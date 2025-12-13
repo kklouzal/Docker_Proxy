@@ -167,6 +167,11 @@ Startup note (first run):
 - If the ClamAV signature DB is missing, the container will run an initial `freshclam` download **blocking startup**.
 - Container health will remain failing until `clamd` is up.
 
+Persistence:
+- ClamAV signature databases (e.g. `main.cvd`, `daily.cvd`) are stored under `/var/lib/squid-flask-proxy/clamav/db`.
+- In the default Compose setup, this directory is backed by a named Docker volume (`clamav_db`), so signature updates persist across container rebuilds/restarts.
+- Note: `docker compose down -v` will delete named volumes (including the ClamAV DB).
+
 Configuration:
 - Enable/disable scanning via the **ClamAV** tab (updates Squid ICAP policy).
 - Max scan size is configurable in the **ClamAV** tab (default: 128 MiB).

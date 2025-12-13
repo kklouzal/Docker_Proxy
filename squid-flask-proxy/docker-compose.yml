@@ -13,6 +13,7 @@ services:
       - ./squid/ssl/certs:/etc/squid/ssl/certs
       - squid_ssl_db:/var/lib/ssl_db
       - proxy_data:/var/lib/squid-flask-proxy
+      - clamav_db:/var/lib/squid-flask-proxy/clamav/db
     environment:
       SQUID_WORKERS: ${SQUID_WORKERS:-2}
       ICAP_BASE_PORT: ${ICAP_BASE_PORT:-1344}
@@ -21,7 +22,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 90s
 
 volumes:
   squid_ssl_db:
   proxy_data:
+  clamav_db:

@@ -431,7 +431,16 @@ def _send_sample_respmod(service: str = "/respmod") -> Dict[str, Any]:
 
 def _check_clamd() -> Dict[str, Any]:
     # Best-effort health check: PING the clamd unix socket.
-    sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
+    sock_path = (os.environ.get('CLAMAV_SOCKET_PATH') or '/var/lib/squid-flask-proxy/clamav/clamd.sock').strip()
+    if not sock_path:
+        sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
+    # During clamd startup (loading signature DB), the socket file often appears
+    # ~30-60s after the process starts. Avoid showing a scary FileNotFoundError.
+    try:
+        if not os.path.exists(sock_path):
+            return {"ok": False, "detail": "starting (clamd socket not ready yet)"}
+    except Exception:
+        pass
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(0.6)
@@ -453,7 +462,7 @@ def _test_eicar() -> Dict[str, Any]:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(1.5)
         s.connect(sock_path)
-        s.sendall(b"zINSTREAM\0")
+        s.sendall(b"INSTREAM\0")
         s.sendall(struct.pack("!I", len(data)))
         s.sendall(data)
         s.sendall(struct.pack("!I", 0))
@@ -479,6 +488,11 @@ def clamav():
     except Exception:
         settings = {"max_scan_bytes": 134217728}
 
+    try:
+        recent_events = store.list_recent_events(limit=50)
+    except Exception:
+        recent_events = []
+
     clamd_health = _check_clamd()
     icap_health = _check_icap_service(
         host=os.environ.get('ICAP_HOST', '127.0.0.1'),
@@ -497,6 +511,7 @@ def clamav():
         health={"ok": ok, "detail": detail},
         clamav_enabled=clamav_enabled,
         settings=settings,
+        recent_events=recent_events,
         eicar_result=request.args.get('eicar'),
         eicar_detail=request.args.get('eicar_detail'),
         icap_result=request.args.get('icap_sample'),

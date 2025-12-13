@@ -4,7 +4,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 def _now() -> int:
@@ -31,6 +31,17 @@ class ClamavSummary:
     skipped_missing_parts: int
 
     errors: int
+
+
+@dataclass(frozen=True)
+class ClamavEvent:
+    ts: int
+    kind: str  # 'infected'|'error'
+    url: str
+    content_type: str
+    content_encoding: str
+    size_bytes: int
+    detail: str
 
 
 class ClamavStore:
@@ -73,6 +84,24 @@ class ClamavStore:
                 """
             )
 
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clamav_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    content_encoding TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    detail TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_clamav_events_ts ON clamav_events(ts DESC);"
+            )
+
             for k in ("first_seen", "last_seen", "last_infected", "last_error", "last_error_msg"):
                 conn.execute(
                     "INSERT OR IGNORE INTO clamav_meta(k,v) VALUES(?,?)",
@@ -97,6 +126,80 @@ class ClamavStore:
             conn.execute(
                 "INSERT OR IGNORE INTO clamav_settings(k,v) VALUES('max_scan_bytes', '134217728')"
             )
+
+    def record_event(
+        self,
+        *,
+        kind: str,
+        url: str = "",
+        content_type: str = "",
+        content_encoding: str = "",
+        size_bytes: int = 0,
+        detail: str = "",
+    ) -> None:
+        # Intentionally used only for non-OK outcomes (infected/errors) to avoid huge write volume.
+        k = (kind or "").strip().lower()
+        if k not in ("infected", "error"):
+            return
+
+        ts = _now()
+        self.init_db()
+        u = (url or "")[:700]
+        ct = (content_type or "")[:120]
+        ce = (content_encoding or "")[:60]
+        d = (detail or "")[:800]
+        try:
+            sb = int(size_bytes)
+        except Exception:
+            sb = 0
+        if sb < 0:
+            sb = 0
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO clamav_events(ts, kind, url, content_type, content_encoding, size_bytes, detail)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (int(ts), k, u, ct, ce, int(sb), d),
+            )
+
+    def list_recent_events(self, *, limit: int = 50) -> List[ClamavEvent]:
+        self.init_db()
+        try:
+            lim = int(limit)
+        except Exception:
+            lim = 50
+        lim = max(1, min(500, lim))
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ts, kind, url, content_type, content_encoding, size_bytes, detail
+                FROM clamav_events
+                ORDER BY ts DESC, id DESC
+                LIMIT ?
+                """,
+                (int(lim),),
+            ).fetchall()
+
+        out: List[ClamavEvent] = []
+        for r in rows:
+            try:
+                out.append(
+                    ClamavEvent(
+                        ts=int(r[0] or 0),
+                        kind=str(r[1] or ""),
+                        url=str(r[2] or ""),
+                        content_type=str(r[3] or ""),
+                        content_encoding=str(r[4] or ""),
+                        size_bytes=int(r[5] or 0),
+                        detail=str(r[6] or ""),
+                    )
+                )
+            except Exception:
+                continue
+        return out
 
     def get_settings(self) -> Dict[str, int]:
         self.init_db()

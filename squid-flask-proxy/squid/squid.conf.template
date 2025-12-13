@@ -107,6 +107,9 @@ cache_store_log /var/log/squid/store.log
 icap_enable on
 icap_send_client_ip on
 icap_send_client_username off
+# Allow slower ICAP/ClamAV responses before Squid aborts; reduces truncated bodies on large pages.
+icap_connect_timeout 60 seconds
+icap_io_timeout 10 minutes
 # Generated at container start from $SQUID_WORKERS and $ICAP_BASE_PORT.
 include /etc/squid/conf.d/20-icap.conf
 
@@ -125,7 +128,7 @@ adaptation_access av_resp_set allow icap_adblockable
 adaptation_access av_resp_set deny all
 
 # HTML response rewriting (RESPMOD): inject <link rel="preload"> tags for <img src>
-adaptation_access html_preload_set allow icap_adblockable icap_resp_html
+# Temporarily disable HTML rewrite to avoid body truncation on complex pages (e.g., YouTube)
 adaptation_access html_preload_set deny all
 
 # Error handling

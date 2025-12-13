@@ -140,5 +140,52 @@
       </div>
     </div>
   </section>
+
+  <section class="card" style="grid-column: 1 / -1;">
+    <div class="card-header">
+      <h2 class="card-title">Recent detections / errors</h2>
+      <span class="badge">last 50</span>
+    </div>
+    <div class="card-body">
+      {% if recent_events and recent_events|length > 0 %}
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width: 170px;">Time</th>
+              <th style="width: 90px;">Kind</th>
+              <th>URL</th>
+              <th style="width: 130px;">Type</th>
+              <th style="width: 90px;">Bytes</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in recent_events %}
+              <tr>
+                <td><span class="small">{{ fmt_ts(e.ts) if e.ts else '' }}</span></td>
+                <td>
+                  {% if e.kind == 'infected' %}
+                    <span class="badge danger">FOUND</span>
+                  {% else %}
+                    <span class="badge danger">ERROR</span>
+                  {% endif %}
+                </td>
+                <td><span class="small" style="font-family: var(--mono); overflow-wrap: anywhere;">{{ e.url }}</span></td>
+                <td><span class="small">{{ e.content_type }}</span></td>
+                <td class="num"><span class="small">{{ e.size_bytes }}</span></td>
+                <td><span class="small" style="font-family: var(--mono); overflow-wrap: anywhere;">{{ e.detail }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="small">No detections or errors recorded yet.</div>
+      {% endif %}
+
+      <div class="small" style="margin-top: 10px;">
+        Only non-OK outcomes are logged (FOUND/ERROR). Clean scans are not stored.
+      </div>
+    </div>
+  </section>
 </div>
 {% endblock %}

@@ -27,8 +27,35 @@ from services.clamav_store import get_clamav_store
 
 _CLAMAV_SOCKET_PATH = "/var/lib/squid-flask-proxy/clamav/clamd.sock"
 
+
+def _clamav_socket_path() -> str:
+    # Allow override for non-standard clamd setups.
+    p = (os.environ.get("CLAMAV_SOCKET_PATH") or "").strip()
+    return p or _CLAMAV_SOCKET_PATH
+
+
+def _clamav_timeout_s() -> float:
+    raw = (os.environ.get("CLAMAV_TIMEOUT_S") or "").strip()
+    if not raw:
+        return 5.0
+    try:
+        v = float(raw)
+    except Exception:
+        return 5.0
+    # Clamp to a sane range.
+    if v < 0.5:
+        v = 0.5
+    if v > 30.0:
+        v = 30.0
+    return float(v)
+
 _CLAMAV_SETTINGS_LAST = 0
 _CLAMAV_SETTINGS_MAX_SCAN = 134217728
+
+# When clamd is starting (loading signature DB), the unix socket may not exist yet.
+# Avoid logging hundreds/thousands of identical errors during that window.
+_CLAMAV_SOCKET_MISSING_LAST = 0
+_CLAMAV_SOCKET_MISSING_INTERVAL_S = 30
 
 
 def _clamav_get_max_scan_bytes(store) -> int:
@@ -685,8 +712,9 @@ def _remove_headers(hdr_lines: List[str], names: Set[str]) -> List[str]:
     return out
 
 
-def _decode_icap_chunked(data: bytes, max_out: int = 8 * 1024 * 1024) -> Tuple[bytes, bool]:
+def _decode_icap_chunked(data: bytes, max_out: int = 8 * 1024 * 1024) -> Tuple[bytes, bool, bool]:
     # Decode ICAP chunked body (hex size + CRLF + data + CRLF ... + 0 CRLF CRLF)
+    # Returns (body, complete, truncated)
     out = bytearray()
     i = 0
     n = len(data)
@@ -703,13 +731,13 @@ def _decode_icap_chunked(data: bytes, max_out: int = 8 * 1024 * 1024) -> Tuple[b
     while True:
         line = read_line()
         if line is None:
-            return bytes(out), False
+            return bytes(out), False, False
         # ignore chunk extensions
         try:
             size_str = line.split(b";", 1)[0].strip()
             size = int(size_str.decode("ascii", errors="ignore") or "0", 16)
         except Exception:
-            return bytes(out), False
+            return bytes(out), False, False
         if size == 0:
             # Expect trailing CRLF after 0-size chunk and optional trailers.
             # We accept either immediate CRLF or trailers ending in CRLF CRLF.
@@ -721,49 +749,119 @@ def _decode_icap_chunked(data: bytes, max_out: int = 8 * 1024 * 1024) -> Tuple[b
                 # Try to find end of trailers.
                 end = data.find(b"\r\n\r\n", i)
                 if end < 0:
-                    return bytes(out), False
+                    return bytes(out), False, False
                 i = end + 4
-            return bytes(out), True
+            return bytes(out), True, False
 
         if i + size + 2 > n:
-            return bytes(out), False
+            return bytes(out), False, False
         out += data[i : i + size]
         if len(out) > max_out:
-            return bytes(out[:max_out]), True
+            # We intentionally stop early to avoid buffering huge bodies.
+            # Callers must treat this as truncated and skip rewriting/scanning.
+            return bytes(out[:max_out]), False, True
         i += size
         # chunk CRLF
         if data[i : i + 2] != b"\r\n":
-            return bytes(out), False
+            return bytes(out), False, False
         i += 2
 
 
-def _maybe_decompress(body: bytes, encoding: str) -> Tuple[Optional[bytes], str]:
+def _maybe_decompress_limited(body: bytes, encoding: str, max_out: int) -> Tuple[Optional[bytes], str, bool]:
+    # Returns (decoded_bytes, style, truncated)
+    # - decoded_bytes is None on unsupported/invalid encoding OR when truncated.
+    # - truncated=True indicates the decoded output would exceed max_out.
     enc = (encoding or "").strip().lower()
+    if max_out < 1:
+        max_out = 1
+
     if not enc or enc == "identity":
-        return body, "identity"
+        if len(body) > max_out:
+            return None, "identity", True
+        return body, "identity", False
+
     if enc == "gzip":
         try:
-            return gzip.decompress(body), "gzip"
+            import io
+
+            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz:
+                dec = gz.read(max_out + 1)
+            if len(dec) > max_out:
+                return None, "gzip", True
+            return dec, "gzip", False
         except Exception:
-            return None, ""
+            return None, "", False
+
     if enc == "deflate":
         # Deflate can be zlib-wrapped or raw.
-        try:
-            return zlib.decompress(body), "deflate-zlib"
-        except Exception:
+        for wbits, style in ((zlib.MAX_WBITS, "deflate-zlib"), (-zlib.MAX_WBITS, "deflate-raw")):
             try:
-                return zlib.decompress(body, wbits=-zlib.MAX_WBITS), "deflate-raw"
+                dobj = zlib.decompressobj(wbits=wbits)
+                out = bytearray()
+                mv = memoryview(body)
+                off = 0
+                while off < len(mv):
+                    chunk = mv[off : off + 64 * 1024]
+                    off += len(chunk)
+                    part = dobj.decompress(chunk, max_out - len(out) + 1)
+                    if part:
+                        out += part
+                        if len(out) > max_out:
+                            return None, style, True
+                    if dobj.unconsumed_tail:
+                        # Push tail through in next loop.
+                        mv = memoryview(dobj.unconsumed_tail.tobytes())
+                        off = 0
+                tail = dobj.flush(max_out - len(out) + 1)
+                if tail:
+                    out += tail
+                if len(out) > max_out:
+                    return None, style, True
+                return bytes(out), style, False
             except Exception:
-                return None, ""
+                continue
+        return None, "", False
+
     if enc == "br":
-        # Brotli-compressed responses (common on modern sites).
         if brotli is None:
-            return None, ""
+            return None, "", False
+
+        # Prefer incremental decompression when available to enforce a cap.
         try:
-            return brotli.decompress(body), "br"
+            dec = bytearray()
+            d = brotli.Decompressor()  # type: ignore[attr-defined]
+            mv = memoryview(body)
+            off = 0
+            while off < len(mv):
+                chunk = mv[off : off + 64 * 1024]
+                off += len(chunk)
+                part = d.process(chunk.tobytes())
+                if part:
+                    dec += part
+                    if len(dec) > max_out:
+                        return None, "br", True
+            if len(dec) > max_out:
+                return None, "br", True
+            return bytes(dec), "br", False
         except Exception:
-            return None, ""
-    return None, ""
+            # Fallback: one-shot decompress (cannot reliably cap memory usage).
+            try:
+                dec2 = brotli.decompress(body)
+                if len(dec2) > max_out:
+                    return None, "br", True
+                return dec2, "br", False
+            except Exception:
+                return None, "", False
+
+    return None, "", False
+
+
+def _maybe_decompress(body: bytes, encoding: str) -> Tuple[Optional[bytes], str]:
+    # Backwards-compatible wrapper for legacy call sites.
+    dec, style, truncated = _maybe_decompress_limited(body, encoding, max_out=64 * 1024 * 1024)
+    if truncated:
+        return None, ""
+    return dec, style
 
 
 def _recompress(body: bytes, style: str) -> Tuple[bytes, str]:
@@ -791,6 +889,105 @@ def _recompress(body: bytes, style: str) -> Tuple[bytes, str]:
                 return body, ""
     # fallback: no encoding
     return body, ""
+
+
+def _drain_icap_chunked_discard(
+    sock: socket.socket,
+    initial: bytes,
+    *,
+    max_total: int,
+    timeout_s: float,
+) -> bool:
+    # Best-effort: drain an ICAP chunked body from the TCP stream without buffering.
+    # This prevents closing the connection with unread request bytes (which can cause
+    # Squid to treat the ICAP service as failing / reset).
+    # Returns True if we saw a valid terminating 0-size chunk.
+    if max_total < 1:
+        max_total = 1
+    if timeout_s < 0.2:
+        timeout_s = 0.2
+
+    buf = bytearray(initial or b"")
+    pos = 0
+    drained = 0
+    saw_end = False
+
+    sock.settimeout(timeout_s)
+
+    def ensure(n: int) -> bool:
+        nonlocal buf, pos, drained
+        while len(buf) - pos < n:
+            try:
+                chunk = sock.recv(4096)
+            except TimeoutError:
+                return False
+            if not chunk:
+                return False
+            buf += chunk
+            drained += len(chunk)
+            if drained > max_total:
+                return False
+        return True
+
+    def read_line() -> Optional[bytes]:
+        nonlocal buf, pos
+        while True:
+            idx = buf.find(b"\r\n", pos)
+            if idx >= 0:
+                line = bytes(buf[pos:idx])
+                pos = idx + 2
+                return line
+            # Need more.
+            if not ensure(1):
+                return None
+
+    try:
+        while drained <= max_total:
+            line = read_line()
+            if line is None:
+                break
+
+            try:
+                size_str = line.split(b";", 1)[0].strip()
+                size = int(size_str.decode("ascii", errors="ignore") or "0", 16)
+            except Exception:
+                break
+
+            if size == 0:
+                # Consume optional trailer headers until CRLF CRLF.
+                # We already consumed the 0-size line; next is either CRLF or trailers.
+                # First, allow an immediate CRLF.
+                if ensure(2) and bytes(buf[pos : pos + 2]) == b"\r\n":
+                    pos += 2
+                    saw_end = True
+                    break
+
+                # Otherwise read until end of trailers.
+                while True:
+                    tline = read_line()
+                    if tline is None:
+                        break
+                    if tline == b"":
+                        saw_end = True
+                        break
+                break
+
+            # Skip chunk payload and trailing CRLF.
+            if not ensure(size + 2):
+                break
+            pos += size
+            if bytes(buf[pos : pos + 2]) != b"\r\n":
+                break
+            pos += 2
+
+            # Compact buffer occasionally.
+            if pos > 64 * 1024:
+                del buf[:pos]
+                pos = 0
+    except Exception:
+        saw_end = False
+
+    return bool(saw_end)
 
 
 _IMG_SRC_RE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*(['\"])(.*?)\1", re.I | re.S)
@@ -902,16 +1099,19 @@ def _icap_virus_block_403(url: str, virus: str) -> bytes:
     )
 
 
-def _clamd_instream_scan(data: bytes, sock_path: str, timeout_s: float = 2.5) -> Tuple[str, str]:
+def _clamd_instream_scan(data: bytes, sock_path: str, timeout_s: float = 5.0) -> Tuple[str, str]:
     # Returns (status, detail)
     # status: 'clean'|'infected'|'error'
     # detail: virus name for infected, or error string
+    s: Optional[socket.socket] = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(timeout_s)
         s.connect(sock_path)
 
-        s.sendall(b"zINSTREAM\0")
+        # INSTREAM expects raw bytes with 4-byte big-endian chunk sizes.
+        # (zINSTREAM requires zlib-compressed chunks, which we are not sending.)
+        s.sendall(b"INSTREAM\0")
         mv = memoryview(data)
         chunk = 32 * 1024
         off = 0
@@ -922,19 +1122,41 @@ def _clamd_instream_scan(data: bytes, sock_path: str, timeout_s: float = 2.5) ->
             off += n
         s.sendall(struct.pack("!I", 0))
 
-        resp = s.recv(4096)
-        s.close()
-        text = resp.decode("utf-8", errors="replace").strip()
+        # Response is NUL-terminated; read until NUL or socket close.
+        resp = bytearray()
+        while True:
+            part = s.recv(4096)
+            if not part:
+                break
+            resp += part
+            if b"\0" in part or len(resp) >= 8192:
+                break
+
+        text = resp.decode("utf-8", errors="replace")
+        if "\0" in text:
+            text = text.split("\0", 1)[0]
+        text = text.strip("\r\n\t ")
+        if not text:
+            return "error", "empty clamd response"
+
+        # Typical: 'stream: OK' or 'stream: Eicar-Test-Signature FOUND'
         if "FOUND" in text:
-            # e.g. 'stream: Eicar-Test-Signature FOUND'
             name = text.split(":", 1)[-1].strip()
             name = name.replace("FOUND", "").strip() or "malware"
             return "infected", name
-        if text.endswith("OK"):
+        if "OK" in text and "ERROR" not in text:
             return "clean", "OK"
-        return "error", (text or "unexpected clamd response")
+        return "error", text
+    except FileNotFoundError:
+        return "error", "clamd_socket_missing"
     except Exception as e:
         return "error", f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            if s is not None:
+                s.close()
+        except Exception:
+            pass
 
 
 class IcapHandler(socketserver.BaseRequestHandler):
@@ -1132,6 +1354,13 @@ class IcapHandler(socketserver.BaseRequestHandler):
             except Exception:
                 pass
             try:
+                store.record_event(
+                    kind="error",
+                    detail=f"unhandled_exception: {type(e).__name__}: {e}",
+                )
+            except Exception:
+                pass
+            try:
                 self.request.sendall(_icap_204())
             except Exception:
                 pass
@@ -1141,6 +1370,10 @@ class IcapHandler(socketserver.BaseRequestHandler):
         if "res-hdr" not in offsets or "res-body" not in offsets:
             try:
                 store.record_skip("missing_parts")
+            except Exception:
+                pass
+            try:
+                store.record_event(kind="error", detail="icap_missing_parts")
             except Exception:
                 pass
             try:
@@ -1171,6 +1404,10 @@ class IcapHandler(socketserver.BaseRequestHandler):
             except Exception:
                 pass
             try:
+                store.record_event(kind="error", detail="timeout_reading_res_hdr")
+            except Exception:
+                pass
+            try:
                 self.request.sendall(_icap_204())
             except Exception:
                 pass
@@ -1183,6 +1420,10 @@ class IcapHandler(socketserver.BaseRequestHandler):
             except Exception:
                 pass
             try:
+                store.record_event(kind="error", detail="missing_res_hdr")
+            except Exception:
+                pass
+            try:
                 self.request.sendall(_icap_204())
             except Exception:
                 pass
@@ -1190,6 +1431,7 @@ class IcapHandler(socketserver.BaseRequestHandler):
 
         _status_line, headers = _parse_http_headers_block(res_hdr_text)
         ctype = (headers.get("content-type") or "").strip().lower()
+        # content-encoding may be empty / identity
         if ctype.startswith("image/") or ctype.startswith("video/"):
             try:
                 store.record_skip("image_video")
@@ -1199,7 +1441,34 @@ class IcapHandler(socketserver.BaseRequestHandler):
                 self.request.sendall(_icap_204())
             except Exception:
                 pass
+
+            # Drain any already-sent res-body bytes to avoid TCP RST on close.
+            try:
+                body_off = offsets.get("res-body", 0)
+                if body_off >= len(rest):
+                    # Read just enough to reach the start of the chunked body.
+                    while len(rest) < body_off + 8 and len(rest) < 8 * 1024 * 1024:
+                        chunk = self.request.recv(4096)
+                        if not chunk:
+                            break
+                        rest += chunk
+                initial = rest[body_off:] if body_off < len(rest) else b""
+                _drain_icap_chunked_discard(
+                    self.request,
+                    initial,
+                    max_total=256 * 1024 * 1024,
+                    timeout_s=2.0,
+                )
+            except Exception:
+                pass
             return
+
+        def best_effort_url() -> str:
+            try:
+                req_hdr = _extract_http_request(rest, offsets)
+                return _parse_url_from_http_request(req_hdr)
+            except Exception:
+                return ""
 
         # Collect full ICAP chunked body (cap reads).
         body_off = offsets.get("res-body", 0)
@@ -1218,8 +1487,25 @@ class IcapHandler(socketserver.BaseRequestHandler):
                 return
 
         body_chunked = rest[body_off:]
+        decoded_body: Optional[bytes] = None
+        decoded_complete = False
+        decoded_truncated = False
+        saw_end_marker = False
         try:
-            while b"\r\n0\r\n\r\n" not in body_chunked and len(body_chunked) < 140 * 1024 * 1024:
+            while len(body_chunked) < 140 * 1024 * 1024:
+                # Only attempt decode once we plausibly have the final chunk marker.
+                if not saw_end_marker:
+                    tail = body_chunked[-65536:] if len(body_chunked) > 65536 else body_chunked
+                    if b"\r\n0\r\n" in tail:
+                        saw_end_marker = True
+
+                if saw_end_marker:
+                    decoded_body, decoded_complete, decoded_truncated = _decode_icap_chunked(
+                        body_chunked, max_out=140 * 1024 * 1024
+                    )
+                    if decoded_complete or decoded_truncated:
+                        break
+
                 chunk = self.request.recv(4096)
                 if not chunk:
                     break
@@ -1227,10 +1513,50 @@ class IcapHandler(socketserver.BaseRequestHandler):
         except TimeoutError:
             pass
 
-        raw_http_body, complete = _decode_icap_chunked(body_chunked, max_out=140 * 1024 * 1024)
+        if decoded_body is None:
+            decoded_body, decoded_complete, decoded_truncated = _decode_icap_chunked(
+                body_chunked, max_out=140 * 1024 * 1024
+            )
+
+        raw_http_body, complete, truncated = decoded_body, decoded_complete, decoded_truncated
+        if raw_http_body is None:
+            raw_http_body = b""
+        if truncated:
+            try:
+                store.record_skip("too_large")
+            except Exception:
+                pass
+            try:
+                store.record_event(
+                    kind="error",
+                    url=best_effort_url(),
+                    content_type=(headers.get("content-type") or "")[:120],
+                    content_encoding=(headers.get("content-encoding") or "")[:60],
+                    size_bytes=int(len(raw_http_body)),
+                    detail="icap_body_truncated",
+                )
+            except Exception:
+                pass
+            try:
+                self.request.sendall(_icap_204())
+            except Exception:
+                pass
+            return
+
         if not complete:
             try:
                 store.record_skip("incomplete_body")
+            except Exception:
+                pass
+            try:
+                store.record_event(
+                    kind="error",
+                    url=best_effort_url(),
+                    content_type=(headers.get("content-type") or "")[:120],
+                    content_encoding=(headers.get("content-encoding") or "")[:60],
+                    size_bytes=int(len(raw_http_body)),
+                    detail="icap_incomplete_body",
+                )
             except Exception:
                 pass
             try:
@@ -1242,12 +1568,88 @@ class IcapHandler(socketserver.BaseRequestHandler):
         max_scan = _clamav_get_max_scan_bytes(store)
 
         enc = headers.get("content-encoding") or ""
-        dec, _style = _maybe_decompress(raw_http_body, enc)
-        if dec is None:
+        # Early skip: if identity encoding and Content-Length is already too large.
+        if (not enc or enc.strip().lower() in ("", "identity")):
             try:
-                store.record_skip("unsupported_encoding")
+                clen = int((headers.get("content-length") or "0").strip() or "0")
             except Exception:
-                pass
+                clen = 0
+            if clen > max_scan > 0:
+                try:
+                    store.record_skip("too_large")
+                except Exception:
+                    pass
+                try:
+                    store.record_event(
+                        kind="error",
+                        url=best_effort_url(),
+                        content_type=(headers.get("content-type") or "")[:120],
+                        content_encoding=(headers.get("content-encoding") or "")[:60],
+                        size_bytes=int(clen),
+                        detail=f"too_large_content_length>{int(max_scan)}",
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    self.request.sendall(_icap_204())
+                except Exception:
+                    pass
+
+                # Drain the incoming body (Squid may already be sending it) to avoid ICAP failures.
+                try:
+                    body_off = offsets.get("res-body", 0)
+                    if body_off >= len(rest):
+                        while len(rest) < body_off + 8 and len(rest) < 8 * 1024 * 1024:
+                            chunk = self.request.recv(4096)
+                            if not chunk:
+                                break
+                            rest += chunk
+                    initial = rest[body_off:] if body_off < len(rest) else b""
+                    _drain_icap_chunked_discard(
+                        self.request,
+                        initial,
+                        max_total=256 * 1024 * 1024,
+                        timeout_s=2.0,
+                    )
+                except Exception:
+                    pass
+                return
+
+        dec, _style, truncated = _maybe_decompress_limited(raw_http_body, enc, max_out=int(max_scan))
+        if dec is None:
+            if truncated:
+                try:
+                    store.record_skip("too_large")
+                except Exception:
+                    pass
+                try:
+                    store.record_event(
+                        kind="error",
+                        url=best_effort_url(),
+                        content_type=(headers.get("content-type") or "")[:120],
+                        content_encoding=(headers.get("content-encoding") or "")[:60],
+                        size_bytes=int(len(raw_http_body)),
+                        detail=f"too_large_after_decompress>{int(max_scan)}",
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    store.record_skip("unsupported_encoding")
+                except Exception:
+                    pass
+                try:
+                    store.record_event(
+                        kind="error",
+                        url=best_effort_url(),
+                        content_type=(headers.get("content-type") or "")[:120],
+                        content_encoding=(headers.get("content-encoding") or "")[:60],
+                        size_bytes=int(len(raw_http_body)),
+                        detail="unsupported_or_invalid_content_encoding",
+                    )
+                except Exception:
+                    pass
             try:
                 self.request.sendall(_icap_204())
             except Exception:
@@ -1260,12 +1662,27 @@ class IcapHandler(socketserver.BaseRequestHandler):
             except Exception:
                 pass
             try:
+                store.record_event(
+                    kind="error",
+                    url=best_effort_url(),
+                    content_type=(headers.get("content-type") or "")[:120],
+                    content_encoding=(headers.get("content-encoding") or "")[:60],
+                    size_bytes=int(len(dec)),
+                    detail=f"too_large_decoded>{int(max_scan)}",
+                )
+            except Exception:
+                pass
+            try:
                 self.request.sendall(_icap_204())
             except Exception:
                 pass
             return
 
-        status, detail = _clamd_instream_scan(dec, sock_path=_CLAMAV_SOCKET_PATH)
+        status, detail = _clamd_instream_scan(
+            dec,
+            sock_path=_clamav_socket_path(),
+            timeout_s=_clamav_timeout_s(),
+        )
 
         if status == "clean":
             try:
@@ -1292,16 +1709,62 @@ class IcapHandler(socketserver.BaseRequestHandler):
                 url = ""
 
             try:
+                store.record_event(
+                    kind="infected",
+                    url=url,
+                    content_type=(headers.get("content-type") or "")[:120],
+                    content_encoding=(headers.get("content-encoding") or "")[:60],
+                    size_bytes=int(len(dec) if dec is not None else 0),
+                    detail=str(detail or "")[:800],
+                )
+            except Exception:
+                pass
+
+            try:
                 self.request.sendall(_icap_virus_block_403(url, detail))
             except Exception:
                 pass
             return
 
         # error
-        try:
-            store.record_error(str(detail))
-        except Exception:
-            pass
+        # Avoid spamming logs when clamd is still starting and hasn't created its socket yet.
+        if str(detail) == "clamd_socket_missing":
+            global _CLAMAV_SOCKET_MISSING_LAST
+            now_ts = _now()
+            if now_ts - int(_CLAMAV_SOCKET_MISSING_LAST) >= int(_CLAMAV_SOCKET_MISSING_INTERVAL_S):
+                _CLAMAV_SOCKET_MISSING_LAST = now_ts
+                try:
+                    store.record_error("clamd_socket_missing")
+                except Exception:
+                    pass
+                try:
+                    store.record_event(
+                        kind="error",
+                        url=best_effort_url(),
+                        content_type=(headers.get("content-type") or "")[:120],
+                        content_encoding=(headers.get("content-encoding") or "")[:60],
+                        size_bytes=int(len(dec) if dec is not None else 0),
+                        detail="clamd_socket_missing (starting)",
+                    )
+                except Exception:
+                    pass
+        else:
+            try:
+                store.record_error(str(detail))
+            except Exception:
+                pass
+
+            try:
+                store.record_event(
+                    kind="error",
+                    url=best_effort_url(),
+                    content_type=(headers.get("content-type") or "")[:120],
+                    content_encoding=(headers.get("content-encoding") or "")[:60],
+                    size_bytes=int(len(dec) if dec is not None else 0),
+                    detail=str(detail or "")[:800],
+                )
+            except Exception:
+                pass
         try:
             self.request.sendall(_icap_204())
         except Exception:
@@ -1386,6 +1849,25 @@ class IcapHandler(socketserver.BaseRequestHandler):
                 self.request.sendall(_icap_204())
             except Exception:
                 pass
+
+            # Drain any already-sent res-body bytes to avoid TCP RST on close.
+            try:
+                body_off = offsets.get("res-body", 0)
+                if body_off >= len(rest):
+                    while len(rest) < body_off + 8 and len(rest) < 8 * 1024 * 1024:
+                        chunk = self.request.recv(4096)
+                        if not chunk:
+                            break
+                        rest += chunk
+                initial = rest[body_off:] if body_off < len(rest) else b""
+                _drain_icap_chunked_discard(
+                    self.request,
+                    initial,
+                    max_total=64 * 1024 * 1024,
+                    timeout_s=2.0,
+                )
+            except Exception:
+                pass
             return
 
         # Collect the ICAP chunked body.
@@ -1406,9 +1888,23 @@ class IcapHandler(socketserver.BaseRequestHandler):
                 return
 
         body_chunked = rest[body_off:]
-        # keep reading until chunked terminator seen (best-effort cap)
+        decoded_body: Optional[bytes] = None
+        decoded_complete = False
+        decoded_truncated = False
+        saw_end_marker = False
+        # keep reading until chunked terminator is actually decodable (best-effort cap)
         try:
-            while b"\r\n0\r\n\r\n" not in body_chunked and len(body_chunked) < 8 * 1024 * 1024:
+            while len(body_chunked) < 8 * 1024 * 1024:
+                if not saw_end_marker:
+                    tail = body_chunked[-65536:] if len(body_chunked) > 65536 else body_chunked
+                    if b"\r\n0\r\n" in tail:
+                        saw_end_marker = True
+
+                if saw_end_marker:
+                    decoded_body, decoded_complete, decoded_truncated = _decode_icap_chunked(body_chunked)
+                    if decoded_complete or decoded_truncated:
+                        break
+
                 chunk = self.request.recv(4096)
                 if not chunk:
                     break
@@ -1416,7 +1912,23 @@ class IcapHandler(socketserver.BaseRequestHandler):
         except TimeoutError:
             pass
 
-        raw_http_body, complete = _decode_icap_chunked(body_chunked)
+        if decoded_body is None:
+            decoded_body, decoded_complete, decoded_truncated = _decode_icap_chunked(body_chunked)
+
+        raw_http_body, complete, truncated = decoded_body, decoded_complete, decoded_truncated
+        if raw_http_body is None:
+            raw_http_body = b""
+        if truncated:
+            try:
+                store.record_skip("incomplete_body")
+            except Exception:
+                pass
+            try:
+                self.request.sendall(_icap_204())
+            except Exception:
+                pass
+            return
+
         if not complete:
             try:
                 print("[icap respmod] icap chunked incomplete -> 204", flush=True)
@@ -1439,14 +1951,20 @@ class IcapHandler(socketserver.BaseRequestHandler):
             pass
 
         enc = headers.get("content-encoding") or ""
-        dec, style = _maybe_decompress(raw_http_body, enc)
+        dec, style, dec_truncated = _maybe_decompress_limited(raw_http_body, enc, max_out=8 * 1024 * 1024)
         if dec is None:
+            if dec_truncated:
+                try:
+                    store.record_skip("incomplete_body")
+                except Exception:
+                    pass
+            else:
+                try:
+                    store.record_skip("unsupported_encoding")
+                except Exception:
+                    pass
             try:
                 print(f"[icap respmod] unsupported/invalid content-encoding={enc!r} -> 204", flush=True)
-            except Exception:
-                pass
-            try:
-                store.record_skip("unsupported_encoding")
             except Exception:
                 pass
             # Unsupported or invalid encoding (e.g. br). Skip.
