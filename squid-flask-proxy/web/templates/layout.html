@@ -17,18 +17,18 @@
                 </div>
             </div>
             <nav class="nav" aria-label="Primary">
-                <div class="nav-group">
-                    <div class="nav-label {{ 'active' if request.endpoint in ['index','live','ssl_errors'] else '' }}">Status</div>
-                    <div class="nav-links">
+                <div class="nav-dropdown">
+                    <button class="nav-trigger {{ 'active' if request.endpoint in ['index','live','ssl_errors'] else '' }}" type="button">Status</button>
+                    <div class="nav-menu">
                         <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
                         <a class="{{ 'active' if request.endpoint == 'live' else '' }}" href="{{ url_for('live') }}">Live</a>
                         <a class="{{ 'active' if request.endpoint == 'ssl_errors' else '' }}" href="{{ url_for('ssl_errors') }}">SSL Errors</a>
                     </div>
                 </div>
 
-                <div class="nav-group">
-                    <div class="nav-label {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','icap_preload','clamav'] else '' }}">Policy</div>
-                    <div class="nav-links">
+                <div class="nav-dropdown">
+                    <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','icap_preload','clamav'] else '' }}" type="button">Policy</button>
+                    <div class="nav-menu">
                         <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
                         <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
                         <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
@@ -38,19 +38,15 @@
                     </div>
                 </div>
 
-                <div class="nav-group">
-                    <div class="nav-label {{ 'active' if request.endpoint in ['socks'] else '' }}">Access</div>
-                    <div class="nav-links">
+                <div class="nav-dropdown">
+                    <button class="nav-trigger {{ 'active' if request.endpoint in ['socks'] else '' }}" type="button">Access</button>
+                    <div class="nav-menu">
                         <a class="{{ 'active' if request.endpoint == 'socks' else '' }}" href="{{ url_for('socks') }}">SOCKS</a>
                     </div>
                 </div>
 
-                <div class="nav-group nav-single">
-                    <a class="nav-link-standalone" href="{{ url_for('health') }}">Diagnostics</a>
-                </div>
-                <div class="nav-group nav-single">
-                    <a class="nav-link-standalone" href="{{ url_for('proxy_pac') }}">PAC</a>
-                </div>
+                <a class="nav-pill" href="{{ url_for('health') }}">Diagnostics</a>
+                <a class="nav-pill" href="{{ url_for('proxy_pac') }}">PAC</a>
             </nav>
         </div>
     </header>

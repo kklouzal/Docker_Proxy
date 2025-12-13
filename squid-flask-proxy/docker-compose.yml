@@ -3,7 +3,11 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    network_mode: host
+    ports:
+      - "5000:5000"       # Flask UI
+      - "3128:3128"       # HTTP proxy
+      - "${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
+      - "1344-1350:1344-1350"       # ICAP ports (base + workers)
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs

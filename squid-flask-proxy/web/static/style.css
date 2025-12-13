@@ -39,7 +39,7 @@ a{ color: var(--text); text-decoration: none; }
 a:hover{ color: white; }
 
 .container{
-  width: min(1100px, calc(100% - 32px));
+  width: min(1280px, calc(100% - 32px));
   margin: 0 auto;
 }
 
@@ -87,65 +87,92 @@ a:hover{ color: white; }
 .nav{
   display:flex;
   align-items:flex-start;
-  gap: 14px;
+  gap: 12px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.nav-group{
-  display:flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 160px;
+.nav-dropdown{
+  position: relative;
 }
 
-.nav-group.nav-single{
-  min-width: auto;
-  gap: 0;
-}
-
-.nav-label{
-  font-size: 12px;
-  letter-spacing: .3px;
+.nav-trigger{
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.05);
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: .2px;
   text-transform: uppercase;
-  color: var(--muted-2);
-  padding: 6px 8px;
-  border-radius: 10px;
-  border: 1px solid transparent;
+  min-width: 150px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.nav-label.active{
+.nav-trigger.active{
   color: white;
   border-color: rgba(122,162,255,.28);
-  background: rgba(122,162,255,.10);
+  background: rgba(122,162,255,.14);
+  box-shadow: 0 10px 30px rgba(122,162,255,.15);
 }
 
-.nav-links{
-  display:flex;
-  flex-wrap: wrap;
+.nav-menu{
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  display: none;
+  min-width: 220px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(17,24,39,.94);
+  box-shadow: 0 16px 40px rgba(0,0,0,.35);
+  backdrop-filter: blur(10px);
+  flex-direction: column;
   gap: 6px;
+  z-index: 20;
 }
 
-.nav-links a,
-.nav-link-standalone{
-  padding: 8px 10px;
+.nav-dropdown:hover .nav-menu,
+.nav-dropdown:focus-within .nav-menu{
+  display:flex;
+}
+
+.nav-menu a{
+  padding: 10px 10px;
   border-radius: 10px;
   color: var(--muted);
   border: 1px solid rgba(255,255,255,.06);
   background: rgba(255,255,255,.03);
 }
 
-.nav-links a:hover,
-.nav-link-standalone:hover{
+.nav-menu a:hover{
   color: white;
-  background: rgba(255,255,255,.08);
-  border-color: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.14);
 }
 
-.nav-links a.active{
+.nav-menu a.active{
   color: white;
   background: rgba(122,162,255,.16);
   border-color: rgba(122,162,255,.28);
+}
+
+.nav-pill,
+.nav-link-standalone{
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: var(--muted);
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.05);
+}
+
+.nav-pill:hover,
+.nav-link-standalone:hover{
+  color: white;
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.14);
 }
 
 .main{
@@ -394,6 +421,6 @@ pre{
 }
 
 @media (min-width: 900px){
-  .card.split-left{ grid-column: span 7; }
-  .card.split-right{ grid-column: span 5; }
+  .card.split-left{ grid-column: span 8; }
+  .card.split-right{ grid-column: span 4; }
 }
