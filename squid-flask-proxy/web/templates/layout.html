@@ -17,16 +17,40 @@
                 </div>
             </div>
             <nav class="nav" aria-label="Primary">
-                <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
-                <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
-                <a class="{{ 'active' if request.endpoint == 'live' else '' }}" href="{{ url_for('live') }}">Live</a>
-                <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
-                <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
-                <a class="{{ 'active' if request.endpoint == 'icap_preload' else '' }}" href="{{ url_for('icap_preload') }}">ICAP Preload</a>
-                <a class="{{ 'active' if request.endpoint == 'socks' else '' }}" href="{{ url_for('socks') }}">SOCKS</a>
-                <a class="{{ 'active' if request.endpoint == 'ssl_errors' else '' }}" href="{{ url_for('ssl_errors') }}">SSL Errors</a>
-                <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
-                <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
+                <div class="nav-group">
+                    <div class="nav-label {{ 'active' if request.endpoint in ['index','live','ssl_errors'] else '' }}">Status</div>
+                    <div class="nav-links">
+                        <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
+                        <a class="{{ 'active' if request.endpoint == 'live' else '' }}" href="{{ url_for('live') }}">Live</a>
+                        <a class="{{ 'active' if request.endpoint == 'ssl_errors' else '' }}" href="{{ url_for('ssl_errors') }}">SSL Errors</a>
+                    </div>
+                </div>
+
+                <div class="nav-group">
+                    <div class="nav-label {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','icap_preload','clamav'] else '' }}">Policy</div>
+                    <div class="nav-links">
+                        <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
+                        <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
+                        <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
+                        <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
+                        <a class="{{ 'active' if request.endpoint == 'icap_preload' else '' }}" href="{{ url_for('icap_preload') }}">ICAP Preload</a>
+                        <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
+                    </div>
+                </div>
+
+                <div class="nav-group">
+                    <div class="nav-label {{ 'active' if request.endpoint in ['socks'] else '' }}">Access</div>
+                    <div class="nav-links">
+                        <a class="{{ 'active' if request.endpoint == 'socks' else '' }}" href="{{ url_for('socks') }}">SOCKS</a>
+                    </div>
+                </div>
+
+                <div class="nav-group nav-single">
+                    <a class="nav-link-standalone" href="{{ url_for('health') }}">Diagnostics</a>
+                </div>
+                <div class="nav-group nav-single">
+                    <a class="nav-link-standalone" href="{{ url_for('proxy_pac') }}">PAC</a>
+                </div>
             </nav>
         </div>
     </header>

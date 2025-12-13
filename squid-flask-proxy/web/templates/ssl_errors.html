@@ -8,6 +8,32 @@
 
 <section class="card">
   <div class="card-header">
+    <h2 class="card-title">Filters</h2>
+    <span class="badge">best-effort parsing</span>
+  </div>
+  <div class="card-body">
+    <form class="form" method="get" action="{{ url_for('ssl_errors') }}">
+      <div class="row-2">
+        <div>
+          <label for="window">Time window (seconds)</label>
+          <input id="window" name="window" type="number" min="300" max="7776000" step="300" value="{{ window or 86400 }}" />
+        </div>
+        <div>
+          <label for="q">Search domain</label>
+          <input id="q" name="q" type="text" placeholder="contains..." value="{{ search or '' }}" />
+        </div>
+      </div>
+      <div class="actions" style="margin-top: 10px;">
+        <button class="btn primary" type="submit">Apply</button>
+        <a class="btn" href="{{ url_for('ssl_errors_export', window=window, q=search) }}">Export CSV</a>
+      </div>
+      <div class="small">Filters apply to aggregates based on last_seen timestamps.</div>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
     <h2 class="card-title">Recent errors</h2>
     <span class="badge">{{ rows|length }} rows</span>
   </div>
@@ -20,6 +46,7 @@
           <th>Reason</th>
           <th class="num">Count</th>
           <th class="num">Last seen</th>
+          <th class="num">Action</th>
         </tr>
       </thead>
       <tbody>
@@ -33,6 +60,12 @@
             </td>
             <td class="num">{{ r.count }}</td>
             <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
+            <td class="num">
+              <form method="post" action="{{ url_for('ssl_errors_exclude') }}">
+                <input type="hidden" name="domain" value="{{ r.domain }}" />
+                <button class="btn" type="submit">Add to exclusions</button>
+              </form>
+            </td>
           </tr>
         {% endfor %}
       </tbody>
@@ -47,5 +80,43 @@
     </div>
   </div>
 </section>
+
+{% if top_domains %}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Top domains</h2>
+    <span class="badge">clustered</span>
+  </div>
+  <div class="card-body">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Domain</th>
+          <th class="num">Total errors</th>
+          <th class="num">Buckets</th>
+          <th class="num">Last seen</th>
+          <th class="num">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in top_domains %}
+          <tr>
+            <td style="font-family: var(--mono);">{{ d.domain if d.domain else '-' }}</td>
+            <td class="num">{{ d.total }}</td>
+            <td class="num">{{ d.buckets }}</td>
+            <td class="num"><span class="small">{{ fmt_ts(d.last_seen) }}</span></td>
+            <td class="num">
+              <form method="post" action="{{ url_for('ssl_errors_exclude') }}">
+                <input type="hidden" name="domain" value="{{ d.domain }}" />
+                <button class="btn" type="submit">Add to exclusions</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 
 {% endblock %}

@@ -86,26 +86,63 @@ a:hover{ color: white; }
 
 .nav{
   display:flex;
-  align-items:center;
-  gap: 10px;
+  align-items:flex-start;
+  gap: 14px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.nav a{
-  padding: 8px 10px;
+.nav-group{
+  display:flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+}
+
+.nav-group.nav-single{
+  min-width: auto;
+  gap: 0;
+}
+
+.nav-label{
+  font-size: 12px;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  padding: 6px 8px;
   border-radius: 10px;
-  color: var(--muted);
   border: 1px solid transparent;
 }
 
-.nav a:hover{
+.nav-label.active{
   color: white;
-  background: rgba(255,255,255,.06);
-  border-color: rgba(255,255,255,.08);
+  border-color: rgba(122,162,255,.28);
+  background: rgba(122,162,255,.10);
 }
 
-.nav a.active{
+.nav-links{
+  display:flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nav-links a,
+.nav-link-standalone{
+  padding: 8px 10px;
+  border-radius: 10px;
+  color: var(--muted);
+  border: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.03);
+}
+
+.nav-links a:hover,
+.nav-link-standalone:hover{
+  color: white;
+  background: rgba(255,255,255,.08);
+  border-color: rgba(255,255,255,.12);
+}
+
+.nav-links a.active{
   color: white;
   background: rgba(122,162,255,.16);
   border-color: rgba(122,162,255,.28);

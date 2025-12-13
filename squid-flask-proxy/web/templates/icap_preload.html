@@ -20,6 +20,15 @@
       <button class="btn primary" type="submit" name="action" value="enable">Enable</button>
     {% endif %}
   </form>
+
+  <form method="post" action="{{ url_for('icap_preload_test') }}" style="display:inline; margin-left: 10px;">
+    <button class="btn" type="submit">Send sample ICAP</button>
+  </form>
+
+  {% if sample_result %}
+    {% if sample_result == 'ok' %}<span class="badge ok">Sample ok</span>{% else %}<span class="badge danger">Sample failed</span>{% endif %}
+    {% if sample_detail %}<span class="small" style="font-family: var(--mono);">{{ sample_detail }}</span>{% endif %}
+  {% endif %}
 </div>
 
 <div class="grid">

@@ -1546,6 +1546,10 @@ class AdblockEngine:
         self._decision_cache_ttl = int(settings.get("cache_ttl") or 0)
         self._decision_cache_max = int(settings.get("cache_max") or 0)
 
+        # Track cache effectiveness without per-request SQLite writes.
+        self._cache_stats_lock = threading.Lock()
+        self._pending_cache_stats: Counter[str] = Counter()
+
         # Batch block-stat writes to avoid per-request SQLite work.
         self._stats_lock = threading.Lock()
         self._pending_blocks: Counter[str] = Counter()
@@ -1576,10 +1580,18 @@ class AdblockEngine:
                 self._flush_pending_blocks()
             except Exception:
                 pass
+            try:
+                self._flush_cache_stats(force_flush=False)
+            except Exception:
+                pass
             time.sleep(2)
 
         try:
             self._flush_pending_blocks()
+        except Exception:
+            pass
+        try:
+            self._flush_cache_stats(force_flush=True)
         except Exception:
             pass
 
@@ -1599,12 +1611,25 @@ class AdblockEngine:
 
     def _loop(self) -> None:
         last_refresh_req = 0
+        last_cache_flush_req = 0
         while not self._stop:
             try:
                 refresh_req = self.store.get_refresh_requested()
                 force = refresh_req > last_refresh_req
                 if force:
                     last_refresh_req = refresh_req
+
+                cache_flush_req = self.store.get_cache_flush_requested()
+                if cache_flush_req > last_cache_flush_req:
+                    last_cache_flush_req = cache_flush_req
+                    try:
+                        with self._cache_lock:
+                            evicted = len(self._decision_cache)
+                            self._decision_cache.clear()
+                        self._record_cache_stat("evictions", evicted)
+                        self._flush_cache_stats(force_flush=True)
+                    except Exception:
+                        pass
 
                 # Download updates for enabled lists if due.
                 any_updated = False
@@ -1746,11 +1771,16 @@ class AdblockEngine:
                         if (now_ts - ts) <= self._decision_cache_ttl:
                             # LRU bump
                             self._decision_cache.move_to_end(cache_key)
+                            self._record_cache_stat("hits", 1)
                             return val or None
                         # Expired
                         self._decision_cache.pop(cache_key, None)
+                        self._record_cache_stat("evictions", 1)
             except Exception:
                 pass
+
+        if self._decision_cache_ttl > 0 and self._decision_cache_max > 0:
+            self._record_cache_stat("misses", 1)
 
         with self._lock:
             matcher = self._ruleset.matcher
@@ -1770,6 +1800,7 @@ class AdblockEngine:
                         self._decision_cache.move_to_end(cache_key)
                         while len(self._decision_cache) > self._decision_cache_max:
                             self._decision_cache.popitem(last=False)
+                            self._record_cache_stat("evictions", 1)
                 except Exception:
                     pass
             return blocked_by
@@ -1780,6 +1811,7 @@ class AdblockEngine:
                     self._decision_cache.move_to_end(cache_key)
                     while len(self._decision_cache) > self._decision_cache_max:
                         self._decision_cache.popitem(last=False)
+                        self._record_cache_stat("evictions", 1)
             except Exception:
                 pass
         return None
@@ -1792,6 +1824,45 @@ class AdblockEngine:
         try:
             with self._stats_lock:
                 self._pending_blocks[list_key] += 1
+        except Exception:
+            pass
+
+    def _record_cache_stat(self, key: str, delta: int) -> None:
+        if delta <= 0:
+            return
+        try:
+            with self._cache_stats_lock:
+                self._pending_cache_stats[key] += int(delta)
+        except Exception:
+            pass
+
+    def _flush_cache_stats(self, force_flush: bool = False) -> None:
+        hits = misses = evictions = 0
+        try:
+            with self._cache_stats_lock:
+                if not self._pending_cache_stats and not force_flush:
+                    return
+                hits = int(self._pending_cache_stats.get("hits", 0))
+                misses = int(self._pending_cache_stats.get("misses", 0))
+                evictions = int(self._pending_cache_stats.get("evictions", 0))
+                self._pending_cache_stats.clear()
+        except Exception:
+            return
+
+        size = None
+        try:
+            with self._cache_lock:
+                size = len(self._decision_cache)
+        except Exception:
+            size = None
+
+        try:
+            self.store.record_cache_stats(
+                hits=hits,
+                misses=misses,
+                evictions=evictions,
+                size=size,
+            )
         except Exception:
             pass
 

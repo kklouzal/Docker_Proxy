@@ -121,7 +121,11 @@
     <section class="card split-left">
         <div class="card-header">
             <h2 class="card-title">Proxy Status</h2>
-            <span class="badge ok">Running</span>
+            {% if proxy_ok %}
+                <span class="badge ok">OK</span>
+            {% else %}
+                <span class="badge warn">Check</span>
+            {% endif %}
         </div>
         <div class="card-body">
             <pre>{{ proxy_status }}</pre>
@@ -133,19 +137,58 @@
                     <button class="btn" type="submit">Clear caches</button>
                 </form>
                 <a class="btn" href="{{ url_for('squid_config') }}">Edit config</a>
+                <a class="btn" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download config</a>
             </div>
+
+            {% if last_config %}
+                <div class="small" style="margin-top: 12px;">
+                    Last config apply: {{ fmt_ts(last_config.ts) }} ({{ last_config.remote_addr or 'n/a' }}) · {{ 'ok' if last_config.ok else 'failed' }}
+                </div>
+            {% else %}
+                <div class="small" style="margin-top: 12px;">No config apply events recorded yet.</div>
+            {% endif %}
         </div>
     </section>
 
     <aside class="card split-right">
         <div class="card-header">
-            <h2 class="card-title">Web UI</h2>
-            <span class="badge ok">OK</span>
+            <h2 class="card-title">Services Health</h2>
+            <span class="badge">Inline</span>
         </div>
         <div class="card-body">
-            <pre>{{ flask_status }}</pre>
-            <div class="small" style="margin-top: 12px;">
-                Health endpoint: <span style="font-family: var(--mono);">/health</span>
+            <div class="kv">
+                <div class="k">ICAP</div>
+                <div class="v">
+                    {% if icap_health and icap_health.ok %}
+                        <span class="badge ok">OK</span>
+                    {% else %}
+                        <span class="badge warn">Check</span>
+                    {% endif %}
+                    <span class="small">{{ icap_health.detail if icap_health else 'n/a' }}</span>
+                </div>
+
+                <div class="k">ClamAV</div>
+                <div class="v">
+                    {% if clamav_health and clamav_health.ok %}
+                        <span class="badge ok">OK</span>
+                    {% else %}
+                        <span class="badge warn">Check</span>
+                    {% endif %}
+                    <span class="small">{{ clamav_health.detail if clamav_health else 'n/a' }}</span>
+                </div>
+
+                <div class="k">Dante (SOCKS)</div>
+                <div class="v">
+                    {% if dante_health and dante_health.ok %}
+                        <span class="badge ok">OK</span>
+                    {% else %}
+                        <span class="badge warn">Check</span>
+                    {% endif %}
+                    <span class="small">{{ dante_health.detail if dante_health else 'n/a' }}</span>
+                </div>
+
+                <div class="k">Web UI</div>
+                <div class="v"><span class="badge ok">OK</span> <span class="small">Health: /health</span></div>
             </div>
         </div>
     </aside>

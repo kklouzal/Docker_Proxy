@@ -472,10 +472,15 @@ class LiveStatsStore:
                 )
             return rows
 
-    def get_totals(self) -> Dict[str, int]:
+    def get_totals(self, *, since: Optional[int] = None) -> Dict[str, int]:
+        where = ""
+        params: Tuple[Any, ...] = ()
+        if since is not None:
+            where = "WHERE last_seen >= ?"
+            params = (int(since),)
         with self._connect() as conn:
-            d = conn.execute("SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM domains").fetchone()
-            c = conn.execute("SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM clients").fetchone()
+            d = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM domains {where}", params).fetchone()
+            c = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM clients {where}", params).fetchone()
         return {
             "domain_requests": int(d[0]) if d else 0,
             "domain_hit_requests": int(d[1]) if d else 0,
@@ -483,18 +488,35 @@ class LiveStatsStore:
             "client_hit_requests": int(c[1]) if c else 0,
         }
 
-    def list_domains(self, sort: str = "recent", order: str = "desc", limit: int = 100) -> List[Dict[str, Any]]:
+    def list_domains(
+        self,
+        sort: str = "recent",
+        order: str = "desc",
+        limit: int = 100,
+        *,
+        since: Optional[int] = None,
+        search: str = "",
+    ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
-        if sort == "top":
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM domains ORDER BY requests {order_sql}, last_seen DESC LIMIT ?"
-        elif sort == "cache":
-            # cache% sort; protect division by zero
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM domains ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT ?"
-        else:
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM domains ORDER BY last_seen {order_sql}, requests DESC LIMIT ?"
+        where = []
+        params: List[Any] = []
+        if since is not None:
+            where.append("last_seen >= ?")
+            params.append(int(since))
+        if search:
+            where.append("domain LIKE ?")
+            params.append(f"%{search}%")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-        rows = self._query_rows(sql, (int(limit),))
-        totals = self.get_totals()
+        if sort == "top":
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM domains {where_sql} ORDER BY requests {order_sql}, last_seen DESC LIMIT ?"
+        elif sort == "cache":
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM domains {where_sql} ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT ?"
+        else:
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM domains {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT ?"
+
+        rows = self._query_rows(sql, tuple(params + [int(limit)]))
+        totals = self.get_totals(since=since)
         total = totals["domain_requests"]
         out: List[Dict[str, Any]] = []
         for r in rows:
@@ -509,17 +531,35 @@ class LiveStatsStore:
             )
         return out
 
-    def list_clients(self, sort: str = "recent", order: str = "desc", limit: int = 100) -> List[Dict[str, Any]]:
+    def list_clients(
+        self,
+        sort: str = "recent",
+        order: str = "desc",
+        limit: int = 100,
+        *,
+        since: Optional[int] = None,
+        search: str = "",
+    ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
-        if sort == "top":
-            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM clients ORDER BY requests {order_sql}, last_seen DESC LIMIT ?"
-        elif sort == "cache":
-            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM clients ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT ?"
-        else:
-            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM clients ORDER BY last_seen {order_sql}, requests DESC LIMIT ?"
+        where = []
+        params: List[Any] = []
+        if since is not None:
+            where.append("last_seen >= ?")
+            params.append(int(since))
+        if search:
+            where.append("ip LIKE ?")
+            params.append(f"%{search}%")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-        rows = self._query_rows(sql, (int(limit),))
-        totals = self.get_totals()
+        if sort == "top":
+            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM clients {where_sql} ORDER BY requests {order_sql}, last_seen DESC LIMIT ?"
+        elif sort == "cache":
+            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM clients {where_sql} ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT ?"
+        else:
+            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM clients {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT ?"
+
+        rows = self._query_rows(sql, tuple(params + [int(limit)]))
+        totals = self.get_totals(since=since)
         total = totals["client_requests"]
         out: List[Dict[str, Any]] = []
         for r in rows:
@@ -601,6 +641,13 @@ class LiveStatsStore:
                 }
             )
         return out
+
+    def export_rows(self, mode: str, *, since: Optional[int] = None, search: str = "", limit: int = 500) -> List[Dict[str, Any]]:
+        mode_s = (mode or "domains").strip().lower()
+        lim = max(10, min(1000, int(limit)))
+        if mode_s == "clients":
+            return self.list_clients(sort="recent", order="desc", limit=lim, since=since, search=search)
+        return self.list_domains(sort="recent", order="desc", limit=lim, since=since, search=search)
 
     def list_domain_not_cached_reasons(self, domain: str, limit: int = 10) -> List[Dict[str, Any]]:
         d = (domain or "").strip().lower().lstrip(".")

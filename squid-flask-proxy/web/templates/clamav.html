@@ -29,6 +29,22 @@
   {% if health and health.detail %}
     <span class="small" style="font-family: var(--mono);">{{ health.detail }}</span>
   {% endif %}
+
+  <form method="post" action="{{ url_for('clamav_test_eicar') }}" style="display:inline; margin-left: 12px;">
+    <button class="btn" type="submit">Test EICAR</button>
+  </form>
+  <form method="post" action="{{ url_for('clamav_test_icap') }}" style="display:inline; margin-left: 8px;">
+    <button class="btn" type="submit">Send sample ICAP</button>
+  </form>
+
+  {% if eicar_result %}
+    {% if eicar_result == 'ok' %}<span class="badge ok">EICAR detected</span>{% else %}<span class="badge danger">EICAR failed</span>{% endif %}
+    {% if eicar_detail %}<span class="small" style="font-family: var(--mono);">{{ eicar_detail }}</span>{% endif %}
+  {% endif %}
+  {% if icap_result %}
+    {% if icap_result == 'ok' %}<span class="badge ok">ICAP sample ok</span>{% else %}<span class="badge danger">ICAP sample failed</span>{% endif %}
+    {% if icap_detail %}<span class="small" style="font-family: var(--mono);">{{ icap_detail }}</span>{% endif %}
+  {% endif %}
 </div>
 
 <div class="grid">

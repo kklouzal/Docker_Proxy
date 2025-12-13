@@ -5,6 +5,7 @@ import datetime
 import time
 import os
 import ipaddress
+import struct
 from services.stats import get_stats
 from services.live_stats import get_store
 from services.exclusions_store import get_exclusions_store
@@ -88,21 +89,58 @@ def inject_now():
         "fmt_ts": fmt_ts,
     }
 
+
+def _check_tcp(host: str, port: int, timeout: float = 0.6) -> Dict[str, Any]:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return {"ok": True, "detail": "tcp connect ok"}
+    except Exception as e:
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 @app.route('/')
 def index():
     stdout, stderr = squid_controller.get_status()
+    proxy_detail = (stdout or b'').decode('utf-8', errors='replace') + (stderr or b'').decode('utf-8', errors='replace')
+    proxy_ok = not stderr
+
     stats = get_stats()
     try:
         trends = get_timeseries_store().summary()
     except Exception:
         trends = {}
 
+    icap_health = _check_icap_respmod()
+    clamav_health = _check_clamd()
+    dante_port = int(os.environ.get('DANTE_PORT', 1080))
+    dante_health = _check_tcp(os.environ.get('DANTE_HOST', '127.0.0.1'), dante_port)
+
+    last_config = None
+    try:
+        row = get_audit_store().latest_config_apply()
+        if row:
+            last_config = {
+                "ts": int(row[0]),
+                "kind": row[1],
+                "ok": bool(row[2]),
+                "remote_addr": row[3],
+                "user_agent": row[4],
+                "detail": row[5],
+            }
+    except Exception:
+        pass
+
     return render_template(
         'index.html',
-        proxy_status=(stdout or b'').decode('utf-8', errors='replace') + (stderr or b'').decode('utf-8', errors='replace'),
+        proxy_status=proxy_detail,
+        proxy_ok=proxy_ok,
         flask_status="OK",
         stats=stats,
         trends=trends,
+        icap_health=icap_health,
+        clamav_health=clamav_health,
+        dante_health=dante_health,
+        last_config=last_config,
     )
 
 
@@ -111,7 +149,7 @@ def health():
     return jsonify({"ok": True}), 200
 
 
-@app.route('/api/squid/config', methods=['GET'])
+@app.route('/api/squid-config', methods=['GET'])
 def api_squid_config():
     cfg = squid_controller.get_current_config() or ""
     return app.response_class(cfg, mimetype='text/plain; charset=utf-8')
@@ -121,18 +159,64 @@ def api_squid_config():
 def ssl_errors():
     store = get_ssl_errors_store()
     limit_s = (request.args.get('limit') or '200').strip()
+    q = (request.args.get('q') or '').strip().lower()
+    window_s = (request.args.get('window') or '86400').strip()
     try:
         limit = int(limit_s)
     except ValueError:
         limit = 200
-    rows = store.list_errors(limit=limit)
-    return render_template('ssl_errors.html', rows=rows)
+    try:
+        window_i = max(300, min(90 * 24 * 3600, int(window_s)))
+    except ValueError:
+        window_i = 86400
+    since_ts = int(time.time()) - window_i
+
+    try:
+        rows = store.list_recent(since=since_ts, search=q, limit=limit)
+        top_domains = store.top_domains(since=since_ts, search=q, limit=15)
+    except Exception:
+        rows = []
+        top_domains = []
+
+    return render_template('ssl_errors.html', rows=rows, top_domains=top_domains, window=window_i, search=q)
+
+
+@app.route('/ssl-errors/exclude', methods=['POST'])
+def ssl_errors_exclude():
+    domain = (request.form.get('domain') or '').strip().lower().lstrip('.')
+    if domain:
+        try:
+            get_exclusions_store().add_domain(domain)
+        except Exception:
+            pass
+    return redirect(url_for('ssl_errors', q=domain))
+
+
+@app.route('/ssl-errors/export', methods=['GET'])
+def ssl_errors_export():
+    store = get_ssl_errors_store()
+    q = (request.args.get('q') or '').strip().lower()
+    window_s = (request.args.get('window') or '86400').strip()
+    try:
+        window_i = max(300, min(90 * 24 * 3600, int(window_s)))
+    except ValueError:
+        window_i = 86400
+    since_ts = int(time.time()) - window_i
+    rows = store.list_recent(since=since_ts, search=q, limit=1000)
+
+    headers = ["domain", "category", "reason", "count", "last_seen", "sample"]
+    out = [";".join(headers)]
+    for r in rows:
+        out.append(";".join([str(getattr(r, 'domain', '')), getattr(r, 'category', ''), getattr(r, 'reason', ''), str(getattr(r, 'count', 0)), str(getattr(r, 'last_seen', 0)), getattr(r, 'sample', '')]))
+    body = "\n".join(out)
+    return app.response_class(body, mimetype='text/csv; charset=utf-8')
 
 
 @app.route('/socks', methods=['GET'])
 def socks():
     store = get_socks_store()
     window_s = (request.args.get('window') or '3600').strip()
+    q = (request.args.get('q') or '').strip()
     try:
         window = int(window_s)
     except ValueError:
@@ -148,9 +232,10 @@ def socks():
         return f"{window // (24 * 3600)}d"
 
     summary = store.summary(since=since)
-    top_clients = store.top_clients(since=since, limit=20)
-    top_dests = store.top_destinations(since=since, limit=20)
-    recent = store.recent(limit=200)
+    top_clients = store.top_clients(since=since, limit=20, search=q)
+    top_dests = store.top_destinations(since=since, limit=20, search=q)
+    recent_all = store.recent(limit=200, since=since)
+    recent = store.recent(limit=200, since=since, search=q)
 
     # Heuristic: if all activity appears from a single private IP, it's often Docker NAT
     # masking real LAN client IPs (common on Docker Desktop).
@@ -165,7 +250,7 @@ def socks():
         return s.startswith('172.17.') or s.startswith('172.18.') or s.startswith('172.19.') or s.startswith('172.20.')
 
     seen_ips = []
-    for e in recent:
+    for e in recent_all:
         if e.src_ip:
             seen_ips.append(e.src_ip)
     uniq_ips = sorted({ip for ip in seen_ips if ip})
@@ -186,6 +271,8 @@ def socks():
     return render_template(
         'socks.html',
         window_label=window_label(),
+        window=window,
+        search=q,
         summary=summary,
         top_clients=top_clients,
         top_dests=top_dests,
@@ -226,6 +313,9 @@ def adblock():
             store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
         elif action == 'refresh':
             store.request_refresh_now()
+        elif action == 'flush_cache':
+            store.request_cache_flush()
+            return redirect(url_for('adblock', cache_flushed='1'))
         return redirect(url_for('adblock'))
 
     statuses = store.list_statuses()
@@ -237,7 +327,43 @@ def adblock():
         stats = store.stats()
     except Exception:
         stats = {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
-    return render_template('adblock.html', statuses=statuses, stats=stats, settings=settings)
+    try:
+        cache_stats = store.cache_stats()
+    except Exception:
+        cache_stats = {"hits": 0, "misses": 0, "evictions": 0, "current_size": 0, "last_flush": 0, "last_flush_req": 0}
+
+    interval = store.get_update_interval_seconds()
+    now_ts = int(time.time())
+    status_rows = []
+    for st in statuses:
+        next_refresh = now_ts if not st.enabled else (st.last_success + interval if st.last_success > 0 else now_ts)
+        last_failure_ts = st.last_attempt if st.last_error else 0
+        status_rows.append(
+            {
+                "key": st.key,
+                "url": st.url,
+                "enabled": st.enabled,
+                "rules": st.rules,
+                "bytes": st.bytes,
+                "last_success": st.last_success,
+                "last_attempt": st.last_attempt,
+                "last_error": st.last_error,
+                "last_failure_ts": last_failure_ts,
+                "next_refresh": next_refresh,
+            }
+        )
+
+    return render_template(
+        'adblock.html',
+        statuses=status_rows,
+        stats=stats,
+        settings=settings,
+        cache_stats=cache_stats,
+        cache_max=settings.get('cache_max'),
+        cache_ttl=settings.get('cache_ttl'),
+        update_interval_seconds=interval,
+        cache_flushed=(request.args.get('cache_flushed') == '1'),
+    )
 
 
 def _check_icap_service(host: str = "127.0.0.1", port: int = 1344, service: str = "/respmod"):
@@ -272,6 +398,37 @@ def _check_icap_respmod(host: str = "127.0.0.1", port: int = 1344, service: str 
     return _check_icap_service(host=host, port=port, service=service)
 
 
+def _send_sample_respmod(service: str = "/respmod") -> Dict[str, Any]:
+    host = os.environ.get('ICAP_HOST', '127.0.0.1')
+    port = int(os.environ.get('ICAP_PORT', 1344))
+    path = service or '/respmod'
+    if not path.startswith('/'):
+        path = '/' + path
+
+    http_body = b"Hello from ICAP sample"
+    http_hdr = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n"
+    chunk = f"{len(http_body):X}\r\n".encode('ascii') + http_body + b"\r\n0\r\n\r\n"
+    res_body_off = len(http_hdr)
+    icap_req = (
+        f"RESPMOD icap://{host}:{port}{path} ICAP/1.0\r\n"
+        f"Host: {host}\r\n"
+        "Allow: 204\r\n"
+        f"Encapsulated: res-hdr=0, res-body={res_body_off}\r\n"
+        "\r\n"
+    ).encode('ascii') + http_hdr + chunk
+
+    try:
+        with socket.create_connection((host, port), timeout=1.2) as s:
+            s.settimeout(1.2)
+            s.sendall(icap_req)
+            resp = s.recv(512)
+        line = resp.split(b"\r\n", 1)[0].decode('ascii', errors='replace') if resp else "no data"
+        ok = line.startswith("ICAP/1.0 20")
+        return {"ok": ok, "detail": line or "no data"}
+    except Exception as e:
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 def _check_clamd() -> Dict[str, Any]:
     # Best-effort health check: PING the clamd unix socket.
     sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
@@ -284,6 +441,27 @@ def _check_clamd() -> Dict[str, Any]:
         s.close()
         ok = data.startswith(b"PONG")
         return {"ok": bool(ok), "detail": (data.decode('ascii', errors='replace').strip() or 'no data')}
+    except Exception as e:
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+def _test_eicar() -> Dict[str, Any]:
+    # Send EICAR string via clamd INSTREAM to verify detection.
+    sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
+    data = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.5)
+        s.connect(sock_path)
+        s.sendall(b"zINSTREAM\0")
+        s.sendall(struct.pack("!I", len(data)))
+        s.sendall(data)
+        s.sendall(struct.pack("!I", 0))
+        resp = s.recv(512)
+        s.close()
+        text = resp.decode('ascii', errors='replace') if resp else ''
+        ok = ('Eicar' in text) or ('FOUND' in text)
+        return {"ok": ok, "detail": text or 'no data'}
     except Exception as e:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
@@ -319,6 +497,10 @@ def clamav():
         health={"ok": ok, "detail": detail},
         clamav_enabled=clamav_enabled,
         settings=settings,
+        eicar_result=request.args.get('eicar'),
+        eicar_detail=request.args.get('eicar_detail'),
+        icap_result=request.args.get('icap_sample'),
+        icap_detail=request.args.get('icap_detail'),
     )
 
 
@@ -336,6 +518,30 @@ def clamav_settings():
         mib = 2048
     get_clamav_store().set_settings(max_scan_bytes=mib * 1024 * 1024)
     return redirect(url_for('clamav'))
+
+
+@app.route('/clamav/test-eicar', methods=['POST'])
+def clamav_test_eicar():
+    res = _test_eicar()
+    return redirect(
+        url_for(
+            'clamav',
+            eicar='ok' if res.get('ok') else 'fail',
+            eicar_detail=(res.get('detail') or '')[:300],
+        )
+    )
+
+
+@app.route('/clamav/test-icap', methods=['POST'])
+def clamav_test_icap():
+    res = _send_sample_respmod(service='/avrespmod')
+    return redirect(
+        url_for(
+            'clamav',
+            icap_sample='ok' if res.get('ok') else 'fail',
+            icap_detail=(res.get('detail') or '')[:300],
+        )
+    )
 
 
 _CLAMAV_ALLOW_RE = re.compile(r"^(\s*)(#\s*)?(adaptation_access\s+av_resp_set\s+allow\b.*)$", re.I | re.M)
@@ -403,7 +609,26 @@ def icap_preload():
     health = _check_icap_respmod()
     cfg = squid_controller.get_current_config() or ""
     preload_enabled = _is_preload_enabled(cfg)
-    return render_template('icap_preload.html', stats=stats, health=health, preload_enabled=preload_enabled)
+    return render_template(
+        'icap_preload.html',
+        stats=stats,
+        health=health,
+        preload_enabled=preload_enabled,
+        sample_result=request.args.get('sample'),
+        sample_detail=request.args.get('sample_detail'),
+    )
+
+
+@app.route('/icap/preload/test', methods=['POST'])
+def icap_preload_test():
+    res = _send_sample_respmod(service=os.environ.get('ICAP_PRELOAD_PATH', '/respmod'))
+    return redirect(
+        url_for(
+            'icap_preload',
+            sample='ok' if res.get('ok') else 'fail',
+            sample_detail=(res.get('detail') or '')[:300],
+        )
+    )
 
 
 _PRELOAD_ALLOW_RE = re.compile(r"^(\s*)(#\s*)?(adaptation_access\s+html_preload_set\s+allow\b.*)$", re.I | re.M)
@@ -466,30 +691,60 @@ def icap_preload_toggle():
 
 @app.route('/squid/config', methods=['GET', 'POST'])
 def squid_config():
+    validation = None
+    posted_config = None
     if request.method == 'POST':
+        action = (request.form.get('action') or 'apply').strip().lower()
         config_text = request.form.get('config_text', '')
-        ok, details = squid_controller.apply_config_text(config_text)
-        try:
-            get_audit_store().record(
-                kind='config_apply_manual',
-                ok=ok,
-                remote_addr=request.remote_addr,
-                user_agent=request.headers.get('User-Agent'),
-                detail=(details or '')[:4000],
-                config_text=config_text,
-            )
-        except Exception:
-            pass
-        if ok:
-            return redirect(url_for('squid_config', ok='1'))
-        return redirect(url_for('squid_config', error='1'))
+        posted_config = config_text
+        if action == 'validate':
+            ok, details = squid_controller.validate_config_text(config_text)
+            validation = {'ok': ok, 'detail': (details or '').strip()}
+            try:
+                get_audit_store().record(
+                    kind='config_validate_manual',
+                    ok=ok,
+                    remote_addr=request.remote_addr,
+                    user_agent=request.headers.get('User-Agent'),
+                    detail=(details or '')[:4000],
+                    config_text=config_text,
+                )
+            except Exception:
+                pass
+        else:
+            ok, details = squid_controller.apply_config_text(config_text)
+            try:
+                get_audit_store().record(
+                    kind='config_apply_manual',
+                    ok=ok,
+                    remote_addr=request.remote_addr,
+                    user_agent=request.headers.get('User-Agent'),
+                    detail=(details or '')[:4000],
+                    config_text=config_text,
+                )
+            except Exception:
+                pass
+            if ok:
+                return redirect(url_for('squid_config', ok='1'))
+            return redirect(url_for('squid_config', error='1'))
     current_config = squid_controller.get_current_config()
     tunables = squid_controller.get_tunable_options(current_config)
     overrides = squid_controller.get_cache_override_options(current_config)
+    exclusions = get_exclusions_store().list_all()
+    exclusions_count = len(getattr(exclusions, 'domains', []) or []) + len(getattr(exclusions, 'dst_nets', []) or []) + len(getattr(exclusions, 'src_nets', []) or [])
+    summary = {
+        'workers': tunables.get('workers') if tunables else None,
+        'cache_dir_size_mb': tunables.get('cache_dir_size_mb') if tunables else None,
+        'cache_mem_mb': tunables.get('cache_mem_mb') if tunables else None,
+        'overrides': overrides or {},
+        'overrides_on': any(overrides.values()) if overrides else False,
+        'exclusions_count': exclusions_count,
+    }
+    config_text = posted_config if posted_config is not None else current_config
     subtab = (request.args.get('subtab') or 'safe').strip().lower()
     if subtab not in ('safe', 'overrides'):
         subtab = 'safe'
-    return render_template('squid_config.html', config_text=current_config, tunables=tunables, overrides=overrides, subtab=subtab)
+    return render_template('squid_config.html', config_text=config_text, tunables=tunables, overrides=overrides, subtab=subtab, summary=summary, validation=validation, exclusions=exclusions)
 
 
 @app.route('/squid/config/apply-safe', methods=['POST'])
@@ -732,6 +987,14 @@ def live():
     ip = (request.args.get('ip') or '').strip()
     detail = (request.args.get('detail') or 'top').strip().lower()
     domain = (request.args.get('domain') or '').strip().lower().lstrip('.')
+    search = (request.args.get('q') or '').strip().lower()
+    window_s = (request.args.get('window') or '3600').strip()
+
+    try:
+        window_i = max(300, min(7 * 24 * 3600, int(window_s)))
+    except ValueError:
+        window_i = 3600
+    since_ts = int(time.time()) - window_i
 
     try:
         limit_i = max(10, min(500, int(limit)))
@@ -740,7 +1003,7 @@ def live():
 
     # Sub-tab: global view of why content was not served from cache.
     if subtab == 'reasons':
-        totals = store.get_totals()
+        totals = store.get_totals(since=since_ts)
         global_nocache_total, global_reasons = store.list_global_not_cached_reasons(limit=min(limit_i, 200))
         return render_template(
             'live.html',
@@ -759,12 +1022,14 @@ def live():
             global_nocache_total=global_nocache_total,
             global_reasons=global_reasons,
             totals=totals,
+            search=search,
+            window=window_i,
         )
 
     subtab = 'activity'
 
     if mode == 'clients':
-        rows = store.list_clients(sort=sort, order=order, limit=limit_i)
+        rows = store.list_clients(sort=sort, order=order, limit=limit_i, since=since_ts, search=search)
         client_domains = store.list_client_domains(ip=ip, sort=request.args.get('ip_sort') or 'top') if ip else []
         client_not_cached = store.list_client_not_cached(ip=ip, limit=min(limit_i, 200)) if ip else []
 
@@ -788,12 +1053,12 @@ def live():
             pass
     else:
         mode = 'domains'
-        rows = store.list_domains(sort=sort, order=order, limit=limit_i)
+        rows = store.list_domains(sort=sort, order=order, limit=limit_i, since=since_ts, search=search)
         client_domains = []
         client_not_cached = []
         domain_reasons = store.list_domain_not_cached_reasons(domain=domain, limit=10) if domain and detail == 'nocache' else []
 
-    totals = store.get_totals()
+    totals = store.get_totals(since=since_ts)
     return render_template(
         'live.html',
         subtab=subtab,
@@ -811,7 +1076,33 @@ def live():
         global_nocache_total=0,
         global_reasons=[],
         totals=totals,
+        search=search,
+        window=window_i,
     )
+
+
+@app.route('/live/export', methods=['GET'])
+def live_export():
+    store = get_store()
+    mode = (request.args.get('mode') or 'domains').strip().lower()
+    search = (request.args.get('q') or '').strip().lower()
+    window_s = (request.args.get('window') or '3600').strip()
+    try:
+        window_i = max(300, min(7 * 24 * 3600, int(window_s)))
+    except ValueError:
+        window_i = 3600
+    since_ts = int(time.time()) - window_i
+    rows = store.export_rows(mode, since=since_ts, search=search, limit=1000)
+
+    def to_csv(data: list[dict]) -> str:
+        headers = list(data[0].keys()) if data else []
+        out = [";".join(headers)]
+        for r in data:
+            out.append(";".join([str(r.get(h, '')) for h in headers]))
+        return "\n".join(out)
+
+    body = to_csv(rows)
+    return app.response_class(body, mimetype='text/csv; charset=utf-8')
 
 
 @app.route('/reload', methods=['POST'])

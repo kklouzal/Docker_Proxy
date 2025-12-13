@@ -291,52 +291,72 @@ class SocksStore:
             ).fetchone()
             return dict(row or {})
 
-    def top_clients(self, since: int, limit: int = 20) -> List[Dict[str, Any]]:
+    def top_clients(self, since: int, limit: int = 20, search: str = "") -> List[Dict[str, Any]]:
+        like = None
+        params: List[Any] = [since]
+        where = "WHERE ts >= ? AND src_ip != ''"
+        if search:
+            like = f"%{search}%"
+            where += " AND src_ip LIKE ?"
+            params.append(like)
+        sql = f"""
+            SELECT src_ip, COUNT(*) AS events,
+                   SUM(CASE WHEN action = 'connect' THEN 1 ELSE 0 END) AS connects,
+                   SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+                   MAX(ts) AS last_seen
+            FROM socks_events
+            {where}
+            GROUP BY src_ip
+            ORDER BY events DESC
+            LIMIT ?
+            """
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT src_ip, COUNT(*) AS events,
-                       SUM(CASE WHEN action = 'connect' THEN 1 ELSE 0 END) AS connects,
-                       SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
-                       MAX(ts) AS last_seen
-                FROM socks_events
-                WHERE ts >= ? AND src_ip != ''
-                GROUP BY src_ip
-                ORDER BY events DESC
-                LIMIT ?
-                """,
-                (since, int(limit)),
-            ).fetchall()
+            rows = conn.execute(sql, tuple(params + [int(limit)])).fetchall()
             return [dict(r) for r in rows]
 
-    def top_destinations(self, since: int, limit: int = 20) -> List[Dict[str, Any]]:
+    def top_destinations(self, since: int, limit: int = 20, search: str = "") -> List[Dict[str, Any]]:
+        like = None
+        params: List[Any] = [since]
+        where = "WHERE ts >= ? AND dst != ''"
+        if search:
+            like = f"%{search}%"
+            where += " AND dst LIKE ?"
+            params.append(like)
+        sql = f"""
+            SELECT dst, dst_port, COUNT(*) AS events,
+                   SUM(CASE WHEN action = 'connect' THEN 1 ELSE 0 END) AS connects,
+                   SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+                   MAX(ts) AS last_seen
+            FROM socks_events
+            {where}
+            GROUP BY dst, dst_port
+            ORDER BY events DESC
+            LIMIT ?
+            """
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT dst, dst_port, COUNT(*) AS events,
-                       SUM(CASE WHEN action = 'connect' THEN 1 ELSE 0 END) AS connects,
-                       SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
-                       MAX(ts) AS last_seen
-                FROM socks_events
-                WHERE ts >= ? AND dst != ''
-                GROUP BY dst, dst_port
-                ORDER BY events DESC
-                LIMIT ?
-                """,
-                (since, int(limit)),
-            ).fetchall()
+            rows = conn.execute(sql, tuple(params + [int(limit)])).fetchall()
             return [dict(r) for r in rows]
 
-    def recent(self, limit: int = 200) -> List[SocksEventRow]:
+    def recent(self, limit: int = 200, since: Optional[int] = None, search: str = "") -> List[SocksEventRow]:
+        where = []
+        params: List[Any] = []
+        if since is not None:
+            where.append("ts >= ?")
+            params.append(int(since))
+        if search:
+            where.append("(src_ip LIKE ? OR dst LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%"])
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ts, action, protocol, src_ip, src_port, dst, dst_port, msg
                 FROM socks_events
+                {where_sql}
                 ORDER BY ts DESC, id DESC
                 LIMIT ?
                 """,
-                (int(limit),),
+                tuple(params + [int(limit)]),
             ).fetchall()
             return [
                 SocksEventRow(

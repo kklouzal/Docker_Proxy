@@ -6,6 +6,22 @@
 <h1 class="page-title">SOCKS</h1>
 <p class="page-subtitle">Best-effort analytics parsed from Dante (<span style="font-family: var(--mono);">sockd</span>) connection logs.</p>
 
+<form method="get" class="filter-form" style="margin: 0 0 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+  <label class="small">Window
+    <select name="window">
+      <option value="3600" {% if window == 3600 %}selected{% endif %}>1h</option>
+      <option value="14400" {% if window == 14400 %}selected{% endif %}>4h</option>
+      <option value="43200" {% if window == 43200 %}selected{% endif %}>12h</option>
+      <option value="86400" {% if window == 86400 %}selected{% endif %}>1d</option>
+      <option value="604800" {% if window == 604800 %}selected{% endif %}>7d</option>
+    </select>
+  </label>
+  <label class="small">Search (client or destination)
+    <input type="text" name="q" value="{{ search }}" placeholder="192.168.0.10 or example.com" />
+  </label>
+  <button type="submit">Apply</button>
+</form>
+
 <div class="small" style="margin: 0 0 14px;">
   Windows note: configuring SOCKS via <span style="font-family: var(--mono);">inetcpl.cpl</span> is not reliably honored by all apps.
   If you see no events, test explicitly with <span style="font-family: var(--mono);">curl --socks5-hostname &lt;host-ip&gt;:1080 https://example.com -v</span>.
@@ -13,7 +29,12 @@
 </div>
 
 {% if nat_warning %}
-  <div style="margin: 0 0 14px;"><span class="badge">Note</span> <span class="small">{{ nat_warning_text }}</span></div>
+  <div class="card" style="border: 1px solid #f2c94c; background: #fff8e1; margin: 0 0 14px;">
+    <div class="card-body" style="display: flex; gap: 8px; align-items: center;">
+      <span class="badge" style="background: #f2994a;">NAT?</span>
+      <span class="small" style="font-weight: 600;">{{ nat_warning_text }}</span>
+    </div>
+  </div>
 {% endif %}
 
 <section class="card">
@@ -48,6 +69,13 @@
     <div class="small" style="margin-top: 10px;">
       Notes: Destinations may appear as IPs unless clients use SOCKS remote DNS.
     </div>
+    {% if top_clients|length > 0 %}
+      <div class="small" style="margin-top: 6px;">Per-client events (top {{ top_clients|length }}):
+        {% for r in top_clients %}
+          <span class="badge" style="margin-right: 6px;">{{ r.src_ip }} · {{ r.events }}</span>
+        {% endfor %}
+      </div>
+    {% endif %}
   </div>
 </section>
 

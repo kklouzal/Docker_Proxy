@@ -81,6 +81,21 @@ class AuditStore:
                 "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200)"
             )
 
+    def latest_config_apply(self) -> Optional[sqlite3.Row]:
+        # Returns the most recent config_apply* event (if any).
+        self.init_db()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT ts, kind, ok, remote_addr, user_agent, detail
+                FROM audit_events
+                WHERE kind LIKE 'config_apply%'
+                ORDER BY ts DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return row
+
 
 _store: Optional[AuditStore] = None
 

@@ -87,6 +87,15 @@ class AdblockStore:
 
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS adblock_cache_stats (
+                    k TEXT PRIMARY KEY,
+                    v INTEGER NOT NULL
+                );
+                """
+            )
+
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS adblock_settings (
                     k TEXT PRIMARY KEY,
                     v TEXT NOT NULL
@@ -122,6 +131,15 @@ class AdblockStore:
 
             conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('settings_version','1')")
             conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('refresh_requested','0')")
+            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cache_flush_requested','0')")
+            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cache_last_flush','0')")
+            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cache_current_size','0')")
+
+            for k in ("hits", "misses", "evictions"):
+                conn.execute(
+                    "INSERT OR IGNORE INTO adblock_cache_stats(k,v) VALUES(?,0)",
+                    (k,),
+                )
 
     def get_settings(self) -> Dict[str, Any]:
         def as_int(s: str, default: int) -> int:
@@ -187,6 +205,13 @@ class AdblockStore:
                 (str(_now()),),
             )
 
+    def request_cache_flush(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO adblock_meta(k,v) VALUES('cache_flush_requested',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                (str(_now()),),
+            )
+
     def get_settings_version(self) -> int:
         with self._connect() as conn:
             row = conn.execute("SELECT v FROM adblock_meta WHERE k='settings_version'").fetchone()
@@ -198,6 +223,14 @@ class AdblockStore:
     def get_refresh_requested(self) -> int:
         with self._connect() as conn:
             row = conn.execute("SELECT v FROM adblock_meta WHERE k='refresh_requested'").fetchone()
+            try:
+                return int(row[0]) if row else 0
+            except Exception:
+                return 0
+
+    def get_cache_flush_requested(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT v FROM adblock_meta WHERE k='cache_flush_requested'").fetchone()
             try:
                 return int(row[0]) if row else 0
             except Exception:
@@ -372,6 +405,54 @@ class AdblockStore:
             else:
                 conn.execute("UPDATE adblock_lists SET last_error=? WHERE key=?", (err[:400], key))
                 return False
+
+    def record_cache_stats(self, *, hits: int = 0, misses: int = 0, evictions: int = 0, size: int | None = None) -> None:
+        with self._connect() as conn:
+            if hits:
+                conn.execute(
+                    "INSERT INTO adblock_cache_stats(k,v) VALUES('hits',?) ON CONFLICT(k) DO UPDATE SET v = v + excluded.v",
+                    (int(hits),),
+                )
+            if misses:
+                conn.execute(
+                    "INSERT INTO adblock_cache_stats(k,v) VALUES('misses',?) ON CONFLICT(k) DO UPDATE SET v = v + excluded.v",
+                    (int(misses),),
+                )
+            if evictions:
+                conn.execute(
+                    "INSERT INTO adblock_cache_stats(k,v) VALUES('evictions',?) ON CONFLICT(k) DO UPDATE SET v = v + excluded.v",
+                    (int(evictions),),
+                )
+            if size is not None:
+                conn.execute(
+                    "INSERT INTO adblock_meta(k,v) VALUES('cache_current_size',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                    (str(max(0, int(size))),),
+                )
+                conn.execute(
+                    "INSERT INTO adblock_meta(k,v) VALUES('cache_last_flush',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                    (str(_now()),),
+                )
+
+    def cache_stats(self) -> Dict[str, int]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT k, v FROM adblock_cache_stats").fetchall()
+            meta_rows = conn.execute(
+                "SELECT k, v FROM adblock_meta WHERE k IN ('cache_current_size','cache_last_flush','cache_flush_requested')"
+            ).fetchall()
+
+        stats = {str(r[0]): int(r[1]) for r in rows}
+        meta = {str(r[0]): int(r[1]) for r in meta_rows}
+        return {
+            "hits": int(stats.get("hits") or 0),
+            "misses": int(stats.get("misses") or 0),
+            "evictions": int(stats.get("evictions") or 0),
+            "current_size": int(meta.get("cache_current_size") or 0),
+            "last_flush": int(meta.get("cache_last_flush") or 0),
+            "last_flush_req": int(meta.get("cache_flush_requested") or 0),
+        }
+
+    def get_update_interval_seconds(self) -> int:
+        return int(self.update_interval_seconds)
 
 
 _store: Optional[AdblockStore] = None

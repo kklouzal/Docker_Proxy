@@ -215,6 +215,68 @@ class SslErrorsStore:
                 sample = (msg or "").strip()[:400]
                 self._upsert(conn, domain, category, reason, ts, sample)
 
+    def list_recent(self, *, since: Optional[int] = None, search: str = "", limit: int = 200) -> List[SslErrorRow]:
+        where = []
+        params: List[Any] = []
+        if since is not None:
+            where.append("last_seen >= ?")
+            params.append(int(since))
+        if search:
+            where.append("domain LIKE ?")
+            params.append(f"%{search}%")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        lim = max(10, min(500, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors {where_sql} ORDER BY last_seen DESC LIMIT ?",
+                tuple(params + [lim]),
+            ).fetchall()
+        return [
+            SslErrorRow(
+                domain=str(r[0]),
+                category=str(r[1]),
+                reason=str(r[2]),
+                count=int(r[3]),
+                first_seen=int(r[4]),
+                last_seen=int(r[5]),
+                sample=str(r[6]),
+            )
+            for r in rows
+        ]
+
+    def top_domains(self, *, since: Optional[int] = None, search: str = "", limit: int = 20) -> List[Dict[str, Any]]:
+        where = []
+        params: List[Any] = []
+        if since is not None:
+            where.append("last_seen >= ?")
+            params.append(int(since))
+        if search:
+            where.append("domain LIKE ?")
+            params.append(f"%{search}%")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        lim = max(5, min(100, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS buckets, SUM(count) AS total, MAX(last_seen) AS last_seen
+                FROM ssl_errors
+                {where_sql}
+                GROUP BY domain
+                ORDER BY total DESC, last_seen DESC
+                LIMIT ?
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+        return [
+            {
+                "domain": str(r[0] or ''),
+                "buckets": int(r[1] or 0),
+                "total": int(r[2] or 0),
+                "last_seen": int(r[3] or 0),
+            }
+            for r in rows
+        ]
+
     def start_background(self) -> None:
         with self._start_lock:
             if self._started:

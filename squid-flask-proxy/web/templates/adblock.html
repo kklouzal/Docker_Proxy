@@ -47,6 +47,45 @@
 
 <section class="card">
   <div class="card-header">
+    <h2 class="card-title">Decision cache</h2>
+    <span class="badge">LRU</span>
+  </div>
+  <div class="card-body">
+    <div class="actions" style="margin-bottom: 10px; gap: 12px; align-items: center;">
+      <div class="stat" style="padding: 0;">
+        <div class="stat-k">Hit rate</div>
+        {% set hits = cache_stats.hits or 0 %}
+        {% set misses = cache_stats.misses or 0 %}
+        {% set total = hits + misses %}
+        {% if total > 0 %}
+          {% set rate = (100.0 * hits / total) %}
+          <div class="stat-v">{{ "%.1f"|format(rate) }}%</div>
+        {% else %}
+          <div class="stat-v">n/a</div>
+        {% endif %}
+      </div>
+      <div class="stat" style="padding: 0;">
+        <div class="stat-k">Entries</div>
+        <div class="stat-v">{{ cache_stats.current_size }}/{{ cache_max }}</div>
+        <div class="small">TTL {{ cache_ttl }}s</div>
+      </div>
+      <div class="stat" style="padding: 0;">
+        <div class="stat-k">Hits / Misses</div>
+        <div class="stat-v">{{ hits }} / {{ misses }}</div>
+        <div class="small">Evictions {{ cache_stats.evictions }}</div>
+      </div>
+      <form method="post" style="margin-left: auto;">
+        <input type="hidden" name="action" value="flush_cache">
+        <button class="btn" type="submit">Flush cache</button>
+        {% if cache_flushed %}<span class="small" style="margin-left:8px;">Requested</span>{% endif %}
+      </form>
+    </div>
+    <div class="small">Cache size and hit/miss totals come from the ICAP runtime; flush requests clear the live in-memory cache.</div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
     <h2 class="card-title">Block statistics</h2>
   </div>
   <div class="card-body">
@@ -83,7 +122,9 @@
             <th>List</th>
             <th class="num">Rules</th>
             <th class="num">Bytes</th>
-            <th class="num">Last success</th>
+            <th class="num">Last refresh</th>
+            <th class="num">Last failure</th>
+            <th class="num">Next refresh</th>
             <th>Last error</th>
             <th class="num">Blocked (24h)</th>
           </tr>
@@ -101,9 +142,9 @@
             <td class="num">{{ st.rules }}</td>
             <td class="num">{{ st.bytes }}</td>
             <td class="num"><span class="small">{% if st.last_success %}{{ fmt_ts(st.last_success) }}{% else %}-{% endif %}</span></td>
-            <td>
-              <div class="small" style="font-family: var(--mono); max-width: 420px; overflow-wrap: anywhere;">{{ st.last_error }}</div>
-            </td>
+            <td class="num"><span class="small">{% if st.last_failure_ts %}{{ fmt_ts(st.last_failure_ts) }}{% else %}-{% endif %}</span></td>
+            <td class="num"><span class="small">{% if st.enabled %}{{ fmt_ts(st.next_refresh) }}{% else %}-{% endif %}</span></td>
+            <td><div class="small" style="font-family: var(--mono); max-width: 420px; overflow-wrap: anywhere;">{{ st.last_error }}</div></td>
             <td class="num">{{ stats.by_list_24h.get(st.key, 0) }}</td>
           </tr>
           {% endfor %}
@@ -112,7 +153,7 @@
 
       <div class="small" style="margin-top: 10px;">
         Notes: If ad blocking is disabled or no lists are enabled, the ICAP service returns <span style="font-family: var(--mono);">204 No Content</span> and nothing is blocked.
-        Lists refresh automatically about every 6 hours after a successful download.
+        Lists refresh automatically about every 6 hours after a successful download. Next refresh times assume the service is running.
       </div>
     </form>
   </div>

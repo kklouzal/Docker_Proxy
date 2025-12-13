@@ -90,6 +90,17 @@
         </div>
       </div>
 
+      <div class="row-2">
+        <div>
+          <label for="window">Time window (seconds)</label>
+          <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+        </div>
+        <div>
+          <label for="q">Search (domain or client)</label>
+          <input id="q" name="q" type="text" placeholder="contains..." value="{{ search }}" />
+        </div>
+      </div>
+
       {% if mode == 'clients' %}
       <div>
         <label for="ip">Client IP (optional)</label>
@@ -101,6 +112,7 @@
       <div class="actions">
         <button class="btn primary" type="submit">Apply</button>
         <a class="btn ghost" href="{{ url_for('live', mode=mode) }}">Reset</a>
+        <a class="btn" href="{{ url_for('live_export', mode=mode, window=window, q=search) }}">Export CSV</a>
       </div>
 
       <div class="small">
