@@ -17,6 +17,7 @@ services:
     environment:
       SQUID_WORKERS: ${SQUID_WORKERS:-2}
       ICAP_BASE_PORT: ${ICAP_BASE_PORT:-1344}
+      CICAP_PORT: ${CICAP_PORT:-14000}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s

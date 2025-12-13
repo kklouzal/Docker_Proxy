@@ -6,6 +6,7 @@ import time
 import os
 import ipaddress
 import struct
+import uuid
 from services.stats import get_stats
 from services.live_stats import get_store
 from services.exclusions_store import get_exclusions_store
@@ -15,7 +16,6 @@ from services.ssl_errors_store import get_ssl_errors_store
 from services.socks_store import get_socks_store
 from services.adblock_store import get_adblock_store
 from services.preload_store import get_preload_store
-from services.clamav_store import get_clamav_store
 
 import socket
 import re
@@ -401,6 +401,10 @@ def _check_icap_respmod(host: str = "127.0.0.1", port: int = 1344, service: str 
 def _send_sample_respmod(service: str = "/respmod") -> Dict[str, Any]:
     host = os.environ.get('ICAP_HOST', '127.0.0.1')
     port = int(os.environ.get('ICAP_PORT', 1344))
+    return _send_sample_respmod_to(host=host, port=port, service=service)
+
+
+def _send_sample_respmod_to(host: str, port: int, service: str = "/respmod") -> Dict[str, Any]:
     path = service or '/respmod'
     if not path.startswith('/'):
         path = '/' + path
@@ -429,6 +433,16 @@ def _send_sample_respmod(service: str = "/respmod") -> Dict[str, Any]:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
+def _send_sample_av_icap() -> Dict[str, Any]:
+    # Send a tiny RESPMOD sample to the c-icap AV service (avrespmod).
+    host = os.environ.get('CICAP_HOST', '127.0.0.1')
+    try:
+        port = int(os.environ.get('CICAP_PORT', 14000))
+    except Exception:
+        port = 14000
+    return _send_sample_respmod_to(host=host, port=port, service='/avrespmod')
+
+
 def _check_clamd() -> Dict[str, Any]:
     # Best-effort health check: PING the clamd unix socket.
     sock_path = (os.environ.get('CLAMAV_SOCKET_PATH') or '/var/lib/squid-flask-proxy/clamav/clamd.sock').strip()
@@ -455,20 +469,42 @@ def _check_clamd() -> Dict[str, Any]:
 
 
 def _test_eicar() -> Dict[str, Any]:
-    # Send EICAR string via clamd INSTREAM to verify detection.
-    sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
+    # Send EICAR string via clamd SCAN (temp file) to verify detection.
+    sock_path = (os.environ.get('CLAMAV_SOCKET_PATH') or '/var/lib/squid-flask-proxy/clamav/clamd.sock').strip()
+    if not sock_path:
+        sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
     data = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
     try:
+        if not os.path.exists(sock_path):
+            return {"ok": False, "detail": "starting (clamd socket not ready yet)"}
+
+        # Some clamd builds/configs disable INSTREAM and STATS but still allow SCAN.
+        # Use SCAN against a temp file as a reliable, local sanity check.
+        tmp_dir = os.environ.get('TMPDIR') or '/tmp'
+        tmp_name = f"eicar_{uuid.uuid4().hex}.txt"
+        tmp_path = os.path.join(tmp_dir, tmp_name)
+        with open(tmp_path, 'wb') as f:
+            f.write(data)
+
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(1.5)
         s.connect(sock_path)
-        s.sendall(b"INSTREAM\0")
-        s.sendall(struct.pack("!I", len(data)))
-        s.sendall(data)
-        s.sendall(struct.pack("!I", 0))
-        resp = s.recv(512)
+        s.sendall((f"SCAN {tmp_path}\n").encode('utf-8'))
+
+        buf = b""
+        while b"\n" not in buf and len(buf) < 4096:
+            chunk = s.recv(512)
+            if not chunk:
+                break
+            buf += chunk
         s.close()
-        text = resp.decode('ascii', errors='replace') if resp else ''
+
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        text = buf.decode('ascii', errors='replace') if buf else ''
         ok = ('Eicar' in text) or ('FOUND' in text)
         return {"ok": ok, "detail": text or 'no data'}
     except Exception as e:
@@ -477,62 +513,27 @@ def _test_eicar() -> Dict[str, Any]:
 
 @app.route('/clamav', methods=['GET'])
 def clamav():
-    try:
-        stats = get_clamav_store().summary()
-    except Exception:
-        stats = None
-
-    store = get_clamav_store()
-    try:
-        settings = store.get_settings()
-    except Exception:
-        settings = {"max_scan_bytes": 134217728}
-
-    try:
-        recent_events = store.list_recent_events(limit=50)
-    except Exception:
-        recent_events = []
-
     clamd_health = _check_clamd()
-    icap_health = _check_icap_service(
-        host=os.environ.get('ICAP_HOST', '127.0.0.1'),
-        port=int(os.environ.get('ICAP_PORT', 1344)),
+    cicap_health = _check_icap_service(
+        host=os.environ.get('CICAP_HOST', '127.0.0.1'),
+        port=int(os.environ.get('CICAP_PORT', 14000)),
         service='/avrespmod',
     )
 
-    ok = bool(clamd_health.get('ok')) and bool(icap_health.get('ok'))
-    detail = f"clamd={clamd_health.get('detail')} | icap={icap_health.get('detail')}"
+    ok = bool(clamd_health.get('ok')) and bool(cicap_health.get('ok'))
+    detail = f"clamd={clamd_health.get('detail')} | cicap={cicap_health.get('detail')}"
 
     cfg = squid_controller.get_current_config() or ""
     clamav_enabled = _is_clamav_enabled(cfg)
     return render_template(
         'clamav.html',
-        stats=stats,
         health={"ok": ok, "detail": detail},
         clamav_enabled=clamav_enabled,
-        settings=settings,
-        recent_events=recent_events,
         eicar_result=request.args.get('eicar'),
         eicar_detail=request.args.get('eicar_detail'),
         icap_result=request.args.get('icap_sample'),
         icap_detail=request.args.get('icap_detail'),
     )
-
-
-@app.route('/clamav/settings', methods=['POST'])
-def clamav_settings():
-    # Web-configurable setting (no env vars): max scan size in MiB.
-    v = (request.form.get('max_scan_mib') or '').strip()
-    try:
-        mib = int(v)
-    except Exception:
-        mib = 128
-    if mib < 1:
-        mib = 1
-    if mib > 2048:
-        mib = 2048
-    get_clamav_store().set_settings(max_scan_bytes=mib * 1024 * 1024)
-    return redirect(url_for('clamav'))
 
 
 @app.route('/clamav/test-eicar', methods=['POST'])
@@ -549,7 +550,7 @@ def clamav_test_eicar():
 
 @app.route('/clamav/test-icap', methods=['POST'])
 def clamav_test_icap():
-    res = _send_sample_respmod(service='/avrespmod')
+    res = _send_sample_av_icap()
     return redirect(
         url_for(
             'clamav',

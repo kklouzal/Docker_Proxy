@@ -154,14 +154,11 @@ Ad blocking behavior is configured in the **Ad Blocking** tab in the web UI:
 - Decision cache settings (TTL + max entries)
 
 ## ClamAV (ICAP)
-This project also supports ICAP-based antivirus scanning using **ClamAV**.
+This project supports ICAP-based antivirus scanning using **ClamAV**, implemented via **c-icap** (`virus_scan` + `clamd_mod`).
 
 Behavior:
 - Scans HTTP responses (RESPMOD) **before** the ICAP Preload HTML rewrite stage.
-- Decompresses `Content-Encoding` (gzip/deflate/br) before scanning.
-- Skips scanning for `image/*` and `video/*` responses.
-- Enforces a max scan size of **128 MiB** (larger responses are skipped).
-- On detection, the response is replaced with a simple block page.
+- Squid is configured with `bypass=on` for the AV ICAP service (fail-open if AV is unavailable).
 
 Startup note (first run):
 - If the ClamAV signature DB is missing, the container will run an initial `freshclam` download **blocking startup**.
@@ -174,8 +171,9 @@ Persistence:
 
 Configuration:
 - Enable/disable scanning via the **ClamAV** tab (updates Squid ICAP policy).
-- Max scan size is configurable in the **ClamAV** tab (default: 128 MiB).
-- clamd socket is fixed at `/var/lib/squid-flask-proxy/clamav/clamd.sock`.
+- AV scanning is served by c-icap on `icap://127.0.0.1:${CICAP_PORT:-14000}/avrespmod`.
+- c-icap module configuration is provided in `docker/clamd_mod.conf` and `docker/virus_scan.conf`.
+- clamd socket is `/var/lib/squid-flask-proxy/clamav/clamd.sock`.
 
 ## Caching notes (safe baseline)
 The default baseline config in [squid/squid.conf.template](squid/squid.conf.template) is tuned to be a **bandwidth saver** while staying conservative:

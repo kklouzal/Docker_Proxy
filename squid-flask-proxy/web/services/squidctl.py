@@ -44,6 +44,10 @@ class SquidController:
             workers_i = 1
 
         base_port = self._get_icap_base_port()
+        try:
+            cicap_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
+        except Exception:
+            cicap_port = 14000
         conf_dir = Path("/etc/squid/conf.d")
         conf_dir.mkdir(parents=True, exist_ok=True)
         out_path = conf_dir / "20-icap.conf"
@@ -55,7 +59,8 @@ class SquidController:
         for i in range(workers_i):
             port = base_port + i
             lines.append(f"icap_service adblock_req_{i} reqmod_precache icap://127.0.0.1:{port}/reqmod bypass=on")
-            lines.append(f"icap_service av_resp_{i} respmod_precache icap://127.0.0.1:{port}/avrespmod bypass=on")
+            # Antivirus scanning is served by c-icap (not the Python ICAP server).
+            lines.append(f"icap_service av_resp_{i} respmod_precache icap://127.0.0.1:{cicap_port}/avrespmod bypass=on")
             lines.append(f"icap_service html_preload_{i} respmod_precache icap://127.0.0.1:{port}/respmod bypass=on")
             req_names.append(f"adblock_req_{i}")
             av_names.append(f"av_resp_{i}")

@@ -32,7 +32,7 @@ if [ -f /etc/squid/squid.conf ]; then
             BEGIN{done=0}
             {line=$0}
             tolower($0) ~ /^\s*adaptation_access\s+html_preload_set\b/ && done==0 {
-                print "# Antivirus scanning (RESPMOD): ClamAV";
+                print "# Antivirus scanning (RESPMOD): c-icap + ClamAV";
                 print "# Runs before HTML response rewriting.";
                 print "adaptation_access av_resp_set allow icap_adblockable";
                 print "adaptation_access av_resp_set deny all";
@@ -86,6 +86,36 @@ mkdir -p /etc/supervisor.d
     echo "stdout_logfile_maxbytes=0"
 } > /etc/supervisor.d/icap.conf
 
+# Run c-icap for AV (ClamAV) ICAP service.
+# Squid's av_resp_set always points to c-icap; the Python ICAP server no longer implements /avrespmod.
+CICAP_PORT_RAW="${CICAP_PORT:-14000}"
+case "$CICAP_PORT_RAW" in
+    ''|*[!0-9]*) CICAP_PORT=14000 ;;
+    *) CICAP_PORT="$CICAP_PORT_RAW" ;;
+esac
+
+mkdir -p /var/run/c-icap
+cat > /etc/supervisor.d/cicap.conf <<'EOF'
+[program:cicap]
+command=/bin/sh -c 'p=/var/lib/squid-flask-proxy/clamav/clamd.sock; i=0; while [ "$i" -lt 60 ]; do [ -S "$p" ] && break; i=$((i + 1)); sleep 1; done; exec /usr/bin/c-icap -N -D -d 1 -f /etc/c-icap/c-icap.conf'
+autostart=true
+autorestart=true
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+EOF
+
+# Keep c-icap config port in sync with env.
+if [ -f /etc/c-icap/c-icap.conf ]; then
+    # Replace any existing Port directive; otherwise append.
+    if grep -qi "^\s*Port\s\+" /etc/c-icap/c-icap.conf 2>/dev/null; then
+        sed -i "s/^\s*Port\s\+.*/Port ${CICAP_PORT}/I" /etc/c-icap/c-icap.conf
+    else
+        echo "Port ${CICAP_PORT}" >> /etc/c-icap/c-icap.conf
+    fi
+fi
+
 BASE_RAW="${ICAP_BASE_PORT:-1344}"
 case "$BASE_RAW" in
     ''|*[!0-9]*) ICAP_BASE_PORT=1344 ;;
@@ -101,7 +131,7 @@ RESP_NAMES=""
     while [ "$i" -lt "$WORKERS" ]; do
         port=$((ICAP_BASE_PORT + i))
         echo "icap_service adblock_req_${i} reqmod_precache icap://127.0.0.1:${port}/reqmod bypass=on"
-        echo "icap_service av_resp_${i} respmod_precache icap://127.0.0.1:${port}/avrespmod bypass=on"
+        echo "icap_service av_resp_${i} respmod_precache icap://127.0.0.1:${CICAP_PORT}/avrespmod bypass=on"
         echo "icap_service html_preload_${i} respmod_precache icap://127.0.0.1:${port}/respmod bypass=on"
         REQ_NAMES="$REQ_NAMES adblock_req_${i}"
         AV_NAMES="$AV_NAMES av_resp_${i}"
