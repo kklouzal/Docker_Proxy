@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Squid Flask Proxy{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <div class="container header-inner">
+            <div class="brand">
+                <div class="brand-mark" aria-hidden="true"></div>
+                <div class="brand-title">
+                    <strong>Squid Flask Proxy</strong>
+                    <span>Proxy + admin UI</span>
+                </div>
+            </div>
+            <nav class="nav" aria-label="Primary">
+                <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
+                <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
+                <a class="{{ 'active' if request.endpoint == 'live' else '' }}" href="{{ url_for('live') }}">Live</a>
+                <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
+                <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
+                <a class="{{ 'active' if request.endpoint == 'icap_preload' else '' }}" href="{{ url_for('icap_preload') }}">ICAP Preload</a>
+                <a class="{{ 'active' if request.endpoint == 'socks' else '' }}" href="{{ url_for('socks') }}">SOCKS</a>
+                <a class="{{ 'active' if request.endpoint == 'ssl_errors' else '' }}" href="{{ url_for('ssl_errors') }}">SSL Errors</a>
+                <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
+                <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="main">
+        <div class="container">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <div class="small">&copy; {{ current_year }} Squid Flask Proxy</div>
+        </div>
+    </footer>
+</body>
+</html>

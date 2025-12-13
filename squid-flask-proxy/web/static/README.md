@@ -1,0 +1,1 @@
+# This file contains documentation related to static files used in the web application.

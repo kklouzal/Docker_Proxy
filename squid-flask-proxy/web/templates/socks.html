@@ -1,0 +1,165 @@
+{% extends "layout.html" %}
+
+{% block title %}SOCKS · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">SOCKS</h1>
+<p class="page-subtitle">Best-effort analytics parsed from Dante (<span style="font-family: var(--mono);">sockd</span>) connection logs.</p>
+
+<div class="small" style="margin: 0 0 14px;">
+  Windows note: configuring SOCKS via <span style="font-family: var(--mono);">inetcpl.cpl</span> is not reliably honored by all apps.
+  If you see no events, test explicitly with <span style="font-family: var(--mono);">curl --socks5-hostname &lt;host-ip&gt;:1080 https://example.com -v</span>.
+  Some Docker/NAT setups may also mask the true client IP.
+</div>
+
+{% if nat_warning %}
+  <div style="margin: 0 0 14px;"><span class="badge">Note</span> <span class="small">{{ nat_warning_text }}</span></div>
+{% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Summary</h2>
+    <span class="badge">last {{ window_label }}</span>
+  </div>
+  <div class="card-body">
+    <div class="grid" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
+      <div class="stat">
+        <div class="stat-k">Events</div>
+        <div class="stat-v">{{ summary.total or 0 }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-k">Connects</div>
+        <div class="stat-v">{{ summary.connects or 0 }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-k">Blocked</div>
+        <div class="stat-v">{{ summary.blocked or 0 }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-k">Errors</div>
+        <div class="stat-v">{{ summary.errors or 0 }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-k">Disconnects</div>
+        <div class="stat-v">{{ summary.disconnects or 0 }}</div>
+      </div>
+    </div>
+
+    <div class="small" style="margin-top: 10px;">
+      Notes: Destinations may appear as IPs unless clients use SOCKS remote DNS.
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Top clients</h2>
+    <span class="badge">{{ top_clients|length }} rows</span>
+  </div>
+  <div class="card-body">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Client</th>
+          <th class="num">Events</th>
+          <th class="num">Connects</th>
+          <th class="num">Blocked</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in top_clients %}
+          <tr>
+            <td style="font-family: var(--mono);">{{ r.src_ip }}</td>
+            <td class="num">{{ r.events }}</td>
+            <td class="num">{{ r.connects }}</td>
+            <td class="num">{{ r.blocked }}</td>
+            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if top_clients|length == 0 %}
+      <div class="small">No client activity recorded yet.</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Top destinations</h2>
+    <span class="badge">{{ top_dests|length }} rows</span>
+  </div>
+  <div class="card-body">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Destination</th>
+          <th class="num">Port</th>
+          <th class="num">Events</th>
+          <th class="num">Connects</th>
+          <th class="num">Blocked</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in top_dests %}
+          <tr>
+            <td style="font-family: var(--mono);">{{ r.dst }}</td>
+            <td class="num">{{ r.dst_port }}</td>
+            <td class="num">{{ r.events }}</td>
+            <td class="num">{{ r.connects }}</td>
+            <td class="num">{{ r.blocked }}</td>
+            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if top_dests|length == 0 %}
+      <div class="small">No destination activity recorded yet.</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Recent events</h2>
+    <span class="badge">{{ recent|length }} rows</span>
+  </div>
+  <div class="card-body">
+    <table class="table">
+      <thead>
+        <tr>
+          <th class="num">Time</th>
+          <th>Action</th>
+          <th>Proto</th>
+          <th>Client</th>
+          <th>Destination</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in recent %}
+          <tr>
+            <td class="num"><span class="small">{{ fmt_ts(e.ts) }}</span></td>
+            <td style="font-family: var(--mono);">{{ e.action }}</td>
+            <td style="font-family: var(--mono);">{{ e.protocol }}</td>
+            <td style="font-family: var(--mono);">{{ e.src_ip if e.src_ip else '-' }}{% if e.src_port %}:{{ e.src_port }}{% endif %}</td>
+            <td style="font-family: var(--mono);">{{ e.dst if e.dst else '-' }}{% if e.dst_port %}:{{ e.dst_port }}{% endif %}</td>
+            <td>
+              <div class="small" style="font-family: var(--mono);">{{ e.msg }}</div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if recent|length == 0 %}
+      <div class="small">No SOCKS events recorded yet.</div>
+    {% endif %}
+  </div>
+</section>
+
+{% endblock %}

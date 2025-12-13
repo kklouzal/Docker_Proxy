@@ -1,0 +1,120 @@
+{% extends "layout.html" %}
+
+{% block title %}Ad Blocking · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Ad Blocking</h1>
+<p class="page-subtitle">ICAP-based blocking using EasyList-style subscriptions.</p>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Settings</h2>
+  </div>
+  <div class="card-body">
+    <form method="post">
+      <div class="actions" style="margin-bottom: 12px;">
+        <button class="btn primary" type="submit" name="action" value="save_settings">Save settings</button>
+      </div>
+
+      <div class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: end;">
+        <div>
+          <label class="small" style="display:block; margin-bottom: 6px;">Enabled</label>
+          <label class="small" style="display:flex; align-items:center; gap:8px;">
+            <input class="check" type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
+            Enable ad blocking
+          </label>
+        </div>
+
+        <div>
+          <label class="small" style="display:block; margin-bottom: 6px;">Decision cache TTL (seconds)</label>
+          <input class="input" type="number" name="cache_ttl" value="{{ settings.cache_ttl }}" min="0" max="604800" step="1" />
+          <div class="small" style="margin-top: 6px;">0 disables caching.</div>
+        </div>
+
+        <div>
+          <label class="small" style="display:block; margin-bottom: 6px;">Decision cache max entries</label>
+          <input class="input" type="number" name="cache_max" value="{{ settings.cache_max }}" min="0" max="1000000" step="1" />
+          <div class="small" style="margin-top: 6px;">0 disables caching.</div>
+        </div>
+      </div>
+
+      <div class="small" style="margin-top: 10px;">
+        Notes: This proxy always performs full URL matching (no CONNECT pre-block and no host gating). If performance is an issue, increase caching.
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Block statistics</h2>
+  </div>
+  <div class="card-body">
+    <div class="grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+      <div class="stat">
+        <div class="stat-k">Total blocked</div>
+        <div class="stat-v">{{ stats.total }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-k">Blocked (last 24h)</div>
+        <div class="stat-v">{{ stats.last_24h }}</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Subscriptions</h2>
+    <span class="badge">{{ statuses|length }} lists</span>
+  </div>
+
+  <div class="card-body">
+    <form method="post">
+      <div class="actions" style="margin-bottom: 12px;">
+        <button class="btn primary" type="submit" name="action" value="save_lists">Save lists</button>
+        <button class="btn" type="submit" name="action" value="refresh">Update now</button>
+      </div>
+
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Enabled</th>
+            <th>List</th>
+            <th class="num">Rules</th>
+            <th class="num">Bytes</th>
+            <th class="num">Last success</th>
+            <th>Last error</th>
+            <th class="num">Blocked (24h)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for st in statuses %}
+          <tr>
+            <td>
+              <input class="check" type="checkbox" name="enabled_{{ st.key }}" {% if st.enabled %}checked{% endif %} />
+            </td>
+            <td>
+              <div><strong>{{ st.key }}</strong></div>
+              <div class="small" style="font-family: var(--mono); max-width: 560px; overflow-wrap: anywhere;">{{ st.url }}</div>
+            </td>
+            <td class="num">{{ st.rules }}</td>
+            <td class="num">{{ st.bytes }}</td>
+            <td class="num"><span class="small">{% if st.last_success %}{{ fmt_ts(st.last_success) }}{% else %}-{% endif %}</span></td>
+            <td>
+              <div class="small" style="font-family: var(--mono); max-width: 420px; overflow-wrap: anywhere;">{{ st.last_error }}</div>
+            </td>
+            <td class="num">{{ stats.by_list_24h.get(st.key, 0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="small" style="margin-top: 10px;">
+        Notes: If ad blocking is disabled or no lists are enabled, the ICAP service returns <span style="font-family: var(--mono);">204 No Content</span> and nothing is blocked.
+        Lists refresh automatically about every 6 hours after a successful download.
+      </div>
+    </form>
+  </div>
+</section>
+{% endblock %}

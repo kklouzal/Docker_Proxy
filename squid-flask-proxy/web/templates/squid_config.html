@@ -1,0 +1,168 @@
+{% extends "layout.html" %}
+
+{% block title %}Squid Config · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Squid Configuration</h1>
+<p class="page-subtitle">Edit the running <span style="font-family: var(--mono);">squid.conf</span> and reload in-place.</p>
+
+{% if request.args.get('ok') %}
+    <div style="margin: 0 0 14px;"><span class="badge ok">Applied</span> <span class="small">Config validated and Squid reloaded.</span></div>
+{% elif request.args.get('error') %}
+    <div style="margin: 0 0 14px;"><span class="badge danger">Failed</span> <span class="small">Config validation/reload failed; previous config kept.</span></div>
+{% endif %}
+
+<div class="grid">
+    <section class="card split-left">
+        <div class="card-header">
+            <h2 class="card-title">squid.conf</h2>
+            <span class="badge">Validates on save</span>
+        </div>
+        <div class="card-body">
+            <form class="form" action="{{ url_for('squid_config') }}" method="post">
+                <label for="config_text">Configuration file</label>
+                <textarea id="config_text" name="config_text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">{{ config_text }}</textarea>
+                <div class="actions">
+                    <button class="btn primary" type="submit">Save & Reload</button>
+                                        <button class="btn ghost" type="button" id="reload-running-config" data-url="{{ url_for('api_squid_config') }}">Reload from running config</button>
+                </div>
+                <div class="small">The server validates the config before applying it; if validation fails, it keeps the previous config.</div>
+            </form>
+
+                        <script>
+                            (function () {
+                                var btn = document.getElementById('reload-running-config');
+                                var ta = document.getElementById('config_text');
+                                if (!btn || !ta) return;
+                                btn.addEventListener('click', function () {
+                                    var url = btn.getAttribute('data-url');
+                                    if (!url) return;
+                                    fetch(url, { cache: 'no-store' })
+                                        .then(function (r) { return r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)); })
+                                        .then(function (text) { ta.value = text || ''; })
+                                        .catch(function (e) { console.error('Failed to load running config', e); });
+                                });
+                            })();
+                        </script>
+        </div>
+    </section>
+
+    <aside class="card split-right">
+        <div class="card-header">
+            <h2 class="card-title">Options</h2>
+            <span class="badge ok">Template</span>
+        </div>
+        <div class="card-body">
+            <div class="actions" style="margin-bottom: 12px;">
+                <a class="btn {{ 'primary' if subtab != 'overrides' else 'ghost' }}" href="{{ url_for('squid_config', subtab='safe') }}">Safe caching</a>
+                <a class="btn {{ 'primary' if subtab == 'overrides' else 'ghost' }}" href="{{ url_for('squid_config', subtab='overrides') }}">Cache overrides</a>
+            </div>
+
+            {% if subtab == 'overrides' %}
+            <form class="form" action="{{ url_for('apply_cache_overrides') }}" method="post">
+                <div class="small" style="margin-bottom: 10px;">
+                    These settings intentionally override cache-control semantics to increase caching. Use with care.
+                </div>
+
+                <label class="check-row">
+                    <input class="check" type="checkbox" name="override_client_no_cache" {% if overrides and overrides.client_no_cache %}checked{% endif %} />
+                    <span>Override client no-cache (Cache-Control/Pragma)</span>
+                </label>
+
+                <label class="check-row">
+                    <input class="check" type="checkbox" name="override_origin_private" {% if overrides and overrides.origin_private %}checked{% endif %} />
+                    <span>Override origin private (Cache-Control: private)</span>
+                </label>
+
+                <label class="check-row">
+                    <input class="check" type="checkbox" name="override_client_no_store" {% if overrides and overrides.client_no_store %}checked{% endif %} />
+                    <span>Override client no-store (Cache-Control: no-store)</span>
+                </label>
+
+                <label class="check-row">
+                    <input class="check" type="checkbox" name="override_origin_no_store" {% if overrides and overrides.origin_no_store %}checked{% endif %} />
+                    <span>Override origin no-store (Cache-Control/Pragma: no-store)</span>
+                </label>
+
+                <div class="actions">
+                    <button class="btn primary" type="submit">Save & Apply (template)</button>
+                </div>
+
+                <div class="small">Applies overrides via <span style="font-family: var(--mono);">refresh_pattern</span> options and reloads Squid.</div>
+            </form>
+            {% else %}
+            <form class="form" action="{{ url_for('apply_safe_caching') }}" method="post">
+                <label for="cache_dir_size_mb">Disk cache size (MB)</label>
+                <input id="cache_dir_size_mb" name="cache_dir_size_mb" type="number" min="100" step="100" value="{{ (tunables.cache_dir_size_mb if tunables and tunables.cache_dir_size_mb is not none else 10000) }}" />
+
+                <label for="cache_mem_mb">Memory cache (MB)</label>
+                <input id="cache_mem_mb" name="cache_mem_mb" type="number" min="16" step="16" value="{{ (tunables.cache_mem_mb if tunables and tunables.cache_mem_mb is not none else 256) }}" />
+
+                <label for="maximum_object_size_mb">Max cached object size (MB)</label>
+                <input id="maximum_object_size_mb" name="maximum_object_size_mb" type="number" min="1" step="1" value="{{ (tunables.maximum_object_size_mb if tunables and tunables.maximum_object_size_mb is not none else 64) }}" />
+
+                <label for="maximum_object_size_in_memory_kb">Max in-memory object (KB)</label>
+                <input id="maximum_object_size_in_memory_kb" name="maximum_object_size_in_memory_kb" type="number" min="0" step="64" value="{{ (tunables.maximum_object_size_in_memory_kb if tunables and tunables.maximum_object_size_in_memory_kb is not none else 1024) }}" />
+
+                <label for="cache_swap_low">cache_swap_low (%)</label>
+                <input id="cache_swap_low" name="cache_swap_low" type="number" min="0" max="100" step="1" value="{{ (tunables.cache_swap_low if tunables and tunables.cache_swap_low is not none else 90) }}" />
+
+                <label for="cache_swap_high">cache_swap_high (%)</label>
+                <input id="cache_swap_high" name="cache_swap_high" type="number" min="0" max="100" step="1" value="{{ (tunables.cache_swap_high if tunables and tunables.cache_swap_high is not none else 95) }}" />
+
+                <label class="check-row">
+                    <input class="check" type="checkbox" name="collapsed_forwarding_on" {% if (tunables and tunables.collapsed_forwarding is not none and tunables.collapsed_forwarding) or (not tunables) or (tunables and tunables.collapsed_forwarding is none) %}checked{% endif %} />
+                    <span>Enable collapsed forwarding</span>
+                </label>
+
+                <label class="check-row">
+                    <input class="check" type="checkbox" name="range_cache_on" {% if (tunables and tunables.range_offset_limit is not none and tunables.range_offset_limit == -1) or (not tunables) or (tunables and tunables.range_offset_limit is none) %}checked{% endif %} />
+                    <span>Enable caching of Range requests</span>
+                </label>
+
+                <label for="cache_replacement_policy">Disk cache replacement policy</label>
+                <select id="cache_replacement_policy" name="cache_replacement_policy">
+                    {% set crp = (tunables.cache_replacement_policy if tunables and tunables.cache_replacement_policy else 'heap GDSF') %}
+                    <option value="heap GDSF" {% if crp == 'heap GDSF' %}selected{% endif %}>heap GDSF (higher hit-rate)</option>
+                    <option value="heap LFUDA" {% if crp == 'heap LFUDA' %}selected{% endif %}>heap LFUDA</option>
+                    <option value="lru" {% if crp == 'lru' %}selected{% endif %}>LRU</option>
+                </select>
+
+                <label for="memory_replacement_policy">Memory cache replacement policy</label>
+                <select id="memory_replacement_policy" name="memory_replacement_policy">
+                    {% set mrp = (tunables.memory_replacement_policy if tunables and tunables.memory_replacement_policy else 'heap GDSF') %}
+                    <option value="heap GDSF" {% if mrp == 'heap GDSF' %}selected{% endif %}>heap GDSF (higher hit-rate)</option>
+                    <option value="heap LFUDA" {% if mrp == 'heap LFUDA' %}selected{% endif %}>heap LFUDA</option>
+                    <option value="lru" {% if mrp == 'lru' %}selected{% endif %}>LRU</option>
+                </select>
+
+                <label class="check-row">
+                    <input class="check" type="checkbox" name="pipeline_prefetch_on" {% if (tunables and tunables.pipeline_prefetch is not none and tunables.pipeline_prefetch) or (not tunables) or (tunables and tunables.pipeline_prefetch is none) %}checked{% endif %} />
+                    <span>Enable pipeline_prefetch</span>
+                </label>
+
+                <label for="workers">Squid workers (SMP)</label>
+                <input id="workers" name="workers" type="number" min="1" max="4" step="1" value="{{ (tunables.workers if tunables and tunables.workers is not none else 2) }}" />
+                <div class="small">More workers improves throughput but uses more RAM. Recommended: 2–4.</div>
+                <div class="small">Note: Changing workers requires a full Squid restart (it cannot be applied with reconfigure). This UI will restart Squid automatically.</div>
+
+                <label for="quick_abort_min_kb">quick_abort_min (KB)</label>
+                <input id="quick_abort_min_kb" name="quick_abort_min_kb" type="number" min="0" step="1" value="{{ (tunables.quick_abort_min_kb if tunables and tunables.quick_abort_min_kb is not none else 0) }}" />
+
+                <label for="quick_abort_max_kb">quick_abort_max (KB)</label>
+                <input id="quick_abort_max_kb" name="quick_abort_max_kb" type="number" min="0" step="1" value="{{ (tunables.quick_abort_max_kb if tunables and tunables.quick_abort_max_kb is not none else 0) }}" />
+
+                <label for="quick_abort_pct">quick_abort_pct</label>
+                <input id="quick_abort_pct" name="quick_abort_pct" type="number" min="0" max="100" step="1" value="{{ (tunables.quick_abort_pct if tunables and tunables.quick_abort_pct is not none else 100) }}" />
+
+                <div class="actions">
+                    <button class="btn primary" type="submit">Save & Apply (template)</button>
+                </div>
+
+                <div class="small">Generates config from the template, validates it, applies it, and reloads Squid. No aggressive cache overrides are enabled.</div>
+            </form>
+            {% endif %}
+        </div>
+    </aside>
+</div>
+{% endblock %}

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.so
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Local env/config
+.env
+*.env
+
+# Logs & local data
+*.log
+*.db
+*.sqlite3
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Runtime-generated Squid SSL artifacts (mounted volume)
+squid/ssl/certs/
+squid/ssl/db/
+
+# Local Python packaging
+*.egg-info/
+dist/
+build/

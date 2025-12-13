@@ -1,0 +1,267 @@
+{% extends "layout.html" %}
+
+{% block title %}Live · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Live</h1>
+<p class="page-subtitle">Recent proxy activity aggregated from <span style="font-family: var(--mono);">access.log</span>.</p>
+
+<div class="actions" style="margin-bottom: 12px;">
+  <a class="btn {{ 'primary' if subtab != 'reasons' else 'ghost' }}" href="{{ url_for('live', subtab='activity', mode=mode, sort=sort, order=order, limit=limit, ip=ip) }}">Activity</a>
+  <a class="btn {{ 'primary' if subtab == 'reasons' else 'ghost' }}" href="{{ url_for('live', subtab='reasons', limit=limit) }}">Not cached reasons</a>
+</div>
+
+{% if subtab == 'reasons' %}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Why requests were not served from cache</h2>
+    <span class="badge">top {{ global_reasons|length }} reasons</span>
+  </div>
+  <div class="card-body">
+    <div class="small" style="margin-bottom: 10px;">
+      Percent is relative to all non-cached requests observed (best-effort from <span style="font-family: var(--mono);">access.log</span>).
+      Total non-cached requests: {{ global_nocache_total }}.
+    </div>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Reason</th>
+          <th class="num">Requests</th>
+          <th class="num">% of non-cached</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in global_reasons %}
+          <tr>
+            <td>{{ r.reason }}</td>
+            <td class="num">{{ r.requests }}</td>
+            <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
+            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if global_reasons|length == 0 %}
+      <div class="small">No non-cached reasons recorded yet. Generate traffic through the proxy and refresh.</div>
+    {% endif %}
+  </div>
+</section>
+
+{% else %}
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">View</h2>
+    <span class="badge">updates continuously</span>
+  </div>
+  <div class="card-body">
+    <form class="form" method="get" action="{{ url_for('live') }}">
+      <div class="row-2">
+        <div>
+          <label for="mode">Group by</label>
+          <select id="mode" name="mode">
+            <option value="domains" {% if mode == 'domains' %}selected{% endif %}>Domains</option>
+            <option value="clients" {% if mode == 'clients' %}selected{% endif %}>Client IPs</option>
+          </select>
+        </div>
+        <div>
+          <label for="sort">Sort</label>
+          <select id="sort" name="sort">
+            <option value="recent" {% if sort == 'recent' %}selected{% endif %}>Newest → Oldest</option>
+            <option value="top" {% if sort == 'top' %}selected{% endif %}>Top by % / hits</option>
+            <option value="cache" {% if sort == 'cache' %}selected{% endif %}>Top by cache %</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row-2">
+        <div>
+          <label for="order">Order</label>
+          <select id="order" name="order">
+            <option value="desc" {% if order == 'desc' %}selected{% endif %}>Descending</option>
+            <option value="asc" {% if order == 'asc' %}selected{% endif %}>Ascending</option>
+          </select>
+        </div>
+        <div>
+          <label for="limit">Limit</label>
+          <input id="limit" name="limit" type="number" min="10" max="500" step="10" value="{{ limit }}" />
+        </div>
+      </div>
+
+      {% if mode == 'clients' %}
+      <div>
+        <label for="ip">Client IP (optional)</label>
+        <input id="ip" name="ip" type="text" placeholder="e.g. 192.168.1.25" value="{{ ip }}" />
+        <div class="small">If set, shows top domains for that client below.</div>
+      </div>
+      {% endif %}
+
+      <div class="actions">
+        <button class="btn primary" type="submit">Apply</button>
+        <a class="btn ghost" href="{{ url_for('live', mode=mode) }}">Reset</a>
+      </div>
+
+      <div class="small">
+        Totals: {{ totals.domain_requests }} domain-requests ({{ "%.1f"|format((totals.domain_hit_requests / totals.domain_requests * 100) if totals.domain_requests else 0) }}% cache hit)
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="card" style="margin-top: 16px;">
+  <div class="card-header">
+    <h2 class="card-title">{{ 'Domains' if mode == 'domains' else 'Clients' }}</h2>
+    <span class="badge">{{ rows|length }} rows</span>
+  </div>
+  <div class="card-body">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>{{ 'Domain' if mode == 'domains' else 'Client IP' }}</th>
+          <th class="num">Requests</th>
+          <th class="num">% of total</th>
+          <th class="num">Cache %</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+          <tr>
+            <td style="font-family: var(--mono);">
+              {% if mode == 'domains' %}
+                <a href="{{ url_for('live', mode='domains', sort=sort, order=order, limit=limit, domain=r.domain, detail='nocache') }}">{{ r.domain }}</a>
+              {% else %}
+                <a href="{{ url_for('live', mode='clients', sort=sort, order=order, limit=limit, ip=r.ip) }}">{{ r.ip }}</a>
+              {% endif %}
+            </td>
+            <td class="num">{{ r.requests }}</td>
+            <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
+            <td class="num">{{ "%.1f"|format(r.cache_pct) }}%</td>
+            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if rows|length == 0 %}
+      <div class="small">No data yet. Generate traffic through the proxy and refresh.</div>
+    {% endif %}
+  </div>
+</section>
+
+{% if mode == 'domains' and detail == 'nocache' and domain %}
+<section class="card" style="margin-top: 16px;">
+  <div class="card-header">
+    <h2 class="card-title">Not cached reasons for {{ domain }}</h2>
+    <span class="badge">top {{ domain_reasons|length }} reasons</span>
+  </div>
+  <div class="card-body">
+    <div class="actions" style="margin-bottom: 12px;">
+      <a class="btn ghost" href="{{ url_for('live', mode='domains', sort=sort, order=order, limit=limit) }}">Back to domains</a>
+    </div>
+    <div class="small" style="margin-bottom: 10px;">
+      Percent is relative to non-cached requests for this domain (best-effort from <span style="font-family: var(--mono);">access.log</span>).
+    </div>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Reason</th>
+          <th class="num">Requests</th>
+          <th class="num">% of misses</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in domain_reasons %}
+          <tr>
+            <td>{{ r.reason }}</td>
+            <td class="num">{{ r.requests }}</td>
+            <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
+            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if domain_reasons|length == 0 %}
+      <div class="small">No non-cached reasons recorded for this domain yet.</div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if mode == 'clients' and ip and (client_domains or client_not_cached) %}
+<section class="card" style="margin-top: 16px;">
+  <div class="card-header">
+    <h2 class="card-title">Client details for {{ ip }}</h2>
+    <span class="badge">{{ (client_not_cached|length if client_not_cached is defined else 0) + (client_domains|length) }} rows</span>
+  </div>
+  <div class="card-body">
+    <div class="actions" style="margin-bottom: 12px;">
+      <a class="btn {{ 'primary' if detail != 'nocache' else 'ghost' }}" href="{{ url_for('live', mode='clients', sort=sort, order=order, limit=limit, ip=ip, detail='top') }}">Top domains</a>
+      <a class="btn {{ 'primary' if detail == 'nocache' else 'ghost' }}" href="{{ url_for('live', mode='clients', sort=sort, order=order, limit=limit, ip=ip, detail='nocache') }}">Not cached (reasons)</a>
+    </div>
+
+    {% if detail == 'nocache' %}
+    <div class="small" style="margin-bottom: 10px;">
+      Reasons are best-effort from <span style="font-family: var(--mono);">access.log</span> result codes and may not reflect response headers.
+    </div>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Domain</th>
+          <th class="num">Not cached</th>
+          <th class="num">Cache %</th>
+          <th>Reason</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in client_not_cached %}
+          <tr>
+            <td style="font-family: var(--mono);">{{ r.domain }}</td>
+            <td class="num">{{ r.miss_requests }}</td>
+            <td class="num">{{ "%.1f"|format(r.cache_pct) }}%</td>
+            <td>{{ r.reason }}</td>
+            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if client_not_cached|length == 0 %}
+      <div class="small">No non-cached requests recorded for this client yet.</div>
+    {% endif %}
+    {% else %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Domain</th>
+          <th class="num">Requests</th>
+          <th class="num">% of client</th>
+          <th class="num">Cache %</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in client_domains %}
+          <tr>
+            <td style="font-family: var(--mono);">{{ r.domain }}</td>
+            <td class="num">{{ r.requests }}</td>
+            <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
+            <td class="num">{{ "%.1f"|format(r.cache_pct) }}%</td>
+            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% endif %}
+
+{% endblock %}

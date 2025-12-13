@@ -1,0 +1,128 @@
+{% extends "layout.html" %}
+
+{% block title %}ClamAV · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">ClamAV</h1>
+<p class="page-subtitle">RESPMOD antivirus scan (ClamAV). Skips image/video. Runs before ICAP Preload.</p>
+
+<div class="actions" style="margin-bottom: 12px;">
+  {% if clamav_enabled %}
+    <span class="badge ok">Active</span>
+  {% else %}
+    <span class="badge danger">Disabled</span>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('clamav_toggle') }}" style="display:inline;">
+    {% if clamav_enabled %}
+      <button class="btn" type="submit" name="action" value="disable">Disable</button>
+    {% else %}
+      <button class="btn primary" type="submit" name="action" value="enable">Enable</button>
+    {% endif %}
+  </form>
+
+  {% if health and health.ok %}
+    <span class="badge ok">Running</span>
+  {% else %}
+    <span class="badge danger">Not responding</span>
+  {% endif %}
+  {% if health and health.detail %}
+    <span class="small" style="font-family: var(--mono);">{{ health.detail }}</span>
+  {% endif %}
+</div>
+
+<div class="grid">
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Settings</h2>
+      <span class="badge">web config</span>
+    </div>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('clamav_settings') }}" class="actions" style="gap: 10px; align-items: baseline;">
+        <label class="small">
+          Max scan size (MiB)
+          <input name="max_scan_mib" type="number" min="1" max="2048" value="{{ (settings.max_scan_bytes // (1024*1024)) if settings else 128 }}" style="width: 110px; margin-left: 8px;">
+        </label>
+        <button class="btn primary" type="submit">Save</button>
+        <span class="small">Default: 128 MiB</span>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Status</h2>
+      <span class="badge">counters</span>
+    </div>
+    <div class="card-body">
+      <div class="kv">
+        <div class="k">First seen</div>
+        <div class="v"><span class="small">{% if stats and stats.first_seen %}{{ fmt_ts(stats.first_seen) }}{% else %}-{% endif %}</span></div>
+
+        <div class="k">Last seen</div>
+        <div class="v"><span class="small">{% if stats and stats.last_seen %}{{ fmt_ts(stats.last_seen) }}{% else %}-{% endif %}</span></div>
+
+        <div class="k">Last infected</div>
+        <div class="v"><span class="small">{% if stats and stats.last_infected %}{{ fmt_ts(stats.last_infected) }}{% else %}-{% endif %}</span></div>
+
+        <div class="k">Last error</div>
+        <div class="v">
+          <span class="small">{% if stats and stats.last_error %}{{ fmt_ts(stats.last_error) }}{% else %}-{% endif %}</span>
+          {% if stats and stats.last_error_msg %}
+            <div class="small" style="margin-top: 6px; font-family: var(--mono); overflow-wrap: anywhere;">{{ stats.last_error_msg }}</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Scan statistics</h2>
+      <span class="badge">RESPMOD</span>
+    </div>
+    <div class="card-body">
+      <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;">
+        <div class="stat">
+          <div class="stat-k">Calls</div>
+          <div class="stat-v">{{ stats.respmod_calls if stats else 0 }}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">Scanned</div>
+          <div class="stat-v">{{ stats.scanned if stats else 0 }}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">Clean</div>
+          <div class="stat-v">{{ stats.clean if stats else 0 }}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">Infected</div>
+          <div class="stat-v">{{ stats.infected if stats else 0 }}</div>
+        </div>
+      </div>
+
+      <table class="table" style="margin-top: 14px;">
+        <thead>
+          <tr>
+            <th>Skip / error reason</th>
+            <th class="num">Count</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Skipped: image/video</td><td class="num">{{ stats.skipped_image_video if stats else 0 }}</td></tr>
+          <tr><td>Skipped: too large</td><td class="num">{{ stats.skipped_too_large if stats else 0 }}</td></tr>
+          <tr><td>Skipped: unsupported encoding</td><td class="num">{{ stats.skipped_unsupported_encoding if stats else 0 }}</td></tr>
+          <tr><td>Skipped: incomplete body</td><td class="num">{{ stats.skipped_incomplete_body if stats else 0 }}</td></tr>
+          <tr><td>Skipped: missing ICAP parts</td><td class="num">{{ stats.skipped_missing_parts if stats else 0 }}</td></tr>
+          <tr><td>Errors</td><td class="num">{{ stats.errors if stats else 0 }}</td></tr>
+        </tbody>
+      </table>
+
+      <div class="small" style="margin-top: 10px;">
+        Notes: Squid is configured with <span style="font-family: var(--mono);">bypass=on</span> for ICAP services.
+        If ClamAV is down, browsing should continue (fail-open) but scans won’t occur.
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,153 @@
+{% extends "layout.html" %}
+
+{% block title %}Home · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 id="status" class="page-title">Status</h1>
+<p class="page-subtitle">Live process + configuration checks.</p>
+
+<div class="grid">
+    <section class="card">
+        <div class="card-header">
+            <h2 class="card-title">Statistics</h2>
+            {% if stats and stats.squid and stats.squid.mgr_available %}
+                <span class="badge ok">cachemgr</span>
+            {% else %}
+                <span class="badge warn">log-based</span>
+            {% endif %}
+        </div>
+        <div class="card-body">
+            <div class="kv">
+                <div class="k">CPU</div>
+                <div class="v">
+                    {% if stats and stats.cpu and stats.cpu.util_percent is not none %}
+                        {{ "%.1f"|format(stats.cpu.util_percent) }}%
+                    {% else %}
+                        n/a
+                    {% endif %}
+                    {% if stats and stats.cpu and stats.cpu.loadavg %}
+                        <span class="small"> (load {{ stats.cpu.loadavg['1m'] }}, {{ stats.cpu.loadavg['5m'] }}, {{ stats.cpu.loadavg['15m'] }})</span>
+                    {% endif %}
+                </div>
+
+                <div class="k">Memory</div>
+                <div class="v">
+                    {% if stats and stats.memory %}
+                        {% if stats.memory.used_bytes is not none and stats.memory.total_bytes is not none %}
+                            {{ (stats.memory.used_bytes // (1024*1024)) }} MiB / {{ (stats.memory.total_bytes // (1024*1024)) }} MiB
+                            {% if stats.memory.used_percent is not none %}
+                                <span class="small"> ({{ "%.1f"|format(stats.memory.used_percent) }}%)</span>
+                            {% endif %}
+                        {% else %}
+                            n/a
+                        {% endif %}
+                    {% else %}
+                        n/a
+                    {% endif %}
+                </div>
+
+                <div class="k">Cache dir</div>
+                <div class="v">
+                    {% if stats and stats.storage %}
+                        {{ stats.storage.cache_path }}
+                        <span class="small"> ({{ stats.storage.cache_dir_size_human }})</span>
+                    {% else %}
+                        n/a
+                    {% endif %}
+                </div>
+
+                <div class="k">Disk (cache FS)</div>
+                <div class="v">
+                    {% if stats and stats.storage %}
+                        {{ stats.storage.cache_fs_used_human }} used / {{ stats.storage.cache_fs_total_human }} total
+                        <span class="small"> ({{ stats.storage.cache_fs_free_human }} free)</span>
+                    {% else %}
+                        n/a
+                    {% endif %}
+                </div>
+
+                <div class="k">Hit rate (5m)</div>
+                <div class="v">
+                    {% if stats and stats.squid and stats.squid.hit_rate %}
+                        {% set r = stats.squid.hit_rate.request_hit_ratio %}
+                        {% set b = stats.squid.hit_rate.byte_hit_ratio %}
+                        {% if r is not none %}Req {{ "%.1f"|format(r) }}%{% else %}Req n/a{% endif %}
+                        <span class="small"> · </span>
+                        {% if b is not none %}Bytes {{ "%.1f"|format(b) }}%{% else %}Bytes n/a{% endif %}
+                        {% if stats.squid.hit_rate_source %}
+                            <span class="small"> ({{ stats.squid.hit_rate_source }})</span>
+                        {% endif %}
+                    {% else %}
+                        n/a
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="card-header">
+            <h2 class="card-title">Trends</h2>
+            <span class="badge">averages</span>
+        </div>
+        <div class="card-body">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Window</th>
+                        <th class="num">Samples</th>
+                        <th class="num">CPU avg</th>
+                        <th class="num">Mem avg</th>
+                        <th class="num">Hit avg</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for k in ['60s','1h','24h','7d'] %}
+                        {% set t = (trends[k] if trends and k in trends else None) %}
+                        <tr>
+                            <td>{{ k }}</td>
+                            <td class="num">{{ t.count if t else 0 }}</td>
+                            <td class="num">{% if t and t.cpu_avg is not none %}{{ "%.1f"|format(t.cpu_avg) }}%{% else %}n/a{% endif %}</td>
+                            <td class="num">{% if t and t.mem_avg is not none %}{{ "%.1f"|format(t.mem_avg) }}%{% else %}n/a{% endif %}</td>
+                            <td class="num">{% if t and t.hit_rate_avg is not none %}{{ "%.1f"|format(t.hit_rate_avg) }}%{% else %}n/a{% endif %}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <div class="small" style="margin-top: 10px;">Backed by SQLite rollups (1s → 1m → 1h → 1d …). API: <span style="font-family: var(--mono);">/api/timeseries</span></div>
+        </div>
+    </section>
+
+    <section class="card split-left">
+        <div class="card-header">
+            <h2 class="card-title">Proxy Status</h2>
+            <span class="badge ok">Running</span>
+        </div>
+        <div class="card-body">
+            <pre>{{ proxy_status }}</pre>
+            <div class="actions" style="margin-top: 12px;">
+                <form action="{{ url_for('reload_squid') }}" method="post">
+                    <button class="btn primary" type="submit">Reload Squid</button>
+                </form>
+                <form action="{{ url_for('clear_caches') }}" method="post">
+                    <button class="btn" type="submit">Clear caches</button>
+                </form>
+                <a class="btn" href="{{ url_for('squid_config') }}">Edit config</a>
+            </div>
+        </div>
+    </section>
+
+    <aside class="card split-right">
+        <div class="card-header">
+            <h2 class="card-title">Web UI</h2>
+            <span class="badge ok">OK</span>
+        </div>
+        <div class="card-body">
+            <pre>{{ flask_status }}</pre>
+            <div class="small" style="margin-top: 12px;">
+                Health endpoint: <span style="font-family: var(--mono);">/health</span>
+            </div>
+        </div>
+    </aside>
+</div>
+{% endblock %}

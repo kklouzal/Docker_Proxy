@@ -1,0 +1,138 @@
+http_port 3128 ssl-bump \
+	cert=/etc/squid/ssl/certs/ca.crt \
+	key=/etc/squid/ssl/certs/ca.key \
+	generate-host-certificates=on \
+	dynamic_cert_mem_cache_size=128MB
+
+# SMP mode (multi-process). Higher worker counts increase throughput but use more RAM.
+# If you change this, recreate/restart the container so the ICAP process count can match.
+workers 2
+
+http_access allow all
+
+# Allow cache manager access from localhost (used by the web UI for stats)
+http_access allow manager localhost
+http_access deny manager
+
+# Squid helper for on-the-fly certificate generation (ssl-bump)
+sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 4MB
+sslcrtd_children 5
+
+# Basic bump rules (MITM). Adjust for your policy.
+acl step1 at_step SslBump1
+ssl_bump peek step1
+ssl_bump bump all
+
+# Cache settings
+cache_dir ufs /var/spool/squid 10000 16 256
+maximum_object_size 64 MB
+maximum_object_size_in_memory 1024 KB
+minimum_object_size 0 KB
+cache_mem 256 MB
+
+# Connection behavior
+# Image-heavy pages create many parallel requests; keeping connections persistent
+# reduces handshake churn.
+client_persistent_connections on
+server_persistent_connections on
+
+# Timeouts
+# For throttled/slow origins (common on image boards), allow longer waits before
+# Squid gives up. These are upper bounds and can increase concurrency/resource
+# usage under upstream trouble.
+connect_timeout 90 seconds
+request_timeout 30 minutes
+read_timeout 30 minutes
+forward_timeout 30 minutes
+
+# Improve bandwidth savings for large downloads/video segments that use HTTP Range.
+# (Safe: does not override origin cache directives; it only enables caching of range responses.)
+range_offset_limit -1
+
+# Conservative cache watermarks to reduce churn.
+cache_swap_low 90
+cache_swap_high 95
+
+# Collapse concurrent requests for the same object.
+collapsed_forwarding on
+
+# Safe heuristic caching when explicit expiry headers are absent.
+# These patterns DO NOT use override flags (e.g., override-expire/ignore-no-cache), so
+# objects marked private/no-store/no-cache by origin servers remain non-cacheable.
+
+# --- Google Fonts (High-Hit Rule) ---
+# (Place before generic font rule to catch first. Speeds up most web browsing)
+refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 1440   80%  10080 store-stale
+
+# --- Binaries & Installers (1 month min, 3 month max) ---
+# (This is the fallback for winget/chocolatey packages from non-major vendors)
+refresh_pattern -i \.(iso|img|dmg|bin|exe|msi|msu)(\?|$)        43800  100% 129600 store-stale
+refresh_pattern -i \.(rar|jar|gz|tgz|tar|bz2|zip|7z)(\?|$)     43800  100% 129600 store-stale
+
+# --- Media (1 month min, 3 month max) ---
+refresh_pattern -i \.(mp4|mkv|flv|mov|avi|mpeg|webm)(\?|$)     43800  100% 129600 store-stale
+refresh_pattern -i \.(mp3|wav|ogg|flac|aac)(\?|$)              43800  100% 129600 store-stale
+
+# --- Static Web Assets (Images, Fonts, Docs) ---
+refresh_pattern -i \.(png|jpe?g|gif|webp|bmp|ico|svg|tiff)(\?|$)  43800  100% 129600 store-stale
+refresh_pattern -i \.(woff2?|ttf|otf|eot)(\?|$)                   43800   85%  129600 store-stale
+refresh_pattern -i \.(pdf|docx?|xlsx?|pptx?)(\?|$)                10080   90%  43200  store-stale
+
+# --- Scripts & Styles (Shorter cache) ---
+refresh_pattern -i \.(css)(\?|$)                                  10080   80%  43800  store-stale
+refresh_pattern -i \.(js)(\?|$)                                   1440    80%  10080  store-stale
+refresh_pattern -i \.(xhtml|html|htm)\?.*                           0      0%  0      store-stale
+refresh_pattern -i \.(xml)(\?|$)                                  360     80%  1440   store-stale
+refresh_pattern -i \.(xhtml|html|htm)$                             360     80%  1440   store-stale
+
+# Protect dynamic endpoints: do not cache CGI or generic query-string URLs.
+# Keep this below the specific allow-list above so common cache-busted assets can still cache.
+refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
+
+# Fallback heuristic.
+refresh_pattern . 0 20% 4320
+
+# Log settings
+# Structured access log used by the web UI. Includes cache-related request/response headers.
+# Fields (TSV): ts, ms, client_ip, method, url, result/status, bytes,
+#   req_cc, req_pragma, req_auth, req_cookie,
+#   rep_cc, rep_pragma, rep_expires, rep_vary, rep_set_cookie
+logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t"%{Cache-Control}>h"\t"%{Pragma}>h"\t"%{Authorization}>h"\t"%{Cookie}>h"\t"%{Cache-Control}<h"\t"%{Pragma}<h"\t"%{Expires}<h"\t"%{Vary}<h"\t"%{Set-Cookie}<h"
+access_log /var/log/squid/access.log liveui
+cache_log /var/log/squid/cache.log
+cache_store_log /var/log/squid/store.log
+
+# ICAP ad blocking (managed by web UI)
+# The ICAP service runs inside the same container on localhost.
+icap_enable on
+icap_send_client_ip on
+icap_send_client_username off
+# Generated at container start from $SQUID_WORKERS and $ICAP_BASE_PORT.
+include /etc/squid/conf.d/20-icap.conf
+
+# ICAP policy:
+# - Only inspect HTTP requests with URLs (GET/HEAD).
+# - Do NOT adapt CONNECT: CONNECT only carries host:port and lacks context
+#   (third-party/resource type), so domain-only decisions can overblock.
+acl icap_adblockable method GET HEAD
+acl icap_resp_html rep_mime_type -i text/html
+adaptation_access adblock_req_set allow icap_adblockable
+adaptation_access adblock_req_set deny all
+
+# Antivirus scanning (RESPMOD): ClamAV
+# Runs before HTML response rewriting.
+adaptation_access av_resp_set allow icap_adblockable
+adaptation_access av_resp_set deny all
+
+# HTML response rewriting (RESPMOD): inject <link rel="preload"> tags for <img src>
+adaptation_access html_preload_set allow icap_adblockable icap_resp_html
+adaptation_access html_preload_set deny all
+
+# Error handling
+error_directory /usr/share/squid/errors/en
+
+# MIME table for content-type detection
+mime_table /etc/squid/mime.conf
+
+# Custom configuration options can be added here
+# This section can be modified by the Flask application at runtime.

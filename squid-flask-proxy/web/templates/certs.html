@@ -1,0 +1,51 @@
+{% extends "layout.html" %}
+
+{% block title %}Certificates · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Certificates</h1>
+<p class="page-subtitle">Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores.</p>
+
+<div class="grid">
+    <section class="card split-left">
+        <div class="card-header">
+            <h2 class="card-title">CA Certificate</h2>
+            {% if certificate %}
+                <span class="badge ok">Available</span>
+            {% else %}
+                <span class="badge warn">Not generated</span>
+            {% endif %}
+        </div>
+        <div class="card-body">
+            <div class="small">
+                This certificate must be installed on client devices to avoid HTTPS warnings when using SSL-bump.
+            </div>
+            <div class="actions" style="margin-top: 12px;">
+                <form action="{{ url_for('generate_certificate') }}" method="post">
+                    <button class="btn primary" type="submit">Generate/Ensure CA</button>
+                </form>
+                {% if certificate %}
+                    <a class="btn" href="{{ url_for('download_certificate', filename=certificate) }}">Download CA</a>
+                {% else %}
+                    <a class="btn" href="{{ url_for('download_certificate', filename='ca.crt') }}">Download CA</a>
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+    <aside class="card split-right">
+        <div class="card-header">
+            <h2 class="card-title">Security Notes</h2>
+        </div>
+        <div class="card-body">
+            <div class="small">
+                - Only the public CA cert is downloadable.
+                <br>
+                - The private key stays in the container.
+                <br>
+                - Treat SSL-bump as MITM; use with explicit authorization.
+            </div>
+        </div>
+    </aside>
+</div>
+{% endblock %}

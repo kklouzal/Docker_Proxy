@@ -1,0 +1,175 @@
+{% extends "layout.html" %}
+
+{% block title %}Exclusions · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Exclusions</h1>
+<p class="page-subtitle">Define destinations that should not be intercepted/cached. (Client-side bypass is available via PAC.)</p>
+
+{% if request.args.get('ok') %}
+  <div style="margin: 0 0 14px;"><span class="badge ok">Applied</span> <span class="small">Squid reloaded with updated exclusions.</span></div>
+{% elif request.args.get('error') %}
+  <div style="margin: 0 0 14px;"><span class="badge danger">Failed</span> <span class="small">Validation/reload failed; previous config kept.</span></div>
+{% endif %}
+
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header">
+      <h2 class="card-title">Domains</h2>
+      <span class="badge">spliced + not cached</span>
+    </div>
+    <div class="card-body">
+      <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        <input type="hidden" name="action" value="add_domain" />
+        <label for="domain">Add domain</label>
+        <input id="domain" name="domain" type="text" placeholder="example.com" />
+        <div class="actions">
+          <button class="btn primary" type="submit">Add</button>
+        </div>
+      </form>
+
+      <div style="margin-top: 14px;" class="small">Current ({{ ex.domains|length }}):</div>
+      <table class="table" style="margin-top: 8px;">
+        <thead>
+          <tr><th>Domain</th><th class="num">Action</th></tr>
+        </thead>
+        <tbody>
+          {% for d in ex.domains %}
+            <tr>
+              <td style="font-family: var(--mono);">{{ d }}</td>
+              <td class="num">
+                <form method="post" action="{{ url_for('exclusions') }}" style="display:inline;">
+                  <input type="hidden" name="action" value="remove_domain" />
+                  <input type="hidden" name="domain" value="{{ d }}" />
+                  <button class="btn" type="submit">Remove</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if ex.domains|length == 0 %}
+        <div class="small" style="margin-top: 8px;">No domain exclusions yet.</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <aside class="card split-right">
+    <div class="card-header">
+      <h2 class="card-title">Private networks</h2>
+      <span class="badge ok">recommended</span>
+    </div>
+    <div class="card-body">
+      <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        <input type="hidden" name="action" value="toggle_private" />
+        <label class="check-row">
+          <input class="check" type="checkbox" name="exclude_private_nets" {% if ex.exclude_private_nets %}checked{% endif %} />
+          <span>Exclude common RFC1918/local ranges (destination)</span>
+        </label>
+        <div class="actions">
+          <button class="btn primary" type="submit">Save</button>
+        </div>
+        <div class="small">This prevents SSL-bump and caching for private destination networks. For true client-side bypass, use the PAC file below.</div>
+      </form>
+
+      <div style="margin-top: 14px;" class="small">PAC file (client-side bypass):</div>
+      <div class="actions" style="margin-top: 8px;">
+        <a class="btn" href="{{ url_for('proxy_pac') }}">Download proxy.pac</a>
+      </div>
+      <div class="small" style="margin-top: 8px;">Configure your clients to use this PAC to send excluded destinations DIRECT and everything else via the proxy.</div>
+    </div>
+  </aside>
+
+  <section class="card split-left">
+    <div class="card-header">
+      <h2 class="card-title">Destination networks</h2>
+      <span class="badge">spliced + not cached</span>
+    </div>
+    <div class="card-body">
+      <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        <input type="hidden" name="action" value="add_dst" />
+        <label for="dst">Add CIDR</label>
+        <input id="dst" name="cidr" type="text" placeholder="192.168.0.0/16" />
+        <div class="actions">
+          <button class="btn primary" type="submit">Add</button>
+        </div>
+      </form>
+
+      <div style="margin-top: 14px;" class="small">Current ({{ ex.dst_nets|length }}):</div>
+      <table class="table" style="margin-top: 8px;">
+        <thead>
+          <tr><th>CIDR</th><th class="num">Action</th></tr>
+        </thead>
+        <tbody>
+          {% for c in ex.dst_nets %}
+            <tr>
+              <td style="font-family: var(--mono);">{{ c }}</td>
+              <td class="num">
+                <form method="post" action="{{ url_for('exclusions') }}" style="display:inline;">
+                  <input type="hidden" name="action" value="remove_dst" />
+                  <input type="hidden" name="cidr" value="{{ c }}" />
+                  <button class="btn" type="submit">Remove</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside class="card split-right">
+    <div class="card-header">
+      <h2 class="card-title">Client networks (optional)</h2>
+      <span class="badge">no bump/cache</span>
+    </div>
+    <div class="card-body">
+      <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        <input type="hidden" name="action" value="add_src" />
+        <label for="src">Add client CIDR</label>
+        <input id="src" name="cidr" type="text" placeholder="192.168.1.0/24" />
+        <div class="actions">
+          <button class="btn primary" type="submit">Add</button>
+        </div>
+      </form>
+
+      <div style="margin-top: 14px;" class="small">Current ({{ ex.src_nets|length }}):</div>
+      <table class="table" style="margin-top: 8px;">
+        <thead>
+          <tr><th>CIDR</th><th class="num">Action</th></tr>
+        </thead>
+        <tbody>
+          {% for c in ex.src_nets %}
+            <tr>
+              <td style="font-family: var(--mono);">{{ c }}</td>
+              <td class="num">
+                <form method="post" action="{{ url_for('exclusions') }}" style="display:inline;">
+                  <input type="hidden" name="action" value="remove_src" />
+                  <input type="hidden" name="cidr" value="{{ c }}" />
+                  <button class="btn" type="submit">Remove</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </aside>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Apply</h2>
+      <span class="badge">validate + revert on failure</span>
+    </div>
+    <div class="card-body">
+      <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        <input type="hidden" name="action" value="apply" />
+        <div class="actions">
+          <button class="btn primary" type="submit">Save & Apply to Squid</button>
+        </div>
+        <div class="small">This regenerates <span style="font-family: var(--mono);">squid.conf</span> from the template using current tunables + exclusions, validates it, then reloads Squid.</div>
+      </form>
+    </div>
+  </section>
+</div>
+{% endblock %}

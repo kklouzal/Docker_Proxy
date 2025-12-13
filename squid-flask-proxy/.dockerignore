@@ -1,0 +1,16 @@
+# Ignore the following files and directories when building the Docker image
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.env
+*.git
+*.gitignore
+docker-compose.yml
+squid/ssl/certs/
+squid/ssl/db/
+web/static/README.md
+web/tests/

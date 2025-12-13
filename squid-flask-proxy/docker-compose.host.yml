@@ -1,0 +1,23 @@
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    network_mode: host
+    volumes:
+      - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - ./squid/ssl/certs:/etc/squid/ssl/certs
+      - squid_ssl_db:/var/lib/ssl_db
+      - proxy_data:/var/lib/squid-flask-proxy
+    environment:
+      SQUID_WORKERS: ${SQUID_WORKERS:-2}
+      ICAP_BASE_PORT: ${ICAP_BASE_PORT:-1344}
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  squid_ssl_db:
+  proxy_data:
