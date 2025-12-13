@@ -83,7 +83,8 @@ def inject_now():
             return ''
 
     return {
-        "current_year": datetime.datetime.utcnow().year,
+        # Use timezone-aware UTC to avoid deprecation warnings.
+        "current_year": datetime.datetime.now(datetime.UTC).year,
         "fmt_ts": fmt_ts,
     }
 

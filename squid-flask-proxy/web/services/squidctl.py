@@ -610,24 +610,36 @@ class SquidController:
                 pass
 
     def start_squid(self):
-        process = Popen(['squid', '-N', '-f', self.squid_conf_path], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = process.communicate()
-        return stdout, stderr
+        try:
+            process = Popen(['squid', '-N', '-f', self.squid_conf_path], stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            return stdout, stderr
+        except FileNotFoundError:
+            return b"", b"squid binary not found"
 
     def stop_squid(self):
-        process = Popen(['squid', '-k', 'shutdown'], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = process.communicate()
-        return stdout, stderr
+        try:
+            process = Popen(['squid', '-k', 'shutdown'], stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            return stdout, stderr
+        except FileNotFoundError:
+            return b"", b"squid binary not found"
 
     def reload_squid(self):
-        process = Popen(['squid', '-k', 'reconfigure'], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = process.communicate()
-        return stdout, stderr
+        try:
+            process = Popen(['squid', '-k', 'reconfigure'], stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            return stdout, stderr
+        except FileNotFoundError:
+            return b"", b"squid binary not found"
 
     def get_status(self):
-        process = Popen(['squid', '-k', 'check'], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = process.communicate()
-        return stdout, stderr
+        try:
+            process = Popen(['squid', '-k', 'check'], stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+            return stdout, stderr
+        except FileNotFoundError:
+            return b"", b"squid binary not found"
 
     def get_current_config(self):
         if os.path.exists(self.squid_conf_path):

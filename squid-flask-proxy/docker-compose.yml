@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+    network_mode: host
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
@@ -11,21 +12,11 @@ services:
     environment:
       SQUID_WORKERS: ${SQUID_WORKERS:-2}
       ICAP_BASE_PORT: ${ICAP_BASE_PORT:-1344}
-    ports:
-      - "3128:3128"
-      - "5000:5000"
-      - "1080:1080"
-    networks:
-      - proxy_network
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s
       timeout: 5s
       retries: 5
-
-networks:
-  proxy_network:
-    driver: bridge
 
 volumes:
   squid_ssl_db:
