@@ -3,6 +3,8 @@
 __pycache__/
 *.pyo
 *.pyd
+.pytest_cache/
+.ruff_cache/
 *.db
 *.sqlite3
 *.log

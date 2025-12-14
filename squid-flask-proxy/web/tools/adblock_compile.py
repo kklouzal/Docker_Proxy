@@ -417,7 +417,6 @@ def _compile_and_extract_all(
     # Single pass over a list file that:
     #  - preserves current “safe” buckets for c-icap
     #  - extracts every rule into JSONL buckets for future expansion
-    out = CompileOutput(set(), set(), [], 0, 0, 0, 0, 0)
     # We build counts manually to avoid re-reading.
     domains_block: Set[str] = set()
     domains_allow: Set[str] = set()

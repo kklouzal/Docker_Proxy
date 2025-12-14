@@ -5,7 +5,6 @@ import datetime
 import time
 import os
 import ipaddress
-import struct
 import uuid
 from services.stats import get_stats
 from services.live_stats import get_store
