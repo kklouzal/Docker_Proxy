@@ -281,6 +281,11 @@
                     </label>
 
                     <label class="check-row">
+                        <input class="check" type="checkbox" name="override_origin_no_cache" {% if overrides and overrides.origin_no_cache %}checked{% endif %} />
+                        <span>Override origin no-cache (Cache-Control: no-cache)</span>
+                    </label>
+
+                    <label class="check-row">
                         <input class="check" type="checkbox" name="override_client_no_store" {% if overrides and overrides.client_no_store %}checked{% endif %} />
                         <span>Override client no-store (Cache-Control: no-store)</span>
                     </label>
@@ -288,6 +293,11 @@
                     <label class="check-row">
                         <input class="check" type="checkbox" name="override_origin_no_store" {% if overrides and overrides.origin_no_store %}checked{% endif %} />
                         <span>Override origin no-store (Cache-Control/Pragma: no-store)</span>
+                    </label>
+
+                    <label class="check-row">
+                        <input class="check" type="checkbox" name="override_ignore_auth" {% if overrides and overrides.ignore_auth %}checked{% endif %} />
+                        <span>Override authorization-required objects (ignore-auth)</span>
                     </label>
 
                     <div class="actions">

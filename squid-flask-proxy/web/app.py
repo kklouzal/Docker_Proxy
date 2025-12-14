@@ -1068,6 +1068,8 @@ def apply_cache_overrides():
             'origin_private': request.form.get('override_origin_private') == 'on',
             'client_no_store': request.form.get('override_client_no_store') == 'on',
             'origin_no_store': request.form.get('override_origin_no_store') == 'on',
+            'origin_no_cache': request.form.get('override_origin_no_cache') == 'on',
+            'ignore_auth': request.form.get('override_ignore_auth') == 'on',
         }
         config_text = squid_controller.apply_cache_overrides(config_text, overrides)
     except Exception:

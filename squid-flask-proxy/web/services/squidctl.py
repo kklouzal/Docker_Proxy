@@ -18,6 +18,9 @@ class SquidController:
     def __init__(self, squid_conf_path: str = "/etc/squid/squid.conf"):
         self.squid_conf_path = squid_conf_path
         self.squid_conf_template_path = "/etc/squid/squid.conf.template"
+        self.persisted_squid_conf_path = os.environ.get(
+            "PERSISTED_SQUID_CONF_PATH", "/var/lib/squid-flask-proxy/squid.conf"
+        )
         if (not os.path.exists(self.squid_conf_template_path)) and os.path.exists("/squid/squid.conf.template"):
             self.squid_conf_template_path = "/squid/squid.conf.template"
 
@@ -502,6 +505,8 @@ class SquidController:
             "client_no_store": find_bool("override_client_no_store"),
             "origin_private": find_bool("override_origin_private"),
             "origin_no_store": find_bool("override_origin_no_store"),
+            "origin_no_cache": find_bool("override_origin_no_cache"),
+            "ignore_auth": find_bool("override_ignore_auth"),
         }
 
     def get_caching_lines(self, config_text: Optional[str] = None) -> list[str]:
@@ -548,10 +553,16 @@ class SquidController:
         if bool(ov.get("client_no_cache")):
             # Best-effort: ignore client reload/no-cache requests.
             flags.append("ignore-reload")
+        if bool(ov.get("origin_no_cache")):
+            # Ignore origin no-cache directives.
+            flags.append("ignore-no-cache")
         if bool(ov.get("origin_private")):
             flags.append("ignore-private")
         if bool(ov.get("client_no_store")) or bool(ov.get("origin_no_store")):
             flags.append("ignore-no-store")
+        if bool(ov.get("ignore_auth")):
+            # Allow caching of responses for requests requiring authorization.
+            flags.append("ignore-auth")
 
         # Remove any existing managed override metadata block.
         start_marker = "# Cache overrides (managed by web UI)"
@@ -566,7 +577,7 @@ class SquidController:
 
         # Normalize refresh_pattern lines by removing known override flags, then
         # re-appending the enabled ones.
-        override_tokens = ("ignore-reload", "ignore-no-cache", "ignore-no-store", "ignore-private")
+        override_tokens = ("ignore-reload", "ignore-no-cache", "ignore-no-store", "ignore-private", "ignore-auth")
 
         def should_skip_refresh_pattern(line: str) -> bool:
             # Keep the explicit no-cache rule intact.
@@ -610,6 +621,8 @@ class SquidController:
                 f"# override_client_no_store={'1' if bool(ov.get('client_no_store')) else '0'}",
                 f"# override_origin_private={'1' if bool(ov.get('origin_private')) else '0'}",
                 f"# override_origin_no_store={'1' if bool(ov.get('origin_no_store')) else '0'}",
+                f"# override_origin_no_cache={'1' if bool(ov.get('origin_no_cache')) else '0'}",
+                f"# override_ignore_auth={'1' if bool(ov.get('ignore_auth')) else '0'}",
                 end_marker,
                 "",
             ]
@@ -1089,6 +1102,13 @@ class SquidController:
                         self._supervisor_reread_update()
                         self.restart_squid()
                     return False, restart_details or "Squid restart failed."
+                # Persist only after the new config is actually active.
+                try:
+                    os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
+                    self._write_file(self.persisted_squid_conf_path, config_text)
+                except Exception:
+                    pass
+
                 msg = (restart_details or "Squid restarted.").strip()
                 if scale_details:
                     msg = (msg + "\n" + scale_details).strip()
@@ -1100,6 +1120,13 @@ class SquidController:
                     os.replace(backup_path, self.squid_conf_path)
                     run(["squid", "-k", "reconfigure"], capture_output=True, timeout=6)
                 return False, self._decode_completed(p) or "Squid reconfigure failed."
+
+            # Persist only after the new config is actually active.
+            try:
+                os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
+                self._write_file(self.persisted_squid_conf_path, config_text)
+            except Exception:
+                pass
 
             return True, self._decode_completed(p) or "Squid reconfigured."
         except Exception as e:
