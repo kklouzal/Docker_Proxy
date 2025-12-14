@@ -95,5 +95,50 @@ class TestRoutes(unittest.TestCase):
         response = self.app.get('/clamav')
         self.assertEqual(response.status_code, 200)
 
+    def test_pac_builder(self):
+        response = self.app.get('/pac')
+        self.assertEqual(response.status_code, 200)
+
+    def test_proxy_pac(self):
+        response = self.app.get('/proxy.pac')
+        self.assertEqual(response.status_code, 200)
+
+    def test_proxy_pac_can_include_socks(self):
+        # Create a catch-all PAC profile that enables SOCKS.
+        flask_app = _import_app()
+        from services.pac_profiles_store import PacProfilesStore  # type: ignore
+
+        # Use a temp DB file to avoid interacting with real volumes.
+        import tempfile
+        db = tempfile.NamedTemporaryFile(prefix="pac_profiles_", suffix=".db", delete=False)
+        db.close()
+
+        store = PacProfilesStore(db_path=db.name)
+        ok, err, pid = store.upsert_profile(
+            profile_id=None,
+            name="test",
+            client_cidr="",
+            socks_enabled=True,
+            socks_host="",
+            socks_port="1080",
+            direct_domains_text="example.com\n",
+            direct_dst_nets_text="10.0.0.0/8\n",
+        )
+        self.assertTrue(ok, err)
+        self.assertIsNotNone(pid)
+
+        # Monkeypatch the global store getter inside app module.
+        import app as app_module  # type: ignore
+
+        old_get = app_module.get_pac_profiles_store
+        app_module.get_pac_profiles_store = lambda: store
+        try:
+            response = self.app.get('/proxy.pac')
+            self.assertEqual(response.status_code, 200)
+            body = response.data.decode('utf-8', errors='replace')
+            self.assertIn('SOCKS5', body)
+        finally:
+            app_module.get_pac_profiles_store = old_get
+
 if __name__ == '__main__':
     unittest.main()

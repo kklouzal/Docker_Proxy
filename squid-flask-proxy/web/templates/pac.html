@@ -1,0 +1,174 @@
+{% extends "layout.html" %}
+
+{% block title %}PAC Builder · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">PAC Builder</h1>
+<p class="page-subtitle">Define multiple PAC profiles and serve different PAC content based on the client IP requesting the PAC.</p>
+
+{% if request.args.get('ok') %}
+  <div style="margin: 0 0 14px;"><span class="badge ok">Saved</span> <span class="small">PAC profiles updated.</span></div>
+{% elif request.args.get('error') %}
+  <div style="margin: 0 0 14px;"><span class="badge danger">Error</span> <span class="small">{{ request.args.get('msg') or 'Request failed.' }}</span></div>
+{% endif %}
+
+<div class="grid">
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">PAC URL</h2>
+      <span class="badge">clients use this</span>
+    </div>
+    <div class="card-body">
+      <div class="small">Configure your clients to use:</div>
+      <div style="margin-top: 8px; font-family: var(--mono);">{{ pac_url }}</div>
+      <div class="small" style="margin-top: 8px;">The server chooses which PAC content to return based on the requester IP (e.g. <span style="font-family: var(--mono);">REMOTE_ADDR</span> or <span style="font-family: var(--mono);">X-Forwarded-For</span>).</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Create PAC profile</h2>
+      <span class="badge">CIDR → profile</span>
+    </div>
+    <div class="card-body">
+      <form class="form" method="post" action="{{ url_for('pac_builder') }}">
+        <input type="hidden" name="action" value="create" />
+
+        <div class="row-2">
+          <div>
+            <label for="name">Name</label>
+            <input id="name" name="name" type="text" placeholder="Office LAN" />
+          </div>
+          <div>
+            <label for="client_cidr">Client CIDR (who gets this PAC)</label>
+            <input id="client_cidr" name="client_cidr" type="text" placeholder="192.168.10.0/24" />
+            <div class="small" style="margin-top: 6px;">Leave blank to make a catch-all fallback (matched only if no CIDR profile matches).</div>
+          </div>
+        </div>
+
+        <div class="row-2">
+          <div>
+            <label class="check-row">
+              <input class="check" type="checkbox" name="socks_enabled" />
+              <span>Include SOCKS5 first (then fall back to HTTP proxy)</span>
+            </label>
+            <div class="small" style="margin-top: 6px;">Returned chain becomes <span style="font-family: var(--mono);">SOCKS5 ...; PROXY ...; DIRECT</span> when enabled.</div>
+          </div>
+          <div>
+            <div class="row-2">
+              <div>
+                <label for="socks_host">SOCKS host (optional)</label>
+                <input id="socks_host" name="socks_host" type="text" placeholder="(default: same host as PAC)" />
+              </div>
+              <div>
+                <label for="socks_port">SOCKS port</label>
+                <input id="socks_port" name="socks_port" type="text" value="1080" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="row-2">
+          <div>
+            <label for="direct_domains">Domains that go DIRECT (one per line)</label>
+            <textarea id="direct_domains" name="direct_domains" style="min-height: 140px;" placeholder="example.com\ninternal.corp"></textarea>
+          </div>
+          <div>
+            <label for="direct_dst_nets">Destination CIDR that go DIRECT (one per line)</label>
+            <textarea id="direct_dst_nets" name="direct_dst_nets" style="min-height: 140px;" placeholder="10.0.0.0/8\n192.168.0.0/16"></textarea>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" type="submit">Create</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">PAC profiles</h2>
+      <span class="badge">{{ profiles|length }} rows</span>
+    </div>
+    <div class="card-body">
+      {% if profiles|length == 0 %}
+        <div class="small">No PAC profiles yet. Create one above. Until you do, <span style="font-family: var(--mono);">/proxy.pac</span> falls back to the legacy exclusions-based PAC.</div>
+      {% endif %}
+
+      {% for p in profiles %}
+        <div class="card" style="margin: 0 0 14px;">
+          <div class="card-header">
+            <h3 class="card-title">{{ p.name }}</h3>
+            {% if p.client_cidr %}
+              <span class="badge">CIDR {{ p.client_cidr }}</span>
+            {% else %}
+              <span class="badge warn">catch-all</span>
+            {% endif %}
+          </div>
+          <div class="card-body">
+            <form class="form" method="post" action="{{ url_for('pac_builder') }}">
+              <input type="hidden" name="action" value="update" />
+              <input type="hidden" name="profile_id" value="{{ p.id }}" />
+
+              <div class="row-2">
+                <div>
+                  <label>Name</label>
+                  <input name="name" type="text" value="{{ p.name }}" />
+                </div>
+                <div>
+                  <label>Client CIDR</label>
+                  <input name="client_cidr" type="text" value="{{ p.client_cidr }}" placeholder="192.168.10.0/24" />
+                </div>
+              </div>
+
+              <div class="row-2">
+                <div>
+                  <label class="check-row">
+                    <input class="check" type="checkbox" name="socks_enabled" {% if p.socks_enabled %}checked{% endif %} />
+                    <span>Include SOCKS5 first</span>
+                  </label>
+                </div>
+                <div>
+                  <div class="row-2">
+                    <div>
+                      <label>SOCKS host (optional)</label>
+                      <input name="socks_host" type="text" value="{{ p.socks_host }}" placeholder="(default: same host as PAC)" />
+                    </div>
+                    <div>
+                      <label>SOCKS port</label>
+                      <input name="socks_port" type="text" value="{{ p.socks_port }}" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row-2">
+                <div>
+                  <label>Domains that go DIRECT (one per line)</label>
+                  <textarea name="direct_domains" style="min-height: 140px;">{{ p.direct_domains|join('\n') }}</textarea>
+                </div>
+                <div>
+                  <label>Destination CIDR that go DIRECT (one per line)</label>
+                  <textarea name="direct_dst_nets" style="min-height: 140px;">{{ p.direct_dst_nets|join('\n') }}</textarea>
+                </div>
+              </div>
+
+              <div class="actions" style="display:flex; gap: 8px; align-items: center;">
+                <button class="btn primary" type="submit">Save</button>
+              </div>
+            </form>
+
+            <form method="post" action="{{ url_for('pac_builder') }}" style="margin-top: 8px;">
+              <input type="hidden" name="action" value="delete" />
+              <input type="hidden" name="profile_id" value="{{ p.id }}" />
+              <button class="btn" type="submit">Delete</button>
+              <span class="small" style="margin-left: 8px;">Deletes this PAC profile and its rules.</span>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

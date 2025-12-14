@@ -84,6 +84,7 @@ Also confirm:
 - Dynamic Squid configuration through a web interface.
 - View the status of the Squid proxy and Flask application.
 - Generate and download self-signed SSL certificates for HTTPS caching.
+- Dynamic PAC serving at `/proxy.pac` with a UI builder at `/pac` (serve different PAC rules based on the client IP requesting the PAC).
 
 ## SOCKS5 support (Dante)
 This container also runs a Dante SOCKS proxy on port `1080`.
@@ -199,7 +200,7 @@ The default baseline config in [squid/squid.conf.template](squid/squid.conf.temp
 Some modern apps work poorly with HTTPS interception (SSL-bump) and/or rely on non-HTTP traffic paths (especially WebRTC media over UDP). Common symptoms include sign-in loops, “can’t connect”, blank calls, or meetings failing to start.
 
 Recommended mitigations (lowest-risk first):
-- Prefer configuring **browser proxy** via a PAC file rather than forcing a global system proxy. This project serves a PAC at `/proxy.pac`.
+- Prefer configuring **browser proxy** via a PAC file rather than forcing a global system proxy. This project serves a PAC at `/proxy.pac` and includes a PAC Builder UI at `/pac`.
 - If a site/app breaks under SSL-bump (often due to **certificate pinning** or strict TLS behavior), add its domain(s) to the **Exclusions** page. Excluded domains are configured to **splice** (no bump) and **not cache**.
 - If you are using `netsh winhttp set proxy ...`, use a **bypass list** for pinned/real-time apps so they go DIRECT (example categories: Teams/Office endpoints, Slack, Webex, Google Meet). WinHTTP is used by many non-browser components that may not tolerate interception.
 - Be aware of protocol limits: Squid is an **HTTP proxy**. It can proxy HTTP/HTTPS (and WebSockets over HTTP), but it does not proxy arbitrary UDP. WebRTC media frequently uses UDP (STUN/TURN), so calls may still require direct UDP egress even when the browser uses an HTTP proxy for signaling.

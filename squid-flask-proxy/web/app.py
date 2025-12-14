@@ -14,6 +14,7 @@ from services.timeseries_store import get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.socks_store import get_socks_store
 from services.adblock_store import get_adblock_store
+from services.pac_profiles_store import get_pac_profiles_store
 from services.housekeeping import start_housekeeping
 
 import socket
@@ -1138,41 +1139,158 @@ def exclusions():
 def proxy_pac():
     # NOTE: Squid cannot force a client to "bypass the proxy" for some destinations when the client is
     # explicitly configured to use the proxy. A PAC file is the usual way to implement bypass behavior.
+    #
+    # This endpoint dynamically selects which PAC to return based on the *requester's* source IP (server-side).
+    # The PAC logic itself remains destination-based (runs on the client).
+
+    def _requester_ip() -> str:
+        # Best-effort: if a reverse-proxy is in front, it may set X-Forwarded-For.
+        xff = (request.headers.get('X-Forwarded-For') or '').strip()
+        if xff:
+            # First IP in the list is the original client.
+            cand = (xff.split(',')[0] or '').strip()
+            if cand:
+                return cand
+        xri = (request.headers.get('X-Real-IP') or '').strip()
+        if xri:
+            return xri
+        return (request.remote_addr or '').strip()
+
+    def _build_pac(proxy_str: str, *, direct_domains: list[str], direct_dst_nets: list[str], include_private: bool) -> str:
+        lines: list[str] = []
+        lines.append("function FindProxyForURL(url, host) {")
+        lines.append("  host = host.toLowerCase();")
+
+        # Always bypass local/loopback. The Windows "bypass proxy for local addresses" checkbox does not
+        # reliably apply when a PAC script is used, and many apps use WinHTTP which ignores that checkbox.
+        lines.append("  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';")
+        lines.append("  if (isPlainHostName(host)) return 'DIRECT';")
+
+        lines.append("  var ip = dnsResolve(host);")
+        lines.append("  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';")
+
+        for d in direct_domains:
+            # Match domain and subdomains
+            lines.append(f"  if (dnsDomainIs(host, '{d}') || shExpMatch(host, '*.{d}')) return 'DIRECT';")
+
+        for cidr in direct_dst_nets:
+            try:
+                net = ipaddress.ip_network(cidr, strict=False)
+                if getattr(net, 'version', 4) != 4:
+                    continue
+                net_addr = str(net.network_address)
+                mask = _cidr_to_mask(cidr)
+                lines.append(f"  if (ip && isInNet(ip, '{net_addr}', '{mask}')) return 'DIRECT';")
+            except Exception:
+                continue
+
+        if include_private:
+            # Optional: bypass RFC1918 + link-local destinations.
+            lines.append("  if (ip && isInNet(ip, '10.0.0.0', '255.0.0.0')) return 'DIRECT';")
+            lines.append("  if (ip && isInNet(ip, '172.16.0.0', '255.240.0.0')) return 'DIRECT';")
+            lines.append("  if (ip && isInNet(ip, '192.168.0.0', '255.255.0.0')) return 'DIRECT';")
+            lines.append("  if (ip && isInNet(ip, '169.254.0.0', '255.255.0.0')) return 'DIRECT';")
+
+        lines.append(f"  return '{proxy_str}';")
+        lines.append("}")
+        return "\n".join(lines) + "\n"
+
     host = (request.host.split(':')[0] or '127.0.0.1').strip()
-    proxy = f"PROXY {host}:3128; DIRECT"
-    store = get_exclusions_store()
-    ex = store.list_all()
+    http_proxy = f"PROXY {host}:3128"
+    http_chain = f"{http_proxy}; DIRECT"
 
-    # For PAC, we only use destination-based checks (domains + optional private nets). Client-src based
-    # bypass is not possible in PAC (it runs on the client without reliable client IP).
-    domains = [d for d in ex.domains]
+    # Try dynamic PAC profiles first.
+    prof = None
+    try:
+        prof = get_pac_profiles_store().match_profile_for_client_ip(_requester_ip())
+    except Exception:
+        prof = None
 
-    lines = []
-    lines.append("function FindProxyForURL(url, host) {")
-    lines.append("  host = host.toLowerCase();")
+    if prof is not None:
+        # Optional SOCKS5 in the return chain.
+        proxy_chain = http_chain
+        try:
+            if bool(getattr(prof, 'socks_enabled', False)):
+                socks_host = (getattr(prof, 'socks_host', '') or '').strip() or host
+                socks_port = int(getattr(prof, 'socks_port', 1080) or 1080)
+                proxy_chain = f"SOCKS5 {socks_host}:{socks_port}; {http_proxy}; DIRECT"
+        except Exception:
+            proxy_chain = http_chain
 
-    # Always bypass local/loopback. The Windows "bypass proxy for local addresses" checkbox does not
-    # reliably apply when a PAC script is used, and many apps use WinHTTP which ignores that checkbox.
-    lines.append("  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';")
-    lines.append("  if (isPlainHostName(host)) return 'DIRECT';")
+        pac = _build_pac(
+            proxy_chain,
+            direct_domains=list(getattr(prof, 'direct_domains', []) or []),
+            direct_dst_nets=list(getattr(prof, 'direct_dst_nets', []) or []),
+            include_private=False,
+        )
+        return app.response_class(pac, mimetype='application/x-ns-proxy-autoconfig')
 
-    lines.append("  var ip = dnsResolve(host);")
-    lines.append("  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';")
-    for d in domains:
-        # Match domain and subdomains
-        lines.append(f"  if (dnsDomainIs(host, '{d}') || shExpMatch(host, '*.{d}')) return 'DIRECT';")
-
-    # Optional: bypass RFC1918 + link-local destinations when enabled in Exclusions.
-    if getattr(ex, 'exclude_private_nets', False):
-        lines.append("  if (ip && isInNet(ip, '10.0.0.0', '255.0.0.0')) return 'DIRECT';")
-        lines.append("  if (ip && isInNet(ip, '172.16.0.0', '255.240.0.0')) return 'DIRECT';")
-        lines.append("  if (ip && isInNet(ip, '192.168.0.0', '255.255.0.0')) return 'DIRECT';")
-        lines.append("  if (ip && isInNet(ip, '169.254.0.0', '255.255.0.0')) return 'DIRECT';")
-    lines.append(f"  return '{proxy}';")
-    lines.append("}")
-
-    pac = "\n".join(lines) + "\n"
+    # Legacy fallback: build PAC from Exclusions.
+    ex = get_exclusions_store().list_all()
+    pac = _build_pac(
+        http_chain,
+        direct_domains=[d for d in ex.domains],
+        direct_dst_nets=[],
+        include_private=bool(getattr(ex, 'exclude_private_nets', False)),
+    )
     return app.response_class(pac, mimetype='application/x-ns-proxy-autoconfig')
+
+
+@app.route('/pac', methods=['GET', 'POST'])
+def pac_builder():
+    store = get_pac_profiles_store()
+
+    if request.method == 'POST':
+        action = (request.form.get('action') or '').strip()
+        try:
+            if action == 'create':
+                ok, err, _ = store.upsert_profile(
+                    profile_id=None,
+                    name=request.form.get('name') or '',
+                    client_cidr=request.form.get('client_cidr') or '',
+                    socks_enabled=(request.form.get('socks_enabled') == 'on'),
+                    socks_host=request.form.get('socks_host') or '',
+                    socks_port=request.form.get('socks_port') or '',
+                    direct_domains_text=request.form.get('direct_domains') or '',
+                    direct_dst_nets_text=request.form.get('direct_dst_nets') or '',
+                )
+                if not ok:
+                    return redirect(url_for('pac_builder', error='1', msg=err))
+                return redirect(url_for('pac_builder', ok='1'))
+
+            if action == 'update':
+                pid = int(request.form.get('profile_id') or '0')
+                ok, err, _ = store.upsert_profile(
+                    profile_id=pid,
+                    name=request.form.get('name') or '',
+                    client_cidr=request.form.get('client_cidr') or '',
+                    socks_enabled=(request.form.get('socks_enabled') == 'on'),
+                    socks_host=request.form.get('socks_host') or '',
+                    socks_port=request.form.get('socks_port') or '',
+                    direct_domains_text=request.form.get('direct_domains') or '',
+                    direct_dst_nets_text=request.form.get('direct_dst_nets') or '',
+                )
+                if not ok:
+                    return redirect(url_for('pac_builder', error='1', msg=err))
+                return redirect(url_for('pac_builder', ok='1'))
+
+            if action == 'delete':
+                pid = int(request.form.get('profile_id') or '0')
+                store.delete_profile(pid)
+                return redirect(url_for('pac_builder', ok='1'))
+        except Exception as e:
+            return redirect(url_for('pac_builder', error='1', msg=f"{type(e).__name__}: {e}"))
+
+        return redirect(url_for('pac_builder'))
+
+    profiles = []
+    try:
+        profiles = store.list_profiles()
+    except Exception:
+        profiles = []
+
+    pac_url = (request.url_root.rstrip('/') + url_for('proxy_pac'))
+    return render_template('pac.html', profiles=profiles, pac_url=pac_url)
 
 
 def _cidr_to_mask(cidr: str) -> str:
