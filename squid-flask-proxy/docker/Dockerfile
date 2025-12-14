@@ -77,15 +77,8 @@ FROM alpine:3.20
 
 # Install necessary packages
 # Note: Alpine's squid package does not ship the legacy `squidclient` binary.
-#
-# Adblocking performance: try to enable RE2 (fast regex engine) for adblockparser.
-# On Alpine, prefer the packaged Python binding (`py3-re2`) over the PyPI `re2` module,
-# which frequently fails to build on newer Python versions.
-RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn supervisor openssl ca-certificates py3-re2 py3-brotli libatomic \
-		clamav clamav-daemon \
-	&& apk add --no-cache --virtual .pip-deps py3-pip \
-	&& python3 -m pip install --no-cache-dir --break-system-packages adblockparser \
-	&& apk del .pip-deps
+RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn supervisor openssl ca-certificates libatomic \
+		clamav clamav-daemon
 
 # Set working directory
 WORKDIR /app
@@ -104,6 +97,7 @@ COPY docker/healthcheck.sh /healthcheck.sh
 # c-icap (built from source in the builder stage)
 COPY --from=cicap_builder /out/ /
 COPY docker/c-icap.conf /etc/c-icap/c-icap.conf
+COPY docker/adblock_req.conf /etc/adblock_req.conf
 COPY docker/clamd_mod.conf /etc/clamd_mod.conf
 COPY docker/virus_scan.conf /etc/virus_scan.conf
 

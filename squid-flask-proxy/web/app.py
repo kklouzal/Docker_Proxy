@@ -15,7 +15,6 @@ from services.timeseries_store import get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.socks_store import get_socks_store
 from services.adblock_store import get_adblock_store
-from services.preload_store import get_preload_store
 
 import socket
 import re
@@ -74,6 +73,12 @@ if not _disable_background:
     except Exception:
         pass
 
+    # Start background ingestion of c-icap adblock (REQMOD) blocks (best-effort).
+    try:
+        get_adblock_store().start_blocklog_background()
+    except Exception:
+        pass
+
 
 @app.context_processor
 def inject_now():
@@ -110,7 +115,8 @@ def index():
     except Exception:
         trends = {}
 
-    icap_health = _check_icap_respmod()
+    # ICAP health check: verify the adblock REQMOD c-icap instance is reachable.
+    icap_health = _check_icap_adblock()
     clamav_health = _check_clamd()
     dante_port = int(os.environ.get('DANTE_PORT', 1080))
     dante_health = _check_tcp(os.environ.get('DANTE_HOST', '127.0.0.1'), dante_port)
@@ -312,7 +318,17 @@ def adblock():
             cache_max = as_int('cache_max', int(cur.get('cache_max') or 0))
             store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
         elif action == 'refresh':
+            # Refresh is handled asynchronously by background workers.
+            # If no lists are enabled, a refresh won't download anything.
+            any_enabled = False
+            try:
+                any_enabled = any(st.enabled for st in store.list_statuses())
+            except Exception:
+                any_enabled = False
+            if not any_enabled:
+                return redirect(url_for('adblock', refresh_no_lists='1'))
             store.request_refresh_now()
+            return redirect(url_for('adblock', refresh_requested='1'))
         elif action == 'flush_cache':
             store.request_cache_flush()
             return redirect(url_for('adblock', cache_flushed='1'))
@@ -353,6 +369,11 @@ def adblock():
             }
         )
 
+    try:
+        recent_blocks = store.list_recent_block_events(limit=100)
+    except Exception:
+        recent_blocks = []
+
     return render_template(
         'adblock.html',
         statuses=status_rows,
@@ -363,13 +384,16 @@ def adblock():
         cache_ttl=settings.get('cache_ttl'),
         update_interval_seconds=interval,
         cache_flushed=(request.args.get('cache_flushed') == '1'),
+        refresh_requested=(request.args.get('refresh_requested') == '1'),
+        refresh_no_lists=(request.args.get('refresh_no_lists') == '1'),
+        recent_blocks=recent_blocks,
     )
 
 
-def _check_icap_service(host: str = "127.0.0.1", port: int = 1344, service: str = "/respmod"):
+def _check_icap_service(host: str, port: int, service: str):
     # Best-effort local health check: connect and issue ICAP OPTIONS.
     # Keep timeouts tight so the UI can't hang.
-    path = (service or "/respmod")
+    path = (service or "/")
     if not path.startswith("/"):
         path = "/" + path
     req = (
@@ -394,18 +418,17 @@ def _check_icap_service(host: str = "127.0.0.1", port: int = 1344, service: str 
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
-def _check_icap_respmod(host: str = "127.0.0.1", port: int = 1344, service: str = "/respmod"):
-    return _check_icap_service(host=host, port=port, service=service)
+def _check_icap_adblock() -> Dict[str, Any]:
+    host = os.environ.get('CICAP_HOST', '127.0.0.1')
+    try:
+        port = int(os.environ.get('CICAP_PORT', 14000))
+    except Exception:
+        port = 14000
+    return _check_icap_service(host=host, port=port, service='/adblockreq')
 
 
-def _send_sample_respmod(service: str = "/respmod") -> Dict[str, Any]:
-    host = os.environ.get('ICAP_HOST', '127.0.0.1')
-    port = int(os.environ.get('ICAP_PORT', 1344))
-    return _send_sample_respmod_to(host=host, port=port, service=service)
-
-
-def _send_sample_respmod_to(host: str, port: int, service: str = "/respmod") -> Dict[str, Any]:
-    path = service or '/respmod'
+def _send_sample_respmod_to(host: str, port: int, service: str = "/avrespmod") -> Dict[str, Any]:
+    path = service or '/avrespmod'
     if not path.startswith('/'):
         path = '/' + path
 
@@ -437,9 +460,9 @@ def _send_sample_av_icap() -> Dict[str, Any]:
     # Send a tiny RESPMOD sample to the c-icap AV service (avrespmod).
     host = os.environ.get('CICAP_HOST', '127.0.0.1')
     try:
-        port = int(os.environ.get('CICAP_PORT', 14000))
+        port = int(os.environ.get('CICAP_AV_PORT', 14001))
     except Exception:
-        port = 14000
+        port = 14001
     return _send_sample_respmod_to(host=host, port=port, service='/avrespmod')
 
 
@@ -516,7 +539,7 @@ def clamav():
     clamd_health = _check_clamd()
     cicap_health = _check_icap_service(
         host=os.environ.get('CICAP_HOST', '127.0.0.1'),
-        port=int(os.environ.get('CICAP_PORT', 14000)),
+        port=int(os.environ.get('CICAP_AV_PORT', 14001)),
         service='/avrespmod',
     )
 
@@ -616,94 +639,6 @@ def clamav_toggle():
     return redirect(url_for('clamav', error='1'))
 
 
-@app.route('/icap/preload', methods=['GET'])
-def icap_preload():
-    try:
-        stats = get_preload_store().summary()
-    except Exception:
-        stats = None
-    health = _check_icap_respmod()
-    cfg = squid_controller.get_current_config() or ""
-    preload_enabled = _is_preload_enabled(cfg)
-    return render_template(
-        'icap_preload.html',
-        stats=stats,
-        health=health,
-        preload_enabled=preload_enabled,
-        sample_result=request.args.get('sample'),
-        sample_detail=request.args.get('sample_detail'),
-    )
-
-
-@app.route('/icap/preload/test', methods=['POST'])
-def icap_preload_test():
-    res = _send_sample_respmod(service=os.environ.get('ICAP_PRELOAD_PATH', '/respmod'))
-    return redirect(
-        url_for(
-            'icap_preload',
-            sample='ok' if res.get('ok') else 'fail',
-            sample_detail=(res.get('detail') or '')[:300],
-        )
-    )
-
-
-_PRELOAD_ALLOW_RE = re.compile(r"^(\s*)(#\s*)?(adaptation_access\s+html_preload_set\s+allow\b.*)$", re.I | re.M)
-_PRELOAD_DENY_RE = re.compile(r"^\s*(#\s*)?adaptation_access\s+html_preload_set\s+deny\s+all\s*$", re.I | re.M)
-
-
-def _is_preload_enabled(cfg_text: str) -> bool:
-    # Enabled if there's an uncommented allow rule for html_preload_set.
-    m = _PRELOAD_ALLOW_RE.search(cfg_text or "")
-    if not m:
-        return False
-    comment_prefix = (m.group(2) or "").strip()
-    return comment_prefix == ""
-
-
-def _set_preload_enabled(cfg_text: str, enabled: bool) -> str:
-    text = cfg_text or ""
-
-    def repl(m: re.Match) -> str:
-        indent = m.group(1) or ""
-        rule = m.group(3) or ""
-        if enabled:
-            return indent + rule
-        return indent + "# " + rule
-
-    if _PRELOAD_ALLOW_RE.search(text):
-        return _PRELOAD_ALLOW_RE.sub(repl, text, count=1)
-
-    # If the allow rule is missing and we're enabling, insert a default allow rule.
-    if enabled:
-        allow_line = "adaptation_access html_preload_set allow icap_adblockable icap_resp_html"
-        deny_match = _PRELOAD_DENY_RE.search(text)
-        if deny_match:
-            insert_at = deny_match.start()
-            return text[:insert_at] + allow_line + "\n" + text[insert_at:]
-        return text.rstrip() + "\n" + allow_line + "\n"
-
-    return text
-
-
-@app.route('/icap/preload/toggle', methods=['POST'])
-def icap_preload_toggle():
-    action = (request.form.get('action') or '').strip().lower()
-    cfg = squid_controller.get_current_config() or ""
-    currently_enabled = _is_preload_enabled(cfg)
-
-    if action == 'enable':
-        desired = True
-    elif action == 'disable':
-        desired = False
-    else:
-        desired = (not currently_enabled)
-
-    new_cfg = _set_preload_enabled(cfg, desired)
-    ok, _details = squid_controller.apply_config_text(new_cfg)
-    if ok:
-        return redirect(url_for('icap_preload'))
-    # Keep it minimal: just redirect back; status will show unchanged.
-    return redirect(url_for('icap_preload', error='1'))
 
 @app.route('/squid/config', methods=['GET', 'POST'])
 def squid_config():

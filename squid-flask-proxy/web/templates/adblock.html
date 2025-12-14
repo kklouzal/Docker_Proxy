@@ -104,6 +104,44 @@
 
 <section class="card">
   <div class="card-header">
+    <h2 class="card-title">Recent blocks</h2>
+    <span class="badge">SQLite (from c-icap access log)</span>
+  </div>
+  <div class="card-body">
+    {% if recent_blocks and recent_blocks|length > 0 %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th class="num">Time</th>
+            <th>Client</th>
+            <th>Method</th>
+            <th>URL</th>
+            <th>Result</th>
+            <th class="num">HTTP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in recent_blocks %}
+          <tr>
+            <td class="num"><span class="small">{% if e.ts %}{{ fmt_ts(e.ts) }}{% else %}-{% endif %}</span></td>
+            <td><span class="small" style="font-family: var(--mono);">{{ e.src_ip }}</span></td>
+            <td><span class="small" style="font-family: var(--mono);">{{ e.method }}</span></td>
+            <td><span class="small" style="font-family: var(--mono); max-width: 720px; overflow-wrap: anywhere;">{{ e.url }}</span></td>
+            <td><span class="small" style="font-family: var(--mono);">{{ e.result }}</span></td>
+            <td class="num"><span class="small" style="font-family: var(--mono);">{{ e.status }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="small" style="margin-top: 10px;">Shows up to the most recent 100 blocks stored in SQLite.</div>
+    {% else %}
+      <div class="small">No blocks recorded in the database yet.</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
     <h2 class="card-title">Subscriptions</h2>
     <span class="badge">{{ statuses|length }} lists</span>
   </div>
@@ -113,6 +151,8 @@
       <div class="actions" style="margin-bottom: 12px;">
         <button class="btn primary" type="submit" name="action" value="save_lists">Save lists</button>
         <button class="btn" type="submit" name="action" value="refresh">Update now</button>
+        {% if refresh_no_lists %}<span class="small" style="margin-left:8px;">No lists enabled — check one and click “Save lists” first.</span>{% endif %}
+        {% if refresh_requested %}<span class="small" style="margin-left:8px;">Refresh requested — downloads run in background (may take ~30s).</span>{% endif %}
       </div>
 
       <table class="table">

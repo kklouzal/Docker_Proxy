@@ -6,6 +6,11 @@ set -eu
 if [ -f /config/app.env ]; then
     export $(cat /config/app.env | xargs)
 fi
+python3 /app/tools/adblock_compile.py \
+    --db /var/lib/squid-flask-proxy/adblock.db \
+    --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
+    --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
+    || true
 
 # Ensure squid.conf is based on our template (needed for caching + ssl-bump).
 # If the file already looks like our managed config, keep it.
@@ -19,28 +24,6 @@ fi
 if [ -n "$TEMPLATE" ]; then
     if [ ! -f /etc/squid/squid.conf ] || ! grep -q "ssl_bump" /etc/squid/squid.conf 2>/dev/null; then
         cp "$TEMPLATE" /etc/squid/squid.conf
-    fi
-fi
-
-# Upgrade path: ensure ClamAV adaptation policy exists if ICAP is enabled.
-# Insert av_resp_set rules before html_preload_set if missing.
-if [ -f /etc/squid/squid.conf ]; then
-    if grep -qi "^\s*icap_enable\s\+on\b" /etc/squid/squid.conf 2>/dev/null \
-        && grep -qi "^\s*adaptation_access\s\+html_preload_set\b" /etc/squid/squid.conf 2>/dev/null \
-        && ! grep -qi "^\s*adaptation_access\s\+av_resp_set\b" /etc/squid/squid.conf 2>/dev/null; then
-        awk '
-            BEGIN{done=0}
-            {line=$0}
-            tolower($0) ~ /^\s*adaptation_access\s+html_preload_set\b/ && done==0 {
-                print "# Antivirus scanning (RESPMOD): c-icap + ClamAV";
-                print "# Runs before HTML response rewriting.";
-                print "adaptation_access av_resp_set allow icap_adblockable";
-                print "adaptation_access av_resp_set deny all";
-                print "";
-                done=1
-            }
-            {print line}
-        ' /etc/squid/squid.conf > /tmp/squid.conf.tmp && mv /tmp/squid.conf.tmp /etc/squid/squid.conf
     fi
 fi
 
@@ -69,80 +52,113 @@ fi
 # Ensure supervisord sees a valid value even if compose didn't set it.
 export SQUID_WORKERS="$WORKERS"
 
-# Generate supervisord program config for ICAP based on current workers.
 mkdir -p /etc/supervisor.d
-{
-    echo "[program:icap]"
-    echo "directory=/app"
-    echo "process_name=icap_%(process_num)s"
-    echo "numprocs=$WORKERS"
-    echo "environment=PROC_NUM=%(process_num)s"
-    echo "command=/bin/sh -c 'BASE=\${ICAP_BASE_PORT:-1344}; PORT=\$((BASE + \${PROC_NUM:-0})); ICAP_BIND=127.0.0.1 ICAP_PORT=\$PORT exec python3 /app/icap_server.py'"
-    echo "autostart=true"
-    echo "autorestart=true"
-    echo "stderr_logfile=/dev/stderr"
-    echo "stdout_logfile=/dev/stdout"
-    echo "stderr_logfile_maxbytes=0"
-    echo "stdout_logfile_maxbytes=0"
-} > /etc/supervisor.d/icap.conf
+rm -f /etc/supervisor.d/icap.conf || true
 
-# Run c-icap for AV (ClamAV) ICAP service.
-# Squid's av_resp_set always points to c-icap; the Python ICAP server no longer implements /avrespmod.
+# Run c-icap for adblock REQMOD (no ClamAV dependency) and AV (ClamAV).
+# We start an adblock-only c-icap instance immediately so Squid's ICAP OPTIONS checks succeed
+# quickly. A second c-icap instance (AV) can wait for the clamd socket without impacting adblock.
 CICAP_PORT_RAW="${CICAP_PORT:-14000}"
 case "$CICAP_PORT_RAW" in
     ''|*[!0-9]*) CICAP_PORT=14000 ;;
     *) CICAP_PORT="$CICAP_PORT_RAW" ;;
 esac
 
+CICAP_AV_PORT_RAW="${CICAP_AV_PORT:-14001}"
+case "$CICAP_AV_PORT_RAW" in
+    ''|*[!0-9]*) CICAP_AV_PORT=14001 ;;
+    *) CICAP_AV_PORT="$CICAP_AV_PORT_RAW" ;;
+esac
+
 mkdir -p /var/run/c-icap
-cat > /etc/supervisor.d/cicap.conf <<'EOF'
-[program:cicap]
-command=/bin/sh -c 'p=/var/lib/squid-flask-proxy/clamav/clamd.sock; i=0; while [ "$i" -lt 60 ]; do [ -S "$p" ] && break; i=$((i + 1)); sleep 1; done; exec /usr/bin/c-icap -N -D -d 1 -f /etc/c-icap/c-icap.conf'
+
+# Generate per-instance c-icap configs from the base image config.
+# - adblock instance: no clamd_mod / virus_scan
+# - av instance: full config (waits for clamd socket before starting)
+if [ -f /etc/c-icap/c-icap.conf ]; then
+    cp /etc/c-icap/c-icap.conf /etc/c-icap/c-icap-av.conf
+    cp /etc/c-icap/c-icap.conf /etc/c-icap/c-icap-adblock.conf
+
+    # Ensure distinct pidfiles for multiple instances.
+    if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
+        sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile /var/run/c-icap/c-icap-av.pid#I" /etc/c-icap/c-icap-av.conf
+    else
+        echo "PidFile /var/run/c-icap/c-icap-av.pid" >> /etc/c-icap/c-icap-av.conf
+    fi
+
+    if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" /etc/c-icap/c-icap-adblock.conf 2>/dev/null; then
+        sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile /var/run/c-icap/c-icap-adblock.pid#I" /etc/c-icap/c-icap-adblock.conf
+    else
+        echo "PidFile /var/run/c-icap/c-icap-adblock.pid" >> /etc/c-icap/c-icap-adblock.conf
+    fi
+
+    # Avoid both instances writing to the same access log.
+    # Keep the default access log path for adblock (used by the UI/SQLite ingestion).
+    if grep -qiE "^[[:space:]]*AccessLog[[:space:]]+/var/log/cicap-access\.log([[:space:]]|$)" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
+        sed -i -E "s#^[[:space:]]*AccessLog[[:space:]]+/var/log/cicap-access\.log([[:space:]]|$)#AccessLog /var/log/cicap-access-av.log\1#I" /etc/c-icap/c-icap-av.conf
+    fi
+
+    # Set ports
+    if grep -qiE "^[[:space:]]*Port[[:space:]]+" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
+        sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${CICAP_AV_PORT}#I" /etc/c-icap/c-icap-av.conf
+    else
+        echo "Port 127.0.0.1:${CICAP_AV_PORT}" >> /etc/c-icap/c-icap-av.conf
+    fi
+
+    if grep -qiE "^[[:space:]]*Port[[:space:]]+" /etc/c-icap/c-icap-adblock.conf 2>/dev/null; then
+        sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${CICAP_PORT}#I" /etc/c-icap/c-icap-adblock.conf
+    else
+        echo "Port 127.0.0.1:${CICAP_PORT}" >> /etc/c-icap/c-icap-adblock.conf
+    fi
+
+    # Strip AV-related bits from the adblock-only instance.
+    sed -i -E '\#^[[:space:]]*Include[[:space:]]+/etc/clamd_mod\.conf([[:space:]]|$)#d' /etc/c-icap/c-icap-adblock.conf
+    sed -i -E '/^[[:space:]]*Service[[:space:]]+virus_scan([[:space:]]|$)/d' /etc/c-icap/c-icap-adblock.conf
+    sed -i -E '/^[[:space:]]*ServiceAlias[[:space:]]+avrespmod([[:space:]]|$)/d' /etc/c-icap/c-icap-adblock.conf
+    sed -i -E '\#^[[:space:]]*Include[[:space:]]+/etc/virus_scan\.conf([[:space:]]|$)#d' /etc/c-icap/c-icap-adblock.conf
+fi
+
+cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'
+[program:cicap_adblock]
+command=/usr/bin/c-icap -N -D -d 1 -f /etc/c-icap/c-icap-adblock.conf
 autostart=true
 autorestart=true
+priority=10
 stderr_logfile=/dev/stderr
 stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
 
-# Keep c-icap config port in sync with env.
-if [ -f /etc/c-icap/c-icap.conf ]; then
-    # Replace any existing Port directive; otherwise append.
-    if grep -qi "^\s*Port\s\+" /etc/c-icap/c-icap.conf 2>/dev/null; then
-        sed -i "s/^\s*Port\s\+.*/Port ${CICAP_PORT}/I" /etc/c-icap/c-icap.conf
-    else
-        echo "Port ${CICAP_PORT}" >> /etc/c-icap/c-icap.conf
-    fi
-fi
-
-BASE_RAW="${ICAP_BASE_PORT:-1344}"
-case "$BASE_RAW" in
-    ''|*[!0-9]*) ICAP_BASE_PORT=1344 ;;
-    *) ICAP_BASE_PORT="$BASE_RAW" ;;
-esac
+cat > /etc/supervisor.d/cicap_av.conf <<'EOF'
+[program:cicap_av]
+# Wait for clamd's unix socket so clamd_mod can register the engine before virus_scan starts.
+command=/bin/sh -c 'SOCK=/var/lib/squid-flask-proxy/clamav/clamd.sock; i=0; while [ $i -lt 120 ]; do [ -S "$SOCK" ] && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -D -d 1 -f /etc/c-icap/c-icap-av.conf'
+autostart=true
+autorestart=true
+priority=11
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+EOF
 
 REQ_NAMES=""
 AV_NAMES=""
-RESP_NAMES=""
 
 {
     i=0
     while [ "$i" -lt "$WORKERS" ]; do
-        port=$((ICAP_BASE_PORT + i))
-        echo "icap_service adblock_req_${i} reqmod_precache icap://127.0.0.1:${port}/reqmod bypass=on"
-        echo "icap_service av_resp_${i} respmod_precache icap://127.0.0.1:${CICAP_PORT}/avrespmod bypass=on"
-        echo "icap_service html_preload_${i} respmod_precache icap://127.0.0.1:${port}/respmod bypass=on"
+        echo "icap_service adblock_req_${i} reqmod_precache icap://127.0.0.1:${CICAP_PORT}/adblockreq bypass=on"
+        echo "icap_service av_resp_${i} respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
         REQ_NAMES="$REQ_NAMES adblock_req_${i}"
         AV_NAMES="$AV_NAMES av_resp_${i}"
-        RESP_NAMES="$RESP_NAMES html_preload_${i}"
         i=$((i + 1))
     done
 
     # Squid will select a service from the set (round-robin/availability) for each transaction.
     echo "adaptation_service_set adblock_req_set$REQ_NAMES"
     echo "adaptation_service_set av_resp_set$AV_NAMES"
-    echo "adaptation_service_set html_preload_set$RESP_NAMES"
 } > /etc/squid/conf.d/20-icap.conf
 
 # Normalize known distro path differences without overwriting user config

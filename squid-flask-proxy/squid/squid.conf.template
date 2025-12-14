@@ -110,7 +110,7 @@ icap_send_client_username off
 # Allow slower ICAP/ClamAV responses before Squid aborts; reduces truncated bodies on large pages.
 icap_connect_timeout 60 seconds
 icap_io_timeout 10 minutes
-# Generated at container start from $SQUID_WORKERS and $ICAP_BASE_PORT.
+# Generated at container start from $SQUID_WORKERS.
 include /etc/squid/conf.d/20-icap.conf
 
 # ICAP policy:
@@ -118,18 +118,12 @@ include /etc/squid/conf.d/20-icap.conf
 # - Do NOT adapt CONNECT: CONNECT only carries host:port and lacks context
 #   (third-party/resource type), so domain-only decisions can overblock.
 acl icap_adblockable method GET HEAD
-acl icap_resp_html rep_mime_type -i text/html
 adaptation_access adblock_req_set allow icap_adblockable
 adaptation_access adblock_req_set deny all
 
 # Antivirus scanning (RESPMOD): ClamAV
-# Runs before HTML response rewriting.
 adaptation_access av_resp_set allow icap_adblockable
 adaptation_access av_resp_set deny all
-
-# HTML response rewriting (RESPMOD): inject <link rel="preload"> tags for <img src>
-# Temporarily disable HTML rewrite to avoid body truncation on complex pages (e.g., YouTube)
-adaptation_access html_preload_set deny all
 
 # Error handling
 error_directory /usr/share/squid/errors/en

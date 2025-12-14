@@ -27,13 +27,12 @@
                 </div>
 
                 <div class="nav-dropdown">
-                    <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','icap_preload','clamav'] else '' }}" type="button">Policy</button>
+                    <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','clamav'] else '' }}" type="button">Policy</button>
                     <div class="nav-menu">
                         <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
                         <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
                         <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
                         <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
-                        <a class="{{ 'active' if request.endpoint == 'icap_preload' else '' }}" href="{{ url_for('icap_preload') }}">ICAP Preload</a>
                         <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
                     </div>
                 </div>

@@ -7,7 +7,6 @@ services:
       - "5000:5000"       # Flask UI
       - "3128:3128"       # HTTP proxy
       - "${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
-      - "1344-1350:1344-1350"       # ICAP ports (base + workers)
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
@@ -16,8 +15,8 @@ services:
       - clamav_db:/var/lib/squid-flask-proxy/clamav/db
     environment:
       SQUID_WORKERS: ${SQUID_WORKERS:-2}
-      ICAP_BASE_PORT: ${ICAP_BASE_PORT:-1344}
       CICAP_PORT: ${CICAP_PORT:-14000}
+      CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s

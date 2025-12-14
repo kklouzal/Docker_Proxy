@@ -22,14 +22,14 @@ if ! ps 2>/dev/null | grep -q '[s]ockd'; then
     exit 1
 fi
 
-# Check ICAP liveness (TCP connect)
-if ! python3 -c "import socket; s=socket.create_connection(('127.0.0.1', 1344), 2); s.close()" >/dev/null 2>&1; then
-    echo "ICAP server is not reachable"
+# Check c-icap adblock ICAP service liveness (OPTIONS /adblockreq)
+if ! python3 -c "import os,socket; host='127.0.0.1'; port=int(os.environ.get('CICAP_PORT','14000')); path='/adblockreq'; req=(f'OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\nHost: {host}\r\nEncapsulated: null-body=0\r\n\r\n').encode('ascii'); s=socket.create_connection((host,port),2); s.settimeout(2); s.sendall(req); resp=s.recv(512); s.close(); assert resp.startswith(b'ICAP/1.0 200')" >/dev/null 2>&1; then
+    echo "c-icap adblock ICAP service is not responding"
     exit 1
 fi
 
 # Check c-icap AV ICAP service liveness (OPTIONS /avrespmod)
-if ! python3 -c "import os,socket; host='127.0.0.1'; port=int(os.environ.get('CICAP_PORT','14000')); path='/avrespmod'; req=(f'OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\nHost: {host}\r\nEncapsulated: null-body=0\r\n\r\n').encode('ascii'); s=socket.create_connection((host,port),2); s.settimeout(2); s.sendall(req); resp=s.recv(512); s.close(); assert resp.startswith(b'ICAP/1.0')" >/dev/null 2>&1; then
+if ! python3 -c "import os,socket; host='127.0.0.1'; port=int(os.environ.get('CICAP_AV_PORT','14001')); path='/avrespmod'; req=(f'OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\nHost: {host}\r\nEncapsulated: null-body=0\r\n\r\n').encode('ascii'); s=socket.create_connection((host,port),2); s.settimeout(2); s.sendall(req); resp=s.recv(512); s.close(); assert resp.startswith(b'ICAP/1.0 200')" >/dev/null 2>&1; then
     echo "c-icap AV ICAP service is not responding"
     exit 1
 fi

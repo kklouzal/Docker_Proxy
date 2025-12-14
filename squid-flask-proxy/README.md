@@ -153,12 +153,27 @@ Ad blocking behavior is configured in the **Ad Blocking** tab in the web UI:
 - Subscription list enable/disable and manual “Update now”
 - Decision cache settings (TTL + max entries)
 
+Implementation details:
+- Ad blocking is served by c-icap as a **REQMOD** service at `icap://127.0.0.1:${CICAP_PORT:-14000}/adblockreq`.
+- The container compiles subscriptions on startup and on “Update now” via `web/tools/adblock_compile.py`.
+- The c-icap url_check service configuration lives in `docker/adblock_req.conf`.
+
+### c-icap access log (direct REQMOD logging)
+The c-icap REQMOD service logs per-transaction decisions to:
+- `/var/log/cicap-access.log` (TSV)
+
+To find ad-block events, filter for `REQMOD` entries for the `adblockreq` service. Blocked requests are returned as an HTTP `403` response.
+
 ## ClamAV (ICAP)
 This project supports ICAP-based antivirus scanning using **ClamAV**, implemented via **c-icap** (`virus_scan` + `clamd_mod`).
 
 Behavior:
-- Scans HTTP responses (RESPMOD) **before** the ICAP Preload HTML rewrite stage.
 - Squid is configured with `bypass=on` for the AV ICAP service (fail-open if AV is unavailable).
+
+Ports / startup behavior:
+- AV scanning is served by c-icap as a **RESPMOD** service at `icap://127.0.0.1:${CICAP_AV_PORT:-14001}/avrespmod`.
+- The container runs two c-icap instances: the adblock instance binds immediately, while the AV instance may wait until the `clamd` unix socket is ready.
+- The AV instance writes to `/var/log/cicap-access-av.log` (separate from adblock logging).
 
 Startup note (first run):
 - If the ClamAV signature DB is missing, the container will run an initial `freshclam` download **blocking startup**.
@@ -171,7 +186,6 @@ Persistence:
 
 Configuration:
 - Enable/disable scanning via the **ClamAV** tab (updates Squid ICAP policy).
-- AV scanning is served by c-icap on `icap://127.0.0.1:${CICAP_PORT:-14000}/avrespmod`.
 - c-icap module configuration is provided in `docker/clamd_mod.conf` and `docker/virus_scan.conf`.
 - clamd socket is `/var/lib/squid-flask-proxy/clamav/clamd.sock`.
 
@@ -194,22 +208,13 @@ Troubleshooting tips:
 - Check the **SSL Errors** page (`/ssl-errors`) for repeated TLS/certificate/handshake failures.
 - If changing Squid `workers` to improve throughput, note it triggers a full Squid restart.
 
-## Scaling: Squid workers and ICAP processes
+## Scaling: Squid workers
 
-This container can run Squid in SMP mode (multiple worker processes) and will start the **same number of ICAP server processes** for throughput **at container start**.
-
-- `SQUID_WORKERS` (default: `2`)
-  - Used as a fallback if `workers N` is not present in the Squid config.
-  - Sets the number of ICAP server processes supervised by Supervisor.
-  - Squid load-balances across the ICAP instances using `adaptation_service_set`.
+This container can run Squid in SMP mode (multiple worker processes).
 
 - Squid `workers N`
   - The entrypoint reads `workers N` from `/etc/squid/squid.conf` and uses that as the authoritative worker count.
-  - If you change `workers`, recreate/restart the container so Supervisor can respawn the correct number of ICAP processes.
-
-- `ICAP_BASE_PORT` (default: `1344`)
-  - ICAP instances listen on consecutive ports starting at this base (e.g. `1344`, `1345`, `1346`...).
-  - Squid is configured to use all of these instances.
+  - It generates `/etc/squid/conf.d/20-icap.conf` with matching `adaptation_service_set` entries.
 
 ### Applying template updates
 On container start, the entrypoint copies the template into `/etc/squid/squid.conf` only when the config doesn’t exist yet (or doesn’t look like an SSL-bump config).

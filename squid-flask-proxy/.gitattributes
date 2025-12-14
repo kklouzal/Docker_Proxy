@@ -1,0 +1,54 @@
+# Normalize text files and reduce Windows↔Linux line-ending noise.
+#
+# - Keep Linux-container files LF so /bin/sh, alpine tools, etc. work reliably.
+# - Keep Windows scripts CRLF if you add any PowerShell/batch helpers.
+
+# Default behavior
+* text=auto
+
+# Shell scripts (must be LF for Linux containers)
+*.sh text eol=lf
+
+# Docker / container config
+Dockerfile text eol=lf
+**/Dockerfile text eol=lf
+*.conf text eol=lf
+*.template text eol=lf
+*.env text eol=lf
+*.example text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# App source (safe as LF; works on Windows fine)
+*.py text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Windows-native scripts (if present)
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.bz2 binary
+*.xz binary
+*.7z binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary

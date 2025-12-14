@@ -28,12 +28,6 @@ class SquidController:
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
 
-    def _get_icap_base_port(self) -> int:
-        try:
-            return int((os.environ.get("ICAP_BASE_PORT") or "1344").strip())
-        except Exception:
-            return 1344
-
     def _generate_icap_include(self, workers: int) -> None:
         # Generates /etc/squid/conf.d/20-icap.conf.
         try:
@@ -43,67 +37,31 @@ class SquidController:
         if workers_i < 1:
             workers_i = 1
 
-        base_port = self._get_icap_base_port()
         try:
-            cicap_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
+            cicap_adblock_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
         except Exception:
-            cicap_port = 14000
+            cicap_adblock_port = 14000
+        try:
+            cicap_av_port = int((os.environ.get("CICAP_AV_PORT") or "14001").strip())
+        except Exception:
+            cicap_av_port = 14001
         conf_dir = Path("/etc/squid/conf.d")
         conf_dir.mkdir(parents=True, exist_ok=True)
         out_path = conf_dir / "20-icap.conf"
 
         req_names = []
         av_names = []
-        resp_names = []
         lines = []
         for i in range(workers_i):
-            port = base_port + i
-            lines.append(f"icap_service adblock_req_{i} reqmod_precache icap://127.0.0.1:{port}/reqmod bypass=on")
-            # Antivirus scanning is served by c-icap (not the Python ICAP server).
-            lines.append(f"icap_service av_resp_{i} respmod_precache icap://127.0.0.1:{cicap_port}/avrespmod bypass=on")
-            lines.append(f"icap_service html_preload_{i} respmod_precache icap://127.0.0.1:{port}/respmod bypass=on")
+            lines.append(f"icap_service adblock_req_{i} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on")
+            lines.append(f"icap_service av_resp_{i} respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass=on")
             req_names.append(f"adblock_req_{i}")
             av_names.append(f"av_resp_{i}")
-            resp_names.append(f"html_preload_{i}")
 
         # Squid chooses a service from the set for each transaction.
         lines.append("adaptation_service_set adblock_req_set " + " ".join(req_names))
         lines.append("adaptation_service_set av_resp_set " + " ".join(av_names))
-        lines.append("adaptation_service_set html_preload_set " + " ".join(resp_names))
         out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    def _generate_supervisor_icap_conf(self, workers: int) -> None:
-        # Generates /etc/supervisor.d/icap.conf.
-        try:
-            workers_i = int(workers)
-        except Exception:
-            workers_i = 1
-        if workers_i < 1:
-            workers_i = 1
-
-        conf_dir = Path("/etc/supervisor.d")
-        conf_dir.mkdir(parents=True, exist_ok=True)
-        out_path = conf_dir / "icap.conf"
-        out_path.write_text(
-            "\n".join(
-                [
-                    "[program:icap]",
-                    "directory=/app",
-                    "process_name=icap_%(process_num)s",
-                    f"numprocs={workers_i}",
-                    "environment=PROC_NUM=%(process_num)s",
-                    "command=/bin/sh -c 'BASE=${ICAP_BASE_PORT:-1344}; PORT=$((BASE + ${PROC_NUM:-0})); ICAP_BIND=127.0.0.1 ICAP_PORT=$PORT exec python3 /app/icap_server.py'",
-                    "autostart=true",
-                    "autorestart=true",
-                    "stderr_logfile=/dev/stderr",
-                    "stdout_logfile=/dev/stdout",
-                    "stderr_logfile_maxbytes=0",
-                    "stdout_logfile_maxbytes=0",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
 
     def _supervisor_reread_update(self) -> Tuple[bool, str]:
         try:
@@ -118,11 +76,15 @@ class SquidController:
             return False, str(e)
 
     def apply_icap_scaling(self, workers: int) -> Tuple[bool, str]:
-        """Update Squid ICAP service-set include and scale ICAP processes via supervisord."""
+        """Update Squid ICAP service-set include.
+
+        ICAP services are handled by c-icap instances in this container.
+        Scaling updates the Squid service-set include to point at the right
+        c-icap endpoints.
+        """
         try:
             self._generate_icap_include(workers)
-            self._generate_supervisor_icap_conf(workers)
-            return self._supervisor_reread_update()
+            return True, "ICAP include updated."
         except Exception as e:
             return False, str(e)
 
