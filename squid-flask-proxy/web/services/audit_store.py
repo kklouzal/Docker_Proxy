@@ -96,6 +96,35 @@ class AuditStore:
             ).fetchone()
         return row
 
+    def _checkpoint_and_vacuum(self) -> None:
+        # Best-effort compaction. VACUUM may fail if the DB is busy.
+        try:
+            with self._connect() as conn:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("VACUUM;")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+        """Prune old audit/config apply history.
+
+        Note: the store also enforces a max row count on write; this adds
+        time-based pruning to ensure stale history doesn't linger.
+        """
+        self.init_db()
+        days = max(1, int(retention_days or 30))
+        cutoff = int(time.time()) - (days * 24 * 60 * 60)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM audit_events WHERE ts < ?", (int(cutoff),))
+        if vacuum:
+            self._checkpoint_and_vacuum()
+
 
 _store: Optional[AuditStore] = None
 

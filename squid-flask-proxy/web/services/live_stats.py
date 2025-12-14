@@ -294,6 +294,38 @@ class LiveStatsStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_client_domain_nocache_ip ON client_domain_nocache(ip, last_seen DESC);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_client_domain_nocache_domain ON client_domain_nocache(domain, last_seen DESC);")
 
+    def _checkpoint_and_vacuum(self) -> None:
+        # Best-effort compaction. VACUUM may fail if the DB is busy.
+        try:
+            with self._connect() as conn:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("VACUUM;")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+        """Prune stale aggregate rows.
+
+        This store keeps only aggregates keyed by (domain/client/etc). Without pruning,
+        the DB can grow indefinitely as new domains/clients appear over time.
+        """
+        days = max(1, int(retention_days or 30))
+        cutoff = _now() - (days * 24 * 60 * 60)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM client_domain_nocache WHERE last_seen < ?", (int(cutoff),))
+            conn.execute("DELETE FROM client_domains WHERE last_seen < ?", (int(cutoff),))
+            conn.execute("DELETE FROM domains WHERE last_seen < ?", (int(cutoff),))
+            conn.execute("DELETE FROM clients WHERE last_seen < ?", (int(cutoff),))
+
+        if vacuum:
+            self._checkpoint_and_vacuum()
+
     def _upsert_agg(self, conn: sqlite3.Connection, table: str, key_col: str, key: str, ts: int, size_bytes: int, is_hit: bool) -> None:
         hit = 1 if is_hit else 0
         hit_bytes = size_bytes if is_hit else 0

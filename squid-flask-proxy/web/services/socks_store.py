@@ -122,7 +122,7 @@ class SocksStore:
         db_path: str = "/var/lib/squid-flask-proxy/socks.db",
         log_path: str = "/var/log/sockd.log",
         seed_max_lines: int = 5000,
-        retention_days: int = 14,
+        retention_days: int = 30,
     ):
         self.db_path = db_path
         self.log_path = log_path
@@ -165,6 +165,28 @@ class SocksStore:
     def _prune(self, conn: sqlite3.Connection) -> None:
         cutoff = _now() - int(self.retention_days * 24 * 60 * 60)
         conn.execute("DELETE FROM socks_events WHERE ts < ?", (cutoff,))
+
+    def _checkpoint_and_vacuum(self) -> None:
+        try:
+            with self._connect() as conn:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("VACUUM;")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+        days = max(1, int(retention_days or 30))
+        cutoff = _now() - int(days * 24 * 60 * 60)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM socks_events WHERE ts < ?", (int(cutoff),))
+        if vacuum:
+            self._checkpoint_and_vacuum()
 
     def ingest_line(self, line: str) -> None:
         s = (line or "").strip("\r\n")

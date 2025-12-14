@@ -49,7 +49,7 @@ class AdblockStore:
         lists_dir: str = "/var/lib/squid-flask-proxy/adblock/lists",
         update_interval_seconds: int = 6 * 60 * 60,
         cicap_access_log_path: str = "/var/log/cicap-access.log",
-        blocklog_retention_days: int = 14,
+        blocklog_retention_days: int = 30,
     ):
         self.db_path = db_path
         self.lists_dir = lists_dir
@@ -408,9 +408,35 @@ class AdblockStore:
         )
 
     def _prune_events(self, conn: sqlite3.Connection) -> None:
-        days = max(1, int(self.blocklog_retention_days or 14))
+        days = max(1, int(self.blocklog_retention_days or 30))
         cutoff = _now() - days * 24 * 3600
         conn.execute("DELETE FROM adblock_events WHERE ts < ?", (int(cutoff),))
+
+    def _checkpoint_and_vacuum(self) -> None:
+        try:
+            with self._connect() as conn:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("VACUUM;")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+        """Prune old benign blocklog data to keep the DB bounded."""
+        days = max(1, int(retention_days or 30))
+        cutoff = _now() - days * 24 * 3600
+        cutoff_day = int(cutoff // 86400)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM adblock_events WHERE ts < ?", (int(cutoff),))
+            # Daily rollup rows are small, but keep them aligned with the same retention.
+            conn.execute("DELETE FROM adblock_counts WHERE day < ?", (int(cutoff_day),))
+        if vacuum:
+            self._checkpoint_and_vacuum()
 
     def list_recent_block_events(self, limit: int = 100) -> List[Dict[str, Any]]:
         self.init_db()
@@ -779,6 +805,6 @@ def get_adblock_store() -> AdblockStore:
             lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "/var/lib/squid-flask-proxy/adblock/lists"),
             update_interval_seconds=_env_int("ADBLOCK_UPDATE_INTERVAL", 6 * 60 * 60),
             cicap_access_log_path=os.environ.get("CICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
-            blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 14),
+            blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
         )
     return _store

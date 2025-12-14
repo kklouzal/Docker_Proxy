@@ -35,6 +35,50 @@ class TestRoutes(unittest.TestCase):
         response = self.app.get('/squid/config')
         self.assertEqual(response.status_code, 200)
 
+    def test_squid_config_caching_tab(self):
+        response = self.app.get('/squid/config?tab=caching')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_timeouts_tab(self):
+        response = self.app.get('/squid/config?tab=timeouts')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_logging_tab(self):
+        response = self.app.get('/squid/config?tab=logging')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_network_tab(self):
+        response = self.app.get('/squid/config?tab=network')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_dns_tab(self):
+        response = self.app.get('/squid/config?tab=dns')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_ssl_tab(self):
+        response = self.app.get('/squid/config?tab=ssl')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_icap_tab(self):
+        response = self.app.get('/squid/config?tab=icap')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_privacy_tab(self):
+        response = self.app.get('/squid/config?tab=privacy')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_limits_tab(self):
+        response = self.app.get('/squid/config?tab=limits')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_performance_tab(self):
+        response = self.app.get('/squid/config?tab=performance')
+        self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_http_tab(self):
+        response = self.app.get('/squid/config?tab=http')
+        self.assertEqual(response.status_code, 200)
+
     def test_status(self):
         response = self.app.get('/status', follow_redirects=False)
         self.assertIn(response.status_code, (301, 302, 308))

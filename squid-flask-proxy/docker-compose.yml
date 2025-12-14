@@ -11,6 +11,7 @@ services:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
       - squid_ssl_db:/var/lib/ssl_db
+      - squid_cache:/var/spool/squid
       - proxy_data:/var/lib/squid-flask-proxy
       - clamav_db:/var/lib/squid-flask-proxy/clamav/db
     environment:
@@ -25,6 +26,7 @@ services:
       start_period: 90s
 
 volumes:
+  squid_cache:
   squid_ssl_db:
   proxy_data:
   clamav_db:

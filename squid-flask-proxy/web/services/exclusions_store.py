@@ -107,14 +107,11 @@ class ExclusionsStore:
         self.init_db()
         with self._connect() as conn:
             domains = [str(r[0]) for r in conn.execute("SELECT domain FROM domains ORDER BY domain ASC").fetchall()]
-            dst = [str(r[0]) for r in conn.execute("SELECT cidr FROM dst_nets ORDER BY cidr ASC").fetchall()]
             src = [str(r[0]) for r in conn.execute("SELECT cidr FROM src_nets ORDER BY cidr ASC").fetchall()]
         enabled = self.get_exclude_private_nets()
-        if enabled:
-            for p in PRIVATE_NETS_V4:
-                if p not in dst:
-                    dst.append(p)
-        return Exclusions(domains=domains, dst_nets=dst, src_nets=src, exclude_private_nets=enabled)
+        # Destination-network exclusions are intentionally limited to the built-in private/local ranges.
+        # (Custom destination CIDR exclusions are not exposed by the UI.)
+        return Exclusions(domains=domains, dst_nets=[], src_nets=src, exclude_private_nets=enabled)
 
 
 _store: Optional[ExclusionsStore] = None

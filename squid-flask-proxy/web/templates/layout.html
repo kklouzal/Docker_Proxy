@@ -61,5 +61,52 @@
             <div class="small">&copy; {{ current_year }} Squid Flask Proxy</div>
         </div>
     </footer>
+
+    <script>
+        // Keep top-nav dropdowns open briefly after mouse leaves.
+        // This prevents the menu from disappearing when moving the cursor
+        // from the trigger button to the dropdown items across a small gap.
+        (() => {
+            const CLOSE_DELAY_MS = 1000;
+            const dropdowns = Array.from(document.querySelectorAll('.nav-dropdown'));
+            const closeTimers = new WeakMap();
+
+            const clearCloseTimer = (dropdown) => {
+                const timer = closeTimers.get(dropdown);
+                if (timer) {
+                    window.clearTimeout(timer);
+                    closeTimers.delete(dropdown);
+                }
+            };
+
+            const closeAllExcept = (keepOpen) => {
+                dropdowns.forEach((dropdown) => {
+                    if (dropdown === keepOpen) return;
+                    clearCloseTimer(dropdown);
+                    dropdown.classList.remove('open');
+                });
+            };
+
+            const open = (dropdown) => {
+                clearCloseTimer(dropdown);
+                closeAllExcept(dropdown);
+                dropdown.classList.add('open');
+            };
+
+            const scheduleClose = (dropdown) => {
+                clearCloseTimer(dropdown);
+                const timer = window.setTimeout(() => {
+                    dropdown.classList.remove('open');
+                    closeTimers.delete(dropdown);
+                }, CLOSE_DELAY_MS);
+                closeTimers.set(dropdown, timer);
+            };
+
+            dropdowns.forEach((dropdown) => {
+                dropdown.addEventListener('mouseenter', () => open(dropdown));
+                dropdown.addEventListener('mouseleave', () => scheduleClose(dropdown));
+            });
+        })();
+    </script>
 </body>
 </html>

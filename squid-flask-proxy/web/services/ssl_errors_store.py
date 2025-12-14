@@ -154,8 +154,30 @@ class SslErrorsStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ssl_errors_category ON ssl_errors(category, last_seen DESC);")
 
             # Retention: keep aggregates that have been seen recently.
-            cutoff = _now() - (90 * 24 * 60 * 60)
+            cutoff = _now() - (30 * 24 * 60 * 60)
             conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (cutoff,))
+
+    def _checkpoint_and_vacuum(self) -> None:
+        try:
+            with self._connect() as conn:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                try:
+                    conn.execute("VACUUM;")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+        days = max(1, int(retention_days or 30))
+        cutoff = _now() - (days * 24 * 60 * 60)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (int(cutoff),))
+        if vacuum:
+            self._checkpoint_and_vacuum()
 
     def _upsert(self, conn: sqlite3.Connection, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
         key = f"{domain}|{category}|{reason}"

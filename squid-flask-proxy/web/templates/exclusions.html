@@ -4,7 +4,7 @@
 
 {% block content %}
 <h1 class="page-title">Exclusions</h1>
-<p class="page-subtitle">Define destinations that should not be intercepted/cached. (Client-side bypass is available via PAC.)</p>
+<p class="page-subtitle">Define what should not be SSL-bumped/cached: specific destination domains, or requests coming from source IP ranges. (Client-side bypass is available via PAC.)</p>
 
 {% if request.args.get('ok') %}
   <div style="margin: 0 0 14px;"><span class="badge ok">Applied</span> <span class="small">Squid reloaded with updated exclusions.</span></div>
@@ -15,7 +15,7 @@
 <div class="grid">
   <section class="card split-left">
     <div class="card-header">
-      <h2 class="card-title">Domains</h2>
+      <h2 class="card-title">No bump/cache requests going to the following domains</h2>
       <span class="badge">spliced + not cached</span>
     </div>
     <div class="card-body">
@@ -64,12 +64,12 @@
         <input type="hidden" name="action" value="toggle_private" />
         <label class="check-row">
           <input class="check" type="checkbox" name="exclude_private_nets" {% if ex.exclude_private_nets %}checked{% endif %} />
-          <span>Exclude common RFC1918/local ranges (destination)</span>
+          <span>Exclude common private/local destination ranges (RFC1918 + loopback + link-local)</span>
         </label>
         <div class="actions">
           <button class="btn primary" type="submit">Save</button>
         </div>
-        <div class="small">This prevents SSL-bump and caching for private destination networks. For true client-side bypass, use the PAC file below.</div>
+        <div class="small">Applies to destination networks only (where the request is going), and is separate from the source IP CIDR exclusions (where the request is coming from).</div>
       </form>
 
       <div style="margin-top: 14px;" class="small">PAC file (client-side bypass):</div>
@@ -82,45 +82,7 @@
 
   <section class="card split-left">
     <div class="card-header">
-      <h2 class="card-title">Destination networks</h2>
-      <span class="badge">spliced + not cached</span>
-    </div>
-    <div class="card-body">
-      <form class="form" method="post" action="{{ url_for('exclusions') }}">
-        <input type="hidden" name="action" value="add_dst" />
-        <label for="dst">Add CIDR</label>
-        <input id="dst" name="cidr" type="text" placeholder="192.168.0.0/16" />
-        <div class="actions">
-          <button class="btn primary" type="submit">Add</button>
-        </div>
-      </form>
-
-      <div style="margin-top: 14px;" class="small">Current ({{ ex.dst_nets|length }}):</div>
-      <table class="table" style="margin-top: 8px;">
-        <thead>
-          <tr><th>CIDR</th><th class="num">Action</th></tr>
-        </thead>
-        <tbody>
-          {% for c in ex.dst_nets %}
-            <tr>
-              <td style="font-family: var(--mono);">{{ c }}</td>
-              <td class="num">
-                <form method="post" action="{{ url_for('exclusions') }}" style="display:inline;">
-                  <input type="hidden" name="action" value="remove_dst" />
-                  <input type="hidden" name="cidr" value="{{ c }}" />
-                  <button class="btn" type="submit">Remove</button>
-                </form>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <aside class="card split-right">
-    <div class="card-header">
-      <h2 class="card-title">Client networks (optional)</h2>
+      <h2 class="card-title">No bump/cache requests coming from IP CIDR</h2>
       <span class="badge">no bump/cache</span>
     </div>
     <div class="card-body">
@@ -153,8 +115,11 @@
           {% endfor %}
         </tbody>
       </table>
+      {% if ex.src_nets|length == 0 %}
+        <div class="small" style="margin-top: 8px;">No source CIDR exclusions yet.</div>
+      {% endif %}
     </div>
-  </aside>
+  </section>
 
   <section class="card">
     <div class="card-header">

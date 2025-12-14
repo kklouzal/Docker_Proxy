@@ -14,6 +14,7 @@ from services.timeseries_store import get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.socks_store import get_socks_store
 from services.adblock_store import get_adblock_store
+from services.housekeeping import start_housekeeping
 
 import socket
 import re
@@ -32,6 +33,7 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
         'cache_mem_mb': tunables.get('cache_mem_mb') or 256,
         'maximum_object_size_mb': tunables.get('maximum_object_size_mb') or 64,
         'maximum_object_size_in_memory_kb': tunables.get('maximum_object_size_in_memory_kb') or 1024,
+        'minimum_object_size_kb': tunables.get('minimum_object_size_kb') if tunables.get('minimum_object_size_kb') is not None else 0,
         'cache_swap_low': tunables.get('cache_swap_low') or 90,
         'cache_swap_high': tunables.get('cache_swap_high') or 95,
         'collapsed_forwarding_on': bool(tunables.get('collapsed_forwarding') if tunables.get('collapsed_forwarding') is not None else True),
@@ -40,9 +42,76 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
         'cache_replacement_policy': tunables.get('cache_replacement_policy') or 'heap GDSF',
         'memory_replacement_policy': tunables.get('memory_replacement_policy') or 'heap GDSF',
         'pipeline_prefetch_on': bool(tunables.get('pipeline_prefetch') if tunables.get('pipeline_prefetch') is not None else True),
+        'client_persistent_connections_on': bool(tunables.get('client_persistent_connections') if tunables.get('client_persistent_connections') is not None else True),
+        'server_persistent_connections_on': bool(tunables.get('server_persistent_connections') if tunables.get('server_persistent_connections') is not None else True),
+        'negative_ttl_seconds': tunables.get('negative_ttl_seconds'),
+        'positive_dns_ttl_seconds': tunables.get('positive_dns_ttl_seconds'),
+        'negative_dns_ttl_seconds': tunables.get('negative_dns_ttl_seconds'),
+        'read_ahead_gap_kb': tunables.get('read_ahead_gap_kb'),
         'quick_abort_min_kb': tunables.get('quick_abort_min_kb') if tunables.get('quick_abort_min_kb') is not None else 0,
         'quick_abort_max_kb': tunables.get('quick_abort_max_kb') if tunables.get('quick_abort_max_kb') is not None else 0,
         'quick_abort_pct': tunables.get('quick_abort_pct') if tunables.get('quick_abort_pct') is not None else 100,
+
+        # Timeouts (seconds)
+        'connect_timeout_seconds': tunables.get('connect_timeout_seconds') if tunables.get('connect_timeout_seconds') is not None else 90,
+        'request_timeout_seconds': tunables.get('request_timeout_seconds') if tunables.get('request_timeout_seconds') is not None else 1800,
+        'read_timeout_seconds': tunables.get('read_timeout_seconds') if tunables.get('read_timeout_seconds') is not None else 1800,
+        'forward_timeout_seconds': tunables.get('forward_timeout_seconds') if tunables.get('forward_timeout_seconds') is not None else 1800,
+        'shutdown_lifetime_seconds': tunables.get('shutdown_lifetime_seconds') if tunables.get('shutdown_lifetime_seconds') is not None else 30,
+        'half_closed_clients_on': bool(tunables.get('half_closed_clients') if tunables.get('half_closed_clients') is not None else True),
+
+        # Logging
+        'logfile_rotate': tunables.get('logfile_rotate') if tunables.get('logfile_rotate') is not None else 10,
+
+        # Network
+        'pconn_timeout_seconds': tunables.get('pconn_timeout_seconds') if tunables.get('pconn_timeout_seconds') is not None else 120,
+        'idle_pconn_timeout_seconds': tunables.get('idle_pconn_timeout_seconds') if tunables.get('idle_pconn_timeout_seconds') is not None else 60,
+        'client_lifetime_seconds': tunables.get('client_lifetime_seconds') if tunables.get('client_lifetime_seconds') is not None else 3600,
+        'max_filedescriptors': tunables.get('max_filedescriptors') if tunables.get('max_filedescriptors') is not None else 8192,
+
+        # DNS
+        'dns_v4_first_on': bool(tunables.get('dns_v4_first') if tunables.get('dns_v4_first') is not None else True),
+        'dns_timeout_seconds': tunables.get('dns_timeout_seconds') if tunables.get('dns_timeout_seconds') is not None else 5,
+        'dns_retransmit_seconds': tunables.get('dns_retransmit_seconds') if tunables.get('dns_retransmit_seconds') is not None else 2,
+        'dns_nameservers': (tunables.get('dns_nameservers') or ''),
+        'hosts_file': (tunables.get('hosts_file') or ''),
+        'ipcache_size': tunables.get('ipcache_size') if tunables.get('ipcache_size') is not None else 8192,
+        'fqdncache_size': tunables.get('fqdncache_size') if tunables.get('fqdncache_size') is not None else 8192,
+
+        # SSL
+        'dynamic_cert_mem_cache_size_mb': tunables.get('dynamic_cert_mem_cache_size_mb') if tunables.get('dynamic_cert_mem_cache_size_mb') is not None else 128,
+        'sslcrtd_children': tunables.get('sslcrtd_children') if tunables.get('sslcrtd_children') is not None else 5,
+
+        # ICAP
+        'icap_enable_on': bool(tunables.get('icap_enable') if tunables.get('icap_enable') is not None else True),
+        'icap_send_client_ip_on': bool(tunables.get('icap_send_client_ip') if tunables.get('icap_send_client_ip') is not None else True),
+        'icap_send_client_port_on': bool(tunables.get('icap_send_client_port') if tunables.get('icap_send_client_port') is not None else False),
+        'icap_send_client_username_on': bool(tunables.get('icap_send_client_username') if tunables.get('icap_send_client_username') is not None else False),
+        'icap_preview_enable_on': bool(tunables.get('icap_preview_enable') if tunables.get('icap_preview_enable') is not None else False),
+        'icap_preview_size_kb': tunables.get('icap_preview_size_kb'),
+        'icap_connect_timeout_seconds': tunables.get('icap_connect_timeout_seconds') if tunables.get('icap_connect_timeout_seconds') is not None else 60,
+        'icap_io_timeout_seconds': tunables.get('icap_io_timeout_seconds') if tunables.get('icap_io_timeout_seconds') is not None else 600,
+
+        # Privacy (optional: only applied when present/posted)
+        'forwarded_for_value': (tunables.get('forwarded_for_value') or ''),
+        'via_on': (tunables.get('via') if tunables.get('via') is not None else None),
+        'follow_x_forwarded_for_value': (tunables.get('follow_x_forwarded_for_value') or ''),
+
+        # Limits (optional)
+        'request_header_max_size_kb': tunables.get('request_header_max_size_kb'),
+        'reply_header_max_size_kb': tunables.get('reply_header_max_size_kb'),
+        'request_body_max_size_mb': tunables.get('request_body_max_size_mb'),
+        'client_request_buffer_max_size_kb': tunables.get('client_request_buffer_max_size_kb'),
+
+        # Performance (optional)
+        'memory_pools_on': (tunables.get('memory_pools') if tunables.get('memory_pools') is not None else None),
+        'memory_pools_limit_mb': tunables.get('memory_pools_limit_mb'),
+        'store_avg_object_size_kb': tunables.get('store_avg_object_size_kb'),
+        'store_objects_per_bucket': tunables.get('store_objects_per_bucket'),
+
+        # HTTP (optional)
+        'visible_hostname': (tunables.get('visible_hostname') or ''),
+        'httpd_suppress_version_string_on': (tunables.get('httpd_suppress_version_string') if tunables.get('httpd_suppress_version_string') is not None else None),
     }
 
 _disable_background = (os.environ.get('DISABLE_BACKGROUND') or '').strip() == '1'
@@ -75,6 +144,12 @@ if not _disable_background:
     # Start background ingestion of c-icap adblock (REQMOD) blocks (best-effort).
     try:
         get_adblock_store().start_blocklog_background()
+    except Exception:
+        pass
+
+    # Daily housekeeping: prune old benign DB entries (best-effort).
+    try:
+        start_housekeeping(retention_days=30, interval_seconds=24 * 60 * 60)
     except Exception:
         pass
 
@@ -641,6 +716,10 @@ def clamav_toggle():
 
 @app.route('/squid/config', methods=['GET', 'POST'])
 def squid_config():
+    tab = (request.args.get('tab') or request.form.get('tab') or 'config').strip().lower()
+    if tab not in ('config', 'caching', 'timeouts', 'logging', 'network', 'dns', 'ssl', 'icap', 'privacy', 'limits', 'performance', 'http'):
+        tab = 'config'
+
     validation = None
     posted_config = None
     if request.method == 'POST':
@@ -675,13 +754,28 @@ def squid_config():
             except Exception:
                 pass
             if ok:
-                return redirect(url_for('squid_config', ok='1'))
-            return redirect(url_for('squid_config', error='1'))
+                return redirect(url_for('squid_config', tab=tab, ok='1'))
+            return redirect(url_for('squid_config', tab=tab, error='1'))
     current_config = squid_controller.get_current_config()
     tunables = squid_controller.get_tunable_options(current_config)
     overrides = squid_controller.get_cache_override_options(current_config)
+    caching_lines = squid_controller.get_caching_lines(current_config)
+    timeout_lines = squid_controller.get_timeout_lines(current_config)
+    logging_lines = squid_controller.get_logging_lines(current_config)
+    network_lines = squid_controller.get_network_lines(current_config)
+    dns_lines = squid_controller.get_dns_lines(current_config)
+    ssl_lines = squid_controller.get_ssl_lines(current_config)
+    icap_lines = squid_controller.get_icap_lines(current_config)
+    privacy_lines = squid_controller.get_privacy_lines(current_config)
+    limits_lines = squid_controller.get_limits_lines(current_config)
+    performance_lines = squid_controller.get_performance_lines(current_config)
+    http_lines = squid_controller.get_http_lines(current_config)
     exclusions = get_exclusions_store().list_all()
-    exclusions_count = len(getattr(exclusions, 'domains', []) or []) + len(getattr(exclusions, 'dst_nets', []) or []) + len(getattr(exclusions, 'src_nets', []) or [])
+    exclusions_count = (
+        len(getattr(exclusions, 'domains', []) or [])
+        + len(getattr(exclusions, 'src_nets', []) or [])
+        + (1 if bool(getattr(exclusions, 'exclude_private_nets', False)) else 0)
+    )
     summary = {
         'workers': tunables.get('workers') if tunables else None,
         'cache_dir_size_mb': tunables.get('cache_dir_size_mb') if tunables else None,
@@ -694,7 +788,28 @@ def squid_config():
     subtab = (request.args.get('subtab') or 'safe').strip().lower()
     if subtab not in ('safe', 'overrides'):
         subtab = 'safe'
-    return render_template('squid_config.html', config_text=config_text, tunables=tunables, overrides=overrides, subtab=subtab, summary=summary, validation=validation, exclusions=exclusions)
+    return render_template(
+        'squid_config.html',
+        tab=tab,
+        config_text=config_text,
+        tunables=tunables,
+        overrides=overrides,
+        subtab=subtab,
+        summary=summary,
+        validation=validation,
+        exclusions=exclusions,
+        caching_lines=caching_lines,
+        timeout_lines=timeout_lines,
+        logging_lines=logging_lines,
+        network_lines=network_lines,
+        dns_lines=dns_lines,
+        ssl_lines=ssl_lines,
+        icap_lines=icap_lines,
+        privacy_lines=privacy_lines,
+        limits_lines=limits_lines,
+        performance_lines=performance_lines,
+        http_lines=http_lines,
+    )
 
 
 @app.route('/squid/config/apply-safe', methods=['POST'])
@@ -706,29 +821,206 @@ def apply_safe_caching():
         except ValueError:
             return default
 
-    workers_i = as_int('workers', 2)
-    if workers_i < 1:
-        workers_i = 1
-    if workers_i > 4:
-        workers_i = 4
+    def as_optional_int(name: str) -> int | None:
+        v = (request.form.get(name) or '').strip()
+        if v == '':
+            return None
+        try:
+            return int(v)
+        except ValueError:
+            return None
 
-    options = {
-        'cache_dir_size_mb': as_int('cache_dir_size_mb', 10000),
-        'cache_mem_mb': as_int('cache_mem_mb', 256),
-        'maximum_object_size_mb': as_int('maximum_object_size_mb', 64),
-        'maximum_object_size_in_memory_kb': as_int('maximum_object_size_in_memory_kb', 1024),
-        'cache_swap_low': as_int('cache_swap_low', 90),
-        'cache_swap_high': as_int('cache_swap_high', 95),
-        'collapsed_forwarding_on': request.form.get('collapsed_forwarding_on') == 'on',
-        'range_cache_on': request.form.get('range_cache_on') == 'on',
-        'workers': workers_i,
-        'cache_replacement_policy': (request.form.get('cache_replacement_policy') or 'heap GDSF').strip(),
-        'memory_replacement_policy': (request.form.get('memory_replacement_policy') or 'heap GDSF').strip(),
-        'pipeline_prefetch_on': request.form.get('pipeline_prefetch_on') == 'on',
-        'quick_abort_min_kb': as_int('quick_abort_min_kb', 0),
-        'quick_abort_max_kb': as_int('quick_abort_max_kb', 0),
-        'quick_abort_pct': as_int('quick_abort_pct', 100),
-    }
+    def as_optional_str(name: str) -> str | None:
+        v = (request.form.get(name) or '').strip()
+        return v if v != '' else None
+
+    # Start from current tunables so partial forms (different tabs) don't reset unrelated settings.
+    try:
+        current = squid_controller.get_current_config()
+        tunables = squid_controller.get_tunable_options(current)
+        options = _options_from_tunables(tunables)
+    except Exception:
+        options = _options_from_tunables({})
+
+    form_kind = (request.form.get('form_kind') or 'caching').strip().lower()
+
+    # Numeric caching options (always override when present)
+    if request.form.get('cache_dir_size_mb') is not None:
+        options['cache_dir_size_mb'] = as_int('cache_dir_size_mb', int(options.get('cache_dir_size_mb') or 10000))
+    if request.form.get('cache_mem_mb') is not None:
+        options['cache_mem_mb'] = as_int('cache_mem_mb', int(options.get('cache_mem_mb') or 256))
+    if request.form.get('maximum_object_size_mb') is not None:
+        options['maximum_object_size_mb'] = as_int('maximum_object_size_mb', int(options.get('maximum_object_size_mb') or 64))
+    if request.form.get('maximum_object_size_in_memory_kb') is not None:
+        options['maximum_object_size_in_memory_kb'] = as_int('maximum_object_size_in_memory_kb', int(options.get('maximum_object_size_in_memory_kb') or 1024))
+    if request.form.get('minimum_object_size_kb') is not None:
+        options['minimum_object_size_kb'] = as_int('minimum_object_size_kb', int(options.get('minimum_object_size_kb') if options.get('minimum_object_size_kb') is not None else 0))
+    if request.form.get('cache_swap_low') is not None:
+        options['cache_swap_low'] = as_int('cache_swap_low', int(options.get('cache_swap_low') or 90))
+    if request.form.get('cache_swap_high') is not None:
+        options['cache_swap_high'] = as_int('cache_swap_high', int(options.get('cache_swap_high') or 95))
+
+    # Checkbox semantics: if the tab posts them, treat presence as True, absence as False.
+    if form_kind in ('caching', 'timeouts'):
+        if 'collapsed_forwarding_on' in request.form or form_kind == 'caching':
+            options['collapsed_forwarding_on'] = ('collapsed_forwarding_on' in request.form)
+        if 'range_cache_on' in request.form or form_kind == 'caching':
+            options['range_cache_on'] = ('range_cache_on' in request.form)
+        if 'pipeline_prefetch_on' in request.form or form_kind == 'caching':
+            options['pipeline_prefetch_on'] = ('pipeline_prefetch_on' in request.form)
+        if 'client_persistent_connections_on' in request.form or form_kind == 'caching':
+            options['client_persistent_connections_on'] = ('client_persistent_connections_on' in request.form)
+        if 'server_persistent_connections_on' in request.form or form_kind == 'caching':
+            options['server_persistent_connections_on'] = ('server_persistent_connections_on' in request.form)
+        if 'half_closed_clients_on' in request.form or form_kind == 'timeouts':
+            options['half_closed_clients_on'] = ('half_closed_clients_on' in request.form)
+
+    # Selects/strings
+    if request.form.get('cache_replacement_policy') is not None:
+        options['cache_replacement_policy'] = (request.form.get('cache_replacement_policy') or (options.get('cache_replacement_policy') or 'heap GDSF')).strip()
+    if request.form.get('memory_replacement_policy') is not None:
+        options['memory_replacement_policy'] = (request.form.get('memory_replacement_policy') or (options.get('memory_replacement_policy') or 'heap GDSF')).strip()
+
+    # Optional ints: only override if not blank
+    v = as_optional_int('negative_ttl_seconds')
+    if v is not None:
+        options['negative_ttl_seconds'] = v
+    v = as_optional_int('positive_dns_ttl_seconds')
+    if v is not None:
+        options['positive_dns_ttl_seconds'] = v
+    v = as_optional_int('negative_dns_ttl_seconds')
+    if v is not None:
+        options['negative_dns_ttl_seconds'] = v
+    v = as_optional_int('read_ahead_gap_kb')
+    if v is not None:
+        options['read_ahead_gap_kb'] = v
+
+    # Quick abort (numbers always present on caching form)
+    if request.form.get('quick_abort_min_kb') is not None:
+        options['quick_abort_min_kb'] = as_int('quick_abort_min_kb', int(options.get('quick_abort_min_kb') if options.get('quick_abort_min_kb') is not None else 0))
+    if request.form.get('quick_abort_max_kb') is not None:
+        options['quick_abort_max_kb'] = as_int('quick_abort_max_kb', int(options.get('quick_abort_max_kb') if options.get('quick_abort_max_kb') is not None else 0))
+    if request.form.get('quick_abort_pct') is not None:
+        options['quick_abort_pct'] = as_int('quick_abort_pct', int(options.get('quick_abort_pct') if options.get('quick_abort_pct') is not None else 100))
+
+    # Workers (numbers always present on caching form)
+    if request.form.get('workers') is not None:
+        workers_i = as_int('workers', int(options.get('workers') or 2))
+        if workers_i < 1:
+            workers_i = 1
+        if workers_i > 4:
+            workers_i = 4
+        options['workers'] = workers_i
+
+    # Timeouts (seconds)
+    if request.form.get('connect_timeout_seconds') is not None:
+        options['connect_timeout_seconds'] = as_int('connect_timeout_seconds', int(options.get('connect_timeout_seconds') or 90))
+    if request.form.get('request_timeout_seconds') is not None:
+        options['request_timeout_seconds'] = as_int('request_timeout_seconds', int(options.get('request_timeout_seconds') or 1800))
+    if request.form.get('read_timeout_seconds') is not None:
+        options['read_timeout_seconds'] = as_int('read_timeout_seconds', int(options.get('read_timeout_seconds') or 1800))
+    if request.form.get('forward_timeout_seconds') is not None:
+        options['forward_timeout_seconds'] = as_int('forward_timeout_seconds', int(options.get('forward_timeout_seconds') or 1800))
+    if request.form.get('shutdown_lifetime_seconds') is not None:
+        options['shutdown_lifetime_seconds'] = as_int('shutdown_lifetime_seconds', int(options.get('shutdown_lifetime_seconds') or 30))
+
+    # Logging
+    if request.form.get('logfile_rotate') is not None:
+        options['logfile_rotate'] = as_int('logfile_rotate', int(options.get('logfile_rotate') or 10))
+
+    # Network
+    if request.form.get('pconn_timeout_seconds') is not None:
+        options['pconn_timeout_seconds'] = as_int('pconn_timeout_seconds', int(options.get('pconn_timeout_seconds') or 120))
+    if request.form.get('idle_pconn_timeout_seconds') is not None:
+        options['idle_pconn_timeout_seconds'] = as_int('idle_pconn_timeout_seconds', int(options.get('idle_pconn_timeout_seconds') or 60))
+    if request.form.get('client_lifetime_seconds') is not None:
+        options['client_lifetime_seconds'] = as_int('client_lifetime_seconds', int(options.get('client_lifetime_seconds') or 3600))
+    if request.form.get('max_filedescriptors') is not None:
+        options['max_filedescriptors'] = as_int('max_filedescriptors', int(options.get('max_filedescriptors') or 8192))
+
+    # DNS
+    if form_kind == 'dns':
+        options['dns_v4_first_on'] = ('dns_v4_first_on' in request.form)
+        v = as_optional_str('dns_nameservers')
+        if v is not None:
+            options['dns_nameservers'] = v
+        v = as_optional_str('hosts_file')
+        if v is not None:
+            options['hosts_file'] = v
+    if request.form.get('dns_timeout_seconds') is not None:
+        options['dns_timeout_seconds'] = as_int('dns_timeout_seconds', int(options.get('dns_timeout_seconds') or 5))
+    if request.form.get('dns_retransmit_seconds') is not None:
+        options['dns_retransmit_seconds'] = as_int('dns_retransmit_seconds', int(options.get('dns_retransmit_seconds') or 2))
+    if request.form.get('ipcache_size') is not None:
+        options['ipcache_size'] = as_int('ipcache_size', int(options.get('ipcache_size') or 8192))
+    if request.form.get('fqdncache_size') is not None:
+        options['fqdncache_size'] = as_int('fqdncache_size', int(options.get('fqdncache_size') or 8192))
+
+    # SSL
+    if request.form.get('dynamic_cert_mem_cache_size_mb') is not None:
+        options['dynamic_cert_mem_cache_size_mb'] = as_int('dynamic_cert_mem_cache_size_mb', int(options.get('dynamic_cert_mem_cache_size_mb') or 128))
+    if request.form.get('sslcrtd_children') is not None:
+        options['sslcrtd_children'] = as_int('sslcrtd_children', int(options.get('sslcrtd_children') or 5))
+
+    # ICAP
+    if form_kind == 'icap':
+        options['icap_enable_on'] = ('icap_enable_on' in request.form)
+        options['icap_send_client_ip_on'] = ('icap_send_client_ip_on' in request.form)
+        options['icap_send_client_port_on'] = ('icap_send_client_port_on' in request.form)
+        options['icap_send_client_username_on'] = ('icap_send_client_username_on' in request.form)
+        options['icap_preview_enable_on'] = ('icap_preview_enable_on' in request.form)
+        v = as_optional_int('icap_preview_size_kb')
+        if v is not None:
+            options['icap_preview_size_kb'] = v
+    if request.form.get('icap_connect_timeout_seconds') is not None:
+        options['icap_connect_timeout_seconds'] = as_int('icap_connect_timeout_seconds', int(options.get('icap_connect_timeout_seconds') or 60))
+    if request.form.get('icap_io_timeout_seconds') is not None:
+        options['icap_io_timeout_seconds'] = as_int('icap_io_timeout_seconds', int(options.get('icap_io_timeout_seconds') or 600))
+
+    # Privacy
+    if form_kind == 'privacy':
+        options['via_on'] = ('via_on' in request.form)
+        v = as_optional_str('forwarded_for_value')
+        if v is not None:
+            options['forwarded_for_value'] = v
+        v = as_optional_str('follow_x_forwarded_for_value')
+        if v is not None:
+            options['follow_x_forwarded_for_value'] = v
+
+    # Limits
+    if form_kind == 'limits':
+        v = as_optional_int('request_header_max_size_kb')
+        if v is not None:
+            options['request_header_max_size_kb'] = v
+        v = as_optional_int('reply_header_max_size_kb')
+        if v is not None:
+            options['reply_header_max_size_kb'] = v
+        v = as_optional_int('request_body_max_size_mb')
+        if v is not None:
+            options['request_body_max_size_mb'] = v
+        v = as_optional_int('client_request_buffer_max_size_kb')
+        if v is not None:
+            options['client_request_buffer_max_size_kb'] = v
+
+    # Performance
+    if form_kind == 'performance':
+        options['memory_pools_on'] = ('memory_pools_on' in request.form)
+        v = as_optional_int('memory_pools_limit_mb')
+        if v is not None:
+            options['memory_pools_limit_mb'] = v
+        v = as_optional_int('store_avg_object_size_kb')
+        if v is not None:
+            options['store_avg_object_size_kb'] = v
+        v = as_optional_int('store_objects_per_bucket')
+        if v is not None:
+            options['store_objects_per_bucket'] = v
+
+    # HTTP
+    if form_kind == 'http':
+        options['httpd_suppress_version_string_on'] = ('httpd_suppress_version_string_on' in request.form)
+        v = as_optional_str('visible_hostname')
+        if v is not None:
+            options['visible_hostname'] = v
 
     try:
         # Preserve any previously-applied cache override toggles.
@@ -738,7 +1030,7 @@ def apply_safe_caching():
         config_text = squid_controller.generate_config_from_template_with_exclusions(options, exclusions)
         config_text = squid_controller.apply_cache_overrides(config_text, overrides)
     except Exception:
-        return redirect(url_for('squid_config', error='1'))
+        return redirect(url_for('squid_config', tab='caching', error='1'))
 
     ok, _details = squid_controller.apply_config_text(config_text)
     try:
@@ -752,9 +1044,10 @@ def apply_safe_caching():
         )
     except Exception:
         pass
+    target_tab = form_kind if form_kind in ('timeouts', 'logging', 'network', 'dns', 'ssl', 'icap', 'privacy', 'limits', 'performance', 'http') else 'caching'
     if ok:
-        return redirect(url_for('squid_config', ok='1'))
-    return redirect(url_for('squid_config', error='1'))
+        return redirect(url_for('squid_config', tab=target_tab, ok='1'))
+    return redirect(url_for('squid_config', tab=target_tab, error='1'))
 
 
 @app.route('/squid/config/apply-overrides', methods=['POST'])
@@ -777,7 +1070,7 @@ def apply_cache_overrides():
         }
         config_text = squid_controller.apply_cache_overrides(config_text, overrides)
     except Exception:
-        return redirect(url_for('squid_config', subtab='overrides', error='1'))
+        return redirect(url_for('squid_config', tab='caching', subtab='overrides', error='1'))
 
     ok, _details = squid_controller.apply_config_text(config_text)
     try:
@@ -792,8 +1085,8 @@ def apply_cache_overrides():
     except Exception:
         pass
     if ok:
-        return redirect(url_for('squid_config', subtab='overrides', ok='1'))
-    return redirect(url_for('squid_config', subtab='overrides', error='1'))
+        return redirect(url_for('squid_config', tab='caching', subtab='overrides', ok='1'))
+    return redirect(url_for('squid_config', tab='caching', subtab='overrides', error='1'))
 
 
 @app.route('/exclusions', methods=['GET', 'POST'])
@@ -807,10 +1100,6 @@ def exclusions():
             store.add_domain(request.form.get('domain') or '')
         elif action == 'remove_domain':
             store.remove_domain(request.form.get('domain') or '')
-        elif action == 'add_dst':
-            store.add_net('dst_nets', request.form.get('cidr') or '')
-        elif action == 'remove_dst':
-            store.remove_net('dst_nets', request.form.get('cidr') or '')
         elif action == 'add_src':
             store.add_net('src_nets', request.form.get('cidr') or '')
         elif action == 'remove_src':
@@ -854,10 +1143,9 @@ def proxy_pac():
     store = get_exclusions_store()
     ex = store.list_all()
 
-    # For PAC, we only use destination-based checks (domain + dst nets). Client-src based bypass is not
-    # possible in PAC (it runs on the client without reliable client IP).
+    # For PAC, we only use destination-based checks (domains + optional private nets). Client-src based
+    # bypass is not possible in PAC (it runs on the client without reliable client IP).
     domains = [d for d in ex.domains]
-    dst_nets = [c for c in ex.dst_nets]
 
     lines = []
     lines.append("function FindProxyForURL(url, host) {")
@@ -873,9 +1161,6 @@ def proxy_pac():
     for d in domains:
         # Match domain and subdomains
         lines.append(f"  if (dnsDomainIs(host, '{d}') || shExpMatch(host, '*.{d}')) return 'DIRECT';")
-    for c in dst_nets:
-        # ip subnet checks require dnsResolve(host)
-        lines.append(f"  if (ip && isInNet(ip, '{c.split('/')[0]}', '{_cidr_to_mask(c)}')) return 'DIRECT';")
 
     # Optional: bypass RFC1918 + link-local destinations when enabled in Exclusions.
     if getattr(ex, 'exclude_private_nets', False):

@@ -37,7 +37,7 @@
             <td>{{ r.reason }}</td>
             <td class="num">{{ r.requests }}</td>
             <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
-            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
           </tr>
         {% endfor %}
       </tbody>
@@ -151,7 +151,7 @@
             <td class="num">{{ r.requests }}</td>
             <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
             <td class="num">{{ "%.1f"|format(r.cache_pct) }}%</td>
-            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
           </tr>
         {% endfor %}
       </tbody>
@@ -191,7 +191,7 @@
             <td>{{ r.reason }}</td>
             <td class="num">{{ r.requests }}</td>
             <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
-            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
           </tr>
         {% endfor %}
       </tbody>
@@ -237,7 +237,7 @@
             <td class="num">{{ r.miss_requests }}</td>
             <td class="num">{{ "%.1f"|format(r.cache_pct) }}%</td>
             <td>{{ r.reason }}</td>
-            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
           </tr>
         {% endfor %}
       </tbody>
@@ -264,7 +264,7 @@
             <td class="num">{{ r.requests }}</td>
             <td class="num">{{ "%.1f"|format(r.pct) }}%</td>
             <td class="num">{{ "%.1f"|format(r.cache_pct) }}%</td>
-            <td class="num"><span class="small">{{ r.last_seen }}</span></td>
+            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
           </tr>
         {% endfor %}
       </tbody>
