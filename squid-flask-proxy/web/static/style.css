@@ -180,6 +180,14 @@ a:hover{ color: white; }
   border-color: rgba(255,255,255,.14);
 }
 
+.nav-pill.active,
+.nav-link-standalone.active{
+  color: white;
+  border-color: rgba(122,162,255,.28);
+  background: rgba(122,162,255,.14);
+  box-shadow: 0 10px 30px rgba(122,162,255,.15);
+}
+
 .main{
   padding: 28px 0 42px;
   flex: 1 0 auto;

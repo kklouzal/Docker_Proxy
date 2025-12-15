@@ -57,22 +57,6 @@
                     </div>
                     <div class="small">The server validates the config before applying it; if validation fails, it keeps the previous config.</div>
                 </form>
-
-                <script>
-                    (function () {
-                        var btn = document.getElementById('reload-running-config');
-                        var ta = document.getElementById('config_text');
-                        if (!btn || !ta) return;
-                        btn.addEventListener('click', function () {
-                            var url = btn.getAttribute('data-url');
-                            if (!url) return;
-                            fetch(url, { cache: 'no-store' })
-                                .then(function (r) { return r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)); })
-                                .then(function (text) { ta.value = text || ''; })
-                                .catch(function (e) { console.error('Failed to load running config', e); });
-                        });
-                    })();
-                </script>
             </div>
         </section>
     {% elif tab == 'caching' %}
