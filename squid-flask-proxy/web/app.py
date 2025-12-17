@@ -1,6 +1,7 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file, abort
+from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file, abort, session
 from services.squidctl import SquidController
-from services.cert_manager import CertManager
+from services.cert_manager import CertManager, install_pfx_as_ca
+from services.auth_store import get_auth_store
 import datetime
 import time
 import os
@@ -14,6 +15,8 @@ from services.timeseries_store import get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.socks_store import get_socks_store
 from services.adblock_store import get_adblock_store
+from services.webfilter_store import get_webfilter_store
+from services.sslfilter_store import get_sslfilter_store
 from services.pac_profiles_store import get_pac_profiles_store
 from services.housekeeping import start_housekeeping
 
@@ -24,6 +27,69 @@ from typing import Any, Dict
 app = Flask(__name__)
 squid_controller = SquidController()
 cert_manager = CertManager()
+
+# Session security: persist a secret key so login survives container restarts.
+_auth_store = get_auth_store()
+try:
+    app.secret_key = _auth_store.get_or_create_secret_key()
+except Exception:
+    # Fallback: sessions will reset on restart.
+    app.secret_key = os.environ.get('FLASK_SECRET_KEY') or 'dev-insecure'
+
+# Ensure there is at least one login.
+try:
+    _auth_store.ensure_default_admin()
+except Exception:
+    pass
+
+
+def _is_logged_in() -> bool:
+    u = session.get('user')
+    return bool(u and isinstance(u, str))
+
+
+@app.before_request
+def _require_login_guard():
+    # Allow liveness and static assets unauthenticated.
+    if request.endpoint in (None, 'static', 'health'):
+        return None
+
+    # Allow PAC file retrieval by clients without requiring UI login.
+    if request.path in ('/proxy.pac', '/wpad.dat'):
+        return None
+
+    # Allow auth routes.
+    if request.endpoint in ('login', 'logout'):
+        return None
+
+    if _is_logged_in():
+        return None
+
+    # Redirect everything else to login.
+    return redirect(url_for('login', next=request.full_path))
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
+        next_url = (request.form.get('next') or '').strip()
+        if _auth_store.verify_user(username, password):
+            session['user'] = username
+            return redirect(next_url or url_for('index'))
+        return render_template('login.html', error='Invalid username or password.', next=next_url)
+
+    if _is_logged_in():
+        return redirect(url_for('index'))
+    next_url = (request.args.get('next') or '').strip()
+    return render_template('login.html', error=None, next=next_url)
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('login'))
 
 
 def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,6 +183,17 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
 
 _disable_background = (os.environ.get('DISABLE_BACKGROUND') or '').strip() == '1'
 
+
+@app.template_filter('datetimeformat')
+def _datetimeformat(ts: object) -> str:
+    try:
+        i = int(ts)  # type: ignore[arg-type]
+        if i <= 0:
+            return ''
+        return datetime.datetime.fromtimestamp(i).strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return ''
+
 if not _disable_background:
     # Start background ingestion of Squid access.log into SQLite (best-effort).
     try:
@@ -145,6 +222,12 @@ if not _disable_background:
     # Start background ingestion of c-icap adblock (REQMOD) blocks (best-effort).
     try:
         get_adblock_store().start_blocklog_background()
+    except Exception:
+        pass
+
+    # Start web filtering background updater (downloads/compiles categories daily at midnight).
+    try:
+        get_webfilter_store().start_background()
     except Exception:
         pass
 
@@ -462,6 +545,161 @@ def adblock():
         refresh_requested=(request.args.get('refresh_requested') == '1'),
         refresh_no_lists=(request.args.get('refresh_no_lists') == '1'),
         recent_blocks=recent_blocks,
+    )
+
+
+@app.route('/webfilter', methods=['GET', 'POST'])
+def webfilter():
+    store = get_webfilter_store()
+    try:
+        store.init_db()
+    except Exception:
+        pass
+
+    tab = (request.args.get('tab') or request.form.get('tab') or 'categories').strip().lower()
+    if tab not in ('categories', 'whitelist', 'blockedlog'):
+        tab = 'categories'
+
+    if request.method == 'POST':
+        action = (request.form.get('action') or '').strip()
+
+        if action == 'save':
+            enabled = request.form.get('enabled') == 'on'
+            source_url = (request.form.get('source_url') or '').strip()
+            categories = [c.strip() for c in request.form.getlist('categories') if (c or '').strip()]
+
+            # Enabling requires a source URL so auto-download works.
+            if enabled and not source_url:
+                return redirect(url_for('webfilter', tab='categories', err_source='1'))
+
+            store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
+
+            # Apply include + reconfigure squid so changes take effect immediately.
+            try:
+                store.apply_squid_include()
+                from subprocess import run as _run
+
+                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+            except Exception:
+                pass
+
+            return redirect(url_for('webfilter', tab='categories'))
+
+        if action == 'whitelist_add':
+            entry = (request.form.get('whitelist_domain') or '').strip()
+            ok, err, _pat = store.add_whitelist(entry)
+            try:
+                store.apply_squid_include()
+                from subprocess import run as _run
+
+                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+            except Exception:
+                pass
+
+            if not ok:
+                return redirect(url_for('webfilter', tab='whitelist', wl_err=(err or '1')))
+            return redirect(url_for('webfilter', tab='whitelist', wl_ok='1'))
+
+        if action == 'whitelist_remove':
+            pat = (request.form.get('pattern') or '').strip()
+            try:
+                store.remove_whitelist(pat)
+            except Exception:
+                pass
+            try:
+                store.apply_squid_include()
+                from subprocess import run as _run
+
+                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+            except Exception:
+                pass
+            return redirect(url_for('webfilter', tab='whitelist'))
+
+        return redirect(url_for('webfilter', tab=tab))
+
+    settings = store.get_settings()
+    available = store.list_available_categories()
+    selected = set(settings.blocked_categories)
+    whitelist_rows = store.list_whitelist()
+    blocked_log_rows = store.list_blocked_log(limit=200) if tab == 'blockedlog' else []
+    return render_template(
+        'webfilter.html',
+        tab=tab,
+        settings=settings,
+        available_categories=available,
+        selected=selected,
+        whitelist_rows=whitelist_rows,
+        blocked_log_rows=blocked_log_rows,
+        err_source=(request.args.get('err_source') == '1'),
+        wl_ok=(request.args.get('wl_ok') == '1'),
+        wl_err=(request.args.get('wl_err') or ''),
+    )
+
+
+@app.route('/webfilter/test', methods=['POST'])
+def webfilter_test_domain():
+    store = get_webfilter_store()
+    try:
+        store.init_db()
+    except Exception:
+        pass
+
+    payload = request.get_json(silent=True) or {}
+    domain = (payload.get('domain') or request.form.get('domain') or '').strip()
+    try:
+        res = store.test_domain(domain)
+        return jsonify(res), 200
+    except Exception as e:
+        return jsonify({"ok": False, "verdict": "error", "reason": f"{type(e).__name__}: {e}"}), 200
+
+
+@app.route('/sslfilter', methods=['GET', 'POST'])
+def sslfilter():
+    store = get_sslfilter_store()
+    try:
+        store.init_db()
+    except Exception:
+        pass
+
+    if request.method == 'POST':
+        action = (request.form.get('action') or '').strip().lower()
+        if action == 'add':
+            entry = (request.form.get('cidr') or '').strip()
+            ok, err, _canonical = store.add_nobump(entry)
+            try:
+                store.apply_squid_include()
+                from subprocess import run as _run
+
+                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+            except Exception:
+                pass
+            if not ok:
+                return redirect(url_for('sslfilter', err=(err or '1')))
+            return redirect(url_for('sslfilter', ok='1'))
+
+        if action == 'remove':
+            cidr = (request.form.get('cidr') or '').strip()
+            try:
+                store.remove_nobump(cidr)
+            except Exception:
+                pass
+            try:
+                store.apply_squid_include()
+                from subprocess import run as _run
+
+                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+            except Exception:
+                pass
+            return redirect(url_for('sslfilter'))
+
+        return redirect(url_for('sslfilter'))
+
+    rows = store.list_nobump()
+    return render_template(
+        'sslfilter.html',
+        rows=rows,
+        ok=(request.args.get('ok') == '1'),
+        err=(request.args.get('err') or ''),
     )
 
 
@@ -1238,6 +1476,17 @@ def proxy_pac():
     return app.response_class(pac, mimetype='application/x-ns-proxy-autoconfig')
 
 
+@app.route('/wpad.dat', methods=['GET'])
+def wpad_dat():
+    # WPAD convention: clients request http://wpad.<domain>/wpad.dat
+    resp = proxy_pac()
+    try:
+        resp.headers['Content-Disposition'] = 'inline; filename="wpad.dat"'
+    except Exception:
+        pass
+    return resp
+
+
 @app.route('/pac', methods=['GET', 'POST'])
 def pac_builder():
     store = get_pac_profiles_store()
@@ -1478,7 +1727,9 @@ def clear_caches():
 @app.route('/certs', methods=['GET'])
 def certs():
     certificate = "ca.crt" if cert_manager.ca_exists() else None
-    return render_template('certs.html', certificate=certificate)
+    message = request.args.get('msg')
+    message_ok = request.args.get('ok') == '1'
+    return render_template('certs.html', certificate=certificate, message=message, message_ok=message_ok)
 
 
 @app.route('/certs/generate', methods=['POST'])
@@ -1496,6 +1747,47 @@ def generate_certificate():
     return redirect(url_for('certs'))
 
 
+@app.route('/certs/upload', methods=['POST'])
+def upload_certificate_pfx():
+    # Upload a PKCS#12 bundle containing cert + private key and install it as Squid's CA.
+    pfx_file = request.files.get('pfx')
+    password = request.form.get('pfx_password', '')
+
+    if not pfx_file or not getattr(pfx_file, 'filename', ''):
+        return redirect(url_for('certs', ok='0', msg='No PFX file selected.'))
+
+    filename = (pfx_file.filename or '').lower()
+    _, ext = os.path.splitext(filename)
+    if ext not in ['.pfx', '.p12']:
+        return redirect(url_for('certs', ok='0', msg='Unsupported file type. Please upload a .pfx or .p12.'))
+
+    # Basic guard against accidental huge uploads.
+    if request.content_length is not None and request.content_length > (10 * 1024 * 1024):
+        return redirect(url_for('certs', ok='0', msg='Upload too large (max 10MB).'))
+
+    pfx_bytes = pfx_file.read() or b''
+    result = install_pfx_as_ca(cert_manager.ca_dir, pfx_bytes, password=password)
+
+    if result.ok:
+        try:
+            squid_controller.reload_squid()
+        except Exception:
+            pass
+
+    try:
+        get_audit_store().record(
+            kind='ca_upload_pfx',
+            ok=result.ok,
+            remote_addr=request.remote_addr,
+            user_agent=request.headers.get('User-Agent'),
+            details={'message': result.message},
+        )
+    except Exception:
+        pass
+
+    return redirect(url_for('certs', ok='1' if result.ok else '0', msg=result.message))
+
+
 @app.route('/certs/download/<path:filename>', methods=['GET'])
 def download_certificate(filename: str):
     # Only allow downloading the public CA cert
@@ -1503,6 +1795,57 @@ def download_certificate(filename: str):
         abort(404)
     cert_manager.ensure_ca()
     return send_file(cert_manager.ca_cert_path, as_attachment=True, download_name='squid-proxy-ca.crt')
+
+
+@app.route('/administration', methods=['GET', 'POST'])
+def administration():
+    store = _auth_store
+    current_user = (session.get('user') or '').strip()
+
+    if request.method == 'POST':
+        action = (request.form.get('action') or '').strip()
+        try:
+            if action == 'add_user':
+                username = (request.form.get('username') or '').strip()
+                password = request.form.get('password') or ''
+                store.add_user(username, password)
+                return redirect(url_for('administration', ok='1', msg='User added.'))
+
+            if action == 'set_password':
+                username = (request.form.get('username') or '').strip()
+                new_password = request.form.get('new_password') or ''
+                store.set_password(username, new_password)
+                return redirect(url_for('administration', ok='1', msg='Password updated.'))
+
+            if action == 'delete_user':
+                username = (request.form.get('username') or '').strip()
+                if username == current_user or username.casefold() == current_user.casefold():
+                    return redirect(url_for('administration', ok='0', msg='Cannot remove the currently signed-in user.'))
+                users = store.list_users()
+                if len(users) <= 1:
+                    return redirect(url_for('administration', ok='0', msg='Cannot remove the last user.'))
+                store.delete_user(username)
+                return redirect(url_for('administration', ok='1', msg='User removed.'))
+
+            return redirect(url_for('administration', ok='0', msg='Unknown action.'))
+        except Exception as e:
+            return redirect(url_for('administration', ok='0', msg=str(e)))
+
+    users = []
+    try:
+        users = store.list_users()
+    except Exception:
+        users = []
+
+    message = request.args.get('msg')
+    message_ok = request.args.get('ok') == '1'
+    return render_template(
+        'administration.html',
+        users=users,
+        current_user=current_user,
+        message=message,
+        message_ok=message_ok,
+    )
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

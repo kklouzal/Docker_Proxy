@@ -98,6 +98,118 @@
         }
       });
     }
+
+    // Web Filtering page: bind enable toggle, category tiles, and test-domain button.
+    const webfilterEnabledHidden = container.querySelector('#webfilter-enabled-hidden');
+    const webfilterEnabledToggle = container.querySelector('#webfilter-enabled-toggle');
+    if (webfilterEnabledHidden && webfilterEnabledToggle && !webfilterEnabledToggle.dataset.spaBound) {
+      webfilterEnabledToggle.dataset.spaBound = '1';
+
+      const setEnabledTile = (enabled) => {
+        webfilterEnabledToggle.classList.toggle('is-enabled', enabled);
+        webfilterEnabledToggle.classList.toggle('is-disabled', !enabled);
+        webfilterEnabledToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+        const state = webfilterEnabledToggle.querySelector('.webfilter-toggle-state');
+        if (state) state.textContent = enabled ? 'Enabled' : 'Disabled';
+      };
+
+      const getEnabledHidden = () => webfilterEnabledHidden.querySelector('input[type="hidden"][name="enabled"][value="on"]');
+
+      webfilterEnabledToggle.addEventListener('click', () => {
+        const existing = getEnabledHidden();
+        const enabled = !existing;
+        if (enabled) {
+          const inp = document.createElement('input');
+          inp.type = 'hidden';
+          inp.name = 'enabled';
+          inp.value = 'on';
+          webfilterEnabledHidden.appendChild(inp);
+        } else if (existing) {
+          existing.remove();
+        }
+        setEnabledTile(enabled);
+      });
+    }
+
+    const selectedWrap = container.querySelector('#webfilter-selected');
+    const tiles = Array.from(container.querySelectorAll('.webfilter-cat'));
+    if (selectedWrap && tiles.length > 0) {
+      const esc = (s) => (window.CSS && typeof window.CSS.escape === 'function') ? window.CSS.escape(s) : String(s).replace(/"/g, '\\"');
+      const getHidden = (cat) => selectedWrap.querySelector(`input[type="hidden"][name="categories"][value="${esc(cat)}"]`);
+      const setTile = (tile, blocked) => {
+        tile.classList.toggle('is-blocked', blocked);
+        tile.classList.toggle('is-allowed', !blocked);
+        tile.setAttribute('aria-pressed', blocked ? 'true' : 'false');
+      };
+
+      tiles.forEach((tile) => {
+        if (tile.dataset.spaBound) return;
+        tile.dataset.spaBound = '1';
+        const cat = tile.getAttribute('data-category') || '';
+        if (!cat) return;
+        tile.addEventListener('click', () => {
+          const existing = getHidden(cat);
+          const blocked = !existing;
+          if (blocked) {
+            const inp = document.createElement('input');
+            inp.type = 'hidden';
+            inp.name = 'categories';
+            inp.value = cat;
+            selectedWrap.appendChild(inp);
+          } else {
+            existing.remove();
+          }
+          setTile(tile, blocked);
+        });
+      });
+    }
+
+    const testInp = container.querySelector('#webfilter-test-domain');
+    const testBtn = container.querySelector('#webfilter-test-btn');
+    const testOut = container.querySelector('#webfilter-test-result');
+    if (testInp && testBtn && testOut && !testBtn.dataset.spaBound) {
+      testBtn.dataset.spaBound = '1';
+
+      const setResult = (kind, text) => {
+        testOut.classList.remove('is-hidden');
+        testOut.textContent = text || '';
+        testOut.classList.toggle('is-allowed', kind === 'allowed');
+        testOut.classList.toggle('is-blocked', kind === 'blocked');
+        testOut.classList.toggle('is-neutral', !kind || (kind !== 'allowed' && kind !== 'blocked'));
+      };
+
+      testBtn.addEventListener('click', async () => {
+        const domain = (testInp.value || '').trim();
+        if (!domain) {
+          setResult('', 'Enter a domain');
+          return;
+        }
+        setResult('', 'Testing…');
+        try {
+          const r = await fetch('/webfilter/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain })
+          });
+          const data = await r.json();
+          const verdict = (data && data.verdict) ? String(data.verdict) : 'error';
+          if (verdict === 'blocked') {
+            const list = (data && data.matched_blocked && Array.isArray(data.matched_blocked)) ? data.matched_blocked.map(String) : [];
+            const by = (data && data.blocked_by) ? String(data.blocked_by) : '';
+            const suffix = list.length > 1 ? ` (${list.join(', ')})` : (by ? ` (${by})` : '');
+            setResult('blocked', `Blocked${suffix}`);
+          } else if (verdict === 'allowed') {
+            setResult('allowed', 'Allowed');
+          } else if (verdict === 'invalid') {
+            setResult('', String(data.reason || 'Invalid domain'));
+          } else {
+            setResult('', String(data.reason || 'Error'));
+          }
+        } catch (error) {
+          setResult('', 'Error');
+        }
+      });
+    }
   };
 
   const fetchAndSwap = async (url, { push = true, method = 'GET', body = undefined } = {}) => {

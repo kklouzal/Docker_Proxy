@@ -1,90 +1,92 @@
-# Squid Flask Proxy
+﻿# Squid Flask Proxy
 
-This project is a Dockerized application that combines a Squid proxy server with a Flask web interface for configuration and management. It allows users to configure Squid at runtime, view its status, and manage SSL certificates for HTTPS caching.
+This project is a Dockerized Squid proxy bundled with a Flask admin UI.
 
-## Project Structure
+It’s designed for “real” proxy deployments where you want:
+- A manageable Squid configuration (templated + UI-driven includes)
+- Optional SSL-bump (TLS interception) for managed devices
+- Domain-based policy controls (exclusions, category filtering, whitelist)
+- WPAD/PAC auto-discovery without exposing the admin UI on port 80
+- Optional ICAP services for ad-blocking and antivirus
 
-- **docker/**: Contains Docker-related files.
-  - `Dockerfile`: Instructions to build the Docker image.
-  - `entrypoint.sh`: Script executed when the container starts.
-  - `supervisord.conf`: Configuration for Supervisor to manage processes.
-  - `healthcheck.sh`: Script to check the health of services.
+## Quick start
 
-- **squid/**: Contains Squid configuration files.
-  - `squid.conf.template`: Template for Squid configuration.
-  - `mime.conf`: Defines MIME types for Squid.
-  - `error_pages/`: Directory for custom error pages.
-  - `ssl/`: Directory for SSL certificates and database.
+Build and run:
+```powershell
+docker compose up -d --build
+```
 
-- **web/**: Contains the Flask web application.
-  - `app.py`: Main Flask application file.
-  - `wsgi.py`: WSGI entry point for serving the Flask app.
-  - `requirements.txt`: Python dependencies for the Flask application.
-  - `templates/`: HTML templates for the web interface.
-  - `static/`: Directory for static files.
-  - `services/`: Contains service logic for interacting with Squid and managing configurations.
-  - `tests/`: Unit tests for the Flask application.
+Open the admin UI:
+- `http://localhost:5000`
 
-- **scripts/**: Contains utility scripts for managing SSL and Squid.
-  - `generate_ca.sh`: Generates a self-signed certificate authority (CA).
-  - `init_ssl_db.sh`: Initializes the SSL database for Squid.
-  - `reload_squid.sh`: Reloads the Squid configuration.
+Default login:
+- Username: `admin`
+- Password: `admin`
 
-- **config/**: Contains example environment configuration files.
-  - `app.env.example`: Example environment configuration for the Flask app.
-  - `squid.env.example`: Example environment configuration for Squid.
+After first login, change the password in **Administration**.
 
-- **docker-compose.yml**: Defines services, networks, and volumes for the Docker application.
+## Ports and endpoints
 
-- **.dockerignore**: Specifies files to ignore when building the Docker image.
+The default Compose file publishes:
+- `3128/tcp`: Squid HTTP proxy
+- `5000/tcp`: Admin UI (Flask)
+- `80/tcp`: WPAD/PAC *dedicated listener* (NOT the admin UI)
+- `1080/tcp`: SOCKS5 proxy (Dante)
 
-- **.gitignore**: Specifies files to ignore in version control.
+WPAD/PAC listener behavior (port 80):
+- `GET /` → serves `wpad.dat`
+- `GET /wpad.dat` → serves PAC (`application/x-ns-proxy-autoconfig`)
+- `GET /proxy.pac` → serves PAC
+- Any other path returns `404`
 
-## Getting Started
-
-1. **Clone the repository**:
-   ```
-   git clone <repository-url>
-   cd squid-flask-proxy
-   ```
-
-2. **Build the Docker image**:
-   ```
-   docker-compose build
-   ```
-
-3. **Run the application**:
-   ```
-   docker-compose up
-   ```
-
-4. **Access the web interface**:
-   Open your web browser and navigate to `http://localhost:5000`.
+Note: `http://<host>:5000` is the admin UI. Port 80 is intentionally isolated to PAC/WPAD only.
 
 ## Access from other computers (LAN)
-By default, Docker publishes the ports on all interfaces (`0.0.0.0`) via Compose:
-- Web UI: `http://<host-ip>:5000`
-- Proxy: set your client/system proxy to `<host-ip>:3128`
 
-If it works on the host but not from another machine, the most common cause on Windows is an inbound firewall rule.
+By default, Docker publishes ports on all interfaces (`0.0.0.0`) via Compose:
+- Admin UI: `http://<host-ip>:5000`
+- Proxy: configure system/browser proxy to `http://<host-ip>:3128`
+- WPAD: `http://<host-ip>/wpad.dat` (port 80)
+
+If it works on the host but not from another machine, on Windows the most common cause is an inbound firewall rule.
 
 ### Windows Firewall (PowerShell)
 Run these in an elevated PowerShell to allow inbound TCP on the Private profile:
 ```powershell
 New-NetFirewallRule -DisplayName "Squid Flask Proxy UI (5000)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5000 -Profile Private
 New-NetFirewallRule -DisplayName "Squid Proxy (3128)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3128 -Profile Private
+New-NetFirewallRule -DisplayName "Squid WPAD/PAC (80)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 80 -Profile Private
+New-NetFirewallRule -DisplayName "Squid SOCKS (1080)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1080 -Profile Private
 ```
 
 Also confirm:
 - You’re using `http://` (not `https://`) for the UI.
 - The client machine is on the same LAN/subnet and not on an isolated/guest Wi‑Fi network.
 
-## Features
+## Authentication and security
 
-- Dynamic Squid configuration through a web interface.
-- View the status of the Squid proxy and Flask application.
-- Generate and download self-signed SSL certificates for HTTPS caching.
-- Dynamic PAC serving at `/proxy.pac` with a UI builder at `/pac` (serve different PAC rules based on the client IP requesting the PAC).
+- The admin UI is protected by a login session.
+- PAC endpoints (`/proxy.pac`, `/wpad.dat`) are intentionally public so WPAD works without authentication.
+- Users are managed in **Administration** (add users, change passwords). The currently logged-in user cannot delete themselves.
+
+If you want stronger isolation, consider removing the `5000:5000` publish and accessing the UI only via:
+- a management VLAN
+- a VPN
+- an SSH tunnel / port-forward
+
+## Features (current)
+
+- **Status/Diagnostics** pages for live proxy activity and health.
+- **Policy controls** from the web UI:
+  - Squid config editor (with safe defaults)
+  - Exclusions (domain/CIDR policies for problematic destinations)
+  - Certificates (CA management for ssl-bump)
+  - Ad Blocking (ICAP REQMOD)
+  - Web Filtering (UT1 categories, domain-based)
+  - ClamAV scanning (ICAP RESPMOD)
+  - SSL Filtering (client CIDRs that must be spliced)
+- **PAC Builder** UI at `/pac` + PAC generation at `/proxy.pac`.
+- **WPAD** support via the dedicated port 80 listener, serving `wpad.dat`.
 
 ## SOCKS5 support (Dante)
 This container also runs a Dante SOCKS proxy on port `1080`.
@@ -142,6 +144,9 @@ This container uses SQLite (stored under `/var/lib/squid-flask-proxy` via a name
 - Live activity aggregation (domains/IPs) used by the Live page
 - Exclusions (domains/CIDRs) used to regenerate Squid config
 - Admin audit trail of config apply actions (success/failure + request metadata)
+- Web filtering settings + whitelist + blocked-request log
+- Authentication/user database
+- SSL Filtering (no-bump CIDRs)
 
 ## Ad Blocking (ICAP)
 This project supports ICAP-based request blocking using EasyList-style subscriptions.
@@ -158,6 +163,34 @@ Implementation details:
 - Ad blocking is served by c-icap as a **REQMOD** service at `icap://127.0.0.1:${CICAP_PORT:-14000}/adblockreq`.
 - The container compiles subscriptions on startup and on “Update now” via `web/tools/adblock_compile.py`.
 - The c-icap url_check service configuration lives in `docker/adblock_req.conf`.
+
+## Web Filtering (UT1 categories, domain-based)
+This container can block destinations based on a locally downloaded categorized blacklist (UT1-style: `Blacklists/<category>/domains`).
+
+How it works:
+- The admin UI controls whether web filtering is enabled and which categories are blocked.
+- When web filtering is enabled, the container downloads/compiles a local SQLite DB of domain categories automatically.
+- Refresh schedule: first download happens immediately on enable, then once per day at local midnight.
+- Squid uses an `external_acl_type` helper to check the destination domain against the selected blocked categories.
+- When blocked, Squid returns a custom error page (`ERR_WEBFILTER_BLOCKED`).
+
+UI tabs:
+- **Categories**: enable/disable + choose blocked categories + test a domain
+- **Whitelist**: allowlist (exact or wildcard suffix) evaluated before blocking
+- **Blocked Log**: recent blocked requests (client IP, destination URL, category)
+
+Important notes:
+- This is **domain-based** filtering (good for “block a site/category”). It does not require URL/path inspection.
+- You are responsible for verifying the dataset’s license/terms are compatible with your internal business use.
+
+Configuration:
+- Open the UI: **Policy → Web Filtering**
+- Set the feed URL
+- Enable filtering and select categories to block
+
+Blocked Log notes:
+- The blocked log is recorded by the Squid external ACL helper when a category match results in a deny decision.
+- The log is stored in `webfilter.db` under `/var/lib/squid-flask-proxy`.
 
 ### c-icap access log (direct REQMOD logging)
 The c-icap REQMOD service logs per-transaction decisions to:
@@ -208,6 +241,57 @@ Recommended mitigations (lowest-risk first):
 Troubleshooting tips:
 - Check the **SSL Errors** page (`/ssl-errors`) for repeated TLS/certificate/handshake failures.
 - If changing Squid `workers` to improve throughput, note it triggers a full Squid restart.
+
+## SSL Filtering (no-bump client CIDRs)
+
+Some client networks cannot install a custom CA (guest BYOD, IoT, consoles, printers). If those clients are TLS-intercepted (ssl-bumped), they will fail with certificate errors.
+
+The **Policy → SSL Filtering** page lets you define client CIDRs that should be **spliced** (tunneled) instead of bumped.
+
+Behavior:
+- Matching client IP → `ssl_bump splice` (no decryption; real website certs)
+- Other clients → existing rules apply (default: `ssl_bump bump all`)
+
+Important limitation:
+- Certbot/Let’s Encrypt cannot be used as a “replacement bump CA” for general browsing, because public CAs only issue certificates for domains you control.
+
+Impact on other features:
+- Spliced HTTPS traffic cannot be inspected/modified/scanned (no ICAP REQMOD/RESPMOD on the decrypted content).
+- Domain-based allow/deny can still work (depending on client behavior and protocol), but you lose URL/path visibility.
+
+## Certificates (ssl-bump CA)
+
+The proxy uses a CA certificate + private key for SSL-bump.
+
+Options:
+- Generate a self-signed CA (default)
+- Upload an existing CA bundle:
+  - `.crt/.key` (where applicable)
+  - `.pfx/.p12` (PKCS#12), with validation that the cert and private key match
+
+After updating the CA, Squid is reconfigured so the change takes effect.
+
+Note: clients must trust this CA to avoid certificate warnings when bumping.
+
+## WPAD / PAC
+
+This project supports:
+- Dynamic PAC generation at `/proxy.pac`
+- WPAD auto-discovery via `/wpad.dat`
+
+Security model:
+- Port 80 is served by a dedicated minimal HTTP server that only serves PAC endpoints.
+- The PAC server fetches generated PAC content from the internal Flask endpoint (`127.0.0.1:5000/proxy.pac`).
+
+## Project structure (high level)
+
+- `docker/`: container build + supervisord + startup scripts
+  - Includes a dedicated supervisord program for the PAC/WPAD listener
+- `squid/`: Squid template config + MIME + error pages
+  - UI-driven policy includes live under `/etc/squid/conf.d/*.conf`
+- `web/`: Flask admin UI + services + tools
+  - `services/`: SQLite-backed stores and Squid integration
+  - `tools/`: helper scripts (PAC server, category helper, builders, apply scripts)
 
 ## Scaling: Squid workers
 

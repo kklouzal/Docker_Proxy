@@ -4,8 +4,32 @@ set -eu
 
 # Initialize environment variables
 if [ -f /config/app.env ]; then
-    export $(cat /config/app.env | xargs)
+    # Robust .env loader (supports spaces after '='; ignores comments/blank lines).
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Strip CRLF
+        line="${line%\r}"
+        case "$line" in
+            ''|\#*) continue ;;
+        esac
+        # Support optional leading 'export '
+        case "$line" in
+            export\ *) line="${line#export }" ;;
+        esac
+        case "$line" in
+            *=*)
+                key="${line%%=*}"
+                val="${line#*=}"
+                key="$(printf '%s' "$key" | tr -d ' \t')"
+                # Skip invalid keys
+                case "$key" in
+                    ''|*[!A-Za-z0-9_]* ) continue ;;
+                esac
+                export "$key=$val"
+                ;;
+        esac
+    done < /config/app.env
 fi
+
 python3 /app/tools/adblock_compile.py \
     --db /var/lib/squid-flask-proxy/adblock.db \
     --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
@@ -61,6 +85,45 @@ fi
 # Generate Squid include snippets for ICAP scaling.
 # We derive the worker count from squid.conf so UI edits like "workers 4" validate.
 mkdir -p /etc/squid/conf.d
+
+# SSL filtering include is driven by the admin UI (SQLite settings).
+# Always generate a safe include so squid.conf can include it.
+python3 /app/tools/sslfilter_apply.py || true
+
+# Web filtering include is driven by the admin UI (SQLite settings).
+# Always generate a safe include so squid.conf.template's include succeeds.
+python3 /app/tools/webfilter_apply.py || true
+
+# Ensure the SSL filtering include is present in squid.conf even if a user edited/persisted it.
+# It should appear after 'ssl_bump peek step1' and before any 'ssl_bump bump' rule.
+if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/10-sslfilter.conf" /etc/squid/squid.conf 2>/dev/null; then
+    TMP="/tmp/squid.conf.$$"
+    awk '
+        BEGIN{inserted=0}
+        /^ssl_bump peek step1$/ && !inserted {
+            print;
+            print "# SSL filtering (no-bump CIDRs). Safe if empty.";
+            print "include /etc/squid/conf.d/10-sslfilter.conf";
+            inserted=1;
+            next
+        }
+        /^ssl_bump bump/ && !inserted {
+            print "# SSL filtering (no-bump CIDRs). Safe if empty.";
+            print "include /etc/squid/conf.d/10-sslfilter.conf";
+            inserted=1;
+            print;
+            next
+        }
+        {print}
+        END{
+            if(!inserted){
+                print "";
+                print "# SSL filtering (no-bump CIDRs). Safe if empty.";
+                print "include /etc/squid/conf.d/10-sslfilter.conf";
+            }
+        }
+    ' /etc/squid/squid.conf > "$TMP" && mv "$TMP" /etc/squid/squid.conf || rm -f "$TMP"
+fi
 
 WORKERS=""
 if [ -f /etc/squid/squid.conf ]; then

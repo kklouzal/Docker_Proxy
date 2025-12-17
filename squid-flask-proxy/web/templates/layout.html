@@ -17,6 +17,7 @@
                     <span>Proxy + admin UI</span>
                 </div>
             </div>
+            {% if session.get('user') %}
             <nav class="nav" aria-label="Primary">
                 <div class="nav-dropdown">
                     <button class="nav-trigger {{ 'active' if request.endpoint in ['index','live','ssl_errors'] else '' }}" type="button">Status</button>
@@ -28,13 +29,15 @@
                 </div>
 
                 <div class="nav-dropdown">
-                    <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','clamav'] else '' }}" type="button">Policy</button>
+                    <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','clamav','webfilter','sslfilter'] else '' }}" type="button">Policy</button>
                     <div class="nav-menu">
                         <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
                         <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
                         <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
                         <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
+                        <a class="{{ 'active' if request.endpoint == 'webfilter' else '' }}" href="{{ url_for('webfilter') }}">Web Filtering</a>
                         <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
+                        <a class="{{ 'active' if request.endpoint == 'sslfilter' else '' }}" href="{{ url_for('sslfilter') }}">SSL Filtering</a>
                     </div>
                 </div>
 
@@ -47,7 +50,13 @@
 
                 <a class="nav-pill" href="{{ url_for('health') }}">Diagnostics</a>
                 <a class="nav-pill" href="{{ url_for('pac_builder') }}">PAC</a>
+                <a class="nav-pill {{ 'active' if request.endpoint == 'administration' else '' }}" href="{{ url_for('administration') }}">Administration</a>
+
+                <form action="{{ url_for('logout') }}" method="post" style="display:inline;">
+                    <button class="nav-pill" type="submit">Logout</button>
+                </form>
             </nav>
+            {% endif %}
         </div>
     </header>
 

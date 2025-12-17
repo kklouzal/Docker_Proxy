@@ -90,6 +90,7 @@ COPY squid /squid
 COPY scripts /scripts
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/supervisord.conf /etc/supervisord.conf
+COPY docker/pac_http.conf /etc/supervisor.d/pac_http.conf
 COPY docker/clamd.conf /etc/clamav/clamd.conf
 COPY docker/freshclam.conf /etc/clamav/freshclam.conf
 COPY docker/healthcheck.sh /healthcheck.sh
@@ -105,8 +106,13 @@ COPY docker/virus_scan.conf /etc/virus_scan.conf
 RUN chmod +x /entrypoint.sh /healthcheck.sh /scripts/*.sh \
 	&& mkdir -p /etc/squid/ssl/certs /var/lib/ssl_db /var/spool/squid
 
-# Expose ports for Flask, Squid, and Dante (SOCKS5)
-EXPOSE 5000 3128 1080
+# Install custom Squid error pages (keeps built-in pages intact)
+RUN if [ -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED ] && [ -d /usr/share/squid/errors/en ]; then \
+		cp -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED /usr/share/squid/errors/en/; \
+	fi
+
+# Expose ports for Flask, Squid, PAC/HTTP, and Dante (SOCKS5)
+EXPOSE 5000 3128 80 1080
 
 # Set the entry point
 ENTRYPOINT ["/entrypoint.sh"]

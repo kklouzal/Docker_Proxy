@@ -8,8 +8,6 @@ http_port 3128 ssl-bump \
 # If you change this, recreate/restart the container so the ICAP process count can match.
 workers 2
 
-http_access allow all
-
 # Allow cache manager access from localhost (used by the web UI for stats)
 http_access allow manager localhost
 http_access deny manager
@@ -21,6 +19,8 @@ sslcrtd_children 5
 # Basic bump rules (MITM). Adjust for your policy.
 acl step1 at_step SslBump1
 ssl_bump peek step1
+# SSL filtering (no-bump CIDRs). Safe if empty.
+include /etc/squid/conf.d/10-sslfilter.conf
 ssl_bump bump all
 
 # Cache settings
@@ -138,5 +138,8 @@ error_directory /usr/share/squid/errors/en
 # MIME table for content-type detection
 mime_table /etc/squid/mime.conf
 
-# Custom configuration options can be added here
-# This section can be modified by the Flask application at runtime.
+# Web filtering (generated at container start). Safe if empty.
+include /etc/squid/conf.d/30-webfilter.conf
+
+# Default access policy
+http_access allow all

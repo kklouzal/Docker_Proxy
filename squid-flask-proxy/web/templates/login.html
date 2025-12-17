@@ -1,0 +1,52 @@
+{% extends "layout.html" %}
+
+{% block title %}Login · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Admin Login</h1>
+<p class="page-subtitle">Sign in to manage proxy settings.</p>
+
+<div class="grid">
+    <section class="card split-left">
+        <div class="card-header">
+            <h2 class="card-title">Login</h2>
+        </div>
+        <div class="card-body">
+            {% if error %}
+            <div class="small" style="margin-bottom: 10px;">
+                <span class="badge danger">Error</span>
+                <span style="margin-left: 8px;">{{ error }}</span>
+            </div>
+            {% endif %}
+            <form class="form" action="{{ url_for('login') }}" method="post" data-no-spa>
+                <input type="hidden" name="next" value="{{ next or '' }}">
+                <div>
+                    <label for="username">Username</label>
+                    <input id="username" name="username" type="text" autocomplete="username" required>
+                </div>
+                <div>
+                    <label for="password">Password</label>
+                    <input id="password" name="password" type="password" autocomplete="current-password" required>
+                </div>
+                <div class="actions">
+                    <button class="btn primary" type="submit">Sign in</button>
+                </div>
+            </form>
+            <div class="small" style="margin-top: 12px;">
+                Default credentials: <strong>admin / admin</strong>
+            </div>
+        </div>
+    </section>
+
+    <aside class="card split-right">
+        <div class="card-header">
+            <h2 class="card-title">Note</h2>
+        </div>
+        <div class="card-body">
+            <div class="small">
+                This login protects the admin panel only. Proxy clients do not use it.
+            </div>
+        </div>
+    </aside>
+</div>
+{% endblock %}

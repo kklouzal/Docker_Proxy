@@ -1,5 +1,7 @@
 import os
 import sys
+import tarfile
+import tempfile
 import unittest
 
 
@@ -17,6 +19,10 @@ def _import_app():
     # Avoid starting background tailers/samplers during unit tests.
     os.environ.setdefault('DISABLE_BACKGROUND', '1')
 
+    # Isolate auth state so tests are deterministic.
+    os.environ.setdefault('AUTH_DB', os.path.join(tempfile.mkdtemp(prefix='sfp_auth_'), 'auth.db'))
+    os.environ.setdefault('FLASK_SECRET_PATH', os.path.join(tempfile.mkdtemp(prefix='sfp_secret_'), 'flask_secret.key'))
+
     from app import app as flask_app  # type: ignore
     flask_app.testing = True
     return flask_app
@@ -26,6 +32,13 @@ class TestRoutes(unittest.TestCase):
     def setUp(self):
         flask_app = _import_app()
         self.app = flask_app.test_client()
+
+        # Login for all protected routes.
+        self.app.post(
+            '/login',
+            data={'username': 'admin', 'password': 'admin', 'next': ''},
+            follow_redirects=True,
+        )
 
     def test_index(self):
         response = self.app.get('/')
@@ -87,6 +100,15 @@ class TestRoutes(unittest.TestCase):
         response = self.app.get('/certs')
         self.assertEqual(response.status_code, 200)
 
+    def test_cannot_delete_current_user(self):
+        response = self.app.post(
+            '/administration',
+            data={'action': 'delete_user', 'username': 'admin'},
+            follow_redirects=False,
+        )
+        self.assertIn(response.status_code, (301, 302, 308))
+        self.assertIn('/administration', response.headers.get('Location', ''))
+
     def test_adblock(self):
         response = self.app.get('/adblock')
         self.assertEqual(response.status_code, 200)
@@ -99,9 +121,32 @@ class TestRoutes(unittest.TestCase):
         response = self.app.get('/pac')
         self.assertEqual(response.status_code, 200)
 
+    def test_webfilter_categories_tab(self):
+        response = self.app.get('/webfilter?tab=categories')
+        self.assertEqual(response.status_code, 200)
+
+    def test_webfilter_whitelist_tab(self):
+        response = self.app.get('/webfilter?tab=whitelist')
+        self.assertEqual(response.status_code, 200)
+
+    def test_webfilter_blockedlog_tab(self):
+        response = self.app.get('/webfilter?tab=blockedlog')
+        self.assertEqual(response.status_code, 200)
+
+    def test_sslfilter_page(self):
+        response = self.app.get('/sslfilter')
+        self.assertEqual(response.status_code, 200)
+
     def test_proxy_pac(self):
         response = self.app.get('/proxy.pac')
         self.assertEqual(response.status_code, 200)
+
+    def test_wpad_dat_public(self):
+        flask_app = _import_app()
+        c = flask_app.test_client()
+        r = c.get('/wpad.dat')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('application/x-ns-proxy-autoconfig', r.headers.get('Content-Type', ''))
 
     def test_proxy_pac_can_include_socks(self):
         # Create a catch-all PAC profile that enables SOCKS.
@@ -139,6 +184,77 @@ class TestRoutes(unittest.TestCase):
             self.assertIn('SOCKS5', body)
         finally:
             app_module.get_pac_profiles_store = old_get
+
+
+class TestWebcatBuildUt1(unittest.TestCase):
+
+    def _import_webcat_build(self):
+        # Import tools module from web/ directory.
+        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        if web_dir not in sys.path:
+            sys.path.insert(0, web_dir)
+
+        from tools import webcat_build  # type: ignore
+
+        return webcat_build
+
+    def test_ut1_tar_gz_lowercase_blacklists_detected(self):
+        webcat_build = self._import_webcat_build()
+
+        with tempfile.TemporaryDirectory(prefix="webcat_ut1_") as td:
+            root = os.path.join(td, "payload")
+            os.makedirs(root, exist_ok=True)
+
+            # UT1 layout (lowercase): blacklists/<category>/domains
+            for cat, domains in {
+                "adult": ["example.com", "sub.example.com"],
+                "drogue": ["drug.example"],
+            }.items():
+                cat_dir = os.path.join(root, "blacklists", cat)
+                os.makedirs(cat_dir, exist_ok=True)
+                with open(os.path.join(cat_dir, "domains"), "w", encoding="utf-8") as f:
+                    for d in domains:
+                        f.write(d + "\n")
+
+            tar_path = os.path.join(td, "ut1.tar.gz")
+            with tarfile.open(tar_path, "w:gz") as t:
+                # Add the payload directory contents at archive root.
+                t.add(root, arcname="")
+
+            pairs, source, aliases = webcat_build._collect(webcat_build.Path(tar_path))  # type: ignore[attr-defined]
+            self.assertTrue(source.startswith("ut1tar:"), source)
+            self.assertGreaterEqual(len(pairs), 3)
+            cats = {c for _, c in pairs}
+            self.assertIn("adult", cats)
+            self.assertIn("drogue", cats)
+            self.assertEqual(aliases, {})
+
+    def test_ut1_dedup_identical_category_lists(self):
+        webcat_build = self._import_webcat_build()
+
+        with tempfile.TemporaryDirectory(prefix="webcat_ut1_") as td:
+            root = os.path.join(td, "payload")
+            os.makedirs(root, exist_ok=True)
+
+            # Two categories with identical domain lists.
+            for cat in ("proxy", "proxies"):
+                cat_dir = os.path.join(root, "blacklists", cat)
+                os.makedirs(cat_dir, exist_ok=True)
+                with open(os.path.join(cat_dir, "domains"), "w", encoding="utf-8") as f:
+                    f.write("example.com\n")
+                    f.write("sub.example.com\n")
+
+            tar_path = os.path.join(td, "ut1.tar.gz")
+            with tarfile.open(tar_path, "w:gz") as t:
+                t.add(root, arcname="")
+
+            pairs, source, aliases = webcat_build._collect(webcat_build.Path(tar_path))  # type: ignore[attr-defined]
+            self.assertTrue(source.startswith("ut1tar:"), source)
+            # Because we iterate categories in sorted order, 'proxies' is canonical and 'proxy' becomes alias.
+            self.assertIn("proxy", aliases)
+            self.assertEqual(aliases["proxy"], "proxies")
+            cats = {c for _, c in pairs}
+            self.assertEqual(cats, {"proxies"})
 
 if __name__ == '__main__':
     unittest.main()

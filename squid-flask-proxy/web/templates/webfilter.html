@@ -1,0 +1,202 @@
+{% extends 'layout.html' %}
+{% block title %}Web Filtering - Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Web Filtering</h1>
+<p class="page-subtitle">Block destinations by category, with whitelist overrides.</p>
+
+{% set feed_url = settings.source_url or 'https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz' %}
+
+<div class="actions" style="margin: 10px 0 14px;">
+  <a class="btn {{ 'primary' if tab == 'categories' else 'ghost' }}" href="{{ url_for('webfilter', tab='categories') }}">Categories</a>
+  <a class="btn {{ 'primary' if tab == 'whitelist' else 'ghost' }}" href="{{ url_for('webfilter', tab='whitelist') }}">Whitelist</a>
+  <a class="btn {{ 'primary' if tab == 'blockedlog' else 'ghost' }}" href="{{ url_for('webfilter', tab='blockedlog') }}">Blocked Log</a>
+</div>
+
+{% if tab == 'whitelist' %}
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Whitelist</h2>
+      <span class="badge">Allowed first</span>
+    </div>
+    <div class="card-body">
+      {% if wl_ok %}
+        <div style="margin: 0 0 12px;"><span class="badge ok">Added</span></div>
+      {% endif %}
+      {% if wl_err %}
+        <div style="margin: 0 0 12px;"><span class="badge danger">Error</span> <span class="small">{{ wl_err }}</span></div>
+      {% endif %}
+
+      <form method="post" class="form" action="{{ url_for('webfilter', tab='whitelist') }}">
+        <input type="hidden" name="tab" value="whitelist">
+        <input type="hidden" name="action" value="whitelist_add">
+        <label for="whitelist_domain">Add domain</label>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <input id="whitelist_domain" class="input" type="text" name="whitelist_domain" placeholder="example.com or *.example.com" style="flex: 1 1 auto;">
+          <button class="btn" type="submit">Add</button>
+        </div>
+        <div class="help">Supports exact domains (example.com) and wildcard suffixes (*.example.com). Whitelisted domains are allowed before category blocking.</div>
+      </form>
+
+      <div style="margin-top: 14px;">
+        {% if whitelist_rows and whitelist_rows|length > 0 %}
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Added</th>
+                <th style="width: 1%;">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for pat, ts in whitelist_rows %}
+                <tr>
+                  <td style="font-family: var(--mono);">{{ pat }}</td>
+                  <td class="small">{{ fmt_ts(ts) if ts else '' }}</td>
+                  <td>
+                    <form method="post" action="{{ url_for('webfilter', tab='whitelist') }}" style="margin:0;">
+                      <input type="hidden" name="tab" value="whitelist">
+                      <input type="hidden" name="action" value="whitelist_remove">
+                      <input type="hidden" name="pattern" value="{{ pat }}">
+                      <button class="btn ghost" type="submit">Remove</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="help">No whitelist entries yet.</div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+{% elif tab == 'blockedlog' %}
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Blocked Log</h2>
+      <span class="badge">Most recent first</span>
+    </div>
+    <div class="card-body">
+      {% if blocked_log_rows and blocked_log_rows|length > 0 %}
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width: 1%;">Time</th>
+              <th style="width: 1%;">Client IP</th>
+              <th>Destination URL</th>
+              <th style="width: 1%;">Category</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in blocked_log_rows %}
+              <tr>
+                <td class="small">{{ fmt_ts(r.ts) if r.ts else '' }}</td>
+                <td style="font-family: var(--mono);">{{ r.src_ip }}</td>
+                <td style="font-family: var(--mono); word-break: break-all;">{{ r.url }}</td>
+                <td><span class="badge danger">{{ r.category }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="help">No blocked requests have been logged yet.</div>
+      {% endif %}
+      <div class="help" style="margin-top: 10px;">This log is populated when Squid blocks a request due to a selected category (whitelisted destinations are allowed first).</div>
+    </div>
+  </section>
+
+{% else %}
+  <form method="post" class="card" action="{{ url_for('webfilter', tab='categories') }}">
+    <input type="hidden" name="tab" value="categories">
+    <input type="hidden" name="action" value="save">
+
+    {% if err_source %}
+      <div class="alert error" style="margin-bottom: 12px;">
+        Source URL is required to enable web filtering.
+      </div>
+    {% endif %}
+
+    <div class="webfilter-toolbar">
+      <div>
+        <div id="webfilter-enabled-hidden">
+          {% if settings.enabled %}
+            <input type="hidden" name="enabled" value="on">
+          {% endif %}
+        </div>
+        <button
+          id="webfilter-enabled-toggle"
+          class="webfilter-toggle{% if settings.enabled %} is-enabled{% else %} is-disabled{% endif %}"
+          type="button"
+          aria-pressed="{% if settings.enabled %}true{% else %}false{% endif %}"
+        >
+          <span class="webfilter-toggle-title">Web filtering</span>
+          <span class="webfilter-toggle-state">{% if settings.enabled %}Enabled{% else %}Disabled{% endif %}</span>
+        </button>
+      </div>
+
+      <div class="webfilter-actions">
+        <button class="btn" type="submit">Save</button>
+        <div class="help" style="text-align:right;">
+          Last update: {{ fmt_ts(settings.last_success) if settings.last_success else 'never' }}
+          {% if settings.last_error %}
+            <br>
+            Last error: {{ settings.last_error }}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-bottom: 16px;">
+      <label>
+        <div class="label">Category feed URL</div>
+        <input class="input" type="text" name="source_url" value="{{ feed_url }}" readonly>
+        <div class="help">Downloaded automatically at enable-time and daily at midnight (local time).</div>
+      </label>
+    </div>
+
+    <div class="form-row" style="margin-bottom: 16px;">
+      <div class="label">Test domain</div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <input id="webfilter-test-domain" class="input" type="text" placeholder="example.com" style="flex: 1 1 auto;">
+        <button id="webfilter-test-btn" class="btn" type="button">Test Domain</button>
+        <span id="webfilter-test-result" class="webfilter-test-result is-hidden" aria-live="polite"></span>
+      </div>
+      <div class="help">Checks whether this domain would be allowed or blocked by the current web filtering settings.</div>
+    </div>
+
+    <div class="form-row" style="margin-bottom: 16px;">
+      <div class="label">Categories to block</div>
+
+      {% if available_categories and available_categories|length > 0 %}
+        <div id="webfilter-selected">
+          {% for c in selected %}
+            <input type="hidden" name="categories" value="{{ c }}">
+          {% endfor %}
+        </div>
+
+        <div class="webfilter-categories">
+          {% for c, domains in available_categories %}
+            <button
+              class="webfilter-cat{% if c in selected %} is-blocked{% else %} is-allowed{% endif %}"
+              type="button"
+              data-category="{{ c }}"
+              aria-pressed="{% if c in selected %}true{% else %}false{% endif %}"
+            >
+              <span class="webfilter-cat-name">{{ c }}</span>
+              <span class="webfilter-cat-count">{{ domains }} domains</span>
+            </button>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="help">
+          No categories are loaded yet. Enable filtering to trigger the first download, then return here to select categories.
+        </div>
+      {% endif %}
+    </div>
+
+  </form>
+{% endif %}
+
+{% endblock %}

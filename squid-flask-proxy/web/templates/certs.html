@@ -6,6 +6,19 @@
 <h1 class="page-title">Certificates</h1>
 <p class="page-subtitle">Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores.</p>
 
+{% if message %}
+<div class="card" style="margin-bottom: 12px;">
+    <div class="card-body">
+        {% if message_ok %}
+            <span class="badge ok">Success</span>
+        {% else %}
+            <span class="badge danger">Error</span>
+        {% endif %}
+        <span class="small" style="margin-left: 8px;">{{ message }}</span>
+    </div>
+</div>
+{% endif %}
+
 <div class="grid">
     <section class="card split-left">
         <div class="card-header">
@@ -29,6 +42,25 @@
                 {% else %}
                     <a class="btn" href="{{ url_for('download_certificate', filename='ca.crt') }}">Download CA</a>
                 {% endif %}
+            </div>
+
+            <div style="margin-top: 16px;">
+                <div class="small" style="margin-bottom: 8px;">
+                    Upload a PKCS#12 bundle (.pfx/.p12) that contains a certificate and private key. If valid, it will replace the current CA used by Squid SSL-bump.
+                </div>
+                <form class="form" action="{{ url_for('upload_certificate_pfx') }}" method="post" enctype="multipart/form-data">
+                    <div>
+                        <label for="pfx">PFX / P12 file</label>
+                        <input id="pfx" name="pfx" type="file" accept=".pfx,.p12,application/x-pkcs12" required>
+                    </div>
+                    <div>
+                        <label for="pfx_password">Password (optional)</label>
+                        <input id="pfx_password" name="pfx_password" type="password" placeholder="Leave blank if none">
+                    </div>
+                    <div class="actions">
+                        <button class="btn primary" type="submit">Upload and Use</button>
+                    </div>
+                </form>
             </div>
         </div>
     </section>

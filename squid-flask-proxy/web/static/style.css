@@ -262,6 +262,155 @@ a:hover{ color: white; }
   gap: 12px;
 }
 
+/* Web filtering category tiles */
+.webfilter-categories{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.webfilter-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+}
+
+.webfilter-actions{
+  display:flex;
+  align-items:center;
+  gap: 12px;
+}
+
+.webfilter-toggle{
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  cursor: pointer;
+  display:flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.webfilter-toggle:focus{ outline: none; }
+.webfilter-toggle:focus-visible{ box-shadow: 0 0 0 3px rgba(122,162,255,.22); }
+
+.webfilter-toggle-title{
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  color: rgba(255,255,255,.92);
+}
+
+.webfilter-toggle-state{
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.webfilter-toggle.is-enabled{
+  border-color: color-mix(in srgb, var(--ok) 38%, var(--border));
+  background: color-mix(in srgb, var(--ok) 14%, rgba(255,255,255,.02));
+}
+
+.webfilter-toggle.is-disabled{
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 14%, rgba(255,255,255,.02));
+}
+
+.webfilter-test-result{
+  display:inline-flex;
+  align-items:center;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.04);
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 30px;
+}
+
+.webfilter-test-result.is-hidden{
+  display: none;
+}
+
+.webfilter-test-result.is-allowed{
+  border-color: color-mix(in srgb, var(--ok) 38%, var(--border));
+  background: color-mix(in srgb, var(--ok) 14%, rgba(255,255,255,.02));
+  color: rgba(255,255,255,.92);
+}
+
+.webfilter-test-result.is-blocked{
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 14%, rgba(255,255,255,.02));
+  color: rgba(255,255,255,.92);
+}
+
+.webfilter-whitelist{
+  min-height: 140px;
+}
+
+.webfilter-cat{
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,.04);
+  box-shadow: none;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.webfilter-cat:focus{
+  outline: none;
+}
+
+.webfilter-cat:focus-visible{
+  box-shadow: 0 0 0 3px rgba(122,162,255,.22);
+}
+
+.webfilter-cat-name{
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  color: rgba(255,255,255,.92);
+}
+
+.webfilter-cat-count{
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.webfilter-cat.is-allowed{
+  border-color: color-mix(in srgb, var(--ok) 38%, var(--border));
+  background: color-mix(in srgb, var(--ok) 14%, rgba(255,255,255,.02));
+}
+
+.webfilter-cat.is-allowed:hover{
+  background: color-mix(in srgb, var(--ok) 18%, rgba(255,255,255,.03));
+}
+
+.webfilter-cat.is-blocked{
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 14%, rgba(255,255,255,.02));
+}
+
+.webfilter-cat.is-blocked:hover{
+  background: color-mix(in srgb, var(--danger) 18%, rgba(255,255,255,.03));
+}
+
 label{
   font-size: 12px;
   letter-spacing: .25px;

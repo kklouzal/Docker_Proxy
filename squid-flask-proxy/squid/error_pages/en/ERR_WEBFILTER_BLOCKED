@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blocked</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; }
+    .box { max-width: 720px; }
+    .title { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .muted { color: #555; }
+    code { background: #f4f4f4; padding: 0.1rem 0.25rem; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="title">This page is blocked</div>
+    <p class="muted">Your organization’s web filtering policy prevented access to this destination.</p>
+    <p><strong>Requested URL:</strong> <code>%U</code></p>
+    <p><strong>Client:</strong> <code>%a</code></p>
+    <p class="muted">If you believe this is an error, contact your administrator.</p>
+  </div>
+</body>
+</html>

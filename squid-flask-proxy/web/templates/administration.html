@@ -1,0 +1,93 @@
+{% extends "layout.html" %}
+
+{% block title %}Administration · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Administration</h1>
+<p class="page-subtitle">Manage admin users for the web panel.</p>
+
+{% if message %}
+<div class="card" style="margin-bottom: 12px;">
+    <div class="card-body">
+        {% if message_ok %}
+            <span class="badge ok">Success</span>
+        {% else %}
+            <span class="badge danger">Error</span>
+        {% endif %}
+        <span class="small" style="margin-left: 8px;">{{ message }}</span>
+    </div>
+</div>
+{% endif %}
+
+<div class="grid">
+    <section class="card split-left">
+        <div class="card-header">
+            <h2 class="card-title">Users</h2>
+            <span class="badge">Signed in as {{ current_user }}</span>
+        </div>
+        <div class="card-body">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Created</th>
+                        <th>Updated</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    <tr>
+                        <td>{{ u.username }}</td>
+                        <td class="small">{{ u.created_ts | datetimeformat }}</td>
+                        <td class="small">{{ u.updated_ts | datetimeformat }}</td>
+                        <td>
+                            <form action="{{ url_for('administration') }}" method="post" style="display:flex; gap: 8px; align-items: center;">
+                                <input type="hidden" name="action" value="set_password">
+                                <input type="hidden" name="username" value="{{ u.username }}">
+                                <input name="new_password" type="password" placeholder="New password" style="max-width: 220px;">
+                                <button class="btn" type="submit">Change</button>
+                            </form>
+                            <form action="{{ url_for('administration') }}" method="post" style="margin-top: 8px;">
+                                <input type="hidden" name="action" value="delete_user">
+                                <input type="hidden" name="username" value="{{ u.username }}">
+                                {% if u.username|lower == current_user|lower %}
+                                    <span class="small">Current user</span>
+                                {% else %}
+                                    <button class="btn" type="submit">Remove</button>
+                                {% endif %}
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <aside class="card split-right">
+        <div class="card-header">
+            <h2 class="card-title">Add User</h2>
+        </div>
+        <div class="card-body">
+            <form class="form" action="{{ url_for('administration') }}" method="post">
+                <input type="hidden" name="action" value="add_user">
+                <div>
+                    <label for="username">Username</label>
+                    <input id="username" name="username" type="text" required>
+                </div>
+                <div>
+                    <label for="password">Password</label>
+                    <input id="password" name="password" type="password" required>
+                </div>
+                <div class="actions">
+                    <button class="btn primary" type="submit">Add</button>
+                </div>
+            </form>
+            <div class="small" style="margin-top: 12px;">
+                Usernames allow letters, numbers, underscore, dash, dot.
+            </div>
+        </div>
+    </aside>
+</div>
+{% endblock %}

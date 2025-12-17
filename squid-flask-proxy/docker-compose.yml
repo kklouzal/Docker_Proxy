@@ -5,6 +5,7 @@ services:
       dockerfile: docker/Dockerfile
     ports:
       - "5000:5000"       # Flask UI
+      - "80:80"           # WPAD / PAC via dedicated port 80 listener
       - "3128:3128"       # HTTP proxy
       - "${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
     volumes:
@@ -13,7 +14,6 @@ services:
       - squid_ssl_db:/var/lib/ssl_db
       - squid_cache:/var/spool/squid
       - proxy_data:/var/lib/squid-flask-proxy
-      - clamav_db:/var/lib/squid-flask-proxy/clamav/db
     environment:
       SQUID_WORKERS: ${SQUID_WORKERS:-2}
       CICAP_PORT: ${CICAP_PORT:-14000}
@@ -29,4 +29,3 @@ volumes:
   squid_cache:
   squid_ssl_db:
   proxy_data:
-  clamav_db:
