@@ -34,6 +34,8 @@ class AuthStore:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def ensure_schema(self) -> None:

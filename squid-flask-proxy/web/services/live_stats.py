@@ -229,7 +229,27 @@ class LiveStatsStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
+
+    def _ingest_line_with_conn(self, conn: sqlite3.Connection, line: str) -> bool:
+        parsed = _parse_access_log_line(line)
+        if not parsed:
+            return False
+        ts, ip, result_code, size_bytes, domain, method, extras = parsed
+        if not domain:
+            return False
+
+        hit = _is_hit(result_code)
+        reason = _derive_not_cached_reason(domain, method, result_code, extras=extras) if not hit else ""
+
+        self._upsert_agg(conn, "domains", "domain", domain, ts, size_bytes, hit)
+        self._upsert_agg(conn, "clients", "ip", ip, ts, size_bytes, hit)
+        self._upsert_client_domain(conn, ip, domain, ts, size_bytes, hit)
+        if not hit:
+            self._upsert_client_domain_nocache(conn, ip, domain, ts, reason)
+        return True
 
     def init_db(self) -> None:
         with self._connect() as conn:
@@ -379,22 +399,8 @@ class LiveStatsStore:
         )
 
     def ingest_line(self, line: str) -> None:
-        parsed = _parse_access_log_line(line)
-        if not parsed:
-            return
-        ts, ip, result_code, size_bytes, domain, method, extras = parsed
-        if not domain:
-            return
-
-        hit = _is_hit(result_code)
-        reason = _derive_not_cached_reason(domain, method, result_code, extras=extras) if not hit else ""
-
         with self._connect() as conn:
-            self._upsert_agg(conn, "domains", "domain", domain, ts, size_bytes, hit)
-            self._upsert_agg(conn, "clients", "ip", ip, ts, size_bytes, hit)
-            self._upsert_client_domain(conn, ip, domain, ts, size_bytes, hit)
-            if not hit:
-                self._upsert_client_domain_nocache(conn, ip, domain, ts, reason)
+            self._ingest_line_with_conn(conn, line)
 
     def _read_last_lines(self, max_lines: int) -> List[str]:
         path = self.access_log_path
@@ -462,14 +468,35 @@ class LiveStatsStore:
                 if last_inode is None:
                     last_inode = inode
 
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    # Start at end so we don't reprocess the whole file.
-                    f.seek(0, os.SEEK_END)
-                    while True:
-                        line = f.readline()
-                        if line:
-                            self.ingest_line(line)
-                            continue
+                with self._connect() as conn:
+                    pending = 0
+                    last_commit = time.time()
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        # Start at end so we don't reprocess the whole file.
+                        f.seek(0, os.SEEK_END)
+                        while True:
+                            line = f.readline()
+                            if line:
+                                try:
+                                    if self._ingest_line_with_conn(conn, line):
+                                        pending += 1
+                                except Exception:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:
+                                        pass
+                                now = time.time()
+                                if pending >= 75 or (now - last_commit) >= 1.0:
+                                    try:
+                                        conn.commit()
+                                    except Exception:
+                                        try:
+                                            conn.rollback()
+                                        except Exception:
+                                            pass
+                                    pending = 0
+                                    last_commit = now
+                                continue
 
                         # Handle copytruncate: inode unchanged but file shrinks.
                         try:
@@ -488,6 +515,10 @@ class LiveStatsStore:
 
                         if inode2 is not None and last_inode is not None and inode2 != last_inode:
                             last_inode = inode2
+                            try:
+                                conn.commit()
+                            except Exception:
+                                pass
                             break
 
                         time.sleep(0.35)

@@ -24,6 +24,9 @@ from services.background_guard import acquire_background_lock
 import socket
 import re
 import secrets
+import csv
+import io
+from urllib.parse import urlparse
 from typing import Any, Dict
 
 app = Flask(__name__)
@@ -32,11 +35,21 @@ cert_manager = CertManager()
 
 # Session security: persist a secret key so login survives container restarts.
 _auth_store = get_auth_store()
-try:
-    app.secret_key = _auth_store.get_or_create_secret_key()
-except Exception:
-    # Fallback: sessions will reset on restart.
-    app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_urlsafe(48)
+_env_secret = (os.environ.get('FLASK_SECRET_KEY') or os.environ.get('SECRET_KEY') or '').strip()
+if _env_secret:
+    app.secret_key = _env_secret
+else:
+    try:
+        app.secret_key = _auth_store.get_or_create_secret_key()
+    except Exception:
+        # Fallback: sessions will reset on restart.
+        app.secret_key = secrets.token_urlsafe(48)
+
+# Cookie hardening. Defaults chosen to avoid breaking common HTTP deployments.
+app.config.setdefault('SESSION_COOKIE_HTTPONLY', True)
+app.config.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')
+if (os.environ.get('SESSION_COOKIE_SECURE') or '').strip() in ('1', 'true', 'True', 'yes', 'on'):
+    app.config['SESSION_COOKIE_SECURE'] = True
 
 # Ensure there is at least one login.
 try:
@@ -48,6 +61,23 @@ except Exception:
 def _is_logged_in() -> bool:
     u = session.get('user')
     return bool(u and isinstance(u, str))
+
+
+def _safe_next_url(next_url: str) -> str:
+    """Allow only local relative redirects to avoid open-redirect issues."""
+    candidate = (next_url or '').strip()
+    if not candidate:
+        return ''
+    # Disallow scheme-relative (//evil.com) and absolute URLs.
+    if candidate.startswith('//'):
+        return ''
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc:
+        return ''
+    # Only allow app-local paths.
+    if not candidate.startswith('/'):
+        return ''
+    return candidate
 
 
 @app.before_request
@@ -76,7 +106,7 @@ def login():
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip()
         password = request.form.get('password') or ''
-        next_url = (request.form.get('next') or '').strip()
+        next_url = _safe_next_url(request.form.get('next') or '')
         if _auth_store.verify_user(username, password):
             session['user'] = username
             return redirect(next_url or url_for('index'))
@@ -84,7 +114,7 @@ def login():
 
     if _is_logged_in():
         return redirect(url_for('index'))
-    next_url = (request.args.get('next') or '').strip()
+    next_url = _safe_next_url(request.args.get('next') or '')
     return render_template('login.html', error=None, next=next_url)
 
 
@@ -1710,10 +1740,12 @@ def live_export():
 
     def to_csv(data: list[dict]) -> str:
         headers = list(data[0].keys()) if data else []
-        out = [";".join(headers)]
+        buf = io.StringIO()
+        w = csv.writer(buf, delimiter=";", lineterminator="\n")
+        w.writerow(headers)
         for r in data:
-            out.append(";".join([str(r.get(h, '')) for h in headers]))
-        return "\n".join(out)
+            w.writerow([r.get(h, "") for h in headers])
+        return buf.getvalue()
 
     body = to_csv(rows)
     return app.response_class(body, mimetype='text/csv; charset=utf-8')

@@ -138,7 +138,33 @@ class SocksStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
+
+    def _ingest_line_with_conn(self, conn: sqlite3.Connection, line: str) -> bool:
+        s = (line or "").strip("\r\n")
+        if not s:
+            return False
+
+        # Avoid counting config/startup warnings as traffic events.
+        sl = s.lower()
+        if "checkconfig()" in sl:
+            return False
+
+        ts = _parse_ts(s)
+        action, _ = _classify(s)
+        protocol = _extract_protocol(s)
+        src_ip, src_port, dst, dst_port = _extract_endpoints(s)
+
+        conn.execute(
+            "INSERT INTO socks_events(ts, action, protocol, src_ip, src_port, dst, dst_port, msg) VALUES(?,?,?,?,?,?,?,?)",
+            (ts, action, protocol, src_ip, int(src_port or 0), dst, int(dst_port or 0), s[:600]),
+        )
+        # Cheap periodic prune.
+        if (ts % 97) == 0:
+            self._prune(conn)
+        return True
 
     def init_db(self) -> None:
         with self._connect() as conn:
@@ -189,28 +215,8 @@ class SocksStore:
             self._checkpoint_and_vacuum()
 
     def ingest_line(self, line: str) -> None:
-        s = (line or "").strip("\r\n")
-        if not s:
-            return
-
-        # Avoid counting config/startup warnings as traffic events.
-        sl = s.lower()
-        if "checkconfig()" in sl:
-            return
-
-        ts = _parse_ts(s)
-        action, _ = _classify(s)
-        protocol = _extract_protocol(s)
-        src_ip, src_port, dst, dst_port = _extract_endpoints(s)
-
         with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO socks_events(ts, action, protocol, src_ip, src_port, dst, dst_port, msg) VALUES(?,?,?,?,?,?,?,?)",
-                (ts, action, protocol, src_ip, int(src_port or 0), dst, int(dst_port or 0), s[:600]),
-            )
-            # Cheap periodic prune.
-            if (ts % 97) == 0:
-                self._prune(conn)
+            self._ingest_line_with_conn(conn, line)
 
     def _read_last_lines(self, max_lines: int) -> List[str]:
         path = self.log_path
@@ -242,8 +248,12 @@ class SocksStore:
         lines = self._read_last_lines(self.seed_max_lines)
         if not lines:
             return
-        for line in lines:
-            self.ingest_line(line)
+        with self._connect() as conn:
+            for line in lines:
+                try:
+                    self._ingest_line_with_conn(conn, line)
+                except Exception:
+                    continue
 
     def start_background(self) -> None:
         with self._start_lock:
@@ -272,13 +282,34 @@ class SocksStore:
                 if last_inode is None:
                     last_inode = inode
 
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    f.seek(0, os.SEEK_END)
-                    while True:
-                        line = f.readline()
-                        if line:
-                            self.ingest_line(line)
-                            continue
+                with self._connect() as conn:
+                    pending = 0
+                    last_commit = time.time()
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(0, os.SEEK_END)
+                        while True:
+                            line = f.readline()
+                            if line:
+                                try:
+                                    if self._ingest_line_with_conn(conn, line):
+                                        pending += 1
+                                except Exception:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:
+                                        pass
+                                now = time.time()
+                                if pending >= 50 or (now - last_commit) >= 1.0:
+                                    try:
+                                        conn.commit()
+                                    except Exception:
+                                        try:
+                                            conn.rollback()
+                                        except Exception:
+                                            pass
+                                    pending = 0
+                                    last_commit = now
+                                continue
 
                         # Handle copytruncate: inode unchanged but file shrinks.
                         try:
@@ -297,6 +328,10 @@ class SocksStore:
 
                         if inode2 is not None and last_inode is not None and inode2 != last_inode:
                             last_inode = inode2
+                            try:
+                                conn.commit()
+                            except Exception:
+                                pass
                             break
 
                         time.sleep(0.5)

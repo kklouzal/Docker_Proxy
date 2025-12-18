@@ -1,6 +1,7 @@
 import os
 import sys
 import tarfile
+import zipfile
 import tempfile
 import unittest
 
@@ -254,6 +255,29 @@ class TestWebcatBuildUt1(unittest.TestCase):
             self.assertEqual(aliases["proxy"], "proxies")
             cats = {c for _, c in pairs}
             self.assertEqual(cats, {"proxies"})
+
+    def test_zip_extraction_blocks_path_traversal(self):
+        webcat_build = self._import_webcat_build()
+
+        with tempfile.TemporaryDirectory(prefix="webcat_zip_") as td:
+            zip_path = os.path.join(td, "ut1.zip")
+            pwned_path = os.path.join(td, "pwned.txt")
+
+            # Build a zip with both a valid UT1 layout and a traversal entry.
+            with zipfile.ZipFile(zip_path, "w") as z:
+                z.writestr("blacklists/adult/domains", "example.com\nsub.example.com\n")
+                z.writestr("blacklists/drogue/domains", "drug.example\n")
+                z.writestr("../pwned.txt", "you should not see this")
+
+            pairs, source, aliases = webcat_build._collect(webcat_build.Path(zip_path))  # type: ignore[attr-defined]
+
+            self.assertTrue(source.startswith("ut1zip:"), source)
+            self.assertGreaterEqual(len(pairs), 3)
+            cats = {c for _, c in pairs}
+            self.assertIn("adult", cats)
+            self.assertIn("drogue", cats)
+            self.assertEqual(aliases, {})
+            self.assertFalse(os.path.exists(pwned_path), "zip traversal wrote outside extraction dir")
 
 if __name__ == '__main__':
     unittest.main()

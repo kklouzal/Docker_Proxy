@@ -204,6 +204,8 @@ class WebFilterStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
     def init_db(self) -> None:
@@ -262,14 +264,17 @@ class WebFilterStore:
 
         self.init_db()
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT pattern, added_ts FROM whitelist ORDER BY added_ts DESC, pattern ASC LIMIT ?",
-                (int(limit),),
-            ).fetchall()
-            out: List[Tuple[str, int]] = []
-            for r in rows:
-                out.append((str(r[0]), int(r[1]) if r[1] is not None else 0))
-            return out
+            return self._list_whitelist(conn, limit=int(limit))
+
+    def _list_whitelist(self, conn: sqlite3.Connection, limit: int) -> List[Tuple[str, int]]:
+        rows = conn.execute(
+            "SELECT pattern, added_ts FROM whitelist ORDER BY added_ts DESC, pattern ASC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        out: List[Tuple[str, int]] = []
+        for r in rows:
+            out.append((str(r[0]), int(r[1]) if r[1] is not None else 0))
+        return out
 
     def list_blocked_log(self, limit: int = 200) -> List[Dict[str, object]]:
         """Return recent blocked events for the UI.
@@ -333,7 +338,12 @@ class WebFilterStore:
         - More specific (longer) first within each group
         """
 
-        rows = self.list_whitelist(limit=10000)
+        self.init_db()
+        with self._connect() as conn:
+            return self._get_whitelist_patterns(conn)
+
+    def _get_whitelist_patterns(self, conn: sqlite3.Connection) -> List[str]:
+        rows = self._list_whitelist(conn, limit=10000)
         pats = [p for p, _ts in rows if p]
         exact = [p for p in pats if not p.startswith("*.")]
         wild = [p for p in pats if p.startswith("*.")]
@@ -364,25 +374,28 @@ class WebFilterStore:
     def get_settings(self) -> WebFilterSettings:
         self.init_db()
         with self._connect() as conn:
-            enabled = self._get(conn, "enabled", "0") == "1"
-            source_url = self._get(conn, "source_url", "")
-            blocked_raw = self._get(conn, "blocked_categories", "")
-            blocked = [c.strip() for c in blocked_raw.replace("\n", ",").split(",") if c.strip()]
-            whitelist = self.get_whitelist_patterns()
-            last_success = int(self._get(conn, "last_success", "0") or 0)
-            last_attempt = int(self._get(conn, "last_attempt", "0") or 0)
-            last_error = self._get(conn, "last_error", "")
-            next_run_ts = int(self._get(conn, "next_run_ts", "0") or 0)
-            return WebFilterSettings(
-                enabled=enabled,
-                source_url=source_url,
-                blocked_categories=blocked,
-                whitelist_domains=whitelist,
-                last_success=last_success,
-                last_attempt=last_attempt,
-                last_error=last_error,
-                next_run_ts=next_run_ts,
-            )
+            return self._get_settings(conn)
+
+    def _get_settings(self, conn: sqlite3.Connection) -> WebFilterSettings:
+        enabled = self._get(conn, "enabled", "0") == "1"
+        source_url = self._get(conn, "source_url", "")
+        blocked_raw = self._get(conn, "blocked_categories", "")
+        blocked = [c.strip() for c in blocked_raw.replace("\n", ",").split(",") if c.strip()]
+        whitelist = self._get_whitelist_patterns(conn)
+        last_success = int(self._get(conn, "last_success", "0") or 0)
+        last_attempt = int(self._get(conn, "last_attempt", "0") or 0)
+        last_error = self._get(conn, "last_error", "")
+        next_run_ts = int(self._get(conn, "next_run_ts", "0") or 0)
+        return WebFilterSettings(
+            enabled=enabled,
+            source_url=source_url,
+            blocked_categories=blocked,
+            whitelist_domains=whitelist,
+            last_success=last_success,
+            last_attempt=last_attempt,
+            last_error=last_error,
+            next_run_ts=next_run_ts,
+        )
 
     def set_settings(
         self,
@@ -635,7 +648,7 @@ class WebFilterStore:
         )
 
         # Whitelist is evaluated first.
-        wl_patterns = self.get_whitelist_patterns()
+        wl_patterns = list(s.whitelist_domains or [])
         os.makedirs(os.path.dirname(self.whitelist_path), exist_ok=True)
         try:
             with open(self.whitelist_path, "w", encoding="utf-8") as f:
@@ -672,27 +685,39 @@ class WebFilterStore:
     def _record_attempt(self, ok: bool, err: str) -> None:
         self.init_db()
         with self._connect() as conn:
-            self._set(conn, "last_attempt", str(_now()))
-            if ok:
-                self._set(conn, "last_success", str(_now()))
-                self._set(conn, "last_error", "")
-            else:
-                self._set(conn, "last_error", (err or "")[:500])
+            self._record_attempt_conn(conn, ok=ok, err=err)
+
+    def _record_attempt_conn(self, conn: sqlite3.Connection, *, ok: bool, err: str) -> None:
+        self._set(conn, "last_attempt", str(_now()))
+        if ok:
+            self._set(conn, "last_success", str(_now()))
+            self._set(conn, "last_error", "")
+        else:
+            self._set(conn, "last_error", (err or "")[:500])
 
     def _set_next_run(self, ts: int) -> None:
         self.init_db()
         with self._connect() as conn:
-            self._set(conn, "next_run_ts", str(int(ts)))
+            self._set_next_run_conn(conn, ts=int(ts))
+
+    def _set_next_run_conn(self, conn: sqlite3.Connection, *, ts: int) -> None:
+        self._set(conn, "next_run_ts", str(int(ts)))
 
     def _clear_refresh_requested(self) -> None:
         self.init_db()
         with self._connect() as conn:
-            self._set_meta(conn, "refresh_requested", "0")
+            self._clear_refresh_requested_conn(conn)
+
+    def _clear_refresh_requested_conn(self, conn: sqlite3.Connection) -> None:
+        self._set_meta(conn, "refresh_requested", "0")
 
     def _refresh_requested(self) -> bool:
         self.init_db()
         with self._connect() as conn:
-            return self._get_meta(conn, "refresh_requested", "0") == "1"
+            return self._refresh_requested_conn(conn)
+
+    def _refresh_requested_conn(self, conn: sqlite3.Connection) -> bool:
+        return self._get_meta(conn, "refresh_requested", "0") == "1"
 
     def _run_build(self, source_url: str) -> Tuple[bool, str]:
         """Run the builder inside the container (best-effort)."""
@@ -737,25 +762,44 @@ class WebFilterStore:
     def _loop(self) -> None:
         while True:
             try:
-                s = self.get_settings()
-                if s.enabled:
-                    now = _now()
+                self.init_db()
 
-                    if self._refresh_requested():
-                        ok, err = self._run_build(s.source_url)
-                        self._record_attempt(ok, err)
-                        self._clear_refresh_requested()
-                        # Always ensure next midnight is scheduled.
-                        self._set_next_run(_next_midnight_ts(now))
-                    else:
-                        next_ts = s.next_run_ts
+                # Read settings + refresh flag in a single connection to avoid extra
+                # opens/closes in this tight loop.
+                with self._connect() as conn:
+                    s = self._get_settings(conn)
+                    refresh = self._refresh_requested_conn(conn)
+
+                    if s.enabled:
+                        now = _now()
+                        # Ensure next_run_ts is initialized when enabled.
+                        next_ts = int(s.next_run_ts or 0)
                         if next_ts <= 0:
                             next_ts = _next_midnight_ts(now)
-                            self._set_next_run(next_ts)
-                        if now >= next_ts:
-                            ok, err = self._run_build(s.source_url)
-                            self._record_attempt(ok, err)
-                            self._set_next_run(_next_midnight_ts(now + 60))
+                            self._set_next_run_conn(conn, ts=next_ts)
+                    else:
+                        next_ts = 0
+
+                if not s.enabled:
+                    time.sleep(5.0)
+                    continue
+
+                now = _now()
+                do_build = False
+                if refresh:
+                    do_build = True
+                    next_after = _next_midnight_ts(now)
+                else:
+                    do_build = now >= int(next_ts or 0)
+                    next_after = _next_midnight_ts(now + 60)
+
+                if do_build:
+                    ok, err = self._run_build(s.source_url)
+                    with self._connect() as conn:
+                        self._record_attempt_conn(conn, ok=ok, err=err)
+                        if refresh:
+                            self._clear_refresh_requested_conn(conn)
+                        self._set_next_run_conn(conn, ts=next_after)
             except Exception:
                 pass
             time.sleep(5.0)

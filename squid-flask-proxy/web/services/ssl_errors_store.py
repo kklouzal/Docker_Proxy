@@ -131,7 +131,20 @@ class SslErrorsStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
+
+    def _ingest_line_with_conn(self, conn: sqlite3.Connection, line: str) -> bool:
+        ts, msg = _parse_cache_log_ts(line)
+        classified = _classify_ssl_error(msg)
+        if not classified:
+            return False
+        category, reason = classified
+        domain = _extract_domain(msg)
+        sample = (msg or "").strip()[:400]
+        self._upsert(conn, domain, category, reason, ts, sample)
+        return True
 
     def init_db(self) -> None:
         with self._connect() as conn:
@@ -195,16 +208,8 @@ class SslErrorsStore:
         )
 
     def ingest_line(self, line: str) -> None:
-        ts, msg = _parse_cache_log_ts(line)
-        classified = _classify_ssl_error(msg)
-        if not classified:
-            return
-        category, reason = classified
-        domain = _extract_domain(msg)
-        sample = (msg or "").strip()[:400]
-
         with self._connect() as conn:
-            self._upsert(conn, domain, category, reason, ts, sample)
+            self._ingest_line_with_conn(conn, line)
 
     def _read_last_lines(self, max_lines: int) -> List[str]:
         path = self.cache_log_path
@@ -326,13 +331,34 @@ class SslErrorsStore:
                 if last_inode is None:
                     last_inode = inode
 
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    f.seek(0, os.SEEK_END)
-                    while True:
-                        line = f.readline()
-                        if line:
-                            self.ingest_line(line)
-                            continue
+                with self._connect() as conn:
+                    pending = 0
+                    last_commit = time.time()
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(0, os.SEEK_END)
+                        while True:
+                            line = f.readline()
+                            if line:
+                                try:
+                                    if self._ingest_line_with_conn(conn, line):
+                                        pending += 1
+                                except Exception:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:
+                                        pass
+                                now = time.time()
+                                if pending >= 50 or (now - last_commit) >= 1.0:
+                                    try:
+                                        conn.commit()
+                                    except Exception:
+                                        try:
+                                            conn.rollback()
+                                        except Exception:
+                                            pass
+                                    pending = 0
+                                    last_commit = now
+                                continue
 
                         # Handle copytruncate: inode unchanged but file shrinks.
                         try:
@@ -350,6 +376,10 @@ class SslErrorsStore:
 
                         if inode2 is not None and last_inode is not None and inode2 != last_inode:
                             last_inode = inode2
+                            try:
+                                conn.commit()
+                            except Exception:
+                                pass
                             break
 
                         time.sleep(0.5)

@@ -11,6 +11,7 @@ import time
 import tarfile
 import urllib.request
 import zipfile
+import shutil
 import hashlib
 from pathlib import Path
 from urllib.parse import urlparse
@@ -198,8 +199,41 @@ def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
 
 def _extract_zip(zip_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_root = out_dir.resolve()
+    max_bytes = int(os.environ.get("WEBCAT_MAX_EXTRACT_BYTES", str(2 * 1024 * 1024 * 1024)))
+    if max_bytes <= 0:
+        max_bytes = 2 * 1024 * 1024 * 1024
+
+    total = 0
     with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(out_dir)
+        for info in z.infolist():
+            name = info.filename or ""
+            # Normalize separators and reject absolute/traversal paths.
+            name = name.replace("\\", "/")
+            if not name or name.startswith("/") or name.startswith("../") or "/../" in name:
+                continue
+
+            target = (out_dir / name).resolve()
+            try:
+                ok = str(target).startswith(str(out_root) + os.sep) or target == out_root
+            except Exception:
+                ok = False
+            if not ok:
+                continue
+
+            # Prevent zip bombs / runaway extraction.
+            file_size = int(getattr(info, "file_size", 0) or 0)
+            total += file_size
+            if total > max_bytes:
+                raise ValueError(f"Extracted data exceeded limit ({max_bytes} bytes).")
+
+            if getattr(info, "is_dir", None) and info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(info, "r") as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst, length=512 * 1024)
 
 
 def _extract_tar(tar_path: Path, out_dir: Path) -> None:

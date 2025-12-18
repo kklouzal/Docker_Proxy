@@ -60,6 +60,7 @@ class AdblockStore:
 
         self._blocklog_started = False
         self._blocklog_lock = threading.Lock()
+        self._last_events_prune_ts = 0
 
     def _connect(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -67,6 +68,8 @@ class AdblockStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
     def init_db(self) -> None:
@@ -239,14 +242,29 @@ class AdblockStore:
             return []
 
     def _blocklog_tail_loop(self) -> None:
+        conn: sqlite3.Connection | None = None
         while True:
             try:
-                self._ingest_new_cicap_lines()
+                if conn is None:
+                    conn = self._connect()
+                self._ingest_new_cicap_lines(conn)
+            except sqlite3.Error:
+                try:
+                    if conn is not None:
+                        conn.rollback()
+                        conn.close()
+                except Exception:
+                    pass
+                conn = None
             except Exception:
-                pass
+                try:
+                    if conn is not None:
+                        conn.rollback()
+                except Exception:
+                    pass
             time.sleep(1.0)
 
-    def _ingest_new_cicap_lines(self) -> None:
+    def _ingest_new_cicap_lines(self, conn: sqlite3.Connection) -> None:
         path = self.cicap_access_log_path
         if not path:
             return
@@ -259,47 +277,77 @@ class AdblockStore:
         inode = int(getattr(st, "st_ino", 0) or 0)
         size = int(getattr(st, "st_size", 0) or 0)
 
-        with self._connect() as conn:
-            try:
-                last_inode = int(self._get_meta(conn, "cicap_access_inode", "0") or 0)
-            except Exception:
-                last_inode = 0
-            try:
-                pos = int(self._get_meta(conn, "cicap_access_pos", "0") or 0)
-            except Exception:
-                pos = 0
+        try:
+            last_inode = int(self._get_meta(conn, "cicap_access_inode", "0") or 0)
+        except Exception:
+            last_inode = 0
+        try:
+            pos = int(self._get_meta(conn, "cicap_access_pos", "0") or 0)
+        except Exception:
+            pos = 0
 
-            if inode != 0 and last_inode != 0 and inode != last_inode:
-                # Log rotated/recreated.
-                pos = 0
-            if size < pos:
-                # Truncated.
-                pos = 0
+        if inode != 0 and last_inode != 0 and inode != last_inode:
+            # Log rotated/recreated.
+            pos = 0
+        if size < pos:
+            # Truncated.
+            pos = 0
 
-            # Read incremental bytes from last pos.
-            try:
-                with open(path, "rb") as f:
-                    f.seek(pos, os.SEEK_SET)
-                    data = f.read()
-                    new_pos = f.tell()
-            except Exception:
-                return
+        # Read incremental bytes from last pos.
+        try:
+            with open(path, "rb") as f:
+                f.seek(pos, os.SEEK_SET)
+                data = f.read()
+                new_pos = f.tell()
+        except Exception:
+            return
 
-            if not data:
-                # Still update inode if it changed (so we don't keep resetting).
+        if not data:
+            # Still update inode if it changed (so we don't keep resetting).
+            with conn:
                 self._set_meta(conn, "cicap_access_inode", str(inode))
                 self._set_meta(conn, "cicap_access_pos", str(pos))
-                return
+            return
 
-            text = data.decode("utf-8", errors="replace")
-            for ln in text.splitlines():
-                row = self._parse_cicap_access_line(ln)
-                if row:
-                    self._insert_event(conn, row)
+        created_ts = _now()
+        event_rows: list[tuple[int, str, str, str, int, str, int, str, int]] = []
+        text = data.decode("utf-8", errors="replace")
+        for ln in text.splitlines():
+            row = self._parse_cicap_access_line(ln)
+            if not row:
+                continue
+            event_rows.append(
+                (
+                    int(row.get("ts") or 0),
+                    str(row.get("src_ip") or "-"),
+                    str(row.get("method") or "-"),
+                    str(row.get("url") or ""),
+                    int(row.get("http_status") or 0),
+                    str(row.get("http_resp_line") or ""),
+                    int(row.get("icap_status") or 0),
+                    str(row.get("raw") or ""),
+                    created_ts,
+                )
+            )
+
+        with conn:
+            if event_rows:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO adblock_events(
+                        ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    event_rows,
+                )
 
             self._set_meta(conn, "cicap_access_inode", str(inode))
             self._set_meta(conn, "cicap_access_pos", str(new_pos))
-            self._prune_events(conn)
+
+            if event_rows:
+                if created_ts - int(self._last_events_prune_ts or 0) >= 60:
+                    self._prune_events(conn)
+                    self._last_events_prune_ts = created_ts
 
     def _parse_cicap_access_line(self, line: str) -> Optional[Dict[str, Any]]:
         raw = (line or "").strip("\r\n")
@@ -588,8 +636,9 @@ class AdblockStore:
 
     def set_enabled(self, enabled_map: Dict[str, bool]) -> None:
         with self._connect() as conn:
-            for key, enabled in enabled_map.items():
-                conn.execute("UPDATE adblock_lists SET enabled=? WHERE key=?", (1 if enabled else 0, key))
+            rows = [(1 if enabled else 0, key) for key, enabled in (enabled_map or {}).items()]
+            if rows:
+                conn.executemany("UPDATE adblock_lists SET enabled=? WHERE key=?", rows)
             self._bump_version(conn)
 
     def list_path(self, key: str) -> str:

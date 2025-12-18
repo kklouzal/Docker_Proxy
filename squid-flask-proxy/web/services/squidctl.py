@@ -1146,36 +1146,59 @@ class SquidController:
                 pass
 
     def start_squid(self):
+        # Best-effort. Prefer supervisor-managed start when available.
         try:
-            process = Popen(['squid', '-N', '-f', self.squid_conf_path], stdout=PIPE, stderr=PIPE)
-            stdout, stderr = process.communicate()
-            return stdout, stderr
+            p = run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
+                capture_output=True,
+                timeout=12,
+            )
+            if p.returncode == 0:
+                return p.stdout or b"", p.stderr or b""
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+        # Fallback: attempt direct start (daemonizes by default).
+        try:
+            p = run(["squid", "-f", self.squid_conf_path], capture_output=True, timeout=12)
+            return p.stdout or b"", p.stderr or b""
         except FileNotFoundError:
             return b"", b"squid binary not found"
+        except Exception as e:
+            return b"", str(e).encode("utf-8", errors="replace")
 
     def stop_squid(self):
         try:
-            process = Popen(['squid', '-k', 'shutdown'], stdout=PIPE, stderr=PIPE)
-            stdout, stderr = process.communicate()
-            return stdout, stderr
+            p = run(["squid", "-k", "shutdown"], capture_output=True, timeout=12)
+            return p.stdout or b"", p.stderr or b""
         except FileNotFoundError:
             return b"", b"squid binary not found"
+        except Exception as e:
+            return b"", str(e).encode("utf-8", errors="replace")
 
     def reload_squid(self):
         try:
-            process = Popen(['squid', '-k', 'reconfigure'], stdout=PIPE, stderr=PIPE)
-            stdout, stderr = process.communicate()
-            return stdout, stderr
+            p = run(["squid", "-k", "reconfigure"], capture_output=True, timeout=12)
+            return p.stdout or b"", p.stderr or b""
         except FileNotFoundError:
             return b"", b"squid binary not found"
+        except Exception as e:
+            return b"", str(e).encode("utf-8", errors="replace")
 
     def get_status(self):
         try:
-            process = Popen(['squid', '-k', 'check'], stdout=PIPE, stderr=PIPE)
-            stdout, stderr = process.communicate()
+            p = run(["squid", "-k", "check"], capture_output=True, timeout=6)
+            stdout = p.stdout or b""
+            stderr = p.stderr or b""
+            if p.returncode != 0 and not stderr:
+                stderr = stdout or f"squid check failed rc={p.returncode}".encode("utf-8")
             return stdout, stderr
         except FileNotFoundError:
             return b"", b"squid binary not found"
+        except Exception as e:
+            return b"", str(e).encode("utf-8", errors="replace")
 
     def get_current_config(self):
         if os.path.exists(self.squid_conf_path):

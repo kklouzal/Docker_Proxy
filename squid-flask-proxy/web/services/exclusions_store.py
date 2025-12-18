@@ -34,6 +34,8 @@ class ExclusionsStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
     def init_db(self) -> None:
@@ -54,6 +56,10 @@ class ExclusionsStore:
         with self._connect() as conn:
             row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
             return str(row[0]) if row else None
+
+    def _get_setting_conn(self, conn: sqlite3.Connection, key: str) -> Optional[str]:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return str(row[0]) if row else None
 
     def set_exclude_private_nets(self, enabled: bool) -> None:
         self._set_setting("exclude_private_nets", "1" if enabled else "0")
@@ -108,7 +114,8 @@ class ExclusionsStore:
         with self._connect() as conn:
             domains = [str(r[0]) for r in conn.execute("SELECT domain FROM domains ORDER BY domain ASC").fetchall()]
             src = [str(r[0]) for r in conn.execute("SELECT cidr FROM src_nets ORDER BY cidr ASC").fetchall()]
-        enabled = self.get_exclude_private_nets()
+            v = self._get_setting_conn(conn, "exclude_private_nets")
+            enabled = True if v is None else (v == "1")
         # Destination-network exclusions are intentionally limited to the built-in private/local ranges.
         # (Custom destination CIDR exclusions are not exposed by the UI.)
         return Exclusions(domains=domains, dst_nets=[], src_nets=src, exclude_private_nets=enabled)
