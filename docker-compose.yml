@@ -1,6 +1,10 @@
+name: squid-flask-proxy
+
 services:
   proxy:
-    image: ghcr.io/kklouzal/docker_proxy:main
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     ports:
       - "5000:5000"       # Flask UI
       - "80:80"           # WPAD / PAC via dedicated port 80 listener
