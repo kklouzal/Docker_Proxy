@@ -3,10 +3,16 @@ import re
 import secrets
 import sqlite3
 import time
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_AUTH_DB = "/var/lib/squid-flask-proxy/auth.db"
@@ -78,7 +84,12 @@ class AuthStore:
         try:
             os.chmod(self.secret_path, 0o600)
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "auth_store.secret_chmod",
+                interval_seconds=300.0,
+                message="Failed to chmod Flask secret key file",
+            )
         return secret
 
     def any_users(self) -> bool:

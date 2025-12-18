@@ -32,6 +32,7 @@
     </div>
     <div class="card-body">
       <form class="form" method="post" action="{{ url_for('pac_builder') }}">
+        {{ csrf_field() }}
         <input type="hidden" name="action" value="create" />
 
         <div class="row-2">
@@ -108,6 +109,7 @@
           </div>
           <div class="card-body">
             <form class="form" method="post" action="{{ url_for('pac_builder') }}">
+              {{ csrf_field() }}
               <input type="hidden" name="action" value="update" />
               <input type="hidden" name="profile_id" value="{{ p.id }}" />
 
@@ -160,6 +162,7 @@
             </form>
 
             <form method="post" action="{{ url_for('pac_builder') }}" style="margin-top: 8px;">
+              {{ csrf_field() }}
               <input type="hidden" name="action" value="delete" />
               <input type="hidden" name="profile_id" value="{{ p.id }}" />
               <button class="btn" type="submit">Delete</button>

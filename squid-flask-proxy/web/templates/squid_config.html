@@ -47,6 +47,7 @@
             </div>
             <div class="card-body">
                 <form class="form" action="{{ url_for('squid_config', tab=tab) }}" method="post">
+                    {{ csrf_field() }}
                     <input type="hidden" name="tab" value="{{ tab }}" />
                     <label for="config_text">Configuration file</label>
                     <textarea id="config_text" name="config_text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">{{ config_text }}</textarea>
@@ -76,6 +77,7 @@
         </section>
 
         <form id="safe-caching-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="caching" />
         </form>
 
@@ -250,6 +252,7 @@
             </div>
             <div class="card-body">
                 <form class="form" action="{{ url_for('apply_cache_overrides') }}" method="post">
+                    {{ csrf_field() }}
                     <div class="small" style="margin-bottom: 10px;">
                         These settings intentionally override cache-control semantics to increase caching. Use with care.
                     </div>
@@ -311,6 +314,7 @@
         </section>
 
         <form id="safe-timeouts-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="timeouts" />
         </form>
 
@@ -386,6 +390,7 @@
         </section>
 
         <form id="safe-logging-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="logging" />
         </form>
 
@@ -434,6 +439,7 @@
         </section>
 
         <form id="safe-network-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="network" />
         </form>
 
@@ -500,6 +506,7 @@
         </section>
 
         <form id="safe-dns-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="dns" />
         </form>
 
@@ -578,6 +585,7 @@
         </section>
 
         <form id="safe-ssl-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="ssl" />
         </form>
 
@@ -637,6 +645,7 @@
         </section>
 
         <form id="safe-icap-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="icap" />
         </form>
 
@@ -725,6 +734,7 @@
         </section>
 
         <form id="safe-privacy-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="privacy" />
         </form>
 
@@ -792,6 +802,7 @@
         </section>
 
         <form id="safe-limits-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="limits" />
         </form>
 
@@ -859,6 +870,7 @@
         </section>
 
         <form id="safe-performance-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="performance" />
         </form>
 
@@ -928,6 +940,7 @@
         </section>
 
         <form id="safe-http-form" action="{{ url_for('apply_safe_caching') }}" method="post">
+            {{ csrf_field() }}
             <input type="hidden" name="form_kind" value="http" />
         </form>
 

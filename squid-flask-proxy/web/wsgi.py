@@ -1,4 +1,9 @@
-from app import app
+"""WSGI entrypoint used by Gunicorn.
 
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
+supervisord runs: `gunicorn -b 0.0.0.0:5000 wsgi:app`
+"""
+
+from app import app as app
+
+# Common WSGI convention for other servers/tools.
+application = app

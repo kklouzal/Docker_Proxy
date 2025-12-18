@@ -3,11 +3,17 @@ from __future__ import annotations
 import threading
 import time
 
+import logging
+
 from services.adblock_store import get_adblock_store
 from services.audit_store import get_audit_store
 from services.live_stats import get_store
 from services.socks_store import get_socks_store
 from services.ssl_errors_store import get_ssl_errors_store
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 _started = False
@@ -40,7 +46,12 @@ def start_housekeeping(*, retention_days: int = 30, interval_seconds: int = 24 *
             try:
                 _run_once(retention_days=int(retention_days))
             except Exception:
-                pass
+                log_exception_throttled(
+                    logger,
+                    "housekeeping.loop",
+                    interval_seconds=300,
+                    message="Housekeeping run failed",
+                )
             time.sleep(float(interval_seconds))
 
     t = threading.Thread(target=loop, name="sqlite-housekeeping", daemon=True)

@@ -14,6 +14,7 @@
   {% endif %}
 
   <form method="post" action="{{ url_for('clamav_toggle') }}" style="display:inline;">
+    {{ csrf_field() }}
     {% if clamav_enabled %}
       <button class="btn" type="submit" name="action" value="disable">Disable</button>
     {% else %}
@@ -31,9 +32,11 @@
   {% endif %}
 
   <form method="post" action="{{ url_for('clamav_test_eicar') }}" style="display:inline; margin-left: 12px;">
+    {{ csrf_field() }}
     <button class="btn" type="submit">Test EICAR</button>
   </form>
   <form method="post" action="{{ url_for('clamav_test_icap') }}" style="display:inline; margin-left: 8px;">
+    {{ csrf_field() }}
     <button class="btn" type="submit">Send sample ICAP</button>
   </form>
 

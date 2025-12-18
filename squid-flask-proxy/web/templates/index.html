@@ -131,9 +131,11 @@
             <pre>{{ proxy_status }}</pre>
             <div class="actions" style="margin-top: 12px;">
                 <form action="{{ url_for('reload_squid') }}" method="post">
+                    {{ csrf_field() }}
                     <button class="btn primary" type="submit">Reload Squid</button>
                 </form>
                 <form action="{{ url_for('clear_caches') }}" method="post">
+                    {{ csrf_field() }}
                     <button class="btn" type="submit">Clear caches</button>
                 </form>
                 <a class="btn" href="{{ url_for('squid_config') }}">Edit config</a>

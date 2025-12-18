@@ -37,6 +37,7 @@
     {% endif %}
 
     <form method="post" class="form" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
       <input type="hidden" name="action" value="add">
       <label for="cidr">Add CIDR</label>
       <div style="display:flex; gap:10px; align-items:center;">
@@ -63,6 +64,7 @@
                 <td class="small">{{ fmt_ts(ts) if ts else '' }}</td>
                 <td>
                   <form method="post" action="{{ url_for('sslfilter') }}" style="margin:0;">
+                    {{ csrf_field() }}
                     <input type="hidden" name="action" value="remove">
                     <input type="hidden" name="cidr" value="{{ cidr }}">
                     <button class="btn ghost" type="submit">Remove</button>

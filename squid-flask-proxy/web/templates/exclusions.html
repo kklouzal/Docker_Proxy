@@ -20,6 +20,7 @@
     </div>
     <div class="card-body">
       <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        {{ csrf_field() }}
         <input type="hidden" name="action" value="add_domain" />
         <label for="domain">Add domain</label>
         <input id="domain" name="domain" type="text" placeholder="example.com" />
@@ -39,6 +40,7 @@
               <td style="font-family: var(--mono);">{{ d }}</td>
               <td class="num">
                 <form method="post" action="{{ url_for('exclusions') }}" style="display:inline;">
+                  {{ csrf_field() }}
                   <input type="hidden" name="action" value="remove_domain" />
                   <input type="hidden" name="domain" value="{{ d }}" />
                   <button class="btn" type="submit">Remove</button>
@@ -61,6 +63,7 @@
     </div>
     <div class="card-body">
       <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        {{ csrf_field() }}
         <input type="hidden" name="action" value="toggle_private" />
         <label class="check-row">
           <input class="check" type="checkbox" name="exclude_private_nets" {% if ex.exclude_private_nets %}checked{% endif %} />
@@ -87,6 +90,7 @@
     </div>
     <div class="card-body">
       <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        {{ csrf_field() }}
         <input type="hidden" name="action" value="add_src" />
         <label for="src">Add client CIDR</label>
         <input id="src" name="cidr" type="text" placeholder="192.168.1.0/24" />
@@ -106,6 +110,7 @@
               <td style="font-family: var(--mono);">{{ c }}</td>
               <td class="num">
                 <form method="post" action="{{ url_for('exclusions') }}" style="display:inline;">
+                  {{ csrf_field() }}
                   <input type="hidden" name="action" value="remove_src" />
                   <input type="hidden" name="cidr" value="{{ c }}" />
                   <button class="btn" type="submit">Remove</button>
@@ -128,6 +133,7 @@
     </div>
     <div class="card-body">
       <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        {{ csrf_field() }}
         <input type="hidden" name="action" value="apply" />
         <div class="actions">
           <button class="btn primary" type="submit">Save & Apply to Squid</button>

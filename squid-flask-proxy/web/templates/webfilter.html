@@ -28,6 +28,7 @@
       {% endif %}
 
       <form method="post" class="form" action="{{ url_for('webfilter', tab='whitelist') }}">
+        {{ csrf_field() }}
         <input type="hidden" name="tab" value="whitelist">
         <input type="hidden" name="action" value="whitelist_add">
         <label for="whitelist_domain">Add domain</label>
@@ -55,6 +56,7 @@
                   <td class="small">{{ fmt_ts(ts) if ts else '' }}</td>
                   <td>
                     <form method="post" action="{{ url_for('webfilter', tab='whitelist') }}" style="margin:0;">
+                      {{ csrf_field() }}
                       <input type="hidden" name="tab" value="whitelist">
                       <input type="hidden" name="action" value="whitelist_remove">
                       <input type="hidden" name="pattern" value="{{ pat }}">
@@ -109,6 +111,7 @@
 
 {% else %}
   <form method="post" class="card" action="{{ url_for('webfilter', tab='categories') }}">
+    {{ csrf_field() }}
     <input type="hidden" name="tab" value="categories">
     <input type="hidden" name="action" value="save">
 

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sqlite3
 import time
 from typing import Optional
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 class AuditStore:
@@ -105,13 +111,28 @@ class AuditStore:
                 try:
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "audit_store.wal_checkpoint",
+                        interval_seconds=300.0,
+                        message="Audit DB wal_checkpoint(TRUNCATE) failed",
+                    )
                 try:
                     conn.execute("VACUUM;")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "audit_store.vacuum",
+                        interval_seconds=300.0,
+                        message="Audit DB VACUUM failed",
+                    )
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "audit_store.checkpoint_vacuum",
+                interval_seconds=300.0,
+                message="Audit DB checkpoint/vacuum failed",
+            )
 
     def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
         """Prune old audit/config apply history.

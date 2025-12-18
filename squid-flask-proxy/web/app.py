@@ -20,6 +20,7 @@ from services.sslfilter_store import get_sslfilter_store
 from services.pac_profiles_store import get_pac_profiles_store
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
+from services.errors import public_error_message
 
 import socket
 import re
@@ -28,10 +29,20 @@ import csv
 import io
 from urllib.parse import urlparse
 from typing import Any, Dict
+from markupsafe import Markup
 
 app = Flask(__name__)
 squid_controller = SquidController()
 cert_manager = CertManager()
+
+# Global request body limit (bytes). Keep reasonably above common form posts.
+try:
+    app.config.setdefault(
+        'MAX_CONTENT_LENGTH',
+        int((os.environ.get('MAX_CONTENT_LENGTH') or str(16 * 1024 * 1024)).strip()),
+    )
+except Exception:
+    app.config.setdefault('MAX_CONTENT_LENGTH', 16 * 1024 * 1024)
 
 # Session security: persist a secret key so login survives container restarts.
 _auth_store = get_auth_store()
@@ -78,6 +89,68 @@ def _safe_next_url(next_url: str) -> str:
     if not candidate.startswith('/'):
         return ''
     return candidate
+
+
+def _csrf_disabled() -> bool:
+    return (os.environ.get('DISABLE_CSRF') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+
+
+def _ensure_csrf_token() -> str:
+    tok = session.get('_csrf_token')
+    if not tok or not isinstance(tok, str):
+        tok = secrets.token_urlsafe(32)
+        session['_csrf_token'] = tok
+    return tok
+
+
+@app.before_request
+def _csrf_guard():
+    if _csrf_disabled():
+        return None
+    if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        return None
+
+    sent = (request.headers.get('X-CSRF-Token') or '').strip()
+    if not sent:
+        sent = (request.form.get('csrf_token') or '').strip()
+
+    expected = _ensure_csrf_token()
+    if not sent or not secrets.compare_digest(sent, expected):
+        abort(403)
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    # Conservative baseline. Avoid breaking existing inline scripts/styles.
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+    resp.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    resp.headers.setdefault('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
+    try:
+        if (resp.mimetype or '').lower().startswith('text/html'):
+            resp.headers.setdefault(
+                'Content-Security-Policy',
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
+            )
+    except Exception:
+        pass
+    return resp
+
+
+@app.context_processor
+def _inject_csrf():
+    token = _ensure_csrf_token()
+
+    def csrf_field() -> Markup:
+        return Markup(f'<input type="hidden" name="csrf_token" value="{token}">')
+
+    return {
+        'csrf_token': token,
+        'csrf_field': csrf_field,
+    }
 
 
 @app.before_request
@@ -832,12 +905,11 @@ def _check_clamd() -> Dict[str, Any]:
     except Exception:
         pass
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(0.6)
-        s.connect(sock_path)
-        s.sendall(b"PING\n")
-        data = s.recv(64)
-        s.close()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(0.6)
+            s.connect(sock_path)
+            s.sendall(b"PING\n")
+            data = s.recv(64)
         ok = data.startswith(b"PONG")
         return {"ok": bool(ok), "detail": (data.decode('ascii', errors='replace').strip() or 'no data')}
     except Exception as e:
@@ -850,6 +922,7 @@ def _test_eicar() -> Dict[str, Any]:
     if not sock_path:
         sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
     data = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+    tmp_path = ""
     try:
         if not os.path.exists(sock_path):
             return {"ok": False, "detail": "starting (clamd socket not ready yet)"}
@@ -862,29 +935,29 @@ def _test_eicar() -> Dict[str, Any]:
         with open(tmp_path, 'wb') as f:
             f.write(data)
 
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1.5)
-        s.connect(sock_path)
-        s.sendall((f"SCAN {tmp_path}\n").encode('utf-8'))
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(1.5)
+            s.connect(sock_path)
+            s.sendall((f"SCAN {tmp_path}\n").encode('utf-8'))
 
-        buf = b""
-        while b"\n" not in buf and len(buf) < 4096:
-            chunk = s.recv(512)
-            if not chunk:
-                break
-            buf += chunk
-        s.close()
-
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+            buf = b""
+            while b"\n" not in buf and len(buf) < 4096:
+                chunk = s.recv(512)
+                if not chunk:
+                    break
+                buf += chunk
 
         text = buf.decode('ascii', errors='replace') if buf else ''
         ok = ('Eicar' in text) or ('FOUND' in text)
         return {"ok": ok, "detail": text or 'no data'}
     except Exception as e:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 @app.route('/clamav', methods=['GET'])
@@ -1807,7 +1880,22 @@ def upload_certificate_pfx():
     if request.content_length is not None and request.content_length > (10 * 1024 * 1024):
         return redirect(url_for('certs', ok='0', msg='Upload too large (max 10MB).'))
 
-    pfx_bytes = pfx_file.read() or b''
+    # Read with a hard cap even if Content-Length is missing or incorrect.
+    max_pfx_bytes = 10 * 1024 * 1024
+    buf = bytearray()
+    try:
+        stream = getattr(pfx_file, 'stream', None) or pfx_file
+        while True:
+            chunk = stream.read(512 * 1024)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_pfx_bytes:
+                return redirect(url_for('certs', ok='0', msg='Upload too large (max 10MB).'))
+    except Exception:
+        return redirect(url_for('certs', ok='0', msg='Failed to read upload.'))
+
+    pfx_bytes = bytes(buf)
     result = install_pfx_as_ca(cert_manager.ca_dir, pfx_bytes, password=password)
 
     if result.ok:
@@ -1871,7 +1959,8 @@ def administration():
 
             return redirect(url_for('administration', ok='0', msg='Unknown action.'))
         except Exception as e:
-            return redirect(url_for('administration', ok='0', msg=str(e)))
+            app.logger.exception("Administration action failed")
+            return redirect(url_for('administration', ok='0', msg=public_error_message(e)))
 
     users = []
     try:

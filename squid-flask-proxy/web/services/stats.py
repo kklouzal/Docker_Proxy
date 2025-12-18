@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -10,6 +11,11 @@ import csv
 import io
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 _CACHE_LOCK = threading.Lock()
@@ -25,6 +31,10 @@ _CACHE_HIT_RATE_INFLIGHT = False
 _CACHE_HIT_RATE_TS = 0.0
 _CACHE_HIT_RATE_VALUE: Optional[Dict[str, Optional[float]]] = None
 _CACHE_HIT_RATE_SOURCE_VALUE: str = ""
+
+_CACHE_CPU_INFLIGHT = False
+_CACHE_CPU_TS = 0.0
+_CACHE_CPU_VALUE: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -93,7 +103,12 @@ def get_meminfo() -> Dict[str, Optional[int]]:
         if avail_kib:
             out["available"] = int(avail_kib.group(1)) * 1024
     except Exception:
-        pass
+        log_exception_throttled(
+            logger,
+            "stats.meminfo",
+            interval_seconds=300.0,
+            message="Failed to read /proc/meminfo",
+        )
     return out
 
 
@@ -257,6 +272,12 @@ def get_stats() -> Dict[str, Any]:
     dir_size_ttl = max(5, int(os.environ.get("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "60")))
     disk_usage_ttl = max(2, int(os.environ.get("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "15")))
     hit_rate_ttl = max(1, int(os.environ.get("STATS_CACHE_HIT_RATE_TTL_SECONDS", "5")))
+    cpu_ttl = max(1, int(os.environ.get("STATS_CACHE_CPU_TTL_SECONDS", "2")))
+
+    try:
+        cpu_sample_seconds = float(os.environ.get("STATS_CPU_SAMPLE_SECONDS", "0.15"))
+    except Exception:
+        cpu_sample_seconds = 0.15
 
     mem = get_meminfo()
     used_mem = None
@@ -359,10 +380,41 @@ def get_stats() -> Dict[str, Any]:
 
     hit, hit_source, mgr_available = _maybe_get_hit_rate()
 
+    def _maybe_get_cpu() -> Dict[str, Any]:
+        global _CACHE_CPU_INFLIGHT, _CACHE_CPU_TS, _CACHE_CPU_VALUE
+        with _CACHE_LOCK:
+            cached = _CACHE_CPU_VALUE
+            age_ok = (now_mono - _CACHE_CPU_TS) < float(cpu_ttl)
+            inflight = _CACHE_CPU_INFLIGHT
+        if cached is not None and age_ok:
+            return cached
+        if inflight and cached is not None:
+            return cached
+
+        with _CACHE_LOCK:
+            if _CACHE_CPU_INFLIGHT and _CACHE_CPU_VALUE is not None:
+                return _CACHE_CPU_VALUE
+            _CACHE_CPU_INFLIGHT = True
+
+        try:
+            value: Dict[str, Any] = {
+                "util_percent": get_cpu_utilization_percent(sample_seconds=cpu_sample_seconds),
+                "loadavg": get_loadavg(),
+            }
+            with _CACHE_LOCK:
+                _CACHE_CPU_VALUE = value
+                _CACHE_CPU_TS = time.monotonic()
+            return value
+        finally:
+            with _CACHE_LOCK:
+                _CACHE_CPU_INFLIGHT = False
+
+    cpu = _maybe_get_cpu()
+
     return {
         "cpu": {
-            "util_percent": get_cpu_utilization_percent(),
-            "loadavg": get_loadavg(),
+            "util_percent": cpu.get("util_percent"),
+            "loadavg": cpu.get("loadavg"),
         },
         "memory": {
             "total_bytes": mem.get("total"),

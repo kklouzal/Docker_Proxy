@@ -35,6 +35,7 @@
             </div>
             <div class="actions" style="margin-top: 12px;">
                 <form action="{{ url_for('generate_certificate') }}" method="post">
+                    {{ csrf_field() }}
                     <button class="btn primary" type="submit">Generate/Ensure CA</button>
                 </form>
                 {% if certificate %}
@@ -49,6 +50,7 @@
                     Upload a PKCS#12 bundle (.pfx/.p12) that contains a certificate and private key. If valid, it will replace the current CA used by Squid SSL-bump.
                 </div>
                 <form class="form" action="{{ url_for('upload_certificate_pfx') }}" method="post" enctype="multipart/form-data">
+                    {{ csrf_field() }}
                     <div>
                         <label for="pfx">PFX / P12 file</label>
                         <input id="pfx" name="pfx" type="file" accept=".pfx,.p12,application/x-pkcs12" required>

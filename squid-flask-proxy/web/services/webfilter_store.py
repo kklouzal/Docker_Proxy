@@ -9,6 +9,14 @@ from dataclasses import dataclass
 from subprocess import run
 from typing import Dict, List, Optional, Set, Tuple
 
+import logging
+
+from services.errors import public_error_message
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
+
 
 _DEFAULT_SOURCE_URL = "https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz"
 
@@ -747,7 +755,12 @@ class WebFilterStore:
                 return False, (err or out or f"builder failed rc={p.returncode}").strip()
             return True, ""
         except Exception as e:
-            return False, f"{type(e).__name__}: {e}"
+            logger.exception("webfilter build failed")
+            return False, public_error_message(
+                e,
+                default="Build failed. Check server logs for details.",
+                max_len=400,
+            )
 
     def start_background(self) -> None:
         with self._lock:
@@ -801,7 +814,12 @@ class WebFilterStore:
                             self._clear_refresh_requested_conn(conn)
                         self._set_next_run_conn(conn, ts=next_after)
             except Exception:
-                pass
+                log_exception_throttled(
+                    logger,
+                    "webfilter_store.loop",
+                    interval_seconds=30,
+                    message="webfilter background loop iteration failed",
+                )
             time.sleep(5.0)
 
 

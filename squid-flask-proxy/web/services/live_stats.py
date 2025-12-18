@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
@@ -9,6 +10,11 @@ import io
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -321,13 +327,28 @@ class LiveStatsStore:
                 try:
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "live_stats.wal_checkpoint",
+                        interval_seconds=300.0,
+                        message="Live stats DB wal_checkpoint(TRUNCATE) failed",
+                    )
                 try:
                     conn.execute("VACUUM;")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "live_stats.vacuum",
+                        interval_seconds=300.0,
+                        message="Live stats DB VACUUM failed",
+                    )
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "live_stats.checkpoint_vacuum",
+                interval_seconds=300.0,
+                message="Live stats DB checkpoint/vacuum failed",
+            )
 
     def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
         """Prune stale aggregate rows.
@@ -484,7 +505,12 @@ class LiveStatsStore:
                                     try:
                                         conn.rollback()
                                     except Exception:
-                                        pass
+                                        log_exception_throttled(
+                                            logger,
+                                            "live_stats.rollback.ingest",
+                                            interval_seconds=300.0,
+                                            message="Live stats tailer rollback failed after ingest error",
+                                        )
                                 now = time.time()
                                 if pending >= 75 or (now - last_commit) >= 1.0:
                                     try:
@@ -493,36 +519,76 @@ class LiveStatsStore:
                                         try:
                                             conn.rollback()
                                         except Exception:
-                                            pass
+                                            log_exception_throttled(
+                                                logger,
+                                                "live_stats.rollback.commit",
+                                                interval_seconds=300.0,
+                                                message="Live stats tailer rollback failed after commit error",
+                                            )
                                     pending = 0
                                     last_commit = now
                                 continue
 
-                        # Handle copytruncate: inode unchanged but file shrinks.
-                        try:
-                            if os.path.getsize(path) < f.tell():
-                                f.seek(0, os.SEEK_SET)
-                                continue
-                        except Exception:
-                            pass
+                            # EOF/idle: commit any pending rows so UI reflects the latest
+                            # data even if the log is quiet.
+                            now = time.time()
+                            if pending and (now - last_commit) >= 1.0:
+                                try:
+                                    conn.commit()
+                                except Exception:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:
+                                        log_exception_throttled(
+                                            logger,
+                                            "live_stats.rollback.idle_commit",
+                                            interval_seconds=300.0,
+                                            message="Live stats tailer rollback failed after idle commit error",
+                                        )
+                                pending = 0
+                                last_commit = now
 
-                        # Handle log rotation by checking inode.
-                        try:
-                            st2 = os.stat(path)
-                            inode2 = getattr(st2, "st_ino", None)
-                        except OSError:
-                            inode2 = None
-
-                        if inode2 is not None and last_inode is not None and inode2 != last_inode:
-                            last_inode = inode2
+                            # Handle copytruncate: inode unchanged but file shrinks.
                             try:
-                                conn.commit()
+                                if os.path.getsize(path) < f.tell():
+                                    f.seek(0, os.SEEK_SET)
+                                    continue
                             except Exception:
-                                pass
-                            break
+                                log_exception_throttled(
+                                    logger,
+                                    "live_stats.copytruncate",
+                                    interval_seconds=300.0,
+                                    message="Live stats tailer copytruncate check failed",
+                                )
 
-                        time.sleep(0.35)
+                            # Handle log rotation by checking inode.
+                            try:
+                                st2 = os.stat(path)
+                                inode2 = getattr(st2, "st_ino", None)
+                            except OSError:
+                                inode2 = None
+
+                            if inode2 is not None and last_inode is not None and inode2 != last_inode:
+                                last_inode = inode2
+                                try:
+                                    conn.commit()
+                                except Exception:
+                                    log_exception_throttled(
+                                        logger,
+                                        "live_stats.commit.rotate",
+                                        interval_seconds=300.0,
+                                        message="Live stats tailer final commit failed during rotation",
+                                    )
+                                break
+
+                            time.sleep(0.35)
             except Exception:
+                log_exception_throttled(
+                    logger,
+                    "live_stats.loop",
+                    interval_seconds=300.0,
+                    message="Live stats tailer loop failed",
+                )
                 time.sleep(1.0)
 
     def _query_rows(self, sql: str, params: Tuple[Any, ...]) -> List[Row]:

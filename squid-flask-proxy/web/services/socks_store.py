@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -7,6 +8,11 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -95,7 +101,12 @@ def _extract_endpoints(line: str) -> Tuple[str, int, str, int]:
             dst_ip, dst_port_s = dot_tokens[-1]
             return src_ip, int(src_port_s), dst_ip.lower(), int(dst_port_s)
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "socks_store.extract_endpoints.dot",
+                interval_seconds=300.0,
+                message="Failed to parse SOCKS endpoints from ip.port tokens",
+            )
     for pat in _FROM_TO_PATTERNS:
         m = pat.search(s)
         if not m:
@@ -198,13 +209,28 @@ class SocksStore:
                 try:
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "socks_store.wal_checkpoint",
+                        interval_seconds=300.0,
+                        message="SOCKS DB wal_checkpoint(TRUNCATE) failed",
+                    )
                 try:
                     conn.execute("VACUUM;")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "socks_store.vacuum",
+                        interval_seconds=300.0,
+                        message="SOCKS DB VACUUM failed",
+                    )
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "socks_store.checkpoint_vacuum",
+                interval_seconds=300.0,
+                message="SOCKS DB checkpoint/vacuum failed",
+            )
 
     def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
         days = max(1, int(retention_days or 30))
@@ -297,7 +323,12 @@ class SocksStore:
                                     try:
                                         conn.rollback()
                                     except Exception:
-                                        pass
+                                        log_exception_throttled(
+                                            logger,
+                                            "socks_store.rollback.ingest",
+                                            interval_seconds=300.0,
+                                            message="SOCKS tailer rollback failed after ingest error",
+                                        )
                                 now = time.time()
                                 if pending >= 50 or (now - last_commit) >= 1.0:
                                     try:
@@ -306,37 +337,76 @@ class SocksStore:
                                         try:
                                             conn.rollback()
                                         except Exception:
-                                            pass
+                                            log_exception_throttled(
+                                                logger,
+                                                "socks_store.rollback.commit",
+                                                interval_seconds=300.0,
+                                                message="SOCKS tailer rollback failed after commit error",
+                                            )
                                     pending = 0
                                     last_commit = now
                                 continue
 
-                        # Handle copytruncate: inode unchanged but file shrinks.
-                        try:
-                            if os.path.getsize(path) < f.tell():
-                                f.seek(0, os.SEEK_SET)
-                                continue
-                        except Exception:
-                            pass
+                            # EOF/idle: commit pending rows so the UI stays fresh.
+                            now = time.time()
+                            if pending and (now - last_commit) >= 1.0:
+                                try:
+                                    conn.commit()
+                                except Exception:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:
+                                        log_exception_throttled(
+                                            logger,
+                                            "socks_store.rollback.idle_commit",
+                                            interval_seconds=300.0,
+                                            message="SOCKS tailer rollback failed after idle commit error",
+                                        )
+                                pending = 0
+                                last_commit = now
 
-                        # Detect rotation/recreate.
-                        try:
-                            st2 = os.stat(path)
-                            inode2 = getattr(st2, "st_ino", None)
-                        except OSError:
-                            inode2 = None
-
-                        if inode2 is not None and last_inode is not None and inode2 != last_inode:
-                            last_inode = inode2
+                            # Handle copytruncate: inode unchanged but file shrinks.
                             try:
-                                conn.commit()
+                                if os.path.getsize(path) < f.tell():
+                                    f.seek(0, os.SEEK_SET)
+                                    continue
                             except Exception:
-                                pass
-                            break
+                                log_exception_throttled(
+                                    logger,
+                                    "socks_store.copytruncate",
+                                    interval_seconds=300.0,
+                                    message="SOCKS tailer copytruncate check failed",
+                                )
 
-                        time.sleep(0.5)
+                            # Detect rotation/recreate.
+                            try:
+                                st2 = os.stat(path)
+                                inode2 = getattr(st2, "st_ino", None)
+                            except OSError:
+                                inode2 = None
+
+                            if inode2 is not None and last_inode is not None and inode2 != last_inode:
+                                last_inode = inode2
+                                try:
+                                    conn.commit()
+                                except Exception:
+                                    log_exception_throttled(
+                                        logger,
+                                        "socks_store.commit.rotate",
+                                        interval_seconds=300.0,
+                                        message="SOCKS tailer final commit failed during rotation",
+                                    )
+                                break
+
+                            time.sleep(0.5)
 
             except Exception:
+                log_exception_throttled(
+                    logger,
+                    "socks_store.loop",
+                    interval_seconds=300.0,
+                    message="SOCKS tailer loop failed",
+                )
                 time.sleep(1.0)
 
     def summary(self, since: int) -> Dict[str, Any]:

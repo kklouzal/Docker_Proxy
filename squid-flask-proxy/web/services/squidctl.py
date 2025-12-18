@@ -8,6 +8,14 @@ from pathlib import Path
 from subprocess import PIPE, Popen, run
 from typing import Any, Dict, Optional, Tuple
 
+import logging
+
+from services.errors import public_error_message
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
+
 try:
     from services.exclusions_store import Exclusions, PRIVATE_NETS_V4
 except Exception:  # pragma: no cover
@@ -102,7 +110,8 @@ class SquidController:
                 return False, self._decode_completed(p2) or "supervisorctl update failed"
             return True, (self._decode_completed(p1) + "\n" + self._decode_completed(p2)).strip()
         except Exception as e:
-            return False, str(e)
+            logger.exception("supervisorctl reread/update failed")
+            return False, public_error_message(e, default="supervisorctl failed. Check server logs for details.")
 
     def apply_icap_scaling(self, workers: int) -> Tuple[bool, str]:
         """Update Squid ICAP service-set include.
@@ -115,7 +124,8 @@ class SquidController:
             self._generate_icap_include(workers)
             return True, "ICAP include updated."
         except Exception as e:
-            return False, str(e)
+            logger.exception("ICAP scaling apply failed")
+            return False, public_error_message(e)
 
     def _replace_or_append_line(self, text: str, key: str, new_line: str) -> str:
         # Replace the first matching directive line, else append.
@@ -915,7 +925,8 @@ class SquidController:
             combined = (p.stdout or "") + ("\n" if p.stdout and p.stderr else "") + (p.stderr or "")
             return p.returncode == 0, combined.strip()
         except Exception as e:
-            return False, str(e)
+            logger.exception("Squid config validation failed")
+            return False, public_error_message(e)
         finally:
             if tmp_path:
                 try:
@@ -972,7 +983,12 @@ class SquidController:
             if m:
                 return (m.group(1) or "").strip()
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "squidctl.parse_cache_dir",
+                interval_seconds=300.0,
+                message="Failed to parse cache_dir from squid config; using default",
+            )
         return "/var/spool/squid"
 
     def clear_disk_cache(self) -> Tuple[bool, str]:
@@ -998,7 +1014,12 @@ class SquidController:
             try:
                 run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
             except Exception:
-                pass
+                log_exception_throttled(
+                    logger,
+                    "squidctl.shutdown_fallback",
+                    interval_seconds=300.0,
+                    message="Squid shutdown fallback failed while clearing disk cache",
+                )
 
         # Delete contents (but not the cache_dir itself).
         try:
@@ -1075,12 +1096,22 @@ class SquidController:
                         if old_icap_include is not None:
                             Path("/etc/squid/conf.d/20-icap.conf").write_text(old_icap_include, encoding="utf-8")
                     except Exception:
-                        pass
+                        log_exception_throttled(
+                            logger,
+                            "squidctl.revert_icap_include",
+                            interval_seconds=300.0,
+                            message="Failed to revert /etc/squid/conf.d/20-icap.conf",
+                        )
                     try:
                         if old_icap_supervisor is not None:
                             Path("/etc/supervisor.d/icap.conf").write_text(old_icap_supervisor, encoding="utf-8")
                     except Exception:
-                        pass
+                        log_exception_throttled(
+                            logger,
+                            "squidctl.revert_icap_supervisor",
+                            interval_seconds=300.0,
+                            message="Failed to revert /etc/supervisor.d/icap.conf",
+                        )
                     self._supervisor_reread_update()
                     self.restart_squid()
                     return False, scale_details or "Failed to scale ICAP processes."
@@ -1093,12 +1124,22 @@ class SquidController:
                             if old_icap_include is not None:
                                 Path("/etc/squid/conf.d/20-icap.conf").write_text(old_icap_include, encoding="utf-8")
                         except Exception:
-                            pass
+                            log_exception_throttled(
+                                logger,
+                                "squidctl.revert_icap_include.restart",
+                                interval_seconds=300.0,
+                                message="Failed to revert /etc/squid/conf.d/20-icap.conf after restart failure",
+                            )
                         try:
                             if old_icap_supervisor is not None:
                                 Path("/etc/supervisor.d/icap.conf").write_text(old_icap_supervisor, encoding="utf-8")
                         except Exception:
-                            pass
+                            log_exception_throttled(
+                                logger,
+                                "squidctl.revert_icap_supervisor.restart",
+                                interval_seconds=300.0,
+                                message="Failed to revert /etc/supervisor.d/icap.conf after restart failure",
+                            )
                         self._supervisor_reread_update()
                         self.restart_squid()
                     return False, restart_details or "Squid restart failed."
@@ -1107,7 +1148,12 @@ class SquidController:
                     os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
                     self._write_file(self.persisted_squid_conf_path, config_text)
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "squidctl.persist_config.workers",
+                        interval_seconds=300.0,
+                        message="Failed to persist squid config after workers change",
+                    )
 
                 msg = (restart_details or "Squid restarted.").strip()
                 if scale_details:
@@ -1126,7 +1172,12 @@ class SquidController:
                 os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
                 self._write_file(self.persisted_squid_conf_path, config_text)
             except Exception:
-                pass
+                log_exception_throttled(
+                    logger,
+                    "squidctl.persist_config",
+                    interval_seconds=300.0,
+                    message="Failed to persist squid config after reconfigure",
+                )
 
             return True, self._decode_completed(p) or "Squid reconfigured."
         except Exception as e:
@@ -1136,8 +1187,14 @@ class SquidController:
                     os.replace(backup_path, self.squid_conf_path)
                     run(["squid", "-k", "reconfigure"], capture_output=True, timeout=6)
             except Exception:
-                pass
-            return False, str(e)
+                log_exception_throttled(
+                    logger,
+                    "squidctl.revert_failed",
+                    interval_seconds=300.0,
+                    message="Squid config revert failed after reconfigure error",
+                )
+            logger.exception("Squid reconfigure failed")
+            return False, public_error_message(e)
         finally:
             try:
                 if os.path.exists(new_path):
@@ -1158,7 +1215,12 @@ class SquidController:
         except FileNotFoundError:
             pass
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "squidctl.start_squid.supervisor",
+                interval_seconds=300.0,
+                message="supervisorctl start squid failed",
+            )
 
         # Fallback: attempt direct start (daemonizes by default).
         try:

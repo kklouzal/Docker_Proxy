@@ -34,12 +34,49 @@ class TestRoutes(unittest.TestCase):
         flask_app = _import_app()
         self.app = flask_app.test_client()
 
+        # Establish session + CSRF token.
+        self.app.get('/login')
+        with self.app.session_transaction() as sess:
+            self.csrf_token = sess.get('_csrf_token', '')
+
         # Login for all protected routes.
         self.app.post(
             '/login',
-            data={'username': 'admin', 'password': 'admin', 'next': ''},
+            data={'username': 'admin', 'password': 'admin', 'next': '', 'csrf_token': self.csrf_token},
             follow_redirects=True,
         )
+
+    def test_eicar_temp_file_cleaned_on_socket_failure(self):
+        # Import the app module to call the helper directly.
+        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        if web_dir not in sys.path:
+            sys.path.insert(0, web_dir)
+        import app as app_module  # type: ignore
+
+        old_sock = os.environ.get('CLAMAV_SOCKET_PATH')
+        old_tmp = os.environ.get('TMPDIR')
+        try:
+            with tempfile.TemporaryDirectory(prefix='sfp_eicar_') as td:
+                # Create a regular file so os.path.exists() passes but connect() fails.
+                fake_sock = os.path.join(td, 'clamd.sock')
+                with open(fake_sock, 'wb') as f:
+                    f.write(b'not a socket')
+
+                os.environ['CLAMAV_SOCKET_PATH'] = fake_sock
+                os.environ['TMPDIR'] = td
+
+                _ = app_module._test_eicar()
+                leftovers = [p for p in os.listdir(td) if p.startswith('eicar_')]
+                self.assertEqual(leftovers, [], f"unexpected leftover temp files: {leftovers}")
+        finally:
+            if old_sock is None:
+                os.environ.pop('CLAMAV_SOCKET_PATH', None)
+            else:
+                os.environ['CLAMAV_SOCKET_PATH'] = old_sock
+            if old_tmp is None:
+                os.environ.pop('TMPDIR', None)
+            else:
+                os.environ['TMPDIR'] = old_tmp
 
     def test_index(self):
         response = self.app.get('/')
@@ -104,7 +141,7 @@ class TestRoutes(unittest.TestCase):
     def test_cannot_delete_current_user(self):
         response = self.app.post(
             '/administration',
-            data={'action': 'delete_user', 'username': 'admin'},
+            data={'action': 'delete_user', 'username': 'admin', 'csrf_token': self.csrf_token},
             follow_redirects=False,
         )
         self.assertIn(response.status_code, (301, 302, 308))

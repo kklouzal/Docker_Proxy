@@ -12,6 +12,7 @@
   </div>
   <div class="card-body">
     <form method="post">
+      {{ csrf_field() }}
       <div class="actions" style="margin-bottom: 12px;">
         <button class="btn primary" type="submit" name="action" value="save_settings">Save settings</button>
       </div>
@@ -75,6 +76,7 @@
         <div class="small">Evictions {{ cache_stats.evictions }}</div>
       </div>
       <form method="post" style="margin-left: auto;">
+        {{ csrf_field() }}
         <input type="hidden" name="action" value="flush_cache">
         <button class="btn" type="submit">Flush cache</button>
         {% if cache_flushed %}<span class="small" style="margin-left:8px;">Requested</span>{% endif %}
@@ -148,6 +150,7 @@
 
   <div class="card-body">
     <form method="post">
+      {{ csrf_field() }}
       <div class="actions" style="margin-bottom: 12px;">
         <button class="btn primary" type="submit" name="action" value="save_lists">Save lists</button>
         <button class="btn" type="submit" name="action" value="refresh">Update now</button>

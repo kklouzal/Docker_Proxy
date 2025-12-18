@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -7,6 +8,11 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -176,13 +182,28 @@ class SslErrorsStore:
                 try:
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "ssl_errors_store.wal_checkpoint",
+                        interval_seconds=300.0,
+                        message="SSL errors DB wal_checkpoint(TRUNCATE) failed",
+                    )
                 try:
                     conn.execute("VACUUM;")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "ssl_errors_store.vacuum",
+                        interval_seconds=300.0,
+                        message="SSL errors DB VACUUM failed",
+                    )
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "ssl_errors_store.checkpoint_vacuum",
+                interval_seconds=300.0,
+                message="SSL errors DB checkpoint/vacuum failed",
+            )
 
     def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
         days = max(1, int(retention_days or 30))
@@ -346,7 +367,12 @@ class SslErrorsStore:
                                     try:
                                         conn.rollback()
                                     except Exception:
-                                        pass
+                                        log_exception_throttled(
+                                            logger,
+                                            "ssl_errors_store.rollback.ingest",
+                                            interval_seconds=300.0,
+                                            message="SSL errors tailer rollback failed after ingest error",
+                                        )
                                 now = time.time()
                                 if pending >= 50 or (now - last_commit) >= 1.0:
                                     try:
@@ -355,35 +381,75 @@ class SslErrorsStore:
                                         try:
                                             conn.rollback()
                                         except Exception:
-                                            pass
+                                            log_exception_throttled(
+                                                logger,
+                                                "ssl_errors_store.rollback.commit",
+                                                interval_seconds=300.0,
+                                                message="SSL errors tailer rollback failed after commit error",
+                                            )
                                     pending = 0
                                     last_commit = now
                                 continue
 
-                        # Handle copytruncate: inode unchanged but file shrinks.
-                        try:
-                            if os.path.getsize(path) < f.tell():
-                                f.seek(0, os.SEEK_SET)
-                                continue
-                        except Exception:
-                            pass
+                            # EOF/idle: commit pending rows so results don't lag.
+                            now = time.time()
+                            if pending and (now - last_commit) >= 1.0:
+                                try:
+                                    conn.commit()
+                                except Exception:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:
+                                        log_exception_throttled(
+                                            logger,
+                                            "ssl_errors_store.rollback.idle_commit",
+                                            interval_seconds=300.0,
+                                            message="SSL errors tailer rollback failed after idle commit error",
+                                        )
+                                pending = 0
+                                last_commit = now
 
-                        try:
-                            st2 = os.stat(path)
-                            inode2 = getattr(st2, "st_ino", None)
-                        except OSError:
-                            inode2 = None
-
-                        if inode2 is not None and last_inode is not None and inode2 != last_inode:
-                            last_inode = inode2
+                            # Handle copytruncate: inode unchanged but file shrinks.
                             try:
-                                conn.commit()
+                                if os.path.getsize(path) < f.tell():
+                                    f.seek(0, os.SEEK_SET)
+                                    continue
                             except Exception:
-                                pass
-                            break
+                                log_exception_throttled(
+                                    logger,
+                                    "ssl_errors_store.copytruncate",
+                                    interval_seconds=300.0,
+                                    message="SSL errors tailer copytruncate check failed",
+                                )
 
-                        time.sleep(0.5)
+                            # Detect rotation/recreate.
+                            try:
+                                st2 = os.stat(path)
+                                inode2 = getattr(st2, "st_ino", None)
+                            except OSError:
+                                inode2 = None
+
+                            if inode2 is not None and last_inode is not None and inode2 != last_inode:
+                                last_inode = inode2
+                                try:
+                                    conn.commit()
+                                except Exception:
+                                    log_exception_throttled(
+                                        logger,
+                                        "ssl_errors_store.commit.rotate",
+                                        interval_seconds=300.0,
+                                        message="SSL errors tailer final commit failed during rotation",
+                                    )
+                                break
+
+                            time.sleep(0.5)
             except Exception:
+                log_exception_throttled(
+                    logger,
+                    "ssl_errors_store.loop",
+                    interval_seconds=300.0,
+                    message="SSL errors tailer loop failed",
+                )
                 time.sleep(1.0)
 
     def list_errors(self, limit: int = 200) -> List[Dict[str, Any]]:

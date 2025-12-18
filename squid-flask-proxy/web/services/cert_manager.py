@@ -5,6 +5,14 @@ import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
+import logging
+
+from services.errors import clean_text, public_error_message
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
+
 
 class CertManager:
     def __init__(self, ca_dir: str = "/etc/squid/ssl/certs"):
@@ -24,7 +32,8 @@ class CertManager:
 
     def ensure_ca(self) -> str:
         os.makedirs(self.ca_dir, exist_ok=True)
-        subprocess.check_call(["/scripts/generate_ca.sh"])
+        # Avoid hanging the UI/container on CA generation.
+        subprocess.run(["/scripts/generate_ca.sh"], check=True, timeout=60)
         return self.ca_cert_path
 
     def ca_exists(self) -> bool:
@@ -68,19 +77,30 @@ def _passin_arg(password: str) -> str:
     return f"pass:{password or ''}"
 
 
-def _run_checked(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, check=True)
+def _run_checked(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
+    # OpenSSL should be fast; a timeout prevents pathological hangs.
+    return subprocess.run(args, capture_output=True, text=True, check=True, timeout=timeout)
 
 
 def _set_best_effort_permissions(cert_path: str, key_path: str):
     try:
         os.chmod(cert_path, 0o644)
     except Exception:
-        pass
+        log_exception_throttled(
+            logger,
+            "cert_manager.chmod.cert",
+            interval_seconds=300.0,
+            message="Failed to chmod CA cert path",
+        )
     try:
         os.chmod(key_path, 0o640)
     except Exception:
-        pass
+        log_exception_throttled(
+            logger,
+            "cert_manager.chmod.key",
+            interval_seconds=300.0,
+            message="Failed to chmod CA key path",
+        )
 
     # Try to hand ownership to squid if present.
     try:
@@ -90,7 +110,12 @@ def _set_best_effort_permissions(cert_path: str, key_path: str):
         os.chown(cert_path, squid.pw_uid, squid.pw_gid)
         os.chown(key_path, squid.pw_uid, squid.pw_gid)
     except Exception:
-        pass
+        log_exception_throttled(
+            logger,
+            "cert_manager.chown.squid",
+            interval_seconds=300.0,
+            message="Failed to chown CA cert/key to squid user",
+        )
 
 
 def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxInstallResult:
@@ -249,9 +274,10 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
         if stderr:
-            return PfxInstallResult(ok=False, message=f"OpenSSL failed: {stderr}")
+            return PfxInstallResult(ok=False, message=f"OpenSSL failed: {clean_text(stderr, max_len=300)}")
         return PfxInstallResult(ok=False, message="OpenSSL failed to parse PFX.")
     except PfxInstallError as e:
         return PfxInstallResult(ok=False, message=str(e))
     except Exception as e:
-        return PfxInstallResult(ok=False, message=str(e))
+        logger.exception("Unexpected PFX import failure")
+        return PfxInstallResult(ok=False, message=public_error_message(e, default="PFX import failed. Check server logs for details."))

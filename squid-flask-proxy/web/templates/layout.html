@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{% block title %}Squid Flask Proxy{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='spa.js') }}" defer></script>
@@ -53,6 +54,7 @@
                 <a class="nav-pill {{ 'active' if request.endpoint == 'administration' else '' }}" href="{{ url_for('administration') }}">Administration</a>
 
                 <form action="{{ url_for('logout') }}" method="post" style="display:inline;">
+                    {{ csrf_field() }}
                     <button class="nav-pill" type="submit">Logout</button>
                 </form>
             </nav>

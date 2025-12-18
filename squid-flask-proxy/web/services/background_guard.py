@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
 
 
 _LOCK_FD: Optional[int] = None
@@ -31,6 +37,12 @@ def acquire_background_lock() -> bool:
             os.makedirs(lock_dir, exist_ok=True)
         except Exception:
             # If we can't create directories, don't block startup.
+            log_exception_throttled(
+                logger,
+                "background_guard.makedirs",
+                interval_seconds=300.0,
+                message="Failed to create BACKGROUND_LOCK_PATH directory; allowing background tasks to start",
+            )
             return True
 
     try:
@@ -47,20 +59,35 @@ def acquire_background_lock() -> bool:
             try:
                 os.close(fd)
             except Exception:
-                pass
+                log_exception_throttled(
+                    logger,
+                    "background_guard.close.blocking",
+                    interval_seconds=300.0,
+                    message="Failed to close background lock fd after contention",
+                )
             return False
         except Exception:
             try:
                 os.close(fd)
             except Exception:
-                pass
+                log_exception_throttled(
+                    logger,
+                    "background_guard.close.flock_error",
+                    interval_seconds=300.0,
+                    message="Failed to close background lock fd after flock error",
+                )
             return True
     except Exception:
         # Non-POSIX environment (or locking unavailable): allow background.
         try:
             os.close(fd)
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "background_guard.close.non_posix",
+                interval_seconds=300.0,
+                message="Failed to close background lock fd in non-POSIX environment",
+            )
         return True
 
     global _LOCK_FD

@@ -19,6 +19,7 @@
             </div>
             {% endif %}
             <form class="form" action="{{ url_for('login') }}" method="post" data-no-spa>
+                {{ csrf_field() }}
                 <input type="hidden" name="next" value="{{ next or '' }}">
                 <div>
                     <label for="username">Username</label>

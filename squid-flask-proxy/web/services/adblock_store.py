@@ -10,6 +10,14 @@ from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+import logging
+
+from services.errors import public_error_message
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ListStatus:
@@ -207,7 +215,12 @@ class AdblockStore:
                 if n == 0:
                     self._seed_from_recent_log(conn)
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "adblock_store.blocklog.seed",
+                interval_seconds=300.0,
+                message="Adblock blocklog seed failed",
+            )
 
         t = threading.Thread(target=self._blocklog_tail_loop, name="adblock-cicap-tailer", daemon=True)
         t.start()
@@ -254,14 +267,24 @@ class AdblockStore:
                         conn.rollback()
                         conn.close()
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "adblock_store.blocklog.conn_reset",
+                        interval_seconds=300.0,
+                        message="Adblock blocklog tailer failed to reset DB connection",
+                    )
                 conn = None
             except Exception:
                 try:
                     if conn is not None:
                         conn.rollback()
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "adblock_store.blocklog.rollback",
+                        interval_seconds=300.0,
+                        message="Adblock blocklog tailer rollback failed",
+                    )
             time.sleep(1.0)
 
     def _ingest_new_cicap_lines(self, conn: sqlite3.Connection) -> None:
@@ -467,13 +490,28 @@ class AdblockStore:
                 try:
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "adblock_store.wal_checkpoint",
+                        interval_seconds=300.0,
+                        message="Adblock DB wal_checkpoint(TRUNCATE) failed",
+                    )
                 try:
                     conn.execute("VACUUM;")
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "adblock_store.vacuum",
+                        interval_seconds=300.0,
+                        message="Adblock DB VACUUM failed",
+                    )
         except Exception:
-            pass
+            log_exception_throttled(
+                logger,
+                "adblock_store.checkpoint_vacuum",
+                interval_seconds=300.0,
+                message="Adblock DB checkpoint/vacuum failed",
+            )
 
     def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
         """Prune old benign blocklog data to keep the DB bounded."""
@@ -741,7 +779,12 @@ class AdblockStore:
                     if cl is not None and int(cl) > max_bytes:
                         return False, f"Download too large (Content-Length={cl}).", 0, 0
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "adblock_store.content_length",
+                        interval_seconds=300.0,
+                        message="Failed to parse Content-Length for adblock download",
+                    )
 
                 with open(tmp, "wb") as f:
                     while True:
@@ -774,7 +817,8 @@ class AdblockStore:
                     os.unlink(tmp)
             except OSError:
                 pass
-            return False, str(e), 0, 0
+                logger.exception("Adblock list download failed (key=%s)", key)
+                return False, public_error_message(e, default="Download failed. Check server logs for details.", max_len=400), 0, 0
 
     def update_one(self, key: str, force: bool = False) -> bool:
         now_ts = _now()

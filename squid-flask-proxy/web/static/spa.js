@@ -3,6 +3,11 @@
 
   const SPA_CONTAINER_ID = 'spa-content';
 
+  const getCsrfToken = () => {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? (meta.getAttribute('content') || '') : '';
+  };
+
   const getSpaContainer = (root = document) => root.getElementById(SPA_CONTAINER_ID);
 
   const isSameOrigin = (url) => {
@@ -188,7 +193,10 @@
         try {
           const r = await fetch('/webfilter/test', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': getCsrfToken(),
+            },
             body: JSON.stringify({ domain })
           });
           const data = await r.json();
@@ -219,13 +227,18 @@
     container.setAttribute('aria-busy', 'true');
 
     try {
+      const headers = {
+        'X-Requested-With': 'spa',
+      };
+      if (method && String(method).toUpperCase() !== 'GET') {
+        headers['X-CSRF-Token'] = getCsrfToken();
+      }
+
       const response = await fetch(url, {
         method,
         body,
         credentials: 'same-origin',
-        headers: {
-          'X-Requested-With': 'spa',
-        },
+        headers,
       });
 
       if (!response.ok) {

@@ -62,6 +62,7 @@
             <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
             <td class="num">
               <form method="post" action="{{ url_for('ssl_errors_exclude') }}">
+                {{ csrf_field() }}
                 <input type="hidden" name="domain" value="{{ r.domain }}" />
                 <button class="btn" type="submit">Add to exclusions</button>
               </form>
@@ -107,6 +108,7 @@
             <td class="num"><span class="small">{{ fmt_ts(d.last_seen) }}</span></td>
             <td class="num">
               <form method="post" action="{{ url_for('ssl_errors_exclude') }}">
+                {{ csrf_field() }}
                 <input type="hidden" name="domain" value="{{ d.domain }}" />
                 <button class="btn" type="submit">Add to exclusions</button>
               </form>

@@ -7,6 +7,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import logging
+
+from services.logutil import log_exception_throttled
+
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class Resolution:
@@ -234,7 +241,12 @@ class TimeSeriesStore:
                     if tick % 30 == 0:
                         self.rollup_and_prune()
                 except Exception:
-                    pass
+                    log_exception_throttled(
+                        logger,
+                        "timeseries_store.sampler",
+                        interval_seconds=30,
+                        message="timeseries sampler iteration failed",
+                    )
                 time.sleep(1.0)
 
         t = threading.Thread(target=loop, name="timeseries-sampler", daemon=True)
