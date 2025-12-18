@@ -1,96 +1,112 @@
 ﻿# Squid Flask Proxy
 
-This project is a Dockerized Squid proxy bundled with a Flask admin UI.
+A Dockerized Squid HTTP proxy bundled with a Flask admin UI for managing policy and operational settings.
 
-It’s designed for “real” proxy deployments where you want:
-- A manageable Squid configuration (templated + UI-driven includes)
+This project targets “real” proxy deployments where you want:
+- A manageable Squid configuration (template baseline + UI-driven includes)
 - Optional SSL-bump (TLS interception) for managed devices
-- Domain-based policy controls (exclusions, category filtering, whitelist)
+- Domain-based policy controls (exclusions, web filtering + whitelist)
 - WPAD/PAC auto-discovery without exposing the admin UI on port 80
-- Optional ICAP services for ad-blocking and antivirus
+- Optional ICAP services for ad-blocking (REQMOD) and antivirus scanning (ClamAV via RESPMOD)
 
-## Quick start
+## Quick start (build from source)
 
-Build and run:
 ```powershell
 docker compose up -d --build
 ```
 
-Open the admin UI:
-- `http://localhost:5000`
+Admin UI:
+- http://localhost:5000
 
-Default login:
+Default login (first run only):
 - Username: `admin`
 - Password: `admin`
 
-After first login, change the password in **Administration**.
+Change the password in **Administration** after first login.
 
-## Ports and endpoints
+## Run the prebuilt image (GHCR)
 
-The default Compose file publishes:
-- `3128/tcp`: Squid HTTP proxy
-- `5000/tcp`: Admin UI (Flask)
-- `80/tcp`: WPAD/PAC *dedicated listener* (NOT the admin UI)
-- `1080/tcp`: SOCKS5 proxy (Dante)
-
-WPAD/PAC listener behavior (port 80):
-- `GET /` → serves `wpad.dat`
-- `GET /wpad.dat` → serves PAC (`application/x-ns-proxy-autoconfig`)
-- `GET /proxy.pac` → serves PAC
-- Any other path returns `404`
-
-Note: `http://<host>:5000` is the admin UI. Port 80 is intentionally isolated to PAC/WPAD only.
-
-## Publishing to GHCR (private source, public image)
-
-You can host the source in a **private** GitHub repository while publishing a **public** container image via GitHub Container Registry (GHCR).
-
-What this repo includes:
-- A GitHub Actions workflow that builds and pushes the Docker image to GHCR: `.github/workflows/publish-ghcr.yml`
-- A Compose example that pulls the GHCR image: `docker-compose.ghcr.yml`
-
-### Recommended workflow
-
-1) Create a GitHub repository and keep it **private**.
-
-2) Push this code to the `main` branch.
-
-3) In GitHub, go to **Actions** and run (or let it run on push). The workflow publishes to:
-
-`ghcr.io/<owner-or-org>/<repo>:main`
-
-4) After the first push, set the GHCR package visibility to **Public**:
-
-GitHub → **Packages** → your image → **Package settings** → **Change visibility** → Public.
-
-5) Update the image reference in `docker-compose.ghcr.yml`:
-
-Replace:
-`ghcr.io/YOUR_GITHUB_OWNER_OR_ORG/YOUR_REPO:main`
-
-With your actual GHCR image name.
-
-### Running from the public image
+Use the provided file:
 
 ```powershell
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
+Or copy/paste a minimal Compose:
+
+```yaml
+name: squid-flask-proxy
+
+services:
+  proxy:
+    image: ghcr.io/kklouzal/docker_proxy:main
+    ports:
+      - "5000:5000"       # Admin UI (Flask)
+      - "80:80"           # WPAD / PAC via dedicated listener
+      - "3128:3128"       # Squid HTTP proxy
+      - "${DANTE_PORT:-1080}:1080"  # SOCKS5 (Dante)
+    volumes:
+      - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - ./squid/ssl/certs:/etc/squid/ssl/certs
+      - squid_ssl_db:/var/lib/ssl_db
+      - squid_cache:/var/spool/squid
+      - proxy_data:/var/lib/squid-flask-proxy
+    environment:
+      SQUID_WORKERS: ${SQUID_WORKERS:-2}
+      CICAP_PORT: ${CICAP_PORT:-14000}
+      CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+volumes:
+  squid_cache:
+  squid_ssl_db:
+  proxy_data:
+```
+
 Notes:
-- A public image does not automatically make the private repo public.
-- Container images can be inspected by recipients (layers/files), so avoid baking secrets into the image.
+- Container images can be inspected by recipients (layers/files), so don’t bake secrets into the image.
+- If you publish under a different owner/repo, update the `image:` value.
+
+## Ports and endpoints
+
+Default published ports:
+- `3128/tcp`: Squid HTTP proxy
+- `5000/tcp`: Admin UI (Flask)
+- `80/tcp`: WPAD/PAC dedicated listener (NOT the admin UI)
+- `1080/tcp`: SOCKS5 proxy (Dante)
+
+Admin UI routes (port 5000):
+- `/` UI home
+- `/proxy.pac` dynamic PAC (public)
+- `/wpad.dat` same PAC content (public)
+- `/health` health endpoint (used by container healthcheck)
+
+WPAD/PAC listener behavior (port 80):
+- `GET /` → serves `wpad.dat`
+- `GET /wpad.dat` → serves PAC (`application/x-ns-proxy-autoconfig`)
+- `GET /proxy.pac` → serves PAC
+- Any other path → `404`
+
+Important: `http://<host>:5000` is the admin UI. Port 80 is intentionally isolated to PAC/WPAD only.
 
 ## Access from other computers (LAN)
 
-By default, Docker publishes ports on all interfaces (`0.0.0.0`) via Compose:
+Docker publishes ports on all interfaces (`0.0.0.0`) by default:
 - Admin UI: `http://<host-ip>:5000`
-- Proxy: configure system/browser proxy to `http://<host-ip>:3128`
+- HTTP proxy: configure clients to `http://<host-ip>:3128`
 - WPAD: `http://<host-ip>/wpad.dat` (port 80)
 
-If it works on the host but not from another machine, on Windows the most common cause is an inbound firewall rule.
+On Windows, the most common “works on host but not on LAN” issue is the inbound firewall.
 
 ### Windows Firewall (PowerShell)
-Run these in an elevated PowerShell to allow inbound TCP on the Private profile:
+
+Run in elevated PowerShell to allow inbound TCP on the Private profile:
+
 ```powershell
 New-NetFirewallRule -DisplayName "Squid Flask Proxy UI (5000)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5000 -Profile Private
 New-NetFirewallRule -DisplayName "Squid Proxy (3128)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3128 -Profile Private
@@ -99,19 +115,60 @@ New-NetFirewallRule -DisplayName "Squid SOCKS (1080)" -Direction Inbound -Action
 ```
 
 Also confirm:
-- You’re using `http://` (not `https://`) for the UI.
-- The client machine is on the same LAN/subnet and not on an isolated/guest Wi‑Fi network.
+- You’re using `http://` (not `https://`) for the UI (unless you front it with your own TLS).
+- The client is on the same LAN/subnet and not on an isolated/guest Wi‑Fi.
 
-## Authentication and security
+## Persistence (volumes)
+
+The container persists operational state under `/var/lib/squid-flask-proxy` (backed by the `proxy_data` named volume in the default Compose setup), including:
+- UI databases (users, audit logs, live stats aggregation)
+- Policy state (exclusions, web filter settings + whitelist + blocked log, SSL filtering CIDRs)
+- Adblock compiled lists / caches
+- ClamAV signature DB (under `/var/lib/squid-flask-proxy/clamav/db`)
+
+Squid cache and SSL database use separate named volumes by default:
+- Squid cache: `/var/spool/squid` (`squid_cache`)
+- sslcrtd DB: `/var/lib/ssl_db` (`squid_ssl_db`)
+
+Reminder: `docker compose down -v` deletes named volumes.
+
+## Authentication and security model
 
 - The admin UI is protected by a login session.
 - PAC endpoints (`/proxy.pac`, `/wpad.dat`) are intentionally public so WPAD works without authentication.
-- Users are managed in **Administration** (add users, change passwords). The currently logged-in user cannot delete themselves.
 
-If you want stronger isolation, consider removing the `5000:5000` publish and accessing the UI only via:
-- a management VLAN
-- a VPN
-- an SSH tunnel / port-forward
+Recommended hardening:
+- Don’t publish the UI port (`5000`) to untrusted networks.
+- Set a persistent Flask secret key (see “Configuration”), so sessions remain valid across restarts.
+- If you terminate TLS in front of the UI (reverse proxy), set secure cookies.
+
+If you want stronger isolation, consider removing the `5000:5000` publish and accessing the UI only via a management VLAN/VPN or an SSH tunnel.
+
+## Configuration (optional `/config/app.env`)
+
+On startup, the container will load environment variables from `/config/app.env` if you mount it.
+
+Example:
+
+```yaml
+services:
+  proxy:
+    volumes:
+      - ./config/app.env:/config/app.env:ro
+```
+
+Common environment variables:
+- `FLASK_SECRET_KEY`: recommended; keeps login sessions stable across restarts.
+- `SESSION_COOKIE_SECURE=1`: mark cookies Secure (use when UI is served over HTTPS).
+- `DISABLE_CSRF=1`: disables CSRF protection (intended for debugging only; not recommended).
+- `SQUID_WORKERS`: number of Squid SMP workers (also influences ICAP service-set generation).
+- `CICAP_PORT`, `CICAP_AV_PORT`: ICAP ports for adblock (REQMOD) and AV (RESPMOD) instances.
+- `ENABLE_DANTE=1|0`: enable/disable SOCKS5.
+- `DANTE_PORT`: SOCKS5 listen port inside the container (default 1080).
+- `DANTE_ALLOW_FROM`: space-separated CIDRs allowed to connect to SOCKS5.
+- `DANTE_BLOCK_PRIVATE_DESTS=1|0`: block SOCKS requests to loopback + RFC1918 destinations.
+- `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
+- `PAC_UPSTREAM`: where the PAC listener fetches PAC content (default `http://127.0.0.1:5000/proxy.pac`).
 
 ## Features (current)
 
@@ -119,13 +176,13 @@ If you want stronger isolation, consider removing the `5000:5000` publish and ac
 - **Policy controls** from the web UI:
   - Squid config editor (with safe defaults)
   - Exclusions (domain/CIDR policies for problematic destinations)
-  - Certificates (CA management for ssl-bump)
+  - Certificates (CA management for SSL-bump)
   - Ad Blocking (ICAP REQMOD)
   - Web Filtering (UT1 categories, domain-based)
   - ClamAV scanning (ICAP RESPMOD)
   - SSL Filtering (client CIDRs that must be spliced)
 - **PAC Builder** UI at `/pac` + PAC generation at `/proxy.pac`.
-- **WPAD** support via the dedicated port 80 listener, serving `wpad.dat`.
+- **WPAD** support via the dedicated port 80 listener (`/wpad.dat`).
 
 ## SOCKS5 support (Dante)
 This container also runs a Dante SOCKS proxy on port `1080`.
@@ -149,34 +206,21 @@ To verify Dante is reachable from a client, test explicitly:
 Also note: depending on Docker Desktop/NAT, Dante may log the source as a gateway/NAT IP rather than the true LAN client IP.
 
 ## Host networking mode (optional)
-If Docker NAT is causing issues (for example: client IPs being masked, or connectivity quirks), you can run the container using Docker's **host network driver**.
 
-Docker documents host networking support as:
-- Docker Engine on Linux
-- Docker Desktop 4.34+ (requires enabling the feature in Docker Desktop settings)
+If Docker NAT causes issues in your environment (for example: connectivity quirks, or you need host-level port binding semantics), you can run with host networking.
 
-### Docker Desktop prerequisites
-1. Docker Desktop → **Settings** → **Resources** → **Network**
-2. Enable **Host networking**
-3. Apply & restart Docker Desktop
+Notes:
+- Host networking is generally available on Linux Docker Engine.
+- Docker Desktop host networking support depends on Docker Desktop version/settings.
+- With host networking, Compose `ports:` mappings are not used; services bind directly on the host.
 
-Important limitations (Docker Desktop):
-- Host networking works at **layer 4** (TCP/UDP). Protocols below TCP/UDP are not supported.
-- Only **Linux containers** are supported.
-- Published ports (`ports:`) are not used with host networking; services bind directly on the host.
+Example Compose snippet:
 
-### Run with host networking
-Use the provided Compose file:
-```powershell
-docker compose -f docker-compose.host.yml up -d --build
+```yaml
+services:
+  proxy:
+    network_mode: host
 ```
-
-Ports will be bound directly on the host (defaults):
-- Squid proxy: `3128`
-- Web UI: `5000`
-- SOCKS5 (Dante): `1080`
-
-If any of those ports are already in use on the host, the container will fail to start.
 
 ## Data persistence (SQLite)
 This container uses SQLite (stored under `/var/lib/squid-flask-proxy` via a named Docker volume) for:
@@ -254,8 +298,8 @@ Startup note (first run):
 
 Persistence:
 - ClamAV signature databases (e.g. `main.cvd`, `daily.cvd`) are stored under `/var/lib/squid-flask-proxy/clamav/db`.
-- In the default Compose setup, this directory is backed by a named Docker volume (`clamav_db`), so signature updates persist across container rebuilds/restarts.
-- Note: `docker compose down -v` will delete named volumes (including the ClamAV DB).
+- In the default Compose setup, that path is inside the `proxy_data` named volume, so signature updates persist across container rebuilds/restarts.
+- Note: `docker compose down -v` will delete named volumes (including the ClamAV signature DB).
 
 Configuration:
 - Enable/disable scanning via the **ClamAV** tab (updates Squid ICAP policy).
@@ -310,6 +354,9 @@ Options:
 
 After updating the CA, Squid is reconfigured so the change takes effect.
 
+Where to find the generated CA:
+- If you mount `./squid/ssl/certs:/etc/squid/ssl/certs`, the CA certificate will be available on the host as `./squid/ssl/certs/ca.crt`.
+
 Note: clients must trust this CA to avoid certificate warnings when bumping.
 
 ## WPAD / PAC
@@ -321,6 +368,24 @@ This project supports:
 Security model:
 - Port 80 is served by a dedicated minimal HTTP server that only serves PAC endpoints.
 - The PAC server fetches generated PAC content from the internal Flask endpoint (`127.0.0.1:5000/proxy.pac`).
+
+## Troubleshooting
+
+Basic checks:
+- UI is reachable: `http://<host>:5000/`
+- Health endpoint: `http://<host>:5000/health`
+- WPAD endpoint: `http://<host>/wpad.dat` (port 80)
+- Proxy is reachable: configure a client to use `http://<host>:3128`
+
+Container logs:
+
+```powershell
+docker compose logs -f proxy
+```
+
+First run ClamAV note:
+- If the ClamAV signature DB is missing, the container runs an initial `freshclam` download which can take time.
+- The container healthcheck can remain failing/unhealthy until `clamd` is up.
 
 ## Project structure (high level)
 
