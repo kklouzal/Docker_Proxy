@@ -150,7 +150,6 @@ class TestRoutes(unittest.TestCase):
 
     def test_proxy_pac_can_include_socks(self):
         # Create a catch-all PAC profile that enables SOCKS.
-        flask_app = _import_app()
         from services.pac_profiles_store import PacProfilesStore  # type: ignore
 
         # Use a temp DB file to avoid interacting with real volumes.

@@ -334,6 +334,14 @@ class SslErrorsStore:
                             self.ingest_line(line)
                             continue
 
+                        # Handle copytruncate: inode unchanged but file shrinks.
+                        try:
+                            if os.path.getsize(path) < f.tell():
+                                f.seek(0, os.SEEK_SET)
+                                continue
+                        except Exception:
+                            pass
+
                         try:
                             st2 = os.stat(path)
                             inode2 = getattr(st2, "st_ino", None)

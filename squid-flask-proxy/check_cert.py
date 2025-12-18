@@ -1,4 +1,5 @@
-import socket, ssl
+import socket
+import ssl
 
 proxy_host = '127.0.0.1'
 proxy_port = 3128

@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -672,27 +673,52 @@ class AdblockStore:
         path = self.list_path(key)
         tmp = path + ".tmp"
         try:
+            u = urlparse(url or "")
+            if u.scheme not in ("http", "https"):
+                return False, "Only http/https URLs are supported.", 0, 0
+
+            max_bytes = int(os.environ.get("ADBLOCK_MAX_DOWNLOAD_BYTES", str(64 * 1024 * 1024)))
+            if max_bytes <= 0:
+                max_bytes = 64 * 1024 * 1024
+
             req = urllib.request.Request(url, headers={"User-Agent": "squid-flask-proxy/icap-adblock"})
-            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-                data = resp.read()
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(tmp, "wb") as f:
-                f.write(data)
+
+            total = 0
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                # Best-effort Content-Length enforcement.
+                try:
+                    cl = resp.headers.get("Content-Length")
+                    if cl is not None and int(cl) > max_bytes:
+                        return False, f"Download too large (Content-Length={cl}).", 0, 0
+                except Exception:
+                    pass
+
+                with open(tmp, "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError(f"Download exceeded limit ({max_bytes} bytes).")
+                        f.write(chunk)
+
             os.replace(tmp, path)
 
             # Rough rule count: ignore comments/blank.
+            rules = 0
             try:
-                text = data.decode("utf-8", errors="replace")
-                rules = 0
-                for line in text.splitlines():
-                    s = line.strip()
-                    if not s or s.startswith("!"):
-                        continue
-                    rules += 1
+                with open(path, "r", encoding="utf-8", errors="replace") as rf:
+                    for line in rf:
+                        s = (line or "").strip()
+                        if not s or s.startswith("!"):
+                            continue
+                        rules += 1
             except Exception:
                 rules = 0
 
-            return True, "", int(len(data)), int(rules)
+            return True, "", int(total), int(rules)
         except Exception as e:
             try:
                 if os.path.exists(tmp):

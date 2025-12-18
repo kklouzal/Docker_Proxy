@@ -6,7 +6,7 @@ import os
 import sqlite3
 import sys
 import time
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Iterable, Optional, Sequence, Set, Tuple
 
 
 def _now() -> int:

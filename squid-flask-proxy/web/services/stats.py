@@ -1,12 +1,30 @@
+from __future__ import annotations
+
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import csv
 import io
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+
+_CACHE_LOCK = threading.Lock()
+_CACHE_DIR_SIZE_INFLIGHT = False
+_CACHE_DIR_SIZE_TS = 0.0
+_CACHE_DIR_SIZE_VALUE: Optional[int] = None
+
+_CACHE_DISK_USAGE_INFLIGHT = False
+_CACHE_DISK_USAGE_TS = 0.0
+_CACHE_DISK_USAGE_VALUE: Optional[DiskUsage] = None
+
+_CACHE_HIT_RATE_INFLIGHT = False
+_CACHE_HIT_RATE_TS = 0.0
+_CACHE_HIT_RATE_VALUE: Optional[Dict[str, Optional[float]]] = None
+_CACHE_HIT_RATE_SOURCE_VALUE: str = ""
 
 
 @dataclass
@@ -234,24 +252,112 @@ def parse_squid_hit_rate(mgr_5min: str) -> Dict[str, Optional[float]]:
 
 
 def get_stats() -> Dict[str, Any]:
+    # These values can be expensive to compute (filesystem walks, subprocesses).
+    # The UI and sampler don't need sub-second freshness, so we cache them.
+    dir_size_ttl = max(5, int(os.environ.get("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "60")))
+    disk_usage_ttl = max(2, int(os.environ.get("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "15")))
+    hit_rate_ttl = max(1, int(os.environ.get("STATS_CACHE_HIT_RATE_TTL_SECONDS", "5")))
+
     mem = get_meminfo()
     used_mem = None
     if mem.get("total") is not None and mem.get("available") is not None:
         used_mem = int(mem["total"] - mem["available"])  # type: ignore[operator]
 
     cache_dir = "/var/spool/squid"
-    cache_disk = get_disk_usage(cache_dir)
-    cache_used_dir = get_directory_size_bytes(cache_dir)
+    now_mono = time.monotonic()
 
-    mgr_5min = get_squid_mgr_text("5min")
-    mgr_info = get_squid_mgr_text("info")
+    def _maybe_get_disk_usage() -> Optional[DiskUsage]:
+        global _CACHE_DISK_USAGE_INFLIGHT, _CACHE_DISK_USAGE_TS, _CACHE_DISK_USAGE_VALUE
+        with _CACHE_LOCK:
+            cached = _CACHE_DISK_USAGE_VALUE
+            age_ok = (now_mono - _CACHE_DISK_USAGE_TS) < float(disk_usage_ttl)
+            inflight = _CACHE_DISK_USAGE_INFLIGHT
+        if cached is not None and age_ok:
+            return cached
+        if inflight:
+            return cached
 
-    if mgr_5min:
-        hit = parse_squid_hit_rate(mgr_5min)
-        hit_source = "cachemgr"
-    else:
-        hit = parse_access_log_hit_rate()
-        hit_source = "access.log"
+        with _CACHE_LOCK:
+            if _CACHE_DISK_USAGE_INFLIGHT:
+                return _CACHE_DISK_USAGE_VALUE
+            _CACHE_DISK_USAGE_INFLIGHT = True
+        try:
+            value = get_disk_usage(cache_dir)
+            with _CACHE_LOCK:
+                _CACHE_DISK_USAGE_VALUE = value
+                _CACHE_DISK_USAGE_TS = now_mono
+            return value
+        finally:
+            with _CACHE_LOCK:
+                _CACHE_DISK_USAGE_INFLIGHT = False
+
+    def _maybe_get_dir_size() -> Optional[int]:
+        global _CACHE_DIR_SIZE_INFLIGHT, _CACHE_DIR_SIZE_TS, _CACHE_DIR_SIZE_VALUE
+        with _CACHE_LOCK:
+            cached = _CACHE_DIR_SIZE_VALUE
+            age_ok = (now_mono - _CACHE_DIR_SIZE_TS) < float(dir_size_ttl)
+            inflight = _CACHE_DIR_SIZE_INFLIGHT
+        if cached is not None and age_ok:
+            return cached
+        if inflight:
+            return cached
+
+        with _CACHE_LOCK:
+            if _CACHE_DIR_SIZE_INFLIGHT:
+                return _CACHE_DIR_SIZE_VALUE
+            _CACHE_DIR_SIZE_INFLIGHT = True
+        try:
+            value = get_directory_size_bytes(cache_dir)
+            with _CACHE_LOCK:
+                _CACHE_DIR_SIZE_VALUE = value
+                _CACHE_DIR_SIZE_TS = now_mono
+            return value
+        finally:
+            with _CACHE_LOCK:
+                _CACHE_DIR_SIZE_INFLIGHT = False
+
+    cache_disk = _maybe_get_disk_usage()
+    cache_used_dir = _maybe_get_dir_size()
+
+    def _maybe_get_hit_rate() -> tuple[Dict[str, Optional[float]], str, bool]:
+        global _CACHE_HIT_RATE_INFLIGHT, _CACHE_HIT_RATE_TS, _CACHE_HIT_RATE_VALUE, _CACHE_HIT_RATE_SOURCE_VALUE
+        with _CACHE_LOCK:
+            cached = _CACHE_HIT_RATE_VALUE
+            cached_source = _CACHE_HIT_RATE_SOURCE_VALUE
+            age_ok = (now_mono - _CACHE_HIT_RATE_TS) < float(hit_rate_ttl)
+            inflight = _CACHE_HIT_RATE_INFLIGHT
+        if cached is not None and age_ok:
+            return cached, cached_source, True
+        if inflight and cached is not None:
+            return cached, cached_source, True
+
+        with _CACHE_LOCK:
+            if _CACHE_HIT_RATE_INFLIGHT:
+                if _CACHE_HIT_RATE_VALUE is not None:
+                    return _CACHE_HIT_RATE_VALUE, _CACHE_HIT_RATE_SOURCE_VALUE, True
+            _CACHE_HIT_RATE_INFLIGHT = True
+
+        try:
+            mgr_5min = get_squid_mgr_text("5min")
+            mgr_info = get_squid_mgr_text("info")
+            if mgr_5min:
+                value = parse_squid_hit_rate(mgr_5min)
+                src = "cachemgr"
+            else:
+                value = parse_access_log_hit_rate()
+                src = "access.log"
+
+            mgr_available = mgr_5min is not None or mgr_info is not None
+            with _CACHE_LOCK:
+                _CACHE_HIT_RATE_VALUE = value
+                _CACHE_HIT_RATE_SOURCE_VALUE = src
+                _CACHE_HIT_RATE_TS = now_mono
+            return value, src, mgr_available
+        finally:
+            with _CACHE_LOCK:
+                _CACHE_HIT_RATE_INFLIGHT = False
+
+    hit, hit_source, mgr_available = _maybe_get_hit_rate()
 
     return {
         "cpu": {
@@ -277,7 +383,7 @@ def get_stats() -> Dict[str, Any]:
         },
         "squid": {
             "hit_rate": hit,
-            "mgr_available": mgr_5min is not None or mgr_info is not None,
+            "mgr_available": mgr_available,
             "hit_rate_source": hit_source,
         },
     }

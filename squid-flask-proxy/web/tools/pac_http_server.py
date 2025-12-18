@@ -1,6 +1,7 @@
 import os
 import sys
 import urllib.request
+from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -39,11 +40,40 @@ class Handler(BaseHTTPRequestHandler):
             # Ensure the generated PAC uses the externally-reachable hostname.
             headers["Host"] = host
 
+        u = urlparse(UPSTREAM or "")
+        if u.scheme not in ("http", "https"):
+            self.send_response(502)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Bad gateway")
+            return
+
         req = urllib.request.Request(UPSTREAM, headers=headers, method="GET")
+
+        max_bytes = int(os.environ.get("PAC_MAX_BYTES", str(2 * 1024 * 1024)))
+        if max_bytes <= 0:
+            max_bytes = 2 * 1024 * 1024
 
         try:
             with urllib.request.urlopen(req, timeout=3) as r:
-                data = r.read()
+                try:
+                    cl = r.headers.get("Content-Length")
+                    if cl is not None and int(cl) > max_bytes:
+                        raise ValueError("PAC too large")
+                except Exception:
+                    pass
+
+                total = 0
+                chunks: list[bytes] = []
+                while True:
+                    chunk = r.read(64 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError("PAC too large")
+                    chunks.append(chunk)
+                data = b"".join(chunks)
                 content_type = r.headers.get("Content-Type") or "application/x-ns-proxy-autoconfig"
         except Exception:
             self.send_response(502)

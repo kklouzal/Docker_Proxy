@@ -11,9 +11,9 @@ import time
 import tarfile
 import urllib.request
 import zipfile
-from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
@@ -163,11 +163,36 @@ def _collect_from_csv(path: Path) -> List[Tuple[str, str]]:
 
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    u = urlparse(url or "")
+    if u.scheme not in ("http", "https"):
+        raise ValueError("Only http/https URLs are supported for downloads.")
+
+    max_bytes = int(os.environ.get("WEBCAT_MAX_DOWNLOAD_BYTES", str(512 * 1024 * 1024)))
+    if max_bytes <= 0:
+        max_bytes = 512 * 1024 * 1024
+
     req = urllib.request.Request(url, headers={"User-Agent": "squid-flask-proxy-webcat/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = r.read()
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    tmp.write_bytes(data)
+
+    total = 0
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        try:
+            cl = r.headers.get("Content-Length")
+            if cl is not None and int(cl) > max_bytes:
+                raise ValueError(f"Download too large (Content-Length={cl}).")
+        except Exception:
+            pass
+
+        with open(tmp, "wb") as f:
+            while True:
+                chunk = r.read(512 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(f"Download exceeded limit ({max_bytes} bytes).")
+                f.write(chunk)
+
     tmp.replace(dest)
 
 

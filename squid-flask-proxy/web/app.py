@@ -19,9 +19,11 @@ from services.webfilter_store import get_webfilter_store
 from services.sslfilter_store import get_sslfilter_store
 from services.pac_profiles_store import get_pac_profiles_store
 from services.housekeeping import start_housekeeping
+from services.background_guard import acquire_background_lock
 
 import socket
 import re
+import secrets
 from typing import Any, Dict
 
 app = Flask(__name__)
@@ -34,7 +36,7 @@ try:
     app.secret_key = _auth_store.get_or_create_secret_key()
 except Exception:
     # Fallback: sessions will reset on restart.
-    app.secret_key = os.environ.get('FLASK_SECRET_KEY') or 'dev-insecure'
+    app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_urlsafe(48)
 
 # Ensure there is at least one login.
 try:
@@ -182,6 +184,14 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 _disable_background = (os.environ.get('DISABLE_BACKGROUND') or '').strip() == '1'
+
+# In multi-worker servers, ensure only one process runs background workers.
+if not _disable_background:
+    try:
+        if not acquire_background_lock():
+            _disable_background = True
+    except Exception:
+        pass
 
 
 @app.template_filter('datetimeformat')
