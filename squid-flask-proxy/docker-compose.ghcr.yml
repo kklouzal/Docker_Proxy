@@ -1,0 +1,29 @@
+services:
+  proxy:
+    image: ghcr.io/kklouzal/docker_proxy:main
+    ports:
+      - "5000:5000"       # Flask UI
+      - "80:80"           # WPAD / PAC via dedicated port 80 listener
+      - "3128:3128"       # HTTP proxy
+      - "${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
+    volumes:
+      - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - ./squid/ssl/certs:/etc/squid/ssl/certs
+      - squid_ssl_db:/var/lib/ssl_db
+      - squid_cache:/var/spool/squid
+      - proxy_data:/var/lib/squid-flask-proxy
+    environment:
+      SQUID_WORKERS: ${SQUID_WORKERS:-2}
+      CICAP_PORT: ${CICAP_PORT:-14000}
+      CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+volumes:
+  squid_cache:
+  squid_ssl_db:
+  proxy_data:

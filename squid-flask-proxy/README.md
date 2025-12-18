@@ -41,6 +41,45 @@ WPAD/PAC listener behavior (port 80):
 
 Note: `http://<host>:5000` is the admin UI. Port 80 is intentionally isolated to PAC/WPAD only.
 
+## Publishing to GHCR (private source, public image)
+
+You can host the source in a **private** GitHub repository while publishing a **public** container image via GitHub Container Registry (GHCR).
+
+What this repo includes:
+- A GitHub Actions workflow that builds and pushes the Docker image to GHCR: `.github/workflows/publish-ghcr.yml`
+- A Compose example that pulls the GHCR image: `docker-compose.ghcr.yml`
+
+### Recommended workflow
+
+1) Create a GitHub repository and keep it **private**.
+
+2) Push this code to the `main` branch.
+
+3) In GitHub, go to **Actions** and run (or let it run on push). The workflow publishes to:
+
+`ghcr.io/<owner-or-org>/<repo>:main`
+
+4) After the first push, set the GHCR package visibility to **Public**:
+
+GitHub → **Packages** → your image → **Package settings** → **Change visibility** → Public.
+
+5) Update the image reference in `docker-compose.ghcr.yml`:
+
+Replace:
+`ghcr.io/YOUR_GITHUB_OWNER_OR_ORG/YOUR_REPO:main`
+
+With your actual GHCR image name.
+
+### Running from the public image
+
+```powershell
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+Notes:
+- A public image does not automatically make the private repo public.
+- Container images can be inspected by recipients (layers/files), so avoid baking secrets into the image.
+
 ## Access from other computers (LAN)
 
 By default, Docker publishes ports on all interfaces (`0.0.0.0`) via Compose:
