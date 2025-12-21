@@ -44,6 +44,11 @@ class DiskUsage:
     free_bytes: int
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    v = (os.environ.get(name, default) or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def _read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         return f.read()
@@ -156,9 +161,9 @@ def get_loadavg() -> Optional[Dict[str, float]]:
         return None
 
 
-def _run(cmd: list[str], timeout: float = 2.0) -> Optional[str]:
+def _run(cmd: list[str], timeout: float = 2.0, env: Optional[Dict[str, str]] = None) -> Optional[str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         if p.returncode != 0:
             return None
         return p.stdout
@@ -167,10 +172,30 @@ def _run(cmd: list[str], timeout: float = 2.0) -> Optional[str]:
 
 
 def get_squid_mgr_text(section: str, host: str = "127.0.0.1", port: int = 3128) -> Optional[str]:
+    # Opt-in: cachemgr polling can be surprisingly expensive and has been observed
+    # to trigger forwarding-loop warnings and Squid instability in some setups.
+    # Default is disabled; enable explicitly if you want cachemgr-based stats.
+    if not _env_flag("STATS_USE_CACHEMGR", "0"):
+        return None
+
     # Requires squidclient in the image and cachemgr allowed for localhost.
     if shutil.which("squidclient") is None:
         return None
-    return _run(["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"])
+
+    # Avoid accidental self-proxying if the container has proxy env vars set.
+    safe_env = dict(os.environ)
+    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
+        safe_env.pop(k, None)
+    existing_no_proxy = safe_env.get("NO_PROXY") or safe_env.get("no_proxy") or ""
+    additions = ["127.0.0.1", "localhost", "::1"]
+    merged = ",".join([p for p in (existing_no_proxy.split(",") if existing_no_proxy else []) if p])
+    for a in additions:
+        if a not in merged.split(","):
+            merged = f"{merged},{a}" if merged else a
+    safe_env["NO_PROXY"] = merged
+    safe_env["no_proxy"] = merged
+
+    return _run(["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"], env=safe_env)
 
 
 def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access.log", max_lines: int = 5000) -> Dict[str, Optional[float]]:
@@ -360,7 +385,9 @@ def get_stats() -> Dict[str, Any]:
 
         try:
             mgr_5min = get_squid_mgr_text("5min")
-            mgr_info = get_squid_mgr_text("info")
+            mgr_info = None
+            if mgr_5min is None:
+                mgr_info = get_squid_mgr_text("info")
             if mgr_5min:
                 value = parse_squid_hit_rate(mgr_5min)
                 src = "cachemgr"
