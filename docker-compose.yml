@@ -1,3 +1,5 @@
+name: squid-flask-proxy
+
 services:
   proxy:
     build:
