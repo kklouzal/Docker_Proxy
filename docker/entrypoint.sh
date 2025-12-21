@@ -82,6 +82,14 @@ EOF
     fi
 fi
 
+# Ensure we keep a bounded number of rotated log files.
+# Even if the user persists/edits squid.conf via the UI, add a safe default if missing.
+if [ -f /etc/squid/squid.conf ] && ! grep -q "^\s*logfile_rotate\b" /etc/squid/squid.conf 2>/dev/null; then
+    echo "" >> /etc/squid/squid.conf
+    echo "# Default log retention for squid -k rotate (daily via supervisor)." >> /etc/squid/squid.conf
+    echo "logfile_rotate 10" >> /etc/squid/squid.conf
+fi
+
 # Generate Squid include snippets for ICAP scaling.
 # We derive the worker count from squid.conf so UI edits like "workers 4" validate.
 mkdir -p /etc/squid/conf.d

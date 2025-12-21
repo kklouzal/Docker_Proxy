@@ -94,6 +94,7 @@ COPY docker/pac_http.conf /etc/supervisor.d/pac_http.conf
 COPY docker/clamd.conf /etc/clamav/clamd.conf
 COPY docker/freshclam.conf /etc/clamav/freshclam.conf
 COPY docker/healthcheck.sh /healthcheck.sh
+COPY docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
 
 # c-icap (built from source in the builder stage)
 COPY --from=cicap_builder /out/ /
@@ -103,7 +104,7 @@ COPY docker/clamd_mod.conf /etc/clamd_mod.conf
 COPY docker/virus_scan.conf /etc/virus_scan.conf
 
 # Make entrypoint script executable
-RUN chmod +x /entrypoint.sh /healthcheck.sh /scripts/*.sh \
+RUN chmod +x /entrypoint.sh /healthcheck.sh /usr/local/bin/squid_logrotate.sh /scripts/*.sh \
 	&& mkdir -p /etc/squid/ssl/certs /var/lib/ssl_db /var/spool/squid
 
 # Install custom Squid error pages (keeps built-in pages intact)

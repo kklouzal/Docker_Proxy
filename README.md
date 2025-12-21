@@ -132,6 +132,14 @@ Squid cache and SSL database use separate named volumes by default:
 
 Reminder: `docker compose down -v` deletes named volumes.
 
+## Log rotation
+
+Squid logs are rotated automatically every 24 hours inside the container by a supervisor-managed job that runs `squid -k rotate`.
+
+Notes:
+- Retention is controlled by the Squid directive `logfile_rotate N` (default `10`).
+- You can change the rotation interval by setting `SQUID_LOG_ROTATE_INTERVAL_SECONDS` (default `86400`).
+
 ## Authentication and security model
 
 - The admin UI is protected by a login session.
