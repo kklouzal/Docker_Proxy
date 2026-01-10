@@ -227,6 +227,22 @@ class SquidController:
                 return None
             return int(b // (1024 * 1024))
 
+        def find_pipeline_prefetch_bool() -> Optional[bool]:
+            # Squid supports either legacy on/off or numeric values.
+            # Squid 6 warns that "pipeline_prefetch on" is deprecated.
+            m = re.search(r"^\s*pipeline_prefetch\s+(\S+)\s*$", text, re.M | re.I)
+            if not m:
+                return None
+            v = (m.group(1) or "").strip().lower()
+            if v in ("on", "true", "yes"):
+                return True
+            if v in ("off", "false", "no"):
+                return False
+            try:
+                return int(v) >= 1
+            except Exception:
+                return None
+
         return {
             "cache_dir_size_mb": find_int(r"^\s*cache_dir\s+ufs\s+\S+\s+(\d+)\s+\d+\s+\d+"),
             "cache_mem_mb": find_int(r"^\s*cache_mem\s+(\d+)\s*MB\s*$"),
@@ -252,7 +268,7 @@ class SquidController:
             # Cache effectiveness/performance
             "cache_replacement_policy": find_str("cache_replacement_policy"),
             "memory_replacement_policy": find_str("memory_replacement_policy"),
-            "pipeline_prefetch": find_on_off("pipeline_prefetch"),
+            "pipeline_prefetch": find_pipeline_prefetch_bool(),
 
             # Cache-first tuning (whether to continue fetching when clients abort)
             "quick_abort_min_kb": find_kb("quick_abort_min"),
@@ -679,7 +695,10 @@ class SquidController:
         read_timeout_seconds = options.get("read_timeout_seconds")
         forward_timeout_seconds = options.get("forward_timeout_seconds")
         shutdown_lifetime_seconds = options.get("shutdown_lifetime_seconds")
-        half_closed_clients_on = bool(options.get("half_closed_clients_on", True))
+        # half_closed_clients can improve cache fill in some scenarios, but Squid
+        # has had stability issues around half-closed monitoring in the past.
+        # Default to off for stability; the UI can explicitly enable it.
+        half_closed_clients_on = bool(options.get("half_closed_clients_on", False))
 
         logfile_rotate = options.get("logfile_rotate")
 
@@ -749,7 +768,7 @@ class SquidController:
 
         out = self._replace_or_append_line(out, "cache_replacement_policy", f"cache_replacement_policy {cache_replacement_policy}")
         out = self._replace_or_append_line(out, "memory_replacement_policy", f"memory_replacement_policy {memory_replacement_policy}")
-        out = self._replace_or_append_line(out, "pipeline_prefetch", f"pipeline_prefetch {'on' if pipeline_prefetch_on else 'off'}")
+        out = self._replace_or_append_line(out, "pipeline_prefetch", f"pipeline_prefetch {1 if pipeline_prefetch_on else 0}")
 
         out = self._replace_or_append_line(out, "client_persistent_connections", f"client_persistent_connections {'on' if client_persistent_connections_on else 'off'}")
         out = self._replace_or_append_line(out, "server_persistent_connections", f"server_persistent_connections {'on' if server_persistent_connections_on else 'off'}")

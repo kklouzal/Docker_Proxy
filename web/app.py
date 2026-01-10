@@ -230,7 +230,7 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
         'read_timeout_seconds': tunables.get('read_timeout_seconds') if tunables.get('read_timeout_seconds') is not None else 1800,
         'forward_timeout_seconds': tunables.get('forward_timeout_seconds') if tunables.get('forward_timeout_seconds') is not None else 1800,
         'shutdown_lifetime_seconds': tunables.get('shutdown_lifetime_seconds') if tunables.get('shutdown_lifetime_seconds') is not None else 30,
-        'half_closed_clients_on': bool(tunables.get('half_closed_clients') if tunables.get('half_closed_clients') is not None else True),
+        'half_closed_clients_on': bool(tunables.get('half_closed_clients') if tunables.get('half_closed_clients') is not None else False),
 
         # Logging
         'logfile_rotate': tunables.get('logfile_rotate') if tunables.get('logfile_rotate') is not None else 10,

@@ -92,17 +92,35 @@ def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Opti
             except ValueError:
                 size_bytes = 0
             domain = _extract_domain(url)
-            extras = {
-                "req_cc": row[7] if len(row) > 7 else "",
-                "req_pragma": row[8] if len(row) > 8 else "",
-                "req_auth": row[9] if len(row) > 9 else "",
-                "req_cookie": row[10] if len(row) > 10 else "",
-                "rep_cc": row[11] if len(row) > 11 else "",
-                "rep_pragma": row[12] if len(row) > 12 else "",
-                "rep_expires": row[13] if len(row) > 13 else "",
-                "rep_vary": row[14] if len(row) > 14 else "",
-                "rep_set_cookie": row[15] if len(row) > 15 else "",
-            }
+
+            # Two known TSV schemas for our structured Squid logformat:
+            # - Legacy (>=16 cols): included Authorization/Cookie request headers.
+            # - Current (>=14 cols): removed Authorization/Cookie to avoid logging secrets.
+            # We never persist raw Authorization/Cookie values; we only track presence.
+            if len(row) >= 16:
+                req_auth = row[9] if len(row) > 9 else ""
+                req_cookie = row[10] if len(row) > 10 else ""
+                extras = {
+                    "req_cc": row[7] if len(row) > 7 else "",
+                    "req_pragma": row[8] if len(row) > 8 else "",
+                    "req_has_auth": "1" if (req_auth and req_auth != "-") else "",
+                    "req_has_cookie": "1" if (req_cookie and req_cookie != "-") else "",
+                    "rep_cc": row[11] if len(row) > 11 else "",
+                    "rep_pragma": row[12] if len(row) > 12 else "",
+                    "rep_expires": row[13] if len(row) > 13 else "",
+                    "rep_vary": row[14] if len(row) > 14 else "",
+                    "rep_set_cookie": row[15] if len(row) > 15 else "",
+                }
+            else:
+                extras = {
+                        "req_cc": row[7] if len(row) > 7 else "",
+                        "req_pragma": row[8] if len(row) > 8 else "",
+                        "rep_cc": row[9] if len(row) > 9 else "",
+                        "rep_pragma": row[10] if len(row) > 10 else "",
+                        "rep_expires": row[11] if len(row) > 11 else "",
+                        "rep_vary": row[12] if len(row) > 12 else "",
+                        "rep_set_cookie": row[13] if len(row) > 13 else "",
+                    }
             return ts, client_ip, result_code, max(size_bytes, 0), domain, method, extras
 
     # Default whitespace format.
@@ -154,8 +172,8 @@ def _derive_not_cached_reason(domain: str, method: str, result_code: str, extras
     ex = extras or {}
     req_cc = (ex.get("req_cc") or "").lower()
     req_pragma = (ex.get("req_pragma") or "").lower()
-    req_auth = (ex.get("req_auth") or "")
-    req_cookie = (ex.get("req_cookie") or "")
+    req_has_auth = (ex.get("req_has_auth") or "") == "1"
+    req_has_cookie = (ex.get("req_has_cookie") or "") == "1"
     rep_cc = (ex.get("rep_cc") or "").lower()
     rep_pragma = (ex.get("rep_pragma") or "").lower()
     rep_vary = (ex.get("rep_vary") or "").lower()
@@ -175,9 +193,9 @@ def _derive_not_cached_reason(domain: str, method: str, result_code: str, extras
         return "Client requested no-cache (Cache-Control/Pragma)"
     if cc_has(req_cc, "only-if-cached"):
         return "Client requested only-if-cached (offline cache mode)"
-    if req_auth and req_auth != "-":
+    if req_has_auth:
         return "Authorization header present (often not cacheable by default)"
-    if req_cookie and req_cookie != "-":
+    if req_has_cookie:
         return "Cookie header present (often reduces cacheability)"
 
     # Origin/response-driven reasons.
@@ -231,11 +249,11 @@ class LiveStatsStore:
 
     def _connect(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=3, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA busy_timeout=30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 

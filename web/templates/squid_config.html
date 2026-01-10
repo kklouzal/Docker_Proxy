@@ -348,7 +348,7 @@
             <div class="card-body">
                 <div class="form">
                     <label class="check-row">
-                        <input form="safe-timeouts-form" class="check" type="checkbox" name="half_closed_clients_on" {% if (tunables and tunables.half_closed_clients is not none and tunables.half_closed_clients) or (not tunables) or (tunables and tunables.half_closed_clients is none) %}checked{% endif %} />
+                        <input form="safe-timeouts-form" class="check" type="checkbox" name="half_closed_clients_on" {% if (tunables and tunables.half_closed_clients is not none and tunables.half_closed_clients) %}checked{% endif %} />
                         <span>half_closed_clients on</span>
                     </label>
 

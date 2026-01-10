@@ -42,6 +42,15 @@ PERSISTED_SQUID_CONF_PATH="${PERSISTED_SQUID_CONF_PATH:-/var/lib/squid-flask-pro
 if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
     mkdir -p /etc/squid
     cp "$PERSISTED_SQUID_CONF_PATH" /etc/squid/squid.conf
+
+    # Squid 6+ deprecates "pipeline_prefetch on" in favor of numeric values.
+    # Migrate the persisted config in-memory for this container run.
+    if grep -qiE "^\s*pipeline_prefetch\s+on\b" /etc/squid/squid.conf 2>/dev/null; then
+        sed -i -E "s/^([[:space:]]*pipeline_prefetch[[:space:]]+)on\b/\11/I" /etc/squid/squid.conf
+    fi
+    if grep -qiE "^\s*pipeline_prefetch\s+off\b" /etc/squid/squid.conf 2>/dev/null; then
+        sed -i -E "s/^([[:space:]]*pipeline_prefetch[[:space:]]+)off\b/\10/I" /etc/squid/squid.conf
+    fi
 fi
 
 TEMPLATE=""
@@ -80,6 +89,29 @@ acl squid_internal_mgr urlpath_regex -i ^/squid-internal-mgr/
 access_log none src_localhost squid_internal_mgr
 EOF
     fi
+fi
+
+# SECURITY: Ensure the live UI logformat does not log credentials (Authorization/Cookie).
+# Users may persist/edit squid.conf via the UI; enforce a safe default on startup.
+SAFE_LIVEUI_FMT='logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t"%{Cache-Control}>h"\t"%{Pragma}>h"\t"%{Cache-Control}<h"\t"%{Pragma}<h"\t"%{Expires}<h"\t"%{Vary}<h"\t"%{Set-Cookie}<h"'
+if [ -f /etc/squid/squid.conf ] && grep -q "^logformat liveui" /etc/squid/squid.conf 2>/dev/null; then
+    if grep -q "%{Authorization}>h\|%{Cookie}>h" /etc/squid/squid.conf 2>/dev/null; then
+        # Replace any existing liveui logformat line with the safe variant.
+        sed -i -E "s#^logformat[[:space:]]+liveui[[:space:]].*#${SAFE_LIVEUI_FMT}#" /etc/squid/squid.conf
+    fi
+fi
+
+# Stability + privacy: never cache requests that carry Authorization/Cookie.
+# This reduces Vary-related cache loops and prevents caching of authenticated content.
+if [ -f /etc/squid/squid.conf ] && ! grep -q "^acl has_auth req_header Authorization" /etc/squid/squid.conf 2>/dev/null; then
+    cat >> /etc/squid/squid.conf <<'EOF'
+
+# Never cache authenticated or cookie-bearing traffic.
+acl has_auth req_header Authorization .
+acl has_cookie req_header Cookie .
+cache deny has_auth
+cache deny has_cookie
+EOF
 fi
 
 # Ensure we keep a bounded number of rotated log files.
@@ -222,7 +254,7 @@ fi
 
 cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'
 [program:cicap_adblock]
-command=/usr/bin/c-icap -N -D -d 1 -f /etc/c-icap/c-icap-adblock.conf
+command=/usr/bin/c-icap -N -d 1 -f /etc/c-icap/c-icap-adblock.conf
 autostart=true
 autorestart=true
 priority=10
@@ -235,7 +267,7 @@ EOF
 cat > /etc/supervisor.d/cicap_av.conf <<'EOF'
 [program:cicap_av]
 # Wait for clamd's unix socket so clamd_mod can register the engine before virus_scan starts.
-command=/bin/sh -c 'SOCK=/var/lib/squid-flask-proxy/clamav/clamd.sock; i=0; while [ $i -lt 120 ]; do [ -S "$SOCK" ] && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -D -d 1 -f /etc/c-icap/c-icap-av.conf'
+command=/bin/sh -c 'SOCK=/var/lib/squid-flask-proxy/clamav/clamd.sock; i=0; while [ $i -lt 120 ]; do [ -S "$SOCK" ] && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -d 1 -f /etc/c-icap/c-icap-av.conf'
 autostart=true
 autorestart=true
 priority=11
@@ -245,22 +277,14 @@ stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
 
-REQ_NAMES=""
-AV_NAMES=""
-
 {
-    i=0
-    while [ "$i" -lt "$WORKERS" ]; do
-        echo "icap_service adblock_req_${i} reqmod_precache icap://127.0.0.1:${CICAP_PORT}/adblockreq bypass=on"
-        echo "icap_service av_resp_${i} respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
-        REQ_NAMES="$REQ_NAMES adblock_req_${i}"
-        AV_NAMES="$AV_NAMES av_resp_${i}"
-        i=$((i + 1))
-    done
-
-    # Squid will select a service from the set (round-robin/availability) for each transaction.
-    echo "adaptation_service_set adblock_req_set$REQ_NAMES"
-    echo "adaptation_service_set av_resp_set$AV_NAMES"
+    # One ICAP service per function.
+    # Duplicating multiple `icap_service` entries pointing at the same URI (same local c-icap instance)
+    # triggers Squid warnings about duplicate URIs and provides no scaling benefit.
+    echo "icap_service adblock_req reqmod_precache icap://127.0.0.1:${CICAP_PORT}/adblockreq bypass=on"
+    echo "icap_service av_resp respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
+    echo "adaptation_service_set adblock_req_set adblock_req"
+    echo "adaptation_service_set av_resp_set av_resp"
 } > /etc/squid/conf.d/20-icap.conf
 
 # Normalize known distro path differences without overwriting user config
@@ -274,6 +298,12 @@ sh /scripts/init_ssl_db.sh
 # Initialize cache dirs (safe to re-run)
 mkdir -p /var/spool/squid /var/log/squid
 mkdir -p /var/lib/squid-flask-proxy
+
+# SECURITY: access.log may contain credentials from older configurations.
+# Since /var/log/squid is not persisted as a volume, it's safe to purge on startup.
+if [ "${SANITIZE_SQUID_ACCESS_LOGS_ON_START:-1}" = "1" ]; then
+    rm -f /var/log/squid/access.log /var/log/squid/access.log.* 2>/dev/null || true
+fi
 
 # ClamAV bootstrap: first startup needs a signature DB download.
 # Persist DB + socket under /var/lib/squid-flask-proxy so restarts are fast.

@@ -56,6 +56,14 @@ cache_swap_high 95
 # Collapse concurrent requests for the same object.
 collapsed_forwarding on
 
+# Never cache authenticated or cookie-bearing traffic.
+# This prevents credential leaks and also avoids Squid cache/Vary edge cases
+# that can lead to instability under certain workloads.
+acl has_auth req_header Authorization .
+acl has_cookie req_header Cookie .
+cache deny has_auth
+cache deny has_cookie
+
 # Safe heuristic caching when explicit expiry headers are absent.
 # These patterns DO NOT use override flags (e.g., override-expire/ignore-no-cache), so
 # objects marked private/no-store/no-cache by origin servers remain non-cacheable.
@@ -94,10 +102,11 @@ refresh_pattern . 0 20% 4320
 
 # Log settings
 # Structured access log used by the web UI. Includes cache-related request/response headers.
+# SECURITY NOTE: Do NOT log Authorization/Cookie headers (they may contain credentials).
 # Fields (TSV): ts, ms, client_ip, method, url, result/status, bytes,
-#   req_cc, req_pragma, req_auth, req_cookie,
+#   req_cc, req_pragma,
 #   rep_cc, rep_pragma, rep_expires, rep_vary, rep_set_cookie
-logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t"%{Cache-Control}>h"\t"%{Pragma}>h"\t"%{Authorization}>h"\t"%{Cookie}>h"\t"%{Cache-Control}<h"\t"%{Pragma}<h"\t"%{Expires}<h"\t"%{Vary}<h"\t"%{Set-Cookie}<h"
+logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t"%{Cache-Control}>h"\t"%{Pragma}>h"\t"%{Cache-Control}<h"\t"%{Pragma}<h"\t"%{Expires}<h"\t"%{Vary}<h"\t"%{Set-Cookie}<h"
 
 # Keep up to N rotated log files (access.log.0 .. access.log.N, same for cache.log).
 # Rotation itself is triggered by a daily supervisor job (squid -k rotate).
