@@ -3,6 +3,10 @@
 set -eu
 
 INTERVAL_SECONDS="${SQUID_LOG_ROTATE_INTERVAL_SECONDS:-86400}"
+INITIAL_DELAY_SECONDS="${SQUID_LOG_ROTATE_INITIAL_DELAY_SECONDS:-15}"
+
+# Give Squid a moment to finish initialization on container start.
+sleep "${INITIAL_DELAY_SECONDS}"
 
 # Supervisor-managed loop: rotate Squid logs every INTERVAL_SECONDS.
 # Rotation requires `logfile_rotate N` in squid.conf to cap retained files.

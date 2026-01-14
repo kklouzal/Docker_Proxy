@@ -21,6 +21,12 @@ acl step1 at_step SslBump1
 ssl_bump peek step1
 # SSL filtering (no-bump CIDRs). Safe if empty.
 include /etc/squid/conf.d/10-sslfilter.conf
+
+# Steam downloads/auth endpoints are frequently intolerant of TLS interception.
+# If users report Steam showing "No Connection" unless bypassing the proxy for
+# *.steamserver.net, splicing these destinations usually resolves it.
+acl steam_sites ssl::server_name .steamserver.net
+ssl_bump splice steam_sites
 ssl_bump bump all
 
 # Cache settings
@@ -118,9 +124,9 @@ acl src_localhost src 127.0.0.1/32 ::1
 acl squid_internal_mgr urlpath_regex -i ^/squid-internal-mgr/
 access_log none src_localhost squid_internal_mgr
 
-access_log /var/log/squid/access.log liveui
-cache_log /var/log/squid/cache.log
-cache_store_log /var/log/squid/store.log
+access_log stdio:/var/log/squid/access.log liveui
+cache_log stdio:/var/log/squid/cache.log
+cache_store_log stdio:/var/log/squid/store.log
 
 # ICAP ad blocking (managed by web UI)
 # The ICAP service runs inside the same container on localhost.

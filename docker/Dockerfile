@@ -1,4 +1,6 @@
-FROM alpine:3.20 AS cicap_builder
+ARG ALPINE_VERSION=3.23.2
+
+FROM alpine:${ALPINE_VERSION} AS cicap_builder
 
 # Defaults are pinned for reproducible builds.
 # Override at build time, e.g.:
@@ -73,7 +75,7 @@ RUN set -eu; \
 	if [ -f /etc/clamd_mod.conf ]; then mkdir -p /out/etc; cp -a /etc/clamd_mod.conf /out/etc/; fi
 
 
-FROM alpine:3.20
+FROM alpine:${ALPINE_VERSION}
 
 # Install necessary packages
 # Note: Alpine's squid package does not ship the legacy `squidclient` binary.
