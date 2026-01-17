@@ -239,6 +239,10 @@ def _extract_zip(zip_path: Path, out_dir: Path) -> None:
 def _extract_tar(tar_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     # Supports .tar, .tar.gz, .tgz
+    max_bytes = int(os.environ.get("WEBCAT_MAX_EXTRACT_BYTES", str(2 * 1024 * 1024 * 1024)))
+    if max_bytes <= 0:
+        max_bytes = 2 * 1024 * 1024 * 1024
+    total = 0
     with tarfile.open(tar_path, "r:*") as t:
         # Prefer safe extraction mode when supported (avoids future default changes).
         try:
@@ -250,8 +254,15 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
         out_root = out_dir.resolve()
         for m in t.getmembers():
             # Skip special file types
-            if m.ischr() or m.isblk() or m.isfifo() or m.isdev():
+            if m.ischr() or m.isblk() or m.isfifo() or m.isdev() or m.issym() or m.islnk():
                 continue
+
+            # Prevent tar bombs / runaway extraction
+            if m.isfile():
+                size = int(getattr(m, "size", 0) or 0)
+                total += size
+                if total > max_bytes:
+                    raise ValueError(f"Extracted data exceeded limit ({max_bytes} bytes).")
 
             # Prevent path traversal / absolute paths
             target = (out_dir / m.name).resolve()

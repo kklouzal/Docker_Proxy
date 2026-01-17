@@ -42,6 +42,9 @@ cache_mem 256 MB
 client_persistent_connections on
 server_persistent_connections on
 
+# Stability: safer behavior with clients that half-close TCP connections.
+half_closed_clients off
+
 # Timeouts
 # For throttled/slow origins (common on image boards), allow longer waits before
 # Squid gives up. These are upper bounds and can increase concurrency/resource

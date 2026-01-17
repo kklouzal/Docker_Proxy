@@ -22,6 +22,14 @@ if ! ps 2>/dev/null | grep -q '[s]ockd'; then
     exit 1
 fi
 
+# Check Dante liveness (SOCKS5 handshake)
+# Client greeting: VER=5, NMETHODS=1, METHODS={0x00 (no-auth)}
+# Expected server choice: VER=5, METHOD=0x00
+if ! python3 -c "import socket; s=socket.create_connection(('127.0.0.1',1080),2); s.settimeout(2); s.sendall(b'\x05\x01\x00'); r=s.recv(2); s.close(); assert r==b'\x05\x00'" >/dev/null 2>&1; then
+    echo "Dante (sockd) is not accepting SOCKS5 no-auth"
+    exit 1
+fi
+
 # Check c-icap adblock ICAP service liveness (OPTIONS /adblockreq)
 if ! python3 -c "import os,socket; host='127.0.0.1'; port=int(os.environ.get('CICAP_PORT','14000')); path='/adblockreq'; req=(f'OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\nHost: {host}\r\nEncapsulated: null-body=0\r\n\r\n').encode('ascii'); s=socket.create_connection((host,port),2); s.settimeout(2); s.sendall(req); resp=s.recv(512); s.close(); assert resp.startswith(b'ICAP/1.0 200')" >/dev/null 2>&1; then
     echo "c-icap adblock ICAP service is not responding"

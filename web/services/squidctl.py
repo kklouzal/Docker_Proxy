@@ -5,7 +5,7 @@ import re
 import tempfile
 import shutil
 from pathlib import Path
-from subprocess import PIPE, Popen, run
+from subprocess import run
 from typing import Any, Dict, Optional, Tuple
 
 import logging
@@ -64,6 +64,23 @@ class SquidController:
     def _write_file(self, path: str, content: str) -> None:
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
+
+    def _atomic_write_file(self, path: str, content: str) -> None:
+        # Write within the destination directory so os.replace is atomic on POSIX.
+        d = os.path.dirname(path) or "."
+        os.makedirs(d, exist_ok=True)
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, dir=d, prefix=".tmp-") as f:
+                tmp_path = f.name
+                f.write(content)
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     def _generate_icap_include(self, workers: int) -> None:
         # Generates /etc/squid/conf.d/20-icap.conf.
@@ -747,8 +764,14 @@ class SquidController:
         workers = int(options.get("workers") or 2)
         if workers < 1:
             workers = 1
-        if workers > 32:
-            workers = 32
+        # Keep in sync with the web UI clamp.
+        try:
+            max_workers = int((os.environ.get("MAX_WORKERS") or "32").strip())
+        except Exception:
+            max_workers = 32
+        max_workers = min(128, max(1, max_workers))
+        if workers > max_workers:
+            workers = max_workers
 
         # For cache-first deployments, defaults aim to keep filling cache even if clients abort.
         quick_abort_min_kb = int(options.get("quick_abort_min_kb") if options.get("quick_abort_min_kb") is not None else 0)
@@ -1165,7 +1188,7 @@ class SquidController:
                 # Persist only after the new config is actually active.
                 try:
                     os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
-                    self._write_file(self.persisted_squid_conf_path, config_text)
+                    self._atomic_write_file(self.persisted_squid_conf_path, config_text)
                 except Exception:
                     log_exception_throttled(
                         logger,
@@ -1189,7 +1212,7 @@ class SquidController:
             # Persist only after the new config is actually active.
             try:
                 os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
-                self._write_file(self.persisted_squid_conf_path, config_text)
+                self._atomic_write_file(self.persisted_squid_conf_path, config_text)
             except Exception:
                 log_exception_throttled(
                     logger,

@@ -1,5 +1,3 @@
-import os
-
 from services.errors import clean_text, public_error_message
 
 

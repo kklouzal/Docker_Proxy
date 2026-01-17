@@ -59,12 +59,26 @@ class AuditStore:
     ) -> None:
         self.init_db()
 
+        def _clip(val: Optional[str], max_len: int) -> Optional[str]:
+            if val is None:
+                return None
+            s = str(val)
+            if max_len > 0 and len(s) > max_len:
+                return s[: max_len - 1] + "…"
+            return s
+
+        kind_s = _clip((kind or "").strip(), 80) or ""
+        remote_s = _clip((remote_addr or "").strip(), 64)
+        ua_s = _clip((user_agent or "").strip(), 256)
+        detail_s = _clip((detail or "").strip(), 1000)
+
         sha = None
         stored_text = None
         if config_text is not None:
             sha = hashlib.sha256(config_text.encode("utf-8", errors="replace")).hexdigest()
             if keep_config_text:
-                stored_text = config_text
+                # Bound stored config text to avoid unbounded DB growth.
+                stored_text = _clip(config_text, 200_000)
 
         with self._connect() as conn:
             conn.execute(
@@ -74,11 +88,11 @@ class AuditStore:
                 """,
                 (
                     int(time.time()),
-                    kind,
+                    kind_s,
                     1 if ok else 0,
-                    remote_addr,
-                    user_agent,
-                    detail,
+                    remote_s,
+                    ua_s,
+                    detail_s,
                     sha,
                     stored_text,
                 ),

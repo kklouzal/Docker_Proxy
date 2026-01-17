@@ -37,10 +37,12 @@ class AuthStore:
 
     def _connect(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        # Under production WSGI servers (e.g. gunicorn), multiple worker threads/processes
+        # may contend on SQLite. Use timeouts + WAL + busy_timeout for stability.
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 

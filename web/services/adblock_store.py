@@ -817,8 +817,8 @@ class AdblockStore:
                     os.unlink(tmp)
             except OSError:
                 pass
-                logger.exception("Adblock list download failed (key=%s)", key)
-                return False, public_error_message(e, default="Download failed. Check server logs for details.", max_len=400), 0, 0
+            logger.exception("Adblock list download failed (key=%s)", key)
+            return False, public_error_message(e, default="Download failed. Check server logs for details.", max_len=400), 0, 0
 
     def update_one(self, key: str, force: bool = False) -> bool:
         now_ts = _now()

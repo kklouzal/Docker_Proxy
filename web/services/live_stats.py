@@ -50,11 +50,30 @@ def _is_hit(result_code: str) -> bool:
 
 def _extract_domain(url: str) -> Optional[str]:
     try:
-        parts = urlsplit(url)
-        host = parts.hostname
-        if not host:
+        raw = (url or "").strip()
+        if not raw:
             return None
-        return host.lower()
+
+        parts = urlsplit(raw)
+        host = parts.hostname
+        if host:
+            return host.lower()
+
+        # Handle CONNECT-style URLs without scheme (e.g., "example.com:443").
+        # Also tolerate bare hostnames with no scheme or path.
+        cand = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        if "@" in cand:
+            cand = cand.split("@", 1)[1]
+        if cand.startswith("[") and "]" in cand:
+            # IPv6 literal like [::1]:443
+            host_part = cand[1 : cand.find("]")]
+            return host_part.lower() if host_part else None
+        if ":" in cand:
+            host_part, port = cand.rsplit(":", 1)
+            if port.isdigit():
+                cand = host_part
+        cand = cand.strip().lower()
+        return cand or None
     except Exception:
         return None
 

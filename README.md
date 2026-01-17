@@ -175,8 +175,24 @@ Common environment variables:
 - `DANTE_PORT`: SOCKS5 listen port inside the container (default 1080).
 - `DANTE_ALLOW_FROM`: space-separated CIDRs allowed to connect to SOCKS5.
 - `DANTE_BLOCK_PRIVATE_DESTS=1|0`: block SOCKS requests to loopback + RFC1918 destinations.
+- `DANTE_SERVERS`: number of Dante "main server" processes (`sockd -N`; default `1`).
+- `DANTE_LOG`: space-separated log keywords: `connect disconnect error data ioop tcpinfo`.
+- `DANTE_DEBUG`: debug verbosity level (`0` disables).
+- `DANTE_TIMEOUT_NEGOTIATE`, `DANTE_TIMEOUT_CONNECT`: negotiation/connect timeouts (seconds).
+- `DANTE_TIMEOUT_IO_TCP`, `DANTE_TIMEOUT_IO_UDP`: idle timeouts (seconds; `0` means forever).
+- `DANTE_UDP_CONNECTDST=yes|no`: connect UDP sockets to destination (default `yes`).
+- `DANTE_SESSION_MAX`: optional per-rule concurrent session cap (blank/0 disables).
+- `DANTE_SESSION_THROTTLE`: optional rate-limit (`connections/seconds`, e.g. `50/1`).
+- `ULIMIT_NOFILE`: optional file-descriptor limit for high concurrency.
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
 - `PAC_UPSTREAM`: where the PAC listener fetches PAC content (default `http://127.0.0.1:5000/proxy.pac`).
+
+Admin UI (Gunicorn) tuning:
+- `WEB_WORKERS`: Gunicorn worker processes (default `2`).
+- `WEB_THREADS`: threads per worker (default `2`).
+- `WEB_TIMEOUT`: worker timeout seconds (default `120`).
+- `WEB_GRACEFUL_TIMEOUT`: graceful shutdown timeout (default `30`).
+- `WEB_KEEPALIVE`: keep-alive seconds (default `5`).
 
 ## Features (current)
 
@@ -212,6 +228,8 @@ To verify Dante is reachable from a client, test explicitly:
 `curl --socks5-hostname <host-ip>:1080 https://example.com -v`
 
 Also note: depending on Docker Desktop/NAT, Dante may log the source as a gateway/NAT IP rather than the true LAN client IP.
+
+If you need **true client IPs** inside the container logs, the most reliable option is to run this on a Linux Docker Engine host (or another deployment where the container receives connections without an extra NAT layer). On Docker Desktop (especially Windows), a VM/bridge is often in the path and can collapse all clients to a single gateway IP from the container's perspective.
 
 ## Host networking mode (optional)
 

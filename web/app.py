@@ -27,13 +27,27 @@ import re
 import secrets
 import csv
 import io
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 from typing import Any, Dict
 from markupsafe import Markup
 
 app = Flask(__name__)
 squid_controller = SquidController()
 cert_manager = CertManager()
+
+
+def _max_workers() -> int:
+    """Upper bound for Squid workers.
+
+    Must match the backend Squid controller clamp to avoid the UI silently
+    downscaling an existing config.
+    """
+    try:
+        v = int((os.environ.get('MAX_WORKERS') or '32').strip())
+    except Exception:
+        v = 32
+    # Keep a reasonable bound to avoid accidental resource blowups.
+    return min(128, max(1, v))
 
 # Global request body limit (bytes). Keep reasonably above common form posts.
 try:
@@ -57,8 +71,10 @@ else:
         app.secret_key = secrets.token_urlsafe(48)
 
 # Cookie hardening. Defaults chosen to avoid breaking common HTTP deployments.
-app.config.setdefault('SESSION_COOKIE_HTTPONLY', True)
-app.config.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')
+# Note: use explicit assignment (not setdefault) so the Set-Cookie attributes are
+# reliably emitted across Flask/Werkzeug versions.
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 if (os.environ.get('SESSION_COOKIE_SECURE') or '').strip() in ('1', 'true', 'True', 'yes', 'on'):
     app.config['SESSION_COOKIE_SECURE'] = True
 
@@ -181,6 +197,16 @@ def login():
         password = request.form.get('password') or ''
         next_url = _safe_next_url(request.form.get('next') or '')
         if _auth_store.verify_user(username, password):
+            # Prevent session fixation by clearing any existing session data.
+            prev_csrf = session.get('_csrf_token')
+            session.clear()
+            # Keep a CSRF token available immediately after login so that the
+            # next POST (often triggered by UI actions) can succeed even if the
+            # client does not perform an intermediate template-rendering GET.
+            if prev_csrf and isinstance(prev_csrf, str):
+                session['_csrf_token'] = prev_csrf
+            else:
+                session['_csrf_token'] = secrets.token_urlsafe(32)
             session['user'] = username
             return redirect(next_url or url_for('index'))
         return render_template('login.html', error='Invalid username or password.', next=next_url)
@@ -193,7 +219,7 @@ def login():
 
 @app.route('/logout', methods=['POST'])
 def logout():
-    session.pop('user', None)
+    session.clear()
     return redirect(url_for('login'))
 
 
@@ -210,7 +236,7 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
         'cache_swap_high': tunables.get('cache_swap_high') or 95,
         'collapsed_forwarding_on': bool(tunables.get('collapsed_forwarding') if tunables.get('collapsed_forwarding') is not None else True),
         'range_cache_on': (tunables.get('range_offset_limit') == -1) if tunables.get('range_offset_limit') is not None else True,
-        'workers': min(4, max(1, int(tunables.get('workers') or 2))),
+        'workers': min(_max_workers(), max(1, int(tunables.get('workers') or 2))),
         'cache_replacement_policy': tunables.get('cache_replacement_policy') or 'heap GDSF',
         'memory_replacement_policy': tunables.get('memory_replacement_policy') or 'heap GDSF',
         'pipeline_prefetch_on': bool(tunables.get('pipeline_prefetch') if tunables.get('pipeline_prefetch') is not None else True),
@@ -371,7 +397,16 @@ def _check_tcp(host: str, port: int, timeout: float = 0.6) -> Dict[str, Any]:
         with socket.create_connection((host, int(port)), timeout=timeout):
             return {"ok": True, "detail": "tcp connect ok"}
     except Exception as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "detail": public_error_message(e)}
+
+
+def _csv_safe(value: object) -> str:
+    """Prevent CSV injection by prefixing formula-like values."""
+    s = "" if value is None else str(value)
+    probe = s.lstrip()
+    if probe and probe[0] in ("=", "+", "-", "@"):  # Excel/Sheets formula prefixes
+        return "'" + s
+    return s
 
 
 @app.route('/')
@@ -482,10 +517,21 @@ def ssl_errors_export():
     rows = store.list_recent(since=since_ts, search=q, limit=1000)
 
     headers = ["domain", "category", "reason", "count", "last_seen", "sample"]
-    out = [";".join(headers)]
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\n")
+    w.writerow(headers)
     for r in rows:
-        out.append(";".join([str(getattr(r, 'domain', '')), getattr(r, 'category', ''), getattr(r, 'reason', ''), str(getattr(r, 'count', 0)), str(getattr(r, 'last_seen', 0)), getattr(r, 'sample', '')]))
-    body = "\n".join(out)
+        w.writerow(
+            [
+                _csv_safe(getattr(r, "domain", "")),
+                _csv_safe(getattr(r, "category", "")),
+                _csv_safe(getattr(r, "reason", "")),
+                _csv_safe(getattr(r, "count", 0)),
+                _csv_safe(getattr(r, "last_seen", 0)),
+                _csv_safe(getattr(r, "sample", "")),
+            ]
+        )
+    body = buf.getvalue()
     return app.response_class(body, mimetype='text/csv; charset=utf-8')
 
 
@@ -763,7 +809,7 @@ def webfilter_test_domain():
         res = store.test_domain(domain)
         return jsonify(res), 200
     except Exception as e:
-        return jsonify({"ok": False, "verdict": "error", "reason": f"{type(e).__name__}: {e}"}), 200
+        return jsonify({"ok": False, "verdict": "error", "reason": public_error_message(e)}), 200
 
 
 @app.route('/sslfilter', methods=['GET', 'POST'])
@@ -841,7 +887,7 @@ def _check_icap_service(host: str, port: int, service: str):
         first = data.split(b"\r\n", 1)[0].decode("ascii", errors="replace") if data else "no data"
         return {"ok": False, "detail": first}
     except Exception as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "detail": public_error_message(e)}
 
 
 def _check_icap_adblock() -> Dict[str, Any]:
@@ -879,7 +925,7 @@ def _send_sample_respmod_to(host: str, port: int, service: str = "/avrespmod") -
         ok = line.startswith("ICAP/1.0 20")
         return {"ok": ok, "detail": line or "no data"}
     except Exception as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "detail": public_error_message(e)}
 
 
 def _send_sample_av_icap() -> Dict[str, Any]:
@@ -913,7 +959,7 @@ def _check_clamd() -> Dict[str, Any]:
         ok = data.startswith(b"PONG")
         return {"ok": bool(ok), "detail": (data.decode('ascii', errors='replace').strip() or 'no data')}
     except Exception as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "detail": public_error_message(e)}
 
 
 def _test_eicar() -> Dict[str, Any]:
@@ -951,7 +997,7 @@ def _test_eicar() -> Dict[str, Any]:
         ok = ('Eicar' in text) or ('FOUND' in text)
         return {"ok": ok, "detail": text or 'no data'}
     except Exception as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "detail": public_error_message(e)}
     finally:
         if tmp_path:
             try:
@@ -1260,8 +1306,9 @@ def apply_safe_caching():
         workers_i = as_int('workers', int(options.get('workers') or 2))
         if workers_i < 1:
             workers_i = 1
-        if workers_i > 4:
-            workers_i = 4
+        max_w = _max_workers()
+        if workers_i > max_w:
+            workers_i = max_w
         options['workers'] = workers_i
 
     # Timeouts (seconds)
@@ -1509,6 +1556,19 @@ def proxy_pac():
             return xri
         return (request.remote_addr or '').strip()
 
+    def _request_host() -> str:
+        # Robust host extraction (handles IPv6 bracket notation).
+        raw = (request.host or '').strip()
+        if not raw:
+            return '127.0.0.1'
+        try:
+            parsed = urlsplit(f"//{raw}")
+            if parsed.hostname:
+                return parsed.hostname
+        except Exception:
+            pass
+        return raw.split(':', 1)[0] or '127.0.0.1'
+
     def _build_pac(proxy_str: str, *, direct_domains: list[str], direct_dst_nets: list[str], include_private: bool) -> str:
         lines: list[str] = []
         lines.append("function FindProxyForURL(url, host) {")
@@ -1548,8 +1608,11 @@ def proxy_pac():
         lines.append("}")
         return "\n".join(lines) + "\n"
 
-    host = (request.host.split(':')[0] or '127.0.0.1').strip()
-    http_proxy = f"PROXY {host}:3128"
+    host = _request_host()
+    proxy_host = host
+    if ":" in proxy_host and not proxy_host.startswith("["):
+        proxy_host = f"[{proxy_host}]"
+    http_proxy = f"PROXY {proxy_host}:3128"
     http_chain = f"{http_proxy}; DIRECT"
 
     # Try dynamic PAC profiles first.
@@ -1643,7 +1706,7 @@ def pac_builder():
                 store.delete_profile(pid)
                 return redirect(url_for('pac_builder', ok='1'))
         except Exception as e:
-            return redirect(url_for('pac_builder', error='1', msg=f"{type(e).__name__}: {e}"))
+            return redirect(url_for('pac_builder', error='1', msg=public_error_message(e)))
 
         return redirect(url_for('pac_builder'))
 
@@ -1817,7 +1880,7 @@ def live_export():
         w = csv.writer(buf, delimiter=";", lineterminator="\n")
         w.writerow(headers)
         for r in data:
-            w.writerow([r.get(h, "") for h in headers])
+            w.writerow([_csv_safe(r.get(h, "")) for h in headers])
         return buf.getvalue()
 
     body = to_csv(rows)
@@ -1849,17 +1912,31 @@ def certs():
 
 @app.route('/certs/generate', methods=['POST'])
 def generate_certificate():
-    cert_manager.ensure_ca()
     try:
-        get_audit_store().record(
-            kind='ca_ensure',
-            ok=True,
-            remote_addr=request.remote_addr,
-            user_agent=request.headers.get('User-Agent'),
-        )
-    except Exception:
-        pass
-    return redirect(url_for('certs'))
+        cert_manager.ensure_ca()
+        try:
+            get_audit_store().record(
+                kind='ca_ensure',
+                ok=True,
+                remote_addr=request.remote_addr,
+                user_agent=request.headers.get('User-Agent'),
+            )
+        except Exception:
+            pass
+        return redirect(url_for('certs', ok='1', msg='CA generated.'))
+    except Exception as e:
+        app.logger.exception("CA generation failed")
+        try:
+            get_audit_store().record(
+                kind='ca_ensure',
+                ok=False,
+                remote_addr=request.remote_addr,
+                user_agent=request.headers.get('User-Agent'),
+                detail=public_error_message(e),
+            )
+        except Exception:
+            pass
+        return redirect(url_for('certs', ok='0', msg=public_error_message(e)))
 
 
 @app.route('/certs/upload', methods=['POST'])
@@ -1910,7 +1987,7 @@ def upload_certificate_pfx():
             ok=result.ok,
             remote_addr=request.remote_addr,
             user_agent=request.headers.get('User-Agent'),
-            details={'message': result.message},
+            detail=result.message,
         )
     except Exception:
         pass
@@ -1923,7 +2000,10 @@ def download_certificate(filename: str):
     # Only allow downloading the public CA cert
     if filename != 'ca.crt':
         abort(404)
-    cert_manager.ensure_ca()
+    try:
+        cert_manager.ensure_ca()
+    except Exception:
+        abort(500)
     return send_file(cert_manager.ca_cert_path, as_attachment=True, download_name='squid-proxy-ca.crt')
 
 

@@ -80,7 +80,8 @@ FROM alpine:${ALPINE_VERSION}
 # Install necessary packages
 # Note: Alpine's squid package does not ship the legacy `squidclient` binary.
 RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn supervisor openssl ca-certificates libatomic \
-		clamav clamav-daemon
+		clamav clamav-daemon \
+		file
 
 # Set working directory
 WORKDIR /app

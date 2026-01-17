@@ -208,11 +208,11 @@ class WebFilterStore:
 
     def _connect(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(self.settings_db_path), exist_ok=True)
-        conn = sqlite3.connect(self.settings_db_path, timeout=3, check_same_thread=False)
+        conn = sqlite3.connect(self.settings_db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("PRAGMA busy_timeout=30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
@@ -448,8 +448,9 @@ class WebFilterStore:
         if not os.path.exists(db_path):
             return []
         try:
-            conn = sqlite3.connect(db_path, timeout=2)
+            conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=30000;")
             try:
                 rows = conn.execute(
                     "SELECT category, domains FROM webcat_categories ORDER BY category ASC LIMIT ?",
@@ -475,7 +476,8 @@ class WebFilterStore:
             return set()
 
         try:
-            conn = sqlite3.connect(db_path, timeout=2)
+            conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+            conn.execute("PRAGMA busy_timeout=30000;")
             try:
                 for cand in _parent_domains(domain):
                     row = conn.execute(
