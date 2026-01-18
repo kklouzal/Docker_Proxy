@@ -29,7 +29,9 @@ class SslFilterStore:
         self.nobump_list_path = nobump_list_path
 
     def _connect(self) -> sqlite3.Connection:
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -99,8 +101,12 @@ class SslFilterStore:
         rows = self.list_nobump(limit=10000)
         cidrs = [c for c, _ts in rows if c]
 
-        os.makedirs(os.path.dirname(self.squid_include_path), exist_ok=True)
-        os.makedirs(os.path.dirname(self.nobump_list_path), exist_ok=True)
+        include_dir = os.path.dirname(self.squid_include_path)
+        if include_dir:
+            os.makedirs(include_dir, exist_ok=True)
+        list_dir = os.path.dirname(self.nobump_list_path)
+        if list_dir:
+            os.makedirs(list_dir, exist_ok=True)
 
         if cidrs:
             # Squid can read IP/CIDR lists from a file for src ACLs.

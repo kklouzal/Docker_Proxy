@@ -36,7 +36,9 @@ class AuthStore:
         self.secret_path = secret_path or os.environ.get("FLASK_SECRET_PATH") or DEFAULT_SECRET_PATH
 
     def _connect(self) -> sqlite3.Connection:
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         # Under production WSGI servers (e.g. gunicorn), multiple worker threads/processes
         # may contend on SQLite. Use timeouts + WAL + busy_timeout for stability.
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
@@ -68,7 +70,9 @@ class AuthStore:
         self.add_user("admin", "admin")
 
     def get_or_create_secret_key(self) -> str:
-        os.makedirs(os.path.dirname(self.secret_path), exist_ok=True)
+        secret_dir = os.path.dirname(self.secret_path)
+        if secret_dir:
+            os.makedirs(secret_dir, exist_ok=True)
         try:
             with open(self.secret_path, "r", encoding="utf-8") as f:
                 val = f.read().strip()

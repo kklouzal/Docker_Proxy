@@ -2,7 +2,6 @@ import os
 import sys
 import subprocess
 
-import pytest
 
 
 def _import_cert_manager_module():

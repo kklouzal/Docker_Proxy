@@ -1187,7 +1187,9 @@ class SquidController:
                     return False, restart_details or "Squid restart failed."
                 # Persist only after the new config is actually active.
                 try:
-                    os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
+                    persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
+                    if persisted_dir:
+                        os.makedirs(persisted_dir, exist_ok=True)
                     self._atomic_write_file(self.persisted_squid_conf_path, config_text)
                 except Exception:
                     log_exception_throttled(
@@ -1211,7 +1213,9 @@ class SquidController:
 
             # Persist only after the new config is actually active.
             try:
-                os.makedirs(os.path.dirname(self.persisted_squid_conf_path), exist_ok=True)
+                persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
+                if persisted_dir:
+                    os.makedirs(persisted_dir, exist_ok=True)
                 self._atomic_write_file(self.persisted_squid_conf_path, config_text)
             except Exception:
                 log_exception_throttled(

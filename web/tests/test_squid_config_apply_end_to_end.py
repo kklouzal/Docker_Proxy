@@ -1,7 +1,6 @@
 import importlib
 import os
 import sys
-import tempfile
 from urllib.parse import parse_qs, urlsplit
 
 import pytest

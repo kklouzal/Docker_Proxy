@@ -207,7 +207,9 @@ class WebFilterStore:
         self._lock = threading.Lock()
 
     def _connect(self) -> sqlite3.Connection:
-        os.makedirs(os.path.dirname(self.settings_db_path), exist_ok=True)
+        db_dir = os.path.dirname(self.settings_db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         conn = sqlite3.connect(self.settings_db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -627,7 +629,9 @@ class WebFilterStore:
         """(Re)generate the Squid include file from current settings."""
 
         s = self.get_settings()
-        os.makedirs(os.path.dirname(self.squid_include_path), exist_ok=True)
+        include_dir = os.path.dirname(self.squid_include_path)
+        if include_dir:
+            os.makedirs(include_dir, exist_ok=True)
 
         if not s.enabled or not s.blocked_categories:
             with open(self.squid_include_path, "w", encoding="utf-8") as f:
@@ -659,7 +663,9 @@ class WebFilterStore:
 
         # Whitelist is evaluated first.
         wl_patterns = list(s.whitelist_domains or [])
-        os.makedirs(os.path.dirname(self.whitelist_path), exist_ok=True)
+        whitelist_dir = os.path.dirname(self.whitelist_path)
+        if whitelist_dir:
+            os.makedirs(whitelist_dir, exist_ok=True)
         try:
             with open(self.whitelist_path, "w", encoding="utf-8") as f:
                 for pat in wl_patterns:
