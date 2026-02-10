@@ -2,6 +2,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import logging
 from dataclasses import dataclass
@@ -186,10 +187,14 @@ class AuthStore:
 
 
 _auth_store: Optional[AuthStore] = None
+_auth_store_lock = threading.Lock()
 
 
 def get_auth_store() -> AuthStore:
     global _auth_store
-    if _auth_store is None:
-        _auth_store = AuthStore()
-    return _auth_store
+    if _auth_store is not None:
+        return _auth_store
+    with _auth_store_lock:
+        if _auth_store is None:
+            _auth_store = AuthStore()
+        return _auth_store

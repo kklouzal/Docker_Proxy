@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import sqlite3
+import threading
 import time
 from typing import Optional
 
@@ -166,10 +167,14 @@ class AuditStore:
 
 
 _store: Optional[AuditStore] = None
+_store_lock = threading.Lock()
 
 
 def get_audit_store() -> AuditStore:
     global _store
-    if _store is None:
-        _store = AuditStore()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = AuditStore()
+        return _store

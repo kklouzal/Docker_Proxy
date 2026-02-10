@@ -230,36 +230,39 @@ class TimeSeriesStore:
             if self._started:
                 return
             self._started = True
+            self.init_db()
 
-        self.init_db()
+            def loop() -> None:
+                tick = 0
+                while True:
+                    try:
+                        stats = get_stats_func()
+                        self.insert_snapshot(stats)
+                        tick += 1
+                        if tick % 30 == 0:
+                            self.rollup_and_prune()
+                    except Exception:
+                        log_exception_throttled(
+                            logger,
+                            "timeseries_store.sampler",
+                            interval_seconds=30,
+                            message="timeseries sampler iteration failed",
+                        )
+                    time.sleep(1.0)
 
-        def loop() -> None:
-            tick = 0
-            while True:
-                try:
-                    stats = get_stats_func()
-                    self.insert_snapshot(stats)
-                    tick += 1
-                    if tick % 30 == 0:
-                        self.rollup_and_prune()
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "timeseries_store.sampler",
-                        interval_seconds=30,
-                        message="timeseries sampler iteration failed",
-                    )
-                time.sleep(1.0)
-
-        t = threading.Thread(target=loop, name="timeseries-sampler", daemon=True)
-        t.start()
+            t = threading.Thread(target=loop, name="timeseries-sampler", daemon=True)
+            t.start()
 
 
 _store: Optional[TimeSeriesStore] = None
+_store_lock = threading.Lock()
 
 
 def get_timeseries_store() -> TimeSeriesStore:
     global _store
-    if _store is None:
-        _store = TimeSeriesStore()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = TimeSeriesStore()
+        return _store

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import sqlite3
@@ -17,6 +18,29 @@ from services.logutil import log_exception_throttled
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_internal_host(hostname: str) -> bool:
+    """Check if hostname resolves to or appears to be an internal/localhost address."""
+    h = (hostname or "").strip().lower()
+    if not h:
+        return True
+    # Block common localhost patterns
+    if h in ("localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"):
+        return True
+    # Block loopback and link-local ranges
+    try:
+        ip = ipaddress.ip_address(h)
+        return (
+            ip.is_loopback or ip.is_private or ip.is_reserved
+            or ip.is_link_local or ip.is_multicast
+        )
+    except ValueError:
+        pass
+    # Block internal-looking hostnames
+    if h.endswith(".local") or h.endswith(".internal") or h.endswith(".localhost"):
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -765,6 +789,9 @@ class AdblockStore:
             u = urlparse(url or "")
             if u.scheme not in ("http", "https"):
                 return False, "Only http/https URLs are supported.", 0, 0
+            # SSRF protection: block requests to internal/localhost addresses
+            if _is_internal_host(u.hostname or ""):
+                return False, "Downloads from internal/localhost addresses are not allowed.", 0, 0
 
             max_bytes = int(os.environ.get("ADBLOCK_MAX_DOWNLOAD_BYTES", str(64 * 1024 * 1024)))
             if max_bytes <= 0:
@@ -909,25 +936,29 @@ class AdblockStore:
 
 
 _store: Optional[AdblockStore] = None
+_store_lock = threading.Lock()
 
 
 def get_adblock_store() -> AdblockStore:
     global _store
-    if _store is None:
-        def _env_int(name: str, default: int) -> int:
-            v = (os.environ.get(name) or "").strip()
-            if not v:
-                return int(default)
-            try:
-                return int(v)
-            except Exception:
-                return int(default)
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            def _env_int(name: str, default: int) -> int:
+                v = (os.environ.get(name) or "").strip()
+                if not v:
+                    return int(default)
+                try:
+                    return int(v)
+                except Exception:
+                    return int(default)
 
-        _store = AdblockStore(
-            db_path=os.environ.get("ADBLOCK_DB", "/var/lib/squid-flask-proxy/adblock.db"),
-            lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "/var/lib/squid-flask-proxy/adblock/lists"),
-            update_interval_seconds=_env_int("ADBLOCK_UPDATE_INTERVAL", 6 * 60 * 60),
-            cicap_access_log_path=os.environ.get("CICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
-            blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
-        )
-    return _store
+            _store = AdblockStore(
+                db_path=os.environ.get("ADBLOCK_DB", "/var/lib/squid-flask-proxy/adblock.db"),
+                lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "/var/lib/squid-flask-proxy/adblock/lists"),
+                update_interval_seconds=_env_int("ADBLOCK_UPDATE_INTERVAL", 6 * 60 * 60),
+                cicap_access_log_path=os.environ.get("CICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
+                blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
+            )
+        return _store

@@ -25,7 +25,19 @@ fi
 # Check Dante liveness (SOCKS5 handshake)
 # Client greeting: VER=5, NMETHODS=1, METHODS={0x00 (no-auth)}
 # Expected server choice: VER=5, METHOD=0x00
-if ! python3 -c "import socket; s=socket.create_connection(('127.0.0.1',1080),2); s.settimeout(2); s.sendall(b'\x05\x01\x00'); r=s.recv(2); s.close(); assert r==b'\x05\x00'" >/dev/null 2>&1; then
+# After verifying the reply, shut down the write-side cleanly so Dante
+# sees a proper TCP FIN instead of an abrupt RST, avoiding noisy
+# "eof from local client" log lines every healthcheck interval.
+if ! python3 -c "
+import socket
+s = socket.create_connection(('127.0.0.1', 1080), 2)
+s.settimeout(2)
+s.sendall(b'\x05\x01\x00')
+r = s.recv(2)
+s.shutdown(socket.SHUT_RDWR)
+s.close()
+assert r == b'\x05\x00'
+" >/dev/null 2>&1; then
     echo "Dante (sockd) is not accepting SOCKS5 no-auth"
     exit 1
 fi

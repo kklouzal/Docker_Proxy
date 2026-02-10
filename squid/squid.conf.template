@@ -73,6 +73,17 @@ acl has_cookie req_header Cookie .
 cache deny has_auth
 cache deny has_cookie
 
+# Prevent caching responses with complex Vary headers.
+# Squid 7.x has a known assertion failure (client_side.cc:2829 !inBuf.isEmpty)
+# triggered by Vary object loops when a cached response's Vary criteria no
+# longer match a subsequent request.  Rather than curating a domain deny-list,
+# block storage of any response whose Vary header contains values beyond the
+# universally safe "Accept-Encoding" (e.g. Origin, Cookie, *, User-Agent).
+# store_miss is evaluated at response time so it catches every origin.
+acl has_vary rep_header Vary .
+acl vary_encoding_only rep_header Vary ^Accept-Encoding$
+store_miss deny has_vary !vary_encoding_only
+
 # Safe heuristic caching when explicit expiry headers are absent.
 # These patterns DO NOT use override flags (e.g., override-expire/ignore-no-cache), so
 # objects marked private/no-store/no-cache by origin servers remain non-cacheable.

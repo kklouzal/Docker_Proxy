@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
 from typing import List, Optional, Tuple
+
+
+# Hostname validation pattern: alphanumeric labels separated by dots
+_HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$")
 
 
 @dataclass(frozen=True)
@@ -171,8 +177,19 @@ class PacProfilesStore:
 
         socks_on = bool(socks_enabled)
         shost = (socks_host or "").strip()
-        if shost and " " in shost:
-            return False, "Invalid SOCKS host.", None
+        if shost:
+            # Validate hostname format - allow hostname or IP address
+            if " " in shost or "\n" in shost or "\r" in shost:
+                return False, "Invalid SOCKS host.", None
+            # Check if it's a valid IP address
+            try:
+                ip_address(shost)
+            except ValueError:
+                # Not an IP, check if it's a valid hostname
+                if len(shost) > 253:
+                    return False, "SOCKS host too long.", None
+                if not _HOSTNAME_RE.match(shost):
+                    return False, "Invalid SOCKS host format.", None
         try:
             sport = int((socks_port or "1080").strip() or "1080")
         except Exception:
@@ -282,11 +299,15 @@ class PacProfilesStore:
 
 
 _store: Optional[PacProfilesStore] = None
+_store_lock = threading.Lock()
 
 
 def get_pac_profiles_store() -> PacProfilesStore:
     global _store
-    if _store is None:
-        _store = PacProfilesStore()
-        _store.init_db()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = PacProfilesStore()
+            _store.init_db()
+        return _store

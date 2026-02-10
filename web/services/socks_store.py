@@ -15,6 +15,11 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+def _escape_like(value: str) -> str:
+    """Escape special LIKE pattern characters for safe SQL queries."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @dataclass(frozen=True)
 class SocksEventRow:
     ts: int
@@ -288,10 +293,9 @@ class SocksStore:
             if self._started:
                 return
             self._started = True
-
-        self.init_db()
-        t = threading.Thread(target=self._tail_loop, name="socks-tailer", daemon=True)
-        t.start()
+            self.init_db()
+            t = threading.Thread(target=self._tail_loop, name="socks-tailer", daemon=True)
+            t.start()
 
     def _tail_loop(self) -> None:
         self.seed_from_recent_log()
@@ -433,8 +437,8 @@ class SocksStore:
         params: List[Any] = [since]
         where = "WHERE ts >= ? AND src_ip != ''"
         if search:
-            like = f"%{search}%"
-            where += " AND src_ip LIKE ?"
+            like = f"%{_escape_like(search)}%"
+            where += " AND src_ip LIKE ? ESCAPE '\\'"
             params.append(like)
         sql = f"""
             SELECT src_ip, COUNT(*) AS events,
@@ -456,8 +460,8 @@ class SocksStore:
         params: List[Any] = [since]
         where = "WHERE ts >= ? AND dst != ''"
         if search:
-            like = f"%{search}%"
-            where += " AND dst LIKE ?"
+            like = f"%{_escape_like(search)}%"
+            where += " AND dst LIKE ? ESCAPE '\\'"
             params.append(like)
         sql = f"""
             SELECT dst, dst_port, COUNT(*) AS events,
@@ -481,8 +485,9 @@ class SocksStore:
             where.append("ts >= ?")
             params.append(int(since))
         if search:
-            where.append("(src_ip LIKE ? OR dst LIKE ?)")
-            params.extend([f"%{search}%", f"%{search}%"])
+            escaped = _escape_like(search)
+            where.append("(src_ip LIKE ? ESCAPE '\\' OR dst LIKE ? ESCAPE '\\')")
+            params.extend([f"%{escaped}%", f"%{escaped}%"])
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         with self._connect() as conn:
             rows = conn.execute(
@@ -511,10 +516,14 @@ class SocksStore:
 
 
 _store: Optional[SocksStore] = None
+_store_lock = threading.Lock()
 
 
 def get_socks_store() -> SocksStore:
     global _store
-    if _store is None:
-        _store = SocksStore()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = SocksStore()
+        return _store

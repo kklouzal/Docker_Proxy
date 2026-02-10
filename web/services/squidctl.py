@@ -34,6 +34,70 @@ class SquidController:
 
         self._squid_version_major: Optional[int] = None
 
+    # -------------------------------------------------------------------------
+    # Input validation helpers for config injection prevention
+    # -------------------------------------------------------------------------
+    _HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$")
+    _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
+    _IPV6_SIMPLE_RE = re.compile(r"^[a-fA-F0-9:]+$")
+
+    def _sanitize_single_line(self, value: str, field_name: str) -> str:
+        """Strip and reject multi-line values to prevent config injection."""
+        if not value:
+            return ""
+        clean = value.strip()
+        if "\n" in clean or "\r" in clean:
+            raise ValueError(f"{field_name} must not contain newlines")
+        return clean
+
+    def _validate_hostname(self, value: str, field_name: str = "hostname") -> str:
+        """Validate and sanitize a hostname value."""
+        clean = self._sanitize_single_line(value, field_name)
+        if not clean:
+            return ""
+        if len(clean) > 253:
+            raise ValueError(f"{field_name} too long (max 253 characters)")
+        if not self._HOSTNAME_RE.match(clean):
+            raise ValueError(f"{field_name} contains invalid characters")
+        return clean
+
+    def _validate_hosts_file_path(self, value: str, field_name: str = "hosts_file") -> str:
+        """Validate hosts_file is a safe filesystem path."""
+        clean = self._sanitize_single_line(value, field_name)
+        if not clean:
+            return ""
+        # Reject shell metacharacters, quotes, semicolons, pipes
+        forbidden = set('|;&$`"\'\\<>(){}[]!#~')
+        if any(c in clean for c in forbidden):
+            raise ValueError(f"{field_name} contains forbidden characters")
+        # Must be an absolute path
+        if not clean.startswith("/"):
+            raise ValueError(f"{field_name} must be an absolute path")
+        return clean
+
+    def _validate_dns_nameservers(self, value: str, field_name: str = "dns_nameservers") -> str:
+        """Validate dns_nameservers is a space-separated list of IPs/hostnames."""
+        clean = self._sanitize_single_line(value, field_name)
+        if not clean:
+            return ""
+        parts = clean.split()
+        for part in parts:
+            # Each part must be an IP or valid hostname
+            if self._IP_RE.match(part):
+                # Validate IP octets
+                octets = part.split(".")
+                for o in octets:
+                    if int(o) > 255:
+                        raise ValueError(f"{field_name} contains invalid IP address: {part}")
+            elif self._IPV6_SIMPLE_RE.match(part):
+                # Basic IPv6 format check (allow :: shorthand)
+                pass
+            elif self._HOSTNAME_RE.match(part):
+                pass
+            else:
+                raise ValueError(f"{field_name} contains invalid entry: {part}")
+        return clean
+
     def _get_squid_version_major(self) -> Optional[int]:
         # Best-effort: used only to avoid generating directives that are obsolete
         # or removed in newer Squid versions. Must not fail on dev hosts/tests.
@@ -727,8 +791,8 @@ class SquidController:
         dns_v4_first_on = bool(options.get("dns_v4_first_on", True))
         dns_timeout_seconds = options.get("dns_timeout_seconds")
         dns_retransmit_seconds = options.get("dns_retransmit_seconds")
-        dns_nameservers = (options.get("dns_nameservers") or "").strip()
-        hosts_file = (options.get("hosts_file") or "").strip()
+        dns_nameservers = self._validate_dns_nameservers(options.get("dns_nameservers") or "")
+        hosts_file = self._validate_hosts_file_path(options.get("hosts_file") or "")
         ipcache_size = options.get("ipcache_size")
         fqdncache_size = options.get("fqdncache_size")
 
@@ -758,7 +822,7 @@ class SquidController:
         store_avg_object_size_kb = options.get("store_avg_object_size_kb")
         store_objects_per_bucket = options.get("store_objects_per_bucket")
 
-        visible_hostname = (options.get("visible_hostname") or "").strip()
+        visible_hostname = self._validate_hostname(options.get("visible_hostname") or "", "visible_hostname")
         httpd_suppress_version_string_on = options.get("httpd_suppress_version_string_on")
 
         workers = int(options.get("workers") or 2)
@@ -963,7 +1027,7 @@ class SquidController:
                 tmp_path = f.name
                 f.write(config_text)
 
-            p = run(["squid", "-k", "parse", "-f", tmp_path], capture_output=True, text=True, timeout=6)
+            p = run(["squid", "-k", "parse", "-f", tmp_path], capture_output=True, text=True, timeout=15)
             combined = (p.stdout or "") + ("\n" if p.stdout and p.stderr else "") + (p.stderr or "")
             return p.returncode == 0, combined.strip()
         except Exception as e:
@@ -1204,11 +1268,11 @@ class SquidController:
                     msg = (msg + "\n" + scale_details).strip()
                 return True, msg
 
-            p = run(["squid", "-k", "reconfigure"], capture_output=True, timeout=6)
+            p = run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
             if p.returncode != 0:
                 if os.path.exists(backup_path):
                     os.replace(backup_path, self.squid_conf_path)
-                    run(["squid", "-k", "reconfigure"], capture_output=True, timeout=6)
+                    run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
                 return False, self._decode_completed(p) or "Squid reconfigure failed."
 
             # Persist only after the new config is actually active.
@@ -1231,7 +1295,7 @@ class SquidController:
             try:
                 if os.path.exists(backup_path):
                     os.replace(backup_path, self.squid_conf_path)
-                    run(["squid", "-k", "reconfigure"], capture_output=True, timeout=6)
+                    run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -1288,7 +1352,7 @@ class SquidController:
 
     def reload_squid(self):
         try:
-            p = run(["squid", "-k", "reconfigure"], capture_output=True, timeout=12)
+            p = run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
             return p.stdout or b"", p.stderr or b""
         except FileNotFoundError:
             return b"", b"squid binary not found"
@@ -1297,7 +1361,7 @@ class SquidController:
 
     def get_status(self):
         try:
-            p = run(["squid", "-k", "check"], capture_output=True, timeout=6)
+            p = run(["squid", "-k", "check"], capture_output=True, timeout=15)
             stdout = p.stdout or b""
             stderr = p.stderr or b""
             if p.returncode != 0 and not stderr:

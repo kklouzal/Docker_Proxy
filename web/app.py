@@ -3,6 +3,7 @@ from services.squidctl import SquidController
 from services.cert_manager import CertManager, install_pfx_as_ca
 from services.auth_store import get_auth_store
 import datetime
+from datetime import timedelta
 import time
 import os
 import ipaddress
@@ -77,6 +78,13 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 if (os.environ.get('SESSION_COOKIE_SECURE') or '').strip() in ('1', 'true', 'True', 'yes', 'on'):
     app.config['SESSION_COOKIE_SECURE'] = True
+
+# Session timeout: auto-logout after 8 hours of inactivity (configurable via env).
+try:
+    _session_hours = int(os.environ.get('SESSION_TIMEOUT_HOURS', '8').strip())
+except Exception:
+    _session_hours = 8
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=max(1, _session_hours))
 
 # Ensure there is at least one login.
 try:
@@ -208,7 +216,29 @@ def login():
             else:
                 session['_csrf_token'] = secrets.token_urlsafe(32)
             session['user'] = username
+            session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
+            try:
+                get_audit_store().record(
+                    kind='login_success',
+                    ok=True,
+                    remote_addr=request.remote_addr,
+                    user_agent=request.headers.get('User-Agent'),
+                    detail=f'user={username}',
+                )
+            except Exception:
+                pass
             return redirect(next_url or url_for('index'))
+        # Log failed login attempt for security auditing
+        try:
+            get_audit_store().record(
+                kind='login_failed',
+                ok=False,
+                remote_addr=request.remote_addr,
+                user_agent=request.headers.get('User-Agent'),
+                detail=f'user={username}',
+            )
+        except Exception:
+            pass
         return render_template('login.html', error='Invalid username or password.', next=next_url)
 
     if _is_logged_in():
@@ -730,6 +760,13 @@ def webfilter():
             # Enabling requires a source URL so auto-download works.
             if enabled and not source_url:
                 return redirect(url_for('webfilter', tab='categories', err_source='1'))
+
+            # Validate URL scheme before saving
+            if source_url:
+                from urllib.parse import urlparse as _urlparse
+                _u = _urlparse(source_url)
+                if _u.scheme not in ('http', 'https'):
+                    return redirect(url_for('webfilter', tab='categories', err_source='1'))
 
             store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
 

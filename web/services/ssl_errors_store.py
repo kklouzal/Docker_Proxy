@@ -15,6 +15,11 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+def _escape_like(value: str) -> str:
+    """Escape special LIKE pattern characters for safe SQL queries."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @dataclass(frozen=True)
 class SslErrorRow:
     domain: str
@@ -272,8 +277,8 @@ class SslErrorsStore:
             where.append("last_seen >= ?")
             params.append(int(since))
         if search:
-            where.append("domain LIKE ?")
-            params.append(f"%{search}%")
+            where.append("domain LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         lim = max(10, min(500, int(limit)))
         with self._connect() as conn:
@@ -301,8 +306,8 @@ class SslErrorsStore:
             where.append("last_seen >= ?")
             params.append(int(since))
         if search:
-            where.append("domain LIKE ?")
-            params.append(f"%{search}%")
+            where.append("domain LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         lim = max(5, min(100, int(limit)))
         with self._connect() as conn:
@@ -332,10 +337,9 @@ class SslErrorsStore:
             if self._started:
                 return
             self._started = True
-
-        self.init_db()
-        t = threading.Thread(target=self._tail_loop, name="ssl-errors-tailer", daemon=True)
-        t.start()
+            self.init_db()
+            t = threading.Thread(target=self._tail_loop, name="ssl-errors-tailer", daemon=True)
+            t.start()
 
     def _tail_loop(self) -> None:
         self.seed_from_recent_log()
@@ -479,11 +483,15 @@ class SslErrorsStore:
 
 
 _store: Optional[SslErrorsStore] = None
+_store_lock = threading.Lock()
 
 
 def get_ssl_errors_store() -> SslErrorsStore:
     global _store
-    if _store is None:
-        _store = SslErrorsStore()
-        _store.init_db()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = SslErrorsStore()
+            _store.init_db()
+        return _store

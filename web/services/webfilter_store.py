@@ -775,10 +775,9 @@ class WebFilterStore:
             if self._started:
                 return
             self._started = True
-
-        self.init_db()
-        t = threading.Thread(target=self._loop, name="webfilter-updater", daemon=True)
-        t.start()
+            self.init_db()
+            t = threading.Thread(target=self._loop, name="webfilter-updater", daemon=True)
+            t.start()
 
     def _loop(self) -> None:
         while True:
@@ -832,11 +831,15 @@ class WebFilterStore:
 
 
 _store: Optional[WebFilterStore] = None
+_store_lock = threading.Lock()
 
 
 def get_webfilter_store() -> WebFilterStore:
     global _store
-    if _store is None:
-        _store = WebFilterStore()
-        _store.init_db()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = WebFilterStore()
+            _store.init_db()
+        return _store

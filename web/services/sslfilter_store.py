@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -130,11 +131,15 @@ class SslFilterStore:
 
 
 _store: Optional[SslFilterStore] = None
+_store_lock = threading.Lock()
 
 
 def get_sslfilter_store() -> SslFilterStore:
     global _store
-    if _store is None:
-        _store = SslFilterStore()
-        _store.init_db()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = SslFilterStore()
+            _store.init_db()
+        return _store

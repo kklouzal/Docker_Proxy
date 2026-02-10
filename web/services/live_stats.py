@@ -17,6 +17,12 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+def _escape_like(value: str) -> str:
+    """Escape special LIKE pattern characters for safe SQL queries."""
+    # SQLite uses ESCAPE '\\' by default; we escape %, _, and \ itself
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @dataclass
 class Row:
     key: str
@@ -503,11 +509,10 @@ class LiveStatsStore:
             if self._started:
                 return
             self._started = True
+            self.init_db()
 
-        self.init_db()
-
-        t = threading.Thread(target=self._tail_loop, name="live-stats-tailer", daemon=True)
-        t.start()
+            t = threading.Thread(target=self._tail_loop, name="live-stats-tailer", daemon=True)
+            t.start()
 
     def _tail_loop(self) -> None:
         # Seed so the page is useful immediately.
@@ -680,8 +685,8 @@ class LiveStatsStore:
             where.append("last_seen >= ?")
             params.append(int(since))
         if search:
-            where.append("domain LIKE ?")
-            params.append(f"%{search}%")
+            where.append("domain LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
         if sort == "top":
@@ -723,8 +728,8 @@ class LiveStatsStore:
             where.append("last_seen >= ?")
             params.append(int(since))
         if search:
-            where.append("ip LIKE ?")
-            params.append(f"%{search}%")
+            where.append("ip LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
         if sort == "top":
@@ -895,10 +900,14 @@ class LiveStatsStore:
 
 
 _store: Optional[LiveStatsStore] = None
+_store_lock = threading.Lock()
 
 
 def get_store() -> LiveStatsStore:
     global _store
-    if _store is None:
-        _store = LiveStatsStore()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = LiveStatsStore()
+        return _store

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 from ipaddress import ip_network
 from typing import List, Optional, Tuple
 
+
+# Domain validation pattern: allows labels with alphanumeric and hyphens,
+# must start/end with alphanumeric, max 63 chars per label, max 253 chars total.
+# Also allows wildcard prefix (*.example.com) for subdomain matching.
+_DOMAIN_LABEL_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$")
 
 PRIVATE_NETS_V4 = [
     "10.0.0.0/8",
@@ -76,13 +83,30 @@ class ExclusionsStore:
         d = (domain or "").strip().lower()
         if not d:
             return False, "Domain is required."
-        if " " in d or "/" in d:
-            return False, "Invalid domain."
-        # allow leading dot to match subdomains
-        if d.startswith("."):
+        # allow leading dot or wildcard prefix for subdomain matching
+        if d.startswith("*."):
+            d = d[2:]  # strip wildcard for validation, will be stored as-is later
+            is_wildcard = True
+        elif d.startswith("."):
             d = d[1:]
+            is_wildcard = False
+        else:
+            is_wildcard = False
+        # Validate domain format
+        if not d or len(d) > 253:
+            return False, "Invalid domain length."
+        if " " in d or "/" in d or "\n" in d or "\r" in d:
+            return False, "Invalid domain characters."
+        labels = d.split(".")
+        if not labels or any(not label for label in labels):
+            return False, "Invalid domain format."
+        for label in labels:
+            if not _DOMAIN_LABEL_RE.match(label):
+                return False, f"Invalid domain label: {label}"
+        # Store with wildcard prefix if applicable
+        store_value = f"*.{d}" if is_wildcard else d
         with self._connect() as conn:
-            conn.execute("INSERT OR IGNORE INTO domains(domain) VALUES(?)", (d,))
+            conn.execute("INSERT OR IGNORE INTO domains(domain) VALUES(?)", (store_value,))
         return True, ""
 
     def remove_domain(self, domain: str) -> None:
@@ -124,11 +148,15 @@ class ExclusionsStore:
 
 
 _store: Optional[ExclusionsStore] = None
+_store_lock = threading.Lock()
 
 
 def get_exclusions_store() -> ExclusionsStore:
     global _store
-    if _store is None:
-        _store = ExclusionsStore()
-        _store.init_db()
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = ExclusionsStore()
+            _store.init_db()
+        return _store

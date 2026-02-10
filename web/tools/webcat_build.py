@@ -162,11 +162,38 @@ def _collect_from_csv(path: Path) -> List[Tuple[str, str]]:
     return pairs
 
 
+def _is_internal_host(hostname: str) -> bool:
+    """Check if hostname resolves to or appears to be an internal/localhost address."""
+    h = (hostname or "").strip().lower()
+    if not h:
+        return True
+    # Block common localhost patterns
+    if h in ("localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"):
+        return True
+    # Block loopback and link-local ranges
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(h)
+        return (
+            ip.is_loopback or ip.is_private or ip.is_reserved
+            or ip.is_link_local or ip.is_multicast
+        )
+    except ValueError:
+        pass
+    # Block internal-looking hostnames
+    if h.endswith(".local") or h.endswith(".internal") or h.endswith(".localhost"):
+        return True
+    return False
+
+
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     u = urlparse(url or "")
     if u.scheme not in ("http", "https"):
         raise ValueError("Only http/https URLs are supported for downloads.")
+    # SSRF protection: block requests to internal/localhost addresses
+    if _is_internal_host(u.hostname or ""):
+        raise ValueError("Downloads from internal/localhost addresses are not allowed.")
 
     max_bytes = int(os.environ.get("WEBCAT_MAX_DOWNLOAD_BYTES", str(512 * 1024 * 1024)))
     if max_bytes <= 0:
