@@ -44,7 +44,7 @@ fi
 # Initialize sslcrtd DB if empty
 if [ ! -f "$SSL_DB_DIR/index.txt" ] && [ ! -d "$SSL_DB_DIR/certs" ]; then
     echo "Initializing sslcrtd DB in $SSL_DB_DIR using $SSLCRTD_BIN"
-    "$SSLCRTD_BIN" -c -s "$SSL_DB_DIR" -M 4MB
+    "$SSLCRTD_BIN" -c -s "$SSL_DB_DIR" -M 16MB
 else
     echo "sslcrtd DB already initialized in $SSL_DB_DIR"
 fi

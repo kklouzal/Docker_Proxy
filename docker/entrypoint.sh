@@ -126,15 +126,23 @@ fi
 # Stability: avoid problematic half-closed client connections.
 # We have observed Squid aborting with an internal assertion (SIGABRT) under some client
 # behaviors when half-closed connections are enabled. Disabling this is generally safer.
+# NOTE: this also patches the persisted volume copy so web UI re-applies don't revert.
 if [ -f /etc/squid/squid.conf ]; then
     if grep -qiE "^\s*half_closed_clients\s+" /etc/squid/squid.conf 2>/dev/null; then
-        sed -i -E "s#^([[:space:]]*half_closed_clients[[:space:]]+).*$#\1off#I" /etc/squid/squid.conf || true
+        sed -i -E 's/^([[:space:]]*half_closed_clients[[:space:]]+).*/\1off/' /etc/squid/squid.conf || true
     else
         cat >> /etc/squid/squid.conf <<'EOF'
 
 # Stability: disable half-closed clients (safer with misbehaving clients).
 half_closed_clients off
 EOF
+    fi
+fi
+# Mirror the fix into the persisted copy on the data volume so that it
+# survives web-UI re-applies and future container restarts.
+if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
+    if grep -qiE "^\s*half_closed_clients\s+" "$PERSISTED_SQUID_CONF_PATH" 2>/dev/null; then
+        sed -i -E 's/^([[:space:]]*half_closed_clients[[:space:]]+).*/\1off/' "$PERSISTED_SQUID_CONF_PATH" || true
     fi
 fi
 

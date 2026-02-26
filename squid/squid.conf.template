@@ -13,7 +13,7 @@ http_access allow manager localhost
 http_access deny manager
 
 # Squid helper for on-the-fly certificate generation (ssl-bump)
-sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 4MB
+sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 16MB
 sslcrtd_children 5
 
 # Basic bump rules (MITM). Adjust for your policy.
@@ -54,9 +54,17 @@ request_timeout 30 minutes
 read_timeout 30 minutes
 forward_timeout 30 minutes
 
-# Improve bandwidth savings for large downloads/video segments that use HTTP Range.
-# (Safe: does not override origin cache directives; it only enables caching of range responses.)
-range_offset_limit -1
+# Range/resumable download support.
+# A bounded limit lets Squid cache range responses for files up to this size
+# while still forwarding data to the browser immediately.  The previous value
+# of -1 (unlimited) caused Squid to fetch and buffer the *entire* object from
+# the origin before serving the first byte to the client, which made browser
+# download managers report 0 KB/s for extended periods.
+range_offset_limit 128 MB
+
+# Limit how far ahead Squid reads from the origin server relative to what it
+# has delivered to the client.  Keeps download progress responsive.
+read_ahead_gap 64 KB
 
 # Conservative cache watermarks to reduce churn.
 cache_swap_low 90

@@ -170,6 +170,12 @@ class SocksStore:
         if "checkconfig()" in sl:
             return False
 
+        # The Docker health-check sends a 3-byte SOCKS5 version probe every
+        # ~15 s from 127.0.0.1 which Dante logs as a block "eof from local
+        # client".  These dominate the DB (~50 % of rows) and are not useful.
+        if "127.0.0.1" in s and "eof from local client" in sl:
+            return False
+
         ts = _parse_ts(s)
         action, _ = _classify(s)
         protocol = _extract_protocol(s)

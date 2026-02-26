@@ -661,15 +661,18 @@ class SquidController:
             # Best-effort: ignore client reload/no-cache requests.
             flags.append("ignore-reload")
         if bool(ov.get("origin_no_cache")):
-            # Ignore origin no-cache directives.
-            flags.append("ignore-no-cache")
+            # Squid 7+ removed "ignore-no-cache" (replaced by ignore-reload
+            # behaviour).  We now use "ignore-reload" which covers the same
+            # semantics without triggering obsolete-option warnings.
+            flags.append("ignore-reload")
         if bool(ov.get("origin_private")):
             flags.append("ignore-private")
         if bool(ov.get("client_no_store")) or bool(ov.get("origin_no_store")):
             flags.append("ignore-no-store")
         if bool(ov.get("ignore_auth")):
-            # Allow caching of responses for requests requiring authorization.
-            flags.append("ignore-auth")
+            # Squid 7+ removed "ignore-auth"; the cache deny has_auth ACL
+            # already controls auth caching.  Skip emitting the obsolete token.
+            pass
 
         # Remove any existing managed override metadata block.
         start_marker = "# Cache overrides (managed by web UI)"
@@ -684,6 +687,8 @@ class SquidController:
 
         # Normalize refresh_pattern lines by removing known override flags, then
         # re-appending the enabled ones.
+        # Note: ignore-no-cache and ignore-auth are obsolete in Squid 7+ and
+        # are no longer emitted, but we still strip them from existing configs.
         override_tokens = ("ignore-reload", "ignore-no-cache", "ignore-no-store", "ignore-private", "ignore-auth")
 
         def should_skip_refresh_pattern(line: str) -> bool:
@@ -776,10 +781,10 @@ class SquidController:
         read_timeout_seconds = options.get("read_timeout_seconds")
         forward_timeout_seconds = options.get("forward_timeout_seconds")
         shutdown_lifetime_seconds = options.get("shutdown_lifetime_seconds")
-        # half_closed_clients can improve cache fill in some scenarios, but Squid
-        # has had stability issues around half-closed monitoring in the past.
-        # Default to off for stability; the UI can explicitly enable it.
-        half_closed_clients_on = bool(options.get("half_closed_clients_on", False))
+        # half_closed_clients MUST remain off.  Squid 7.x triggers a fatal
+        # assertion (client_side.cc:2829 "!inBuf.isEmpty()") when this is enabled,
+        # causing ~8 SIGABRT crashes/day.  The UI toggle is ignored here.
+        half_closed_clients_on = False
 
         logfile_rotate = options.get("logfile_rotate")
 
@@ -851,7 +856,10 @@ class SquidController:
         out = self._replace_or_append_line(out, "cache_swap_low", f"cache_swap_low {cache_swap_low}")
         out = self._replace_or_append_line(out, "cache_swap_high", f"cache_swap_high {cache_swap_high}")
         out = self._replace_or_append_line(out, "collapsed_forwarding", f"collapsed_forwarding {'on' if collapsed_forwarding_on else 'off'}")
-        out = self._replace_or_append_line(out, "range_offset_limit", f"range_offset_limit {-1 if range_cache_on else 0}")
+        # Use a bounded limit when range caching is enabled.  -1 (unlimited)
+        # causes Squid to fetch entire objects before serving the first byte,
+        # which makes browser downloads appear stalled at 0 KB/s.
+        out = self._replace_or_append_line(out, "range_offset_limit", f"range_offset_limit {'128 MB' if range_cache_on else '0'}")
 
         out = self._replace_or_append_line(out, "cache_replacement_policy", f"cache_replacement_policy {cache_replacement_policy}")
         out = self._replace_or_append_line(out, "memory_replacement_policy", f"memory_replacement_policy {memory_replacement_policy}")
