@@ -14,7 +14,7 @@ http_access deny manager
 
 # Squid helper for on-the-fly certificate generation (ssl-bump)
 sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 16MB
-sslcrtd_children 5
+sslcrtd_children 12
 
 # Basic bump rules (MITM). Adjust for your policy.
 acl step1 at_step SslBump1
@@ -64,7 +64,7 @@ range_offset_limit 128 MB
 
 # Limit how far ahead Squid reads from the origin server relative to what it
 # has delivered to the client.  Keeps download progress responsive.
-read_ahead_gap 64 KB
+read_ahead_gap 256 KB
 
 # Conservative cache watermarks to reduce churn.
 cache_swap_low 90
@@ -157,7 +157,7 @@ icap_send_client_ip on
 icap_send_client_username off
 # Allow slower ICAP/ClamAV responses before Squid aborts; reduces truncated bodies on large pages.
 icap_connect_timeout 60 seconds
-icap_io_timeout 10 minutes
+icap_io_timeout 60 seconds
 # Generated at container start from $SQUID_WORKERS.
 include /etc/squid/conf.d/20-icap.conf
 
