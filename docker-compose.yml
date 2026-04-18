@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      pull: true
     restart: unless-stopped
     ports:
       - "5000:5000"       # Flask UI

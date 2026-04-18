@@ -15,6 +15,15 @@ This project targets “real” proxy deployments where you want:
 docker compose up -d --build
 ```
 
+By default, source builds now track Alpine's `latest` stable image tag and
+install the newest `squid` package available in that Alpine repository at
+build time. If you need a reproducible/pinned build instead, override the
+build arg when building:
+
+```powershell
+docker compose build --build-arg ALPINE_VERSION=3.23.4
+```
+
 Admin UI:
 - http://localhost:5000
 
@@ -71,6 +80,7 @@ volumes:
 Notes:
 - Container images can be inspected by recipients (layers/files), so don’t bake secrets into the image.
 - If you publish under a different owner/repo, update the `image:` value.
+- The GHCR publish workflow also refreshes on a weekly schedule so the prebuilt `:main` image can pick up newer Alpine/Squid packages even without a code change.
 
 ## Ports and endpoints
 

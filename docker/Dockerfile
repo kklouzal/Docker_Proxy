@@ -1,10 +1,12 @@
-ARG ALPINE_VERSION=3.23.3
+ARG ALPINE_VERSION=latest
 
 FROM alpine:${ALPINE_VERSION} AS cicap_builder
 
-# Defaults are pinned for reproducible builds.
-# Override at build time, e.g.:
-#   docker compose build --build-arg CICAP_GIT_REF=C_ICAP_0.6.4 --build-arg CICAP_MODULES_GIT_REF=C_ICAP_MODULES_0.5.7
+# Default to Alpine's latest stable image so builds pick up the newest
+# Alpine patch/minor release and the newest Squid package available in that
+# repository at build time. Override at build time for reproducible pinning,
+# e.g.:
+#   docker compose build --build-arg ALPINE_VERSION=3.23.4 --build-arg CICAP_GIT_REF=C_ICAP_0.6.4 --build-arg CICAP_MODULES_GIT_REF=C_ICAP_MODULES_0.5.7
 ARG CICAP_GIT_REF=C_ICAP_0.6.4
 ARG CICAP_MODULES_GIT_REF=C_ICAP_MODULES_0.5.7
 
