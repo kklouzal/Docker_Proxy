@@ -4,6 +4,35 @@
 
 set -eu
 
+has_listen_socket() {
+    PORT="$1" python3 - <<'PY'
+import os
+
+port = int(os.environ['PORT'])
+
+def has_listen_socket(path: str, port: int) -> bool:
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            next(f, None)
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                local_addr = parts[1]
+                state = parts[3]
+                if state != '0A':
+                    continue
+                _addr, port_hex = local_addr.rsplit(':', 1)
+                if int(port_hex, 16) == port:
+                    return True
+    except FileNotFoundError:
+        return False
+    return False
+
+assert has_listen_socket('/proc/net/tcp', port) or has_listen_socket('/proc/net/tcp6', port)
+PY
+}
+
 # Check Squid liveness (internal check)
 if ! squid -k check >/dev/null 2>&1; then
     echo "Squid check failed"
@@ -22,41 +51,26 @@ if ! ps 2>/dev/null | grep -q '[s]ockd'; then
     exit 1
 fi
 
-# Check Dante liveness (SOCKS5 handshake)
-# Client greeting: VER=5, NMETHODS=1, METHODS={0x00 (no-auth)}
-# Expected server choice: VER=5, METHOD=0x00
-# After verifying the reply, shut down the write-side cleanly so Dante
-# sees a proper TCP FIN instead of an abrupt RST, avoiding noisy
-# "eof from local client" log lines every healthcheck interval.
-if ! python3 -c "
-import socket
-s = socket.create_connection(('127.0.0.1', 1080), 2)
-s.settimeout(2)
-s.sendall(b'\x05\x01\x00')
-r = s.recv(2)
-s.shutdown(socket.SHUT_RDWR)
-s.close()
-assert r == b'\x05\x00'
-" >/dev/null 2>&1; then
-    echo "Dante (sockd) is not accepting SOCKS5 no-auth"
+# Check Dante liveness without creating synthetic traffic/log rows.
+# Parse /proc/net/tcp{,6} to confirm the port is listening rather than opening
+# a probe connection that Dante would record in sockd.log every 15 seconds.
+if ! has_listen_socket "${DANTE_PORT:-1080}" >/dev/null 2>&1; then
+    echo "Dante (sockd) is not listening on its configured port"
     exit 1
 fi
 
-# Check c-icap adblock ICAP service liveness (OPTIONS /adblockreq)
-if ! python3 -c "import os,socket; host='127.0.0.1'; port=int(os.environ.get('CICAP_PORT','14000')); path='/adblockreq'; req=(f'OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\nHost: {host}\r\nEncapsulated: null-body=0\r\n\r\n').encode('ascii'); s=socket.create_connection((host,port),2); s.settimeout(2); s.sendall(req); resp=s.recv(512); s.close(); assert resp.startswith(b'ICAP/1.0 200')" >/dev/null 2>&1; then
-    echo "c-icap adblock ICAP service is not responding"
+# Check c-icap liveness without generating synthetic OPTIONS traffic.
+# As with Dante, confirm both ICAP ports are listening instead of probing the
+# services over the protocol, which would otherwise pollute c-icap access logs
+# every 15 seconds.
+if ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1 || ! has_listen_socket "${CICAP_AV_PORT:-14001}" >/dev/null 2>&1; then
+    echo "One or more c-icap services are not listening on their configured ports"
     exit 1
 fi
 
-# Check c-icap AV ICAP service liveness (OPTIONS /avrespmod)
-if ! python3 -c "import os,socket; host='127.0.0.1'; port=int(os.environ.get('CICAP_AV_PORT','14001')); path='/avrespmod'; req=(f'OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\nHost: {host}\r\nEncapsulated: null-body=0\r\n\r\n').encode('ascii'); s=socket.create_connection((host,port),2); s.settimeout(2); s.sendall(req); resp=s.recv(512); s.close(); assert resp.startswith(b'ICAP/1.0 200')" >/dev/null 2>&1; then
-    echo "c-icap AV ICAP service is not responding"
-    exit 1
-fi
-
-# Check ClamAV liveness
-if ! python3 -c "import socket; p='/var/lib/squid-flask-proxy/clamav/clamd.sock'; s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.settimeout(1.0); s.connect(p); s.sendall(b'PING\n'); d=s.recv(16); s.close(); assert d.startswith(b'PONG')" >/dev/null 2>&1; then
-    echo "clamd is not responding"
+# Check the remote clamd backend used by the local AV c-icap service.
+if ! python3 -c "import os,socket; host=(os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'; port=int((os.environ.get('CLAMD_PORT') or '3310').strip()); s=socket.create_connection((host, port), 1.5); s.settimeout(1.5); s.sendall(b'PING\n'); d=s.recv(64); s.close(); assert d.startswith(b'PONG')" >/dev/null 2>&1; then
+    echo "remote clamd is not responding"
     exit 1
 fi
 

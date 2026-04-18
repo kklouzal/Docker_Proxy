@@ -32,8 +32,6 @@ class SquidController:
         if (not os.path.exists(self.squid_conf_template_path)) and os.path.exists("/squid/squid.conf.template"):
             self.squid_conf_template_path = "/squid/squid.conf.template"
 
-        self._squid_version_major: Optional[int] = None
-
     # -------------------------------------------------------------------------
     # Input validation helpers for config injection prevention
     # -------------------------------------------------------------------------
@@ -98,29 +96,6 @@ class SquidController:
                 raise ValueError(f"{field_name} contains invalid entry: {part}")
         return clean
 
-    def _get_squid_version_major(self) -> Optional[int]:
-        # Best-effort: used only to avoid generating directives that are obsolete
-        # or removed in newer Squid versions. Must not fail on dev hosts/tests.
-        if self._squid_version_major is not None:
-            return self._squid_version_major
-        try:
-            if not shutil.which("squid"):
-                return None
-            p = run(["squid", "-v"], capture_output=True, text=True, timeout=3)
-            out = (p.stdout or "") + "\n" + (p.stderr or "")
-            m = re.search(r"\bVersion\s+(\d+)\.", out)
-            if not m:
-                return None
-            self._squid_version_major = int(m.group(1))
-            return self._squid_version_major
-        except Exception:
-            return None
-
-    def _allow_legacy_directives(self) -> bool:
-        v = self._get_squid_version_major()
-        # If we can't detect, assume modern Squid and avoid removed directives.
-        return bool(v is not None and v < 6)
-
     def _read_file(self, path: str) -> str:
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
@@ -146,15 +121,7 @@ class SquidController:
                 except Exception:
                     pass
 
-    def _generate_icap_include(self, workers: int) -> None:
-        # Generates /etc/squid/conf.d/20-icap.conf.
-        try:
-            workers_i = int(workers)
-        except Exception:
-            workers_i = 1
-        if workers_i < 1:
-            workers_i = 1
-
+    def _render_icap_include(self) -> str:
         try:
             cicap_adblock_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
         except Exception:
@@ -163,23 +130,30 @@ class SquidController:
             cicap_av_port = int((os.environ.get("CICAP_AV_PORT") or "14001").strip())
         except Exception:
             cicap_av_port = 14001
+
+        lines = [
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
+            f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass=on",
+            "adaptation_service_set adblock_req_set adblock_req",
+            "adaptation_service_set av_resp_set av_resp",
+            "acl icap_identity_methods method GET HEAD",
+            "request_header_access Accept-Encoding deny icap_identity_methods",
+            "request_header_add Accept-Encoding identity icap_identity_methods",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def _generate_icap_include(self, workers: int) -> None:
+        # Generates /etc/squid/conf.d/20-icap.conf.
+        #
+        # The runtime uses one local c-icap endpoint per function (REQMOD and
+        # RESPMOD). Duplicating multiple `icap_service` directives that point to
+        # the same URI does not create extra capacity and can trigger duplicate
+        # URI warnings in Squid. Keep the include aligned with the entrypoint's
+        # single-endpoint design even when the Squid worker count changes.
         conf_dir = Path("/etc/squid/conf.d")
         conf_dir.mkdir(parents=True, exist_ok=True)
         out_path = conf_dir / "20-icap.conf"
-
-        req_names = []
-        av_names = []
-        lines = []
-        for i in range(workers_i):
-            lines.append(f"icap_service adblock_req_{i} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on")
-            lines.append(f"icap_service av_resp_{i} respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass=on")
-            req_names.append(f"adblock_req_{i}")
-            av_names.append(f"av_resp_{i}")
-
-        # Squid chooses a service from the set for each transaction.
-        lines.append("adaptation_service_set adblock_req_set " + " ".join(req_names))
-        lines.append("adaptation_service_set av_resp_set " + " ".join(av_names))
-        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        out_path.write_text(self._render_icap_include(), encoding="utf-8")
 
     def _supervisor_reread_update(self) -> Tuple[bool, str]:
         try:
@@ -228,10 +202,6 @@ class SquidController:
 
         def find_int(pattern: str) -> Optional[int]:
             m = re.search(pattern, text, re.M | re.I)
-            return int(m.group(1)) if m else None
-
-        def find_mb(key: str) -> Optional[int]:
-            m = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*MB\s*$", text, re.M | re.I)
             return int(m.group(1)) if m else None
 
         def find_on_off(key: str) -> Optional[bool]:
@@ -308,6 +278,17 @@ class SquidController:
                 return None
             return int(b // (1024 * 1024))
 
+        def find_range_offset_limit_mb() -> Optional[int]:
+            m = re.search(r"^\s*range_offset_limit\s+(-?\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
+            if not m:
+                return None
+            if m.group(1) == "-1":
+                return -1
+            b = _size_to_bytes(m.group(1), m.group(2) or "")
+            if b is None:
+                return None
+            return int(b // (1024 * 1024))
+
         def find_pipeline_prefetch_bool() -> Optional[bool]:
             # Squid supports either legacy on/off or numeric values.
             # Squid 6 warns that "pipeline_prefetch on" is deprecated.
@@ -333,7 +314,7 @@ class SquidController:
             "cache_swap_low": find_int(r"^\s*cache_swap_low\s+(\d+)\s*$"),
             "cache_swap_high": find_int(r"^\s*cache_swap_high\s+(\d+)\s*$"),
             "collapsed_forwarding": find_on_off("collapsed_forwarding"),
-            "range_offset_limit": find_int(r"^\s*range_offset_limit\s+(-?\d+)\s*$"),
+            "range_offset_limit": find_range_offset_limit_mb(),
 
             "client_persistent_connections": find_on_off("client_persistent_connections"),
             "server_persistent_connections": find_on_off("server_persistent_connections"),
@@ -362,34 +343,28 @@ class SquidController:
             "read_timeout_seconds": find_time_seconds("read_timeout"),
             "forward_timeout_seconds": find_time_seconds("forward_timeout"),
             "shutdown_lifetime_seconds": find_time_seconds("shutdown_lifetime"),
-            "half_closed_clients": find_on_off("half_closed_clients"),
 
             # Logging
             "logfile_rotate": find_int(r"^\s*logfile_rotate\s+(\d+)\s*$"),
 
             # Network / connection lifecycle
             "pconn_timeout_seconds": find_time_seconds("pconn_timeout"),
-            "idle_pconn_timeout_seconds": find_time_seconds("idle_pconn_timeout"),
             "client_lifetime_seconds": find_time_seconds("client_lifetime"),
             "max_filedescriptors": find_int(r"^\s*max_filedescriptors\s+(\d+)\s*$"),
 
             # DNS / name resolution
-            "dns_v4_first": find_on_off("dns_v4_first"),
             "dns_timeout_seconds": find_time_seconds("dns_timeout"),
-            "dns_retransmit_seconds": find_time_seconds("dns_retransmit"),
             "dns_nameservers": find_str("dns_nameservers"),
             "hosts_file": find_str("hosts_file"),
             "ipcache_size": find_int(r"^\s*ipcache_size\s+(\d+)\s*$"),
             "fqdncache_size": find_int(r"^\s*fqdncache_size\s+(\d+)\s*$"),
 
             # SSL / bump helpers
-            "dynamic_cert_mem_cache_size_mb": find_mb("dynamic_cert_mem_cache_size"),
             "sslcrtd_children": find_int(r"^\s*sslcrtd_children\s+(\d+)\s*$"),
 
             # ICAP
             "icap_enable": find_on_off("icap_enable"),
             "icap_send_client_ip": find_on_off("icap_send_client_ip"),
-            "icap_send_client_port": find_on_off("icap_send_client_port"),
             "icap_send_client_username": find_on_off("icap_send_client_username"),
             "icap_preview_enable": find_on_off("icap_preview_enable"),
             "icap_preview_size_kb": find_size_kb("icap_preview_size"),
@@ -422,7 +397,6 @@ class SquidController:
         text = config_text if config_text is not None else (self.get_current_config() or "")
         keys = (
             "pconn_timeout",
-            "idle_pconn_timeout",
             "client_lifetime",
             "max_filedescriptors",
         )
@@ -439,9 +413,7 @@ class SquidController:
     def get_dns_lines(self, config_text: Optional[str] = None) -> list[str]:
         text = config_text if config_text is not None else (self.get_current_config() or "")
         keys = (
-            "dns_v4_first",
             "dns_timeout",
-            "dns_retransmit",
             "dns_nameservers",
             "hosts_file",
             "positive_dns_ttl",
@@ -462,7 +434,6 @@ class SquidController:
     def get_ssl_lines(self, config_text: Optional[str] = None) -> list[str]:
         text = config_text if config_text is not None else (self.get_current_config() or "")
         keys = (
-            "dynamic_cert_mem_cache_size",
             "sslcrtd_program",
             "sslcrtd_children",
             "ssl_bump",
@@ -588,7 +559,6 @@ class SquidController:
             "read_timeout",
             "forward_timeout",
             "shutdown_lifetime",
-            "half_closed_clients",
         )
         out: list[str] = []
         for line in (text or "").splitlines():
@@ -754,7 +724,7 @@ class SquidController:
         template_text = self._read_file(self.squid_conf_template_path)
 
         cache_dir_size_mb = int(options.get("cache_dir_size_mb") or 10000)
-        cache_mem_mb = int(options.get("cache_mem_mb") or 256)
+        cache_mem_mb = int(options.get("cache_mem_mb") or 96)
         maximum_object_size_mb = int(options.get("maximum_object_size_mb") or 64)
         maximum_object_size_in_memory_kb = int(options.get("maximum_object_size_in_memory_kb") or 1024)
         minimum_object_size_kb = int(options.get("minimum_object_size_kb") if options.get("minimum_object_size_kb") is not None else 0)
@@ -781,32 +751,25 @@ class SquidController:
         read_timeout_seconds = options.get("read_timeout_seconds")
         forward_timeout_seconds = options.get("forward_timeout_seconds")
         shutdown_lifetime_seconds = options.get("shutdown_lifetime_seconds")
-        # half_closed_clients MUST remain off.  Squid 7.x triggers a fatal
-        # assertion (client_side.cc:2829 "!inBuf.isEmpty()") when this is enabled,
-        # causing ~8 SIGABRT crashes/day.  The UI toggle is ignored here.
-        half_closed_clients_on = False
+        # half_closed_clients MUST remain off. Squid 7.x can trigger fatal
+        # assertions when it is enabled, so this deployment hardcodes it off.
 
         logfile_rotate = options.get("logfile_rotate")
 
         pconn_timeout_seconds = options.get("pconn_timeout_seconds")
-        idle_pconn_timeout_seconds = options.get("idle_pconn_timeout_seconds")
         client_lifetime_seconds = options.get("client_lifetime_seconds")
         max_filedescriptors = options.get("max_filedescriptors")
 
-        dns_v4_first_on = bool(options.get("dns_v4_first_on", True))
         dns_timeout_seconds = options.get("dns_timeout_seconds")
-        dns_retransmit_seconds = options.get("dns_retransmit_seconds")
         dns_nameservers = self._validate_dns_nameservers(options.get("dns_nameservers") or "")
         hosts_file = self._validate_hosts_file_path(options.get("hosts_file") or "")
         ipcache_size = options.get("ipcache_size")
         fqdncache_size = options.get("fqdncache_size")
 
-        dynamic_cert_mem_cache_size_mb = options.get("dynamic_cert_mem_cache_size_mb")
         sslcrtd_children = options.get("sslcrtd_children")
 
         icap_enable_on = bool(options.get("icap_enable_on", True))
         icap_send_client_ip_on = bool(options.get("icap_send_client_ip_on", True))
-        icap_send_client_port_on = bool(options.get("icap_send_client_port_on", False))
         icap_send_client_username_on = bool(options.get("icap_send_client_username_on", False))
         icap_preview_enable_on = bool(options.get("icap_preview_enable_on", False))
         icap_preview_size_kb = options.get("icap_preview_size_kb")
@@ -830,7 +793,7 @@ class SquidController:
         visible_hostname = self._validate_hostname(options.get("visible_hostname") or "", "visible_hostname")
         httpd_suppress_version_string_on = options.get("httpd_suppress_version_string_on")
 
-        workers = int(options.get("workers") or 2)
+        workers = int(options.get("workers") or 1)
         if workers < 1:
             workers = 1
         # Keep in sync with the web UI clamp.
@@ -887,7 +850,7 @@ class SquidController:
             out = self._replace_or_append_line(out, "forward_timeout", f"forward_timeout {int(forward_timeout_seconds)} seconds")
         if shutdown_lifetime_seconds is not None:
             out = self._replace_or_append_line(out, "shutdown_lifetime", f"shutdown_lifetime {int(shutdown_lifetime_seconds)} seconds")
-        out = self._replace_or_append_line(out, "half_closed_clients", f"half_closed_clients {'on' if half_closed_clients_on else 'off'}")
+        out = self._replace_or_append_line(out, "half_closed_clients", "half_closed_clients off")
 
         if logfile_rotate is not None:
             out = self._replace_or_append_line(out, "logfile_rotate", f"logfile_rotate {int(logfile_rotate)}")
@@ -895,20 +858,14 @@ class SquidController:
         # Network / connection lifecycle
         if pconn_timeout_seconds is not None:
             out = self._replace_or_append_line(out, "pconn_timeout", f"pconn_timeout {int(pconn_timeout_seconds)} seconds")
-        if self._allow_legacy_directives() and idle_pconn_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "idle_pconn_timeout", f"idle_pconn_timeout {int(idle_pconn_timeout_seconds)} seconds")
         if client_lifetime_seconds is not None:
             out = self._replace_or_append_line(out, "client_lifetime", f"client_lifetime {int(client_lifetime_seconds)} seconds")
         if max_filedescriptors is not None:
             out = self._replace_or_append_line(out, "max_filedescriptors", f"max_filedescriptors {int(max_filedescriptors)}")
 
         # DNS
-        if self._allow_legacy_directives():
-            out = self._replace_or_append_line(out, "dns_v4_first", f"dns_v4_first {'on' if dns_v4_first_on else 'off'}")
         if dns_timeout_seconds is not None:
             out = self._replace_or_append_line(out, "dns_timeout", f"dns_timeout {int(dns_timeout_seconds)} seconds")
-        if self._allow_legacy_directives() and dns_retransmit_seconds is not None:
-            out = self._replace_or_append_line(out, "dns_retransmit", f"dns_retransmit {int(dns_retransmit_seconds)} seconds")
         if dns_nameservers:
             out = self._replace_or_append_line(out, "dns_nameservers", f"dns_nameservers {dns_nameservers}")
         if hosts_file:
@@ -919,16 +876,12 @@ class SquidController:
             out = self._replace_or_append_line(out, "fqdncache_size", f"fqdncache_size {int(fqdncache_size)}")
 
         # SSL
-        if self._allow_legacy_directives() and dynamic_cert_mem_cache_size_mb is not None:
-            out = self._replace_or_append_line(out, "dynamic_cert_mem_cache_size", f"dynamic_cert_mem_cache_size {int(dynamic_cert_mem_cache_size_mb)}MB")
         if sslcrtd_children is not None:
             out = self._replace_or_append_line(out, "sslcrtd_children", f"sslcrtd_children {int(sslcrtd_children)}")
 
         # ICAP
         out = self._replace_or_append_line(out, "icap_enable", f"icap_enable {'on' if icap_enable_on else 'off'}")
         out = self._replace_or_append_line(out, "icap_send_client_ip", f"icap_send_client_ip {'on' if icap_send_client_ip_on else 'off'}")
-        if self._allow_legacy_directives():
-            out = self._replace_or_append_line(out, "icap_send_client_port", f"icap_send_client_port {'on' if icap_send_client_port_on else 'off'}")
         out = self._replace_or_append_line(out, "icap_send_client_username", f"icap_send_client_username {'on' if icap_send_client_username_on else 'off'}")
         out = self._replace_or_append_line(out, "icap_preview_enable", f"icap_preview_enable {'on' if icap_preview_enable_on else 'off'}")
         if icap_preview_size_kb is not None:
@@ -1230,7 +1183,7 @@ class SquidController:
                     self.restart_squid()
                     return False, scale_details or "Failed to scale ICAP processes."
 
-                ok_restart, restart_details = self.restart_squid()
+                ok_restart, restart_details = self.clear_disk_cache()
                 if not ok_restart:
                     if os.path.exists(backup_path):
                         os.replace(backup_path, self.squid_conf_path)
@@ -1256,7 +1209,7 @@ class SquidController:
                             )
                         self._supervisor_reread_update()
                         self.restart_squid()
-                    return False, restart_details or "Squid restart failed."
+                        return False, restart_details or "Squid restart failed after cache reinitialization."
                 # Persist only after the new config is actually active.
                 try:
                     persisted_dir = os.path.dirname(self.persisted_squid_conf_path)

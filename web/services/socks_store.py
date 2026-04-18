@@ -176,6 +176,13 @@ class SocksStore:
         if "127.0.0.1" in s and "eof from local client" in sl:
             return False
 
+        # Local and external SOCKS accept lines only show that a client opened a
+        # socket to Dante itself (for example, container health checks or the
+        # initial client handshake). They do not identify the upstream
+        # destination and drown out the useful connect/block/error rows.
+        if "pass(" in sl and "/accept" in sl:
+            return False
+
         ts = _parse_ts(s)
         action, _ = _classify(s)
         protocol = _extract_protocol(s)

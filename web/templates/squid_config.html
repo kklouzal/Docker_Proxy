@@ -92,7 +92,7 @@
                     <input form="safe-caching-form" id="cache_dir_size_mb" name="cache_dir_size_mb" type="number" min="100" step="100" value="{{ (tunables.cache_dir_size_mb if tunables and tunables.cache_dir_size_mb is not none else 10000) }}" />
 
                     <label for="cache_mem_mb">Memory cache (MB)</label>
-                    <input form="safe-caching-form" id="cache_mem_mb" name="cache_mem_mb" type="number" min="16" step="16" value="{{ (tunables.cache_mem_mb if tunables and tunables.cache_mem_mb is not none else 256) }}" />
+                    <input form="safe-caching-form" id="cache_mem_mb" name="cache_mem_mb" type="number" min="16" step="16" value="{{ (tunables.cache_mem_mb if tunables and tunables.cache_mem_mb is not none else 96) }}" />
                 </div>
             </div>
         </section>
@@ -135,7 +135,7 @@
                     </label>
 
                     <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="range_cache_on" {% if (tunables and tunables.range_offset_limit is not none and tunables.range_offset_limit == -1) or (not tunables) or (tunables and tunables.range_offset_limit is none) %}checked{% endif %} />
+                        <input form="safe-caching-form" class="check" type="checkbox" name="range_cache_on" {% if (tunables and tunables.range_offset_limit is not none and tunables.range_offset_limit != 0) or (not tunables) or (tunables and tunables.range_offset_limit is none) %}checked{% endif %} />
                         <span>Enable caching of Range requests</span>
                     </label>
 
@@ -216,9 +216,9 @@
             <div class="card-body">
                 <div class="form">
                     <label for="workers">Squid workers (SMP)</label>
-                    <input form="safe-caching-form" id="workers" name="workers" type="number" min="1" max="4" step="1" value="{{ (tunables.workers if tunables and tunables.workers is not none else 2) }}" />
-                    <div class="small">More workers improves throughput but uses more RAM. Recommended: 2–4.</div>
-                    <div class="small">Note: Changing workers requires a full Squid restart (it cannot be applied with reconfigure). This UI will restart Squid automatically.</div>
+                    <input form="safe-caching-form" id="workers" name="workers" type="number" min="1" max="4" step="1" value="{{ (tunables.workers if tunables and tunables.workers is not none else 1) }}" />
+                    <div class="small">More workers can improve throughput on SMP-capable builds, but they also increase RAM use. Start low and raise only after measuring.</div>
+                    <div class="small">Note: Changing workers requires a full Squid restart and cache metadata reinitialization (it cannot be applied with reconfigure). This UI will handle that automatically.</div>
 
                     <label for="quick_abort_min_kb">quick_abort_min (KB)</label>
                     <input form="safe-caching-form" id="quick_abort_min_kb" name="quick_abort_min_kb" type="number" min="0" step="1" value="{{ (tunables.quick_abort_min_kb if tunables and tunables.quick_abort_min_kb is not none else 0) }}" />
@@ -347,11 +347,6 @@
             </div>
             <div class="card-body">
                 <div class="form">
-                    <label class="check-row">
-                        <input form="safe-timeouts-form" class="check" type="checkbox" name="half_closed_clients_on" {% if (tunables and tunables.half_closed_clients is not none and tunables.half_closed_clients) %}checked{% endif %} />
-                        <span>half_closed_clients on</span>
-                    </label>
-
                     <label for="shutdown_lifetime_seconds">shutdown_lifetime (seconds)</label>
                     <input form="safe-timeouts-form" id="shutdown_lifetime_seconds" name="shutdown_lifetime_seconds" type="number" min="0" step="1" value="{{ (tunables.shutdown_lifetime_seconds if tunables and tunables.shutdown_lifetime_seconds is not none else 30) }}" />
                     <div class="small">Lower values speed shutdowns but may drop active connections.</div>
@@ -453,9 +448,6 @@
                     <label for="pconn_timeout_seconds">pconn_timeout (seconds)</label>
                     <input form="safe-network-form" id="pconn_timeout_seconds" name="pconn_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.pconn_timeout_seconds if tunables and tunables.pconn_timeout_seconds is not none else 120) }}" />
 
-                    <label for="idle_pconn_timeout_seconds">idle_pconn_timeout (seconds)</label>
-                    <input form="safe-network-form" id="idle_pconn_timeout_seconds" name="idle_pconn_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.idle_pconn_timeout_seconds if tunables and tunables.idle_pconn_timeout_seconds is not none else 60) }}" />
-
                     <label for="client_lifetime_seconds">client_lifetime (seconds)</label>
                     <input form="safe-network-form" id="client_lifetime_seconds" name="client_lifetime_seconds" type="number" min="0" step="1" value="{{ (tunables.client_lifetime_seconds if tunables and tunables.client_lifetime_seconds is not none else 3600) }}" />
                 </div>
@@ -517,16 +509,8 @@
             </div>
             <div class="card-body">
                 <div class="form">
-                    <label class="check-row">
-                        <input form="safe-dns-form" class="check" type="checkbox" name="dns_v4_first_on" {% if (tunables and tunables.dns_v4_first is not none and tunables.dns_v4_first) or (not tunables) or (tunables and tunables.dns_v4_first is none) %}checked{% endif %} />
-                        <span>dns_v4_first on</span>
-                    </label>
-
                     <label for="dns_timeout_seconds">dns_timeout (seconds)</label>
                     <input form="safe-dns-form" id="dns_timeout_seconds" name="dns_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.dns_timeout_seconds if tunables and tunables.dns_timeout_seconds is not none else 5) }}" />
-
-                    <label for="dns_retransmit_seconds">dns_retransmit (seconds)</label>
-                    <input form="safe-dns-form" id="dns_retransmit_seconds" name="dns_retransmit_seconds" type="number" min="0" step="1" value="{{ (tunables.dns_retransmit_seconds if tunables and tunables.dns_retransmit_seconds is not none else 2) }}" />
 
                     <label for="dns_nameservers">dns_nameservers</label>
                     <input form="safe-dns-form" id="dns_nameservers" name="dns_nameservers" type="text" value="{{ (tunables.dns_nameservers if tunables and tunables.dns_nameservers else '') }}" />
@@ -591,26 +575,13 @@
 
         <section class="card">
             <div class="card-header">
-                <h2 class="card-title">Certificate cache</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="dynamic_cert_mem_cache_size_mb">dynamic_cert_mem_cache_size (MB)</label>
-                    <input form="safe-ssl-form" id="dynamic_cert_mem_cache_size_mb" name="dynamic_cert_mem_cache_size_mb" type="number" min="16" step="16" value="{{ (tunables.dynamic_cert_mem_cache_size_mb if tunables and tunables.dynamic_cert_mem_cache_size_mb is not none else 128) }}" />
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">sslcrtd helper</h2>
+                <h2 class="card-title">SSL helper tuning</h2>
                 <span class="badge ok">Template</span>
             </div>
             <div class="card-body">
                 <div class="form">
                     <label for="sslcrtd_children">sslcrtd_children</label>
-                    <input form="safe-ssl-form" id="sslcrtd_children" name="sslcrtd_children" type="number" min="1" step="1" value="{{ (tunables.sslcrtd_children if tunables and tunables.sslcrtd_children is not none else 5) }}" />
+                    <input form="safe-ssl-form" id="sslcrtd_children" name="sslcrtd_children" type="number" min="1" step="1" value="{{ (tunables.sslcrtd_children if tunables and tunables.sslcrtd_children is not none else 8) }}" />
                 </div>
             </div>
         </section>
@@ -664,11 +635,6 @@
                     <label class="check-row">
                         <input form="safe-icap-form" class="check" type="checkbox" name="icap_send_client_ip_on" {% if (tunables and tunables.icap_send_client_ip is not none and tunables.icap_send_client_ip) or (not tunables) or (tunables and tunables.icap_send_client_ip is none) %}checked{% endif %} />
                         <span>icap_send_client_ip on</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-icap-form" class="check" type="checkbox" name="icap_send_client_port_on" {% if tunables and tunables.icap_send_client_port is not none and tunables.icap_send_client_port %}checked{% endif %} />
-                        <span>icap_send_client_port on</span>
                     </label>
 
                     <label class="check-row">

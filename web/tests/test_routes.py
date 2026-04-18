@@ -1,8 +1,10 @@
 import os
+import socket
 import sys
 import tarfile
 import zipfile
 import tempfile
+import threading
 import unittest
 
 
@@ -53,30 +55,153 @@ class TestRoutes(unittest.TestCase):
             sys.path.insert(0, web_dir)
         import app as app_module  # type: ignore
 
-        old_sock = os.environ.get('CLAMAV_SOCKET_PATH')
-        old_tmp = os.environ.get('TMPDIR')
+        old_host = os.environ.get('CLAMD_HOST')
+        old_port = os.environ.get('CLAMD_PORT')
         try:
-            with tempfile.TemporaryDirectory(prefix='sfp_eicar_') as td:
-                # Create a regular file so os.path.exists() passes but connect() fails.
-                fake_sock = os.path.join(td, 'clamd.sock')
-                with open(fake_sock, 'wb') as f:
-                    f.write(b'not a socket')
+            # Pick an unused port and close it so the connect attempt fails cleanly.
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+            listener.close()
 
-                os.environ['CLAMAV_SOCKET_PATH'] = fake_sock
-                os.environ['TMPDIR'] = td
+            os.environ['CLAMD_HOST'] = '127.0.0.1'
+            os.environ['CLAMD_PORT'] = str(port)
 
-                _ = app_module._test_eicar()
-                leftovers = [p for p in os.listdir(td) if p.startswith('eicar_')]
-                self.assertEqual(leftovers, [], f"unexpected leftover temp files: {leftovers}")
+            res = app_module._test_eicar()
+            self.assertFalse(res.get('ok'), res)
         finally:
-            if old_sock is None:
-                os.environ.pop('CLAMAV_SOCKET_PATH', None)
+            if old_host is None:
+                os.environ.pop('CLAMD_HOST', None)
             else:
-                os.environ['CLAMAV_SOCKET_PATH'] = old_sock
-            if old_tmp is None:
-                os.environ.pop('TMPDIR', None)
+                os.environ['CLAMD_HOST'] = old_host
+            if old_port is None:
+                os.environ.pop('CLAMD_PORT', None)
             else:
-                os.environ['TMPDIR'] = old_tmp
+                os.environ['CLAMD_PORT'] = old_port
+
+    def test_check_clamd_uses_remote_tcp_when_no_socket_path(self):
+        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        if web_dir not in sys.path:
+            sys.path.insert(0, web_dir)
+        import app as app_module  # type: ignore
+
+        old_host = os.environ.get('CLAMD_HOST')
+        old_port = os.environ.get('CLAMD_PORT')
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        seen = {'request': b''}
+
+        def serve() -> None:
+            conn, _addr = listener.accept()
+            with conn:
+                buf = b''
+                while b'\n' not in buf:
+                    chunk = conn.recv(64)
+                    if not chunk:
+                        break
+                    buf += chunk
+                seen['request'] = buf
+                conn.sendall(b'PONG\n')
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        try:
+            os.environ['CLAMD_HOST'] = '127.0.0.1'
+            os.environ['CLAMD_PORT'] = str(port)
+
+            res = app_module._check_clamd()
+            self.assertTrue(res.get('ok'), res)
+            self.assertIn('PONG', res.get('detail', ''))
+            self.assertEqual(seen['request'], b'PING\n')
+        finally:
+            listener.close()
+            t.join(timeout=2)
+            if old_host is None:
+                os.environ.pop('CLAMD_HOST', None)
+            else:
+                os.environ['CLAMD_HOST'] = old_host
+            if old_port is None:
+                os.environ.pop('CLAMD_PORT', None)
+            else:
+                os.environ['CLAMD_PORT'] = old_port
+
+    def test_eicar_uses_remote_tcp_instream(self):
+        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        if web_dir not in sys.path:
+            sys.path.insert(0, web_dir)
+        import app as app_module  # type: ignore
+
+        old_host = os.environ.get('CLAMD_HOST')
+        old_port = os.environ.get('CLAMD_PORT')
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        captured = {'command': b'', 'payload': b''}
+
+        def serve() -> None:
+            conn, _addr = listener.accept()
+            with conn:
+                prefix = b'zINSTREAM\0'
+                buf = b''
+                while len(buf) < len(prefix):
+                    chunk = conn.recv(128)
+                    if not chunk:
+                        break
+                    buf += chunk
+                captured['command'] = buf[:len(prefix)]
+                rest = buf[len(prefix):]
+                payload = b''
+
+                while True:
+                    while len(rest) < 4:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        rest += chunk
+                    if len(rest) < 4:
+                        break
+                    size = int.from_bytes(rest[:4], 'big')
+                    rest = rest[4:]
+                    if size == 0:
+                        break
+                    while len(rest) < size:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        rest += chunk
+                    payload += rest[:size]
+                    rest = rest[size:]
+
+                captured['payload'] = payload
+                conn.sendall(b'stream: Eicar-Test-Signature FOUND\0')
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        try:
+            os.environ['CLAMD_HOST'] = '127.0.0.1'
+            os.environ['CLAMD_PORT'] = str(port)
+
+            res = app_module._test_eicar()
+            self.assertTrue(res.get('ok'), res)
+            self.assertIn('FOUND', res.get('detail', ''))
+            self.assertEqual(captured['command'], b'zINSTREAM\0')
+            self.assertIn(b'EICAR-STANDARD-ANTIVIRUS-TEST-FILE', captured['payload'])
+        finally:
+            listener.close()
+            t.join(timeout=2)
+            if old_host is None:
+                os.environ.pop('CLAMD_HOST', None)
+            else:
+                os.environ['CLAMD_HOST'] = old_host
+            if old_port is None:
+                os.environ.pop('CLAMD_PORT', None)
+            else:
+                os.environ['CLAMD_PORT'] = old_port
 
     def test_index(self):
         response = self.app.get('/')
@@ -89,6 +214,20 @@ class TestRoutes(unittest.TestCase):
     def test_squid_config_caching_tab(self):
         response = self.app.get('/squid/config?tab=caching')
         self.assertEqual(response.status_code, 200)
+
+    def test_squid_config_caching_tab_keeps_range_cache_checked_for_bounded_limit(self):
+        import app as app_module  # type: ignore
+
+        old_get_current_config = app_module.squid_controller.get_current_config
+        try:
+            app_module.squid_controller.get_current_config = lambda: "range_offset_limit 128 MB\n"
+            response = self.app.get('/squid/config?tab=caching')
+        finally:
+            app_module.squid_controller.get_current_config = old_get_current_config
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn('name="range_cache_on" checked', body)
 
     def test_squid_config_timeouts_tab(self):
         response = self.app.get('/squid/config?tab=timeouts')

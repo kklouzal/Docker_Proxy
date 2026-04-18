@@ -88,6 +88,14 @@ def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
     s = (msg or "")
     sl = s.lower()
 
+    # Ignore common startup/config noise that mentions ssl/tls but is not an error.
+    if sl.startswith("processing configuration file:"):
+        return None
+    if "helperopenservers: starting" in sl and "ssl_crtd" in sl:
+        return None
+    if "accepting ssl bumped http socket connections" in sl:
+        return None
+
     # Fast keyword gate.
     if not any(k in sl for k in ("ssl", "tls", "x509", "certificate", "handshake", "bump", "openssl")):
         return None

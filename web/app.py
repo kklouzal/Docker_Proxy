@@ -2,12 +2,10 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, s
 from services.squidctl import SquidController
 from services.cert_manager import CertManager, install_pfx_as_ca
 from services.auth_store import get_auth_store
-import datetime
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import time
 import os
 import ipaddress
-import uuid
 from services.stats import get_stats
 from services.live_stats import get_store
 from services.exclusions_store import get_exclusions_store
@@ -61,7 +59,7 @@ except Exception:
 
 # Session security: persist a secret key so login survives container restarts.
 _auth_store = get_auth_store()
-_env_secret = (os.environ.get('FLASK_SECRET_KEY') or os.environ.get('SECRET_KEY') or '').strip()
+_env_secret = (os.environ.get('FLASK_SECRET_KEY') or '').strip()
 if _env_secret:
     app.secret_key = _env_secret
 else:
@@ -258,15 +256,15 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
     # Keep behavior identical to the prior inline dicts.
     return {
         'cache_dir_size_mb': tunables.get('cache_dir_size_mb') or 10000,
-        'cache_mem_mb': tunables.get('cache_mem_mb') or 256,
+        'cache_mem_mb': tunables.get('cache_mem_mb') or 96,
         'maximum_object_size_mb': tunables.get('maximum_object_size_mb') or 64,
         'maximum_object_size_in_memory_kb': tunables.get('maximum_object_size_in_memory_kb') or 1024,
         'minimum_object_size_kb': tunables.get('minimum_object_size_kb') if tunables.get('minimum_object_size_kb') is not None else 0,
         'cache_swap_low': tunables.get('cache_swap_low') or 90,
         'cache_swap_high': tunables.get('cache_swap_high') or 95,
         'collapsed_forwarding_on': bool(tunables.get('collapsed_forwarding') if tunables.get('collapsed_forwarding') is not None else True),
-        'range_cache_on': (tunables.get('range_offset_limit') == -1) if tunables.get('range_offset_limit') is not None else True,
-        'workers': min(_max_workers(), max(1, int(tunables.get('workers') or 2))),
+        'range_cache_on': (tunables.get('range_offset_limit') != 0) if tunables.get('range_offset_limit') is not None else True,
+        'workers': min(_max_workers(), max(1, int(tunables.get('workers') or 1))),
         'cache_replacement_policy': tunables.get('cache_replacement_policy') or 'heap GDSF',
         'memory_replacement_policy': tunables.get('memory_replacement_policy') or 'heap GDSF',
         'pipeline_prefetch_on': bool(tunables.get('pipeline_prefetch') if tunables.get('pipeline_prefetch') is not None else True),
@@ -286,34 +284,28 @@ def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
         'read_timeout_seconds': tunables.get('read_timeout_seconds') if tunables.get('read_timeout_seconds') is not None else 1800,
         'forward_timeout_seconds': tunables.get('forward_timeout_seconds') if tunables.get('forward_timeout_seconds') is not None else 1800,
         'shutdown_lifetime_seconds': tunables.get('shutdown_lifetime_seconds') if tunables.get('shutdown_lifetime_seconds') is not None else 30,
-        'half_closed_clients_on': bool(tunables.get('half_closed_clients') if tunables.get('half_closed_clients') is not None else False),
 
         # Logging
         'logfile_rotate': tunables.get('logfile_rotate') if tunables.get('logfile_rotate') is not None else 10,
 
         # Network
         'pconn_timeout_seconds': tunables.get('pconn_timeout_seconds') if tunables.get('pconn_timeout_seconds') is not None else 120,
-        'idle_pconn_timeout_seconds': tunables.get('idle_pconn_timeout_seconds') if tunables.get('idle_pconn_timeout_seconds') is not None else 60,
         'client_lifetime_seconds': tunables.get('client_lifetime_seconds') if tunables.get('client_lifetime_seconds') is not None else 3600,
         'max_filedescriptors': tunables.get('max_filedescriptors') if tunables.get('max_filedescriptors') is not None else 8192,
 
         # DNS
-        'dns_v4_first_on': bool(tunables.get('dns_v4_first') if tunables.get('dns_v4_first') is not None else True),
         'dns_timeout_seconds': tunables.get('dns_timeout_seconds') if tunables.get('dns_timeout_seconds') is not None else 5,
-        'dns_retransmit_seconds': tunables.get('dns_retransmit_seconds') if tunables.get('dns_retransmit_seconds') is not None else 2,
         'dns_nameservers': (tunables.get('dns_nameservers') or ''),
         'hosts_file': (tunables.get('hosts_file') or ''),
         'ipcache_size': tunables.get('ipcache_size') if tunables.get('ipcache_size') is not None else 8192,
         'fqdncache_size': tunables.get('fqdncache_size') if tunables.get('fqdncache_size') is not None else 8192,
 
         # SSL
-        'dynamic_cert_mem_cache_size_mb': tunables.get('dynamic_cert_mem_cache_size_mb') if tunables.get('dynamic_cert_mem_cache_size_mb') is not None else 128,
-        'sslcrtd_children': tunables.get('sslcrtd_children') if tunables.get('sslcrtd_children') is not None else 5,
+        'sslcrtd_children': tunables.get('sslcrtd_children') if tunables.get('sslcrtd_children') is not None else 8,
 
         # ICAP
         'icap_enable_on': bool(tunables.get('icap_enable') if tunables.get('icap_enable') is not None else True),
         'icap_send_client_ip_on': bool(tunables.get('icap_send_client_ip') if tunables.get('icap_send_client_ip') is not None else True),
-        'icap_send_client_port_on': bool(tunables.get('icap_send_client_port') if tunables.get('icap_send_client_port') is not None else False),
         'icap_send_client_username_on': bool(tunables.get('icap_send_client_username') if tunables.get('icap_send_client_username') is not None else False),
         'icap_preview_enable_on': bool(tunables.get('icap_preview_enable') if tunables.get('icap_preview_enable') is not None else False),
         'icap_preview_size_kb': tunables.get('icap_preview_size_kb'),
@@ -359,7 +351,7 @@ def _datetimeformat(ts: object) -> str:
         i = int(ts)  # type: ignore[arg-type]
         if i <= 0:
             return ''
-        return datetime.datetime.fromtimestamp(i).strftime('%Y-%m-%d %H:%M:%S')
+        return datetime.fromtimestamp(i).strftime('%Y-%m-%d %H:%M:%S')
     except Exception:
         return ''
 
@@ -411,13 +403,13 @@ if not _disable_background:
 def inject_now():
     def fmt_ts(ts: int) -> str:
         try:
-            return datetime.datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
+            return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
         except Exception:
             return ''
 
     return {
         # Use timezone-aware UTC to avoid deprecation warnings.
-        "current_year": datetime.datetime.now(datetime.UTC).year,
+        "current_year": datetime.now(UTC).year,
         "fmt_ts": fmt_ts,
     }
 
@@ -975,72 +967,64 @@ def _send_sample_av_icap() -> Dict[str, Any]:
     return _send_sample_respmod_to(host=host, port=port, service='/avrespmod')
 
 
-def _check_clamd() -> Dict[str, Any]:
-    # Best-effort health check: PING the clamd unix socket.
-    sock_path = (os.environ.get('CLAMAV_SOCKET_PATH') or '/var/lib/squid-flask-proxy/clamav/clamd.sock').strip()
-    if not sock_path:
-        sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
-    # During clamd startup (loading signature DB), the socket file often appears
-    # ~30-60s after the process starts. Avoid showing a scary FileNotFoundError.
+def _clamd_host_port() -> tuple[str, int]:
+    host = (os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'
     try:
-        if not os.path.exists(sock_path):
-            return {"ok": False, "detail": "starting (clamd socket not ready yet)"}
+        port = int((os.environ.get('CLAMD_PORT') or '3310').strip())
     except Exception:
-        pass
+        port = 3310
+    return host, port
+
+
+def _recv_clamd_reply(sock: socket.socket, max_bytes: int = 4096) -> bytes:
+    buf = b''
+    while len(buf) < max_bytes:
+        chunk = sock.recv(min(512, max_bytes - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+        if b'\0' in buf or b'\n' in buf:
+            break
+    return buf
+
+
+def _check_clamd() -> Dict[str, Any]:
+    # Best-effort health check for the remote ClamAV backend used by c-icap.
+    host, port = _clamd_host_port()
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(0.6)
-            s.connect(sock_path)
+        with socket.create_connection((host, port), timeout=0.8) as s:
+            s.settimeout(0.8)
             s.sendall(b"PING\n")
-            data = s.recv(64)
+            data = _recv_clamd_reply(s, max_bytes=64)
         ok = data.startswith(b"PONG")
-        return {"ok": bool(ok), "detail": (data.decode('ascii', errors='replace').strip() or 'no data')}
+        detail = data.replace(b'\0', b'\n').decode('ascii', errors='replace').strip() or 'no data'
+        return {"ok": bool(ok), "detail": f"{detail} ({host}:{port})"}
     except Exception as e:
-        return {"ok": False, "detail": public_error_message(e)}
+        return {"ok": False, "detail": f"{host}:{port}: {public_error_message(e)}"}
 
 
 def _test_eicar() -> Dict[str, Any]:
-    # Send EICAR string via clamd SCAN (temp file) to verify detection.
-    sock_path = (os.environ.get('CLAMAV_SOCKET_PATH') or '/var/lib/squid-flask-proxy/clamav/clamd.sock').strip()
-    if not sock_path:
-        sock_path = '/var/lib/squid-flask-proxy/clamav/clamd.sock'
+    # Send EICAR string to the remote clamd backend using INSTREAM.
     data = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
-    tmp_path = ""
     try:
-        if not os.path.exists(sock_path):
-            return {"ok": False, "detail": "starting (clamd socket not ready yet)"}
+        host, port = _clamd_host_port()
+        with socket.create_connection((host, port), timeout=2.0) as s:
+            s.settimeout(2.0)
+            s.sendall(b"zINSTREAM\0")
+            view = memoryview(data)
+            chunk_size = 8192
+            for offset in range(0, len(data), chunk_size):
+                chunk = view[offset:offset + chunk_size]
+                s.sendall(len(chunk).to_bytes(4, 'big'))
+                s.sendall(chunk.tobytes())
+            s.sendall((0).to_bytes(4, 'big'))
+            buf = _recv_clamd_reply(s)
 
-        # Some clamd builds/configs disable INSTREAM and STATS but still allow SCAN.
-        # Use SCAN against a temp file as a reliable, local sanity check.
-        tmp_dir = os.environ.get('TMPDIR') or '/tmp'
-        tmp_name = f"eicar_{uuid.uuid4().hex}.txt"
-        tmp_path = os.path.join(tmp_dir, tmp_name)
-        with open(tmp_path, 'wb') as f:
-            f.write(data)
-
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(1.5)
-            s.connect(sock_path)
-            s.sendall((f"SCAN {tmp_path}\n").encode('utf-8'))
-
-            buf = b""
-            while b"\n" not in buf and len(buf) < 4096:
-                chunk = s.recv(512)
-                if not chunk:
-                    break
-                buf += chunk
-
-        text = buf.decode('ascii', errors='replace') if buf else ''
+        text = buf.replace(b'\0', b'\n').decode('ascii', errors='replace').strip() if buf else ''
         ok = ('Eicar' in text) or ('FOUND' in text)
-        return {"ok": ok, "detail": text or 'no data'}
+        return {"ok": ok, "detail": text or f'no data from {host}:{port}'}
     except Exception as e:
         return {"ok": False, "detail": public_error_message(e)}
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
 
 
 @app.route('/clamav', methods=['GET'])
@@ -1283,7 +1267,7 @@ def apply_safe_caching():
     if request.form.get('cache_dir_size_mb') is not None:
         options['cache_dir_size_mb'] = as_int('cache_dir_size_mb', int(options.get('cache_dir_size_mb') or 10000))
     if request.form.get('cache_mem_mb') is not None:
-        options['cache_mem_mb'] = as_int('cache_mem_mb', int(options.get('cache_mem_mb') or 256))
+        options['cache_mem_mb'] = as_int('cache_mem_mb', int(options.get('cache_mem_mb') or 96))
     if request.form.get('maximum_object_size_mb') is not None:
         options['maximum_object_size_mb'] = as_int('maximum_object_size_mb', int(options.get('maximum_object_size_mb') or 64))
     if request.form.get('maximum_object_size_in_memory_kb') is not None:
@@ -1307,9 +1291,6 @@ def apply_safe_caching():
             options['client_persistent_connections_on'] = ('client_persistent_connections_on' in request.form)
         if 'server_persistent_connections_on' in request.form or form_kind == 'caching':
             options['server_persistent_connections_on'] = ('server_persistent_connections_on' in request.form)
-        if 'half_closed_clients_on' in request.form or form_kind == 'timeouts':
-            options['half_closed_clients_on'] = ('half_closed_clients_on' in request.form)
-
     # Selects/strings
     if request.form.get('cache_replacement_policy') is not None:
         options['cache_replacement_policy'] = (request.form.get('cache_replacement_policy') or (options.get('cache_replacement_policy') or 'heap GDSF')).strip()
@@ -1340,7 +1321,7 @@ def apply_safe_caching():
 
     # Workers (numbers always present on caching form)
     if request.form.get('workers') is not None:
-        workers_i = as_int('workers', int(options.get('workers') or 2))
+        workers_i = as_int('workers', int(options.get('workers') or 1))
         if workers_i < 1:
             workers_i = 1
         max_w = _max_workers()
@@ -1367,8 +1348,6 @@ def apply_safe_caching():
     # Network
     if request.form.get('pconn_timeout_seconds') is not None:
         options['pconn_timeout_seconds'] = as_int('pconn_timeout_seconds', int(options.get('pconn_timeout_seconds') or 120))
-    if request.form.get('idle_pconn_timeout_seconds') is not None:
-        options['idle_pconn_timeout_seconds'] = as_int('idle_pconn_timeout_seconds', int(options.get('idle_pconn_timeout_seconds') or 60))
     if request.form.get('client_lifetime_seconds') is not None:
         options['client_lifetime_seconds'] = as_int('client_lifetime_seconds', int(options.get('client_lifetime_seconds') or 3600))
     if request.form.get('max_filedescriptors') is not None:
@@ -1376,7 +1355,6 @@ def apply_safe_caching():
 
     # DNS
     if form_kind == 'dns':
-        options['dns_v4_first_on'] = ('dns_v4_first_on' in request.form)
         v = as_optional_str('dns_nameservers')
         if v is not None:
             options['dns_nameservers'] = v
@@ -1385,24 +1363,19 @@ def apply_safe_caching():
             options['hosts_file'] = v
     if request.form.get('dns_timeout_seconds') is not None:
         options['dns_timeout_seconds'] = as_int('dns_timeout_seconds', int(options.get('dns_timeout_seconds') or 5))
-    if request.form.get('dns_retransmit_seconds') is not None:
-        options['dns_retransmit_seconds'] = as_int('dns_retransmit_seconds', int(options.get('dns_retransmit_seconds') or 2))
     if request.form.get('ipcache_size') is not None:
         options['ipcache_size'] = as_int('ipcache_size', int(options.get('ipcache_size') or 8192))
     if request.form.get('fqdncache_size') is not None:
         options['fqdncache_size'] = as_int('fqdncache_size', int(options.get('fqdncache_size') or 8192))
 
     # SSL
-    if request.form.get('dynamic_cert_mem_cache_size_mb') is not None:
-        options['dynamic_cert_mem_cache_size_mb'] = as_int('dynamic_cert_mem_cache_size_mb', int(options.get('dynamic_cert_mem_cache_size_mb') or 128))
     if request.form.get('sslcrtd_children') is not None:
-        options['sslcrtd_children'] = as_int('sslcrtd_children', int(options.get('sslcrtd_children') or 5))
+        options['sslcrtd_children'] = as_int('sslcrtd_children', int(options.get('sslcrtd_children') or 8))
 
     # ICAP
     if form_kind == 'icap':
         options['icap_enable_on'] = ('icap_enable_on' in request.form)
         options['icap_send_client_ip_on'] = ('icap_send_client_ip_on' in request.form)
-        options['icap_send_client_port_on'] = ('icap_send_client_port_on' in request.form)
         options['icap_send_client_username_on'] = ('icap_send_client_username_on' in request.form)
         options['icap_preview_enable_on'] = ('icap_preview_enable_on' in request.form)
         v = as_optional_int('icap_preview_size_kb')

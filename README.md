@@ -49,11 +49,15 @@ name: squid-flask-proxy
 services:
   proxy:
     image: ghcr.io/kklouzal/docker_proxy:main
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.lo.disable_ipv6: ${DISABLE_IPV6:-1}
     ports:
-      - "5000:5000"       # Admin UI (Flask)
-      - "80:80"           # WPAD / PAC via dedicated listener
-      - "3128:3128"       # Squid HTTP proxy
-      - "${DANTE_PORT:-1080}:1080"  # SOCKS5 (Dante)
+      - "0.0.0.0:5000:5000"       # Admin UI (Flask)
+      - "0.0.0.0:80:80"           # WPAD / PAC via dedicated listener
+      - "0.0.0.0:3128:3128"       # Squid HTTP proxy
+      - "0.0.0.0:${DANTE_PORT:-1080}:1080"  # SOCKS5 (Dante)
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
@@ -61,9 +65,12 @@ services:
       - squid_cache:/var/spool/squid
       - proxy_data:/var/lib/squid-flask-proxy
     environment:
-      SQUID_WORKERS: ${SQUID_WORKERS:-2}
+      DISABLE_IPV6: ${DISABLE_IPV6:-1}
+      SQUID_WORKERS: ${SQUID_WORKERS:-1}
       CICAP_PORT: ${CICAP_PORT:-14000}
       CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
+      CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
+      CLAMD_PORT: ${CLAMD_PORT:-3310}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s
@@ -134,7 +141,6 @@ The container persists operational state under `/var/lib/squid-flask-proxy` (bac
 - UI databases (users, audit logs, live stats aggregation)
 - Policy state (exclusions, web filter settings + whitelist + blocked log, SSL filtering CIDRs)
 - Adblock compiled lists / caches
-- ClamAV signature DB (under `/var/lib/squid-flask-proxy/clamav/db`)
 
 Squid cache and SSL database use separate named volumes by default:
 - Squid cache: `/var/spool/squid` (`squid_cache`)
@@ -176,11 +182,13 @@ services:
 ```
 
 Common environment variables:
+- `DISABLE_IPV6=1|0`: when enabled, the container disables IPv6 via sysctls, normalizes local binds to IPv4, and the Compose examples publish ports on `0.0.0.0` only.
 - `FLASK_SECRET_KEY`: recommended; keeps login sessions stable across restarts.
 - `SESSION_COOKIE_SECURE=1`: mark cookies Secure (use when UI is served over HTTPS).
 - `DISABLE_CSRF=1`: disables CSRF protection (intended for debugging only; not recommended).
-- `SQUID_WORKERS`: number of Squid SMP workers (also influences ICAP service-set generation).
+- `SQUID_WORKERS`: number of Squid SMP workers (default `1`; also influences ICAP service-set generation).
 - `CICAP_PORT`, `CICAP_AV_PORT`: ICAP ports for adblock (REQMOD) and AV (RESPMOD) instances.
+- `CLAMD_HOST`, `CLAMD_PORT`: remote ClamAV daemon used by the local AV c-icap instance.
 - `ENABLE_DANTE=1|0`: enable/disable SOCKS5.
 - `DANTE_PORT`: SOCKS5 listen port inside the container (default 1080).
 - `DANTE_ALLOW_FROM`: space-separated CIDRs allowed to connect to SOCKS5.
@@ -198,7 +206,7 @@ Common environment variables:
 - `PAC_UPSTREAM`: where the PAC listener fetches PAC content (default `http://127.0.0.1:5000/proxy.pac`).
 
 Admin UI (Gunicorn) tuning:
-- `WEB_WORKERS`: Gunicorn worker processes (default `2`).
+- `WEB_WORKERS`: Gunicorn worker processes (default `1`).
 - `WEB_THREADS`: threads per worker (default `2`).
 - `WEB_TIMEOUT`: worker timeout seconds (default `120`).
 - `WEB_GRACEFUL_TIMEOUT`: graceful shutdown timeout (default `30`).
@@ -323,30 +331,27 @@ This project supports ICAP-based antivirus scanning using **ClamAV**, implemente
 Behavior:
 - Squid is configured with `bypass=on` for the AV ICAP service (fail-open if AV is unavailable).
 
-Ports / startup behavior:
+Topology / startup behavior:
 - AV scanning is served by c-icap as a **RESPMOD** service at `icap://127.0.0.1:${CICAP_AV_PORT:-14001}/avrespmod`.
-- The container runs two c-icap instances: the adblock instance binds immediately, while the AV instance may wait until the `clamd` unix socket is ready.
+- The proxy container runs two c-icap instances: the adblock instance binds immediately, while the AV instance waits for a reachable remote `clamd` backend.
+- The local AV c-icap instance talks to a remote ClamAV daemon at `CLAMD_HOST:CLAMD_PORT`.
 - The AV instance writes to `/var/log/cicap-access-av.log` (separate from adblock logging).
 
-Startup note (first run):
-- If the ClamAV signature DB is missing, the container will run an initial `freshclam` download **blocking startup**.
-- Container health will remain failing until `clamd` is up.
-
-Persistence:
-- ClamAV signature databases (e.g. `main.cvd`, `daily.cvd`) are stored under `/var/lib/squid-flask-proxy/clamav/db`.
-- In the default Compose setup, that path is inside the `proxy_data` named volume, so signature updates persist across container rebuilds/restarts.
-- Note: `docker compose down -v` will delete named volumes (including the ClamAV signature DB).
+Remote ClamAV host:
+- Run `clamd` (and optional `freshclam`) on a separate trusted host/container.
+- Expose TCP `3310` only to the proxy host/subnet if possible.
+- The proxy container no longer ships a local ClamAV signature DB or local `clamd` process.
 
 Configuration:
 - Enable/disable scanning via the **ClamAV** tab (updates Squid ICAP policy).
+- Set `CLAMD_HOST` / `CLAMD_PORT` for the remote backend.
 - c-icap module configuration is provided in `docker/clamd_mod.conf` and `docker/virus_scan.conf`.
-- clamd socket is `/var/lib/squid-flask-proxy/clamav/clamd.sock`.
 
 ## Caching notes (safe baseline)
 The default baseline config in [squid/squid.conf.template](squid/squid.conf.template) is tuned to be a **bandwidth saver** while staying conservative:
 - It caches HTTP and bumped-HTTPS content only when the origin server permits caching (no aggressive overrides of `private` / `no-store` / `no-cache`).
 - It enables heuristic caching via `refresh_pattern` only when explicit expiry headers are absent.
-- It allows larger objects to be cached (`maximum_object_size 64 MB`) and enables caching of Range responses (`range_offset_limit -1`).
+- It allows larger objects to be cached (`maximum_object_size 64 MB`) and enables bounded caching of Range responses (`range_offset_limit 128 MB`) so browsers still see progressive delivery.
 
 ## Mitigating app breakage (Slack / Google Meet / Webex / Teams)
 Some modern apps work poorly with HTTPS interception (SSL-bump) and/or rely on non-HTTP traffic paths (especially WebRTC media over UDP). Common symptoms include sign-in loops, “can’t connect”, blank calls, or meetings failing to start.
@@ -419,9 +424,9 @@ Container logs:
 docker compose logs -f proxy
 ```
 
-First run ClamAV note:
-- If the ClamAV signature DB is missing, the container runs an initial `freshclam` download which can take time.
-- The container healthcheck can remain failing/unhealthy until `clamd` is up.
+Remote ClamAV note:
+- The proxy container expects a reachable `clamd` endpoint at `CLAMD_HOST:CLAMD_PORT`.
+- If that remote daemon is down or unreachable, container health will fail and AV scanning will bypass/fail open until connectivity returns.
 
 ## Project structure (high level)
 
@@ -440,9 +445,11 @@ This container can run Squid in SMP mode (multiple worker processes).
 - Squid `workers N`
   - The entrypoint reads `workers N` from `/etc/squid/squid.conf` and uses that as the authoritative worker count.
   - It generates `/etc/squid/conf.d/20-icap.conf` with matching `adaptation_service_set` entries.
+  - The supervisor must launch Squid with `--foreground` for SMP kids to exist; `-N` forces the master to run as the only worker and ignores additional kids.
+  - Changing the worker count also forces a cache metadata reinitialization to avoid reusing incompatible `swap.state` files.
 
 ### Applying template updates
-On container start, the entrypoint copies the template into `/etc/squid/squid.conf` only when the config doesn’t exist yet (or doesn’t look like an SSL-bump config).
+On container start, the entrypoint copies the template into `/etc/squid/squid.conf` when the config doesn’t exist yet.
 
 If you already edited `/etc/squid/squid.conf` (for example via the UI), changing the template alone will not overwrite your live config.
 To adopt new baseline changes, paste the updated template into the UI and reload Squid (or recreate the container after removing the existing config).

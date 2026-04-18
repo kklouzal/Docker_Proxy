@@ -82,7 +82,7 @@ FROM alpine:${ALPINE_VERSION}
 # Install necessary packages
 # Note: Alpine's squid package does not ship the legacy `squidclient` binary.
 RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn supervisor openssl ca-certificates libatomic \
-		clamav clamav-daemon \
+		pcre2 \
 		file
 
 # Set working directory
@@ -96,8 +96,6 @@ COPY scripts /scripts
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/supervisord.conf /etc/supervisord.conf
 COPY docker/pac_http.conf /etc/supervisor.d/pac_http.conf
-COPY docker/clamd.conf /etc/clamav/clamd.conf
-COPY docker/freshclam.conf /etc/clamav/freshclam.conf
 COPY docker/healthcheck.sh /healthcheck.sh
 COPY docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
 

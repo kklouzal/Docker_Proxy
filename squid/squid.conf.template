@@ -1,12 +1,12 @@
-http_port 3128 ssl-bump \
+http_port 0.0.0.0:3128 ssl-bump \
 	cert=/etc/squid/ssl/certs/ca.crt \
 	key=/etc/squid/ssl/certs/ca.key \
 	generate-host-certificates=on \
 	dynamic_cert_mem_cache_size=128MB
 
 # SMP mode (multi-process). Higher worker counts increase throughput but use more RAM.
-# If you change this, recreate/restart the container so the ICAP process count can match.
-workers 2
+# Start low and raise only after measuring real throughput gains.
+workers 1
 
 # Allow cache manager access from localhost (used by the web UI for stats)
 http_access allow manager localhost
@@ -14,7 +14,7 @@ http_access deny manager
 
 # Squid helper for on-the-fly certificate generation (ssl-bump)
 sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 16MB
-sslcrtd_children 12
+sslcrtd_children 8
 
 # Basic bump rules (MITM). Adjust for your policy.
 acl step1 at_step SslBump1
@@ -34,13 +34,19 @@ cache_dir ufs /var/spool/squid 10000 16 256
 maximum_object_size 64 MB
 maximum_object_size_in_memory 1024 KB
 minimum_object_size 0 KB
-cache_mem 256 MB
+cache_mem 96 MB
 
 # Connection behavior
 # Image-heavy pages create many parallel requests; keeping connections persistent
 # reduces handshake churn.
 client_persistent_connections on
 server_persistent_connections on
+
+# Keep persistent upstream connections warm long enough for image/gallery bursts
+# and enable conservative request pipelining where clients/origins support it.
+pconn_timeout 120 seconds
+client_lifetime 3600 seconds
+pipeline_prefetch 1
 
 # Stability: safer behavior with clients that half-close TCP connections.
 half_closed_clients off
@@ -72,6 +78,13 @@ cache_swap_high 95
 
 # Collapse concurrent requests for the same object.
 collapsed_forwarding on
+
+# Cache-first behavior for image-heavy browsing/download bursts.
+# Keep fetching cacheable objects even if the client gives up so retries do not
+# restart from a cold origin fetch.
+quick_abort_min 0 KB
+quick_abort_max 0 KB
+quick_abort_pct 100
 
 # Never cache authenticated or cookie-bearing traffic.
 # This prevents credential leaks and also avoids Squid cache/Vary edge cases

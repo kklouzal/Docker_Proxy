@@ -4,11 +4,15 @@ services:
   proxy:
     restart: unless-stopped
     image: ghcr.io/kklouzal/docker_proxy:main
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.lo.disable_ipv6: ${DISABLE_IPV6:-1}
     ports:
-      - "5000:5000"       # Flask UI
-      - "80:80"           # WPAD / PAC via dedicated port 80 listener
-      - "3128:3128"       # HTTP proxy
-      - "${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
+      - "0.0.0.0:5000:5000"       # Flask UI
+      - "0.0.0.0:80:80"           # WPAD / PAC via dedicated port 80 listener
+      - "0.0.0.0:3128:3128"       # HTTP proxy
+      - "0.0.0.0:${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
@@ -16,9 +20,12 @@ services:
       - squid_cache:/var/spool/squid
       - proxy_data:/var/lib/squid-flask-proxy
     environment:
-      SQUID_WORKERS: ${SQUID_WORKERS:-2}
+      DISABLE_IPV6: ${DISABLE_IPV6:-1}
+      SQUID_WORKERS: ${SQUID_WORKERS:-1}
       CICAP_PORT: ${CICAP_PORT:-14000}
       CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
+      CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
+      CLAMD_PORT: ${CLAMD_PORT:-3310}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s
