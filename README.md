@@ -2,8 +2,7 @@
 
 A Dockerized Squid HTTP proxy bundled with a Flask admin UI for managing policy and operational settings.
 
-Runtime state now targets an **external MySQL 8+ backend**. Legacy SQLite data under
-`/var/lib/squid-flask-proxy/*.db` is imported automatically on the first MySQL-backed startup.
+Runtime state now targets an **external MySQL 8+ backend**.
 
 This project targets “real” proxy deployments where you want:
 - A manageable Squid configuration (template baseline + UI-driven includes)
@@ -162,13 +161,9 @@ Also confirm:
 
 Authoritative runtime/admin state now lives in the configured external MySQL database.
 
-On first MySQL-backed boot, the container runs a one-time importer that copies any legacy
-SQLite files from `/var/lib/squid-flask-proxy` into MySQL before the normal services start.
-
 The container persists operational state under `/var/lib/squid-flask-proxy` (backed by the `proxy_data` named volume in the default Compose setup), including:
 - Policy artifacts and caches (compiled adblock/web filter files, cached local runtime assets)
 - Adblock compiled lists / caches
-- Legacy SQLite files retained for migration/rollback safety
 
 Squid cache and SSL database use separate named volumes by default:
 - Squid cache: `/var/spool/squid` (`squid_cache`)
@@ -297,14 +292,16 @@ services:
     network_mode: host
 ```
 
-## Data persistence (SQLite)
-This container uses SQLite (stored under `/var/lib/squid-flask-proxy` via a named Docker volume) for:
+## Data persistence
+This container uses an external MySQL database for runtime/admin state, including:
 - Live activity aggregation (domains/IPs) used by the Live page
 - Exclusions (domains/CIDRs) used to regenerate Squid config
 - Admin audit trail of config apply actions (success/failure + request metadata)
 - Web filtering settings + whitelist + blocked-request log
 - Authentication/user database
 - SSL Filtering (no-bump CIDRs)
+- Ad blocking state, counters, and recent events
+- Time-series rollups and SOCKS/SSL telemetry
 
 ## Ad Blocking (ICAP)
 This project supports ICAP-based request blocking using EasyList-style subscriptions.
@@ -327,7 +324,7 @@ This container can block destinations based on a locally downloaded categorized 
 
 How it works:
 - The admin UI controls whether web filtering is enabled and which categories are blocked.
-- When web filtering is enabled, the container downloads/compiles a local SQLite DB of domain categories automatically.
+- When web filtering is enabled, the container downloads/compiles domain categories into MySQL-backed `webcat_*` tables automatically.
 - Refresh schedule: first download happens immediately on enable, then once per day at local midnight.
 - Squid uses an `external_acl_type` helper to check the destination domain against the selected blocked categories.
 - When blocked, Squid returns a custom error page (`ERR_WEBFILTER_BLOCKED`).
@@ -348,7 +345,7 @@ Configuration:
 
 Blocked Log notes:
 - The blocked log is recorded by the Squid external ACL helper when a category match results in a deny decision.
-- The log is stored in `webfilter.db` under `/var/lib/squid-flask-proxy`.
+- The log is stored in the MySQL `webfilter_blocked_log` table.
 
 ### c-icap access log (direct REQMOD logging)
 The c-icap REQMOD service logs per-transaction decisions to:
@@ -466,7 +463,7 @@ Remote ClamAV note:
 - `squid/`: Squid template config + MIME + error pages
   - UI-driven policy includes live under `/etc/squid/conf.d/*.conf`
 - `web/`: Flask admin UI + services + tools
-  - `services/`: SQLite-backed stores and Squid integration
+  - `services/`: MySQL-backed stores and Squid integration
   - `tools/`: helper scripts (PAC server, category helper, builders, apply scripts)
 
 ## Scaling: Squid workers

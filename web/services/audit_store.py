@@ -14,46 +14,29 @@ logger = logging.getLogger(__name__)
 
 
 class AuditStore:
-    def __init__(self, db_path: str = "/var/lib/squid-flask-proxy/audit.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        _ = db_path
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            if conn.is_mysql:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS audit_events (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        ts BIGINT NOT NULL,
-                        kind VARCHAR(80) NOT NULL,
-                        ok TINYINT(1) NOT NULL,
-                        remote_addr VARCHAR(64),
-                        user_agent VARCHAR(256),
-                        detail TEXT,
-                        config_sha256 CHAR(64),
-                        config_text LONGTEXT
-                    )
-                    """
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    ts BIGINT NOT NULL,
+                    kind VARCHAR(80) NOT NULL,
+                    ok TINYINT(1) NOT NULL,
+                    remote_addr VARCHAR(64),
+                    user_agent VARCHAR(256),
+                    detail TEXT,
+                    config_sha256 CHAR(64),
+                    config_text LONGTEXT
                 )
-            else:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS audit_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts INTEGER NOT NULL,
-                        kind TEXT NOT NULL,
-                        ok INTEGER NOT NULL,
-                        remote_addr TEXT,
-                        user_agent TEXT,
-                        detail TEXT,
-                        config_sha256 TEXT,
-                        config_text TEXT
-                    );
-                    """
-                )
+                """
+            )
             create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_ts", columns_sql="ts")
             create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_kind", columns_sql="kind")
 
@@ -133,43 +116,7 @@ class AuditStore:
             ).fetchone()
         return row
 
-    def _checkpoint_and_vacuum(self) -> None:
-        # Best-effort compaction. VACUUM may fail if the DB is busy.
-        try:
-            with self._connect() as conn:
-                if conn.is_mysql:
-                    return
-        except Exception:
-            pass
-        try:
-            with self._connect() as conn:
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "audit_store.wal_checkpoint",
-                        interval_seconds=300.0,
-                        message="Audit DB wal_checkpoint(TRUNCATE) failed",
-                    )
-                try:
-                    conn.execute("VACUUM;")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "audit_store.vacuum",
-                        interval_seconds=300.0,
-                        message="Audit DB VACUUM failed",
-                    )
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "audit_store.checkpoint_vacuum",
-                interval_seconds=300.0,
-                message="Audit DB checkpoint/vacuum failed",
-            )
-
-    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+    def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune old audit/config apply history.
 
         Note: the store also enforces a max row count on write; this adds
@@ -180,8 +127,6 @@ class AuditStore:
         cutoff = int(time.time()) - (days * 24 * 60 * 60)
         with self._connect() as conn:
             conn.execute("DELETE FROM audit_events WHERE ts < ?", (int(cutoff),))
-        if vacuum:
-            self._checkpoint_and_vacuum()
 
 
 _store: Optional[AuditStore] = None

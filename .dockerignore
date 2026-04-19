@@ -6,7 +6,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.db
-*.sqlite3
 *.log
 *.env
 *.git

@@ -22,7 +22,7 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from services.db import connect, using_mysql
+from services.db import connect
 
 
 _HOST_RE = re.compile(
@@ -310,79 +310,43 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
             t.extract(m, out_dir)
 
 
-def _connect(db_path: Path):
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return connect(default_sqlite_path=str(db_path))
+def _connect():
+    return connect()
 
 
 def _init_db(conn) -> None:
-    if conn.is_mysql:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_domains (
-                domain VARCHAR(255) PRIMARY KEY,
-                categories TEXT NOT NULL
-            )
-            """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS webcat_domains (
+            domain VARCHAR(255) PRIMARY KEY,
+            categories TEXT NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_categories (
-                category VARCHAR(128) PRIMARY KEY,
-                domains BIGINT NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS webcat_categories (
+            category VARCHAR(128) PRIMARY KEY,
+            domains BIGINT NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_meta (
-                k VARCHAR(64) PRIMARY KEY,
-                v LONGTEXT NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS webcat_meta (
+            k VARCHAR(64) PRIMARY KEY,
+            v LONGTEXT NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_aliases (
-                alias VARCHAR(128) PRIMARY KEY,
-                canonical VARCHAR(128) NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS webcat_aliases (
+            alias VARCHAR(128) PRIMARY KEY,
+            canonical VARCHAR(128) NOT NULL
         )
-    else:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_domains (
-                domain TEXT PRIMARY KEY,
-                categories TEXT NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_categories (
-                category TEXT PRIMARY KEY,
-                domains INTEGER NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_meta (
-                k TEXT PRIMARY KEY,
-                v TEXT NOT NULL
-            );
-            """
-        )
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS webcat_aliases (
-                alias TEXT PRIMARY KEY,
-                canonical TEXT NOT NULL
-            );
-            """
-        )
+        """
+    )
 
 
 def _upsert_meta(conn, k: str, v: str) -> None:
@@ -393,7 +357,6 @@ def _upsert_meta(conn, k: str, v: str) -> None:
 
 
 def _build_db(
-    db_path: Path,
     pairs: Sequence[Tuple[str, str]],
     *,
     source: str,
@@ -413,7 +376,7 @@ def _build_db(
         for c in cats:
             cat_counts[c] = cat_counts.get(c, 0) + 1
 
-    with _connect(db_path) as conn:
+    with _connect() as conn:
         _init_db(conn)
         conn.execute("DELETE FROM webcat_domains")
         conn.execute("DELETE FROM webcat_categories")
@@ -621,13 +584,10 @@ def _find_ut1_blacklists_dir(root: Path) -> Optional[Path]:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Download/compile a domain->category DB for Squid (UT1/OWC-style sources).")
-    ap.add_argument("--db", default="/var/lib/squid-flask-proxy/webcat.db", help="Output SQLite DB path")
     ap.add_argument("--source-url", default="", help="Optional URL to download (zip or csv)")
     ap.add_argument("--source-path", default="", help="Optional local path (dir, zip, csv)")
     ap.add_argument("--download-to", default="/var/lib/squid-flask-proxy/webcat/source", help="Where to save downloaded artifact")
     args = ap.parse_args(list(argv) if argv is not None else None)
-
-    db_path = Path(args.db)
 
     source_path_s = (args.source_path or "").strip()
     source_url = (args.source_url or "").strip()
@@ -669,21 +629,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[webcat] no domain/category pairs found (format mismatch?)", file=sys.stderr)
         return 3
 
-    if using_mysql(default_sqlite_path=str(db_path)):
-        domains, total_pairs = _build_db(db_path, pairs, source=source_label, aliases=aliases)
-    else:
-        # Build to a temporary DB and atomically replace. This prevents rebuild failures when Squid
-        # (or other readers) currently have the DB open.
-        tmp_db_path = db_path.with_name(db_path.name + ".buildtmp")
-        try:
-            if tmp_db_path.exists():
-                tmp_db_path.unlink()
-        except Exception:
-            pass
-
-        domains, total_pairs = _build_db(tmp_db_path, pairs, source=source_label, aliases=aliases)
-        os.replace(str(tmp_db_path), str(db_path))
-    print(f"[webcat] built {db_path}: {domains} domains, {total_pairs} pairs", file=sys.stderr)
+    domains, total_pairs = _build_db(pairs, source=source_label, aliases=aliases)
+    print(f"[webcat] updated MySQL webcat tables: {domains} domains, {total_pairs} pairs", file=sys.stderr)
     return 0
 
 

@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+from .mysql_test_utils import configure_test_mysql_env
+
 
 def _add_web_to_path() -> None:
     web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -11,10 +13,11 @@ def _add_web_to_path() -> None:
 
 def test_socks_store_ignores_accept_noise_and_keeps_connect_events(tmp_path):
     _add_web_to_path()
+    configure_test_mysql_env(tmp_path)
 
     from services.socks_store import SocksStore  # type: ignore
 
-    store = SocksStore(db_path=str(tmp_path / "socks.db"), log_path=str(tmp_path / "sockd.log"))
+    store = SocksStore(log_path=str(tmp_path / "sockd.log"))
     store.init_db()
 
     store.ingest_line(
@@ -34,10 +37,11 @@ def test_socks_store_ignores_accept_noise_and_keeps_connect_events(tmp_path):
 
 def test_ssl_errors_store_ignores_startup_noise(tmp_path):
     _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "ssl-errors")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
-    store = SslErrorsStore(db_path=str(tmp_path / "ssl_errors.db"), cache_log_path=str(tmp_path / "cache.log"))
+    store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     store.init_db()
     store.ingest_line("2026/04/18 04:04:09| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)")
     store.ingest_line("2026/04/18 04:04:39| helperOpenServers: Starting 5/12 'ssl_crtd' processes")

@@ -7,6 +7,8 @@ import tempfile
 import threading
 import unittest
 
+from .mysql_test_utils import configure_test_mysql_env
+
 
 def _import_app():
     try:
@@ -23,8 +25,8 @@ def _import_app():
     os.environ.setdefault('DISABLE_BACKGROUND', '1')
 
     # Isolate auth state so tests are deterministic.
-    os.environ.setdefault('AUTH_DB', os.path.join(tempfile.mkdtemp(prefix='sfp_auth_'), 'auth.db'))
-    os.environ.setdefault('FLASK_SECRET_PATH', os.path.join(tempfile.mkdtemp(prefix='sfp_secret_'), 'flask_secret.key'))
+    secret_path = os.path.join(tempfile.mkdtemp(prefix='sfp_secret_'), 'flask_secret.key')
+    configure_test_mysql_env(tempfile.mkdtemp(prefix='sfp_mysql_'), secret_path=secret_path)
 
     from app import app as flask_app  # type: ignore
     flask_app.testing = True

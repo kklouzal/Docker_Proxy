@@ -625,11 +625,6 @@ def _write_sorted_lines(path: str, items: Iterable[str]) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Compile EasyList-style adblock lists into c-icap friendly buckets")
     ap.add_argument(
-        "--db",
-        default="/var/lib/squid-flask-proxy/adblock.db",
-        help="Path to adblock SQLite DB (used to discover enabled lists)",
-    )
-    ap.add_argument(
         "--lists-dir",
         default="/var/lib/squid-flask-proxy/adblock/lists",
         help="Directory containing downloaded filter list files",
@@ -654,7 +649,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[adblock_compile] failed to import AdblockStore: {e}", file=sys.stderr)
         return 2
 
-    store = AdblockStore(db_path=str(ns.db), lists_dir=str(ns.lists_dir))
+    store = AdblockStore(lists_dir=str(ns.lists_dir))
     try:
         store.init_db()
     except Exception:

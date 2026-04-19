@@ -53,46 +53,30 @@ def _get_metric(stats: Dict[str, Any], path: str) -> Optional[float]:
 
 
 class TimeSeriesStore:
-    def __init__(self, db_path: str = "/var/lib/squid-flask-proxy/timeseries.db"):
-        self.db_path = db_path
-
+    def __init__(self, db_path: Optional[str] = None):
+        _ = db_path
         self._started = False
         self._start_lock = threading.Lock()
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def init_db(self) -> None:
         with self._connect() as conn:
             for r in RESOLUTIONS:
-                if conn.is_mysql:
-                    conn.execute(
-                        f"""
-                        CREATE TABLE IF NOT EXISTS {r.table} (
-                            ts BIGINT PRIMARY KEY,
-                            count BIGINT NOT NULL,
-                            cpu DOUBLE,
-                            mem DOUBLE,
-                            disk_used DOUBLE,
-                            cache_dir_size DOUBLE,
-                            hit_rate DOUBLE
-                        )
-                        """
+                conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {r.table} (
+                        ts BIGINT PRIMARY KEY,
+                        count BIGINT NOT NULL,
+                        cpu DOUBLE,
+                        mem DOUBLE,
+                        disk_used DOUBLE,
+                        cache_dir_size DOUBLE,
+                        hit_rate DOUBLE
                     )
-                else:
-                    conn.execute(
-                        f"""
-                        CREATE TABLE IF NOT EXISTS {r.table} (
-                            ts INTEGER PRIMARY KEY,
-                            count INTEGER NOT NULL,
-                            cpu REAL,
-                            mem REAL,
-                            disk_used REAL,
-                            cache_dir_size REAL,
-                            hit_rate REAL
-                        );
-                        """
-                    )
+                    """
+                )
                 create_index_if_not_exists(conn, table_name=r.table, index_name=f"idx_{r.table}_ts", columns_sql="ts")
 
     def insert_snapshot(self, stats: Dict[str, Any], ts: Optional[int] = None) -> None:

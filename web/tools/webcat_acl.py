@@ -51,8 +51,7 @@ def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
 
 
 class _Db:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self):
         self._conn = None
         self._last_open_attempt = 0
 
@@ -65,7 +64,7 @@ class _Db:
             return None
         self._last_open_attempt = now
         try:
-            conn = connect(default_sqlite_path=self.db_path)
+            conn = connect()
             self._conn = conn
             return conn
         except Exception:
@@ -90,19 +89,16 @@ class _Db:
 
 
 class _BlockedLogDb:
-    def __init__(self, db_path: str, *, max_rows: int = 5000):
-        self.db_path = db_path
+    def __init__(self, *, max_rows: int = 5000):
         self.max_rows = int(max_rows) if max_rows else 5000
         self._conn = None
         self._last_open_attempt = 0
         self._inserts = 0
 
     def _table(self, conn) -> str:
-        return "webfilter_blocked_log" if getattr(conn, "is_mysql", False) else "blocked_log"
+        return "webfilter_blocked_log"
 
     def _connect(self):
-        if not self.db_path:
-            return None
         now = _now()
         if self._conn is not None:
             return self._conn
@@ -110,29 +106,17 @@ class _BlockedLogDb:
             return None
         self._last_open_attempt = now
         try:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            conn = connect(default_sqlite_path=self.db_path)
+            conn = connect()
             blocked_log_table = self._table(conn)
-            if conn.is_mysql:
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
-                    "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
-                    "ts BIGINT NOT NULL, "
-                    "src_ip VARCHAR(64) NOT NULL, "
-                    "url TEXT NOT NULL, "
-                    "category VARCHAR(128) NOT NULL"
-                    ")"
-                )
-            else:
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    "ts INTEGER NOT NULL, "
-                    "src_ip TEXT NOT NULL, "
-                    "url TEXT NOT NULL, "
-                    "category TEXT NOT NULL"
-                    ");"
-                )
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
+                "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                "ts BIGINT NOT NULL, "
+                "src_ip VARCHAR(64) NOT NULL, "
+                "url TEXT NOT NULL, "
+                "category VARCHAR(128) NOT NULL"
+                ")"
+            )
             create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_ts", columns_sql="ts")
             self._conn = conn
             return conn
@@ -159,18 +143,10 @@ class _BlockedLogDb:
             # Periodic trimming to keep the DB bounded.
             if self.max_rows > 0 and (self._inserts % 100) == 0:
                 try:
-                    if getattr(conn, "is_mysql", False):
-                        conn.execute(
-                            f"DELETE FROM {blocked_log_table} WHERE id NOT IN (SELECT id FROM (SELECT id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s) AS keepers)",
-                            (int(self.max_rows),),
-                        )
-                    else:
-                        conn.execute(
-                            f"DELETE FROM {blocked_log_table} WHERE id IN ("
-                            f"SELECT id FROM {blocked_log_table} ORDER BY ts DESC LIMIT -1 OFFSET ?"
-                            ")",
-                            (int(self.max_rows),),
-                        )
+                    conn.execute(
+                        f"DELETE FROM {blocked_log_table} WHERE id NOT IN (SELECT id FROM (SELECT id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s) AS keepers)",
+                        (int(self.max_rows),),
+                    )
                     conn.commit()
                 except Exception:
                     pass
@@ -221,14 +197,12 @@ def _write_response(channel_id: Optional[str], ok: bool) -> None:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Squid external ACL helper for domain category blocking (local categories DB).")
-    ap.add_argument("--db", default=os.environ.get("WEBFILTER_DB", "/var/lib/squid-flask-proxy/webcat.db"))
-    ap.add_argument("--settings-db", default=os.environ.get("WEBFILTER_SETTINGS_DB", "/var/lib/squid-flask-proxy/webfilter.db"))
     ap.add_argument("--log-max-rows", type=int, default=int(os.environ.get("WEBFILTER_LOG_MAX_ROWS", "5000")))
     ap.add_argument("--fail", choices=["open", "closed"], default=os.environ.get("WEBFILTER_FAIL", "open"))
     args = ap.parse_args(list(argv) if argv is not None else None)
 
-    db = _Db(args.db)
-    log_db = _BlockedLogDb(args.settings_db, max_rows=int(args.log_max_rows))
+    db = _Db()
+    log_db = _BlockedLogDb(max_rows=int(args.log_max_rows))
     fail_open = args.fail == "open"
 
     for raw in sys.stdin:

@@ -59,78 +59,45 @@ def _normalize_v4_cidr(cidr: str) -> Tuple[Optional[str], str]:
 
 
 class PacProfilesStore:
-    def __init__(self, db_path: str = "/var/lib/squid-flask-proxy/pac_profiles.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        _ = db_path
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            if conn.is_mysql:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pac_profiles (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        name VARCHAR(255) NOT NULL,
-                        client_cidr VARCHAR(64) NOT NULL DEFAULT '',
-                        socks_enabled TINYINT(1) NOT NULL DEFAULT 0,
-                        socks_host VARCHAR(255) NOT NULL DEFAULT '',
-                        socks_port INT NOT NULL DEFAULT 1080,
-                        created_ts BIGINT NOT NULL
-                    )
-                    """
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pac_profiles (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    name VARCHAR(255) NOT NULL,
+                    client_cidr VARCHAR(64) NOT NULL DEFAULT '',
+                    socks_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                    socks_host VARCHAR(255) NOT NULL DEFAULT '',
+                    socks_port INT NOT NULL DEFAULT 1080,
+                    created_ts BIGINT NOT NULL
                 )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pac_direct_domains (
-                        profile_id BIGINT NOT NULL,
-                        domain VARCHAR(255) NOT NULL,
-                        PRIMARY KEY(profile_id, domain)
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pac_direct_domains (
+                    profile_id BIGINT NOT NULL,
+                    domain VARCHAR(255) NOT NULL,
+                    PRIMARY KEY(profile_id, domain)
                 )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pac_direct_dst_nets (
-                        profile_id BIGINT NOT NULL,
-                        cidr VARCHAR(64) NOT NULL,
-                        PRIMARY KEY(profile_id, cidr)
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pac_direct_dst_nets (
+                    profile_id BIGINT NOT NULL,
+                    cidr VARCHAR(64) NOT NULL,
+                    PRIMARY KEY(profile_id, cidr)
                 )
-            else:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pac_profiles (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        client_cidr TEXT NOT NULL DEFAULT '',
-                        socks_enabled INTEGER NOT NULL DEFAULT 0,
-                        socks_host TEXT NOT NULL DEFAULT '',
-                        socks_port INTEGER NOT NULL DEFAULT 1080,
-                        created_ts INTEGER NOT NULL
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pac_direct_domains (
-                        profile_id INTEGER NOT NULL,
-                        domain TEXT NOT NULL,
-                        PRIMARY KEY(profile_id, domain)
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pac_direct_dst_nets (
-                        profile_id INTEGER NOT NULL,
-                        cidr TEXT NOT NULL,
-                        PRIMARY KEY(profile_id, cidr)
-                    );
-                    """
-                )
+                """
+            )
             create_index_if_not_exists(
                 conn,
                 table_name="pac_profiles",
@@ -140,11 +107,11 @@ class PacProfilesStore:
 
             # Lightweight schema migration for existing DBs.
             if not column_exists(conn, "pac_profiles", "socks_enabled"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_enabled INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_enabled TINYINT(1) NOT NULL DEFAULT 0")
             if not column_exists(conn, "pac_profiles", "socks_host"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_host TEXT NOT NULL DEFAULT ''")
+                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_host VARCHAR(255) NOT NULL DEFAULT ''")
             if not column_exists(conn, "pac_profiles", "socks_port"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_port INTEGER NOT NULL DEFAULT 1080")
+                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_port INT NOT NULL DEFAULT 1080")
 
     def list_profiles(self) -> List[PacProfile]:
         self.init_db()

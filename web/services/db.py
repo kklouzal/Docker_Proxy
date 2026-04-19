@@ -2,17 +2,12 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import threading
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Sequence
 from urllib.parse import unquote, urlparse
 
-try:
-    import pymysql  # type: ignore
-except Exception:  # pragma: no cover - import tested indirectly at runtime
-    pymysql = None  # type: ignore[assignment]
+import pymysql  # type: ignore
 
 
 MYSQL_DEFAULT_DB = "squid_proxy"
@@ -20,11 +15,9 @@ MYSQL_DEFAULT_DB = "squid_proxy"
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    backend: str
-    sqlite_path: Optional[str] = None
-    host: str = ""
+    host: str
     port: int = 3306
-    user: str = ""
+    user: str = "root"
     password: str = ""
     database: str = MYSQL_DEFAULT_DB
     charset: str = "utf8mb4"
@@ -57,9 +50,6 @@ class CompatResult:
     def _convert_row(self, row: Any) -> Any:
         if row is None:
             return None
-        if isinstance(row, sqlite3.Row):
-            columns = tuple(row.keys())
-            return CompatRow(columns, [row[c] for c in columns])
         if isinstance(row, dict):
             columns = tuple(row.keys())
             return CompatRow(columns, [row[c] for c in columns])
@@ -87,39 +77,27 @@ class _EmptyCursor:
 
 
 class CompatConnection:
-    def __init__(self, native: Any, backend: str):
+    def __init__(self, native: Any):
         self.native = native
-        self.backend = backend
 
     @property
     def is_mysql(self) -> bool:
-        return self.backend == "mysql"
-
-    @property
-    def is_sqlite(self) -> bool:
-        return self.backend == "sqlite"
+        return True
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> CompatResult:
-        translated = translate_sql(sql, self.backend)
+        translated = translate_sql(sql)
         if not translated.strip():
             return CompatResult(_EmptyCursor())
-        params = tuple(params or ())
-        if self.is_mysql:
-            cur = self.native.cursor()
-            cur.execute(translated, params)
-            return CompatResult(cur)
-        cur = self.native.execute(translated, params)
+        cur = self.native.cursor()
+        cur.execute(translated, tuple(params or ()))
         return CompatResult(cur)
 
     def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> CompatResult:
-        translated = translate_sql(sql, self.backend)
+        translated = translate_sql(sql)
         if not translated.strip():
             return CompatResult(_EmptyCursor())
-        if self.is_mysql:
-            cur = self.native.cursor()
-            cur.executemany(translated, [tuple(p) for p in seq_of_params])
-            return CompatResult(cur)
-        cur = self.native.executemany(translated, [tuple(p) for p in seq_of_params])
+        cur = self.native.cursor()
+        cur.executemany(translated, [tuple(p) for p in seq_of_params])
         return CompatResult(cur)
 
     def commit(self) -> None:
@@ -145,17 +123,9 @@ class CompatConnection:
         return False
 
 
-_DATABASE_ERRORS: tuple[type[BaseException], ...] = (sqlite3.DatabaseError,)
-_INTEGRITY_ERRORS: tuple[type[BaseException], ...] = (sqlite3.IntegrityError,)
-_OPERATIONAL_ERRORS: tuple[type[BaseException], ...] = (sqlite3.OperationalError,)
-if pymysql is not None:
-    _DATABASE_ERRORS = _DATABASE_ERRORS + (pymysql.MySQLError,)  # type: ignore[attr-defined]
-    _INTEGRITY_ERRORS = _INTEGRITY_ERRORS + (pymysql.IntegrityError,)  # type: ignore[attr-defined]
-    _OPERATIONAL_ERRORS = _OPERATIONAL_ERRORS + (pymysql.OperationalError,)  # type: ignore[attr-defined]
-
-DATABASE_ERRORS = _DATABASE_ERRORS
-INTEGRITY_ERRORS = _INTEGRITY_ERRORS
-OPERATIONAL_ERRORS = _OPERATIONAL_ERRORS
+DATABASE_ERRORS: tuple[type[BaseException], ...] = (pymysql.MySQLError,)  # type: ignore[attr-defined]
+INTEGRITY_ERRORS: tuple[type[BaseException], ...] = (pymysql.IntegrityError,)  # type: ignore[attr-defined]
+OPERATIONAL_ERRORS: tuple[type[BaseException], ...] = (pymysql.OperationalError,)  # type: ignore[attr-defined]
 
 
 _mysql_ready = False
@@ -170,21 +140,11 @@ def _env_bool(name: str, default: str = "0") -> bool:
 def _parse_database_url(url: str) -> DatabaseConfig:
     parsed = urlparse(url)
     scheme = (parsed.scheme or "").lower()
-    if scheme.startswith("sqlite"):
-        raw_path = parsed.path or ""
-        if raw_path.startswith("///"):
-            raw_path = raw_path[1:]
-        path = unquote(raw_path)
-        if os.name == "nt" and path.startswith("/") and len(path) > 2 and path[2] == ":":
-            path = path[1:]
-        return DatabaseConfig(backend="sqlite", sqlite_path=path)
-
     if not scheme.startswith("mysql"):
         raise ValueError(f"Unsupported DATABASE_URL scheme: {scheme}")
 
     db_name = (parsed.path or "").lstrip("/") or os.environ.get("MYSQL_DATABASE") or MYSQL_DEFAULT_DB
     return DatabaseConfig(
-        backend="mysql",
         host=parsed.hostname or os.environ.get("MYSQL_HOST") or "127.0.0.1",
         port=int(parsed.port or int(os.environ.get("MYSQL_PORT") or 3306)),
         user=unquote(parsed.username or os.environ.get("MYSQL_USER") or "root"),
@@ -196,52 +156,31 @@ def _parse_database_url(url: str) -> DatabaseConfig:
     )
 
 
-def resolve_database_config(default_sqlite_path: Optional[str] = None) -> DatabaseConfig:
+def resolve_database_config() -> DatabaseConfig:
     url = (os.environ.get("DATABASE_URL") or "").strip()
     if url:
         return _parse_database_url(url)
 
     mysql_host = (os.environ.get("MYSQL_HOST") or "").strip()
     mysql_db = (os.environ.get("MYSQL_DATABASE") or os.environ.get("MYSQL_DB") or "").strip()
-    if mysql_host or mysql_db:
-        return DatabaseConfig(
-            backend="mysql",
-            host=mysql_host or "127.0.0.1",
-            port=int((os.environ.get("MYSQL_PORT") or "3306").strip() or "3306"),
-            user=(os.environ.get("MYSQL_USER") or "root").strip() or "root",
-            password=os.environ.get("MYSQL_PASSWORD") or "",
-            database=mysql_db or MYSQL_DEFAULT_DB,
-            charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
-            connect_timeout=int((os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"),
-            create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
-        )
+    mysql_user = (os.environ.get("MYSQL_USER") or "").strip()
+    if not mysql_host and not mysql_db and not mysql_user:
+        raise RuntimeError("MySQL configuration is required. Set DATABASE_URL or MYSQL_HOST/MYSQL_DATABASE.")
 
-    return DatabaseConfig(backend="sqlite", sqlite_path=default_sqlite_path or ":memory:")
-
-
-def using_mysql(default_sqlite_path: Optional[str] = None) -> bool:
-    return resolve_database_config(default_sqlite_path=default_sqlite_path).backend == "mysql"
+    return DatabaseConfig(
+        host=mysql_host or "127.0.0.1",
+        port=int((os.environ.get("MYSQL_PORT") or "3306").strip() or "3306"),
+        user=mysql_user or "root",
+        password=os.environ.get("MYSQL_PASSWORD") or "",
+        database=mysql_db or MYSQL_DEFAULT_DB,
+        charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
+        connect_timeout=int((os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"),
+        create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
+    )
 
 
-def connect(default_sqlite_path: Optional[str] = None) -> CompatConnection:
-    cfg = resolve_database_config(default_sqlite_path=default_sqlite_path)
-    if cfg.backend == "sqlite":
-        path = cfg.sqlite_path or ":memory:"
-        path_obj = Path(path)
-        db_dir = path_obj.parent if str(path_obj.parent) not in ("", ".") else None
-        if db_dir is not None:
-            db_dir.mkdir(parents=True, exist_ok=True)
-        native = sqlite3.connect(path, timeout=30, check_same_thread=False)
-        native.row_factory = sqlite3.Row
-        native.execute("PRAGMA journal_mode=WAL")
-        native.execute("PRAGMA synchronous=NORMAL")
-        native.execute("PRAGMA busy_timeout=30000")
-        native.execute("PRAGMA foreign_keys=ON")
-        return CompatConnection(native, "sqlite")
-
-    if pymysql is None:  # pragma: no cover - depends on runtime package availability
-        raise RuntimeError("PyMySQL is not installed but MySQL configuration was requested.")
-
+def connect(*_args, **_kwargs) -> CompatConnection:
+    cfg = resolve_database_config()
     _ensure_mysql_database(cfg)
     native = pymysql.connect(  # type: ignore[call-arg]
         host=cfg.host,
@@ -253,7 +192,7 @@ def connect(default_sqlite_path: Optional[str] = None) -> CompatConnection:
         autocommit=False,
         connect_timeout=int(cfg.connect_timeout),
     )
-    return CompatConnection(native, "mysql")
+    return CompatConnection(native)
 
 
 def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
@@ -263,8 +202,6 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
     with _mysql_ready_lock:
         if _mysql_ready or not cfg.create_database:
             return
-        if pymysql is None:  # pragma: no cover
-            raise RuntimeError("PyMySQL is not installed but MySQL configuration was requested.")
         native = pymysql.connect(  # type: ignore[call-arg]
             host=cfg.host,
             port=int(cfg.port),
@@ -284,10 +221,8 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
         _mysql_ready = True
 
 
-def translate_sql(sql: str, backend: str) -> str:
+def translate_sql(sql: str) -> str:
     s = sql or ""
-    if backend != "mysql":
-        return s
 
     if re.match(r"^\s*PRAGMA\b", s, flags=re.I):
         return ""
@@ -304,44 +239,28 @@ def translate_sql(sql: str, backend: str) -> str:
         update_clause = re.sub(r"\bMAX\(", "GREATEST(", update_clause, flags=re.I)
         s = s[: m.start()] + "ON DUPLICATE KEY UPDATE " + update_clause + m.group(2)
 
-    s = s.replace("?", "%s")
-    return s
+    return s.replace("?", "%s")
 
 
 def table_exists(conn: CompatConnection, table_name: str) -> bool:
-    if conn.is_sqlite:
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (table_name,),
-        ).fetchone()
-        return row is not None
     row = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s LIMIT 1",
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ? LIMIT 1",
         (table_name,),
     ).fetchone()
     return row is not None
 
 
 def column_exists(conn: CompatConnection, table_name: str, column_name: str) -> bool:
-    if conn.is_sqlite:
-        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        return any(str(r[1]) == column_name for r in rows)
     row = conn.execute(
-        "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s LIMIT 1",
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1",
         (table_name, column_name),
     ).fetchone()
     return row is not None
 
 
 def index_exists(conn: CompatConnection, index_name: str) -> bool:
-    if conn.is_sqlite:
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
-            (index_name,),
-        ).fetchone()
-        return row is not None
     row = conn.execute(
-        "SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = %s LIMIT 1",
+        "SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = ? LIMIT 1",
         (index_name,),
     ).fetchone()
     return row is not None

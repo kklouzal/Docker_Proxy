@@ -135,12 +135,12 @@ def _extract_endpoints(line: str) -> Tuple[str, int, str, int]:
 class SocksStore:
     def __init__(
         self,
-        db_path: str = "/var/lib/squid-flask-proxy/socks.db",
+        db_path: Optional[str] = None,
         log_path: str = "/var/log/sockd.log",
         seed_max_lines: int = 5000,
         retention_days: int = 30,
     ):
-        self.db_path = db_path
+        _ = db_path
         self.log_path = log_path
         self.seed_max_lines = seed_max_lines
         self.retention_days = retention_days
@@ -149,7 +149,7 @@ class SocksStore:
         self._start_lock = threading.Lock()
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def _ingest_line_with_conn(self, conn, line: str) -> bool:
         s = (line or "").strip("\r\n")
@@ -190,38 +190,21 @@ class SocksStore:
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            if conn.is_mysql:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS socks_events (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        ts BIGINT NOT NULL,
-                        action VARCHAR(32) NOT NULL,
-                        protocol VARCHAR(32) NOT NULL,
-                        src_ip VARCHAR(64) NOT NULL,
-                        src_port INT NOT NULL,
-                        dst VARCHAR(255) NOT NULL,
-                        dst_port INT NOT NULL,
-                        msg TEXT NOT NULL
-                    )
-                    """
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS socks_events (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    ts BIGINT NOT NULL,
+                    action VARCHAR(32) NOT NULL,
+                    protocol VARCHAR(32) NOT NULL,
+                    src_ip VARCHAR(64) NOT NULL,
+                    src_port INT NOT NULL,
+                    dst VARCHAR(255) NOT NULL,
+                    dst_port INT NOT NULL,
+                    msg TEXT NOT NULL
                 )
-            else:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS socks_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts INTEGER NOT NULL,
-                        action TEXT NOT NULL,
-                        protocol TEXT NOT NULL,
-                        src_ip TEXT NOT NULL,
-                        src_port INTEGER NOT NULL,
-                        dst TEXT NOT NULL,
-                        dst_port INTEGER NOT NULL,
-                        msg TEXT NOT NULL
-                    );
-                    """
-                )
+                """
+            )
             create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_ts", columns_sql="ts")
             create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_src", columns_sql="src_ip, ts")
             create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_dst", columns_sql="dst, ts")
@@ -231,48 +214,11 @@ class SocksStore:
         cutoff = _now() - int(self.retention_days * 24 * 60 * 60)
         conn.execute("DELETE FROM socks_events WHERE ts < ?", (cutoff,))
 
-    def _checkpoint_and_vacuum(self) -> None:
-        try:
-            with self._connect() as conn:
-                if conn.is_mysql:
-                    return
-        except Exception:
-            pass
-        try:
-            with self._connect() as conn:
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "socks_store.wal_checkpoint",
-                        interval_seconds=300.0,
-                        message="SOCKS DB wal_checkpoint(TRUNCATE) failed",
-                    )
-                try:
-                    conn.execute("VACUUM;")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "socks_store.vacuum",
-                        interval_seconds=300.0,
-                        message="SOCKS DB VACUUM failed",
-                    )
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "socks_store.checkpoint_vacuum",
-                interval_seconds=300.0,
-                message="SOCKS DB checkpoint/vacuum failed",
-            )
-
-    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+    def prune_old_entries(self, *, retention_days: int = 30) -> None:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - int(days * 24 * 60 * 60)
         with self._connect() as conn:
             conn.execute("DELETE FROM socks_events WHERE ts < ?", (int(cutoff),))
-        if vacuum:
-            self._checkpoint_and_vacuum()
 
     def ingest_line(self, line: str) -> None:
         with self._connect() as conn:

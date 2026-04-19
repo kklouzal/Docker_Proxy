@@ -107,7 +107,7 @@
 <section class="card">
   <div class="card-header">
     <h2 class="card-title">Recent blocks</h2>
-    <span class="badge">SQLite (from c-icap access log)</span>
+    <span class="badge">MySQL-backed</span>
   </div>
   <div class="card-body">
     {% if recent_blocks and recent_blocks|length > 0 %}
@@ -135,7 +135,7 @@
           {% endfor %}
         </tbody>
       </table>
-      <div class="small" style="margin-top: 10px;">Shows up to the most recent 100 blocks stored in SQLite.</div>
+      <div class="small" style="margin-top: 10px;">Shows up to the most recent 100 blocks stored in MySQL.</div>
     {% else %}
       <div class="small">No blocks recorded in the database yet.</div>
     {% endif %}

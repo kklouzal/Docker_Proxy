@@ -8,7 +8,6 @@ import sys
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate /etc/squid/conf.d/10-sslfilter.conf from UI settings")
-    ap.add_argument("--db", default="/var/lib/squid-flask-proxy/sslfilter.db")
     ap.add_argument("--out", default="/etc/squid/conf.d/10-sslfilter.conf")
     args = ap.parse_args()
 
@@ -19,7 +18,7 @@ def main() -> int:
         print(f"[sslfilter] import failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
-    store = SslFilterStore(db_path=args.db, squid_include_path=args.out)
+    store = SslFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
         return 0

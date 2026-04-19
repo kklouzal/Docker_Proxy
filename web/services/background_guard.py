@@ -18,7 +18,7 @@ def acquire_background_lock() -> bool:
 
     In production, app servers may spawn multiple processes (e.g., gunicorn workers).
     Without a guard, each process would start its own tailers/samplers and contend
-    on the same SQLite files.
+    on the same runtime tables and log ingestion loops.
 
     Returns True if this process should start background tasks, False otherwise.
 

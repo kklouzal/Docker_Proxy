@@ -4,6 +4,8 @@ import tempfile
 
 import pytest
 
+from .mysql_test_utils import configure_test_mysql_env
+
 
 def _import_app():
     try:
@@ -16,15 +18,8 @@ def _import_app():
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 
-    # Avoid starting background tailers/samplers during unit tests.
-    os.environ.setdefault("DISABLE_BACKGROUND", "1")
-
-    # Isolate auth state so tests are deterministic.
-    os.environ.setdefault("AUTH_DB", os.path.join(tempfile.mkdtemp(prefix="sfp_auth_"), "auth.db"))
-    os.environ.setdefault(
-        "FLASK_SECRET_PATH",
-        os.path.join(tempfile.mkdtemp(prefix="sfp_secret_"), "flask_secret.key"),
-    )
+    secret_path = os.path.join(tempfile.mkdtemp(prefix="sfp_secret_"), "flask_secret.key")
+    configure_test_mysql_env(tempfile.mkdtemp(prefix="sfp_mysql_"), secret_path=secret_path)
 
     from app import app as flask_app  # type: ignore
 
@@ -309,40 +304,27 @@ def test_csrf_can_be_disabled_for_debug(monkeypatch):
     assert "/login" in (r.headers.get("Location", "") or "")
 
 
-def test_auth_store_connect_uses_safe_sqlite_options(tmp_path, monkeypatch):
+def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch):
     # Import module from web/ directory.
     web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 
     from services import auth_store  # type: ignore
-    from services import db as db_module  # type: ignore
-
-    captured = {"args": None, "kwargs": None, "pragmas": []}
-
-    class FakeConn:
-        def execute(self, sql: str, *params):
-            captured["pragmas"].append(sql.strip())
-            return None
+    sentinel = object()
+    captured = {"args": None, "kwargs": None}
 
     def fake_connect(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return FakeConn()
+        return sentinel
 
-    monkeypatch.setattr(db_module.sqlite3, "connect", fake_connect)
+    monkeypatch.setattr(auth_store, "connect", fake_connect)
 
-    store = auth_store.AuthStore(db_path=str(tmp_path / "auth.db"), secret_path=str(tmp_path / "secret.key"))
-    _ = store._connect()
-
-    assert captured["kwargs"] is not None
-    assert captured["kwargs"].get("timeout") == 30
-    assert captured["kwargs"].get("check_same_thread") is False
-
-    # Ensure we set WAL + busy timeout to reduce lock errors.
-    pragmas = "\n".join(captured["pragmas"])
-    assert "journal_mode=WAL" in pragmas
-    assert "busy_timeout=30000" in pragmas
+    store = auth_store.AuthStore(db_path="legacy-auth-location", secret_path=str(tmp_path / "secret.key"))
+    assert store._connect() is sentinel
+    assert captured["args"] == ()
+    assert captured["kwargs"] == {}
 
 
 def test_auth_store_username_and_password_validation(tmp_path):
@@ -350,9 +332,11 @@ def test_auth_store_username_and_password_validation(tmp_path):
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 
+    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "secret.key")
+
     from services.auth_store import AuthStore  # type: ignore
 
-    store = AuthStore(db_path=str(tmp_path / "auth.db"), secret_path=str(tmp_path / "secret.key"))
+    store = AuthStore(secret_path=str(tmp_path / "secret.key"))
 
     with pytest.raises(ValueError):
         store.add_user("", "pass")

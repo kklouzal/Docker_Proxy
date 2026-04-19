@@ -42,12 +42,7 @@ if [ "$IPV6_DISABLED" = "1" ]; then
     LOCALHOST_SRC_ACL="127.0.0.1/32"
 fi
 
-# When moving from the legacy SQLite layout to MySQL, import persisted data
-# before any background compilers/readers start using the new backend.
-python3 /app/tools/sqlite_to_mysql.py --data-dir /var/lib/squid-flask-proxy || true
-
 python3 /app/tools/adblock_compile.py \
-    --db /var/lib/squid-flask-proxy/adblock.db \
     --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
     --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
     || true
@@ -242,11 +237,11 @@ fi
 # We derive the worker count from squid.conf so UI edits like "workers 4" validate.
 mkdir -p /etc/squid/conf.d
 
-# SSL filtering include is driven by the admin UI (SQLite settings).
+# SSL filtering include is driven by the admin UI database state.
 # Always generate a safe include so squid.conf can include it.
 python3 /app/tools/sslfilter_apply.py || true
 
-# Web filtering include is driven by the admin UI (SQLite settings).
+# Web filtering include is driven by the admin UI database state.
 # Always generate a safe include so squid.conf.template's include succeeds.
 python3 /app/tools/webfilter_apply.py || true
 
@@ -437,7 +432,7 @@ if [ -f /etc/c-icap/c-icap.conf ]; then
     fi
 
     # Avoid both instances writing to the same access log.
-    # Keep the default access log path for adblock (used by the UI/SQLite ingestion).
+    # Keep the default access log path for adblock (used by the UI/database ingestion).
     if grep -qiE "^[[:space:]]*AccessLog[[:space:]]+/var/log/cicap-access\.log([[:space:]]|$)" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
         sed -i -E "s#^[[:space:]]*AccessLog[[:space:]]+/var/log/cicap-access\.log([[:space:]]|$)#AccessLog /var/log/cicap-access-av.log\1#I" /etc/c-icap/c-icap-av.conf
     fi

@@ -193,13 +193,13 @@ _DEFAULTS: Dict[str, str] = {
 class WebFilterStore:
     def __init__(
         self,
-        settings_db_path: str = "/var/lib/squid-flask-proxy/webfilter.db",
-        webcat_db_path: str = "/var/lib/squid-flask-proxy/webcat.db",
+        settings_db_path: Optional[str] = None,
+        webcat_db_path: Optional[str] = None,
         squid_include_path: str = "/etc/squid/conf.d/30-webfilter.conf",
         whitelist_path: str = "/var/lib/squid-flask-proxy/webfilter_whitelist.txt",
     ):
-        self.settings_db_path = settings_db_path
-        self.webcat_db_path = webcat_db_path
+        _ = settings_db_path
+        _ = webcat_db_path
         self.squid_include_path = squid_include_path
         self.whitelist_path = whitelist_path
 
@@ -207,14 +207,12 @@ class WebFilterStore:
         self._lock = threading.Lock()
 
     def _connect(self):
-        return connect(default_sqlite_path=self.settings_db_path)
+        return connect()
 
     def _connect_webcat(self):
-        return connect(default_sqlite_path=self.webcat_db_path)
+        return connect()
 
     def _table(self, conn, logical_name: str) -> str:
-        if not conn.is_mysql:
-            return logical_name
         mapping = {
             "settings": "webfilter_settings",
             "meta": "webfilter_meta",
@@ -229,32 +227,18 @@ class WebFilterStore:
             meta_table = self._table(conn, "meta")
             whitelist_table = self._table(conn, "whitelist")
             blocked_log_table = self._table(conn, "blocked_log")
-            if conn.is_mysql:
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {whitelist_table}(pattern VARCHAR(255) PRIMARY KEY, added_ts BIGINT NOT NULL)")
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
-                    "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
-                    "ts BIGINT NOT NULL, "
-                    "src_ip VARCHAR(64) NOT NULL, "
-                    "url TEXT NOT NULL, "
-                    "category VARCHAR(128) NOT NULL"
-                    ")"
-                )
-            else:
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(k TEXT PRIMARY KEY, v TEXT NOT NULL);")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k TEXT PRIMARY KEY, v TEXT NOT NULL);")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {whitelist_table}(pattern TEXT PRIMARY KEY, added_ts INTEGER NOT NULL);")
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    "ts INTEGER NOT NULL, "
-                    "src_ip TEXT NOT NULL, "
-                    "url TEXT NOT NULL, "
-                    "category TEXT NOT NULL"
-                    ");"
-                )
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {whitelist_table}(pattern VARCHAR(255) PRIMARY KEY, added_ts BIGINT NOT NULL)")
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
+                "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                "ts BIGINT NOT NULL, "
+                "src_ip VARCHAR(64) NOT NULL, "
+                "url TEXT NOT NULL, "
+                "category VARCHAR(128) NOT NULL"
+                ")"
+            )
             create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_ts", columns_sql="ts")
             for k, v in _DEFAULTS.items():
                 conn.execute(f"INSERT OR IGNORE INTO {settings_table}(k,v) VALUES(?,?)", (k, v))
@@ -649,7 +633,7 @@ class WebFilterStore:
         # Pass client IP + destination + full requested URL so the helper can write a blocked log.
         lines.append(
             f"external_acl_type webcat children={helpers} ttl={ttl} negative_ttl={neg_ttl} %SRC %DST %URI "
-            f"/usr/bin/python3 /app/tools/webcat_acl.py --db {self.webcat_db_path} --settings-db {self.settings_db_path} --fail {fail}"
+            f"/usr/bin/python3 /app/tools/webcat_acl.py --fail {fail}"
         )
 
         # Whitelist is evaluated first.
@@ -738,8 +722,6 @@ class WebFilterStore:
                 [
                     "python3",
                     "/app/tools/webcat_build.py",
-                    "--db",
-                    self.webcat_db_path,
                     "--source-url",
                     source_url,
                     "--download-to",

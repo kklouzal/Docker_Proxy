@@ -356,7 +356,7 @@ def _datetimeformat(ts: object) -> str:
         return ''
 
 if not _disable_background:
-    # Start background ingestion of Squid access.log into SQLite (best-effort).
+    # Start background ingestion of Squid access.log into the database (best-effort).
     try:
         get_store().start_background()
     except Exception:

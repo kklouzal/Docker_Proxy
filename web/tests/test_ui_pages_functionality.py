@@ -7,6 +7,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from .mysql_test_utils import configure_test_mysql_env
+
 
 def _import_app_module():
     try:
@@ -18,14 +20,8 @@ def _import_app_module():
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 
-    os.environ.setdefault("DISABLE_BACKGROUND", "1")
-
-    # Isolate auth state for deterministic tests.
-    os.environ.setdefault("AUTH_DB", os.path.join(tempfile.mkdtemp(prefix="sfp_auth_"), "auth.db"))
-    os.environ.setdefault(
-        "FLASK_SECRET_PATH",
-        os.path.join(tempfile.mkdtemp(prefix="sfp_secret_"), "flask_secret.key"),
-    )
+    secret_path = os.path.join(tempfile.mkdtemp(prefix="sfp_secret_"), "flask_secret.key")
+    configure_test_mysql_env(tempfile.mkdtemp(prefix="sfp_mysql_"), secret_path=secret_path)
 
     import app as app_module  # type: ignore
 

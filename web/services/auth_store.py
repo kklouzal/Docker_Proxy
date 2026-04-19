@@ -16,7 +16,6 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_AUTH_DB = "/var/lib/squid-flask-proxy/auth.db"
 DEFAULT_SECRET_PATH = "/var/lib/squid-flask-proxy/flask_secret.key"
 
 
@@ -33,36 +32,24 @@ class AuthStore:
         db_path: Optional[str] = None,
         secret_path: Optional[str] = None,
     ):
-        self.db_path = db_path or os.environ.get("AUTH_DB") or DEFAULT_AUTH_DB
+        _ = db_path
         self.secret_path = secret_path or os.environ.get("FLASK_SECRET_PATH") or DEFAULT_SECRET_PATH
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def ensure_schema(self) -> None:
         with self._connect() as conn:
-            if conn.is_mysql:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS users (
-                        username VARCHAR(64) PRIMARY KEY,
-                        password_hash TEXT NOT NULL,
-                        created_ts BIGINT NOT NULL,
-                        updated_ts BIGINT NOT NULL
-                    )
-                    """
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    username VARCHAR(64) PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    created_ts BIGINT NOT NULL,
+                    updated_ts BIGINT NOT NULL
                 )
-            else:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS users (
-                        username TEXT PRIMARY KEY,
-                        password_hash TEXT NOT NULL,
-                        created_ts INTEGER NOT NULL,
-                        updated_ts INTEGER NOT NULL
-                    )
-                    """
-                )
+                """
+            )
 
     def ensure_default_admin(self) -> None:
         self.ensure_schema()

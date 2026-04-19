@@ -22,33 +22,25 @@ class SslFilterSettings:
 class SslFilterStore:
     def __init__(
         self,
-        db_path: str = "/var/lib/squid-flask-proxy/sslfilter.db",
+        db_path: Optional[str] = None,
         squid_include_path: str = "/etc/squid/conf.d/10-sslfilter.conf",
         nobump_list_path: str = "/var/lib/squid-flask-proxy/sslfilter_nobump.txt",
     ):
-        self.db_path = db_path
+        _ = db_path
         self.squid_include_path = squid_include_path
         self.nobump_list_path = nobump_list_path
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            if conn.is_mysql:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS nobump_cidrs("
-                    "cidr VARCHAR(64) PRIMARY KEY, "
-                    "added_ts BIGINT NOT NULL"
-                    ")"
-                )
-            else:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS nobump_cidrs("
-                    "cidr TEXT PRIMARY KEY, "
-                    "added_ts INTEGER NOT NULL"
-                    ");"
-                )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS nobump_cidrs("
+                "cidr VARCHAR(64) PRIMARY KEY, "
+                "added_ts BIGINT NOT NULL"
+                ")"
+            )
 
     def list_nobump(self, limit: int = 5000) -> List[Tuple[str, int]]:
         self.init_db()

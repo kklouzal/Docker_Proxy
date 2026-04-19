@@ -33,15 +33,13 @@ class Exclusions:
 
 
 class ExclusionsStore:
-    def __init__(self, db_path: str = "/var/lib/squid-flask-proxy/exclusions.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        _ = db_path
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def _table(self, conn, logical_name: str) -> str:
-        if not conn.is_mysql:
-            return logical_name
         mapping = {
             "domains": "exclusions_domains",
             "dst_nets": "exclusions_dst_nets",
@@ -56,16 +54,10 @@ class ExclusionsStore:
             dst_table = self._table(conn, "dst_nets")
             src_table = self._table(conn, "src_nets")
             settings_table = self._table(conn, "settings")
-            if conn.is_mysql:
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {domains_table}(domain VARCHAR(255) PRIMARY KEY)")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {dst_table}(cidr VARCHAR(64) PRIMARY KEY)")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {src_table}(cidr VARCHAR(64) PRIMARY KEY)")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(`key` VARCHAR(64) PRIMARY KEY, value TEXT NOT NULL)")
-            else:
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {domains_table}(domain TEXT PRIMARY KEY);")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {dst_table}(cidr TEXT PRIMARY KEY);")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {src_table}(cidr TEXT PRIMARY KEY);")
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {domains_table}(domain VARCHAR(255) PRIMARY KEY)")
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {dst_table}(cidr VARCHAR(64) PRIMARY KEY)")
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {src_table}(cidr VARCHAR(64) PRIMARY KEY)")
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(`key` VARCHAR(64) PRIMARY KEY, value TEXT NOT NULL)")
 
     def _set_setting(self, key: str, value: str) -> None:
         with self._connect() as conn:

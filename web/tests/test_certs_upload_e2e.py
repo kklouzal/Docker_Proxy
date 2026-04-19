@@ -6,6 +6,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from .mysql_test_utils import configure_test_mysql_env
+
 
 def _import_app_isolated(tmp_path):
     try:
@@ -17,9 +19,7 @@ def _import_app_isolated(tmp_path):
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 
-    os.environ["DISABLE_BACKGROUND"] = "1"
-    os.environ["AUTH_DB"] = str(tmp_path / "auth.db")
-    os.environ["FLASK_SECRET_PATH"] = str(tmp_path / "flask_secret.key")
+    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
 
     if "app" in sys.modules:
         del sys.modules["app"]

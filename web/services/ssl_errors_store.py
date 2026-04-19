@@ -134,11 +134,11 @@ def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
 class SslErrorsStore:
     def __init__(
         self,
-        db_path: str = "/var/lib/squid-flask-proxy/ssl_errors.db",
+        db_path: Optional[str] = None,
         cache_log_path: str = "/var/log/squid/cache.log",
         seed_max_lines: int = 5000,
     ):
-        self.db_path = db_path
+        _ = db_path
         self.cache_log_path = cache_log_path
         self.seed_max_lines = seed_max_lines
 
@@ -146,7 +146,7 @@ class SslErrorsStore:
         self._start_lock = threading.Lock()
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def _ingest_line_with_conn(self, conn, line: str) -> bool:
         ts, msg = _parse_cache_log_ts(line)
@@ -161,36 +161,20 @@ class SslErrorsStore:
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            if conn.is_mysql:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS ssl_errors (
-                        row_key CHAR(40) PRIMARY KEY,
-                        domain VARCHAR(255) NOT NULL,
-                        category VARCHAR(64) NOT NULL,
-                        reason VARCHAR(300) NOT NULL,
-                        count BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL,
-                        sample TEXT NOT NULL
-                    )
-                    """
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ssl_errors (
+                    row_key CHAR(40) PRIMARY KEY,
+                    domain VARCHAR(255) NOT NULL,
+                    category VARCHAR(64) NOT NULL,
+                    reason VARCHAR(300) NOT NULL,
+                    count BIGINT NOT NULL DEFAULT 0,
+                    first_seen BIGINT NOT NULL,
+                    last_seen BIGINT NOT NULL,
+                    sample TEXT NOT NULL
                 )
-            else:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS ssl_errors (
-                        row_key TEXT PRIMARY KEY,
-                        domain TEXT NOT NULL,
-                        category TEXT NOT NULL,
-                        reason TEXT NOT NULL,
-                        count INTEGER NOT NULL DEFAULT 0,
-                        first_seen INTEGER NOT NULL,
-                        last_seen INTEGER NOT NULL,
-                        sample TEXT NOT NULL
-                    );
-                    """
-                )
+                """
+            )
             create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_last_seen", columns_sql="last_seen")
             create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_domain", columns_sql="domain, last_seen")
             create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_category", columns_sql="category, last_seen")
@@ -199,48 +183,11 @@ class SslErrorsStore:
             cutoff = _now() - (30 * 24 * 60 * 60)
             conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (cutoff,))
 
-    def _checkpoint_and_vacuum(self) -> None:
-        try:
-            with self._connect() as conn:
-                if conn.is_mysql:
-                    return
-        except Exception:
-            pass
-        try:
-            with self._connect() as conn:
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "ssl_errors_store.wal_checkpoint",
-                        interval_seconds=300.0,
-                        message="SSL errors DB wal_checkpoint(TRUNCATE) failed",
-                    )
-                try:
-                    conn.execute("VACUUM;")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "ssl_errors_store.vacuum",
-                        interval_seconds=300.0,
-                        message="SSL errors DB VACUUM failed",
-                    )
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "ssl_errors_store.checkpoint_vacuum",
-                interval_seconds=300.0,
-                message="SSL errors DB checkpoint/vacuum failed",
-            )
-
-    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+    def prune_old_entries(self, *, retention_days: int = 30) -> None:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
         with self._connect() as conn:
             conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (int(cutoff),))
-        if vacuum:
-            self._checkpoint_and_vacuum()
 
     def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
         row_key = hashlib.sha1(f"{domain}|{category}|{reason}".encode("utf-8", errors="replace")).hexdigest()

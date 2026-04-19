@@ -8,8 +8,6 @@ import sys
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate /etc/squid/conf.d/30-webfilter.conf from UI settings")
-    ap.add_argument("--settings-db", default="/var/lib/squid-flask-proxy/webfilter.db")
-    ap.add_argument("--webcat-db", default="/var/lib/squid-flask-proxy/webcat.db")
     ap.add_argument("--out", default="/etc/squid/conf.d/30-webfilter.conf")
     args = ap.parse_args()
 
@@ -21,7 +19,7 @@ def main() -> int:
         print(f"[webfilter] import failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
-    store = WebFilterStore(settings_db_path=args.settings_db, webcat_db_path=args.webcat_db, squid_include_path=args.out)
+    store = WebFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
         return 0

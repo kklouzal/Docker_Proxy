@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 def _escape_like(value: str) -> str:
     """Escape special LIKE pattern characters for safe SQL queries."""
-    # SQLite uses ESCAPE '\\' by default; we escape %, _, and \ itself
+    # Escape %, _, and \\ itself so callers can safely use LIKE-based filtering.
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -262,11 +262,11 @@ def _derive_not_cached_reason(domain: str, method: str, result_code: str, extras
 class LiveStatsStore:
     def __init__(
         self,
-        db_path: str = "/var/lib/squid-flask-proxy/live_stats.db",
+        db_path: Optional[str] = None,
         access_log_path: str = "/var/log/squid/access.log",
         seed_max_lines: int = 5000,
     ):
-        self.db_path = db_path
+        _ = db_path
         self.access_log_path = access_log_path
         self.seed_max_lines = seed_max_lines
 
@@ -274,11 +274,9 @@ class LiveStatsStore:
         self._start_lock = threading.Lock()
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def _table(self, conn, logical_name: str) -> str:
-        if not conn.is_mysql:
-            return logical_name
         mapping = {
             "domains": "live_stats_domains",
             "clients": "live_stats_clients",
@@ -311,163 +309,71 @@ class LiveStatsStore:
             clients_table = self._table(conn, "clients")
             client_domains_table = self._table(conn, "client_domains")
             nocache_table = self._table(conn, "client_domain_nocache")
-            if conn.is_mysql:
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {domains_table} (
-                        domain VARCHAR(255) PRIMARY KEY,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        hit_requests BIGINT NOT NULL DEFAULT 0,
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        hit_bytes BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL
-                    )
-                    """
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {domains_table} (
+                    domain VARCHAR(255) PRIMARY KEY,
+                    requests BIGINT NOT NULL DEFAULT 0,
+                    hit_requests BIGINT NOT NULL DEFAULT 0,
+                    bytes BIGINT NOT NULL DEFAULT 0,
+                    hit_bytes BIGINT NOT NULL DEFAULT 0,
+                    first_seen BIGINT NOT NULL,
+                    last_seen BIGINT NOT NULL
                 )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {clients_table} (
-                        ip VARCHAR(64) PRIMARY KEY,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        hit_requests BIGINT NOT NULL DEFAULT 0,
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        hit_bytes BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {clients_table} (
+                    ip VARCHAR(64) PRIMARY KEY,
+                    requests BIGINT NOT NULL DEFAULT 0,
+                    hit_requests BIGINT NOT NULL DEFAULT 0,
+                    bytes BIGINT NOT NULL DEFAULT 0,
+                    hit_bytes BIGINT NOT NULL DEFAULT 0,
+                    first_seen BIGINT NOT NULL,
+                    last_seen BIGINT NOT NULL
                 )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {client_domains_table} (
-                        ip VARCHAR(64) NOT NULL,
-                        domain VARCHAR(255) NOT NULL,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        hit_requests BIGINT NOT NULL DEFAULT 0,
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        hit_bytes BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL,
-                        PRIMARY KEY (ip, domain)
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {client_domains_table} (
+                    ip VARCHAR(64) NOT NULL,
+                    domain VARCHAR(255) NOT NULL,
+                    requests BIGINT NOT NULL DEFAULT 0,
+                    hit_requests BIGINT NOT NULL DEFAULT 0,
+                    bytes BIGINT NOT NULL DEFAULT 0,
+                    hit_bytes BIGINT NOT NULL DEFAULT 0,
+                    first_seen BIGINT NOT NULL,
+                    last_seen BIGINT NOT NULL,
+                    PRIMARY KEY (ip, domain)
                 )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {nocache_table} (
-                        row_key CHAR(40) PRIMARY KEY,
-                        ip VARCHAR(64) NOT NULL,
-                        domain VARCHAR(255) NOT NULL,
-                        reason VARCHAR(300) NOT NULL,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {nocache_table} (
+                    row_key CHAR(40) PRIMARY KEY,
+                    ip VARCHAR(64) NOT NULL,
+                    domain VARCHAR(255) NOT NULL,
+                    reason VARCHAR(300) NOT NULL,
+                    requests BIGINT NOT NULL DEFAULT 0,
+                    first_seen BIGINT NOT NULL,
+                    last_seen BIGINT NOT NULL
                 )
-            else:
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {domains_table} (
-                        domain TEXT PRIMARY KEY,
-                        requests INTEGER NOT NULL DEFAULT 0,
-                        hit_requests INTEGER NOT NULL DEFAULT 0,
-                        bytes INTEGER NOT NULL DEFAULT 0,
-                        hit_bytes INTEGER NOT NULL DEFAULT 0,
-                        first_seen INTEGER NOT NULL,
-                        last_seen INTEGER NOT NULL
-                    );
-                    """
-                )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {clients_table} (
-                        ip TEXT PRIMARY KEY,
-                        requests INTEGER NOT NULL DEFAULT 0,
-                        hit_requests INTEGER NOT NULL DEFAULT 0,
-                        bytes INTEGER NOT NULL DEFAULT 0,
-                        hit_bytes INTEGER NOT NULL DEFAULT 0,
-                        first_seen INTEGER NOT NULL,
-                        last_seen INTEGER NOT NULL
-                    );
-                    """
-                )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {client_domains_table} (
-                        ip TEXT NOT NULL,
-                        domain TEXT NOT NULL,
-                        requests INTEGER NOT NULL DEFAULT 0,
-                        hit_requests INTEGER NOT NULL DEFAULT 0,
-                        bytes INTEGER NOT NULL DEFAULT 0,
-                        hit_bytes INTEGER NOT NULL DEFAULT 0,
-                        first_seen INTEGER NOT NULL,
-                        last_seen INTEGER NOT NULL,
-                        PRIMARY KEY (ip, domain)
-                    );
-                    """
-                )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {nocache_table} (
-                        row_key TEXT PRIMARY KEY,
-                        ip TEXT NOT NULL,
-                        domain TEXT NOT NULL,
-                        reason TEXT NOT NULL,
-                        requests INTEGER NOT NULL DEFAULT 0,
-                        first_seen INTEGER NOT NULL,
-                        last_seen INTEGER NOT NULL
-                    );
-                    """
-                )
+                """
+            )
             create_index_if_not_exists(conn, table_name=domains_table, index_name=f"idx_{domains_table}_last_seen", columns_sql="last_seen")
             create_index_if_not_exists(conn, table_name=clients_table, index_name=f"idx_{clients_table}_last_seen", columns_sql="last_seen")
             create_index_if_not_exists(conn, table_name=client_domains_table, index_name=f"idx_{client_domains_table}_ip", columns_sql="ip")
             create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_ip", columns_sql="ip, last_seen")
             create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_domain", columns_sql="domain, last_seen")
 
-    def _checkpoint_and_vacuum(self) -> None:
-        # Best-effort compaction. VACUUM may fail if the DB is busy.
-        try:
-            with self._connect() as conn:
-                if conn.is_mysql:
-                    return
-        except Exception:
-            pass
-        try:
-            with self._connect() as conn:
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "live_stats.wal_checkpoint",
-                        interval_seconds=300.0,
-                        message="Live stats DB wal_checkpoint(TRUNCATE) failed",
-                    )
-                try:
-                    conn.execute("VACUUM;")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "live_stats.vacuum",
-                        interval_seconds=300.0,
-                        message="Live stats DB VACUUM failed",
-                    )
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "live_stats.checkpoint_vacuum",
-                interval_seconds=300.0,
-                message="Live stats DB checkpoint/vacuum failed",
-            )
-
-    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+    def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune stale aggregate rows.
 
         This store keeps only aggregates keyed by (domain/client/etc). Without pruning,
-        the DB can grow indefinitely as new domains/clients appear over time.
+        the table set can grow indefinitely as new domains/clients appear over time.
         """
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
@@ -476,9 +382,6 @@ class LiveStatsStore:
             conn.execute(f"DELETE FROM {self._table(conn, 'client_domains')} WHERE last_seen < ?", (int(cutoff),))
             conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE last_seen < ?", (int(cutoff),))
             conn.execute(f"DELETE FROM {self._table(conn, 'clients')} WHERE last_seen < ?", (int(cutoff),))
-
-        if vacuum:
-            self._checkpoint_and_vacuum()
 
     def _upsert_agg(self, conn, table: str, key_col: str, key: str, ts: int, size_bytes: int, is_hit: bool) -> None:
         table_name = self._table(conn, table)

@@ -84,13 +84,13 @@ def _event_key(ts: int, src_ip: str, url: str, http_status: int) -> str:
 class AdblockStore:
     def __init__(
         self,
-        db_path: str = "/var/lib/squid-flask-proxy/adblock.db",
+        db_path: Optional[str] = None,
         lists_dir: str = "/var/lib/squid-flask-proxy/adblock/lists",
         update_interval_seconds: int = 6 * 60 * 60,
         cicap_access_log_path: str = "/var/log/cicap-access.log",
         blocklog_retention_days: int = 30,
     ):
-        self.db_path = db_path
+        _ = db_path
         self.lists_dir = lists_dir
         self.update_interval_seconds = update_interval_seconds
         self.cicap_access_log_path = cicap_access_log_path
@@ -101,147 +101,79 @@ class AdblockStore:
         self._last_events_prune_ts = 0
 
     def _connect(self):
-        return connect(default_sqlite_path=self.db_path)
+        return connect()
 
     def init_db(self) -> None:
         os.makedirs(self.lists_dir, exist_ok=True)
         with self._connect() as conn:
-            if conn.is_mysql:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_lists (
-                        `key` VARCHAR(64) PRIMARY KEY,
-                        url TEXT NOT NULL,
-                        enabled TINYINT(1) NOT NULL DEFAULT 0,
-                        last_success BIGINT NOT NULL DEFAULT 0,
-                        last_attempt BIGINT NOT NULL DEFAULT 0,
-                        last_error VARCHAR(500) NOT NULL DEFAULT '',
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        rules BIGINT NOT NULL DEFAULT 0
-                    )
-                    """
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adblock_lists (
+                    `key` VARCHAR(64) PRIMARY KEY,
+                    url TEXT NOT NULL,
+                    enabled TINYINT(1) NOT NULL DEFAULT 0,
+                    last_success BIGINT NOT NULL DEFAULT 0,
+                    last_attempt BIGINT NOT NULL DEFAULT 0,
+                    last_error VARCHAR(500) NOT NULL DEFAULT '',
+                    bytes BIGINT NOT NULL DEFAULT 0,
+                    rules BIGINT NOT NULL DEFAULT 0
                 )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_meta (
-                        k VARCHAR(64) PRIMARY KEY,
-                        v TEXT NOT NULL
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adblock_meta (
+                    k VARCHAR(64) PRIMARY KEY,
+                    v TEXT NOT NULL
                 )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_cache_stats (
-                        k VARCHAR(64) PRIMARY KEY,
-                        v BIGINT NOT NULL
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adblock_cache_stats (
+                    k VARCHAR(64) PRIMARY KEY,
+                    v BIGINT NOT NULL
                 )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_settings (
-                        k VARCHAR(64) PRIMARY KEY,
-                        v TEXT NOT NULL
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adblock_settings (
+                    k VARCHAR(64) PRIMARY KEY,
+                    v TEXT NOT NULL
                 )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_counts (
-                        day BIGINT NOT NULL,
-                        list_key VARCHAR(64) NOT NULL,
-                        blocked BIGINT NOT NULL,
-                        PRIMARY KEY(day, list_key)
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adblock_counts (
+                    day BIGINT NOT NULL,
+                    list_key VARCHAR(64) NOT NULL,
+                    blocked BIGINT NOT NULL,
+                    PRIMARY KEY(day, list_key)
                 )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_events (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        event_key CHAR(40) NOT NULL,
-                        ts BIGINT NOT NULL,
-                        src_ip VARCHAR(64) NOT NULL,
-                        method VARCHAR(16) NOT NULL,
-                        url TEXT NOT NULL,
-                        http_status INT NOT NULL,
-                        http_resp_line VARCHAR(255) NOT NULL,
-                        icap_status INT NOT NULL,
-                        raw TEXT NOT NULL,
-                        created_ts BIGINT NOT NULL
-                    )
-                    """
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adblock_events (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    event_key CHAR(40) NOT NULL,
+                    ts BIGINT NOT NULL,
+                    src_ip VARCHAR(64) NOT NULL,
+                    method VARCHAR(16) NOT NULL,
+                    url TEXT NOT NULL,
+                    http_status INT NOT NULL,
+                    http_resp_line VARCHAR(255) NOT NULL,
+                    icap_status INT NOT NULL,
+                    raw TEXT NOT NULL,
+                    created_ts BIGINT NOT NULL
                 )
-            else:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_lists (
-                        key TEXT PRIMARY KEY,
-                        url TEXT NOT NULL,
-                        enabled INTEGER NOT NULL DEFAULT 0,
-                        last_success INTEGER NOT NULL DEFAULT 0,
-                        last_attempt INTEGER NOT NULL DEFAULT 0,
-                        last_error TEXT NOT NULL DEFAULT '',
-                        bytes INTEGER NOT NULL DEFAULT 0,
-                        rules INTEGER NOT NULL DEFAULT 0
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_meta (
-                        k TEXT PRIMARY KEY,
-                        v TEXT NOT NULL
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_cache_stats (
-                        k TEXT PRIMARY KEY,
-                        v INTEGER NOT NULL
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_settings (
-                        k TEXT PRIMARY KEY,
-                        v TEXT NOT NULL
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_counts (
-                        day INTEGER NOT NULL,
-                        list_key TEXT NOT NULL,
-                        blocked INTEGER NOT NULL,
-                        PRIMARY KEY(day, list_key)
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS adblock_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        event_key TEXT,
-                        ts INTEGER NOT NULL,
-                        src_ip TEXT NOT NULL,
-                        method TEXT NOT NULL,
-                        url TEXT NOT NULL,
-                        http_status INTEGER NOT NULL,
-                        http_resp_line TEXT NOT NULL,
-                        icap_status INTEGER NOT NULL,
-                        raw TEXT NOT NULL,
-                        created_ts INTEGER NOT NULL
-                    );
-                    """
-                )
+                """
+            )
             if not column_exists(conn, "adblock_events", "event_key"):
                 conn.execute("ALTER TABLE adblock_events ADD COLUMN event_key TEXT")
-            if conn.is_mysql:
-                conn.execute("ALTER TABLE adblock_lists MODIFY COLUMN last_error VARCHAR(500) NOT NULL DEFAULT ''")
+            conn.execute("ALTER TABLE adblock_lists MODIFY COLUMN last_error VARCHAR(500) NOT NULL DEFAULT ''")
             create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_ts", columns_sql="ts, id")
             create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_uniq", columns_sql="event_key", unique=True)
 
@@ -598,42 +530,7 @@ class AdblockStore:
         cutoff = _now() - days * 24 * 3600
         conn.execute("DELETE FROM adblock_events WHERE ts < ?", (int(cutoff),))
 
-    def _checkpoint_and_vacuum(self) -> None:
-        try:
-            with self._connect() as conn:
-                if conn.is_mysql:
-                    return
-        except Exception:
-            pass
-        try:
-            with self._connect() as conn:
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "adblock_store.wal_checkpoint",
-                        interval_seconds=300.0,
-                        message="Adblock DB wal_checkpoint(TRUNCATE) failed",
-                    )
-                try:
-                    conn.execute("VACUUM;")
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "adblock_store.vacuum",
-                        interval_seconds=300.0,
-                        message="Adblock DB VACUUM failed",
-                    )
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "adblock_store.checkpoint_vacuum",
-                interval_seconds=300.0,
-                message="Adblock DB checkpoint/vacuum failed",
-            )
-
-    def prune_old_entries(self, *, retention_days: int = 30, vacuum: bool = True) -> None:
+    def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune old benign blocklog data to keep the DB bounded."""
         days = max(1, int(retention_days or 30))
         cutoff = _now() - days * 24 * 3600
@@ -642,8 +539,6 @@ class AdblockStore:
             conn.execute("DELETE FROM adblock_events WHERE ts < ?", (int(cutoff),))
             # Daily rollup rows are small, but keep them aligned with the same retention.
             conn.execute("DELETE FROM adblock_counts WHERE day < ?", (int(cutoff_day),))
-        if vacuum:
-            self._checkpoint_and_vacuum()
 
     def list_recent_block_events(self, limit: int = 100) -> List[Dict[str, Any]]:
         self.init_db()
@@ -818,7 +713,7 @@ class AdblockStore:
         """Bulk increment blocked counters.
 
         This is meant for the ICAP hot path: accumulate counts in memory and
-        flush periodically to avoid per-request SQLite writes.
+        flush periodically to avoid per-request writes.
         """
         day = int(_now() // 86400)
         rows = []
@@ -1049,7 +944,6 @@ def get_adblock_store() -> AdblockStore:
                     return int(default)
 
             _store = AdblockStore(
-                db_path=os.environ.get("ADBLOCK_DB", "/var/lib/squid-flask-proxy/adblock.db"),
                 lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "/var/lib/squid-flask-proxy/adblock/lists"),
                 update_interval_seconds=_env_int("ADBLOCK_UPDATE_INTERVAL", 6 * 60 * 60),
                 cicap_access_log_path=os.environ.get("CICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
