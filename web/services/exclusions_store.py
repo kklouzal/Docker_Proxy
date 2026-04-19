@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import threading
 from dataclasses import dataclass
 from ipaddress import ip_network
 from typing import List, Optional, Tuple
+
+from services.db import connect
 
 
 # Domain validation pattern: allows labels with alphanumeric and hyphens,
@@ -35,39 +36,54 @@ class ExclusionsStore:
     def __init__(self, db_path: str = "/var/lib/squid-flask-proxy/exclusions.db"):
         self.db_path = db_path
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
+
+    def _table(self, conn, logical_name: str) -> str:
+        if not conn.is_mysql:
+            return logical_name
+        mapping = {
+            "domains": "exclusions_domains",
+            "dst_nets": "exclusions_dst_nets",
+            "src_nets": "exclusions_src_nets",
+            "settings": "exclusions_settings",
+        }
+        return mapping[logical_name]
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS domains(domain TEXT PRIMARY KEY);")
-            conn.execute("CREATE TABLE IF NOT EXISTS dst_nets(cidr TEXT PRIMARY KEY);")
-            conn.execute("CREATE TABLE IF NOT EXISTS src_nets(cidr TEXT PRIMARY KEY);")
-            conn.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            domains_table = self._table(conn, "domains")
+            dst_table = self._table(conn, "dst_nets")
+            src_table = self._table(conn, "src_nets")
+            settings_table = self._table(conn, "settings")
+            if conn.is_mysql:
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {domains_table}(domain VARCHAR(255) PRIMARY KEY)")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {dst_table}(cidr VARCHAR(64) PRIMARY KEY)")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {src_table}(cidr VARCHAR(64) PRIMARY KEY)")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(`key` VARCHAR(64) PRIMARY KEY, value TEXT NOT NULL)")
+            else:
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {domains_table}(domain TEXT PRIMARY KEY);")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {dst_table}(cidr TEXT PRIMARY KEY);")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {src_table}(cidr TEXT PRIMARY KEY);")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 
     def _set_setting(self, key: str, value: str) -> None:
         with self._connect() as conn:
+            settings_table = self._table(conn, "settings")
             conn.execute(
-                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                f"INSERT INTO {settings_table}(`key`,value) VALUES(?,?) ON CONFLICT(`key`) DO UPDATE SET value=excluded.value",
                 (key, value),
             )
 
     def _get_setting(self, key: str) -> Optional[str]:
         with self._connect() as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            settings_table = self._table(conn, "settings")
+            row = conn.execute(f"SELECT value FROM {settings_table} WHERE `key`=?", (key,)).fetchone()
             return str(row[0]) if row else None
 
-    def _get_setting_conn(self, conn: sqlite3.Connection, key: str) -> Optional[str]:
-        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    def _get_setting_conn(self, conn, key: str) -> Optional[str]:
+        settings_table = self._table(conn, "settings")
+        row = conn.execute(f"SELECT value FROM {settings_table} WHERE `key`=?", (key,)).fetchone()
         return str(row[0]) if row else None
 
     def set_exclude_private_nets(self, enabled: bool) -> None:
@@ -106,13 +122,13 @@ class ExclusionsStore:
         # Store with wildcard prefix if applicable
         store_value = f"*.{d}" if is_wildcard else d
         with self._connect() as conn:
-            conn.execute("INSERT OR IGNORE INTO domains(domain) VALUES(?)", (store_value,))
+            conn.execute(f"INSERT OR IGNORE INTO {self._table(conn, 'domains')}(domain) VALUES(?)", (store_value,))
         return True, ""
 
     def remove_domain(self, domain: str) -> None:
         d = (domain or "").strip().lower().lstrip(".")
         with self._connect() as conn:
-            conn.execute("DELETE FROM domains WHERE domain=?", (d,))
+            conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE domain=?", (d,))
 
     def add_net(self, table: str, cidr: str) -> Tuple[bool, str]:
         c = (cidr or "").strip()
@@ -125,7 +141,7 @@ class ExclusionsStore:
         if table not in ("dst_nets", "src_nets"):
             return False, "Invalid target."
         with self._connect() as conn:
-            conn.execute(f"INSERT OR IGNORE INTO {table}(cidr) VALUES(?)", (str(n),))
+            conn.execute(f"INSERT OR IGNORE INTO {self._table(conn, table)}(cidr) VALUES(?)", (str(n),))
         return True, ""
 
     def remove_net(self, table: str, cidr: str) -> None:
@@ -133,13 +149,13 @@ class ExclusionsStore:
         if table not in ("dst_nets", "src_nets"):
             return
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {table} WHERE cidr=?", (c,))
+            conn.execute(f"DELETE FROM {self._table(conn, table)} WHERE cidr=?", (c,))
 
     def list_all(self) -> Exclusions:
         self.init_db()
         with self._connect() as conn:
-            domains = [str(r[0]) for r in conn.execute("SELECT domain FROM domains ORDER BY domain ASC").fetchall()]
-            src = [str(r[0]) for r in conn.execute("SELECT cidr FROM src_nets ORDER BY cidr ASC").fetchall()]
+            domains = [str(r[0]) for r in conn.execute(f"SELECT domain FROM {self._table(conn, 'domains')} ORDER BY domain ASC").fetchall()]
+            src = [str(r[0]) for r in conn.execute(f"SELECT cidr FROM {self._table(conn, 'src_nets')} ORDER BY cidr ASC").fetchall()]
             v = self._get_setting_conn(conn, "exclude_private_nets")
             enabled = True if v is None else (v == "1")
         # Destination-network exclusions are intentionally limited to the built-in private/local ranges.

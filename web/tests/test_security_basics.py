@@ -316,6 +316,7 @@ def test_auth_store_connect_uses_safe_sqlite_options(tmp_path, monkeypatch):
         sys.path.insert(0, web_dir)
 
     from services import auth_store  # type: ignore
+    from services import db as db_module  # type: ignore
 
     captured = {"args": None, "kwargs": None, "pragmas": []}
 
@@ -329,7 +330,7 @@ def test_auth_store_connect_uses_safe_sqlite_options(tmp_path, monkeypatch):
         captured["kwargs"] = kwargs
         return FakeConn()
 
-    monkeypatch.setattr(auth_store.sqlite3, "connect", fake_connect)
+    monkeypatch.setattr(db_module.sqlite3, "connect", fake_connect)
 
     store = auth_store.AuthStore(db_path=str(tmp_path / "auth.db"), secret_path=str(tmp_path / "secret.key"))
     _ = store._connect()

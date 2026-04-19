@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import re
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.db import connect, create_index_if_not_exists
 from services.logutil import log_exception_throttled
 
 
@@ -148,19 +148,10 @@ class SocksStore:
         self._started = False
         self._start_lock = threading.Lock()
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
 
-    def _ingest_line_with_conn(self, conn: sqlite3.Connection, line: str) -> bool:
+    def _ingest_line_with_conn(self, conn, line: str) -> bool:
         s = (line or "").strip("\r\n")
         if not s:
             return False
@@ -199,31 +190,54 @@ class SocksStore:
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS socks_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts INTEGER NOT NULL,
-                    action TEXT NOT NULL,
-                    protocol TEXT NOT NULL,
-                    src_ip TEXT NOT NULL,
-                    src_port INTEGER NOT NULL,
-                    dst TEXT NOT NULL,
-                    dst_port INTEGER NOT NULL,
-                    msg TEXT NOT NULL
-                );
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_socks_events_ts ON socks_events(ts DESC);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_socks_events_src ON socks_events(src_ip, ts DESC);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_socks_events_dst ON socks_events(dst, ts DESC);")
+            if conn.is_mysql:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS socks_events (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        ts BIGINT NOT NULL,
+                        action VARCHAR(32) NOT NULL,
+                        protocol VARCHAR(32) NOT NULL,
+                        src_ip VARCHAR(64) NOT NULL,
+                        src_port INT NOT NULL,
+                        dst VARCHAR(255) NOT NULL,
+                        dst_port INT NOT NULL,
+                        msg TEXT NOT NULL
+                    )
+                    """
+                )
+            else:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS socks_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts INTEGER NOT NULL,
+                        action TEXT NOT NULL,
+                        protocol TEXT NOT NULL,
+                        src_ip TEXT NOT NULL,
+                        src_port INTEGER NOT NULL,
+                        dst TEXT NOT NULL,
+                        dst_port INTEGER NOT NULL,
+                        msg TEXT NOT NULL
+                    );
+                    """
+                )
+            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_ts", columns_sql="ts")
+            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_src", columns_sql="src_ip, ts")
+            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_dst", columns_sql="dst, ts")
             self._prune(conn)
 
-    def _prune(self, conn: sqlite3.Connection) -> None:
+    def _prune(self, conn) -> None:
         cutoff = _now() - int(self.retention_days * 24 * 60 * 60)
         conn.execute("DELETE FROM socks_events WHERE ts < ?", (cutoff,))
 
     def _checkpoint_and_vacuum(self) -> None:
+        try:
+            with self._connect() as conn:
+                if conn.is_mysql:
+                    return
+        except Exception:
+            pass
         try:
             with self._connect() as conn:
                 try:

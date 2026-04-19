@@ -81,7 +81,7 @@ FROM alpine:${ALPINE_VERSION}
 
 # Install necessary packages
 # Note: Alpine's squid package does not ship the legacy `squidclient` binary.
-RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn supervisor openssl ca-certificates libatomic \
+RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn py3-pip supervisor openssl ca-certificates libatomic \
 		pcre2 \
 		file
 
@@ -105,6 +105,9 @@ COPY docker/c-icap.conf /etc/c-icap/c-icap.conf
 COPY docker/adblock_req.conf /etc/adblock_req.conf
 COPY docker/clamd_mod.conf /etc/clamd_mod.conf
 COPY docker/virus_scan.conf /etc/virus_scan.conf
+
+# Python runtime dependencies not shipped by Alpine packages.
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
 
 # Make entrypoint script executable
 RUN chmod +x /entrypoint.sh /healthcheck.sh /usr/local/bin/squid_logrotate.sh /scripts/*.sh \

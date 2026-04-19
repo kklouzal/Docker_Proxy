@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import os
 import re
-import sqlite3
 import threading
 import time
 import urllib.request
@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import logging
 
+from services.db import DATABASE_ERRORS, column_exists, connect, create_index_if_not_exists
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 
@@ -75,6 +76,11 @@ def _now() -> int:
     return int(time.time())
 
 
+def _event_key(ts: int, src_ip: str, url: str, http_status: int) -> str:
+    raw = f"{int(ts)}|{src_ip}|{url}|{int(http_status)}"
+    return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
+
+
 class AdblockStore:
     def __init__(
         self,
@@ -94,102 +100,157 @@ class AdblockStore:
         self._blocklog_lock = threading.Lock()
         self._last_events_prune_ts = 0
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
 
     def init_db(self) -> None:
         os.makedirs(self.lists_dir, exist_ok=True)
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_lists (
-                    key TEXT PRIMARY KEY,
-                    url TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 0,
-                    last_success INTEGER NOT NULL DEFAULT 0,
-                    last_attempt INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT NOT NULL DEFAULT '',
-                    bytes INTEGER NOT NULL DEFAULT 0,
-                    rules INTEGER NOT NULL DEFAULT 0
-                );
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_meta (
-                    k TEXT PRIMARY KEY,
-                    v TEXT NOT NULL
-                );
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_cache_stats (
-                    k TEXT PRIMARY KEY,
-                    v INTEGER NOT NULL
-                );
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_settings (
-                    k TEXT PRIMARY KEY,
-                    v TEXT NOT NULL
-                );
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_counts (
-                    day INTEGER NOT NULL,
-                    list_key TEXT NOT NULL,
-                    blocked INTEGER NOT NULL,
-                    PRIMARY KEY(day, list_key)
-                );
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts INTEGER NOT NULL,
-                    src_ip TEXT NOT NULL,
-                    method TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    http_status INTEGER NOT NULL,
-                    http_resp_line TEXT NOT NULL,
-                    icap_status INTEGER NOT NULL,
-                    raw TEXT NOT NULL,
-                    created_ts INTEGER NOT NULL
-                );
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_adblock_events_ts ON adblock_events(ts DESC, id DESC);")
-            conn.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_adblock_events_uniq
-                ON adblock_events(ts, src_ip, url, http_status);
-                """
-            )
+            if conn.is_mysql:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_lists (
+                        `key` VARCHAR(64) PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        enabled TINYINT(1) NOT NULL DEFAULT 0,
+                        last_success BIGINT NOT NULL DEFAULT 0,
+                        last_attempt BIGINT NOT NULL DEFAULT 0,
+                        last_error VARCHAR(500) NOT NULL DEFAULT '',
+                        bytes BIGINT NOT NULL DEFAULT 0,
+                        rules BIGINT NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_meta (
+                        k VARCHAR(64) PRIMARY KEY,
+                        v TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_cache_stats (
+                        k VARCHAR(64) PRIMARY KEY,
+                        v BIGINT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_settings (
+                        k VARCHAR(64) PRIMARY KEY,
+                        v TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_counts (
+                        day BIGINT NOT NULL,
+                        list_key VARCHAR(64) NOT NULL,
+                        blocked BIGINT NOT NULL,
+                        PRIMARY KEY(day, list_key)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_events (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        event_key CHAR(40) NOT NULL,
+                        ts BIGINT NOT NULL,
+                        src_ip VARCHAR(64) NOT NULL,
+                        method VARCHAR(16) NOT NULL,
+                        url TEXT NOT NULL,
+                        http_status INT NOT NULL,
+                        http_resp_line VARCHAR(255) NOT NULL,
+                        icap_status INT NOT NULL,
+                        raw TEXT NOT NULL,
+                        created_ts BIGINT NOT NULL
+                    )
+                    """
+                )
+            else:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_lists (
+                        key TEXT PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        enabled INTEGER NOT NULL DEFAULT 0,
+                        last_success INTEGER NOT NULL DEFAULT 0,
+                        last_attempt INTEGER NOT NULL DEFAULT 0,
+                        last_error TEXT NOT NULL DEFAULT '',
+                        bytes INTEGER NOT NULL DEFAULT 0,
+                        rules INTEGER NOT NULL DEFAULT 0
+                    );
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_meta (
+                        k TEXT PRIMARY KEY,
+                        v TEXT NOT NULL
+                    );
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_cache_stats (
+                        k TEXT PRIMARY KEY,
+                        v INTEGER NOT NULL
+                    );
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_settings (
+                        k TEXT PRIMARY KEY,
+                        v TEXT NOT NULL
+                    );
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_counts (
+                        day INTEGER NOT NULL,
+                        list_key TEXT NOT NULL,
+                        blocked INTEGER NOT NULL,
+                        PRIMARY KEY(day, list_key)
+                    );
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_key TEXT,
+                        ts INTEGER NOT NULL,
+                        src_ip TEXT NOT NULL,
+                        method TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        http_status INTEGER NOT NULL,
+                        http_resp_line TEXT NOT NULL,
+                        icap_status INTEGER NOT NULL,
+                        raw TEXT NOT NULL,
+                        created_ts INTEGER NOT NULL
+                    );
+                    """
+                )
+            if not column_exists(conn, "adblock_events", "event_key"):
+                conn.execute("ALTER TABLE adblock_events ADD COLUMN event_key TEXT")
+            if conn.is_mysql:
+                conn.execute("ALTER TABLE adblock_lists MODIFY COLUMN last_error VARCHAR(500) NOT NULL DEFAULT ''")
+            create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_ts", columns_sql="ts, id")
+            create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_uniq", columns_sql="event_key", unique=True)
 
             for key, url in _DEFAULT_LISTS.items():
                 conn.execute(
                     """
-                    INSERT INTO adblock_lists(key, url, enabled)
+                    INSERT INTO adblock_lists(`key`, url, enabled)
                     VALUES(?,?,0)
-                    ON CONFLICT(key) DO UPDATE SET url=excluded.url;
+                    ON CONFLICT(`key`) DO UPDATE SET url=excluded.url;
                     """,
                     (key, url),
                 )
@@ -216,11 +277,11 @@ class AdblockStore:
                     (k,),
                 )
 
-    def _get_meta(self, conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    def _get_meta(self, conn, key: str, default: str = "") -> str:
         row = conn.execute("SELECT v FROM adblock_meta WHERE k=?", (key,)).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
-    def _set_meta(self, conn: sqlite3.Connection, key: str, value: str) -> None:
+    def _set_meta(self, conn, key: str, value: str) -> None:
         conn.execute(
             "INSERT INTO adblock_meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
             (key, value),
@@ -251,7 +312,7 @@ class AdblockStore:
         t = threading.Thread(target=self._blocklog_tail_loop, name="adblock-cicap-tailer", daemon=True)
         t.start()
 
-    def _seed_from_recent_log(self, conn: sqlite3.Connection, max_lines: int = 5000) -> None:
+    def _seed_from_recent_log(self, conn, max_lines: int = 5000) -> None:
         lines = self._read_last_lines(self.cicap_access_log_path, max_lines=max_lines)
         if not lines:
             return
@@ -281,13 +342,13 @@ class AdblockStore:
             return []
 
     def _blocklog_tail_loop(self) -> None:
-        conn: sqlite3.Connection | None = None
+        conn = None
         while True:
             try:
                 if conn is None:
                     conn = self._connect()
                 self._ingest_new_cicap_lines(conn)
-            except sqlite3.Error:
+            except DATABASE_ERRORS:
                 try:
                     if conn is not None:
                         conn.rollback()
@@ -313,7 +374,7 @@ class AdblockStore:
                     )
             time.sleep(1.0)
 
-    def _ingest_new_cicap_lines(self, conn: sqlite3.Connection) -> None:
+    def _ingest_new_cicap_lines(self, conn) -> None:
         path = self.cicap_access_log_path
         if not path:
             return
@@ -353,9 +414,15 @@ class AdblockStore:
 
         if not data:
             # Still update inode if it changed (so we don't keep resetting).
-            with conn:
+            try:
                 self._set_meta(conn, "cicap_access_inode", str(inode))
                 self._set_meta(conn, "cicap_access_pos", str(pos))
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             return
 
         created_ts = _now()
@@ -365,8 +432,15 @@ class AdblockStore:
             row = self._parse_cicap_access_line(ln)
             if not row:
                 continue
+            dedupe_key = _event_key(
+                int(row.get("ts") or 0),
+                str(row.get("src_ip") or "-"),
+                str(row.get("url") or ""),
+                int(row.get("http_status") or 0),
+            )
             event_rows.append(
                 (
+                    dedupe_key,
                     int(row.get("ts") or 0),
                     str(row.get("src_ip") or "-"),
                     str(row.get("method") or "-"),
@@ -379,13 +453,13 @@ class AdblockStore:
                 )
             )
 
-        with conn:
+        try:
             if event_rows:
                 conn.executemany(
                     """
                     INSERT OR IGNORE INTO adblock_events(
-                        ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
-                    ) VALUES(?,?,?,?,?,?,?,?,?)
+                        event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
                     """,
                     event_rows,
                 )
@@ -397,6 +471,13 @@ class AdblockStore:
                 if created_ts - int(self._last_events_prune_ts or 0) >= 60:
                     self._prune_events(conn)
                     self._last_events_prune_ts = created_ts
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
 
     def _parse_cicap_access_line(self, line: str) -> Optional[Dict[str, Any]]:
         raw = (line or "").strip("\r\n")
@@ -485,14 +566,21 @@ class AdblockStore:
             "raw": raw,
         }
 
-    def _insert_event(self, conn: sqlite3.Connection, row: Dict[str, Any]) -> None:
+    def _insert_event(self, conn, row: Dict[str, Any]) -> None:
+        dedupe_key = _event_key(
+            int(row.get("ts") or 0),
+            str(row.get("src_ip") or "-"),
+            str(row.get("url") or ""),
+            int(row.get("http_status") or 0),
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO adblock_events(
-                ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
-            ) VALUES(?,?,?,?,?,?,?,?,?)
+                event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
             """,
             (
+                dedupe_key,
                 int(row.get("ts") or 0),
                 str(row.get("src_ip") or "-"),
                 str(row.get("method") or "-"),
@@ -505,12 +593,18 @@ class AdblockStore:
             ),
         )
 
-    def _prune_events(self, conn: sqlite3.Connection) -> None:
+    def _prune_events(self, conn) -> None:
         days = max(1, int(self.blocklog_retention_days or 30))
         cutoff = _now() - days * 24 * 3600
         conn.execute("DELETE FROM adblock_events WHERE ts < ?", (int(cutoff),))
 
     def _checkpoint_and_vacuum(self) -> None:
+        try:
+            with self._connect() as conn:
+                if conn.is_mysql:
+                    return
+        except Exception:
+            pass
         try:
             with self._connect() as conn:
                 try:
@@ -630,7 +724,7 @@ class AdblockStore:
             )
             self._bump_version(conn)
 
-    def _bump_version(self, conn: sqlite3.Connection) -> None:
+    def _bump_version(self, conn) -> None:
         cur = conn.execute("SELECT v FROM adblock_meta WHERE k='settings_version'").fetchone()
         try:
             v = int(cur[0]) if cur else 1
@@ -682,7 +776,7 @@ class AdblockStore:
     def list_statuses(self) -> List[ListStatus]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT key, url, enabled, last_success, last_attempt, last_error, bytes, rules FROM adblock_lists ORDER BY key"
+                "SELECT `key`, url, enabled, last_success, last_attempt, last_error, bytes, rules FROM adblock_lists ORDER BY `key`"
             ).fetchall()
             return [
                 ListStatus(
@@ -702,7 +796,7 @@ class AdblockStore:
         with self._connect() as conn:
             rows = [(1 if enabled else 0, key) for key, enabled in (enabled_map or {}).items()]
             if rows:
-                conn.executemany("UPDATE adblock_lists SET enabled=? WHERE key=?", rows)
+                conn.executemany("UPDATE adblock_lists SET enabled=? WHERE `key`=?", rows)
             self._bump_version(conn)
 
     def list_path(self, key: str) -> str:
@@ -855,7 +949,7 @@ class AdblockStore:
         now_ts = _now()
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT key, url, enabled, last_success, last_attempt, last_error, bytes, rules FROM adblock_lists WHERE key=?",
+                "SELECT `key`, url, enabled, last_success, last_attempt, last_error, bytes, rules FROM adblock_lists WHERE `key`=?",
                 (key,),
             ).fetchone()
             if not row:
@@ -872,18 +966,18 @@ class AdblockStore:
             )
             if not self.should_update(status, now_ts, force):
                 return False
-            conn.execute("UPDATE adblock_lists SET last_attempt=? WHERE key=?", (now_ts, key))
+            conn.execute("UPDATE adblock_lists SET last_attempt=? WHERE `key`=?", (now_ts, key))
 
         ok, err, b, rules = self.download_list(key, status.url)
         with self._connect() as conn:
             if ok:
                 conn.execute(
-                    "UPDATE adblock_lists SET last_success=?, last_error='', bytes=?, rules=? WHERE key=?",
+                    "UPDATE adblock_lists SET last_success=?, last_error='', bytes=?, rules=? WHERE `key`=?",
                     (now_ts, int(b), int(rules), key),
                 )
                 return True
             else:
-                conn.execute("UPDATE adblock_lists SET last_error=? WHERE key=?", (err[:400], key))
+                conn.execute("UPDATE adblock_lists SET last_error=? WHERE `key`=?", (err[:400], key))
                 return False
 
     def record_cache_stats(self, *, hits: int = 0, misses: int = 0, evictions: int = 0, size: int | None = None) -> None:

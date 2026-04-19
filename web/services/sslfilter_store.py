@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+
+from services.db import connect
 
 
 def _now() -> int:
@@ -29,26 +30,25 @@ class SslFilterStore:
         self.squid_include_path = squid_include_path
         self.nobump_list_path = nobump_list_path
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS nobump_cidrs("
-                "cidr TEXT PRIMARY KEY, "
-                "added_ts INTEGER NOT NULL"
-                ");"
-            )
+            if conn.is_mysql:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS nobump_cidrs("
+                    "cidr VARCHAR(64) PRIMARY KEY, "
+                    "added_ts BIGINT NOT NULL"
+                    ")"
+                )
+            else:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS nobump_cidrs("
+                    "cidr TEXT PRIMARY KEY, "
+                    "added_ts INTEGER NOT NULL"
+                    ");"
+                )
 
     def list_nobump(self, limit: int = 5000) -> List[Tuple[str, int]]:
         self.init_db()

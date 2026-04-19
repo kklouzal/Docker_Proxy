@@ -2,6 +2,9 @@
 
 A Dockerized Squid HTTP proxy bundled with a Flask admin UI for managing policy and operational settings.
 
+Runtime state now targets an **external MySQL 8+ backend**. Legacy SQLite data under
+`/var/lib/squid-flask-proxy/*.db` is imported automatically on the first MySQL-backed startup.
+
 This project targets “real” proxy deployments where you want:
 - A manageable Squid configuration (template baseline + UI-driven includes)
 - Optional SSL-bump (TLS interception) for managed devices
@@ -10,6 +13,19 @@ This project targets “real” proxy deployments where you want:
 - Optional ICAP services for ad-blocking (REQMOD) and antivirus scanning (ClamAV via RESPMOD)
 
 ## Quick start (build from source)
+
+Set the external database connection in the root `.env` file (gitignored) or via your shell/launch environment.
+
+Example:
+
+```dotenv
+MYSQL_HOST=192.168.1.10
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=change_me
+MYSQL_DATABASE=squid_proxy
+MYSQL_CREATE_DATABASE=1
+```
 
 ```powershell
 docker compose up -d --build
@@ -71,6 +87,13 @@ services:
       CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
       CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
       CLAMD_PORT: ${CLAMD_PORT:-3310}
+      DATABASE_URL: ${DATABASE_URL:-}
+      MYSQL_HOST: ${MYSQL_HOST:-}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-}
+      MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s
@@ -135,12 +158,17 @@ Also confirm:
 - You’re using `http://` (not `https://`) for the UI (unless you front it with your own TLS).
 - The client is on the same LAN/subnet and not on an isolated/guest Wi‑Fi.
 
-## Persistence (volumes)
+## Persistence (volumes + database)
+
+Authoritative runtime/admin state now lives in the configured external MySQL database.
+
+On first MySQL-backed boot, the container runs a one-time importer that copies any legacy
+SQLite files from `/var/lib/squid-flask-proxy` into MySQL before the normal services start.
 
 The container persists operational state under `/var/lib/squid-flask-proxy` (backed by the `proxy_data` named volume in the default Compose setup), including:
-- UI databases (users, audit logs, live stats aggregation)
-- Policy state (exclusions, web filter settings + whitelist + blocked log, SSL filtering CIDRs)
+- Policy artifacts and caches (compiled adblock/web filter files, cached local runtime assets)
 - Adblock compiled lists / caches
+- Legacy SQLite files retained for migration/rollback safety
 
 Squid cache and SSL database use separate named volumes by default:
 - Squid cache: `/var/spool/squid` (`squid_cache`)
@@ -182,6 +210,9 @@ services:
 ```
 
 Common environment variables:
+- `DATABASE_URL`: optional full DSN for the external database (for example `mysql+pymysql://user:pass@host:3306/squid_proxy`).
+- `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`: discrete MySQL connection settings.
+- `MYSQL_CREATE_DATABASE=1|0`: auto-create the configured MySQL database if the user has permission.
 - `DISABLE_IPV6=1|0`: when enabled, the container disables IPv6 via sysctls, normalizes local binds to IPv4, and the Compose examples publish ports on `0.0.0.0` only.
 - `FLASK_SECRET_KEY`: recommended; keeps login sessions stable across restarts.
 - `SESSION_COOKIE_SECURE=1`: mark cookies Secure (use when UI is served over HTTPS).

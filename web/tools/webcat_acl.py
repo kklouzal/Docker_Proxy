@@ -3,10 +3,17 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 import time
 from typing import Iterable, Optional, Sequence, Set, Tuple
+
+
+HERE = os.path.abspath(os.path.dirname(__file__))
+APP_ROOT = os.path.abspath(os.path.join(HERE, ".."))
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
+
+from services.db import connect, create_index_if_not_exists
 
 
 def _now() -> int:
@@ -46,10 +53,10 @@ def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
 class _Db:
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn = None
         self._last_open_attempt = 0
 
-    def _connect(self) -> Optional[sqlite3.Connection]:
+    def _connect(self):
         now = _now()
         # Retry open at most once per second if DB missing during startup.
         if self._conn is not None:
@@ -58,8 +65,7 @@ class _Db:
             return None
         self._last_open_attempt = now
         try:
-            conn = sqlite3.connect(self.db_path, timeout=2)
-            conn.row_factory = sqlite3.Row
+            conn = connect(default_sqlite_path=self.db_path)
             self._conn = conn
             return conn
         except Exception:
@@ -87,11 +93,14 @@ class _BlockedLogDb:
     def __init__(self, db_path: str, *, max_rows: int = 5000):
         self.db_path = db_path
         self.max_rows = int(max_rows) if max_rows else 5000
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn = None
         self._last_open_attempt = 0
         self._inserts = 0
 
-    def _connect(self) -> Optional[sqlite3.Connection]:
+    def _table(self, conn) -> str:
+        return "webfilter_blocked_log" if getattr(conn, "is_mysql", False) else "blocked_log"
+
+    def _connect(self):
         if not self.db_path:
             return None
         now = _now()
@@ -102,18 +111,29 @@ class _BlockedLogDb:
         self._last_open_attempt = now
         try:
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            conn = sqlite3.connect(self.db_path, timeout=1)
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS blocked_log("
-                "ts INTEGER NOT NULL, "
-                "src_ip TEXT NOT NULL, "
-                "url TEXT NOT NULL, "
-                "category TEXT NOT NULL"
-                ");"
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_blocked_log_ts ON blocked_log(ts);")
+            conn = connect(default_sqlite_path=self.db_path)
+            blocked_log_table = self._table(conn)
+            if conn.is_mysql:
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
+                    "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                    "ts BIGINT NOT NULL, "
+                    "src_ip VARCHAR(64) NOT NULL, "
+                    "url TEXT NOT NULL, "
+                    "category VARCHAR(128) NOT NULL"
+                    ")"
+                )
+            else:
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "ts INTEGER NOT NULL, "
+                    "src_ip TEXT NOT NULL, "
+                    "url TEXT NOT NULL, "
+                    "category TEXT NOT NULL"
+                    ");"
+                )
+            create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_ts", columns_sql="ts")
             self._conn = conn
             return conn
         except Exception:
@@ -123,6 +143,7 @@ class _BlockedLogDb:
         conn = self._connect()
         if conn is None:
             return
+        blocked_log_table = self._table(conn)
         try:
             s_ip = (src_ip or "")[:128]
             s_url = (url or "")[:2000]
@@ -130,20 +151,29 @@ class _BlockedLogDb:
             if not s_ip or not s_url or not s_cat:
                 return
             conn.execute(
-                "INSERT INTO blocked_log(ts, src_ip, url, category) VALUES(?,?,?,?)",
+                f"INSERT INTO {blocked_log_table}(ts, src_ip, url, category) VALUES(?,?,?,?)",
                 (int(ts), s_ip, s_url, s_cat),
             )
             conn.commit()
             self._inserts += 1
             # Periodic trimming to keep the DB bounded.
             if self.max_rows > 0 and (self._inserts % 100) == 0:
-                conn.execute(
-                    "DELETE FROM blocked_log WHERE rowid IN ("
-                    "SELECT rowid FROM blocked_log ORDER BY ts DESC LIMIT -1 OFFSET ?"
-                    ")",
-                    (int(self.max_rows),),
-                )
-                conn.commit()
+                try:
+                    if getattr(conn, "is_mysql", False):
+                        conn.execute(
+                            f"DELETE FROM {blocked_log_table} WHERE id NOT IN (SELECT id FROM (SELECT id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s) AS keepers)",
+                            (int(self.max_rows),),
+                        )
+                    else:
+                        conn.execute(
+                            f"DELETE FROM {blocked_log_table} WHERE id IN ("
+                            f"SELECT id FROM {blocked_log_table} ORDER BY ts DESC LIMIT -1 OFFSET ?"
+                            ")",
+                            (int(self.max_rows),),
+                        )
+                    conn.commit()
+                except Exception:
+                    pass
         except Exception:
             return
 

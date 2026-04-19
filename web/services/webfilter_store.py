@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import logging
 
+from services.db import connect, create_index_if_not_exists, table_exists
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 
@@ -206,46 +206,66 @@ class WebFilterStore:
         self._started = False
         self._lock = threading.Lock()
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.settings_db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.settings_db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.settings_db_path)
+
+    def _connect_webcat(self):
+        return connect(default_sqlite_path=self.webcat_db_path)
+
+    def _table(self, conn, logical_name: str) -> str:
+        if not conn.is_mysql:
+            return logical_name
+        mapping = {
+            "settings": "webfilter_settings",
+            "meta": "webfilter_meta",
+            "whitelist": "webfilter_whitelist",
+            "blocked_log": "webfilter_blocked_log",
+        }
+        return mapping[logical_name]
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT NOT NULL);")
-            conn.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);")
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS whitelist(pattern TEXT PRIMARY KEY, added_ts INTEGER NOT NULL);"
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS blocked_log("
-                "ts INTEGER NOT NULL, "
-                "src_ip TEXT NOT NULL, "
-                "url TEXT NOT NULL, "
-                "category TEXT NOT NULL"
-                ");"
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_blocked_log_ts ON blocked_log(ts);")
+            settings_table = self._table(conn, "settings")
+            meta_table = self._table(conn, "meta")
+            whitelist_table = self._table(conn, "whitelist")
+            blocked_log_table = self._table(conn, "blocked_log")
+            if conn.is_mysql:
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {whitelist_table}(pattern VARCHAR(255) PRIMARY KEY, added_ts BIGINT NOT NULL)")
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
+                    "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                    "ts BIGINT NOT NULL, "
+                    "src_ip VARCHAR(64) NOT NULL, "
+                    "url TEXT NOT NULL, "
+                    "category VARCHAR(128) NOT NULL"
+                    ")"
+                )
+            else:
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(k TEXT PRIMARY KEY, v TEXT NOT NULL);")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k TEXT PRIMARY KEY, v TEXT NOT NULL);")
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {whitelist_table}(pattern TEXT PRIMARY KEY, added_ts INTEGER NOT NULL);")
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "ts INTEGER NOT NULL, "
+                    "src_ip TEXT NOT NULL, "
+                    "url TEXT NOT NULL, "
+                    "category TEXT NOT NULL"
+                    ");"
+                )
+            create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_ts", columns_sql="ts")
             for k, v in _DEFAULTS.items():
-                conn.execute("INSERT OR IGNORE INTO settings(k,v) VALUES(?,?)", (k, v))
-            conn.execute("INSERT OR IGNORE INTO meta(k,v) VALUES('refresh_requested','0')")
+                conn.execute(f"INSERT OR IGNORE INTO {settings_table}(k,v) VALUES(?,?)", (k, v))
+            conn.execute(f"INSERT OR IGNORE INTO {meta_table}(k,v) VALUES('refresh_requested','0')")
 
             # One-time migration: if an existing DB has empty values, populate the new defaults
             # without overwriting user-provided configuration.
-            applied = conn.execute(
-                "SELECT v FROM meta WHERE k='defaults_v1_applied'"
-            ).fetchone()
+            applied = conn.execute(f"SELECT v FROM {meta_table} WHERE k='defaults_v1_applied'").fetchone()
             if not applied:
-                cur_src = (conn.execute("SELECT v FROM settings WHERE k='source_url'").fetchone() or [""])[0]
-                cur_cats = (conn.execute("SELECT v FROM settings WHERE k='blocked_categories'").fetchone() or [""])[0]
+                cur_src = (conn.execute(f"SELECT v FROM {settings_table} WHERE k='source_url'").fetchone() or [""])[0]
+                cur_cats = (conn.execute(f"SELECT v FROM {settings_table} WHERE k='blocked_categories'").fetchone() or [""])[0]
                 if not str(cur_src or "").strip():
                     self._set(conn, "source_url", _DEFAULT_SOURCE_URL)
                 if not str(cur_cats or "").strip():
@@ -253,16 +273,14 @@ class WebFilterStore:
                 self._set_meta(conn, "defaults_v1_applied", "1")
 
             # One-time migration: move legacy newline whitelist from settings into whitelist table.
-            migrated = conn.execute(
-                "SELECT v FROM meta WHERE k='whitelist_v1_migrated'"
-            ).fetchone()
+            migrated = conn.execute(f"SELECT v FROM {meta_table} WHERE k='whitelist_v1_migrated'").fetchone()
             if not migrated:
                 raw = self._get(conn, "whitelist_domains", "")
                 patterns = _parse_whitelist_lines([ln for ln in str(raw or "").splitlines()])
                 now = _now()
                 for p in patterns:
                     conn.execute(
-                        "INSERT OR IGNORE INTO whitelist(pattern, added_ts) VALUES(?,?)",
+                        f"INSERT OR IGNORE INTO {whitelist_table}(pattern, added_ts) VALUES(?,?)",
                         (p, int(now)),
                     )
                 # Clear legacy key so we don't keep dual sources of truth.
@@ -276,9 +294,9 @@ class WebFilterStore:
         with self._connect() as conn:
             return self._list_whitelist(conn, limit=int(limit))
 
-    def _list_whitelist(self, conn: sqlite3.Connection, limit: int) -> List[Tuple[str, int]]:
+    def _list_whitelist(self, conn, limit: int) -> List[Tuple[str, int]]:
         rows = conn.execute(
-            "SELECT pattern, added_ts FROM whitelist ORDER BY added_ts DESC, pattern ASC LIMIT ?",
+            f"SELECT pattern, added_ts FROM {self._table(conn, 'whitelist')} ORDER BY added_ts DESC, pattern ASC LIMIT ?",
             (int(limit),),
         ).fetchall()
         out: List[Tuple[str, int]] = []
@@ -300,7 +318,7 @@ class WebFilterStore:
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT ts, src_ip, url, category FROM blocked_log ORDER BY ts DESC LIMIT ?",
+                    f"SELECT ts, src_ip, url, category FROM {self._table(conn, 'blocked_log')} ORDER BY ts DESC LIMIT ?",
                     (int(limit),),
                 ).fetchall()
                 out: List[Dict[str, object]] = []
@@ -327,7 +345,7 @@ class WebFilterStore:
         pat = patterns[0]
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO whitelist(pattern, added_ts) VALUES(?,?)",
+                f"INSERT OR IGNORE INTO {self._table(conn, 'whitelist')}(pattern, added_ts) VALUES(?,?)",
                 (pat, int(_now())),
             )
         return True, "", pat
@@ -338,7 +356,7 @@ class WebFilterStore:
         if not pat:
             return
         with self._connect() as conn:
-            conn.execute("DELETE FROM whitelist WHERE pattern=?", (pat,))
+            conn.execute(f"DELETE FROM {self._table(conn, 'whitelist')} WHERE pattern=?", (pat,))
 
     def get_whitelist_patterns(self) -> List[str]:
         """Return patterns in a stable precedence order.
@@ -352,7 +370,7 @@ class WebFilterStore:
         with self._connect() as conn:
             return self._get_whitelist_patterns(conn)
 
-    def _get_whitelist_patterns(self, conn: sqlite3.Connection) -> List[str]:
+    def _get_whitelist_patterns(self, conn) -> List[str]:
         rows = self._list_whitelist(conn, limit=10000)
         pats = [p for p, _ts in rows if p]
         exact = [p for p in pats if not p.startswith("*.")]
@@ -361,23 +379,23 @@ class WebFilterStore:
         wild.sort(key=lambda s: (-len(s), s))
         return exact + wild
 
-    def _get(self, conn: sqlite3.Connection, key: str, default: str = "") -> str:
-        row = conn.execute("SELECT v FROM settings WHERE k=?", (key,)).fetchone()
+    def _get(self, conn, key: str, default: str = "") -> str:
+        row = conn.execute(f"SELECT v FROM {self._table(conn, 'settings')} WHERE k=?", (key,)).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
-    def _set(self, conn: sqlite3.Connection, key: str, value: str) -> None:
+    def _set(self, conn, key: str, value: str) -> None:
         conn.execute(
-            "INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            f"INSERT INTO {self._table(conn, 'settings')}(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
             (key, value),
         )
 
-    def _get_meta(self, conn: sqlite3.Connection, key: str, default: str = "") -> str:
-        row = conn.execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
+    def _get_meta(self, conn, key: str, default: str = "") -> str:
+        row = conn.execute(f"SELECT v FROM {self._table(conn, 'meta')} WHERE k=?", (key,)).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
-    def _set_meta(self, conn: sqlite3.Connection, key: str, value: str) -> None:
+    def _set_meta(self, conn, key: str, value: str) -> None:
         conn.execute(
-            "INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            f"INSERT INTO {self._table(conn, 'meta')}(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
             (key, value),
         )
 
@@ -386,7 +404,7 @@ class WebFilterStore:
         with self._connect() as conn:
             return self._get_settings(conn)
 
-    def _get_settings(self, conn: sqlite3.Connection) -> WebFilterSettings:
+    def _get_settings(self, conn) -> WebFilterSettings:
         enabled = self._get(conn, "enabled", "0") == "1"
         source_url = self._get(conn, "source_url", "")
         blocked_raw = self._get(conn, "blocked_categories", "")
@@ -446,20 +464,12 @@ class WebFilterStore:
     def list_available_categories(self, limit: int = 5000) -> List[Tuple[str, int]]:
         """Return [(category, domains)] from the compiled webcat DB if available."""
 
-        db_path = self.webcat_db_path
-        if not os.path.exists(db_path):
-            return []
         try:
-            conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout=30000;")
-            try:
+            with self._connect_webcat() as conn:
                 rows = conn.execute(
                     "SELECT category, domains FROM webcat_categories ORDER BY category ASC LIMIT ?",
                     (int(limit),),
                 ).fetchall()
-            finally:
-                conn.close()
             out: List[Tuple[str, int]] = []
             for r in rows:
                 out.append((str(r[0]), int(r[1]) if r[1] is not None else 0))
@@ -473,14 +483,8 @@ class WebFilterStore:
         if not _looks_like_host(domain):
             return set()
 
-        db_path = self.webcat_db_path
-        if not os.path.exists(db_path):
-            return set()
-
         try:
-            conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
-            conn.execute("PRAGMA busy_timeout=30000;")
-            try:
+            with self._connect_webcat() as conn:
                 for cand in _parent_domains(domain):
                     row = conn.execute(
                         "SELECT categories FROM webcat_domains WHERE domain=?",
@@ -489,8 +493,6 @@ class WebFilterStore:
                     if row and row[0]:
                         raw = str(row[0])
                         return {c for c in raw.split("|") if c}
-            finally:
-                conn.close()
         except Exception:
             return set()
         return set()
@@ -591,26 +593,15 @@ class WebFilterStore:
         if not cats:
             return []
 
-        db_path = self.webcat_db_path
-        if not os.path.exists(db_path):
-            return cats
-
         try:
-            conn = sqlite3.connect(db_path, timeout=2)
-            try:
-                # Table may not exist if the DB was built by an older version.
-                exists = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='webcat_aliases'"
-                ).fetchone()
-                if not exists:
+            with self._connect_webcat() as conn:
+                if not table_exists(conn, "webcat_aliases"):
                     return cats
                 placeholders = ",".join(["?"] * len(cats))
                 rows = conn.execute(
                     f"SELECT alias, canonical FROM webcat_aliases WHERE alias IN ({placeholders})",
                     tuple(cats),
                 ).fetchall()
-            finally:
-                conn.close()
 
             mapping = {str(r[0]): str(r[1]) for r in rows if r and r[0] and r[1]}
             mapped = [mapping.get(c, c) for c in cats]
@@ -703,7 +694,7 @@ class WebFilterStore:
         with self._connect() as conn:
             self._record_attempt_conn(conn, ok=ok, err=err)
 
-    def _record_attempt_conn(self, conn: sqlite3.Connection, *, ok: bool, err: str) -> None:
+    def _record_attempt_conn(self, conn, *, ok: bool, err: str) -> None:
         self._set(conn, "last_attempt", str(_now()))
         if ok:
             self._set(conn, "last_success", str(_now()))
@@ -716,7 +707,7 @@ class WebFilterStore:
         with self._connect() as conn:
             self._set_next_run_conn(conn, ts=int(ts))
 
-    def _set_next_run_conn(self, conn: sqlite3.Connection, *, ts: int) -> None:
+    def _set_next_run_conn(self, conn, *, ts: int) -> None:
         self._set(conn, "next_run_ts", str(int(ts)))
 
     def _clear_refresh_requested(self) -> None:
@@ -724,7 +715,7 @@ class WebFilterStore:
         with self._connect() as conn:
             self._clear_refresh_requested_conn(conn)
 
-    def _clear_refresh_requested_conn(self, conn: sqlite3.Connection) -> None:
+    def _clear_refresh_requested_conn(self, conn) -> None:
         self._set_meta(conn, "refresh_requested", "0")
 
     def _refresh_requested(self) -> bool:
@@ -732,7 +723,7 @@ class WebFilterStore:
         with self._connect() as conn:
             return self._refresh_requested_conn(conn)
 
-    def _refresh_requested_conn(self, conn: sqlite3.Connection) -> bool:
+    def _refresh_requested_conn(self, conn) -> bool:
         return self._get_meta(conn, "refresh_requested", "0") == "1"
 
     def _run_build(self, source_url: str) -> Tuple[bool, str]:

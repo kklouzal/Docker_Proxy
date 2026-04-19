@@ -1,7 +1,6 @@
 import os
 import re
 import secrets
-import sqlite3
 import threading
 import time
 import logging
@@ -10,6 +9,7 @@ from typing import Optional
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from services.db import INTEGRITY_ERRORS, connect
 from services.logutil import log_exception_throttled
 
 
@@ -36,32 +36,33 @@ class AuthStore:
         self.db_path = db_path or os.environ.get("AUTH_DB") or DEFAULT_AUTH_DB
         self.secret_path = secret_path or os.environ.get("FLASK_SECRET_PATH") or DEFAULT_SECRET_PATH
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        # Under production WSGI servers (e.g. gunicorn), multiple worker threads/processes
-        # may contend on SQLite. Use timeouts + WAL + busy_timeout for stability.
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
 
     def ensure_schema(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY,
-                    password_hash TEXT NOT NULL,
-                    created_ts INTEGER NOT NULL,
-                    updated_ts INTEGER NOT NULL
+            if conn.is_mysql:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        username VARCHAR(64) PRIMARY KEY,
+                        password_hash TEXT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            conn.commit()
+            else:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        username TEXT PRIMARY KEY,
+                        password_hash TEXT NOT NULL,
+                        created_ts INTEGER NOT NULL,
+                        updated_ts INTEGER NOT NULL
+                    )
+                    """
+                )
 
     def ensure_default_admin(self) -> None:
         self.ensure_schema()
@@ -149,9 +150,8 @@ class AuthStore:
                     "INSERT INTO users(username, password_hash, created_ts, updated_ts) VALUES (?,?,?,?)",
                     (u, pw_hash, now, now),
                 )
-            except sqlite3.IntegrityError:
+            except INTEGRITY_ERRORS:
                 raise ValueError("User already exists.")
-            conn.commit()
 
     def set_password(self, username: str, new_password: str) -> None:
         self.ensure_schema()
@@ -172,7 +172,6 @@ class AuthStore:
             )
             if cur.rowcount < 1:
                 raise ValueError("User not found.")
-            conn.commit()
 
     def delete_user(self, username: str) -> None:
         self.ensure_schema()
@@ -183,7 +182,6 @@ class AuthStore:
             cur = conn.execute("DELETE FROM users WHERE username = ?", (u,))
             if cur.rowcount < 1:
                 raise ValueError("User not found.")
-            conn.commit()
 
 
 _auth_store: Optional[AuthStore] = None

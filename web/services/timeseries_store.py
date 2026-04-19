@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import logging
 
+from services.db import connect, create_index_if_not_exists
 from services.logutil import log_exception_throttled
 
 
@@ -59,35 +59,41 @@ class TimeSeriesStore:
         self._started = False
         self._start_lock = threading.Lock()
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
 
     def init_db(self) -> None:
         with self._connect() as conn:
             for r in RESOLUTIONS:
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {r.table} (
-                        ts INTEGER PRIMARY KEY,
-                        count INTEGER NOT NULL,
-                        cpu REAL,
-                        mem REAL,
-                        disk_used REAL,
-                        cache_dir_size REAL,
-                        hit_rate REAL
-                    );
-                    """
-                )
-                conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{r.table}_ts ON {r.table}(ts DESC);")
+                if conn.is_mysql:
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {r.table} (
+                            ts BIGINT PRIMARY KEY,
+                            count BIGINT NOT NULL,
+                            cpu DOUBLE,
+                            mem DOUBLE,
+                            disk_used DOUBLE,
+                            cache_dir_size DOUBLE,
+                            hit_rate DOUBLE
+                        )
+                        """
+                    )
+                else:
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {r.table} (
+                            ts INTEGER PRIMARY KEY,
+                            count INTEGER NOT NULL,
+                            cpu REAL,
+                            mem REAL,
+                            disk_used REAL,
+                            cache_dir_size REAL,
+                            hit_rate REAL
+                        );
+                        """
+                    )
+                create_index_if_not_exists(conn, table_name=r.table, index_name=f"idx_{r.table}_ts", columns_sql="ts")
 
     def insert_snapshot(self, stats: Dict[str, Any], ts: Optional[int] = None) -> None:
         self.init_db()

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.db import connect, create_index_if_not_exists
 from services.logutil import log_exception_throttled
 
 
@@ -144,19 +145,10 @@ class SslErrorsStore:
         self._started = False
         self._start_lock = threading.Lock()
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
 
-    def _ingest_line_with_conn(self, conn: sqlite3.Connection, line: str) -> bool:
+    def _ingest_line_with_conn(self, conn, line: str) -> bool:
         ts, msg = _parse_cache_log_ts(line)
         classified = _classify_ssl_error(msg)
         if not classified:
@@ -169,29 +161,51 @@ class SslErrorsStore:
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ssl_errors (
-                    key TEXT PRIMARY KEY,
-                    domain TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    count INTEGER NOT NULL DEFAULT 0,
-                    first_seen INTEGER NOT NULL,
-                    last_seen INTEGER NOT NULL,
-                    sample TEXT NOT NULL
-                );
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ssl_errors_last_seen ON ssl_errors(last_seen DESC);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ssl_errors_domain ON ssl_errors(domain, last_seen DESC);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ssl_errors_category ON ssl_errors(category, last_seen DESC);")
+            if conn.is_mysql:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ssl_errors (
+                        row_key CHAR(40) PRIMARY KEY,
+                        domain VARCHAR(255) NOT NULL,
+                        category VARCHAR(64) NOT NULL,
+                        reason VARCHAR(300) NOT NULL,
+                        count BIGINT NOT NULL DEFAULT 0,
+                        first_seen BIGINT NOT NULL,
+                        last_seen BIGINT NOT NULL,
+                        sample TEXT NOT NULL
+                    )
+                    """
+                )
+            else:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ssl_errors (
+                        row_key TEXT PRIMARY KEY,
+                        domain TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        reason TEXT NOT NULL,
+                        count INTEGER NOT NULL DEFAULT 0,
+                        first_seen INTEGER NOT NULL,
+                        last_seen INTEGER NOT NULL,
+                        sample TEXT NOT NULL
+                    );
+                    """
+                )
+            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_last_seen", columns_sql="last_seen")
+            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_domain", columns_sql="domain, last_seen")
+            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_category", columns_sql="category, last_seen")
 
             # Retention: keep aggregates that have been seen recently.
             cutoff = _now() - (30 * 24 * 60 * 60)
             conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (cutoff,))
 
     def _checkpoint_and_vacuum(self) -> None:
+        try:
+            with self._connect() as conn:
+                if conn.is_mysql:
+                    return
+        except Exception:
+            pass
         try:
             with self._connect() as conn:
                 try:
@@ -228,19 +242,19 @@ class SslErrorsStore:
         if vacuum:
             self._checkpoint_and_vacuum()
 
-    def _upsert(self, conn: sqlite3.Connection, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
-        key = f"{domain}|{category}|{reason}"
+    def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
+        row_key = hashlib.sha1(f"{domain}|{category}|{reason}".encode("utf-8", errors="replace")).hexdigest()
         conn.execute(
             """
-            INSERT INTO ssl_errors(key, domain, category, reason, count, first_seen, last_seen, sample)
+            INSERT INTO ssl_errors(row_key, domain, category, reason, count, first_seen, last_seen, sample)
             VALUES(?,?,?,?,1,?,?,?)
-            ON CONFLICT(key) DO UPDATE SET
+            ON CONFLICT(row_key) DO UPDATE SET
                 count = count + 1,
                 first_seen = MIN(first_seen, excluded.first_seen),
                 last_seen = MAX(last_seen, excluded.last_seen),
                 sample = excluded.sample;
             """,
-            (key, domain, category, reason, ts, ts, sample[:400]),
+            (row_key, domain, category, reason, ts, ts, sample[:400]),
         )
 
     def ingest_line(self, line: str) -> None:

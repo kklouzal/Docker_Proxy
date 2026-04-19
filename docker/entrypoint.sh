@@ -42,6 +42,10 @@ if [ "$IPV6_DISABLED" = "1" ]; then
     LOCALHOST_SRC_ACL="127.0.0.1/32"
 fi
 
+# When moving from the legacy SQLite layout to MySQL, import persisted data
+# before any background compilers/readers start using the new backend.
+python3 /app/tools/sqlite_to_mysql.py --data-dir /var/lib/squid-flask-proxy || true
+
 python3 /app/tools/adblock_compile.py \
     --db /var/lib/squid-flask-proxy/adblock.db \
     --lists-dir /var/lib/squid-flask-proxy/adblock/lists \

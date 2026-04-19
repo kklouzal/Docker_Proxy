@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
-import sqlite3
 import threading
 import time
 from typing import Optional
 
+from services.db import connect, create_index_if_not_exists
 from services.logutil import log_exception_throttled
 
 
@@ -18,37 +17,45 @@ class AuditStore:
     def __init__(self, db_path: str = "/var/lib/squid-flask-proxy/audit.db"):
         self.db_path = db_path
 
-    def _connect(self) -> sqlite3.Connection:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self):
+        return connect(default_sqlite_path=self.db_path)
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts INTEGER NOT NULL,
-                    kind TEXT NOT NULL,
-                    ok INTEGER NOT NULL,
-                    remote_addr TEXT,
-                    user_agent TEXT,
-                    detail TEXT,
-                    config_sha256 TEXT,
-                    config_text TEXT
-                );
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts DESC);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_kind ON audit_events(kind);")
+            if conn.is_mysql:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        ts BIGINT NOT NULL,
+                        kind VARCHAR(80) NOT NULL,
+                        ok TINYINT(1) NOT NULL,
+                        remote_addr VARCHAR(64),
+                        user_agent VARCHAR(256),
+                        detail TEXT,
+                        config_sha256 CHAR(64),
+                        config_text LONGTEXT
+                    )
+                    """
+                )
+            else:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts INTEGER NOT NULL,
+                        kind TEXT NOT NULL,
+                        ok INTEGER NOT NULL,
+                        remote_addr TEXT,
+                        user_agent TEXT,
+                        detail TEXT,
+                        config_sha256 TEXT,
+                        config_text TEXT
+                    );
+                    """
+                )
+            create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_ts", columns_sql="ts")
+            create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_kind", columns_sql="kind")
 
     def record(
         self,
@@ -102,11 +109,16 @@ class AuditStore:
             )
 
             # Keep storage bounded (last 200 events).
-            conn.execute(
-                "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200)"
-            )
+            if conn.is_mysql:
+                conn.execute(
+                    "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200) AS keepers)"
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200)"
+                )
 
-    def latest_config_apply(self) -> Optional[sqlite3.Row]:
+    def latest_config_apply(self) -> Optional[object]:
         # Returns the most recent config_apply* event (if any).
         self.init_db()
         with self._connect() as conn:
@@ -123,6 +135,12 @@ class AuditStore:
 
     def _checkpoint_and_vacuum(self) -> None:
         # Best-effort compaction. VACUUM may fail if the DB is busy.
+        try:
+            with self._connect() as conn:
+                if conn.is_mysql:
+                    return
+        except Exception:
+            pass
         try:
             with self._connect() as conn:
                 try:

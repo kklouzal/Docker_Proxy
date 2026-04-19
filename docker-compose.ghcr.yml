@@ -26,6 +26,13 @@ services:
       CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
       CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
       CLAMD_PORT: ${CLAMD_PORT:-3310}
+      DATABASE_URL: ${DATABASE_URL:-}
+      MYSQL_HOST: ${MYSQL_HOST:-}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-}
+      MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s
