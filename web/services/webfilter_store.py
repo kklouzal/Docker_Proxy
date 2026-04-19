@@ -193,13 +193,9 @@ _DEFAULTS: Dict[str, str] = {
 class WebFilterStore:
     def __init__(
         self,
-        settings_db_path: Optional[str] = None,
-        webcat_db_path: Optional[str] = None,
         squid_include_path: str = "/etc/squid/conf.d/30-webfilter.conf",
         whitelist_path: str = "/var/lib/squid-flask-proxy/webfilter_whitelist.txt",
     ):
-        _ = settings_db_path
-        _ = webcat_db_path
         self.squid_include_path = squid_include_path
         self.whitelist_path = whitelist_path
 
@@ -256,7 +252,7 @@ class WebFilterStore:
                     self._set(conn, "blocked_categories", ",".join(_DEFAULT_BLOCKED_CATEGORIES))
                 self._set_meta(conn, "defaults_v1_applied", "1")
 
-            # One-time migration: move legacy newline whitelist from settings into whitelist table.
+            # One-time migration: move newline-based whitelist entries from settings into the whitelist table.
             migrated = conn.execute(f"SELECT v FROM {meta_table} WHERE k='whitelist_v1_migrated'").fetchone()
             if not migrated:
                 raw = self._get(conn, "whitelist_domains", "")
@@ -267,7 +263,7 @@ class WebFilterStore:
                         f"INSERT OR IGNORE INTO {whitelist_table}(pattern, added_ts) VALUES(?,?)",
                         (p, int(now)),
                     )
-                # Clear legacy key so we don't keep dual sources of truth.
+                # Clear the old settings key so we don't keep dual sources of truth.
                 self._set(conn, "whitelist_domains", "")
                 self._set_meta(conn, "whitelist_v1_migrated", "1")
 

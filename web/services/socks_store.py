@@ -135,12 +135,10 @@ def _extract_endpoints(line: str) -> Tuple[str, int, str, int]:
 class SocksStore:
     def __init__(
         self,
-        db_path: Optional[str] = None,
         log_path: str = "/var/log/sockd.log",
         seed_max_lines: int = 5000,
         retention_days: int = 30,
     ):
-        _ = db_path
         self.log_path = log_path
         self.seed_max_lines = seed_max_lines
         self.retention_days = retention_days

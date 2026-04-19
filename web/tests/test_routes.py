@@ -81,10 +81,7 @@ class TestRoutes(unittest.TestCase):
             else:
                 os.environ['CLAMD_PORT'] = old_port
 
-    def test_check_clamd_uses_remote_tcp_when_no_socket_path(self):
-        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        if web_dir not in sys.path:
-            sys.path.insert(0, web_dir)
+    def test_check_clamd_uses_remote_tcp_ping(self):
         import app as app_module  # type: ignore
 
         old_host = os.environ.get('CLAMD_HOST')
@@ -331,12 +328,7 @@ class TestRoutes(unittest.TestCase):
         # Create a catch-all PAC profile that enables SOCKS.
         from services.pac_profiles_store import PacProfilesStore  # type: ignore
 
-        # Use a temp DB file to avoid interacting with real volumes.
-        import tempfile
-        db = tempfile.NamedTemporaryFile(prefix="pac_profiles_", suffix=".db", delete=False)
-        db.close()
-
-        store = PacProfilesStore(db_path=db.name)
+        store = PacProfilesStore()
         ok, err, pid = store.upsert_profile(
             profile_id=None,
             name="test",

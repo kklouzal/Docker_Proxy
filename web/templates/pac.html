@@ -94,7 +94,7 @@
     </div>
     <div class="card-body">
       {% if profiles|length == 0 %}
-        <div class="small">No PAC profiles yet. Create one above. Until you do, <span style="font-family: var(--mono);">/proxy.pac</span> falls back to the legacy exclusions-based PAC.</div>
+        <div class="small">No PAC profiles yet. Create one above. Until you do, <span style="font-family: var(--mono);">/proxy.pac</span> falls back to the exclusions-based PAC.</div>
       {% endif %}
 
       {% for p in profiles %}

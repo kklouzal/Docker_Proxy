@@ -312,7 +312,7 @@ def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch):
 
     from services import auth_store  # type: ignore
     sentinel = object()
-    captured = {"args": None, "kwargs": None}
+    captured: dict[str, object] = {"args": (), "kwargs": {}}
 
     def fake_connect(*args, **kwargs):
         captured["args"] = args
@@ -321,7 +321,7 @@ def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch):
 
     monkeypatch.setattr(auth_store, "connect", fake_connect)
 
-    store = auth_store.AuthStore(db_path="legacy-auth-location", secret_path=str(tmp_path / "secret.key"))
+    store = auth_store.AuthStore(secret_path=str(tmp_path / "secret.key"))
     assert store._connect() is sentinel
     assert captured["args"] == ()
     assert captured["kwargs"] == {}

@@ -1651,7 +1651,7 @@ def proxy_pac():
         )
         return app.response_class(pac, mimetype='application/x-ns-proxy-autoconfig')
 
-    # Legacy fallback: build PAC from Exclusions.
+    # Fallback when no PAC profiles exist: build PAC from Exclusions.
     ex = get_exclusions_store().list_all()
     pac = _build_pac(
         http_chain,

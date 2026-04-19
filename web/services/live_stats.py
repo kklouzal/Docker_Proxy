@@ -262,11 +262,9 @@ def _derive_not_cached_reason(domain: str, method: str, result_code: str, extras
 class LiveStatsStore:
     def __init__(
         self,
-        db_path: Optional[str] = None,
         access_log_path: str = "/var/log/squid/access.log",
         seed_max_lines: int = 5000,
     ):
-        _ = db_path
         self.access_log_path = access_log_path
         self.seed_max_lines = seed_max_lines
 

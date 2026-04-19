@@ -7,16 +7,12 @@ import time
 from typing import Optional
 
 from services.db import connect, create_index_if_not_exists
-from services.logutil import log_exception_throttled
 
 
 logger = logging.getLogger(__name__)
 
 
 class AuditStore:
-    def __init__(self, db_path: Optional[str] = None):
-        _ = db_path
-
     def _connect(self):
         return connect()
 
@@ -92,14 +88,9 @@ class AuditStore:
             )
 
             # Keep storage bounded (last 200 events).
-            if conn.is_mysql:
-                conn.execute(
-                    "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200) AS keepers)"
-                )
-            else:
-                conn.execute(
-                    "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200)"
-                )
+            conn.execute(
+                "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200) AS keepers)"
+            )
 
     def latest_config_apply(self) -> Optional[object]:
         # Returns the most recent config_apply* event (if any).

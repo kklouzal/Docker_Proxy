@@ -27,12 +27,7 @@ class UserRow:
 
 
 class AuthStore:
-    def __init__(
-        self,
-        db_path: Optional[str] = None,
-        secret_path: Optional[str] = None,
-    ):
-        _ = db_path
+    def __init__(self, secret_path: Optional[str] = None):
         self.secret_path = secret_path or os.environ.get("FLASK_SECRET_PATH") or DEFAULT_SECRET_PATH
 
     def _connect(self):

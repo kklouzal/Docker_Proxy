@@ -53,8 +53,7 @@ def _get_metric(stats: Dict[str, Any], path: str) -> Optional[float]:
 
 
 class TimeSeriesStore:
-    def __init__(self, db_path: Optional[str] = None):
-        _ = db_path
+    def __init__(self):
         self._started = False
         self._start_lock = threading.Lock()
 

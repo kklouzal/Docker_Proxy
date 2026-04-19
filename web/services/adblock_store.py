@@ -84,13 +84,11 @@ def _event_key(ts: int, src_ip: str, url: str, http_status: int) -> str:
 class AdblockStore:
     def __init__(
         self,
-        db_path: Optional[str] = None,
         lists_dir: str = "/var/lib/squid-flask-proxy/adblock/lists",
         update_interval_seconds: int = 6 * 60 * 60,
         cicap_access_log_path: str = "/var/log/cicap-access.log",
         blocklog_retention_days: int = 30,
     ):
-        _ = db_path
         self.lists_dir = lists_dir
         self.update_interval_seconds = update_interval_seconds
         self.cicap_access_log_path = cicap_access_log_path

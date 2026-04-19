@@ -33,9 +33,6 @@ class Exclusions:
 
 
 class ExclusionsStore:
-    def __init__(self, db_path: Optional[str] = None):
-        _ = db_path
-
     def _connect(self):
         return connect()
 

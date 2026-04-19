@@ -134,11 +134,9 @@ def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
 class SslErrorsStore:
     def __init__(
         self,
-        db_path: Optional[str] = None,
         cache_log_path: str = "/var/log/squid/cache.log",
         seed_max_lines: int = 5000,
     ):
-        _ = db_path
         self.cache_log_path = cache_log_path
         self.seed_max_lines = seed_max_lines
 

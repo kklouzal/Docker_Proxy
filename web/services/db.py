@@ -37,7 +37,7 @@ class CompatRow(dict[str, Any]):
         return super().__getitem__(key)
 
     def keys(self):
-        return self._columns
+        return super().keys()
 
 
 class CompatResult:
@@ -79,10 +79,6 @@ class _EmptyCursor:
 class CompatConnection:
     def __init__(self, native: Any):
         self.native = native
-
-    @property
-    def is_mysql(self) -> bool:
-        return True
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> CompatResult:
         translated = translate_sql(sql)
@@ -162,7 +158,7 @@ def resolve_database_config() -> DatabaseConfig:
         return _parse_database_url(url)
 
     mysql_host = (os.environ.get("MYSQL_HOST") or "").strip()
-    mysql_db = (os.environ.get("MYSQL_DATABASE") or os.environ.get("MYSQL_DB") or "").strip()
+    mysql_db = (os.environ.get("MYSQL_DATABASE") or "").strip()
     mysql_user = (os.environ.get("MYSQL_USER") or "").strip()
     if not mysql_host and not mysql_db and not mysql_user:
         raise RuntimeError("MySQL configuration is required. Set DATABASE_URL or MYSQL_HOST/MYSQL_DATABASE.")
@@ -179,7 +175,7 @@ def resolve_database_config() -> DatabaseConfig:
     )
 
 
-def connect(*_args, **_kwargs) -> CompatConnection:
+def connect() -> CompatConnection:
     cfg = resolve_database_config()
     _ensure_mysql_database(cfg)
     native = pymysql.connect(  # type: ignore[call-arg]

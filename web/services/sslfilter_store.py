@@ -22,11 +22,9 @@ class SslFilterSettings:
 class SslFilterStore:
     def __init__(
         self,
-        db_path: Optional[str] = None,
         squid_include_path: str = "/etc/squid/conf.d/10-sslfilter.conf",
         nobump_list_path: str = "/var/lib/squid-flask-proxy/sslfilter_nobump.txt",
     ):
-        _ = db_path
         self.squid_include_path = squid_include_path
         self.nobump_list_path = nobump_list_path
 

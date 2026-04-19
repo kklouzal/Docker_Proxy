@@ -5,6 +5,7 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from typing import Any
 from unittest import SkipTest
 from urllib.parse import urlparse, urlunparse
 
@@ -74,7 +75,6 @@ def _load_mysql_env_if_needed() -> None:
             "MYSQL_USER",
             "MYSQL_PASSWORD",
             "MYSQL_DATABASE",
-            "MYSQL_DB",
             "MYSQL_CHARSET",
             "MYSQL_CONNECT_TIMEOUT",
             "MYSQL_CREATE_DATABASE",
@@ -85,7 +85,7 @@ def _load_mysql_env_if_needed() -> None:
             return
 
 
-def _base_connection_params() -> dict[str, object]:
+def _base_connection_params() -> dict[str, Any]:
     _load_mysql_env_if_needed()
 
     url = (os.environ.get("DATABASE_URL") or "").strip()
@@ -161,7 +161,6 @@ def _set_database_name(database_name: str) -> None:
         new_url = urlunparse(parsed._replace(path=f"/{database_name}"))
         os.environ["DATABASE_URL"] = new_url
     os.environ["MYSQL_DATABASE"] = database_name
-    os.environ["MYSQL_DB"] = database_name
 
 
 def _purge_runtime_modules() -> None:
