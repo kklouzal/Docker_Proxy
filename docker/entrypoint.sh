@@ -42,6 +42,136 @@ if [ "$IPV6_DISABLED" = "1" ]; then
     LOCALHOST_SRC_ACL="127.0.0.1/32"
 fi
 
+clamp_int() {
+    val="$1"
+    min="$2"
+    max="$3"
+    if [ "$val" -lt "$min" ]; then
+        val="$min"
+    fi
+    if [ "$val" -gt "$max" ]; then
+        val="$max"
+    fi
+    printf '%s\n' "$val"
+}
+
+recommend_sslcrtd_children() {
+    workers="$1"
+    children=$((workers * 2))
+    clamp_int "$children" 2 8
+}
+
+recommend_dynamic_cert_cache_mb() {
+    workers="$1"
+    cache_mb=$((workers * 128))
+    cache_mb="$(clamp_int "$cache_mb" 128 512)"
+    cache_mb=$(( ((cache_mb + 63) / 64) * 64 ))
+    printf '%s\n' "$cache_mb"
+}
+
+recommend_nofile() {
+    workers="$1"
+    nofile=$((workers * 32768))
+    clamp_int "$nofile" 65536 131072
+}
+
+recommend_dante_servers() {
+    workers="$1"
+    servers=$((workers / 2))
+    if [ "$servers" -lt 1 ]; then
+        servers=1
+    fi
+    clamp_int "$servers" 1 4
+}
+
+recommend_webfilter_helpers() {
+    workers="$1"
+    helpers=$((workers * 2))
+    clamp_int "$helpers" 2 8
+}
+
+extract_squid_workers_from_file() {
+    file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        return 0
+    fi
+    awk 'tolower($1)=="workers" && $2 ~ /^[0-9]+$/ {print $2; exit}' "$file_path" 2>/dev/null || true
+}
+
+sanitize_positive_int() {
+    raw="$1"
+    case "$raw" in
+        ''|*[!0-9]*) printf '' ;;
+        *)
+            if [ "$raw" -lt 1 ]; then
+                printf ''
+            else
+                printf '%s' "$raw"
+            fi
+            ;;
+    esac
+}
+
+if [ -z "${DB_POOL_MAX_IDLE_SECONDS:-}" ]; then
+    export DB_POOL_MAX_IDLE_SECONDS=30
+fi
+if [ -z "${LIVE_STATS_COMMIT_BATCH:-}" ]; then
+    export LIVE_STATS_COMMIT_BATCH=250
+fi
+if [ -z "${LIVE_STATS_COMMIT_INTERVAL_SECONDS:-}" ]; then
+    export LIVE_STATS_COMMIT_INTERVAL_SECONDS=2.0
+fi
+if [ -z "${LIVE_STATS_POLL_INTERVAL_SECONDS:-}" ]; then
+    export LIVE_STATS_POLL_INTERVAL_SECONDS=0.5
+fi
+if [ -z "${SOCKS_COMMIT_BATCH:-}" ]; then
+    export SOCKS_COMMIT_BATCH=200
+fi
+if [ -z "${SOCKS_COMMIT_INTERVAL_SECONDS:-}" ]; then
+    export SOCKS_COMMIT_INTERVAL_SECONDS=2.0
+fi
+if [ -z "${SOCKS_POLL_INTERVAL_SECONDS:-}" ]; then
+    export SOCKS_POLL_INTERVAL_SECONDS=0.75
+fi
+if [ -z "${SSL_ERRORS_COMMIT_BATCH:-}" ]; then
+    export SSL_ERRORS_COMMIT_BATCH=200
+fi
+if [ -z "${SSL_ERRORS_COMMIT_INTERVAL_SECONDS:-}" ]; then
+    export SSL_ERRORS_COMMIT_INTERVAL_SECONDS=2.0
+fi
+if [ -z "${SSL_ERRORS_POLL_INTERVAL_SECONDS:-}" ]; then
+    export SSL_ERRORS_POLL_INTERVAL_SECONDS=0.75
+fi
+if [ -z "${STATS_CACHE_DIR_SIZE_TTL_SECONDS:-}" ]; then
+    export STATS_CACHE_DIR_SIZE_TTL_SECONDS=300
+fi
+
+replace_or_append_config_line() {
+    file_path="$1"
+    key="$2"
+    value="$3"
+    if grep -qiE "^[[:space:]]*${key}[[:space:]]+" "$file_path" 2>/dev/null; then
+        sed -i -E "s#^([[:space:]]*${key}[[:space:]]+).*\$#\\1${value}#I" "$file_path" 2>/dev/null || \
+            sed -i -E "s#^([[:space:]]*${key}[[:space:]]+).*\$#\\1${value}#" "$file_path" || true
+    else
+        printf '\n%s %s\n' "$key" "$value" >> "$file_path"
+    fi
+}
+
+apply_squid_perf_tuning() {
+    file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        return 0
+    fi
+
+    replace_or_append_config_line "$file_path" "workers" "$SQUID_WORKERS"
+    replace_or_append_config_line "$file_path" "cache_mem" "$SQUID_CACHE_MEM_MB MB"
+    replace_or_append_config_line "$file_path" "sslcrtd_children" "$SQUID_SSLCRTD_CHILDREN"
+    replace_or_append_config_line "$file_path" "max_filedescriptors" "$SQUID_MAX_FILEDESCRIPTORS"
+    replace_or_append_config_line "$file_path" "buffered_logs" "on"
+    sed -i -E "s#(dynamic_cert_mem_cache_size=)[0-9]+MB#\1${SQUID_DYNAMIC_CERT_MEM_CACHE_MB}MB#I" "$file_path" || true
+}
+
 python3 /app/tools/adblock_compile.py \
     --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
     --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
@@ -77,14 +207,75 @@ if [ -n "$TEMPLATE" ] && [ ! -f "$PERSISTED_SQUID_CONF_PATH" ]; then
     fi
 fi
 
-# Squid 6/7 expects logfile paths to be prefixed with a module name.
-# Normalize common log directives to use stdio: to avoid warnings and improve rotation.
-if [ -f /etc/squid/squid.conf ]; then
-    # access_log may include a logformat and ACLs after the path; preserve the tail.
-    sed -i -E 's#^([[:space:]]*access_log[[:space:]]+)(stdio:)?/var/log/squid/access\.log([[:space:]]+)#\1stdio:/var/log/squid/access.log\3#' /etc/squid/squid.conf || true
-    sed -i -E 's#^([[:space:]]*cache_log[[:space:]]+)(stdio:)?/var/log/squid/cache\.log([[:space:]]*|$)#\1stdio:/var/log/squid/cache.log\3#' /etc/squid/squid.conf || true
-    sed -i -E 's#^([[:space:]]*cache_store_log[[:space:]]+)(stdio:)?/var/log/squid/store\.log([[:space:]]*|$)#\1stdio:/var/log/squid/store.log\3#' /etc/squid/squid.conf || true
+# Resolve the authoritative Squid worker count.
+# Precedence:
+#   1) explicit SQUID_WORKERS env override (deployment/bootstrap override)
+#   2) persisted squid.conf workers line (web UI / config file authority)
+#   3) current config/template value
+#   4) safe fallback of 1
+EXPLICIT_SQUID_WORKERS="$(sanitize_positive_int "${SQUID_WORKERS:-}")"
+PERSISTED_SQUID_WORKERS="$(extract_squid_workers_from_file "$PERSISTED_SQUID_CONF_PATH")"
+CONFIG_SQUID_WORKERS="$(extract_squid_workers_from_file /etc/squid/squid.conf)"
+
+if [ -n "$EXPLICIT_SQUID_WORKERS" ]; then
+    WORKERS="$EXPLICIT_SQUID_WORKERS"
+elif [ -n "$PERSISTED_SQUID_WORKERS" ]; then
+    WORKERS="$PERSISTED_SQUID_WORKERS"
+elif [ -n "$CONFIG_SQUID_WORKERS" ]; then
+    WORKERS="$CONFIG_SQUID_WORKERS"
+else
+    WORKERS=1
 fi
+WORKERS="$(clamp_int "$WORKERS" 1 4)"
+export SQUID_WORKERS="$WORKERS"
+
+# Derive the rest of the process/helper counts from the resolved Squid worker count
+# unless the user explicitly overrides them.
+if [ -z "${SQUID_CACHE_MEM_MB:-}" ]; then
+    export SQUID_CACHE_MEM_MB=256
+fi
+if [ -z "${SQUID_SSLCRTD_CHILDREN:-}" ]; then
+    export SQUID_SSLCRTD_CHILDREN="$(recommend_sslcrtd_children "$WORKERS")"
+fi
+if [ -z "${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ]; then
+    export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(recommend_dynamic_cert_cache_mb "$WORKERS")"
+fi
+if [ -z "${SQUID_MAX_FILEDESCRIPTORS:-}" ]; then
+    export SQUID_MAX_FILEDESCRIPTORS="$(recommend_nofile "$WORKERS")"
+fi
+if [ -z "${ULIMIT_NOFILE:-}" ]; then
+    export ULIMIT_NOFILE="$SQUID_MAX_FILEDESCRIPTORS"
+fi
+if [ -z "${WEB_WORKERS:-}" ]; then
+    export WEB_WORKERS=1
+fi
+if [ -z "${WEB_THREADS:-}" ]; then
+    # One extra thread keeps /health and the UI responsive even while a
+    # blocking admin action (for example squid -k reconfigure) is in flight.
+    export WEB_THREADS=2
+fi
+if [ -z "${DANTE_SERVERS:-}" ]; then
+    export DANTE_SERVERS="$(recommend_dante_servers "$WORKERS")"
+fi
+if [ -z "${WEBFILTER_HELPERS:-}" ]; then
+    export WEBFILTER_HELPERS="$(recommend_webfilter_helpers "$WORKERS")"
+fi
+if [ -z "${DB_POOL_SIZE:-}" ]; then
+    export DB_POOL_SIZE=1
+fi
+
+# Squid 6/7 expects logfile paths to be prefixed with a module name.
+# Normalize the logs we keep and disable store.log, which is pure per-object overhead
+# for this stack and is not consumed anywhere in-product.
+for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
+    if [ ! -f "$SQUID_CFG" ]; then
+        continue
+    fi
+    # access_log may include a logformat and ACLs after the path; preserve the tail.
+    sed -i -E 's#^([[:space:]]*access_log[[:space:]]+)(stdio:)?/var/log/squid/access\.log([[:space:]]+)#\1stdio:/var/log/squid/access.log\3#' "$SQUID_CFG" || true
+    sed -i -E 's#^([[:space:]]*cache_log[[:space:]]+)(stdio:)?/var/log/squid/cache\.log([[:space:]]*|$)#\1stdio:/var/log/squid/cache.log\3#' "$SQUID_CFG" || true
+    sed -i -E 's#^[[:space:]]*cache_store_log[[:space:]]+.*$#cache_store_log none#I' "$SQUID_CFG" || true
+done
 
 # Keep log noise down: exclude local cachemgr polling from access.log.
 # We apply this even if squid.conf already exists (e.g., user edited via UI),
@@ -140,15 +331,15 @@ if [ "$IPV6_DISABLED" = "1" ] && [ -f /etc/squid/squid.conf ]; then
     fi
 fi
 
-# SECURITY: Ensure the live UI logformat does not log credentials (Authorization/Cookie).
-# Users may persist/edit squid.conf via the UI; enforce a safe default on startup.
-SAFE_LIVEUI_FMT='logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t"%{Cache-Control}>h"\t"%{Pragma}>h"\t"%{Cache-Control}<h"\t"%{Pragma}<h"\t"%{Expires}<h"\t"%{Vary}<h"\t"%{Set-Cookie}<h"'
-if [ -f /etc/squid/squid.conf ] && grep -q "^logformat liveui" /etc/squid/squid.conf 2>/dev/null; then
-    if grep -q "%{Authorization}>h\|%{Cookie}>h" /etc/squid/squid.conf 2>/dev/null; then
-        # Replace any existing liveui logformat line with the safe variant.
-        sed -i -E "s#^logformat[[:space:]]+liveui[[:space:]].*#${SAFE_LIVEUI_FMT}#" /etc/squid/squid.conf
+# Performance + privacy: keep the live UI logformat lean and credential-free.
+# We intentionally avoid logging request/response headers here because they add
+# measurable per-request formatting and I/O overhead on the proxy hot path.
+SAFE_LIVEUI_FMT='logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st'
+for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
+    if [ -f "$SQUID_CFG" ] && grep -q "^logformat liveui" "$SQUID_CFG" 2>/dev/null; then
+        sed -i -E "s#^logformat[[:space:]]+liveui[[:space:]].*#${SAFE_LIVEUI_FMT}#" "$SQUID_CFG"
     fi
-fi
+done
 
 # Stability + privacy: never cache requests that carry Authorization/Cookie.
 # This reduces Vary-related cache loops and prevents caching of authenticated content.
@@ -231,6 +422,11 @@ quick_abort_max 0 KB
 quick_abort_pct 100
 EOF
     fi
+fi
+
+apply_squid_perf_tuning /etc/squid/squid.conf
+if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
+    apply_squid_perf_tuning "$PERSISTED_SQUID_CONF_PATH"
 fi
 
 # Generate Squid include snippets for ICAP scaling.
@@ -362,9 +558,7 @@ if [ -z "$WORKERS" ]; then
     esac
 fi
 
-if [ "$WORKERS" -lt 1 ]; then
-    WORKERS=1
-fi
+WORKERS="$(clamp_int "$WORKERS" 1 4)"
 
 # Ensure supervisord sees a valid value even if compose didn't set it.
 export SQUID_WORKERS="$WORKERS"
@@ -431,11 +625,9 @@ if [ -f /etc/c-icap/c-icap.conf ]; then
         echo "PidFile /var/run/c-icap/c-icap-adblock.pid" >> /etc/c-icap/c-icap-adblock.conf
     fi
 
-    # Avoid both instances writing to the same access log.
-    # Keep the default access log path for adblock (used by the UI/database ingestion).
-    if grep -qiE "^[[:space:]]*AccessLog[[:space:]]+/var/log/cicap-access\.log([[:space:]]|$)" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
-        sed -i -E "s#^[[:space:]]*AccessLog[[:space:]]+/var/log/cicap-access\.log([[:space:]]|$)#AccessLog /var/log/cicap-access-av.log\1#I" /etc/c-icap/c-icap-av.conf
-    fi
+    # Keep the adblock instance access log (used by the UI/database ingestion),
+    # but disable AV per-transaction logging because nothing in-product reads it.
+    sed -i -E '/^[[:space:]]*AccessLog[[:space:]]+/d' /etc/c-icap/c-icap-av.conf || true
 
     # Set ports
     if grep -qiE "^[[:space:]]*Port[[:space:]]+" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
@@ -459,7 +651,7 @@ fi
 
 cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'
 [program:cicap_adblock]
-command=/usr/bin/c-icap -N -d 1 -f /etc/c-icap/c-icap-adblock.conf
+command=/usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf
 autostart=true
 autorestart=true
 priority=10
@@ -472,7 +664,7 @@ EOF
 cat > /etc/supervisor.d/cicap_av.conf <<'EOF'
 [program:cicap_av]
 # Wait for the remote clamd backend so clamd_mod can register the engine before virus_scan starts.
-command=/bin/sh -c 'HOST="${CLAMD_HOST:-127.0.0.1}"; PORT="${CLAMD_PORT:-3310}"; i=0; while [ $i -lt 120 ]; do python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "$HOST" "$PORT" >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -d 1 -f /etc/c-icap/c-icap-av.conf'
+command=/bin/sh -c 'HOST="${CLAMD_HOST:-127.0.0.1}"; PORT="${CLAMD_PORT:-3310}"; i=0; while [ $i -lt 120 ]; do python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "$HOST" "$PORT" >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf'
 autostart=true
 autorestart=true
 priority=11
@@ -586,7 +778,7 @@ if [ "${ENABLE_DANTE:-1}" = "1" ]; then
     esac
 
     # Logging keywords (connect/disconnect/error/data/ioop/tcpinfo).
-    DANTE_LOG_RAW="${DANTE_LOG:-connect disconnect error}"
+    DANTE_LOG_RAW="${DANTE_LOG:-error}"
     # Keep only known keywords so bad env values don't break sockd startup.
     DANTE_LOG=""
     for tok in ${DANTE_LOG_RAW}; do
@@ -598,7 +790,7 @@ if [ "${ENABLE_DANTE:-1}" = "1" ]; then
     done
     DANTE_LOG="$(printf '%s' "$DANTE_LOG" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$DANTE_LOG" ]; then
-        DANTE_LOG="connect disconnect error"
+        DANTE_LOG="error"
     fi
 
     # Optional session limiting (applies per matching rule).

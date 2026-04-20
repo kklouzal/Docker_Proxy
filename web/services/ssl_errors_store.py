@@ -16,6 +16,22 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = float(default)
+    return max(minimum, min(maximum, value))
+
+
 def _escape_like(value: str) -> str:
     """Escape special LIKE pattern characters for safe SQL queries."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -311,13 +327,17 @@ class SslErrorsStore:
     def _tail_loop(self) -> None:
         self.seed_from_recent_log()
 
+        commit_batch = _env_int("SSL_ERRORS_COMMIT_BATCH", 200, minimum=25, maximum=5000)
+        commit_interval = _env_float("SSL_ERRORS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
+        poll_interval = _env_float("SSL_ERRORS_POLL_INTERVAL_SECONDS", 0.75, minimum=0.1, maximum=5.0)
+
         path = self.cache_log_path
         last_inode: Optional[int] = None
 
         while True:
             try:
                 if not os.path.exists(path):
-                    time.sleep(1.0)
+                    time.sleep(max(1.0, poll_interval))
                     continue
 
                 st = os.stat(path)
@@ -347,7 +367,7 @@ class SslErrorsStore:
                                             message="SSL errors tailer rollback failed after ingest error",
                                         )
                                 now = time.time()
-                                if pending >= 50 or (now - last_commit) >= 1.0:
+                                if pending >= commit_batch or (now - last_commit) >= commit_interval:
                                     try:
                                         conn.commit()
                                     except Exception:
@@ -366,7 +386,7 @@ class SslErrorsStore:
 
                             # EOF/idle: commit pending rows so results don't lag.
                             now = time.time()
-                            if pending and (now - last_commit) >= 1.0:
+                            if pending and (now - last_commit) >= commit_interval:
                                 try:
                                     conn.commit()
                                 except Exception:
@@ -415,7 +435,7 @@ class SslErrorsStore:
                                     )
                                 break
 
-                            time.sleep(0.5)
+                            time.sleep(poll_interval)
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -423,7 +443,7 @@ class SslErrorsStore:
                     interval_seconds=300.0,
                     message="SSL errors tailer loop failed",
                 )
-                time.sleep(1.0)
+                time.sleep(max(1.0, poll_interval))
 
     def list_errors(self, limit: int = 200) -> List[Dict[str, Any]]:
         lim = max(10, min(1000, int(limit)))

@@ -81,11 +81,21 @@ services:
       - proxy_data:/var/lib/squid-flask-proxy
     environment:
       DISABLE_IPV6: ${DISABLE_IPV6:-1}
-      SQUID_WORKERS: ${SQUID_WORKERS:-1}
+      SQUID_WORKERS: ${SQUID_WORKERS:-}
+      SQUID_CACHE_MEM_MB: ${SQUID_CACHE_MEM_MB:-}
+      SQUID_SSLCRTD_CHILDREN: ${SQUID_SSLCRTD_CHILDREN:-}
+      SQUID_DYNAMIC_CERT_MEM_CACHE_MB: ${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}
+      SQUID_MAX_FILEDESCRIPTORS: ${SQUID_MAX_FILEDESCRIPTORS:-}
       CICAP_PORT: ${CICAP_PORT:-14000}
       CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
       CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
       CLAMD_PORT: ${CLAMD_PORT:-3310}
+      WEB_WORKERS: ${WEB_WORKERS:-}
+      WEB_THREADS: ${WEB_THREADS:-}
+      DANTE_SERVERS: ${DANTE_SERVERS:-}
+      ULIMIT_NOFILE: ${ULIMIT_NOFILE:-}
+      WEBFILTER_HELPERS: ${WEBFILTER_HELPERS:-}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-}
       DATABASE_URL: ${DATABASE_URL:-}
       MYSQL_HOST: ${MYSQL_HOST:-}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
@@ -212,15 +222,19 @@ Common environment variables:
 - `FLASK_SECRET_KEY`: recommended; keeps login sessions stable across restarts.
 - `SESSION_COOKIE_SECURE=1`: mark cookies Secure (use when UI is served over HTTPS).
 - `DISABLE_CSRF=1`: disables CSRF protection (intended for debugging only; not recommended).
-- `SQUID_WORKERS`: number of Squid SMP workers (default `1`; also influences ICAP service-set generation).
+- `SQUID_WORKERS`: explicit Squid SMP bootstrap override. If blank, the Squid config's `workers` value is authoritative.
+- `SQUID_CACHE_MEM_MB`: explicit per-worker Squid memory-cache override. Leave blank for the default `256`.
+- `SQUID_SSLCRTD_CHILDREN`: explicit ssl_crtd helper-process override. Leave blank to derive from Squid workers (default `2 × workers`).
+- `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`: explicit TLS dynamic certificate cache override. Leave blank to derive from Squid workers (default `128 × workers`, capped at `512`).
+- `SQUID_MAX_FILEDESCRIPTORS`: explicit Squid file-descriptor ceiling. Leave blank to derive from Squid workers (minimum `65536`).
 - `CICAP_PORT`, `CICAP_AV_PORT`: ICAP ports for adblock (REQMOD) and AV (RESPMOD) instances.
 - `CLAMD_HOST`, `CLAMD_PORT`: remote ClamAV daemon used by the local AV c-icap instance.
 - `ENABLE_DANTE=1|0`: enable/disable SOCKS5.
 - `DANTE_PORT`: SOCKS5 listen port inside the container (default 1080).
 - `DANTE_ALLOW_FROM`: space-separated CIDRs allowed to connect to SOCKS5.
 - `DANTE_BLOCK_PRIVATE_DESTS=1|0`: block SOCKS requests to loopback + RFC1918 destinations.
-- `DANTE_SERVERS`: number of Dante "main server" processes (`sockd -N`; default `1`).
-- `DANTE_LOG`: space-separated log keywords: `connect disconnect error data ioop tcpinfo`.
+- `DANTE_SERVERS`: explicit Dante `sockd -N` override. Leave blank to derive from Squid workers (default `floor(workers / 2)`, minimum `1`).
+- `DANTE_LOG`: space-separated log keywords: `connect disconnect error data ioop tcpinfo` (default is `error` for lower hot-path logging overhead).
 - `DANTE_DEBUG`: debug verbosity level (`0` disables).
 - `DANTE_TIMEOUT_NEGOTIATE`, `DANTE_TIMEOUT_CONNECT`: negotiation/connect timeouts (seconds).
 - `DANTE_TIMEOUT_IO_TCP`, `DANTE_TIMEOUT_IO_UDP`: idle timeouts (seconds; `0` means forever).
@@ -228,12 +242,14 @@ Common environment variables:
 - `DANTE_SESSION_MAX`: optional per-rule concurrent session cap (blank/0 disables).
 - `DANTE_SESSION_THROTTLE`: optional rate-limit (`connections/seconds`, e.g. `50/1`).
 - `ULIMIT_NOFILE`: optional file-descriptor limit for high concurrency.
+- `WEBFILTER_HELPERS`: explicit Squid external ACL helper count for web filtering. Leave blank to derive from Squid workers (default `2 × workers`).
+- `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default `1`; rises to `2` only when the admin UI thread count is scaled up).
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
 - `PAC_UPSTREAM`: where the PAC listener fetches PAC content (default `http://127.0.0.1:5000/proxy.pac`).
 
 Admin UI (Gunicorn) tuning:
-- `WEB_WORKERS`: Gunicorn worker processes (default `1`).
-- `WEB_THREADS`: threads per worker (default `2`).
+- `WEB_WORKERS`: explicit Gunicorn worker override. Default is `1` because the admin UI is rarely used.
+- `WEB_THREADS`: explicit Gunicorn thread override. Default is `2` so `/health` and the UI stay responsive during blocking admin actions.
 - `WEB_TIMEOUT`: worker timeout seconds (default `120`).
 - `WEB_GRACEFUL_TIMEOUT`: graceful shutdown timeout (default `30`).
 - `WEB_KEEPALIVE`: keep-alive seconds (default `5`).
@@ -363,7 +379,7 @@ Topology / startup behavior:
 - AV scanning is served by c-icap as a **RESPMOD** service at `icap://127.0.0.1:${CICAP_AV_PORT:-14001}/avrespmod`.
 - The proxy container runs two c-icap instances: the adblock instance binds immediately, while the AV instance waits for a reachable remote `clamd` backend.
 - The local AV c-icap instance talks to a remote ClamAV daemon at `CLAMD_HOST:CLAMD_PORT`.
-- The AV instance writes to `/var/log/cicap-access-av.log` (separate from adblock logging).
+- The AV instance does not write a per-transaction access log by default; only the adblock REQMOD instance keeps request logging for the UI/event pipeline.
 
 Remote ClamAV host:
 - Run `clamd` (and optional `freshclam`) on a separate trusted host/container.
@@ -470,8 +486,21 @@ Remote ClamAV note:
 
 This container can run Squid in SMP mode (multiple worker processes).
 
+The runtime now uses a Squid-first sizing model:
+
+- the effective Squid `workers` value is the main driver
+- helper/process counts derive from that worker count by default
+- the worker count is hard-capped at `4`
+- Gunicorn stays intentionally small (`1` worker, `2` threads by default)
+
+Source of truth for worker count:
+
+- explicit `SQUID_WORKERS` env override if you set one
+- otherwise the Squid config's `workers N` line (persisted config if present, otherwise the active/template config)
+- otherwise the safe fallback of `1`
+
 - Squid `workers N`
-  - The entrypoint reads `workers N` from `/etc/squid/squid.conf` and uses that as the authoritative worker count.
+  - The entrypoint resolves the effective worker count first, writes it back into the live config, and derives helper/process counts from it.
   - It generates `/etc/squid/conf.d/20-icap.conf` with matching `adaptation_service_set` entries.
   - The supervisor must launch Squid with `--foreground` for SMP kids to exist; `-N` forces the master to run as the only worker and ignores additional kids.
   - Changing the worker count also forces a cache metadata reinitialization to avoid reusing incompatible `swap.state` files.

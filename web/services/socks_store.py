@@ -15,6 +15,22 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = float(default)
+    return max(minimum, min(maximum, value))
+
+
 def _escape_like(value: str) -> str:
     """Escape special LIKE pattern characters for safe SQL queries."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -271,13 +287,17 @@ class SocksStore:
     def _tail_loop(self) -> None:
         self.seed_from_recent_log()
 
+        commit_batch = _env_int("SOCKS_COMMIT_BATCH", 200, minimum=25, maximum=5000)
+        commit_interval = _env_float("SOCKS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
+        poll_interval = _env_float("SOCKS_POLL_INTERVAL_SECONDS", 0.75, minimum=0.1, maximum=5.0)
+
         path = self.log_path
         last_inode: Optional[int] = None
 
         while True:
             try:
                 if not os.path.exists(path):
-                    time.sleep(1.0)
+                    time.sleep(max(1.0, poll_interval))
                     continue
 
                 st = os.stat(path)
@@ -307,7 +327,7 @@ class SocksStore:
                                             message="SOCKS tailer rollback failed after ingest error",
                                         )
                                 now = time.time()
-                                if pending >= 50 or (now - last_commit) >= 1.0:
+                                if pending >= commit_batch or (now - last_commit) >= commit_interval:
                                     try:
                                         conn.commit()
                                     except Exception:
@@ -326,7 +346,7 @@ class SocksStore:
 
                             # EOF/idle: commit pending rows so the UI stays fresh.
                             now = time.time()
-                            if pending and (now - last_commit) >= 1.0:
+                            if pending and (now - last_commit) >= commit_interval:
                                 try:
                                     conn.commit()
                                 except Exception:
@@ -375,7 +395,7 @@ class SocksStore:
                                     )
                                 break
 
-                            time.sleep(0.5)
+                            time.sleep(poll_interval)
 
             except Exception:
                 log_exception_throttled(
@@ -384,7 +404,7 @@ class SocksStore:
                     interval_seconds=300.0,
                     message="SOCKS tailer loop failed",
                 )
-                time.sleep(1.0)
+                time.sleep(max(1.0, poll_interval))
 
     def summary(self, since: int) -> Dict[str, Any]:
         with self._connect() as conn:

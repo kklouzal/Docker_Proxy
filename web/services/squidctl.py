@@ -798,10 +798,10 @@ class SquidController:
             workers = 1
         # Keep in sync with the web UI clamp.
         try:
-            max_workers = int((os.environ.get("MAX_WORKERS") or "32").strip())
+            max_workers = int((os.environ.get("MAX_WORKERS") or "4").strip())
         except Exception:
-            max_workers = 32
-        max_workers = min(128, max(1, max_workers))
+            max_workers = 4
+        max_workers = min(4, max(1, max_workers))
         if workers > max_workers:
             workers = max_workers
 

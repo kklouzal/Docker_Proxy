@@ -83,7 +83,7 @@ def test_apply_safe_workers_are_clamped(tmp_path, monkeypatch):
     c = app_module.app.test_client()
     csrf = _login(c)
 
-    # too high -> clamped to MAX_WORKERS (default 32)
+    # too high -> clamped to MAX_WORKERS (default 4)
     r = c.post(
         "/squid/config/apply-safe",
         data={"form_kind": "caching", "workers": "999", "csrf_token": csrf},
@@ -91,7 +91,7 @@ def test_apply_safe_workers_are_clamped(tmp_path, monkeypatch):
     )
     assert r.status_code in (301, 302, 303, 307, 308)
     assert captured["options"] is not None
-    assert captured["options"]["workers"] == 32
+    assert captured["options"]["workers"] == 4
 
     # too low -> clamped to 1
     captured["options"] = None

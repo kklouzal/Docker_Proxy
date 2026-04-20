@@ -42,11 +42,11 @@ def _max_workers() -> int:
     downscaling an existing config.
     """
     try:
-        v = int((os.environ.get('MAX_WORKERS') or '32').strip())
+        v = int((os.environ.get('MAX_WORKERS') or '4').strip())
     except Exception:
-        v = 32
-    # Keep a reasonable bound to avoid accidental resource blowups.
-    return min(128, max(1, v))
+        v = 4
+    # Hard-cap worker count to keep SMP sizing sane for this container profile.
+    return min(4, max(1, v))
 
 # Global request body limit (bytes). Keep reasonably above common form posts.
 try:

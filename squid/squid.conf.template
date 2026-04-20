@@ -2,10 +2,10 @@ http_port 0.0.0.0:3128 ssl-bump \
 	cert=/etc/squid/ssl/certs/ca.crt \
 	key=/etc/squid/ssl/certs/ca.key \
 	generate-host-certificates=on \
-	dynamic_cert_mem_cache_size=128MB
+	dynamic_cert_mem_cache_size=256MB
 
-# SMP mode (multi-process). Higher worker counts increase throughput but use more RAM.
-# Start low and raise only after measuring real throughput gains.
+# SMP mode (multi-process). The entrypoint auto-tunes this upward at runtime when
+# explicit overrides are not provided.
 workers 1
 
 # Allow cache manager access from localhost (used by the web UI for stats)
@@ -41,6 +41,8 @@ cache_mem 96 MB
 # reduces handshake churn.
 client_persistent_connections on
 server_persistent_connections on
+buffered_logs on
+max_filedescriptors 65535
 
 # Keep persistent upstream connections warm long enough for image/gallery bursts
 # and enable conservative request pipelining where clients/origins support it.
@@ -142,12 +144,11 @@ refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern . 0 20% 4320
 
 # Log settings
-# Structured access log used by the web UI. Includes cache-related request/response headers.
-# SECURITY NOTE: Do NOT log Authorization/Cookie headers (they may contain credentials).
-# Fields (TSV): ts, ms, client_ip, method, url, result/status, bytes,
-#   req_cc, req_pragma,
-#   rep_cc, rep_pragma, rep_expires, rep_vary, rep_set_cookie
-logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t"%{Cache-Control}>h"\t"%{Pragma}>h"\t"%{Cache-Control}<h"\t"%{Pragma}<h"\t"%{Expires}<h"\t"%{Vary}<h"\t"%{Set-Cookie}<h"
+# Structured access log used by the web UI.
+# Keep this intentionally lean: richer header-level cache diagnostics are nice,
+# but they add avoidable per-request formatting and disk I/O overhead.
+# Fields (TSV): ts, ms, client_ip, method, url, result/status, bytes
+logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st
 
 # Keep up to N rotated log files (access.log.0 .. access.log.N, same for cache.log).
 # Rotation itself is triggered by a daily supervisor job (squid -k rotate).
@@ -161,7 +162,7 @@ access_log none src_localhost squid_internal_mgr
 
 access_log stdio:/var/log/squid/access.log liveui
 cache_log stdio:/var/log/squid/cache.log
-cache_store_log stdio:/var/log/squid/store.log
+cache_store_log none
 
 # ICAP ad blocking (managed by web UI)
 # The ICAP service runs inside the same container on localhost.

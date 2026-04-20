@@ -18,6 +18,22 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = float(default)
+    return max(minimum, min(maximum, value))
+
+
 def _escape_like(value: str) -> str:
     """Escape special LIKE pattern characters for safe SQL queries."""
     # Escape %, _, and \\ itself so callers can safely use LIKE-based filtering.
@@ -119,9 +135,10 @@ def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Opti
                 size_bytes = 0
             domain = _extract_domain(url)
 
-            # Two known TSV schemas for our structured Squid logformat:
+            # Three known TSV schemas for our structured Squid logformat:
+            # - Lean current default (7 cols): ts, ms, client_ip, method, url, result/status, bytes.
+            # - Prior default (>=14 cols): header-level cache diagnostics without credentials.
             # - Legacy (>=16 cols): included Authorization/Cookie request headers.
-            # - Current (>=14 cols): removed Authorization/Cookie to avoid logging secrets.
             # We never persist raw Authorization/Cookie values; we only track presence.
             if len(row) >= 16:
                 req_auth = row[9] if len(row) > 9 else ""
@@ -491,6 +508,10 @@ class LiveStatsStore:
         # Seed so the page is useful immediately.
         self.seed_from_recent_log()
 
+        commit_batch = _env_int("LIVE_STATS_COMMIT_BATCH", 250, minimum=25, maximum=5000)
+        commit_interval = _env_float("LIVE_STATS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
+        poll_interval = _env_float("LIVE_STATS_POLL_INTERVAL_SECONDS", 0.5, minimum=0.1, maximum=5.0)
+
         # Tail new lines.
         path = self.access_log_path
         last_inode: Optional[int] = None
@@ -498,7 +519,7 @@ class LiveStatsStore:
         while True:
             try:
                 if not os.path.exists(path):
-                    time.sleep(1.0)
+                    time.sleep(max(1.0, poll_interval))
                     continue
 
                 st = os.stat(path)
@@ -529,7 +550,7 @@ class LiveStatsStore:
                                             message="Live stats tailer rollback failed after ingest error",
                                         )
                                 now = time.time()
-                                if pending >= 75 or (now - last_commit) >= 1.0:
+                                if pending >= commit_batch or (now - last_commit) >= commit_interval:
                                     try:
                                         conn.commit()
                                     except Exception:
@@ -549,7 +570,7 @@ class LiveStatsStore:
                             # EOF/idle: commit any pending rows so UI reflects the latest
                             # data even if the log is quiet.
                             now = time.time()
-                            if pending and (now - last_commit) >= 1.0:
+                            if pending and (now - last_commit) >= commit_interval:
                                 try:
                                     conn.commit()
                                 except Exception:
@@ -598,7 +619,7 @@ class LiveStatsStore:
                                     )
                                 break
 
-                            time.sleep(0.35)
+                            time.sleep(poll_interval)
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -606,7 +627,7 @@ class LiveStatsStore:
                     interval_seconds=300.0,
                     message="Live stats tailer loop failed",
                 )
-                time.sleep(1.0)
+                time.sleep(max(1.0, poll_interval))
 
     def _query_rows(self, sql: str, params: Tuple[Any, ...]) -> List[Row]:
         with self._connect() as conn:

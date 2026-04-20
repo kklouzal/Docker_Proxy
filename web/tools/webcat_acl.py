@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import queue
 import sys
+import threading
 import time
+from collections import OrderedDict
 from typing import Iterable, Optional, Sequence, Set, Tuple
 
 
@@ -18,6 +21,22 @@ from services.db import connect, create_index_if_not_exists
 
 def _now() -> int:
     return int(time.time())
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = float(default)
+    return max(minimum, min(maximum, value))
 
 
 def _norm_domain(s: str) -> str:
@@ -54,6 +73,10 @@ class _Db:
     def __init__(self):
         self._conn = None
         self._last_open_attempt = 0
+        self._cache_max_entries = _env_int("WEBFILTER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000)
+        self._cache_ttl = _env_float("WEBFILTER_CACHE_TTL_SECONDS", 3600.0, minimum=5.0, maximum=86400.0)
+        self._cache_negative_ttl = _env_float("WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS", 300.0, minimum=1.0, maximum=3600.0)
+        self._cache: OrderedDict[str, tuple[float, tuple[str, ...]]] = OrderedDict()
 
     def _connect(self):
         now = _now()
@@ -70,22 +93,54 @@ class _Db:
         except Exception:
             return None
 
+    def _cache_get(self, domain: str) -> Optional[Set[str]]:
+        entry = self._cache.get(domain)
+        if entry is None:
+            return None
+        expires_at, values = entry
+        if time.monotonic() >= expires_at:
+            self._cache.pop(domain, None)
+            return None
+        self._cache.move_to_end(domain)
+        return set(values)
+
+    def _cache_put(self, domain: str, values: Set[str]) -> Set[str]:
+        ttl = self._cache_ttl if values else self._cache_negative_ttl
+        frozen = tuple(sorted(values))
+        self._cache[domain] = (time.monotonic() + ttl, frozen)
+        self._cache.move_to_end(domain)
+        while len(self._cache) > self._cache_max_entries:
+            self._cache.popitem(last=False)
+        return set(frozen)
+
     def lookup_categories(self, domain: str) -> Set[str]:
+        normalized = _norm_domain(domain)
+        if not normalized:
+            return set()
+
+        cached = self._cache_get(normalized)
+        if cached is not None:
+            return cached
+
         conn = self._connect()
         if conn is None:
             return set()
-        for cand in _parent_domains(domain):
-            try:
-                row = conn.execute(
-                    "SELECT categories FROM webcat_domains WHERE domain=?",
-                    (cand,),
-                ).fetchone()
-            except Exception:
-                return set()
-            if row and row[0]:
-                raw = str(row[0])
-                return {c for c in raw.split("|") if c}
-        return set()
+        candidates = list(_parent_domains(normalized))
+        if not candidates:
+            return self._cache_put(normalized, set())
+        placeholders = ",".join(["?"] * len(candidates))
+        params = tuple(candidates + candidates)
+        try:
+            row = conn.execute(
+                f"SELECT categories FROM webcat_domains WHERE domain IN ({placeholders}) ORDER BY FIELD(domain, {placeholders}) LIMIT 1",
+                params,
+            ).fetchone()
+        except Exception:
+            return set()
+        if row and row[0]:
+            raw = str(row[0])
+            return self._cache_put(normalized, {c for c in raw.split("|") if c})
+        return self._cache_put(normalized, set())
 
 
 class _BlockedLogDb:
@@ -94,6 +149,13 @@ class _BlockedLogDb:
         self._conn = None
         self._last_open_attempt = 0
         self._inserts = 0
+        self._batch_size = _env_int("WEBFILTER_LOG_BATCH_SIZE", 128, minimum=1, maximum=2000)
+        self._flush_interval = _env_float("WEBFILTER_LOG_FLUSH_INTERVAL_SECONDS", 1.0, minimum=0.1, maximum=10.0)
+        self._queue: queue.Queue[tuple[int, str, str, str]] = queue.Queue(
+            maxsize=_env_int("WEBFILTER_LOG_QUEUE_SIZE", 10000, minimum=100, maximum=100000)
+        )
+        self._writer_started = False
+        self._writer_lock = threading.Lock()
 
     def _table(self, conn) -> str:
         return "webfilter_blocked_log"
@@ -123,35 +185,76 @@ class _BlockedLogDb:
         except Exception:
             return None
 
-    def insert(self, *, ts: int, src_ip: str, url: str, category: str) -> None:
-        conn = self._connect()
-        if conn is None:
+    def start(self) -> None:
+        if self.max_rows <= 0:
             return
-        blocked_log_table = self._table(conn)
+        with self._writer_lock:
+            if self._writer_started:
+                return
+            self._writer_started = True
+            t = threading.Thread(target=self._run, name="webfilter-blocked-log-writer", daemon=True)
+            t.start()
+
+    def insert(self, *, ts: int, src_ip: str, url: str, category: str) -> None:
+        if self.max_rows <= 0:
+            return
         try:
             s_ip = (src_ip or "")[:128]
             s_url = (url or "")[:2000]
             s_cat = (category or "")[:128]
             if not s_ip or not s_url or not s_cat:
                 return
-            conn.execute(
-                f"INSERT INTO {blocked_log_table}(ts, src_ip, url, category) VALUES(?,?,?,?)",
-                (int(ts), s_ip, s_url, s_cat),
-            )
-            conn.commit()
-            self._inserts += 1
-            # Periodic trimming to keep the DB bounded.
-            if self.max_rows > 0 and (self._inserts % 100) == 0:
-                try:
-                    conn.execute(
-                        f"DELETE FROM {blocked_log_table} WHERE id NOT IN (SELECT id FROM (SELECT id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s) AS keepers)",
-                        (int(self.max_rows),),
-                    )
-                    conn.commit()
-                except Exception:
-                    pass
+            self.start()
+            self._queue.put_nowait((int(ts), s_ip, s_url, s_cat))
         except Exception:
             return
+
+    def _flush(self, conn, batch: list[tuple[int, str, str, str]]) -> None:
+        blocked_log_table = self._table(conn)
+        conn.executemany(
+            f"INSERT INTO {blocked_log_table}(ts, src_ip, url, category) VALUES(?,?,?,?)",
+            batch,
+        )
+        conn.commit()
+        self._inserts += len(batch)
+        if self.max_rows > 0 and self._inserts >= 1000:
+            self._inserts = 0
+            conn.execute(
+                f"DELETE FROM {blocked_log_table} WHERE id NOT IN (SELECT id FROM (SELECT id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s) AS keepers)",
+                (int(self.max_rows),),
+            )
+            conn.commit()
+
+    def _run(self) -> None:
+        conn = None
+        batch: list[tuple[int, str, str, str]] = []
+        last_flush = time.monotonic()
+        while True:
+            timeout = max(0.05, self._flush_interval - (time.monotonic() - last_flush))
+            try:
+                item = self._queue.get(timeout=timeout)
+                batch.append(item)
+            except queue.Empty:
+                pass
+
+            if batch and (len(batch) >= self._batch_size or (time.monotonic() - last_flush) >= self._flush_interval):
+                if conn is None:
+                    conn = self._connect()
+                if conn is not None:
+                    try:
+                        self._flush(conn, batch)
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        conn = None
+                batch.clear()
+                last_flush = time.monotonic()
 
 
 def _parse_line(line: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -203,6 +306,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     db = _Db()
     log_db = _BlockedLogDb(max_rows=int(args.log_max_rows))
+    log_db.start()
     fail_open = args.fail == "open"
 
     for raw in sys.stdin:

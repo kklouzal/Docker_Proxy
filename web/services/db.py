@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 from urllib.parse import unquote, urlparse
@@ -77,8 +78,11 @@ class _EmptyCursor:
 
 
 class CompatConnection:
-    def __init__(self, native: Any):
+    def __init__(self, native: Any, cfg: DatabaseConfig | None = None):
         self.native = native
+        self._cfg = cfg
+        self._closed = False
+        self._discard_on_close = False
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> CompatResult:
         translated = translate_sql(sql)
@@ -97,13 +101,27 @@ class CompatConnection:
         return CompatResult(cur)
 
     def commit(self) -> None:
-        self.native.commit()
+        try:
+            self.native.commit()
+        except Exception:
+            self._discard_on_close = True
+            raise
 
     def rollback(self) -> None:
-        self.native.rollback()
+        try:
+            self.native.rollback()
+        except Exception:
+            self._discard_on_close = True
+            raise
 
     def close(self) -> None:
-        self.native.close()
+        if self._closed:
+            return
+        self._closed = True
+        if self._discard_on_close or self._cfg is None:
+            _close_native_connection(self.native)
+            return
+        _return_connection(self._cfg, self.native)
 
     def __enter__(self) -> "CompatConnection":
         return self
@@ -126,6 +144,115 @@ OPERATIONAL_ERRORS: tuple[type[BaseException], ...] = (pymysql.OperationalError,
 
 _mysql_ready = False
 _mysql_ready_lock = threading.Lock()
+_pool_lock = threading.Lock()
+_pooled_connections: dict[tuple[str, int, str, str, str, str, int], list[tuple[float, Any]]] = {}
+
+
+def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int]:
+    return (
+        cfg.host,
+        int(cfg.port),
+        cfg.user,
+        cfg.password,
+        cfg.database,
+        cfg.charset,
+        int(cfg.connect_timeout),
+    )
+
+
+def _pool_maxsize() -> int:
+    try:
+        return max(0, min(16, int((os.environ.get("DB_POOL_SIZE") or "2").strip() or "2")))
+    except Exception:
+        return 2
+
+
+def _pool_max_idle_seconds() -> float:
+    try:
+        return max(1.0, min(300.0, float((os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "30").strip() or "30")))
+    except Exception:
+        return 30.0
+
+
+def _open_native_connection(cfg: DatabaseConfig) -> Any:
+    return pymysql.connect(  # type: ignore[call-arg]
+        host=cfg.host,
+        port=int(cfg.port),
+        user=cfg.user,
+        password=cfg.password,
+        database=cfg.database,
+        charset=cfg.charset,
+        autocommit=False,
+        connect_timeout=int(cfg.connect_timeout),
+    )
+
+
+def _close_native_connection(native: Any) -> None:
+    try:
+        native.close()
+    except Exception:
+        pass
+
+
+def _clear_pooled_connections() -> None:
+    with _pool_lock:
+        buckets = list(_pooled_connections.values())
+        _pooled_connections.clear()
+    for bucket in buckets:
+        for _ts, native in bucket:
+            _close_native_connection(native)
+
+
+def _reap_pool_locked(now: float | None = None) -> None:
+    current = time.monotonic() if now is None else float(now)
+    max_idle = _pool_max_idle_seconds()
+    stale_keys: list[tuple[str, int, str, str, str, str, int]] = []
+    for key, bucket in _pooled_connections.items():
+        keep: list[tuple[float, Any]] = []
+        for last_used, native in bucket:
+            if (current - float(last_used)) > max_idle:
+                _close_native_connection(native)
+            else:
+                keep.append((last_used, native))
+        if keep:
+            _pooled_connections[key] = keep[-_pool_maxsize():]
+        else:
+            stale_keys.append(key)
+    for key in stale_keys:
+        _pooled_connections.pop(key, None)
+
+
+def _checkout_connection(cfg: DatabaseConfig) -> Any:
+    key = _pool_key(cfg)
+    with _pool_lock:
+        _reap_pool_locked()
+        bucket = _pooled_connections.get(key) or []
+        while bucket:
+            _last_used, native = bucket.pop()
+            _pooled_connections[key] = bucket
+            try:
+                native.ping(reconnect=True)
+                return native
+            except Exception:
+                _close_native_connection(native)
+        if not bucket:
+            _pooled_connections.pop(key, None)
+    return _open_native_connection(cfg)
+
+
+def _return_connection(cfg: DatabaseConfig, native: Any) -> None:
+    maxsize = _pool_maxsize()
+    if maxsize <= 0:
+        _close_native_connection(native)
+        return
+    key = _pool_key(cfg)
+    with _pool_lock:
+        _reap_pool_locked()
+        bucket = _pooled_connections.setdefault(key, [])
+        bucket.append((time.monotonic(), native))
+        while len(bucket) > maxsize:
+            _ts, old = bucket.pop(0)
+            _close_native_connection(old)
 
 
 def _env_bool(name: str, default: str = "0") -> bool:
@@ -178,17 +305,8 @@ def resolve_database_config() -> DatabaseConfig:
 def connect() -> CompatConnection:
     cfg = resolve_database_config()
     _ensure_mysql_database(cfg)
-    native = pymysql.connect(  # type: ignore[call-arg]
-        host=cfg.host,
-        port=int(cfg.port),
-        user=cfg.user,
-        password=cfg.password,
-        database=cfg.database,
-        charset=cfg.charset,
-        autocommit=False,
-        connect_timeout=int(cfg.connect_timeout),
-    )
-    return CompatConnection(native)
+    native = _checkout_connection(cfg)
+    return CompatConnection(native, cfg=cfg)
 
 
 def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
@@ -280,3 +398,4 @@ def reset_mysql_ready_for_tests() -> None:
     global _mysql_ready
     with _mysql_ready_lock:
         _mysql_ready = False
+    _clear_pooled_connections()
