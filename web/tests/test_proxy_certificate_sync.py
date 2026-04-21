@@ -2,36 +2,12 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
-from pathlib import Path
 
-from .mysql_test_utils import configure_test_mysql_env
+from .proxy_runtime_test_helpers import import_proxy_runtime
 
 
 CERT_PEM = "-----BEGIN CERTIFICATE-----\nMIIFPROXY\n-----END CERTIFICATE-----\n"
 KEY_PEM = "-----BEGIN PRIVATE KEY-----\nMIIEPROXY\n-----END PRIVATE KEY-----\n"
-
-
-def _import_proxy_runtime(tmp_path: Path):
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (str(repo_root), str(web_root)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-    os.environ["PROXY_INSTANCE_ID"] = "edge-1"
-    os.environ["DEFAULT_PROXY_ID"] = "edge-1"
-    os.environ["DISABLE_BACKGROUND"] = "1"
-    os.environ["CERTS_DIR"] = str(tmp_path / "certs")
-    os.environ["SSL_DB_DIR"] = str(tmp_path / "ssl_db" / "store")
-
-    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
-
-    import proxy.runtime as runtime_module  # type: ignore
-
-    importlib.reload(runtime_module)
-    return runtime_module
-
 
 def test_proxy_sync_certificate_bundle_materializes_and_records_apply(tmp_path, monkeypatch):
     env_backup = {
@@ -39,7 +15,13 @@ def test_proxy_sync_certificate_bundle_materializes_and_records_apply(tmp_path, 
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "CERTS_DIR", "SSL_DB_DIR")
     }
     try:
-        runtime_module = _import_proxy_runtime(tmp_path)
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "CERTS_DIR": tmp_path / "certs",
+                "SSL_DB_DIR": tmp_path / "ssl_db" / "store",
+            },
+        )
         from services.certificate_bundles import get_certificate_bundles  # type: ignore
         from services.cert_manager import build_certificate_bundle  # type: ignore
 

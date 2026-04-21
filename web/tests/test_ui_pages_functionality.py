@@ -1,59 +1,13 @@
-import os
-import sys
-import tempfile
-
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from .mysql_test_utils import configure_test_mysql_env
-
-
-def _import_app_module():
-    try:
-        import flask  # noqa: F401
-    except Exception as e:
-        pytest.skip(f"Flask not available in this environment: {e}")
-
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-
-    secret_path = os.path.join(tempfile.mkdtemp(prefix="sfp_secret_"), "flask_secret.key")
-    configure_test_mysql_env(tempfile.mkdtemp(prefix="sfp_mysql_"), secret_path=secret_path)
-
-    import app as app_module  # type: ignore
-
-    app_module.app.testing = True
-    return app_module
-
-
-def _get_csrf_token(client) -> str:
-    client.get("/login")
-    with client.session_transaction() as sess:
-        return sess.get("_csrf_token", "") or ""
-
-
-def _login(client) -> str:
-    csrf = _get_csrf_token(client)
-    r = client.post(
-        "/login",
-        data={"username": "admin", "password": "admin", "next": "", "csrf_token": csrf},
-        follow_redirects=False,
-    )
-    assert r.status_code in (301, 302, 303, 307, 308)
-    return csrf
-
-
-def _qs(resp) -> dict[str, list[str]]:
-    loc = resp.headers.get("Location", "") or ""
-    return parse_qs(urlsplit(loc).query)
+from .flask_test_helpers import import_local_app_module, login, redirect_query_params
 
 
 @pytest.fixture()
 def app_module(monkeypatch):
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
 
     # Avoid real socket/subprocess health checks during unit tests.
     monkeypatch.setattr(app_module, "_check_icap_adblock", lambda: {"ok": True, "detail": "stub"})
@@ -384,7 +338,7 @@ def app_module(monkeypatch):
 )
 def test_ui_pages_render_and_include_csrf_meta(app_module, path: str, expected: str):
     c = app_module.app.test_client()
-    _login(c)
+    login(c)
 
     r = c.get(path)
     assert r.status_code == 200
@@ -395,7 +349,7 @@ def test_ui_pages_render_and_include_csrf_meta(app_module, path: str, expected: 
 
 def test_index_post_actions_work(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r1 = c.post("/reload", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r1.status_code in (301, 302, 303, 307, 308)
@@ -410,7 +364,7 @@ def test_index_post_actions_work(app_module):
 
 def test_ssl_errors_exclude_posts_domain(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/ssl-errors/exclude",
@@ -426,7 +380,7 @@ def test_ssl_errors_exclude_posts_domain(app_module):
 
 def test_webfilter_test_domain_json(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post("/webfilter/test", headers={"X-CSRF-Token": csrf}, json={"domain": "example.com"})
     assert r.status_code == 200
@@ -438,7 +392,7 @@ def test_webfilter_test_domain_json(app_module):
 
 def test_clamav_toggle_calls_apply_config(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post("/clamav/toggle", headers={"X-CSRF-Token": csrf}, data={"action": "enable"}, follow_redirects=False)
     assert r.status_code in (301, 302, 303, 307, 308)
@@ -449,7 +403,7 @@ def test_clamav_toggle_calls_apply_config(app_module):
 
 def test_pac_builder_create_profile(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/pac",
@@ -471,7 +425,7 @@ def test_pac_builder_create_profile(app_module):
 
 def test_adblock_save_lists_updates_enabled_map(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_adblock_store")
     assert store.list_statuses(), "expected at least one adblock list status"
@@ -488,7 +442,7 @@ def test_adblock_save_lists_updates_enabled_map(app_module):
 
 def test_adblock_save_settings_persists_values(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_adblock_store")
     r = c.post(
@@ -508,7 +462,7 @@ def test_adblock_save_settings_persists_values(app_module):
 
 def test_adblock_refresh_sets_flag_and_redirects(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_adblock_store")
     store._statuses[0].enabled = True
@@ -520,14 +474,14 @@ def test_adblock_refresh_sets_flag_and_redirects(app_module):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs(r)
+    qs = redirect_query_params(r)
     assert qs.get("refresh_requested") == ["1"]
     assert store._refresh is True
 
 
 def test_adblock_refresh_without_enabled_lists_redirects_notice(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_adblock_store")
     store._statuses[0].enabled = False
@@ -540,14 +494,14 @@ def test_adblock_refresh_without_enabled_lists_redirects_notice(app_module):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs(r)
+    qs = redirect_query_params(r)
     assert qs.get("refresh_no_lists") == ["1"]
     assert store._refresh is False
 
 
 def test_adblock_flush_cache_sets_flag_and_redirects(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_adblock_store")
     store._flush = False
@@ -558,14 +512,14 @@ def test_adblock_flush_cache_sets_flag_and_redirects(app_module):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs(r)
+    qs = redirect_query_params(r)
     assert qs.get("cache_flushed") == ["1"]
     assert store._flush is True
 
 
 def test_webfilter_save_requires_source_url_when_enabling(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/webfilter",
@@ -580,14 +534,14 @@ def test_webfilter_save_requires_source_url_when_enabling(app_module):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs(r)
+    qs = redirect_query_params(r)
     assert qs.get("tab") == ["categories"]
     assert qs.get("err_source") == ["1"]
 
 
 def test_webfilter_save_persists_settings_and_applies_include(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_webfilter_store")
     r = c.post(
@@ -613,7 +567,7 @@ def test_webfilter_save_persists_settings_and_applies_include(app_module):
 
 def test_webfilter_whitelist_add_ok_sets_flash_query(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/webfilter",
@@ -622,14 +576,14 @@ def test_webfilter_whitelist_add_ok_sets_flash_query(app_module):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs(r)
+    qs = redirect_query_params(r)
     assert qs.get("tab") == ["whitelist"]
     assert qs.get("wl_ok") == ["1"]
 
 
 def test_webfilter_whitelist_add_error_sets_error_code(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_webfilter_store")
     store.add_whitelist = lambda entry: (False, "bad_domain", "")  # type: ignore[method-assign]
@@ -641,14 +595,14 @@ def test_webfilter_whitelist_add_error_sets_error_code(app_module):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs(r)
+    qs = redirect_query_params(r)
     assert qs.get("tab") == ["whitelist"]
     assert qs.get("wl_err") == ["bad_domain"]
 
 
 def test_webfilter_whitelist_remove_calls_store(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_webfilter_store")
     store._removed_patterns = []
@@ -664,7 +618,7 @@ def test_webfilter_whitelist_remove_calls_store(app_module):
 
 def test_sslfilter_add_ok_and_error(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_sslfilter_store")
     r_ok = c.post(
@@ -674,7 +628,7 @@ def test_sslfilter_add_ok_and_error(app_module):
         follow_redirects=False,
     )
     assert r_ok.status_code in (301, 302, 303, 307, 308)
-    qs_ok = _qs(r_ok)
+    qs_ok = redirect_query_params(r_ok)
     assert qs_ok.get("ok") == ["1"]
 
     store.add_nobump = lambda entry: (False, "bad_cidr", "")  # type: ignore[method-assign]
@@ -685,13 +639,13 @@ def test_sslfilter_add_ok_and_error(app_module):
         follow_redirects=False,
     )
     assert r_err.status_code in (301, 302, 303, 307, 308)
-    qs_err = _qs(r_err)
+    qs_err = redirect_query_params(r_err)
     assert qs_err.get("err") == ["bad_cidr"]
 
 
 def test_sslfilter_remove_calls_store(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_sslfilter_store")
     removed = {"cidr": None}
@@ -714,7 +668,7 @@ def test_sslfilter_remove_calls_store(app_module):
 
 def test_exclusions_post_actions_and_apply(app_module, monkeypatch):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_fake_ex_store")
     r_add = c.post(
@@ -750,31 +704,31 @@ def test_exclusions_post_actions_and_apply(app_module, monkeypatch):
         follow_redirects=False,
     )
     assert r_apply.status_code in (301, 302, 303, 307, 308)
-    assert _qs(r_apply).get("ok") == ["1"]
+    assert redirect_query_params(r_apply).get("ok") == ["1"]
 
 
 def test_clamav_test_endpoints_redirect_with_result(app_module, monkeypatch):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     monkeypatch.setattr(app_module, "_test_eicar", lambda: {"ok": True, "detail": "Eicar FOUND"})
     r1 = c.post("/clamav/test-eicar", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r1.status_code in (301, 302, 303, 307, 308)
-    qs1 = _qs(r1)
+    qs1 = redirect_query_params(r1)
     assert qs1.get("eicar") == ["ok"]
     assert qs1.get("eicar_detail") == ["Eicar FOUND"]
 
     monkeypatch.setattr(app_module, "_send_sample_av_icap", lambda: {"ok": False, "detail": "ICAP/1.0 500"})
     r2 = c.post("/clamav/test-icap", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r2.status_code in (301, 302, 303, 307, 308)
-    qs2 = _qs(r2)
+    qs2 = redirect_query_params(r2)
     assert qs2.get("icap_sample") == ["fail"]
     assert qs2.get("icap_detail") == ["ICAP/1.0 500"]
 
 
 def test_pac_builder_update_and_delete(app_module):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     store = getattr(app_module, "_test_pac_profiles_store")
     r_upd = c.post(
@@ -808,7 +762,7 @@ def test_pac_builder_update_and_delete(app_module):
 
 def test_certs_generate_success_and_failure(app_module, monkeypatch):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     class FakeCM:
         def __init__(self):
@@ -826,7 +780,7 @@ def test_certs_generate_success_and_failure(app_module, monkeypatch):
     r_ok = c.post("/certs/generate", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r_ok.status_code in (301, 302, 303, 307, 308)
     assert fake.called is True
-    assert _qs(r_ok).get("ok") == ["1"]
+    assert redirect_query_params(r_ok).get("ok") == ["1"]
 
     def boom():
         raise RuntimeError("nope")
@@ -836,12 +790,12 @@ def test_certs_generate_success_and_failure(app_module, monkeypatch):
     monkeypatch.setattr(app_module, "cert_manager", fake2)
     r_fail = c.post("/certs/generate", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r_fail.status_code in (301, 302, 303, 307, 308)
-    assert _qs(r_fail).get("ok") == ["0"]
+    assert redirect_query_params(r_fail).get("ok") == ["0"]
 
 
 def test_squid_config_manual_apply_and_validate(app_module, monkeypatch):
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r_apply = c.post(
         "/squid/config",
@@ -850,7 +804,7 @@ def test_squid_config_manual_apply_and_validate(app_module, monkeypatch):
         follow_redirects=False,
     )
     assert r_apply.status_code in (301, 302, 303, 307, 308)
-    assert _qs(r_apply).get("ok") == ["1"]
+    assert redirect_query_params(r_apply).get("ok") == ["1"]
 
     called = {"n": 0}
 

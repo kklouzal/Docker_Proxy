@@ -2,33 +2,7 @@
 
 set -eu
 
-# Initialize environment variables
-if [ -f /config/app.env ]; then
-    # Robust .env loader (supports spaces after '='; ignores comments/blank lines).
-    while IFS= read -r line || [ -n "$line" ]; do
-        # Strip CRLF
-        line="${line%\r}"
-        case "$line" in
-            ''|\#*) continue ;;
-        esac
-        # Support optional leading 'export '
-        case "$line" in
-            export\ *) line="${line#export }" ;;
-        esac
-        case "$line" in
-            *=*)
-                key="${line%%=*}"
-                val="${line#*=}"
-                key="$(printf '%s' "$key" | tr -d ' \t')"
-                # Skip invalid keys
-                case "$key" in
-                    ''|*[!A-Za-z0-9_]* ) continue ;;
-                esac
-                export "$key=$val"
-                ;;
-        esac
-    done < /config/app.env
-fi
+. /usr/local/bin/load-env.sh
 
 IPV6_DISABLED=0
 case "$(printf '%s' "${DISABLE_IPV6:-0}" | tr 'A-Z' 'a-z')" in

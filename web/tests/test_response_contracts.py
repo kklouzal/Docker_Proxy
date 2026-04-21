@@ -1,50 +1,8 @@
-import os
-import sys
-import tempfile
-
-import pytest
-
-from .mysql_test_utils import configure_test_mysql_env
-
-
-def _import_app_module():
-    try:
-        import flask  # noqa: F401
-    except Exception as e:
-        pytest.skip(f"Flask not available in this environment: {e}")
-
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-
-    secret_path = os.path.join(tempfile.mkdtemp(prefix="sfp_secret_"), "flask_secret.key")
-    configure_test_mysql_env(tempfile.mkdtemp(prefix="sfp_mysql_"), secret_path=secret_path)
-
-    import app as app_module  # type: ignore
-
-    app_module.app.testing = True
-    return app_module
-
-
-def _get_csrf_token(client) -> str:
-    client.get("/login")
-    with client.session_transaction() as sess:
-        return sess.get("_csrf_token", "") or ""
-
-
-def _login(client) -> str:
-    csrf = _get_csrf_token(client)
-    r = client.post(
-        "/login",
-        data={"username": "admin", "password": "admin", "next": "", "csrf_token": csrf},
-        follow_redirects=False,
-    )
-    assert r.status_code in (301, 302, 303, 307, 308)
-    return csrf
+from .flask_test_helpers import import_local_app_module, login
 
 
 def test_proxy_pac_contract_public_and_mimetype():
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
     c = app_module.app.test_client()
 
     r = c.get("/proxy.pac")
@@ -55,7 +13,7 @@ def test_proxy_pac_contract_public_and_mimetype():
 
 
 def test_api_squid_config_requires_login():
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
     c = app_module.app.test_client()
 
     r = c.get("/api/squid-config", follow_redirects=False)
@@ -64,13 +22,13 @@ def test_api_squid_config_requires_login():
 
 
 def test_api_squid_config_text_plain_when_logged_in(monkeypatch):
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
 
     # Avoid touching real Squid config paths during unit tests.
     monkeypatch.setattr(app_module.squid_controller, "get_current_config", lambda: "test-config\n")
 
     c = app_module.app.test_client()
-    _login(c)
+    login(c)
 
     r = c.get("/api/squid-config")
     assert r.status_code == 200
@@ -80,7 +38,7 @@ def test_api_squid_config_text_plain_when_logged_in(monkeypatch):
 
 
 def test_api_timeseries_requires_login():
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
     c = app_module.app.test_client()
 
     r = c.get("/api/timeseries", follow_redirects=False)
@@ -89,7 +47,7 @@ def test_api_timeseries_requires_login():
 
 
 def test_api_timeseries_returns_json_when_logged_in(monkeypatch):
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
 
     class FakeTS:
         def query(self, *, resolution: str, since: int, limit: int):
@@ -98,7 +56,7 @@ def test_api_timeseries_returns_json_when_logged_in(monkeypatch):
     monkeypatch.setattr(app_module, "get_timeseries_store", lambda: FakeTS())
 
     c = app_module.app.test_client()
-    _login(c)
+    login(c)
 
     r = c.get("/api/timeseries?resolution=1s&window=10&limit=1")
     assert r.status_code == 200
@@ -111,7 +69,7 @@ def test_api_timeseries_returns_json_when_logged_in(monkeypatch):
 
 
 def test_certs_download_requires_login():
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
     c = app_module.app.test_client()
 
     r = c.get("/certs/download/ca.crt", follow_redirects=False)
@@ -120,7 +78,7 @@ def test_certs_download_requires_login():
 
 
 def test_certs_download_only_allows_ca_crt(monkeypatch, tmp_path):
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
 
     # Replace the global cert manager with a fake so we don't run shell scripts.
     ca_path = tmp_path / "ca.crt"
@@ -135,7 +93,7 @@ def test_certs_download_only_allows_ca_crt(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "cert_manager", FakeCM())
 
     c = app_module.app.test_client()
-    _login(c)
+    login(c)
 
     # Any other filename should 404 (including traversal attempts).
     for bad in ["nope.crt", "../ca.crt", "..%2Fca.crt", "ca.key"]:
@@ -150,7 +108,7 @@ def test_certs_download_only_allows_ca_crt(monkeypatch, tmp_path):
 
 
 def test_ssl_errors_export_requires_login():
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
     c = app_module.app.test_client()
 
     r = c.get("/ssl-errors/export", follow_redirects=False)
@@ -159,7 +117,7 @@ def test_ssl_errors_export_requires_login():
 
 
 def test_ssl_errors_export_csv_when_logged_in(monkeypatch):
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
 
     class Row:
         def __init__(self):
@@ -177,7 +135,7 @@ def test_ssl_errors_export_csv_when_logged_in(monkeypatch):
     monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSL())
 
     c = app_module.app.test_client()
-    _login(c)
+    login(c)
     r = c.get("/ssl-errors/export?window=300")
     assert r.status_code == 200
     assert (r.headers.get("Content-Type", "") or "").startswith("text/csv")
@@ -187,7 +145,7 @@ def test_ssl_errors_export_csv_when_logged_in(monkeypatch):
 
 
 def test_live_export_requires_login():
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
     c = app_module.app.test_client()
 
     r = c.get("/live/export", follow_redirects=False)
@@ -196,7 +154,7 @@ def test_live_export_requires_login():
 
 
 def test_live_export_csv_when_logged_in(monkeypatch):
-    app_module = _import_app_module()
+    app_module = import_local_app_module()
 
     class FakeLive:
         def export_rows(self, mode: str, *, since: int, search: str, limit: int):
@@ -205,7 +163,7 @@ def test_live_export_csv_when_logged_in(monkeypatch):
     monkeypatch.setattr(app_module, "get_store", lambda: FakeLive())
 
     c = app_module.app.test_client()
-    _login(c)
+    login(c)
     r = c.get("/live/export?mode=domains&window=300")
     assert r.status_code == 200
     assert (r.headers.get("Content-Type", "") or "").startswith("text/csv")

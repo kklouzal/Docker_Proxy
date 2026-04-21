@@ -89,14 +89,37 @@ Or copy/paste a minimal Compose:
 name: squid-flask-proxy
 
 services:
+  admin-ui:
+    image: ghcr.io/kklouzal/docker_proxy-admin-ui:main
+    ports:
+      - "0.0.0.0:5000:5000"
+    environment:
+      PROXY_CONTROL_MODE: remote
+      PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
+      DATABASE_URL: ${DATABASE_URL:-}
+      MYSQL_HOST: ${MYSQL_HOST:-}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-}
+      MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
+    depends_on:
+      proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/healthcheck.admin.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   proxy:
-    image: ghcr.io/kklouzal/docker_proxy:main
+    image: ghcr.io/kklouzal/docker_proxy-proxy:main
     sysctls:
       net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
       net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
       net.ipv6.conf.lo.disable_ipv6: ${DISABLE_IPV6:-1}
     ports:
-      - "0.0.0.0:5000:5000"       # Admin UI (Flask)
       - "0.0.0.0:80:80"           # WPAD / PAC via dedicated listener
       - "0.0.0.0:3128:3128"       # Squid HTTP proxy
       - "0.0.0.0:${DANTE_PORT:-1080}:1080"  # SOCKS5 (Dante)
@@ -130,6 +153,7 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-}
       MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
+      PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s
@@ -147,6 +171,7 @@ Notes:
 - Container images can be inspected by recipients (layers/files), so don’t bake secrets into the image.
 - If you publish under a different owner/repo, update the `image:` value.
 - The GHCR publish workflow also refreshes on a weekly schedule so the prebuilt `:main` image can pick up newer Alpine/Squid packages even without a code change.
+- The split images are now the only supported deployment path; the old monolithic image layout has been removed from the repository.
 
 ## Ports and endpoints
 
@@ -272,7 +297,7 @@ Common environment variables:
 - `WEBFILTER_HELPERS`: explicit Squid external ACL helper count for web filtering. Leave blank to derive from Squid workers (default `2 × workers`).
 - `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default `1`; rises to `2` only when the admin UI thread count is scaled up).
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
-- `PAC_UPSTREAM`: where the PAC listener fetches PAC content (default `http://127.0.0.1:5000/proxy.pac`).
+- `PAC_UPSTREAM`: optional upstream PAC fallback URL. Leave blank for the default proxy-local pre-rendered PAC serving path.
 
 Admin UI (Gunicorn) tuning:
 - `WEB_WORKERS`: explicit Gunicorn worker override. Default is `1` because the admin UI is rarely used.

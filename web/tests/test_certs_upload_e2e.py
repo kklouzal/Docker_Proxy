@@ -1,62 +1,11 @@
-import importlib
 import io
-import os
-import sys
-from urllib.parse import parse_qs, urlsplit
-
-import pytest
-
-from .mysql_test_utils import configure_test_mysql_env
-
-
-def _import_app_isolated(tmp_path):
-    try:
-        import flask  # noqa: F401
-    except Exception as e:
-        pytest.skip(f"Flask not available in this environment: {e}")
-
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-
-    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
-
-    if "app" in sys.modules:
-        del sys.modules["app"]
-
-    import app as app_module  # type: ignore
-
-    importlib.reload(app_module)
-    app_module.app.testing = True
-    return app_module
-
-
-def _get_csrf_token(client) -> str:
-    client.get("/login")
-    with client.session_transaction() as sess:
-        return sess.get("_csrf_token", "") or ""
-
-
-def _login(client) -> str:
-    csrf = _get_csrf_token(client)
-    r = client.post(
-        "/login",
-        data={"username": "admin", "password": "admin", "next": "", "csrf_token": csrf},
-        follow_redirects=False,
-    )
-    assert r.status_code in (301, 302, 303, 307, 308)
-    return csrf
-
-
-def _qs_from_location(resp) -> dict[str, list[str]]:
-    loc = resp.headers.get("Location", "") or ""
-    return parse_qs(urlsplit(loc).query)
+from .flask_test_helpers import import_isolated_app_module, login, redirect_query_params
 
 
 def test_certs_upload_rejects_missing_file(tmp_path):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/certs/upload",
@@ -64,14 +13,14 @@ def test_certs_upload_rejects_missing_file(tmp_path):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs_from_location(r)
+    qs = redirect_query_params(r)
     assert qs.get("ok") == ["0"]
 
 
 def test_certs_upload_rejects_wrong_extension(tmp_path):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     data = {
         "pfx": (io.BytesIO(b"dummy"), "ca.crt"),
@@ -80,13 +29,13 @@ def test_certs_upload_rejects_wrong_extension(tmp_path):
     }
     r = c.post("/certs/upload", data=data, content_type="multipart/form-data", follow_redirects=False)
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs_from_location(r)
+    qs = redirect_query_params(r)
     assert qs.get("ok") == ["0"]
 
 def test_certs_upload_rejects_too_large_by_streaming_read(tmp_path):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     # Exercise the streaming hard-cap (read loop) by uploading >10MB.
     big = b"a" * (10 * 1024 * 1024 + 1)
@@ -101,12 +50,12 @@ def test_certs_upload_rejects_too_large_by_streaming_read(tmp_path):
         follow_redirects=False,
     )
     assert r.status_code in (301, 302, 303, 307, 308)
-    qs = _qs_from_location(r)
+    qs = redirect_query_params(r)
     assert qs.get("ok") == ["0"]
 
 
 def test_certs_upload_happy_path_calls_install_and_reload(tmp_path, monkeypatch):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
 
     calls = {"install": 0, "reload": 0}
 
@@ -126,7 +75,7 @@ def test_certs_upload_happy_path_calls_install_and_reload(tmp_path, monkeypatch)
     monkeypatch.setattr(app_module.squid_controller, "reload_squid", fake_reload)
 
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/certs/upload",
@@ -143,5 +92,5 @@ def test_certs_upload_happy_path_calls_install_and_reload(tmp_path, monkeypatch)
     assert calls["install"] == 1
     assert calls["reload"] == 1
 
-    qs = _qs_from_location(r)
+    qs = redirect_query_params(r)
     assert qs.get("ok") == ["1"]

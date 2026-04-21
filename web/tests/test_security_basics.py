@@ -1,43 +1,16 @@
 import os
 import sys
-import tempfile
 
 import pytest
 
-from .mysql_test_utils import configure_test_mysql_env
-
-
-def _import_app():
-    try:
-        import flask  # noqa: F401
-    except Exception as e:
-        pytest.skip(f"Flask not available in this environment: {e}")
-
-    # Ensure we import the real Flask app from web/app.py.
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-
-    secret_path = os.path.join(tempfile.mkdtemp(prefix="sfp_secret_"), "flask_secret.key")
-    configure_test_mysql_env(tempfile.mkdtemp(prefix="sfp_mysql_"), secret_path=secret_path)
-
-    from app import app as flask_app  # type: ignore
-
-    flask_app.testing = True
-    return flask_app
-
-
-def _get_csrf_token(client) -> str:
-    client.get("/login")
-    with client.session_transaction() as sess:
-        return sess.get("_csrf_token", "") or ""
+from .flask_test_helpers import ensure_web_import_path, get_csrf_token, import_local_flask_app
 
 
 def test_security_headers_present_on_html():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     c.post("/login", data={"username": "admin", "password": "admin", "next": "", "csrf_token": csrf})
 
     r = c.get("/")
@@ -55,7 +28,7 @@ def test_security_headers_present_on_html():
 
 
 def test_health_is_public_without_login():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
     r = c.get("/health")
@@ -65,10 +38,10 @@ def test_health_is_public_without_login():
 
 
 def test_login_blocks_open_redirect_external_url():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     r = c.post(
         "/login",
         data={
@@ -88,10 +61,10 @@ def test_login_blocks_open_redirect_external_url():
 
 
 def test_login_blocks_open_redirect_scheme_relative_url():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     r = c.post(
         "/login",
         data={"username": "admin", "password": "admin", "next": "//evil.example/phish", "csrf_token": csrf},
@@ -105,10 +78,10 @@ def test_login_blocks_open_redirect_scheme_relative_url():
 
 
 def test_login_blocks_open_redirect_non_absolute_path():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     r = c.post(
         "/login",
         data={"username": "admin", "password": "admin", "next": "squid/config", "csrf_token": csrf},
@@ -120,10 +93,10 @@ def test_login_blocks_open_redirect_non_absolute_path():
 
 
 def test_login_allows_local_relative_next_path():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     r = c.post(
         "/login",
         data={
@@ -139,10 +112,10 @@ def test_login_allows_local_relative_next_path():
 
 
 def test_login_sets_session_cookie_flags():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     r = c.post(
         "/login",
         data={"username": "admin", "password": "admin", "next": "", "csrf_token": csrf},
@@ -159,7 +132,7 @@ def test_login_sets_session_cookie_flags():
 
 
 def test_protected_get_redirects_to_login_when_unauthenticated():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
     r = c.get("/", follow_redirects=False)
@@ -168,7 +141,7 @@ def test_protected_get_redirects_to_login_when_unauthenticated():
 
 
 def test_pac_endpoints_are_public_without_login():
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
     r = c.get("/proxy.pac")
@@ -180,10 +153,10 @@ def test_pac_endpoints_are_public_without_login():
 def test_csrf_required_for_protected_post_even_when_logged_in(monkeypatch):
     monkeypatch.delenv("DISABLE_CSRF", raising=False)
 
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     c.post("/login", data={"username": "admin", "password": "admin", "next": "", "csrf_token": csrf})
 
     # Missing csrf_token should be rejected by the global CSRF guard.
@@ -194,10 +167,10 @@ def test_csrf_required_for_protected_post_even_when_logged_in(monkeypatch):
 def test_csrf_header_is_accepted(monkeypatch):
     monkeypatch.delenv("DISABLE_CSRF", raising=False)
 
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
-    csrf = _get_csrf_token(c)
+    csrf = get_csrf_token(c)
     r = c.post("/logout", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r.status_code in (301, 302, 303, 307, 308)
 
@@ -211,7 +184,7 @@ def test_all_post_routes_require_csrf_by_default(monkeypatch):
 
     monkeypatch.delenv("DISABLE_CSRF", raising=False)
 
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
     post_rules = []
@@ -236,7 +209,7 @@ def test_all_post_routes_require_csrf_by_default(monkeypatch):
 def test_all_get_routes_require_login_except_public():
     """Regression test: any new GET route should be behind login unless intended public."""
 
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
     public_paths = {"/health", "/proxy.pac", "/wpad.dat", "/login"}
@@ -270,7 +243,7 @@ def test_all_get_routes_require_login_except_public():
 def test_csrf_required_for_post_when_enabled(monkeypatch):
     monkeypatch.delenv("DISABLE_CSRF", raising=False)
 
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
     # Establish a session but do not send any CSRF token.
@@ -283,7 +256,7 @@ def test_csrf_required_for_post_when_enabled(monkeypatch):
 def test_csrf_required_for_login_post(monkeypatch):
     monkeypatch.delenv("DISABLE_CSRF", raising=False)
 
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
     # No prior GET to establish a CSRF token, and no csrf_token provided.
     r = c.post("/login", data={"username": "admin", "password": "admin", "next": ""}, follow_redirects=False)
@@ -293,7 +266,7 @@ def test_csrf_required_for_login_post(monkeypatch):
 def test_csrf_can_be_disabled_for_debug(monkeypatch):
     monkeypatch.setenv("DISABLE_CSRF", "1")
 
-    app = _import_app()
+    app = import_local_flask_app()
     c = app.test_client()
 
     c.get("/login")
@@ -306,9 +279,7 @@ def test_csrf_can_be_disabled_for_debug(monkeypatch):
 
 def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch):
     # Import module from web/ directory.
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
+    ensure_web_import_path()
 
     from services import auth_store  # type: ignore
     sentinel = object()
@@ -328,10 +299,9 @@ def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch):
 
 
 def test_auth_store_username_and_password_validation(tmp_path):
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
+    ensure_web_import_path()
 
+    from .mysql_test_utils import configure_test_mysql_env
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "secret.key")
 
     from services.auth_store import AuthStore  # type: ignore

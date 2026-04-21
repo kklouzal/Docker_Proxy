@@ -1,60 +1,24 @@
 import os
 import socket
-import sys
 import tarfile
 import zipfile
 import tempfile
 import threading
 import unittest
 
-from .mysql_test_utils import configure_test_mysql_env
-
-
-def _import_app():
-    try:
-        import flask  # noqa: F401
-    except Exception as e:
-        raise unittest.SkipTest(f"Flask not available in this environment: {e}")
-
-    # Ensure we import the real Flask app from web/app.py.
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-
-    # Avoid starting background tailers/samplers during unit tests.
-    os.environ.setdefault('DISABLE_BACKGROUND', '1')
-
-    # Isolate auth state so tests are deterministic.
-    secret_path = os.path.join(tempfile.mkdtemp(prefix='sfp_secret_'), 'flask_secret.key')
-    configure_test_mysql_env(tempfile.mkdtemp(prefix='sfp_mysql_'), secret_path=secret_path)
-
-    from app import app as flask_app  # type: ignore
-    flask_app.testing = True
-    return flask_app
+from .flask_test_helpers import ensure_web_import_path, import_local_flask_app, login
 
 class TestRoutes(unittest.TestCase):
 
     def setUp(self):
-        flask_app = _import_app()
+        flask_app = import_local_flask_app()
         self.app = flask_app.test_client()
 
-        # Establish session + CSRF token.
-        self.app.get('/login')
-        with self.app.session_transaction() as sess:
-            self.csrf_token = sess.get('_csrf_token', '')
-
-        # Login for all protected routes.
-        self.app.post(
-            '/login',
-            data={'username': 'admin', 'password': 'admin', 'next': '', 'csrf_token': self.csrf_token},
-            follow_redirects=True,
-        )
+        self.csrf_token = login(self.app)
 
     def test_eicar_temp_file_cleaned_on_socket_failure(self):
         # Import the app module to call the helper directly.
-        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        if web_dir not in sys.path:
-            sys.path.insert(0, web_dir)
+        ensure_web_import_path()
         import app as app_module  # type: ignore
 
         old_host = os.environ.get('CLAMD_HOST')
@@ -128,9 +92,7 @@ class TestRoutes(unittest.TestCase):
                 os.environ['CLAMD_PORT'] = old_port
 
     def test_eicar_uses_remote_tcp_instream(self):
-        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        if web_dir not in sys.path:
-            sys.path.insert(0, web_dir)
+        ensure_web_import_path()
         import app as app_module  # type: ignore
 
         old_host = os.environ.get('CLAMD_HOST')
@@ -318,7 +280,7 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
     def test_wpad_dat_public(self):
-        flask_app = _import_app()
+        flask_app = import_local_flask_app()
         c = flask_app.test_client()
         r = c.get('/wpad.dat')
         self.assertEqual(r.status_code, 200)
@@ -360,9 +322,7 @@ class TestWebcatBuildUt1(unittest.TestCase):
 
     def _import_webcat_build(self):
         # Import tools module from web/ directory.
-        web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        if web_dir not in sys.path:
-            sys.path.insert(0, web_dir)
+        ensure_web_import_path()
 
         from tools import webcat_build  # type: ignore
 

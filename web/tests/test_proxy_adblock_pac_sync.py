@@ -3,31 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
-import sys
-from pathlib import Path
 
-from .mysql_test_utils import configure_test_mysql_env
-
-
-def _import_proxy_runtime(tmp_path: Path):
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (str(repo_root), str(web_root)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-    os.environ["PROXY_INSTANCE_ID"] = "edge-1"
-    os.environ["DEFAULT_PROXY_ID"] = "edge-1"
-    os.environ["DISABLE_BACKGROUND"] = "1"
-    os.environ["ADBLOCK_COMPILED_DIR"] = str(tmp_path / "compiled")
-    os.environ["PAC_RENDER_DIR"] = str(tmp_path / "pac")
-
-    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
-
-    import proxy.runtime as runtime_module  # type: ignore
-
-    importlib.reload(runtime_module)
-    return runtime_module
+from .proxy_runtime_test_helpers import import_proxy_runtime
 
 
 def test_proxy_sync_adblock_artifact_materializes_and_records_apply(tmp_path, monkeypatch):
@@ -36,7 +13,13 @@ def test_proxy_sync_adblock_artifact_materializes_and_records_apply(tmp_path, mo
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "ADBLOCK_COMPILED_DIR", "PAC_RENDER_DIR")
     }
     try:
-        runtime_module = _import_proxy_runtime(tmp_path)
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "ADBLOCK_COMPILED_DIR": tmp_path / "compiled",
+                "PAC_RENDER_DIR": tmp_path / "pac",
+            },
+        )
         from services.adblock_artifacts import get_adblock_artifacts, read_materialized_artifact_sha  # type: ignore
         from services.adblock_store import get_adblock_store  # type: ignore
 
@@ -102,7 +85,13 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "ADBLOCK_COMPILED_DIR", "PAC_RENDER_DIR")
     }
     try:
-        runtime_module = _import_proxy_runtime(tmp_path)
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "ADBLOCK_COMPILED_DIR": tmp_path / "compiled",
+                "PAC_RENDER_DIR": tmp_path / "pac",
+            },
+        )
         from services.exclusions_store import get_exclusions_store  # type: ignore
         from services.pac_profiles_store import get_pac_profiles_store  # type: ignore
         from services.pac_renderer import read_materialized_pac_state_sha  # type: ignore
@@ -156,7 +145,13 @@ def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "ADBLOCK_COMPILED_DIR", "PAC_RENDER_DIR", "PAC_UPSTREAM")
     }
     try:
-        runtime_module = _import_proxy_runtime(tmp_path)
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "ADBLOCK_COMPILED_DIR": tmp_path / "compiled",
+                "PAC_RENDER_DIR": tmp_path / "pac",
+            },
+        )
         from services.pac_profiles_store import get_pac_profiles_store  # type: ignore
 
         pac_store = get_pac_profiles_store()

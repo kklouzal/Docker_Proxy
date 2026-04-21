@@ -1,59 +1,8 @@
-import importlib
-import os
-import sys
-from urllib.parse import parse_qs, urlsplit
-
-import pytest
-
-from .mysql_test_utils import configure_test_mysql_env
-
-
-def _import_app_isolated(tmp_path):
-    try:
-        import flask  # noqa: F401
-    except Exception as e:
-        pytest.skip(f"Flask not available in this environment: {e}")
-
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-
-    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
-
-    if "app" in sys.modules:
-        del sys.modules["app"]
-
-    import app as app_module  # type: ignore
-
-    importlib.reload(app_module)
-    app_module.app.testing = True
-    return app_module
-
-
-def _get_csrf_token(client) -> str:
-    client.get("/login")
-    with client.session_transaction() as sess:
-        return sess.get("_csrf_token", "") or ""
-
-
-def _login(client) -> str:
-    csrf = _get_csrf_token(client)
-    r = client.post(
-        "/login",
-        data={"username": "admin", "password": "admin", "next": "", "csrf_token": csrf},
-        follow_redirects=False,
-    )
-    assert r.status_code in (301, 302, 303, 307, 308)
-    return csrf
-
-
-def _qs(resp) -> dict[str, list[str]]:
-    loc = resp.headers.get("Location", "") or ""
-    return parse_qs(urlsplit(loc).query)
+from .flask_test_helpers import import_isolated_app_module, login, redirect_query_params
 
 
 def test_apply_safe_workers_are_clamped(tmp_path, monkeypatch):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
 
     captured = {"options": None}
 
@@ -81,7 +30,7 @@ def test_apply_safe_workers_are_clamped(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "get_exclusions_store", lambda: type("S", (), {"list_all": lambda self=None: FakeEx()})())
 
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     # too high -> clamped to MAX_WORKERS (default 4)
     r = c.post(
@@ -105,7 +54,7 @@ def test_apply_safe_workers_are_clamped(tmp_path, monkeypatch):
 
 
 def test_apply_safe_optional_int_blank_does_not_override(tmp_path, monkeypatch):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
 
     captured = {"options": None}
 
@@ -133,7 +82,7 @@ def test_apply_safe_optional_int_blank_does_not_override(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "get_exclusions_store", lambda: type("S", (), {"list_all": lambda self=None: FakeEx()})())
 
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/squid/config/apply-safe",
@@ -150,7 +99,7 @@ def test_apply_safe_optional_int_blank_does_not_override(tmp_path, monkeypatch):
 
 
 def test_apply_safe_error_redirects(tmp_path, monkeypatch):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
 
     monkeypatch.setattr(app_module.squid_controller, "get_current_config", lambda: "")
     monkeypatch.setattr(app_module.squid_controller, "get_tunable_options", lambda _cfg=None: {})
@@ -168,7 +117,7 @@ def test_apply_safe_error_redirects(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "get_exclusions_store", lambda: type("S", (), {"list_all": lambda self=None: FakeEx()})())
 
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/squid/config/apply-safe",
@@ -181,7 +130,7 @@ def test_apply_safe_error_redirects(tmp_path, monkeypatch):
 
 
 def test_apply_overrides_maps_form_to_dict(tmp_path, monkeypatch):
-    app_module = _import_app_isolated(tmp_path)
+    app_module = import_isolated_app_module(tmp_path)
 
     captured = {"overrides": None}
 
@@ -205,7 +154,7 @@ def test_apply_overrides_maps_form_to_dict(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.squid_controller, "apply_config_text", lambda cfg: (True, "ok"))
 
     c = app_module.app.test_client()
-    csrf = _login(c)
+    csrf = login(c)
 
     r = c.post(
         "/squid/config/apply-overrides",
@@ -224,5 +173,5 @@ def test_apply_overrides_maps_form_to_dict(tmp_path, monkeypatch):
     assert captured["overrides"]["client_no_store"] is False
     assert captured["overrides"]["ignore_auth"] is False
 
-    qs = _qs(r)
+    qs = redirect_query_params(r)
     assert qs.get("ok") == ["1"]

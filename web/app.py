@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import time
 import os
 import ipaddress
+import subprocess
 import shutil
 from services.stats import get_stats
 from services.live_stats import get_store
@@ -34,7 +35,7 @@ import re
 import secrets
 import csv
 import io
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse
 from typing import Any, Dict
 from markupsafe import Markup
 
@@ -657,6 +658,31 @@ def _apply_local_adblock_runtime(*, force: bool = False, clear_cache: bool = Fal
         return False, public_error_message(exc, default='Failed to apply adblock runtime locally.')
 
 
+def _apply_local_policy_include(store: Any) -> None:
+    store.apply_squid_include()
+    subprocess.run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+
+
+def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> None:
+    try:
+        if _is_remote_control_mode():
+            _trigger_proxy_sync(force=force)
+        else:
+            _apply_local_policy_include(store)
+    except Exception:
+        pass
+
+
+def _best_effort_refresh_pac_runtime() -> None:
+    try:
+        if _is_remote_control_mode():
+            _trigger_proxy_sync()
+        else:
+            _materialize_local_pac_state()
+    except Exception:
+        pass
+
+
 @app.route('/')
 def index():
     if _is_remote_control_mode():
@@ -839,16 +865,7 @@ def ssl_errors_exclude():
             get_exclusions_store().add_domain(domain)
         except Exception:
             pass
-        if _is_remote_control_mode():
-            try:
-                _trigger_proxy_sync()
-            except Exception:
-                pass
-        else:
-            try:
-                _materialize_local_pac_state()
-            except Exception:
-                pass
+        _best_effort_refresh_pac_runtime()
     return redirect(url_for('ssl_errors', q=domain))
 
 
@@ -1099,40 +1116,14 @@ def webfilter():
                     return redirect(url_for('webfilter', tab='categories', err_source='1'))
 
             store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
-
-            if _is_remote_control_mode():
-                try:
-                    _trigger_proxy_sync(force=True)
-                except Exception:
-                    pass
-            else:
-                # Apply include + reconfigure squid so changes take effect immediately.
-                try:
-                    store.apply_squid_include()
-                    from subprocess import run as _run
-
-                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-                except Exception:
-                    pass
+            _best_effort_refresh_managed_policy(store, force=True)
 
             return redirect(url_for('webfilter', tab='categories'))
 
         if action == 'whitelist_add':
             entry = (request.form.get('whitelist_domain') or '').strip()
             ok, err, _pat = store.add_whitelist(entry)
-            if _is_remote_control_mode():
-                try:
-                    _trigger_proxy_sync(force=True)
-                except Exception:
-                    pass
-            else:
-                try:
-                    store.apply_squid_include()
-                    from subprocess import run as _run
-
-                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-                except Exception:
-                    pass
+            _best_effort_refresh_managed_policy(store, force=True)
 
             if not ok:
                 return redirect(url_for('webfilter', tab='whitelist', wl_err=(err or '1')))
@@ -1144,19 +1135,7 @@ def webfilter():
                 store.remove_whitelist(pat)
             except Exception:
                 pass
-            if _is_remote_control_mode():
-                try:
-                    _trigger_proxy_sync(force=True)
-                except Exception:
-                    pass
-            else:
-                try:
-                    store.apply_squid_include()
-                    from subprocess import run as _run
-
-                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-                except Exception:
-                    pass
+            _best_effort_refresh_managed_policy(store, force=True)
             return redirect(url_for('webfilter', tab='whitelist'))
 
         return redirect(url_for('webfilter', tab=tab))
@@ -1210,19 +1189,7 @@ def sslfilter():
         if action == 'add':
             entry = (request.form.get('cidr') or '').strip()
             ok, err, _canonical = store.add_nobump(entry)
-            if _is_remote_control_mode():
-                try:
-                    _trigger_proxy_sync(force=True)
-                except Exception:
-                    pass
-            else:
-                try:
-                    store.apply_squid_include()
-                    from subprocess import run as _run
-
-                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-                except Exception:
-                    pass
+            _best_effort_refresh_managed_policy(store, force=True)
             if not ok:
                 return redirect(url_for('sslfilter', err=(err or '1')))
             return redirect(url_for('sslfilter', ok='1'))
@@ -1233,19 +1200,7 @@ def sslfilter():
                 store.remove_nobump(cidr)
             except Exception:
                 pass
-            if _is_remote_control_mode():
-                try:
-                    _trigger_proxy_sync(force=True)
-                except Exception:
-                    pass
-            else:
-                try:
-                    store.apply_squid_include()
-                    from subprocess import run as _run
-
-                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-                except Exception:
-                    pass
+            _best_effort_refresh_managed_policy(store, force=True)
             return redirect(url_for('sslfilter'))
 
         return redirect(url_for('sslfilter'))
@@ -1872,34 +1827,22 @@ def apply_cache_overrides():
 def exclusions():
     store = get_exclusions_store()
 
-    def _refresh_pac_side_state() -> None:
-        if _is_remote_control_mode():
-            try:
-                _trigger_proxy_sync()
-            except Exception:
-                pass
-        else:
-            try:
-                _materialize_local_pac_state()
-            except Exception:
-                pass
-
     if request.method == 'POST':
         action = (request.form.get('action') or '').strip()
 
         if action == 'add_domain':
             store.add_domain(request.form.get('domain') or '')
-            _refresh_pac_side_state()
+            _best_effort_refresh_pac_runtime()
         elif action == 'remove_domain':
             store.remove_domain(request.form.get('domain') or '')
-            _refresh_pac_side_state()
+            _best_effort_refresh_pac_runtime()
         elif action == 'add_src':
             store.add_net('src_nets', request.form.get('cidr') or '')
         elif action == 'remove_src':
             store.remove_net('src_nets', request.form.get('cidr') or '')
         elif action == 'toggle_private':
             store.set_exclude_private_nets(request.form.get('exclude_private_nets') == 'on')
-            _refresh_pac_side_state()
+            _best_effort_refresh_pac_runtime()
         elif action == 'apply':
             # Apply current tunables + exclusions as a regenerated config.
             current = _current_managed_config()
@@ -1985,16 +1928,7 @@ def pac_builder():
                 )
                 if not ok:
                     return redirect(url_for('pac_builder', error='1', msg=err))
-                if _is_remote_control_mode():
-                    try:
-                        _trigger_proxy_sync()
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        _materialize_local_pac_state()
-                    except Exception:
-                        pass
+                _best_effort_refresh_pac_runtime()
                 return redirect(url_for('pac_builder', ok='1'))
 
             if action == 'update':
@@ -2011,31 +1945,13 @@ def pac_builder():
                 )
                 if not ok:
                     return redirect(url_for('pac_builder', error='1', msg=err))
-                if _is_remote_control_mode():
-                    try:
-                        _trigger_proxy_sync()
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        _materialize_local_pac_state()
-                    except Exception:
-                        pass
+                _best_effort_refresh_pac_runtime()
                 return redirect(url_for('pac_builder', ok='1'))
 
             if action == 'delete':
                 pid = int(request.form.get('profile_id') or '0')
                 store.delete_profile(pid)
-                if _is_remote_control_mode():
-                    try:
-                        _trigger_proxy_sync()
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        _materialize_local_pac_state()
-                    except Exception:
-                        pass
+                _best_effort_refresh_pac_runtime()
                 return redirect(url_for('pac_builder', ok='1'))
         except Exception as e:
             return redirect(url_for('pac_builder', error='1', msg=public_error_message(e)))
@@ -2050,19 +1966,6 @@ def pac_builder():
 
     pac_url = build_public_pac_url(request.host or '')
     return render_template('pac.html', profiles=profiles, pac_url=pac_url)
-
-
-def _cidr_to_mask(cidr: str) -> str:
-    # Convert v4 CIDR to dotted mask for PAC's isInNet().
-    try:
-        import ipaddress
-
-        net = ipaddress.ip_network(cidr, strict=False)
-        if net.version != 4:
-            return '255.255.255.255'
-        return str(net.netmask)
-    except Exception:
-        return '255.255.255.255'
 
 @app.route('/status')
 def status():
