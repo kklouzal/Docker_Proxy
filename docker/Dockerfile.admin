@@ -1,0 +1,21 @@
+ARG ALPINE_VERSION=latest
+
+FROM alpine:${ALPINE_VERSION}
+
+RUN apk add --no-cache python3 py3-flask py3-gunicorn py3-pip supervisor openssl ca-certificates libatomic file
+
+WORKDIR /app
+
+COPY web /app
+COPY squid /squid
+COPY docker/entrypoint.admin.sh /entrypoint.admin.sh
+COPY docker/supervisord.admin.conf /etc/supervisord.conf
+COPY docker/healthcheck.admin.sh /healthcheck.admin.sh
+
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
+
+RUN chmod +x /entrypoint.admin.sh /healthcheck.admin.sh
+
+EXPOSE 5000
+
+ENTRYPOINT ["/entrypoint.admin.sh"]

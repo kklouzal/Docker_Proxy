@@ -9,8 +9,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.db import connect, create_index_if_not_exists
+from services.db import column_exists, connect, create_index_if_not_exists
 from services.logutil import log_exception_throttled
+from services.proxy_context import get_proxy_id
 
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,7 @@ class SslErrorsStore:
                 """
                 CREATE TABLE IF NOT EXISTS ssl_errors (
                     row_key CHAR(40) PRIMARY KEY,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     domain VARCHAR(255) NOT NULL,
                     category VARCHAR(64) NOT NULL,
                     reason VARCHAR(300) NOT NULL,
@@ -189,9 +191,11 @@ class SslErrorsStore:
                 )
                 """
             )
-            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_last_seen", columns_sql="last_seen")
-            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_domain", columns_sql="domain, last_seen")
-            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_category", columns_sql="category, last_seen")
+            if not column_exists(conn, "ssl_errors", "proxy_id"):
+                conn.execute("ALTER TABLE ssl_errors ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER row_key")
+            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_last_seen", columns_sql="proxy_id, last_seen")
+            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_domain", columns_sql="proxy_id, domain, last_seen")
+            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_category", columns_sql="proxy_id, category, last_seen")
 
             # Retention: keep aggregates that have been seen recently.
             cutoff = _now() - (30 * 24 * 60 * 60)
@@ -204,18 +208,19 @@ class SslErrorsStore:
             conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (int(cutoff),))
 
     def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
-        row_key = hashlib.sha1(f"{domain}|{category}|{reason}".encode("utf-8", errors="replace")).hexdigest()
+        proxy_id = get_proxy_id()
+        row_key = hashlib.sha1(f"{proxy_id}|{domain}|{category}|{reason}".encode("utf-8", errors="replace")).hexdigest()
         conn.execute(
             """
-            INSERT INTO ssl_errors(row_key, domain, category, reason, count, first_seen, last_seen, sample)
-            VALUES(?,?,?,?,1,?,?,?)
+            INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
+            VALUES(?,?,?,?,?,1,?,?,?)
             ON CONFLICT(row_key) DO UPDATE SET
                 count = count + 1,
                 first_seen = MIN(first_seen, excluded.first_seen),
                 last_seen = MAX(last_seen, excluded.last_seen),
                 sample = excluded.sample;
             """,
-            (row_key, domain, category, reason, ts, ts, sample[:400]),
+            (row_key, proxy_id, domain, category, reason, ts, ts, sample[:400]),
         )
 
     def ingest_line(self, line: str) -> None:
@@ -254,8 +259,8 @@ class SslErrorsStore:
                 self._upsert(conn, domain, category, reason, ts, sample)
 
     def list_recent(self, *, since: Optional[int] = None, search: str = "", limit: int = 200) -> List[SslErrorRow]:
-        where = []
-        params: List[Any] = []
+        where = ["proxy_id = ?"]
+        params: List[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= ?")
             params.append(int(since))
@@ -283,8 +288,8 @@ class SslErrorsStore:
         ]
 
     def top_domains(self, *, since: Optional[int] = None, search: str = "", limit: int = 20) -> List[Dict[str, Any]]:
-        where = []
-        params: List[Any] = []
+        where = ["proxy_id = ?"]
+        params: List[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= ?")
             params.append(int(since))
@@ -447,10 +452,11 @@ class SslErrorsStore:
 
     def list_errors(self, limit: int = 200) -> List[Dict[str, Any]]:
         lim = max(10, min(1000, int(limit)))
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors ORDER BY last_seen DESC, count DESC LIMIT ?",
-                (lim,),
+                "SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors WHERE proxy_id=? ORDER BY last_seen DESC, count DESC LIMIT ?",
+                (proxy_id, lim),
             ).fetchall()
 
         out: List[Dict[str, Any]] = []

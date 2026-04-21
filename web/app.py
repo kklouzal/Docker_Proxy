@@ -1,11 +1,14 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file, abort, session
+from flask import Flask, g, render_template, request, redirect, url_for, jsonify, send_file, abort, session
 from services.squidctl import SquidController
-from services.cert_manager import CertManager, install_pfx_as_ca
+from services.cert_manager import CertManager, generate_self_signed_ca_bundle, install_pfx_as_ca, parse_pfx_bundle
+from services.certificate_bundles import get_certificate_bundles
 from services.auth_store import get_auth_store
+from services.config_revisions import get_config_revisions
 from datetime import UTC, datetime, timedelta
 import time
 import os
 import ipaddress
+import shutil
 from services.stats import get_stats
 from services.live_stats import get_store
 from services.exclusions_store import get_exclusions_store
@@ -14,9 +17,14 @@ from services.timeseries_store import get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.socks_store import get_socks_store
 from services.adblock_store import get_adblock_store
+from services.adblock_artifacts import apply_active_artifact_locally, get_adblock_artifacts
 from services.webfilter_store import get_webfilter_store
 from services.sslfilter_store import get_sslfilter_store
 from services.pac_profiles_store import get_pac_profiles_store
+from services.pac_renderer import build_public_pac_url, build_proxy_pac_state, materialize_proxy_pac_state, render_proxy_pac_for_request
+from services.proxy_client import ProxyClientError, get_proxy_client
+from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
+from services.proxy_registry import get_proxy_registry
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.errors import public_error_message
@@ -33,6 +41,14 @@ from markupsafe import Markup
 app = Flask(__name__)
 squid_controller = SquidController()
 cert_manager = CertManager()
+
+
+def _control_mode() -> str:
+    return (os.environ.get('PROXY_CONTROL_MODE') or 'local').strip().lower()
+
+
+def _is_remote_control_mode() -> bool:
+    return _control_mode() == 'remote'
 
 
 def _max_workers() -> int:
@@ -196,6 +212,61 @@ def _require_login_guard():
     return redirect(url_for('login', next=request.full_path))
 
 
+def _resolve_selected_proxy_id() -> str:
+    requested_proxy = request.args.get('proxy_id') or request.form.get('proxy_id')
+    if requested_proxy is not None:
+        session['active_proxy_id'] = normalize_proxy_id(requested_proxy)
+
+    preferred = session.get('active_proxy_id') or get_default_proxy_id()
+    if not _is_remote_control_mode():
+        active = normalize_proxy_id(preferred)
+        session['active_proxy_id'] = active
+        return active
+
+    registry = get_proxy_registry()
+    active = registry.resolve_proxy_id(preferred)
+    session['active_proxy_id'] = active
+    return active
+
+
+@app.before_request
+def _bind_proxy_context():
+    token = set_proxy_id(_resolve_selected_proxy_id())
+    g._proxy_context_token = token
+    return None
+
+
+@app.teardown_request
+def _reset_proxy_context(_exc):
+    token = getattr(g, '_proxy_context_token', None)
+    if token is not None:
+        reset_proxy_id(token)
+
+
+@app.context_processor
+def _inject_proxy_context():
+    active_proxy_id = get_proxy_id()
+    if not _is_remote_control_mode():
+        return {
+            'remote_control_mode': False,
+            'active_proxy_id': active_proxy_id,
+            'active_proxy': None,
+            'fleet_proxies': [],
+        }
+
+    registry = get_proxy_registry()
+    proxies = registry.list_proxies()
+    if not proxies:
+        proxies = [registry.ensure_default_proxy()]
+    active_proxy = registry.get_proxy(active_proxy_id) or proxies[0]
+    return {
+        'remote_control_mode': True,
+        'active_proxy_id': active_proxy.proxy_id,
+        'active_proxy': active_proxy,
+        'fleet_proxies': proxies,
+    }
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -356,33 +427,48 @@ def _datetimeformat(ts: object) -> str:
         return ''
 
 if not _disable_background:
-    # Start background ingestion of Squid access.log into the database (best-effort).
-    try:
-        get_store().start_background()
-    except Exception:
-        pass
+    if not _is_remote_control_mode():
+        # Start background ingestion of Squid access.log into the database (best-effort).
+        try:
+            get_store().start_background()
+        except Exception:
+            pass
 
-    # Start 1s time-series sampler + rollups (best-effort).
-    try:
-        get_timeseries_store().start_background(get_stats)
-    except Exception:
-        pass
+        # Start 1s time-series sampler + rollups (best-effort).
+        try:
+            get_timeseries_store().start_background(get_stats)
+        except Exception:
+            pass
 
-    # Start background ingestion of Squid cache.log SSL/TLS errors (best-effort).
-    try:
-        get_ssl_errors_store().start_background()
-    except Exception:
-        pass
+        # Start background ingestion of Squid cache.log SSL/TLS errors (best-effort).
+        try:
+            get_ssl_errors_store().start_background()
+        except Exception:
+            pass
 
-    # Start background ingestion of Dante (sockd) logs (best-effort).
-    try:
-        get_socks_store().start_background()
-    except Exception:
-        pass
+        # Start background ingestion of Dante (sockd) logs (best-effort).
+        try:
+            get_socks_store().start_background()
+        except Exception:
+            pass
 
-    # Start background ingestion of c-icap adblock (REQMOD) blocks (best-effort).
+        # Start background ingestion of c-icap adblock (REQMOD) blocks (best-effort).
+        try:
+            get_adblock_store().start_blocklog_background()
+        except Exception:
+            pass
+
+        # Pre-render PAC assets for the local PAC listener.
+        try:
+            state = build_proxy_pac_state(get_proxy_id())
+            target_dir = (os.environ.get('PAC_RENDER_DIR') or '/var/lib/squid-flask-proxy/pac').strip() or '/var/lib/squid-flask-proxy/pac'
+            materialize_proxy_pac_state(target_dir, state=state)
+        except Exception:
+            pass
+
+    # Build and activate adblock artifacts from MySQL-backed admin state.
     try:
-        get_adblock_store().start_blocklog_background()
+        get_adblock_artifacts().start_background()
     except Exception:
         pass
 
@@ -431,8 +517,217 @@ def _csv_safe(value: object) -> str:
     return s
 
 
+def _current_managed_config() -> str:
+    if _is_remote_control_mode():
+        revisions = get_config_revisions()
+        current = revisions.get_active_config_text(get_proxy_id())
+        if current:
+            return current
+        fallback = squid_controller.get_current_config() or ""
+        if fallback.strip():
+            revisions.ensure_active_revision(get_proxy_id(), fallback, created_by='system', source_kind='bootstrap')
+        return fallback
+    return squid_controller.get_current_config() or ""
+
+
+def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
+    if not _is_remote_control_mode():
+        return squid_controller.validate_config_text(config_text)
+    if shutil.which('squid') is None:
+        return True, 'Validation is deferred to the selected proxy during sync in split mode.'
+    return squid_controller.validate_config_text(config_text)
+
+
+def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> tuple[bool, str]:
+    if not _is_remote_control_mode():
+        return squid_controller.apply_config_text(config_text)
+
+    proxy_id = get_proxy_id()
+    created_by = str(session.get('user') or '')
+    revision = get_config_revisions().create_revision(
+        proxy_id,
+        config_text,
+        created_by=created_by,
+        source_kind=source_kind,
+        activate=True,
+    )
+    try:
+        result = get_proxy_client().sync_proxy(proxy_id, force=True)
+        ok = bool(result.get('ok', False))
+        detail = str(result.get('detail') or f'Revision {revision.revision_id} queued for sync.')
+        return ok, detail
+    except ProxyClientError as exc:
+        return False, f'Revision {revision.revision_id} saved, but immediate sync failed: {exc}'
+
+
+def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
+    if not _is_remote_control_mode():
+        result = squid_controller.reload_squid()
+        if isinstance(result, tuple) and len(result) == 2:
+            stdout, stderr = result
+        else:
+            stdout, stderr = b'', b''
+        detail = (stdout or b'').decode('utf-8', errors='replace') + (stderr or b'').decode('utf-8', errors='replace')
+        return (not bool(stderr)), detail.strip() or 'Squid reloaded.'
+
+    try:
+        result = get_proxy_client().sync_proxy(get_proxy_id(), force=force)
+        return bool(result.get('ok', False)), str(result.get('detail') or 'Sync requested.')
+    except ProxyClientError as exc:
+        return False, str(exc)
+
+
+def _trigger_proxy_cache_clear() -> tuple[bool, str]:
+    if not _is_remote_control_mode():
+        result = squid_controller.clear_disk_cache()
+        if isinstance(result, tuple) and len(result) == 2:
+            return bool(result[0]), str(result[1] or '')
+        return True, 'Cache clear requested.'
+
+    try:
+        result = get_proxy_client().clear_proxy_cache(get_proxy_id())
+        return bool(result.get('ok', False)), str(result.get('detail') or 'Cache clear requested.')
+    except ProxyClientError as exc:
+        return False, str(exc)
+
+
+def _nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
+    if not _is_remote_control_mode():
+        ok, _detail = _trigger_proxy_sync(force=force)
+        return (1 if ok else 0), (1 if ok else 0)
+
+    proxies = get_proxy_registry().list_proxies()
+    if not proxies:
+        return 0, 0
+
+    client = get_proxy_client()
+    ok_count = 0
+    for proxy in proxies:
+        try:
+            result = client.sync_proxy(proxy.proxy_id, force=force)
+        except ProxyClientError:
+            continue
+        if bool(result.get('ok', False)):
+            ok_count += 1
+    return len(proxies), ok_count
+
+
+def _publish_certificate_bundle_remote(bundle, *, original_filename: str = '') -> tuple[bool, str]:
+    revision = get_certificate_bundles().create_revision(
+        bundle,
+        created_by=str(session.get('user') or ''),
+        original_filename=(original_filename or '')[:255],
+        activate=True,
+    )
+    attempted, ok_count = _nudge_registered_proxies(force=True)
+    if attempted == 0:
+        detail = (
+            f'Certificate revision {revision.revision_id} saved. '
+            'No registered proxies were available to nudge; proxies will apply it on their next poll.'
+        )
+    elif ok_count == attempted:
+        plural = 'proxy' if ok_count == 1 else 'proxies'
+        detail = f'Certificate revision {revision.revision_id} saved. Nudged {ok_count} {plural} immediately.'
+    else:
+        detail = (
+            f'Certificate revision {revision.revision_id} saved. '
+            f'Nudged {ok_count}/{attempted} proxies immediately; remaining proxies will apply it on their next poll.'
+        )
+    return True, detail
+
+
+def _materialize_local_pac_state() -> tuple[bool, str]:
+    if app.testing:
+        return True, 'PAC materialization skipped while testing.'
+    try:
+        state = build_proxy_pac_state(get_proxy_id())
+        target_dir = (os.environ.get('PAC_RENDER_DIR') or '/var/lib/squid-flask-proxy/pac').strip() or '/var/lib/squid-flask-proxy/pac'
+        materialize_proxy_pac_state(target_dir, state=state)
+        return True, 'PAC state materialized locally.'
+    except Exception as exc:
+        return False, public_error_message(exc, default='Failed to materialize PAC state locally.')
+
+
+def _apply_local_adblock_runtime(*, force: bool = False, clear_cache: bool = False) -> tuple[bool, str]:
+    if app.testing:
+        return True, 'Adblock runtime apply skipped while testing.'
+    try:
+        return apply_active_artifact_locally(force=force, clear_cache=clear_cache)
+    except Exception as exc:
+        return False, public_error_message(exc, default='Failed to apply adblock runtime locally.')
+
+
 @app.route('/')
 def index():
+    if _is_remote_control_mode():
+        proxy_id = get_proxy_id()
+        try:
+            health = get_proxy_client().get_health(proxy_id)
+        except ProxyClientError as exc:
+            proxy = get_proxy_registry().get_proxy(proxy_id)
+            health = {
+                'ok': False,
+                'status': proxy.status if proxy else 'offline',
+                'proxy_status': str(exc),
+                'stats': {},
+                'services': {
+                    'icap': {'ok': False, 'detail': 'unavailable'},
+                    'clamav': {'ok': False, 'detail': 'unavailable'},
+                    'dante': {'ok': False, 'detail': 'unavailable'},
+                },
+            }
+
+        proxy_detail = str(health.get('proxy_status') or health.get('detail') or '')
+        proxy_ok = bool(health.get('ok'))
+        stats = health.get('stats') or {}
+        try:
+            trends = get_timeseries_store().summary()
+        except Exception:
+            trends = {}
+        services = health.get('services') or {}
+        icap_health = services.get('icap') or {'ok': False, 'detail': 'n/a'}
+        clamav_health = services.get('clamav') or {'ok': False, 'detail': 'n/a'}
+        dante_health = services.get('dante') or {'ok': False, 'detail': 'n/a'}
+
+        last_config = None
+        latest_apply = get_config_revisions().latest_apply(proxy_id)
+        if latest_apply is not None:
+            last_config = {
+                'ts': latest_apply.applied_ts,
+                'kind': 'config_apply_remote',
+                'ok': latest_apply.ok,
+                'remote_addr': proxy_id,
+                'user_agent': latest_apply.applied_by,
+                'detail': latest_apply.detail,
+            }
+        else:
+            try:
+                row = get_audit_store().latest_config_apply()
+                if row:
+                    last_config = {
+                        'ts': int(row[0]),
+                        'kind': row[1],
+                        'ok': bool(row[2]),
+                        'remote_addr': row[3],
+                        'user_agent': row[4],
+                        'detail': row[5],
+                    }
+            except Exception:
+                pass
+
+        return render_template(
+            'index.html',
+            proxy_status=proxy_detail,
+            proxy_ok=proxy_ok,
+            flask_status='OK',
+            stats=stats,
+            trends=trends,
+            icap_health=icap_health,
+            clamav_health=clamav_health,
+            dante_health=dante_health,
+            last_config=last_config,
+        )
+
     stdout, stderr = squid_controller.get_status()
     proxy_detail = (stdout or b'').decode('utf-8', errors='replace') + (stderr or b'').decode('utf-8', errors='replace')
     proxy_ok = not stderr
@@ -485,8 +780,29 @@ def health():
 
 @app.route('/api/squid-config', methods=['GET'])
 def api_squid_config():
-    cfg = squid_controller.get_current_config() or ""
+    cfg = _current_managed_config()
     return app.response_class(cfg, mimetype='text/plain; charset=utf-8')
+
+
+@app.route('/fleet', methods=['GET'])
+def fleet():
+    if not _is_remote_control_mode():
+        return redirect(url_for('index'))
+
+    registry = get_proxy_registry()
+    proxies = registry.list_proxies()
+    live_health = {}
+    client = get_proxy_client()
+    for proxy in proxies:
+        try:
+            live_health[proxy.proxy_id] = client.get_health(proxy.proxy_id, timeout_seconds=1.5)
+        except ProxyClientError as exc:
+            live_health[proxy.proxy_id] = {
+                'ok': False,
+                'status': proxy.status,
+                'detail': str(exc),
+            }
+    return render_template('fleet.html', proxies=proxies, live_health=live_health)
 
 
 @app.route('/ssl-errors', methods=['GET'])
@@ -523,6 +839,16 @@ def ssl_errors_exclude():
             get_exclusions_store().add_domain(domain)
         except Exception:
             pass
+        if _is_remote_control_mode():
+            try:
+                _trigger_proxy_sync()
+            except Exception:
+                pass
+        else:
+            try:
+                _materialize_local_pac_state()
+            except Exception:
+                pass
     return redirect(url_for('ssl_errors', q=domain))
 
 
@@ -642,6 +968,7 @@ def adblock():
             for st in store.list_statuses():
                 enabled_map[st.key] = request.form.get(f'enabled_{st.key}') == 'on'
             store.set_enabled(enabled_map)
+            store.request_refresh_now()
         elif action == 'save_settings':
             enabled = request.form.get('adblock_enabled') == 'on'
 
@@ -656,6 +983,7 @@ def adblock():
             cache_ttl = as_int('cache_ttl', int(cur.get('cache_ttl') or 0))
             cache_max = as_int('cache_max', int(cur.get('cache_max') or 0))
             store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
+            store.request_refresh_now()
         elif action == 'refresh':
             # Refresh is handled asynchronously by background workers.
             # If no lists are enabled, a refresh won't download anything.
@@ -670,6 +998,16 @@ def adblock():
             return redirect(url_for('adblock', refresh_requested='1'))
         elif action == 'flush_cache':
             store.request_cache_flush()
+            if _is_remote_control_mode():
+                try:
+                    _trigger_proxy_sync()
+                except Exception:
+                    pass
+            else:
+                try:
+                    _apply_local_adblock_runtime(force=True, clear_cache=True)
+                except Exception:
+                    pass
             return redirect(url_for('adblock', cache_flushed='1'))
         return redirect(url_for('adblock'))
 
@@ -762,27 +1100,39 @@ def webfilter():
 
             store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
 
-            # Apply include + reconfigure squid so changes take effect immediately.
-            try:
-                store.apply_squid_include()
-                from subprocess import run as _run
+            if _is_remote_control_mode():
+                try:
+                    _trigger_proxy_sync(force=True)
+                except Exception:
+                    pass
+            else:
+                # Apply include + reconfigure squid so changes take effect immediately.
+                try:
+                    store.apply_squid_include()
+                    from subprocess import run as _run
 
-                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-            except Exception:
-                pass
+                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+                except Exception:
+                    pass
 
             return redirect(url_for('webfilter', tab='categories'))
 
         if action == 'whitelist_add':
             entry = (request.form.get('whitelist_domain') or '').strip()
             ok, err, _pat = store.add_whitelist(entry)
-            try:
-                store.apply_squid_include()
-                from subprocess import run as _run
+            if _is_remote_control_mode():
+                try:
+                    _trigger_proxy_sync(force=True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    store.apply_squid_include()
+                    from subprocess import run as _run
 
-                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-            except Exception:
-                pass
+                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+                except Exception:
+                    pass
 
             if not ok:
                 return redirect(url_for('webfilter', tab='whitelist', wl_err=(err or '1')))
@@ -794,13 +1144,19 @@ def webfilter():
                 store.remove_whitelist(pat)
             except Exception:
                 pass
-            try:
-                store.apply_squid_include()
-                from subprocess import run as _run
+            if _is_remote_control_mode():
+                try:
+                    _trigger_proxy_sync(force=True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    store.apply_squid_include()
+                    from subprocess import run as _run
 
-                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-            except Exception:
-                pass
+                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+                except Exception:
+                    pass
             return redirect(url_for('webfilter', tab='whitelist'))
 
         return redirect(url_for('webfilter', tab=tab))
@@ -854,13 +1210,19 @@ def sslfilter():
         if action == 'add':
             entry = (request.form.get('cidr') or '').strip()
             ok, err, _canonical = store.add_nobump(entry)
-            try:
-                store.apply_squid_include()
-                from subprocess import run as _run
+            if _is_remote_control_mode():
+                try:
+                    _trigger_proxy_sync(force=True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    store.apply_squid_include()
+                    from subprocess import run as _run
 
-                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-            except Exception:
-                pass
+                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+                except Exception:
+                    pass
             if not ok:
                 return redirect(url_for('sslfilter', err=(err or '1')))
             return redirect(url_for('sslfilter', ok='1'))
@@ -871,13 +1233,19 @@ def sslfilter():
                 store.remove_nobump(cidr)
             except Exception:
                 pass
-            try:
-                store.apply_squid_include()
-                from subprocess import run as _run
+            if _is_remote_control_mode():
+                try:
+                    _trigger_proxy_sync(force=True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    store.apply_squid_include()
+                    from subprocess import run as _run
 
-                _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-            except Exception:
-                pass
+                    _run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
+                except Exception:
+                    pass
             return redirect(url_for('sslfilter'))
 
         return redirect(url_for('sslfilter'))
@@ -1115,7 +1483,7 @@ def _set_clamav_enabled(cfg_text: str, enabled: bool) -> str:
 @app.route('/clamav/toggle', methods=['POST'])
 def clamav_toggle():
     action = (request.form.get('action') or '').strip().lower()
-    cfg = squid_controller.get_current_config() or ""
+    cfg = _current_managed_config()
     currently_enabled = _is_clamav_enabled(cfg)
 
     if action == 'enable':
@@ -1126,7 +1494,7 @@ def clamav_toggle():
         desired = (not currently_enabled)
 
     new_cfg = _set_clamav_enabled(cfg, desired)
-    ok, _details = squid_controller.apply_config_text(new_cfg)
+    ok, _details = _publish_config_for_current_mode(new_cfg, source_kind='clamav')
     if ok:
         return redirect(url_for('clamav'))
     return redirect(url_for('clamav', error='1'))
@@ -1146,7 +1514,7 @@ def squid_config():
         config_text = request.form.get('config_text', '')
         posted_config = config_text
         if action == 'validate':
-            ok, details = squid_controller.validate_config_text(config_text)
+            ok, details = _validate_config_for_current_mode(config_text)
             validation = {'ok': ok, 'detail': (details or '').strip()}
             try:
                 get_audit_store().record(
@@ -1160,7 +1528,7 @@ def squid_config():
             except Exception:
                 pass
         else:
-            ok, details = squid_controller.apply_config_text(config_text)
+            ok, details = _publish_config_for_current_mode(config_text, source_kind='manual')
             try:
                 get_audit_store().record(
                     kind='config_apply_manual',
@@ -1175,7 +1543,7 @@ def squid_config():
             if ok:
                 return redirect(url_for('squid_config', tab=tab, ok='1'))
             return redirect(url_for('squid_config', tab=tab, error='1'))
-    current_config = squid_controller.get_current_config()
+    current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
     overrides = squid_controller.get_cache_override_options(current_config)
     caching_lines = squid_controller.get_caching_lines(current_config)
@@ -1255,7 +1623,7 @@ def apply_safe_caching():
 
     # Start from current tunables so partial forms (different tabs) don't reset unrelated settings.
     try:
-        current = squid_controller.get_current_config()
+        current = _current_managed_config()
         tunables = squid_controller.get_tunable_options(current)
         options = _options_from_tunables(tunables)
     except Exception:
@@ -1433,7 +1801,7 @@ def apply_safe_caching():
 
     try:
         # Preserve any previously-applied cache override toggles.
-        cur = squid_controller.get_current_config()
+        cur = _current_managed_config()
         overrides = squid_controller.get_cache_override_options(cur)
         exclusions = get_exclusions_store().list_all()
         config_text = squid_controller.generate_config_from_template_with_exclusions(options, exclusions)
@@ -1441,7 +1809,7 @@ def apply_safe_caching():
     except Exception:
         return redirect(url_for('squid_config', tab='caching', error='1'))
 
-    ok, _details = squid_controller.apply_config_text(config_text)
+    ok, _details = _publish_config_for_current_mode(config_text, source_kind='template')
     try:
         get_audit_store().record(
             kind='config_apply_template',
@@ -1463,7 +1831,7 @@ def apply_safe_caching():
 def apply_cache_overrides():
     # Apply cache override toggles on top of the current tunables/exclusions.
     try:
-        current = squid_controller.get_current_config()
+        current = _current_managed_config()
         tunables = squid_controller.get_tunable_options(current)
 
         options = _options_from_tunables(tunables)
@@ -1483,7 +1851,7 @@ def apply_cache_overrides():
     except Exception:
         return redirect(url_for('squid_config', tab='caching', subtab='overrides', error='1'))
 
-    ok, _details = squid_controller.apply_config_text(config_text)
+    ok, _details = _publish_config_for_current_mode(config_text, source_kind='overrides')
     try:
         get_audit_store().record(
             kind='config_apply_overrides',
@@ -1504,29 +1872,44 @@ def apply_cache_overrides():
 def exclusions():
     store = get_exclusions_store()
 
+    def _refresh_pac_side_state() -> None:
+        if _is_remote_control_mode():
+            try:
+                _trigger_proxy_sync()
+            except Exception:
+                pass
+        else:
+            try:
+                _materialize_local_pac_state()
+            except Exception:
+                pass
+
     if request.method == 'POST':
         action = (request.form.get('action') or '').strip()
 
         if action == 'add_domain':
             store.add_domain(request.form.get('domain') or '')
+            _refresh_pac_side_state()
         elif action == 'remove_domain':
             store.remove_domain(request.form.get('domain') or '')
+            _refresh_pac_side_state()
         elif action == 'add_src':
             store.add_net('src_nets', request.form.get('cidr') or '')
         elif action == 'remove_src':
             store.remove_net('src_nets', request.form.get('cidr') or '')
         elif action == 'toggle_private':
             store.set_exclude_private_nets(request.form.get('exclude_private_nets') == 'on')
+            _refresh_pac_side_state()
         elif action == 'apply':
             # Apply current tunables + exclusions as a regenerated config.
-            current = squid_controller.get_current_config()
+            current = _current_managed_config()
             tunables = squid_controller.get_tunable_options(current)
             overrides = squid_controller.get_cache_override_options(current)
             options = _options_from_tunables(tunables)
             ex = store.list_all()
             cfg = squid_controller.generate_config_from_template_with_exclusions(options, ex)
             cfg = squid_controller.apply_cache_overrides(cfg, overrides)
-            ok, _ = squid_controller.apply_config_text(cfg)
+            ok, _ = _publish_config_for_current_mode(cfg, source_kind='exclusions')
             try:
                 get_audit_store().record(
                     kind='config_apply_exclusions',
@@ -1547,12 +1930,6 @@ def exclusions():
 
 @app.route('/proxy.pac', methods=['GET'])
 def proxy_pac():
-    # NOTE: Squid cannot force a client to "bypass the proxy" for some destinations when the client is
-    # explicitly configured to use the proxy. A PAC file is the usual way to implement bypass behavior.
-    #
-    # This endpoint dynamically selects which PAC to return based on the *requester's* source IP (server-side).
-    # The PAC logic itself remains destination-based (runs on the client).
-
     def _requester_ip() -> str:
         # Best-effort: if a reverse-proxy is in front, it may set X-Forwarded-For.
         xff = (request.headers.get('X-Forwarded-For') or '').strip()
@@ -1567,97 +1944,12 @@ def proxy_pac():
         return (request.remote_addr or '').strip()
 
     def _request_host() -> str:
-        # Robust host extraction (handles IPv6 bracket notation).
-        raw = (request.host or '').strip()
-        if not raw:
-            return '127.0.0.1'
-        try:
-            parsed = urlsplit(f"//{raw}")
-            if parsed.hostname:
-                return parsed.hostname
-        except Exception:
-            pass
-        return raw.split(':', 1)[0] or '127.0.0.1'
+        return (request.host or '').strip() or '127.0.0.1'
 
-    def _build_pac(proxy_str: str, *, direct_domains: list[str], direct_dst_nets: list[str], include_private: bool) -> str:
-        lines: list[str] = []
-        lines.append("function FindProxyForURL(url, host) {")
-        lines.append("  host = host.toLowerCase();")
-
-        # Always bypass local/loopback. The Windows "bypass proxy for local addresses" checkbox does not
-        # reliably apply when a PAC script is used, and many apps use WinHTTP which ignores that checkbox.
-        lines.append("  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';")
-        lines.append("  if (isPlainHostName(host)) return 'DIRECT';")
-
-        lines.append("  var ip = dnsResolve(host);")
-        lines.append("  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';")
-
-        for d in direct_domains:
-            # Match domain and subdomains
-            lines.append(f"  if (dnsDomainIs(host, '{d}') || shExpMatch(host, '*.{d}')) return 'DIRECT';")
-
-        for cidr in direct_dst_nets:
-            try:
-                net = ipaddress.ip_network(cidr, strict=False)
-                if getattr(net, 'version', 4) != 4:
-                    continue
-                net_addr = str(net.network_address)
-                mask = _cidr_to_mask(cidr)
-                lines.append(f"  if (ip && isInNet(ip, '{net_addr}', '{mask}')) return 'DIRECT';")
-            except Exception:
-                continue
-
-        if include_private:
-            # Optional: bypass RFC1918 + link-local destinations.
-            lines.append("  if (ip && isInNet(ip, '10.0.0.0', '255.0.0.0')) return 'DIRECT';")
-            lines.append("  if (ip && isInNet(ip, '172.16.0.0', '255.240.0.0')) return 'DIRECT';")
-            lines.append("  if (ip && isInNet(ip, '192.168.0.0', '255.255.0.0')) return 'DIRECT';")
-            lines.append("  if (ip && isInNet(ip, '169.254.0.0', '255.255.0.0')) return 'DIRECT';")
-
-        lines.append(f"  return '{proxy_str}';")
-        lines.append("}")
-        return "\n".join(lines) + "\n"
-
-    host = _request_host()
-    proxy_host = host
-    if ":" in proxy_host and not proxy_host.startswith("["):
-        proxy_host = f"[{proxy_host}]"
-    http_proxy = f"PROXY {proxy_host}:3128"
-    http_chain = f"{http_proxy}; DIRECT"
-
-    # Try dynamic PAC profiles first.
-    prof = None
-    try:
-        prof = get_pac_profiles_store().match_profile_for_client_ip(_requester_ip())
-    except Exception:
-        prof = None
-
-    if prof is not None:
-        # Optional SOCKS5 in the return chain.
-        proxy_chain = http_chain
-        try:
-            if bool(getattr(prof, 'socks_enabled', False)):
-                socks_host = (getattr(prof, 'socks_host', '') or '').strip() or host
-                socks_port = int(getattr(prof, 'socks_port', 1080) or 1080)
-                proxy_chain = f"SOCKS5 {socks_host}:{socks_port}; {http_proxy}; DIRECT"
-        except Exception:
-            proxy_chain = http_chain
-
-        pac = _build_pac(
-            proxy_chain,
-            direct_domains=list(getattr(prof, 'direct_domains', []) or []),
-            direct_dst_nets=list(getattr(prof, 'direct_dst_nets', []) or []),
-            include_private=False,
-        )
-        return app.response_class(pac, mimetype='application/x-ns-proxy-autoconfig')
-
-    # Fallback when no PAC profiles exist: build PAC from Exclusions.
-    ex = get_exclusions_store().list_all()
-    pac = _build_pac(
-        http_chain,
-        direct_domains=[d for d in ex.domains],
-        direct_dst_nets=[],
-        include_private=bool(getattr(ex, 'exclude_private_nets', False)),
+    pac = render_proxy_pac_for_request(
+        proxy_id=get_proxy_id(),
+        requester_ip=_requester_ip(),
+        request_host=_request_host(),
     )
     return app.response_class(pac, mimetype='application/x-ns-proxy-autoconfig')
 
@@ -1693,6 +1985,16 @@ def pac_builder():
                 )
                 if not ok:
                     return redirect(url_for('pac_builder', error='1', msg=err))
+                if _is_remote_control_mode():
+                    try:
+                        _trigger_proxy_sync()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        _materialize_local_pac_state()
+                    except Exception:
+                        pass
                 return redirect(url_for('pac_builder', ok='1'))
 
             if action == 'update':
@@ -1709,11 +2011,31 @@ def pac_builder():
                 )
                 if not ok:
                     return redirect(url_for('pac_builder', error='1', msg=err))
+                if _is_remote_control_mode():
+                    try:
+                        _trigger_proxy_sync()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        _materialize_local_pac_state()
+                    except Exception:
+                        pass
                 return redirect(url_for('pac_builder', ok='1'))
 
             if action == 'delete':
                 pid = int(request.form.get('profile_id') or '0')
                 store.delete_profile(pid)
+                if _is_remote_control_mode():
+                    try:
+                        _trigger_proxy_sync()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        _materialize_local_pac_state()
+                    except Exception:
+                        pass
                 return redirect(url_for('pac_builder', ok='1'))
         except Exception as e:
             return redirect(url_for('pac_builder', error='1', msg=public_error_message(e)))
@@ -1726,7 +2048,7 @@ def pac_builder():
     except Exception:
         profiles = []
 
-    pac_url = (request.url_root.rstrip('/') + url_for('proxy_pac'))
+    pac_url = build_public_pac_url(request.host or '')
     return render_template('pac.html', profiles=profiles, pac_url=pac_url)
 
 
@@ -1899,41 +2221,90 @@ def live_export():
 
 @app.route('/reload', methods=['POST'])
 def reload_squid():
-    squid_controller.reload_squid()
+    ok, detail = _trigger_proxy_sync(force=True)
+    try:
+        get_audit_store().record(
+            kind='proxy_sync',
+            ok=ok,
+            remote_addr=request.remote_addr,
+            user_agent=request.headers.get('User-Agent'),
+            detail=detail[:4000],
+        )
+    except Exception:
+        pass
     return redirect(url_for('index') + '#status')
 
 
 @app.route('/cache/clear', methods=['POST'])
 def clear_caches():
     # Clear Squid disk cache (best-effort) and restart Squid.
+    ok, detail = _trigger_proxy_cache_clear()
     try:
-        squid_controller.clear_disk_cache()
+        get_audit_store().record(
+            kind='cache_clear',
+            ok=ok,
+            remote_addr=request.remote_addr,
+            user_agent=request.headers.get('User-Agent'),
+            detail=detail[:4000],
+        )
     except Exception:
         pass
     return redirect(url_for('index') + '#status')
 
 @app.route('/certs', methods=['GET'])
 def certs():
-    certificate = "ca.crt" if cert_manager.ca_exists() else None
+    bundle = None
+    proxy_cert_statuses = []
+    if _is_remote_control_mode():
+        bundle_store = get_certificate_bundles()
+        bundle = bundle_store.get_active_bundle()
+        certificate = 'ca.crt' if bundle is not None else None
+        for proxy in get_proxy_registry().list_proxies():
+            latest_apply = bundle_store.latest_apply(proxy.proxy_id)
+            proxy_cert_statuses.append(
+                {
+                    'proxy_id': proxy.proxy_id,
+                    'display_name': proxy.display_name or proxy.proxy_id,
+                    'ok': latest_apply.ok if latest_apply is not None else None,
+                    'detail': latest_apply.detail if latest_apply is not None else '',
+                    'applied_ts': latest_apply.applied_ts if latest_apply is not None else 0,
+                }
+            )
+    else:
+        bundle = cert_manager.load_bundle()
+        certificate = "ca.crt" if cert_manager.ca_exists() else None
     message = request.args.get('msg')
     message_ok = request.args.get('ok') == '1'
-    return render_template('certs.html', certificate=certificate, message=message, message_ok=message_ok)
+    return render_template(
+        'certs.html',
+        certificate=certificate,
+        bundle=bundle,
+        proxy_cert_statuses=proxy_cert_statuses,
+        message=message,
+        message_ok=message_ok,
+    )
 
 
 @app.route('/certs/generate', methods=['POST'])
 def generate_certificate():
     try:
-        cert_manager.ensure_ca()
+        if _is_remote_control_mode():
+            bundle = generate_self_signed_ca_bundle()
+            ok, detail = _publish_certificate_bundle_remote(bundle)
+        else:
+            cert_manager.ensure_ca()
+            ok, detail = True, 'CA generated.'
         try:
             get_audit_store().record(
                 kind='ca_ensure',
-                ok=True,
+                ok=ok,
                 remote_addr=request.remote_addr,
                 user_agent=request.headers.get('User-Agent'),
+                detail=detail[:4000],
             )
         except Exception:
             pass
-        return redirect(url_for('certs', ok='1', msg='CA generated.'))
+        return redirect(url_for('certs', ok='1' if ok else '0', msg=detail))
     except Exception as e:
         app.logger.exception("CA generation failed")
         try:
@@ -1983,26 +2354,38 @@ def upload_certificate_pfx():
         return redirect(url_for('certs', ok='0', msg='Failed to read upload.'))
 
     pfx_bytes = bytes(buf)
-    result = install_pfx_as_ca(cert_manager.ca_dir, pfx_bytes, password=password)
+    if _is_remote_control_mode():
+        parsed = parse_pfx_bundle(pfx_bytes, password=password)
+        ok = bool(parsed.ok and parsed.bundle is not None)
+        detail = parsed.message
+        if ok and parsed.bundle is not None:
+            ok, detail = _publish_certificate_bundle_remote(
+                parsed.bundle,
+                original_filename=(pfx_file.filename or '').strip(),
+            )
+    else:
+        result = install_pfx_as_ca(cert_manager.ca_dir, pfx_bytes, password=password)
+        ok = result.ok
+        detail = result.message
 
-    if result.ok:
-        try:
-            squid_controller.reload_squid()
-        except Exception:
-            pass
+        if ok:
+            try:
+                squid_controller.reload_squid()
+            except Exception:
+                pass
 
     try:
         get_audit_store().record(
             kind='ca_upload_pfx',
-            ok=result.ok,
+            ok=ok,
             remote_addr=request.remote_addr,
             user_agent=request.headers.get('User-Agent'),
-            detail=result.message,
+            detail=detail,
         )
     except Exception:
         pass
 
-    return redirect(url_for('certs', ok='1' if result.ok else '0', msg=result.message))
+    return redirect(url_for('certs', ok='1' if ok else '0', msg=detail))
 
 
 @app.route('/certs/download/<path:filename>', methods=['GET'])
@@ -2010,6 +2393,13 @@ def download_certificate(filename: str):
     # Only allow downloading the public CA cert
     if filename != 'ca.crt':
         abort(404)
+    if _is_remote_control_mode():
+        bundle = get_certificate_bundles().get_active_bundle()
+        if bundle is None:
+            abort(404)
+        response = app.response_class(bundle.fullchain_pem, mimetype='application/x-pem-file')
+        response.headers['Content-Disposition'] = 'attachment; filename=squid-proxy-ca.crt'
+        return response
     try:
         cert_manager.ensure_ca()
     except Exception:

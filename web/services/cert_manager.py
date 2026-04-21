@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import subprocess
@@ -12,6 +13,27 @@ from services.logutil import log_exception_throttled
 
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CA_SUBJECT = "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=Squid Proxy CA"
+DEFAULT_CA_DAYS_VALID = 3650
+
+
+@dataclass(frozen=True)
+class CertificateBundle:
+    cert_pem: str
+    key_pem: str
+    chain_pem: str = ""
+    source_kind: str = "manual"
+    bundle_sha256: str = ""
+    cert_sha256: str = ""
+    subject_dn: str = ""
+    not_before: str = ""
+    not_after: str = ""
+    original_pfx_bytes: Optional[bytes] = None
+
+    @property
+    def fullchain_pem(self) -> str:
+        return (self.cert_pem or "") + (self.chain_pem or "")
 
 
 class CertManager:
@@ -31,23 +53,33 @@ class CertManager:
         return os.path.join(self.ca_dir, "ca.key")
 
     def ensure_ca(self) -> str:
-        os.makedirs(self.ca_dir, exist_ok=True)
-        # Avoid hanging the UI/container on CA generation.
-        subprocess.run(["/scripts/generate_ca.sh"], check=True, timeout=60)
+        if self.ca_exists():
+            return self.ca_cert_path
+        bundle = generate_self_signed_ca_bundle()
+        materialize_certificate_bundle(self.ca_dir, bundle)
         return self.ca_cert_path
 
     def ca_exists(self) -> bool:
-        return os.path.exists(self.ca_cert_path)
+        return os.path.exists(self.ca_cert_path) and os.path.exists(self.ca_key_path)
+
+    def load_bundle(self) -> Optional[CertificateBundle]:
+        return load_local_certificate_bundle(self.ca_dir)
 
 
 @dataclass(frozen=True)
 class PfxInstallResult:
     ok: bool
     message: str
+    bundle: Optional[CertificateBundle] = None
 
 
 class PfxInstallError(Exception):
     pass
+
+
+def _normalize_pem_text(text: str) -> str:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return normalized + "\n" if normalized else ""
 
 
 def _first_pem_block(pem_text: str, block_type: str) -> Optional[str]:
@@ -56,7 +88,7 @@ def _first_pem_block(pem_text: str, block_type: str) -> Optional[str]:
         re.DOTALL,
     )
     match = pattern.search(pem_text)
-    return match.group(0).strip() if match else None
+    return _normalize_pem_text(match.group(0)) if match else None
 
 
 def _all_pem_blocks(pem_text: str, block_type: str) -> list[str]:
@@ -64,7 +96,16 @@ def _all_pem_blocks(pem_text: str, block_type: str) -> list[str]:
         rf"-----BEGIN {re.escape(block_type)}-----.*?-----END {re.escape(block_type)}-----",
         re.DOTALL,
     )
-    return [m.group(0).strip() for m in pattern.finditer(pem_text)]
+    return [_normalize_pem_text(m.group(0)) for m in pattern.finditer(pem_text)]
+
+
+def _split_cert_chain(cert_text: str) -> tuple[str, str]:
+    certs = _all_pem_blocks(cert_text, "CERTIFICATE")
+    if not certs:
+        return "", ""
+    leaf = certs[0]
+    chain = _normalize_pem_text("".join(certs[1:])) if len(certs) > 1 else ""
+    return leaf, chain
 
 
 def _normalize_pubkey(text: str) -> str:
@@ -80,6 +121,71 @@ def _passin_arg(password: str) -> str:
 def _run_checked(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
     # OpenSSL should be fast; a timeout prevents pathological hangs.
     return subprocess.run(args, capture_output=True, text=True, check=True, timeout=timeout)
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def _bundle_sha256(cert_pem: str, key_pem: str, chain_pem: str) -> str:
+    payload = "\0".join([cert_pem or "", chain_pem or "", key_pem or ""])
+    return _sha256_text(payload)
+
+
+def _extract_certificate_metadata(cert_pem: str) -> tuple[str, str]:
+    subject_dn = ""
+    not_before = ""
+    not_after = ""
+    tmp_cert_path = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp_cert:
+            tmp_cert.write(_normalize_pem_text(cert_pem))
+            tmp_cert_path = tmp_cert.name
+        p = _run_checked(["openssl", "x509", "-in", tmp_cert_path, "-noout", "-subject", "-dates"], timeout=15)
+        for line in (p.stdout or "").splitlines():
+            if line.startswith("subject="):
+                subject_dn = line.split("=", 1)[1].strip()
+            elif line.startswith("notBefore="):
+                not_before = line.split("=", 1)[1].strip()
+            elif line.startswith("notAfter="):
+                not_after = line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    finally:
+        if tmp_cert_path:
+            try:
+                os.unlink(tmp_cert_path)
+            except OSError:
+                pass
+    return subject_dn, not_before, not_after
+
+
+def build_certificate_bundle(
+    cert_pem: str,
+    key_pem: str,
+    *,
+    chain_pem: str = "",
+    source_kind: str = "manual",
+    original_pfx_bytes: Optional[bytes] = None,
+) -> CertificateBundle:
+    cert_norm = _normalize_pem_text(cert_pem)
+    key_norm = _normalize_pem_text(key_pem)
+    chain_norm = _normalize_pem_text(chain_pem)
+    if not cert_norm or not key_norm:
+        raise ValueError("Certificate bundle requires both a certificate and a private key.")
+    subject_dn, not_before, not_after = _extract_certificate_metadata(cert_norm)
+    return CertificateBundle(
+        cert_pem=cert_norm,
+        key_pem=key_norm,
+        chain_pem=chain_norm,
+        source_kind=(source_kind or "manual").strip() or "manual",
+        bundle_sha256=_bundle_sha256(cert_norm, key_norm, chain_norm),
+        cert_sha256=_sha256_text(cert_norm),
+        subject_dn=subject_dn,
+        not_before=not_before,
+        not_after=not_after,
+        original_pfx_bytes=original_pfx_bytes,
+    )
 
 
 def _set_best_effort_permissions(cert_path: str, key_path: str):
@@ -118,15 +224,129 @@ def _set_best_effort_permissions(cert_path: str, key_path: str):
         )
 
 
-def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxInstallResult:
-    """Install a user-provided PKCS#12 (.pfx/.p12) as Squid's ssl-bump CA.
-
-    This extracts a leaf certificate + private key from the PFX, validates that
-    they match, writes them as PEM to ca.crt / ca.key, and persists the original
-    PFX as uploaded_ca.pfx.
-    """
+def materialize_certificate_bundle(
+    ca_dir: str,
+    bundle: CertificateBundle,
+    *,
+    original_pfx_bytes: Optional[bytes] = None,
+) -> None:
     os.makedirs(ca_dir, exist_ok=True)
+    dest_cert = os.path.join(ca_dir, "ca.crt")
+    dest_key = os.path.join(ca_dir, "ca.key")
+    dest_pfx = os.path.join(ca_dir, "uploaded_ca.pfx")
 
+    tmp_cert_path = ""
+    tmp_key_path = ""
+    tmp_pfx_path = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, dir=ca_dir, encoding="utf-8") as f_cert:
+            f_cert.write(bundle.fullchain_pem or bundle.cert_pem)
+            tmp_cert_path = f_cert.name
+        with tempfile.NamedTemporaryFile("w", delete=False, dir=ca_dir, encoding="utf-8") as f_key:
+            f_key.write(bundle.key_pem)
+            tmp_key_path = f_key.name
+
+        pfx_bytes = bundle.original_pfx_bytes if original_pfx_bytes is None else original_pfx_bytes
+        if pfx_bytes is not None:
+            with tempfile.NamedTemporaryFile("wb", delete=False, dir=ca_dir) as f_pfx:
+                f_pfx.write(pfx_bytes)
+                tmp_pfx_path = f_pfx.name
+
+        os.replace(tmp_cert_path, dest_cert)
+        tmp_cert_path = ""
+        os.replace(tmp_key_path, dest_key)
+        tmp_key_path = ""
+        if tmp_pfx_path:
+            os.replace(tmp_pfx_path, dest_pfx)
+            tmp_pfx_path = ""
+        elif os.path.exists(dest_pfx):
+            os.unlink(dest_pfx)
+
+        _set_best_effort_permissions(dest_cert, dest_key)
+    finally:
+        for path in (tmp_cert_path, tmp_key_path, tmp_pfx_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def load_local_certificate_bundle(ca_dir: str) -> Optional[CertificateBundle]:
+    cert_path = os.path.join(ca_dir, "ca.crt")
+    key_path = os.path.join(ca_dir, "ca.key")
+    if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+        return None
+    try:
+        with open(cert_path, "r", encoding="utf-8", errors="ignore") as f_cert:
+            cert_text = f_cert.read()
+        with open(key_path, "r", encoding="utf-8", errors="ignore") as f_key:
+            key_text = f_key.read()
+        leaf_cert, chain_pem = _split_cert_chain(cert_text)
+        if not leaf_cert:
+            return None
+        private_key = (
+            _first_pem_block(key_text, "PRIVATE KEY")
+            or _first_pem_block(key_text, "RSA PRIVATE KEY")
+            or _first_pem_block(key_text, "EC PRIVATE KEY")
+        )
+        if not private_key:
+            return None
+        original_pfx_bytes = None
+        uploaded_pfx_path = os.path.join(ca_dir, "uploaded_ca.pfx")
+        if os.path.exists(uploaded_pfx_path):
+            try:
+                with open(uploaded_pfx_path, "rb") as f_pfx:
+                    original_pfx_bytes = f_pfx.read()
+            except Exception:
+                original_pfx_bytes = None
+        return build_certificate_bundle(
+            leaf_cert,
+            private_key,
+            chain_pem=chain_pem,
+            source_kind="local",
+            original_pfx_bytes=original_pfx_bytes,
+        )
+    except Exception:
+        return None
+
+
+def generate_self_signed_ca_bundle(
+    *,
+    subject: str = DEFAULT_CA_SUBJECT,
+    days_valid: int = DEFAULT_CA_DAYS_VALID,
+) -> CertificateBundle:
+    with tempfile.TemporaryDirectory(prefix="generated_ca_") as tmpdir:
+        key_path = os.path.join(tmpdir, "ca.key")
+        cert_path = os.path.join(tmpdir, "ca.crt")
+        _run_checked(["openssl", "genrsa", "-out", key_path, "2048"], timeout=60)
+        _run_checked(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-new",
+                "-nodes",
+                "-key",
+                key_path,
+                "-sha256",
+                "-days",
+                str(int(days_valid)),
+                "-out",
+                cert_path,
+                "-subj",
+                subject,
+            ],
+            timeout=60,
+        )
+        with open(cert_path, "r", encoding="utf-8", errors="ignore") as f_cert:
+            cert_text = f_cert.read()
+        with open(key_path, "r", encoding="utf-8", errors="ignore") as f_key:
+            key_text = f_key.read()
+    return build_certificate_bundle(cert_text, key_text, source_kind="self_signed")
+
+
+def parse_pfx_bundle(pfx_bytes: bytes, password: str = "") -> PfxInstallResult:
     if not pfx_bytes:
         return PfxInstallResult(ok=False, message="Empty PFX upload.")
 
@@ -142,7 +362,6 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
 
             passin = _passin_arg(password)
 
-            # Extract leaf cert (usually the one matching the private key)
             _run_checked(
                 [
                     "openssl",
@@ -158,7 +377,6 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
                 ]
             )
 
-            # Extract CA chain (optional, kept for completeness)
             try:
                 _run_checked(
                     [
@@ -175,11 +393,9 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
                     ]
                 )
             except subprocess.CalledProcessError:
-                # Some PFX files don't include any CA certs.
                 with open(chain_path, "w", encoding="utf-8") as f:
                     f.write("")
 
-            # Extract unencrypted private key
             _run_checked(
                 [
                     "openssl",
@@ -195,13 +411,10 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
                 ]
             )
 
-            leaf_text = ""
             with open(leaf_path, "r", encoding="utf-8", errors="ignore") as f:
                 leaf_text = f.read()
-            chain_text = ""
             with open(chain_path, "r", encoding="utf-8", errors="ignore") as f:
                 chain_text = f.read()
-            key_text = ""
             with open(key_path, "r", encoding="utf-8", errors="ignore") as f:
                 key_text = f.read()
 
@@ -219,12 +432,11 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
             if "ENCRYPTED PRIVATE KEY" in private_key:
                 raise PfxInstallError("Private key is encrypted; Squid needs an unencrypted key.")
 
-            # Validate key matches cert using public key comparison.
             with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp_leaf:
-                tmp_leaf.write(leaf_cert + "\n")
+                tmp_leaf.write(leaf_cert)
                 tmp_leaf_path = tmp_leaf.name
             with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp_key:
-                tmp_key.write(private_key + "\n")
+                tmp_key.write(private_key)
                 tmp_key_path = tmp_key.name
 
             try:
@@ -243,32 +455,15 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
             if _normalize_pubkey(cert_pub) != _normalize_pubkey(key_pub):
                 raise PfxInstallError("Certificate and private key do not match.")
 
-            # Compose ca.crt: leaf + any additional certs from chain.
             chain_certs = _all_pem_blocks(chain_text, "CERTIFICATE")
-            out_cert = "\n".join([leaf_cert] + chain_certs).strip() + "\n"
-            out_key = private_key.strip() + "\n"
-
-            dest_cert = os.path.join(ca_dir, "ca.crt")
-            dest_key = os.path.join(ca_dir, "ca.key")
-            dest_pfx = os.path.join(ca_dir, "uploaded_ca.pfx")
-
-            # Write atomically.
-            with tempfile.NamedTemporaryFile("w", delete=False, dir=ca_dir, encoding="utf-8") as f_cert:
-                f_cert.write(out_cert)
-                tmp_cert_path = f_cert.name
-            with tempfile.NamedTemporaryFile("w", delete=False, dir=ca_dir, encoding="utf-8") as f_key:
-                f_key.write(out_key)
-                tmp_key_out_path = f_key.name
-            with tempfile.NamedTemporaryFile("wb", delete=False, dir=ca_dir) as f_pfx:
-                f_pfx.write(pfx_bytes)
-                tmp_pfx_path = f_pfx.name
-
-            os.replace(tmp_cert_path, dest_cert)
-            os.replace(tmp_key_out_path, dest_key)
-            os.replace(tmp_pfx_path, dest_pfx)
-
-            _set_best_effort_permissions(dest_cert, dest_key)
-            return PfxInstallResult(ok=True, message="PFX installed; Squid will use it for SSL-bump.")
+            bundle = build_certificate_bundle(
+                leaf_cert,
+                private_key,
+                chain_pem="".join(chain_certs),
+                source_kind="uploaded_pfx",
+                original_pfx_bytes=bytes(pfx_bytes),
+            )
+            return PfxInstallResult(ok=True, message="PFX parsed successfully.", bundle=bundle)
     except FileNotFoundError:
         return PfxInstallResult(ok=False, message="openssl not found in container; cannot import PFX.")
     except subprocess.CalledProcessError as e:
@@ -281,3 +476,34 @@ def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxI
     except Exception as e:
         logger.exception("Unexpected PFX import failure")
         return PfxInstallResult(ok=False, message=public_error_message(e, default="PFX import failed. Check server logs for details."))
+
+
+def install_pfx_as_ca(ca_dir: str, pfx_bytes: bytes, password: str = "") -> PfxInstallResult:
+    """Install a user-provided PKCS#12 (.pfx/.p12) as Squid's ssl-bump CA.
+
+    This extracts a leaf certificate + private key from the PFX, validates that
+    they match, writes them as PEM to ca.crt / ca.key, and persists the original
+    PFX as uploaded_ca.pfx.
+    """
+    os.makedirs(ca_dir, exist_ok=True)
+    result = parse_pfx_bundle(pfx_bytes, password=password)
+    if not result.ok or result.bundle is None:
+        return result
+
+    try:
+        materialize_certificate_bundle(
+            ca_dir,
+            result.bundle,
+            original_pfx_bytes=result.bundle.original_pfx_bytes,
+        )
+        return PfxInstallResult(
+            ok=True,
+            message="PFX installed; Squid will use it for SSL-bump.",
+            bundle=result.bundle,
+        )
+    except Exception as e:
+        logger.exception("Unexpected PFX materialization failure")
+        return PfxInstallResult(
+            ok=False,
+            message=public_error_message(e, default="PFX import failed. Check server logs for details."),
+        )

@@ -17,6 +17,7 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 from services.db import connect, create_index_if_not_exists
+from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 
 
 def _now() -> int:
@@ -151,11 +152,19 @@ class _BlockedLogDb:
         self._inserts = 0
         self._batch_size = _env_int("WEBFILTER_LOG_BATCH_SIZE", 128, minimum=1, maximum=2000)
         self._flush_interval = _env_float("WEBFILTER_LOG_FLUSH_INTERVAL_SECONDS", 1.0, minimum=0.1, maximum=10.0)
-        self._queue: queue.Queue[tuple[int, str, str, str]] = queue.Queue(
+        self._queue: queue.Queue[tuple[int, str, str, str, str]] = queue.Queue(
             maxsize=_env_int("WEBFILTER_LOG_QUEUE_SIZE", 10000, minimum=100, maximum=100000)
         )
         self._writer_started = False
         self._writer_lock = threading.Lock()
+
+    def _proxy_id(self) -> str:
+        return normalize_proxy_id(
+            os.environ.get("PROXY_INSTANCE_ID")
+            or os.environ.get("PROXY_ID")
+            or os.environ.get("DEFAULT_PROXY_ID")
+            or get_default_proxy_id()
+        )
 
     def _table(self, conn) -> str:
         return "webfilter_blocked_log"
@@ -173,13 +182,23 @@ class _BlockedLogDb:
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
                 "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
                 "ts BIGINT NOT NULL, "
                 "src_ip VARCHAR(64) NOT NULL, "
                 "url TEXT NOT NULL, "
                 "category VARCHAR(128) NOT NULL"
                 ")"
             )
-            create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_ts", columns_sql="ts")
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1",
+                    (blocked_log_table, "proxy_id"),
+                ).fetchone()
+                if row is None:
+                    conn.execute(f"ALTER TABLE {blocked_log_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
+            except Exception:
+                pass
+            create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_proxy_ts", columns_sql="proxy_id, ts, id")
             self._conn = conn
             return conn
         except Exception:
@@ -205,14 +224,14 @@ class _BlockedLogDb:
             if not s_ip or not s_url or not s_cat:
                 return
             self.start()
-            self._queue.put_nowait((int(ts), s_ip, s_url, s_cat))
+            self._queue.put_nowait((int(ts), self._proxy_id(), s_ip, s_url, s_cat))
         except Exception:
             return
 
-    def _flush(self, conn, batch: list[tuple[int, str, str, str]]) -> None:
+    def _flush(self, conn, batch: list[tuple[int, str, str, str, str]]) -> None:
         blocked_log_table = self._table(conn)
         conn.executemany(
-            f"INSERT INTO {blocked_log_table}(ts, src_ip, url, category) VALUES(?,?,?,?)",
+            f"INSERT INTO {blocked_log_table}(ts, proxy_id, src_ip, url, category) VALUES(?,?,?,?,?)",
             batch,
         )
         conn.commit()
@@ -227,7 +246,7 @@ class _BlockedLogDb:
 
     def _run(self) -> None:
         conn = None
-        batch: list[tuple[int, str, str, str]] = []
+        batch: list[tuple[int, str, str, str, str]] = []
         last_flush = time.monotonic()
         while True:
             timeout = max(0.05, self._flush_interval - (time.monotonic() - last_flush))

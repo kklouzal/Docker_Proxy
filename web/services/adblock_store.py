@@ -13,9 +13,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import logging
 
-from services.db import DATABASE_ERRORS, column_exists, connect, create_index_if_not_exists
+from services.db import DATABASE_ERRORS, column_exists, connect, create_index_if_not_exists, index_exists
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.proxy_context import get_proxy_id
 
 
 logger = logging.getLogger(__name__)
@@ -129,8 +130,10 @@ class AdblockStore:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS adblock_cache_stats (
-                    k VARCHAR(64) PRIMARY KEY,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                    k VARCHAR(64) NOT NULL,
                     v BIGINT NOT NULL
+                    , PRIMARY KEY(proxy_id, k)
                 )
                 """
             )
@@ -145,10 +148,11 @@ class AdblockStore:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS adblock_counts (
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     day BIGINT NOT NULL,
                     list_key VARCHAR(64) NOT NULL,
                     blocked BIGINT NOT NULL,
-                    PRIMARY KEY(day, list_key)
+                    PRIMARY KEY(proxy_id, day, list_key)
                 )
                 """
             )
@@ -156,6 +160,7 @@ class AdblockStore:
                 """
                 CREATE TABLE IF NOT EXISTS adblock_events (
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     event_key CHAR(40) NOT NULL,
                     ts BIGINT NOT NULL,
                     src_ip VARCHAR(64) NOT NULL,
@@ -169,11 +174,34 @@ class AdblockStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adblock_proxy_meta (
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                    k VARCHAR(64) NOT NULL,
+                    v TEXT NOT NULL,
+                    PRIMARY KEY(proxy_id, k)
+                )
+                """
+            )
+            if not column_exists(conn, "adblock_cache_stats", "proxy_id"):
+                conn.execute("ALTER TABLE adblock_cache_stats ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute("ALTER TABLE adblock_cache_stats DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, k)")
+            if not column_exists(conn, "adblock_counts", "proxy_id"):
+                conn.execute("ALTER TABLE adblock_counts ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute("ALTER TABLE adblock_counts DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, day, list_key)")
+            if not column_exists(conn, "adblock_events", "proxy_id"):
+                conn.execute("ALTER TABLE adblock_events ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
             if not column_exists(conn, "adblock_events", "event_key"):
                 conn.execute("ALTER TABLE adblock_events ADD COLUMN event_key TEXT")
             conn.execute("ALTER TABLE adblock_lists MODIFY COLUMN last_error VARCHAR(500) NOT NULL DEFAULT ''")
-            create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_ts", columns_sql="ts, id")
-            create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_uniq", columns_sql="event_key", unique=True)
+            if index_exists(conn, "idx_adblock_events_uniq"):
+                try:
+                    conn.execute("DROP INDEX idx_adblock_events_uniq ON adblock_events")
+                except Exception:
+                    pass
+            create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_proxy_ts", columns_sql="proxy_id, ts, id")
+            create_index_if_not_exists(conn, table_name="adblock_events", index_name="idx_adblock_events_proxy_uniq", columns_sql="proxy_id, event_key", unique=True)
 
             for key, url in _DEFAULT_LISTS.items():
                 conn.execute(
@@ -193,18 +221,17 @@ class AdblockStore:
 
             conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('settings_version','1')")
             conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('refresh_requested','0')")
-            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cache_flush_requested','0')")
-            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cache_last_flush','0')")
-            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cache_current_size','0')")
-
-            # c-icap access log tail state
-            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cicap_access_pos','0')")
-            conn.execute("INSERT OR IGNORE INTO adblock_meta(k, v) VALUES('cicap_access_inode','0')")
-
+            proxy_id = get_proxy_id()
             for k in ("hits", "misses", "evictions"):
                 conn.execute(
-                    "INSERT OR IGNORE INTO adblock_cache_stats(k,v) VALUES(?,0)",
-                    (k,),
+                    "INSERT OR IGNORE INTO adblock_cache_stats(proxy_id,k,v) VALUES(?,?,0)",
+                    (proxy_id, k),
+                )
+            for key in ("cache_flush_requested", "cache_last_flush", "cache_current_size", "cicap_access_pos", "cicap_access_inode"):
+                old_value = self._get_meta(conn, key, "0")
+                conn.execute(
+                    "INSERT OR IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(?,?,?)",
+                    (proxy_id, key, old_value if old_value else "0"),
                 )
 
     def _get_meta(self, conn, key: str, default: str = "") -> str:
@@ -215,6 +242,19 @@ class AdblockStore:
         conn.execute(
             "INSERT INTO adblock_meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
             (key, value),
+        )
+
+    def _get_proxy_meta(self, conn, key: str, default: str = "") -> str:
+        row = conn.execute(
+            "SELECT v FROM adblock_proxy_meta WHERE proxy_id=? AND k=?",
+            (get_proxy_id(), key),
+        ).fetchone()
+        return str(row[0]) if row and row[0] is not None else default
+
+    def _set_proxy_meta(self, conn, key: str, value: str) -> None:
+        conn.execute(
+            "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(?,?,?) ON CONFLICT(proxy_id, k) DO UPDATE SET v=excluded.v",
+            (get_proxy_id(), key, value),
         )
 
     def start_blocklog_background(self) -> None:
@@ -228,7 +268,13 @@ class AdblockStore:
         # Seed only if empty to avoid duplicating historical lines.
         try:
             with self._connect() as conn:
-                n = int(conn.execute("SELECT COUNT(*) FROM adblock_events").fetchone()[0] or 0)
+                n = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM adblock_events WHERE proxy_id=?",
+                        (get_proxy_id(),),
+                    ).fetchone()[0]
+                    or 0
+                )
                 if n == 0:
                     self._seed_from_recent_log(conn)
         except Exception:
@@ -318,11 +364,11 @@ class AdblockStore:
         size = int(getattr(st, "st_size", 0) or 0)
 
         try:
-            last_inode = int(self._get_meta(conn, "cicap_access_inode", "0") or 0)
+            last_inode = int(self._get_proxy_meta(conn, "cicap_access_inode", "0") or 0)
         except Exception:
             last_inode = 0
         try:
-            pos = int(self._get_meta(conn, "cicap_access_pos", "0") or 0)
+            pos = int(self._get_proxy_meta(conn, "cicap_access_pos", "0") or 0)
         except Exception:
             pos = 0
 
@@ -345,8 +391,8 @@ class AdblockStore:
         if not data:
             # Still update inode if it changed (so we don't keep resetting).
             try:
-                self._set_meta(conn, "cicap_access_inode", str(inode))
-                self._set_meta(conn, "cicap_access_pos", str(pos))
+                self._set_proxy_meta(conn, "cicap_access_inode", str(inode))
+                self._set_proxy_meta(conn, "cicap_access_pos", str(pos))
                 conn.commit()
             except Exception:
                 try:
@@ -358,6 +404,7 @@ class AdblockStore:
         created_ts = _now()
         event_rows: list[tuple[int, str, str, str, int, str, int, str, int]] = []
         text = data.decode("utf-8", errors="replace")
+        proxy_id = get_proxy_id()
         for ln in text.splitlines():
             row = self._parse_cicap_access_line(ln)
             if not row:
@@ -370,6 +417,7 @@ class AdblockStore:
             )
             event_rows.append(
                 (
+                    proxy_id,
                     dedupe_key,
                     int(row.get("ts") or 0),
                     str(row.get("src_ip") or "-"),
@@ -388,14 +436,14 @@ class AdblockStore:
                 conn.executemany(
                     """
                     INSERT OR IGNORE INTO adblock_events(
-                        event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                        proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     event_rows,
                 )
 
-            self._set_meta(conn, "cicap_access_inode", str(inode))
-            self._set_meta(conn, "cicap_access_pos", str(new_pos))
+            self._set_proxy_meta(conn, "cicap_access_inode", str(inode))
+            self._set_proxy_meta(conn, "cicap_access_pos", str(new_pos))
 
             if event_rows:
                 if created_ts - int(self._last_events_prune_ts or 0) >= 60:
@@ -506,10 +554,11 @@ class AdblockStore:
         conn.execute(
             """
             INSERT OR IGNORE INTO adblock_events(
-                event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
+                get_proxy_id(),
                 dedupe_key,
                 int(row.get("ts") or 0),
                 str(row.get("src_ip") or "-"),
@@ -551,10 +600,11 @@ class AdblockStore:
                 """
                 SELECT ts, src_ip, method, url, http_status
                 FROM adblock_events
+                WHERE proxy_id=?
                 ORDER BY ts DESC, id DESC
                 LIMIT ?
                 """,
-                (limit_i,),
+                (get_proxy_id(), limit_i),
             ).fetchall()
 
         out: List[Dict[str, Any]] = []
@@ -635,12 +685,22 @@ class AdblockStore:
                 (str(_now()),),
             )
 
-    def request_cache_flush(self) -> None:
+    def clear_refresh_requested(self) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO adblock_meta(k,v) VALUES('cache_flush_requested',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-                (str(_now()),),
+                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') ON CONFLICT(k) DO UPDATE SET v=excluded.v"
             )
+
+    def request_cache_flush(self) -> None:
+        with self._connect() as conn:
+            self._set_proxy_meta(conn, "cache_flush_requested", str(_now()))
+
+    def mark_cache_flushed(self, *, size: int | None = None) -> None:
+        with self._connect() as conn:
+            self._set_proxy_meta(conn, "cache_flush_requested", "0")
+            self._set_proxy_meta(conn, "cache_last_flush", str(_now()))
+            if size is not None:
+                self._set_proxy_meta(conn, "cache_current_size", str(max(0, int(size))))
 
     def get_settings_version(self) -> int:
         with self._connect() as conn:
@@ -660,7 +720,10 @@ class AdblockStore:
 
     def get_cache_flush_requested(self) -> int:
         with self._connect() as conn:
-            row = conn.execute("SELECT v FROM adblock_meta WHERE k='cache_flush_requested'").fetchone()
+            row = conn.execute(
+                "SELECT v FROM adblock_proxy_meta WHERE proxy_id=? AND k='cache_flush_requested'",
+                (get_proxy_id(),),
+            ).fetchone()
             try:
                 return int(row[0]) if row else 0
             except Exception:
@@ -701,10 +764,10 @@ class AdblockStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO adblock_counts(day, list_key, blocked) VALUES(?,?,1)
-                ON CONFLICT(day, list_key) DO UPDATE SET blocked = blocked + 1
+                INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(?,?,?,1)
+                ON CONFLICT(proxy_id, day, list_key) DO UPDATE SET blocked = blocked + 1
                 """,
-                (day, list_key),
+                (get_proxy_id(), day, list_key),
             )
 
     def record_blocks_bulk(self, counts: Dict[str, int]) -> None:
@@ -722,15 +785,15 @@ class AdblockStore:
                 continue
             if not k or n <= 0:
                 continue
-            rows.append((day, str(k), n))
+            rows.append((get_proxy_id(), day, str(k), n))
         if not rows:
             return
 
         with self._connect() as conn:
             conn.executemany(
                 """
-                INSERT INTO adblock_counts(day, list_key, blocked) VALUES(?,?,?)
-                ON CONFLICT(day, list_key) DO UPDATE SET blocked = blocked + excluded.blocked
+                INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(?,?,?,?)
+                ON CONFLICT(proxy_id, day, list_key) DO UPDATE SET blocked = blocked + excluded.blocked
                 """,
                 rows,
             )
@@ -739,18 +802,20 @@ class AdblockStore:
         now = _now()
         day = int(now // 86400)
         day_ago = day - 1
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            total = conn.execute("SELECT COALESCE(SUM(blocked),0) FROM adblock_counts").fetchone()[0]
+            total = conn.execute("SELECT COALESCE(SUM(blocked),0) FROM adblock_counts WHERE proxy_id=?", (proxy_id,)).fetchone()[0]
             last_24h = conn.execute(
-                "SELECT COALESCE(SUM(blocked),0) FROM adblock_counts WHERE day IN (?,?)",
-                (day, day_ago),
+                "SELECT COALESCE(SUM(blocked),0) FROM adblock_counts WHERE proxy_id=? AND day IN (?,?)",
+                (proxy_id, day, day_ago),
             ).fetchone()[0]
             by_list = conn.execute(
-                "SELECT list_key, COALESCE(SUM(blocked),0) AS blocked FROM adblock_counts GROUP BY list_key ORDER BY list_key"
+                "SELECT list_key, COALESCE(SUM(blocked),0) AS blocked FROM adblock_counts WHERE proxy_id=? GROUP BY list_key ORDER BY list_key",
+                (proxy_id,),
             ).fetchall()
             by_list_24h = conn.execute(
-                "SELECT list_key, COALESCE(SUM(blocked),0) AS blocked FROM adblock_counts WHERE day IN (?,?) GROUP BY list_key ORDER BY list_key",
-                (day, day_ago),
+                "SELECT list_key, COALESCE(SUM(blocked),0) AS blocked FROM adblock_counts WHERE proxy_id=? AND day IN (?,?) GROUP BY list_key ORDER BY list_key",
+                (proxy_id, day, day_ago),
             ).fetchall()
         return {
             "total": int(total or 0),
@@ -874,37 +939,33 @@ class AdblockStore:
                 return False
 
     def record_cache_stats(self, *, hits: int = 0, misses: int = 0, evictions: int = 0, size: int | None = None) -> None:
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             if hits:
                 conn.execute(
-                    "INSERT INTO adblock_cache_stats(k,v) VALUES('hits',?) ON CONFLICT(k) DO UPDATE SET v = v + excluded.v",
-                    (int(hits),),
+                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(?, 'hits', ?) ON CONFLICT(proxy_id, k) DO UPDATE SET v = v + excluded.v",
+                    (proxy_id, int(hits)),
                 )
             if misses:
                 conn.execute(
-                    "INSERT INTO adblock_cache_stats(k,v) VALUES('misses',?) ON CONFLICT(k) DO UPDATE SET v = v + excluded.v",
-                    (int(misses),),
+                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(?, 'misses', ?) ON CONFLICT(proxy_id, k) DO UPDATE SET v = v + excluded.v",
+                    (proxy_id, int(misses)),
                 )
             if evictions:
                 conn.execute(
-                    "INSERT INTO adblock_cache_stats(k,v) VALUES('evictions',?) ON CONFLICT(k) DO UPDATE SET v = v + excluded.v",
-                    (int(evictions),),
+                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(?, 'evictions', ?) ON CONFLICT(proxy_id, k) DO UPDATE SET v = v + excluded.v",
+                    (proxy_id, int(evictions)),
                 )
             if size is not None:
-                conn.execute(
-                    "INSERT INTO adblock_meta(k,v) VALUES('cache_current_size',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-                    (str(max(0, int(size))),),
-                )
-                conn.execute(
-                    "INSERT INTO adblock_meta(k,v) VALUES('cache_last_flush',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-                    (str(_now()),),
-                )
+                self._set_proxy_meta(conn, "cache_current_size", str(max(0, int(size))))
 
     def cache_stats(self) -> Dict[str, int]:
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            rows = conn.execute("SELECT k, v FROM adblock_cache_stats").fetchall()
+            rows = conn.execute("SELECT k, v FROM adblock_cache_stats WHERE proxy_id=?", (proxy_id,)).fetchall()
             meta_rows = conn.execute(
-                "SELECT k, v FROM adblock_meta WHERE k IN ('cache_current_size','cache_last_flush','cache_flush_requested')"
+                "SELECT k, v FROM adblock_proxy_meta WHERE proxy_id=? AND k IN ('cache_current_size','cache_last_flush','cache_flush_requested')",
+                (proxy_id,),
             ).fetchall()
 
         stats = {str(r[0]): int(r[1]) for r in rows}
@@ -947,4 +1008,5 @@ def get_adblock_store() -> AdblockStore:
                 cicap_access_log_path=os.environ.get("CICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
                 blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
             )
+            _store.init_db()
         return _store

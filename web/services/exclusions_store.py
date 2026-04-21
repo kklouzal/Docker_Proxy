@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from ipaddress import ip_network
 from typing import List, Optional, Tuple
 
-from services.db import connect
+from services.db import column_exists, connect, create_index_if_not_exists
+from services.proxy_context import get_proxy_id
 
 
 # Domain validation pattern: allows labels with alphanumeric and hyphens,
@@ -51,28 +52,53 @@ class ExclusionsStore:
             dst_table = self._table(conn, "dst_nets")
             src_table = self._table(conn, "src_nets")
             settings_table = self._table(conn, "settings")
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {domains_table}(domain VARCHAR(255) PRIMARY KEY)")
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {dst_table}(cidr VARCHAR(64) PRIMARY KEY)")
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {src_table}(cidr VARCHAR(64) PRIMARY KEY)")
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(`key` VARCHAR(64) PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {domains_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', domain VARCHAR(255) NOT NULL, PRIMARY KEY(proxy_id, domain))"
+            )
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {dst_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', cidr VARCHAR(64) NOT NULL, PRIMARY KEY(proxy_id, cidr))"
+            )
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {src_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', cidr VARCHAR(64) NOT NULL, PRIMARY KEY(proxy_id, cidr))"
+            )
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', `key` VARCHAR(64) NOT NULL, value TEXT NOT NULL, PRIMARY KEY(proxy_id, `key`))"
+            )
+            if not column_exists(conn, domains_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {domains_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute(f"ALTER TABLE {domains_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, domain)")
+            if not column_exists(conn, dst_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {dst_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute(f"ALTER TABLE {dst_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, cidr)")
+            if not column_exists(conn, src_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {src_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute(f"ALTER TABLE {src_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, cidr)")
+            if not column_exists(conn, settings_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {settings_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute(f"ALTER TABLE {settings_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, `key`)")
+            create_index_if_not_exists(conn, table_name=domains_table, index_name=f"idx_{domains_table}_proxy", columns_sql="proxy_id")
+            create_index_if_not_exists(conn, table_name=dst_table, index_name=f"idx_{dst_table}_proxy", columns_sql="proxy_id")
+            create_index_if_not_exists(conn, table_name=src_table, index_name=f"idx_{src_table}_proxy", columns_sql="proxy_id")
 
     def _set_setting(self, key: str, value: str) -> None:
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             settings_table = self._table(conn, "settings")
             conn.execute(
-                f"INSERT INTO {settings_table}(`key`,value) VALUES(?,?) ON CONFLICT(`key`) DO UPDATE SET value=excluded.value",
-                (key, value),
+                f"INSERT INTO {settings_table}(proxy_id, `key`, value) VALUES(?,?,?) ON CONFLICT(proxy_id, `key`) DO UPDATE SET value=excluded.value",
+                (proxy_id, key, value),
             )
 
     def _get_setting(self, key: str) -> Optional[str]:
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             settings_table = self._table(conn, "settings")
-            row = conn.execute(f"SELECT value FROM {settings_table} WHERE `key`=?", (key,)).fetchone()
+            row = conn.execute(f"SELECT value FROM {settings_table} WHERE proxy_id=? AND `key`=?", (proxy_id, key)).fetchone()
             return str(row[0]) if row else None
 
     def _get_setting_conn(self, conn, key: str) -> Optional[str]:
         settings_table = self._table(conn, "settings")
-        row = conn.execute(f"SELECT value FROM {settings_table} WHERE `key`=?", (key,)).fetchone()
+        row = conn.execute(f"SELECT value FROM {settings_table} WHERE proxy_id=? AND `key`=?", (get_proxy_id(), key)).fetchone()
         return str(row[0]) if row else None
 
     def set_exclude_private_nets(self, enabled: bool) -> None:
@@ -110,14 +136,19 @@ class ExclusionsStore:
                 return False, f"Invalid domain label: {label}"
         # Store with wildcard prefix if applicable
         store_value = f"*.{d}" if is_wildcard else d
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(f"INSERT OR IGNORE INTO {self._table(conn, 'domains')}(domain) VALUES(?)", (store_value,))
+            conn.execute(
+                f"INSERT OR IGNORE INTO {self._table(conn, 'domains')}(proxy_id, domain) VALUES(?,?)",
+                (proxy_id, store_value),
+            )
         return True, ""
 
     def remove_domain(self, domain: str) -> None:
         d = (domain or "").strip().lower().lstrip(".")
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE domain=?", (d,))
+            conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE proxy_id=? AND domain=?", (proxy_id, d))
 
     def add_net(self, table: str, cidr: str) -> Tuple[bool, str]:
         c = (cidr or "").strip()
@@ -129,22 +160,40 @@ class ExclusionsStore:
             return False, "Invalid CIDR."
         if table not in ("dst_nets", "src_nets"):
             return False, "Invalid target."
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(f"INSERT OR IGNORE INTO {self._table(conn, table)}(cidr) VALUES(?)", (str(n),))
+            conn.execute(
+                f"INSERT OR IGNORE INTO {self._table(conn, table)}(proxy_id, cidr) VALUES(?,?)",
+                (proxy_id, str(n)),
+            )
         return True, ""
 
     def remove_net(self, table: str, cidr: str) -> None:
         c = (cidr or "").strip()
         if table not in ("dst_nets", "src_nets"):
             return
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table(conn, table)} WHERE cidr=?", (c,))
+            conn.execute(f"DELETE FROM {self._table(conn, table)} WHERE proxy_id=? AND cidr=?", (proxy_id, c))
 
     def list_all(self) -> Exclusions:
         self.init_db()
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            domains = [str(r[0]) for r in conn.execute(f"SELECT domain FROM {self._table(conn, 'domains')} ORDER BY domain ASC").fetchall()]
-            src = [str(r[0]) for r in conn.execute(f"SELECT cidr FROM {self._table(conn, 'src_nets')} ORDER BY cidr ASC").fetchall()]
+            domains = [
+                str(r[0])
+                for r in conn.execute(
+                    f"SELECT domain FROM {self._table(conn, 'domains')} WHERE proxy_id=? ORDER BY domain ASC",
+                    (proxy_id,),
+                ).fetchall()
+            ]
+            src = [
+                str(r[0])
+                for r in conn.execute(
+                    f"SELECT cidr FROM {self._table(conn, 'src_nets')} WHERE proxy_id=? ORDER BY cidr ASC",
+                    (proxy_id,),
+                ).fetchall()
+            ]
             v = self._get_setting_conn(conn, "exclude_private_nets")
             enabled = True if v is None else (v == "1")
         # Destination-network exclusions are intentionally limited to the built-in private/local ranges.

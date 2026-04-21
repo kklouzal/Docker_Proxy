@@ -10,9 +10,10 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import logging
 
-from services.db import connect, create_index_if_not_exists, table_exists
+from services.db import column_exists, connect, create_index_if_not_exists, table_exists
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.proxy_context import get_proxy_id
 
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,15 @@ _DEFAULTS: Dict[str, str] = {
     "next_run_ts": "0",
 }
 
+_GLOBAL_SCOPE = "__global__"
+_GLOBAL_SETTINGS_KEYS = {"source_url", "last_success", "last_attempt", "last_error", "next_run_ts"}
+
+
+@dataclass(frozen=True)
+class WebFilterMaterializedState:
+    include_text: str
+    whitelist_text: str
+
 
 class WebFilterStore:
     def __init__(
@@ -216,6 +226,11 @@ class WebFilterStore:
     def _connect_webcat(self):
         return connect()
 
+    def _settings_scope_for_key(self, key: str) -> str:
+        if (key or "").strip() in _GLOBAL_SETTINGS_KEYS:
+            return _GLOBAL_SCOPE
+        return get_proxy_id()
+
     def _table(self, conn, logical_name: str) -> str:
         mapping = {
             "settings": "webfilter_settings",
@@ -231,22 +246,57 @@ class WebFilterStore:
             meta_table = self._table(conn, "meta")
             whitelist_table = self._table(conn, "whitelist")
             blocked_log_table = self._table(conn, "blocked_log")
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {settings_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', k VARCHAR(64) NOT NULL, v LONGTEXT NOT NULL, PRIMARY KEY(proxy_id, k))"
+            )
             conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {whitelist_table}(pattern VARCHAR(255) PRIMARY KEY, added_ts BIGINT NOT NULL)")
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern))"
+            )
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
                 "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
+                "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
                 "ts BIGINT NOT NULL, "
                 "src_ip VARCHAR(64) NOT NULL, "
                 "url TEXT NOT NULL, "
                 "category VARCHAR(128) NOT NULL"
                 ")"
             )
-            create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_ts", columns_sql="ts")
+            if not column_exists(conn, settings_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {settings_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute(f"ALTER TABLE {settings_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, k)")
+            if not column_exists(conn, whitelist_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {whitelist_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+                conn.execute(f"ALTER TABLE {whitelist_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, pattern)")
+            if not column_exists(conn, blocked_log_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {blocked_log_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
+            create_index_if_not_exists(conn, table_name=settings_table, index_name=f"idx_{settings_table}_proxy_key", columns_sql="proxy_id, k")
+            create_index_if_not_exists(conn, table_name=whitelist_table, index_name=f"idx_{whitelist_table}_proxy_ts", columns_sql="proxy_id, added_ts")
+            create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_proxy_ts", columns_sql="proxy_id, ts, id")
             for k, v in _DEFAULTS.items():
-                conn.execute(f"INSERT OR IGNORE INTO {settings_table}(k,v) VALUES(?,?)", (k, v))
+                conn.execute(
+                    f"INSERT OR IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(?,?,?)",
+                    (self._settings_scope_for_key(k), k, v),
+                )
             conn.execute(f"INSERT OR IGNORE INTO {meta_table}(k,v) VALUES('refresh_requested','0')")
+
+            for key in _GLOBAL_SETTINGS_KEYS:
+                row = conn.execute(
+                    f"SELECT 1 FROM {settings_table} WHERE proxy_id=? AND k=? LIMIT 1",
+                    (_GLOBAL_SCOPE, key),
+                ).fetchone()
+                if row is not None:
+                    continue
+                src = conn.execute(
+                    f"SELECT v FROM {settings_table} WHERE k=? ORDER BY CASE WHEN proxy_id='default' THEN 0 ELSE 1 END, proxy_id ASC LIMIT 1",
+                    (key,),
+                ).fetchone()
+                if src and src[0] is not None:
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(?,?,?)",
+                        (_GLOBAL_SCOPE, key, str(src[0])),
+                    )
 
             # One-time migration: if an existing DB has empty values, populate the new defaults
             # without overwriting user-provided configuration.
@@ -283,9 +333,10 @@ class WebFilterStore:
             return self._list_whitelist(conn, limit=int(limit))
 
     def _list_whitelist(self, conn, limit: int) -> List[Tuple[str, int]]:
+        proxy_id = get_proxy_id()
         rows = conn.execute(
-            f"SELECT pattern, added_ts FROM {self._table(conn, 'whitelist')} ORDER BY added_ts DESC, pattern ASC LIMIT ?",
-            (int(limit),),
+            f"SELECT pattern, added_ts FROM {self._table(conn, 'whitelist')} WHERE proxy_id=? ORDER BY added_ts DESC, pattern ASC LIMIT ?",
+            (proxy_id, int(limit)),
         ).fetchall()
         out: List[Tuple[str, int]] = []
         for r in rows:
@@ -305,9 +356,10 @@ class WebFilterStore:
 
         try:
             with self._connect() as conn:
+                proxy_id = get_proxy_id()
                 rows = conn.execute(
-                    f"SELECT ts, src_ip, url, category FROM {self._table(conn, 'blocked_log')} ORDER BY ts DESC LIMIT ?",
-                    (int(limit),),
+                    f"SELECT ts, src_ip, url, category FROM {self._table(conn, 'blocked_log')} WHERE proxy_id=? ORDER BY ts DESC LIMIT ?",
+                    (proxy_id, int(limit)),
                 ).fetchall()
                 out: List[Dict[str, object]] = []
                 for r in rows:
@@ -332,9 +384,10 @@ class WebFilterStore:
             return False, "Enter a domain like example.com or *.example.com", ""
         pat = patterns[0]
         with self._connect() as conn:
+            proxy_id = get_proxy_id()
             conn.execute(
-                f"INSERT OR IGNORE INTO {self._table(conn, 'whitelist')}(pattern, added_ts) VALUES(?,?)",
-                (pat, int(_now())),
+                f"INSERT OR IGNORE INTO {self._table(conn, 'whitelist')}(proxy_id, pattern, added_ts) VALUES(?,?,?)",
+                (proxy_id, pat, int(_now())),
             )
         return True, "", pat
 
@@ -344,7 +397,7 @@ class WebFilterStore:
         if not pat:
             return
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table(conn, 'whitelist')} WHERE pattern=?", (pat,))
+            conn.execute(f"DELETE FROM {self._table(conn, 'whitelist')} WHERE proxy_id=? AND pattern=?", (get_proxy_id(), pat))
 
     def get_whitelist_patterns(self) -> List[str]:
         """Return patterns in a stable precedence order.
@@ -368,14 +421,26 @@ class WebFilterStore:
         return exact + wild
 
     def _get(self, conn, key: str, default: str = "") -> str:
-        row = conn.execute(f"SELECT v FROM {self._table(conn, 'settings')} WHERE k=?", (key,)).fetchone()
+        scope = self._settings_scope_for_key(key)
+        row = conn.execute(
+            f"SELECT v FROM {self._table(conn, 'settings')} WHERE proxy_id=? AND k=?",
+            (scope, key),
+        ).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
     def _set(self, conn, key: str, value: str) -> None:
+        scope = self._settings_scope_for_key(key)
         conn.execute(
-            f"INSERT INTO {self._table(conn, 'settings')}(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-            (key, value),
+            f"INSERT INTO {self._table(conn, 'settings')}(proxy_id, k, v) VALUES(?,?,?) ON CONFLICT(proxy_id, k) DO UPDATE SET v=excluded.v",
+            (scope, key, value),
         )
+
+    def _get_global_setting_conn(self, conn, key: str, default: str = "") -> str:
+        row = conn.execute(
+            f"SELECT v FROM {self._table(conn, 'settings')} WHERE proxy_id=? AND k=?",
+            (_GLOBAL_SCOPE, key),
+        ).fetchone()
+        return str(row[0]) if row and row[0] is not None else default
 
     def _get_meta(self, conn, key: str, default: str = "") -> str:
         row = conn.execute(f"SELECT v FROM {self._table(conn, 'meta')} WHERE k=?", (key,)).fetchone()
@@ -428,13 +493,17 @@ class WebFilterStore:
 
         with self._connect() as conn:
             prev_enabled = self._get(conn, "enabled", "0") == "1"
+            prev_source = self._get_global_setting_conn(conn, "source_url", "")
 
             self._set(conn, "enabled", "1" if enabled else "0")
             self._set(conn, "source_url", src)
             self._set(conn, "blocked_categories", cats_csv)
 
             # Schedule download/build behavior.
-            if enabled and not prev_enabled:
+            if src and src != prev_source:
+                self._set_meta(conn, "refresh_requested", "1")
+                self._set(conn, "next_run_ts", str(_next_midnight_ts(_now())))
+            elif enabled and not prev_enabled:
                 # Enable transition: trigger immediate refresh + schedule next midnight.
                 self._set_meta(conn, "refresh_requested", "1")
                 self._set(conn, "next_run_ts", str(_next_midnight_ts(_now())))
@@ -604,19 +673,8 @@ class WebFilterStore:
         except Exception:
             return cats
 
-    def apply_squid_include(self) -> None:
-        """(Re)generate the Squid include file from current settings."""
-
+    def render_materialized_state(self) -> WebFilterMaterializedState:
         s = self.get_settings()
-        include_dir = os.path.dirname(self.squid_include_path)
-        if include_dir:
-            os.makedirs(include_dir, exist_ok=True)
-
-        if not s.enabled or not s.blocked_categories:
-            with open(self.squid_include_path, "w", encoding="utf-8") as f:
-                f.write("# Autogenerated: web filtering disabled or no categories selected\n")
-            return
-
         helpers = _env_int("WEBFILTER_HELPERS", 64, minimum=8, maximum=256)
         ttl = _env_int("WEBFILTER_TTL_SECONDS", 3600, minimum=60, maximum=86400)
         neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 300, minimum=0, maximum=3600)
@@ -631,41 +689,36 @@ class WebFilterStore:
                     out.append("_")
             return "".join(out).strip("_") or "cat"
 
+        whitelist_lines: List[str] = []
+        for pat in list(s.whitelist_domains or []):
+            p = (pat or "").strip().lower()
+            if not p:
+                continue
+            if p.startswith("*."):
+                base = p[2:]
+                if base:
+                    whitelist_lines.append("." + base)
+            else:
+                whitelist_lines.append(p)
+        whitelist_text = ("\n".join(whitelist_lines) + "\n") if whitelist_lines else ""
+
+        if not s.enabled or not s.blocked_categories:
+            return WebFilterMaterializedState(
+                include_text="# Autogenerated: web filtering disabled or no categories selected\n",
+                whitelist_text=whitelist_text,
+            )
+
         lines: List[str] = []
         lines.append("# Autogenerated: web filtering (domain categories)")
-        # Pass client IP + destination + full requested URL so the helper can write a blocked log.
         lines.append(
             f"external_acl_type webcat children={helpers} ttl={ttl} negative_ttl={neg_ttl} %SRC %DST %URI "
             f"/usr/bin/python3 /app/tools/webcat_acl.py --fail {fail}"
         )
 
-        # Whitelist is evaluated first.
-        wl_patterns = list(s.whitelist_domains or [])
-        whitelist_dir = os.path.dirname(self.whitelist_path)
-        if whitelist_dir:
-            os.makedirs(whitelist_dir, exist_ok=True)
-        try:
-            with open(self.whitelist_path, "w", encoding="utf-8") as f:
-                for pat in wl_patterns:
-                    p = (pat or "").strip().lower()
-                    if not p:
-                        continue
-                    if p.startswith("*."):
-                        base = p[2:]
-                        if base:
-                            # Squid dstdomain uses a leading dot for wildcard suffix matches.
-                            f.write("." + base + "\n")
-                    else:
-                        f.write(p + "\n")
-        except Exception:
-            # If we can't write the whitelist file, proceed without whitelist.
-            wl_patterns = []
-
-        if wl_patterns:
+        if whitelist_lines:
             lines.append(f"acl webfilter_whitelist dstdomain \"{self.whitelist_path}\"")
             lines.append("http_access allow webfilter_whitelist")
 
-        # Block each selected category
         selected = self._resolve_category_aliases(list(s.blocked_categories or []))
         for cat in selected:
             safe = _safe_acl_name(cat)
@@ -673,8 +726,24 @@ class WebFilterStore:
             lines.append(f"deny_info ERR_WEBFILTER_BLOCKED webfilter_block_{safe}")
             lines.append(f"http_access deny webfilter_block_{safe}")
 
+        return WebFilterMaterializedState(
+            include_text="\n".join(lines) + "\n",
+            whitelist_text=whitelist_text,
+        )
+
+    def apply_squid_include(self) -> None:
+        """(Re)generate the Squid include file from current settings."""
+        include_dir = os.path.dirname(self.squid_include_path)
+        if include_dir:
+            os.makedirs(include_dir, exist_ok=True)
+        whitelist_dir = os.path.dirname(self.whitelist_path)
+        if whitelist_dir:
+            os.makedirs(whitelist_dir, exist_ok=True)
+        state = self.render_materialized_state()
+        with open(self.whitelist_path, "w", encoding="utf-8") as f:
+            f.write(state.whitelist_text)
         with open(self.squid_include_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write(state.include_text)
 
     def _record_attempt(self, ok: bool, err: str) -> None:
         self.init_db()
@@ -767,20 +836,15 @@ class WebFilterStore:
                 # Read settings + refresh flag in a single connection to avoid extra
                 # opens/closes in this tight loop.
                 with self._connect() as conn:
-                    s = self._get_settings(conn)
+                    source_url = self._get_global_setting_conn(conn, "source_url", _DEFAULT_SOURCE_URL)
+                    last_success = int(self._get_global_setting_conn(conn, "last_success", "0") or 0)
+                    next_ts = int(self._get_global_setting_conn(conn, "next_run_ts", "0") or 0)
                     refresh = self._refresh_requested_conn(conn)
+                    if next_ts <= 0:
+                        next_ts = _next_midnight_ts(_now())
+                        self._set_next_run_conn(conn, ts=next_ts)
 
-                    if s.enabled:
-                        now = _now()
-                        # Ensure next_run_ts is initialized when enabled.
-                        next_ts = int(s.next_run_ts or 0)
-                        if next_ts <= 0:
-                            next_ts = _next_midnight_ts(now)
-                            self._set_next_run_conn(conn, ts=next_ts)
-                    else:
-                        next_ts = 0
-
-                if not s.enabled:
+                if not source_url:
                     sleep_seconds = disabled_sleep
                     time.sleep(sleep_seconds)
                     continue
@@ -799,7 +863,7 @@ class WebFilterStore:
                         sleep_seconds = min(enabled_sleep, float(remaining))
 
                 if do_build:
-                    ok, err = self._run_build(s.source_url)
+                    ok, err = self._run_build(source_url)
                     with self._connect() as conn:
                         self._record_attempt_conn(conn, ok=ok, err=err)
                         if refresh:

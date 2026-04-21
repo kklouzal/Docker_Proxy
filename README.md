@@ -4,6 +4,18 @@ A Dockerized Squid HTTP proxy bundled with a Flask admin UI for managing policy 
 
 Runtime state now targets an **external MySQL 8+ backend**.
 
+## Split architecture (admin-ui + proxy)
+
+The repository now supports a **two-container split**:
+
+- `admin-ui`: Flask/Gunicorn control plane for login, policy editing, fleet visibility, and desired-state management
+- `proxy`: Squid/Dante/c-icap runtime plus a tiny internal management API used only for:
+  - health checks
+  - immediate config sync from MySQL
+  - cache clear actions
+
+MySQL remains the source of truth for desired state, audit, stats, and proxy registration. The direct HTTP path is intentionally tiny and internal-only.
+
 This project targets “real” proxy deployments where you want:
 - A manageable Squid configuration (template baseline + UI-driven includes)
 - Optional SSL-bump (TLS interception) for managed devices
@@ -12,6 +24,11 @@ This project targets “real” proxy deployments where you want:
 - Optional ICAP services for ad-blocking (REQMOD) and antivirus scanning (ClamAV via RESPMOD)
 
 ## Quick start (build from source)
+
+The default source-build Compose file now brings up **both** services:
+
+- `admin-ui` on port `5000`
+- `proxy` on ports `80`, `3128`, and `1080`
 
 Set the external database connection in the root `.env` file (gitignored) or via your shell/launch environment.
 
@@ -42,6 +59,11 @@ docker compose build --build-arg ALPINE_VERSION=3.23.4
 Admin UI:
 - http://localhost:5000
 
+Proxy runtime:
+- HTTP proxy: `http://localhost:3128`
+- PAC/WPAD: `http://localhost/`
+- SOCKS5: `localhost:1080`
+
 Default login (first run only):
 - Username: `admin`
 - Password: `admin`
@@ -49,6 +71,11 @@ Default login (first run only):
 Change the password in **Administration** after first login.
 
 ## Run the prebuilt image (GHCR)
+
+The GHCR deployment file now uses **two images**:
+
+- `ghcr.io/<owner>/<repo>-admin-ui:<tag>`
+- `ghcr.io/<owner>/<repo>-proxy:<tag>`
 
 Use the provided file:
 

@@ -6,7 +6,8 @@ import threading
 import time
 from typing import Optional
 
-from services.db import connect, create_index_if_not_exists
+from services.db import column_exists, connect, create_index_if_not_exists
+from services.proxy_context import get_proxy_id
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class AuditStore:
                 """
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     ts BIGINT NOT NULL,
                     kind VARCHAR(80) NOT NULL,
                     ok TINYINT(1) NOT NULL,
@@ -33,8 +35,11 @@ class AuditStore:
                 )
                 """
             )
+            if not column_exists(conn, "audit_events", "proxy_id"):
+                conn.execute("ALTER TABLE audit_events ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
             create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_ts", columns_sql="ts")
             create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_kind", columns_sql="kind")
+            create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_proxy_ts", columns_sql="proxy_id, ts")
 
     def record(
         self,
@@ -69,13 +74,16 @@ class AuditStore:
                 # Bound stored config text to avoid unbounded DB growth.
                 stored_text = _clip(config_text, 200_000)
 
+        proxy_id = get_proxy_id()
+
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO audit_events(ts, kind, ok, remote_addr, user_agent, detail, config_sha256, config_text)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO audit_events(proxy_id, ts, kind, ok, remote_addr, user_agent, detail, config_sha256, config_text)
+                VALUES(?,?,?,?,?,?,?,?,?)
                 """,
                 (
+                    proxy_id,
                     int(time.time()),
                     kind_s,
                     1 if ok else 0,
@@ -95,15 +103,18 @@ class AuditStore:
     def latest_config_apply(self) -> Optional[object]:
         # Returns the most recent config_apply* event (if any).
         self.init_db()
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT ts, kind, ok, remote_addr, user_agent, detail
                 FROM audit_events
-                WHERE kind LIKE 'config_apply%'
+                WHERE proxy_id=? AND kind LIKE 'config_apply%'
                 ORDER BY ts DESC, id DESC
                 LIMIT 1
                 """
+                ,
+                (proxy_id,),
             ).fetchone()
         return row
 

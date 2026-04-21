@@ -19,17 +19,30 @@ _REGISTERED_DATABASES: set[str] = set()
 _CLEANUP_REGISTERED = False
 _MODULES_TO_PURGE = [
     "app",
+    "services.adblock_artifacts",
     "services.adblock_store",
     "services.audit_store",
     "services.auth_store",
+    "services.certificate_bundles",
+    "services.config_revisions",
     "services.exclusions_store",
     "services.live_stats",
+    "services.policy_materializer",
     "services.pac_profiles_store",
+    "services.pac_renderer",
+    "services.proxy_client",
+    "services.proxy_context",
+    "services.proxy_registry",
     "services.socks_store",
     "services.ssl_errors_store",
     "services.sslfilter_store",
     "services.timeseries_store",
     "services.webfilter_store",
+    "proxy",
+    "proxy.agent",
+    "proxy.app",
+    "proxy.runtime",
+    "proxy.wsgi",
 ]
 
 

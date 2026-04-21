@@ -1,0 +1,763 @@
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import socket
+import subprocess
+import tempfile
+import time
+from typing import Any, Dict
+
+from services.adblock_artifacts import get_adblock_artifacts, materialize_archive_to_directory, read_materialized_artifact_sha
+from services.adblock_store import get_adblock_store
+from services.certificate_bundles import get_certificate_bundles
+from services.cert_manager import CertManager, materialize_certificate_bundle
+from services.config_revisions import get_config_revisions
+from services.errors import public_error_message
+from services.live_stats import get_store
+from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
+from services.proxy_context import get_proxy_id
+from services.proxy_registry import get_proxy_registry
+from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
+from services.socks_store import get_socks_store
+from services.squidctl import SquidController
+from services.ssl_errors_store import get_ssl_errors_store
+from services.stats import get_stats
+from services.timeseries_store import get_timeseries_store
+
+
+def _decode_bytes(value: bytes) -> str:
+    return (value or b"").decode("utf-8", errors="replace").strip()
+
+
+def _decode_completed(proc: Any) -> str:
+    stdout = getattr(proc, "stdout", b"")
+    stderr = getattr(proc, "stderr", b"")
+    stdout_text = stdout if isinstance(stdout, str) else (stdout or b"").decode("utf-8", errors="replace")
+    stderr_text = stderr if isinstance(stderr, str) else (stderr or b"").decode("utf-8", errors="replace")
+    if stdout_text and stderr_text:
+        return (stdout_text + "\n" + stderr_text).strip()
+    return (stdout_text or stderr_text).strip()
+
+
+def _check_tcp(host: str, port: int, timeout: float = 0.75) -> Dict[str, Any]:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return {"ok": True, "detail": "tcp connect ok"}
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc)}
+
+
+def _check_clamd() -> Dict[str, Any]:
+    host = (os.environ.get("CLAMD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int((os.environ.get("CLAMD_PORT") or "3310").strip())
+    except Exception:
+        port = 3310
+    try:
+        with socket.create_connection((host, port), timeout=1.0) as sock:
+            sock.settimeout(1.0)
+            sock.sendall(b"PING\n")
+            data = sock.recv(64)
+        detail = data.decode("utf-8", errors="replace").strip() or "no data"
+        return {"ok": data.startswith(b"PONG"), "detail": f"{detail} ({host}:{port})"}
+    except Exception as exc:
+        return {"ok": False, "detail": f"{host}:{port}: {exc}"}
+
+
+def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
+    path = service if service.startswith("/") else f"/{service}"
+    req = (
+        f"OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\n"
+        f"Host: {host}\r\n"
+        "User-Agent: squid-flask-proxy-proxy\r\n"
+        "Encapsulated: null-body=0\r\n\r\n"
+    ).encode("ascii", errors="replace")
+    try:
+        with socket.create_connection((host, int(port)), timeout=1.0) as sock:
+            sock.settimeout(1.0)
+            sock.sendall(req)
+            data = sock.recv(512)
+        first = data.split(b"\r\n", 1)[0].decode("ascii", errors="replace") if data else "no data"
+        return {"ok": data.startswith(b"ICAP/1.0 200"), "detail": first}
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc)}
+
+
+class ProxyRuntime:
+    def __init__(self) -> None:
+        self.controller = SquidController()
+        self.registry = get_proxy_registry()
+        self.revisions = get_config_revisions()
+        self.certificate_bundles = get_certificate_bundles()
+        self.adblock_artifacts = get_adblock_artifacts()
+        self.cert_manager = CertManager((os.environ.get("CERTS_DIR") or "/etc/squid/ssl/certs").strip() or "/etc/squid/ssl/certs")
+        self.ssl_db_dir = (os.environ.get("SSL_DB_DIR") or "/var/lib/ssl_db/store").strip() or "/var/lib/ssl_db/store"
+        self.adblock_compiled_dir = (os.environ.get("ADBLOCK_COMPILED_DIR") or self.adblock_artifacts.compiled_dir).strip() or self.adblock_artifacts.compiled_dir
+        self.pac_render_dir = (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
+
+    @property
+    def proxy_id(self) -> str:
+        return get_proxy_id()
+
+    def ensure_registered(self) -> None:
+        self.registry.register_local_proxy()
+
+    def _current_config_sha(self) -> str:
+        current = self.controller.get_current_config() or ""
+        if not current:
+            return ""
+        return hashlib.sha256(current.encode("utf-8", errors="replace")).hexdigest()
+
+    def _current_certificate_bundle_sha(self) -> str:
+        bundle = self.cert_manager.load_bundle()
+        return bundle.bundle_sha256 if bundle is not None else ""
+
+    def _read_text_file(self, path: str) -> str:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return ""
+        except Exception:
+            return ""
+
+    def _atomic_write_text(self, path: str, content: str) -> None:
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        handle = None
+        tmp_path = ""
+        try:
+            handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, dir=directory, prefix=".tmp-")
+            tmp_path = handle.name
+            handle.write(content)
+            handle.flush()
+            handle.close()
+            handle = None
+            os.replace(tmp_path, path)
+        finally:
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    def _current_policy_sha(self) -> str:
+        desired = build_proxy_policy_state(self.proxy_id)
+        current_files = tuple(
+            MaterializedPolicyFile(path=item.path, content=self._read_text_file(item.path))
+            for item in desired.files
+        )
+        return calculate_policy_sha(current_files)
+
+    def _current_adblock_artifact_sha(self) -> str:
+        return read_materialized_artifact_sha(self.adblock_compiled_dir)
+
+    def _current_pac_state_sha(self) -> str:
+        return read_materialized_pac_state_sha(self.pac_render_dir)
+
+    def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30) -> tuple[bool, str]:
+        try:
+            proc = subprocess.run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "restart", program_name],
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            return False, public_error_message(exc, default=f"Failed to restart {program_name}.")
+        detail = _decode_completed(proc).strip() or f"{program_name} restarted."
+        return proc.returncode == 0, detail
+
+    def _restart_adblock_service(self) -> tuple[bool, str]:
+        return self._restart_supervisor_program("cicap_adblock")
+
+    def _reload_for_policy_update(self) -> tuple[bool, str]:
+        result = self.controller.reload_squid()
+        if isinstance(result, tuple) and len(result) == 2:
+            stdout, stderr = result
+        else:
+            stdout, stderr = b"", b""
+        detail = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
+        return (not bool(stderr)), detail or "Squid reloaded."
+
+    def _find_sslcrtd_binary(self) -> str:
+        candidates = [
+            shutil.which("ssl_crtd"),
+            "/usr/lib/squid/ssl_crtd",
+            "/usr/libexec/squid/ssl_crtd",
+            "/usr/lib/squid/security_file_certgen",
+            "/usr/libexec/squid/security_file_certgen",
+        ]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return ""
+
+    def _reinitialize_ssl_db_and_restart(self) -> tuple[bool, str]:
+        ssl_db_dir = self.ssl_db_dir
+        if not ssl_db_dir.startswith("/") or ssl_db_dir in ("/", "/etc", "/usr", "/var", "/var/lib"):
+            return False, f"Refusing to reinitialize ssl_db at unsafe path: {ssl_db_dir}"
+
+        details: list[str] = []
+        try:
+            stopped = subprocess.run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+                capture_output=True,
+                timeout=20,
+            )
+            decoded = _decode_completed(stopped)
+            if decoded:
+                details.append(decoded)
+        except Exception as exc:
+            details.append(f"supervisorctl stop squid failed: {exc}")
+            try:
+                fallback = subprocess.run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
+                decoded = _decode_completed(fallback)
+                if decoded:
+                    details.append(decoded)
+            except Exception as inner_exc:
+                details.append(f"squid shutdown fallback failed: {inner_exc}")
+
+        parent_dir = os.path.dirname(ssl_db_dir) or "/var/lib/ssl_db"
+        try:
+            shutil.rmtree(ssl_db_dir, ignore_errors=True)
+            os.makedirs(parent_dir, exist_ok=True)
+        except Exception as exc:
+            details.append(f"Failed to clear ssl_db directory: {exc}")
+            return False, "\n".join([part for part in details if part]).strip()
+
+        helper = self._find_sslcrtd_binary()
+        if not helper:
+            details.append("Could not find ssl_crtd/security_file_certgen helper.")
+            return False, "\n".join([part for part in details if part]).strip()
+
+        try:
+            initialized = subprocess.run([helper, "-c", "-s", ssl_db_dir, "-M", "16MB"], capture_output=True, timeout=90)
+        except Exception as exc:
+            details.append(f"Failed to initialize ssl_db: {exc}")
+            return False, "\n".join([part for part in details if part]).strip()
+
+        if initialized.returncode != 0:
+            details.append(_decode_completed(initialized) or "ssl_crtd initialization failed")
+            return False, "\n".join([part for part in details if part]).strip()
+
+        details.append(_decode_completed(initialized) or f"Reinitialized ssl_db at {ssl_db_dir}.")
+        try:
+            os.chmod(ssl_db_dir, 0o700)
+        except Exception:
+            pass
+
+        ok_restart, restart_detail = self.controller.restart_squid()
+        if restart_detail:
+            details.append(restart_detail)
+        return ok_restart, "\n".join([part for part in details if part]).strip()
+
+    def sync_policy_state(self, *, force: bool = False) -> Dict[str, Any]:
+        desired = build_proxy_policy_state(self.proxy_id)
+        current_sha = self._current_policy_sha()
+        if not force and desired.policy_sha256 == current_sha:
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "reload_required": False,
+                "policy_sha256": desired.policy_sha256,
+                "detail": "Proxy is already using the active policy materialization.",
+            }
+
+        changed_paths: list[str] = []
+        try:
+            for item in desired.files:
+                current_content = self._read_text_file(item.path)
+                if current_content == item.content:
+                    continue
+                self._atomic_write_text(item.path, item.content)
+                changed_paths.append(item.path)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "reload_required": False,
+                "policy_sha256": desired.policy_sha256,
+                "detail": public_error_message(exc, default="Failed to materialize policy state."),
+            }
+
+        if not changed_paths:
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "reload_required": False,
+                "policy_sha256": desired.policy_sha256,
+                "detail": "Policy materialization is already current.",
+            }
+
+        return {
+            "ok": True,
+            "proxy_id": self.proxy_id,
+            "changed": True,
+            "reload_required": True,
+            "policy_sha256": desired.policy_sha256,
+            "detail": f"Updated {len(changed_paths)} local policy file(s).",
+        }
+
+    def sync_adblock_state(self, *, force: bool = False) -> Dict[str, Any]:
+        revision = self.adblock_artifacts.get_active_artifact()
+        store = get_adblock_store()
+        store.init_db()
+        flush_requested = bool(store.get_cache_flush_requested())
+        current_sha = self._current_adblock_artifact_sha()
+
+        if revision is None:
+            if not flush_requested:
+                return {
+                    "ok": True,
+                    "proxy_id": self.proxy_id,
+                    "changed": False,
+                    "artifact_changed": False,
+                    "cache_flushed": False,
+                    "revision_id": None,
+                    "artifact_sha256": current_sha,
+                    "detail": "No active adblock artifact is available.",
+                }
+
+            ok_restart, restart_detail = self._restart_adblock_service()
+            if ok_restart:
+                try:
+                    store.mark_cache_flushed(size=0)
+                except Exception:
+                    pass
+            return {
+                "ok": ok_restart,
+                "proxy_id": self.proxy_id,
+                "changed": True,
+                "artifact_changed": False,
+                "cache_flushed": bool(ok_restart),
+                "revision_id": None,
+                "artifact_sha256": current_sha,
+                "detail": restart_detail.strip() or "Adblock runtime restarted.",
+            }
+
+        artifact_changed = bool(force or revision.artifact_sha256 != current_sha)
+        if not artifact_changed and not flush_requested:
+            detail = "Proxy is already using the active adblock artifact."
+            applied = self.adblock_artifacts.record_apply_result(
+                self.proxy_id,
+                revision.revision_id,
+                ok=True,
+                detail=detail,
+                applied_by="proxy",
+                artifact_sha256=revision.artifact_sha256,
+            )
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "artifact_changed": False,
+                "cache_flushed": False,
+                "revision_id": revision.revision_id,
+                "application_id": applied.application_id,
+                "artifact_sha256": revision.artifact_sha256,
+                "detail": detail,
+            }
+
+        if artifact_changed:
+            try:
+                materialize_archive_to_directory(
+                    self.adblock_compiled_dir,
+                    archive_blob=revision.archive_blob,
+                    artifact_sha256=revision.artifact_sha256,
+                )
+            except Exception as exc:
+                detail = public_error_message(exc, default="Failed to materialize adblock artifact.")
+                applied = self.adblock_artifacts.record_apply_result(
+                    self.proxy_id,
+                    revision.revision_id,
+                    ok=False,
+                    detail=detail,
+                    applied_by="proxy",
+                    artifact_sha256=revision.artifact_sha256,
+                )
+                return {
+                    "ok": False,
+                    "proxy_id": self.proxy_id,
+                    "changed": False,
+                    "artifact_changed": False,
+                    "cache_flushed": False,
+                    "revision_id": revision.revision_id,
+                    "application_id": applied.application_id,
+                    "artifact_sha256": revision.artifact_sha256,
+                    "detail": detail,
+                }
+
+        ok_restart, restart_detail = self._restart_adblock_service()
+        if ok_restart and flush_requested:
+            try:
+                store.mark_cache_flushed(size=0)
+            except Exception:
+                pass
+        detail = restart_detail.strip() or "Adblock artifact applied."
+        applied = self.adblock_artifacts.record_apply_result(
+            self.proxy_id,
+            revision.revision_id,
+            ok=ok_restart,
+            detail=detail,
+            applied_by="proxy",
+            artifact_sha256=revision.artifact_sha256,
+        )
+        return {
+            "ok": ok_restart,
+            "proxy_id": self.proxy_id,
+            "changed": bool(artifact_changed or flush_requested),
+            "artifact_changed": artifact_changed,
+            "cache_flushed": bool(ok_restart and flush_requested),
+            "revision_id": revision.revision_id,
+            "application_id": applied.application_id,
+            "artifact_sha256": revision.artifact_sha256,
+            "detail": detail,
+        }
+
+    def sync_pac_state(self, *, force: bool = False) -> Dict[str, Any]:
+        desired = build_proxy_pac_state(self.proxy_id)
+        current_sha = self._current_pac_state_sha()
+        if not force and desired.state_sha256 == current_sha:
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "state_sha256": desired.state_sha256,
+                "detail": "Proxy is already using the active PAC materialization.",
+            }
+
+        try:
+            materialize_proxy_pac_state(self.pac_render_dir, state=desired)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "state_sha256": desired.state_sha256,
+                "detail": public_error_message(exc, default="Failed to materialize PAC state."),
+            }
+
+        return {
+            "ok": True,
+            "proxy_id": self.proxy_id,
+            "changed": True,
+            "state_sha256": desired.state_sha256,
+            "detail": "PAC state materialized locally.",
+        }
+
+    def bootstrap_revision_if_missing(self) -> None:
+        current = self.controller.get_current_config() or ""
+        if current.strip():
+            self.revisions.ensure_active_revision(
+                self.proxy_id,
+                current,
+                created_by="system",
+                source_kind="bootstrap",
+            )
+
+    def sync_certificate_bundle(self, *, force: bool = False) -> Dict[str, Any]:
+        revision = self.certificate_bundles.get_active_bundle()
+        if revision is None:
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "detail": "",
+                "revision_id": None,
+            }
+
+        current_sha = self._current_certificate_bundle_sha()
+        if not force and revision.bundle_sha256 == current_sha:
+            detail = "Proxy is already using the active certificate bundle."
+            applied = self.certificate_bundles.record_apply_result(
+                self.proxy_id,
+                revision.revision_id,
+                ok=True,
+                detail=detail,
+                applied_by="proxy",
+                bundle_sha256=revision.bundle_sha256,
+            )
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "revision_id": revision.revision_id,
+                "application_id": applied.application_id,
+                "changed": False,
+                "detail": detail,
+                "bundle_sha256": revision.bundle_sha256,
+            }
+
+        try:
+            materialize_certificate_bundle(
+                self.cert_manager.ca_dir,
+                revision.to_bundle(),
+                original_pfx_bytes=revision.original_pfx_blob,
+            )
+        except Exception as exc:
+            detail = public_error_message(exc, default="Failed to materialize certificate bundle.")
+            applied = self.certificate_bundles.record_apply_result(
+                self.proxy_id,
+                revision.revision_id,
+                ok=False,
+                detail=detail,
+                applied_by="proxy",
+                bundle_sha256=revision.bundle_sha256,
+            )
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "revision_id": revision.revision_id,
+                "application_id": applied.application_id,
+                "changed": False,
+                "detail": detail,
+                "bundle_sha256": revision.bundle_sha256,
+            }
+
+        ok_restart, restart_detail = self._reinitialize_ssl_db_and_restart()
+        detail = restart_detail.strip() or "Certificate bundle applied."
+        applied = self.certificate_bundles.record_apply_result(
+            self.proxy_id,
+            revision.revision_id,
+            ok=ok_restart,
+            detail=detail,
+            applied_by="proxy",
+            bundle_sha256=revision.bundle_sha256,
+        )
+        return {
+            "ok": ok_restart,
+            "proxy_id": self.proxy_id,
+            "revision_id": revision.revision_id,
+            "application_id": applied.application_id,
+            "changed": ok_restart,
+            "detail": detail,
+            "bundle_sha256": revision.bundle_sha256,
+        }
+
+    def start_background_tasks(self) -> None:
+        if (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1":
+            return
+        get_store().start_background()
+        get_timeseries_store().start_background(get_stats)
+        get_ssl_errors_store().start_background()
+        get_socks_store().start_background()
+        try:
+            get_adblock_store().start_blocklog_background()
+        except Exception:
+            pass
+
+    def collect_health(self) -> Dict[str, Any]:
+        stdout, stderr = self.controller.get_status()
+        proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
+        proxy_ok = not bool(stderr)
+        stats = get_stats()
+        icap_host = os.environ.get("CICAP_HOST", "127.0.0.1")
+        try:
+            icap_port = int(os.environ.get("CICAP_PORT", 14000))
+        except Exception:
+            icap_port = 14000
+        try:
+            dante_port = int(os.environ.get("DANTE_PORT", 1080))
+        except Exception:
+            dante_port = 1080
+        services = {
+            "icap": _check_icap_service(icap_host, icap_port, "/adblockreq"),
+            "clamav": _check_clamd(),
+            "dante": _check_tcp(os.environ.get("DANTE_HOST", "127.0.0.1"), dante_port),
+        }
+        active_revision = self.revisions.get_active_revision(self.proxy_id)
+        active_certificate = self.certificate_bundles.get_active_bundle()
+        active_adblock_artifact = self.adblock_artifacts.get_active_artifact()
+        current_sha = self._current_config_sha()
+        current_certificate_sha = self._current_certificate_bundle_sha()
+        current_adblock_sha = self._current_adblock_artifact_sha()
+        desired_policy = build_proxy_policy_state(self.proxy_id)
+        current_policy_sha = self._current_policy_sha()
+        desired_pac = build_proxy_pac_state(self.proxy_id)
+        current_pac_sha = self._current_pac_state_sha()
+        ok = proxy_ok and all(bool(item.get("ok")) for item in services.values())
+        return {
+            "ok": ok,
+            "status": "healthy" if ok else "degraded",
+            "proxy_id": self.proxy_id,
+            "proxy_status": proxy_status,
+            "stats": stats,
+            "services": services,
+            "active_revision_id": active_revision.revision_id if active_revision else None,
+            "active_revision_sha": active_revision.config_sha256 if active_revision else "",
+            "current_config_sha": current_sha,
+            "active_certificate_revision_id": active_certificate.revision_id if active_certificate else None,
+            "active_certificate_sha": active_certificate.bundle_sha256 if active_certificate else "",
+            "current_certificate_sha": current_certificate_sha,
+            "active_adblock_revision_id": active_adblock_artifact.revision_id if active_adblock_artifact else None,
+            "active_adblock_sha": active_adblock_artifact.artifact_sha256 if active_adblock_artifact else "",
+            "current_adblock_sha": current_adblock_sha,
+            "desired_policy_sha": desired_policy.policy_sha256,
+            "current_policy_sha": current_policy_sha,
+            "desired_pac_sha": desired_pac.state_sha256,
+            "current_pac_sha": current_pac_sha,
+            "timestamp": int(time.time()),
+        }
+
+    def heartbeat(self) -> Dict[str, Any]:
+        health = self.collect_health()
+        self.registry.heartbeat(
+            self.proxy_id,
+            status=str(health.get("status") or "unknown"),
+            hostname=(os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip(),
+            management_url=(os.environ.get("PROXY_MANAGEMENT_URL") or "").strip(),
+            current_config_sha=str(health.get("current_config_sha") or ""),
+            detail=str(health.get("proxy_status") or "")[:4000],
+        )
+        return health
+
+    def sync_from_db(self, *, force: bool = False) -> Dict[str, Any]:
+        self.ensure_registered()
+        self.bootstrap_revision_if_missing()
+        cert_result = self.sync_certificate_bundle(force=force)
+        cert_ok = bool(cert_result.get("ok", True))
+        cert_changed = bool(cert_result.get("changed", False))
+        detail_parts = [str(cert_result.get("detail") or "").strip()] if str(cert_result.get("detail") or "").strip() else []
+        if not cert_ok:
+            detail = "\n".join(detail_parts).strip() or "Certificate bundle sync failed."
+            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            cert_result["detail"] = detail
+            return cert_result
+
+        policy_result = self.sync_policy_state(force=force)
+        policy_ok = bool(policy_result.get("ok", True))
+        policy_changed = bool(policy_result.get("changed", False))
+        policy_reload_required = bool(policy_result.get("reload_required", False))
+        if str(policy_result.get("detail") or "").strip():
+            detail_parts.append(str(policy_result.get("detail") or "").strip())
+        if not policy_ok:
+            detail = "\n".join(detail_parts).strip() or "Policy materialization failed."
+            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            policy_result["detail"] = detail
+            return policy_result
+
+        adblock_result = self.sync_adblock_state(force=force)
+        adblock_ok = bool(adblock_result.get("ok", True))
+        adblock_changed = bool(adblock_result.get("changed", False))
+        if str(adblock_result.get("detail") or "").strip():
+            detail_parts.append(str(adblock_result.get("detail") or "").strip())
+        if not adblock_ok:
+            detail = "\n".join(detail_parts).strip() or "Adblock artifact materialization failed."
+            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            adblock_result["detail"] = detail
+            return adblock_result
+
+        pac_result = self.sync_pac_state(force=force)
+        pac_ok = bool(pac_result.get("ok", True))
+        pac_changed = bool(pac_result.get("changed", False))
+        if str(pac_result.get("detail") or "").strip():
+            detail_parts.append(str(pac_result.get("detail") or "").strip())
+        if not pac_ok:
+            detail = "\n".join(detail_parts).strip() or "PAC materialization failed."
+            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            pac_result["detail"] = detail
+            return pac_result
+
+        revision = self.revisions.get_active_revision(self.proxy_id)
+        if revision is None:
+            reload_ok = True
+            if policy_reload_required:
+                reload_ok, reload_detail = self._reload_for_policy_update()
+                if reload_detail:
+                    detail_parts.append(reload_detail)
+            detail = "\n".join(detail_parts).strip() or "No active config revision is available for this proxy."
+            result = {
+                "ok": reload_ok,
+                "proxy_id": self.proxy_id,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "certificate_changed": cert_changed,
+                "policy_changed": policy_changed,
+                "adblock_changed": adblock_changed,
+                "pac_changed": pac_changed,
+                "config_changed": False,
+                "detail": detail,
+            }
+            self.registry.mark_apply_result(self.proxy_id, ok=reload_ok, detail=detail, current_config_sha=self._current_config_sha())
+            return result
+
+        current_text = self.controller.get_current_config() or ""
+        current_sha = hashlib.sha256(current_text.encode("utf-8", errors="replace")).hexdigest() if current_text else ""
+        if not force and revision.config_sha256 == current_sha:
+            reload_ok = True
+            if policy_reload_required:
+                reload_ok, reload_detail = self._reload_for_policy_update()
+                if reload_detail:
+                    detail_parts.append(reload_detail)
+            detail = "Proxy is already using the active config revision."
+            if detail_parts:
+                detail_parts.append(detail)
+                detail = "\n".join(detail_parts).strip()
+            self.revisions.record_apply_result(self.proxy_id, revision.revision_id, ok=reload_ok, detail=detail, applied_by="proxy")
+            self.registry.mark_apply_result(self.proxy_id, ok=reload_ok, detail=detail, current_config_sha=current_sha)
+            return {
+                "ok": reload_ok,
+                "proxy_id": self.proxy_id,
+                "revision_id": revision.revision_id,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "certificate_changed": cert_changed,
+                "policy_changed": policy_changed,
+                "adblock_changed": adblock_changed,
+                "pac_changed": pac_changed,
+                "config_changed": False,
+                "detail": detail,
+            }
+
+        ok, config_detail = self.controller.apply_config_text(revision.config_text)
+        if config_detail.strip():
+            detail_parts.append(config_detail.strip())
+        detail = "\n".join([part for part in detail_parts if part]).strip() or config_detail
+        applied = self.revisions.record_apply_result(
+            self.proxy_id,
+            revision.revision_id,
+            ok=ok,
+            detail=detail,
+            applied_by="proxy",
+        )
+        new_sha = revision.config_sha256 if ok else current_sha
+        self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=new_sha)
+        return {
+            "ok": ok,
+            "proxy_id": self.proxy_id,
+            "revision_id": revision.revision_id,
+            "application_id": applied.application_id,
+            "changed": cert_changed or policy_changed or adblock_changed or pac_changed or True,
+            "certificate_changed": cert_changed,
+            "policy_changed": policy_changed,
+            "adblock_changed": adblock_changed,
+            "pac_changed": pac_changed,
+            "config_changed": True,
+            "detail": detail,
+        }
+
+    def clear_cache(self) -> Dict[str, Any]:
+        ok, detail = self.controller.clear_disk_cache()
+        self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=self._current_config_sha())
+        return {
+            "ok": ok,
+            "proxy_id": self.proxy_id,
+            "detail": detail,
+        }
+
+
+_runtime: ProxyRuntime | None = None
+
+
+def get_runtime() -> ProxyRuntime:
+    global _runtime
+    if _runtime is None:
+        _runtime = ProxyRuntime()
+    return _runtime

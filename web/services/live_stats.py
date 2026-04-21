@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
-from services.db import connect, create_index_if_not_exists
+from services.db import column_exists, connect, create_index_if_not_exists
 from services.logutil import log_exception_throttled
+from services.proxy_context import get_proxy_id
 
 
 logger = logging.getLogger(__name__)
@@ -327,32 +328,37 @@ class LiveStatsStore:
             conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {domains_table} (
-                    domain VARCHAR(255) PRIMARY KEY,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                    domain VARCHAR(255) NOT NULL,
                     requests BIGINT NOT NULL DEFAULT 0,
                     hit_requests BIGINT NOT NULL DEFAULT 0,
                     bytes BIGINT NOT NULL DEFAULT 0,
                     hit_bytes BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL
+                    last_seen BIGINT NOT NULL,
+                    PRIMARY KEY (proxy_id, domain)
                 )
                 """
             )
             conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {clients_table} (
-                    ip VARCHAR(64) PRIMARY KEY,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                    ip VARCHAR(64) NOT NULL,
                     requests BIGINT NOT NULL DEFAULT 0,
                     hit_requests BIGINT NOT NULL DEFAULT 0,
                     bytes BIGINT NOT NULL DEFAULT 0,
                     hit_bytes BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL
+                    last_seen BIGINT NOT NULL,
+                    PRIMARY KEY (proxy_id, ip)
                 )
                 """
             )
             conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {client_domains_table} (
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     ip VARCHAR(64) NOT NULL,
                     domain VARCHAR(255) NOT NULL,
                     requests BIGINT NOT NULL DEFAULT 0,
@@ -361,7 +367,7 @@ class LiveStatsStore:
                     hit_bytes BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
                     last_seen BIGINT NOT NULL,
-                    PRIMARY KEY (ip, domain)
+                    PRIMARY KEY (proxy_id, ip, domain)
                 )
                 """
             )
@@ -369,6 +375,7 @@ class LiveStatsStore:
                 f"""
                 CREATE TABLE IF NOT EXISTS {nocache_table} (
                     row_key CHAR(40) PRIMARY KEY,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     ip VARCHAR(64) NOT NULL,
                     domain VARCHAR(255) NOT NULL,
                     reason VARCHAR(300) NOT NULL,
@@ -378,11 +385,31 @@ class LiveStatsStore:
                 )
                 """
             )
-            create_index_if_not_exists(conn, table_name=domains_table, index_name=f"idx_{domains_table}_last_seen", columns_sql="last_seen")
-            create_index_if_not_exists(conn, table_name=clients_table, index_name=f"idx_{clients_table}_last_seen", columns_sql="last_seen")
-            create_index_if_not_exists(conn, table_name=client_domains_table, index_name=f"idx_{client_domains_table}_ip", columns_sql="ip")
-            create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_ip", columns_sql="ip, last_seen")
-            create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_domain", columns_sql="domain, last_seen")
+            if not column_exists(conn, domains_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {domains_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+            try:
+                conn.execute(f"ALTER TABLE {domains_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, domain)")
+            except Exception:
+                pass
+            if not column_exists(conn, clients_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {clients_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+            try:
+                conn.execute(f"ALTER TABLE {clients_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, ip)")
+            except Exception:
+                pass
+            if not column_exists(conn, client_domains_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {client_domains_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
+            try:
+                conn.execute(f"ALTER TABLE {client_domains_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, ip, domain)")
+            except Exception:
+                pass
+            if not column_exists(conn, nocache_table, "proxy_id"):
+                conn.execute(f"ALTER TABLE {nocache_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER row_key")
+            create_index_if_not_exists(conn, table_name=domains_table, index_name=f"idx_{domains_table}_proxy_last_seen", columns_sql="proxy_id, last_seen")
+            create_index_if_not_exists(conn, table_name=clients_table, index_name=f"idx_{clients_table}_proxy_last_seen", columns_sql="proxy_id, last_seen")
+            create_index_if_not_exists(conn, table_name=client_domains_table, index_name=f"idx_{client_domains_table}_proxy_ip", columns_sql="proxy_id, ip")
+            create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_proxy_ip", columns_sql="proxy_id, ip, last_seen")
+            create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_proxy_domain", columns_sql="proxy_id, domain, last_seen")
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune stale aggregate rows.
@@ -402,11 +429,12 @@ class LiveStatsStore:
         table_name = self._table(conn, table)
         hit = 1 if is_hit else 0
         hit_bytes = size_bytes if is_hit else 0
+        proxy_id = get_proxy_id()
         conn.execute(
             f"""
-            INSERT INTO {table_name} ({key_col}, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
-            VALUES (?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT({key_col}) DO UPDATE SET
+            INSERT INTO {table_name} (proxy_id, {key_col}, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+            ON CONFLICT(proxy_id, {key_col}) DO UPDATE SET
                 requests = requests + 1,
                 hit_requests = hit_requests + excluded.hit_requests,
                 bytes = bytes + excluded.bytes,
@@ -414,18 +442,19 @@ class LiveStatsStore:
                 first_seen = MIN(first_seen, excluded.first_seen),
                 last_seen = MAX(last_seen, excluded.last_seen);
             """ ,
-            (key, hit, size_bytes, hit_bytes, ts, ts),
+            (proxy_id, key, hit, size_bytes, hit_bytes, ts, ts),
         )
 
     def _upsert_client_domain(self, conn, ip: str, domain: str, ts: int, size_bytes: int, is_hit: bool) -> None:
         table_name = self._table(conn, "client_domains")
         hit = 1 if is_hit else 0
         hit_bytes = size_bytes if is_hit else 0
+        proxy_id = get_proxy_id()
         conn.execute(
             f"""
-            INSERT INTO {table_name} (ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
-            VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT(ip, domain) DO UPDATE SET
+            INSERT INTO {table_name} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+            ON CONFLICT(proxy_id, ip, domain) DO UPDATE SET
                 requests = requests + 1,
                 hit_requests = hit_requests + excluded.hit_requests,
                 bytes = bytes + excluded.bytes,
@@ -433,7 +462,7 @@ class LiveStatsStore:
                 first_seen = MIN(first_seen, excluded.first_seen),
                 last_seen = MAX(last_seen, excluded.last_seen);
             """,
-            (ip, domain, hit, size_bytes, hit_bytes, ts, ts),
+            (proxy_id, ip, domain, hit, size_bytes, hit_bytes, ts, ts),
         )
 
     def _upsert_client_domain_nocache(self, conn, ip: str, domain: str, ts: int, reason: str) -> None:
@@ -441,17 +470,18 @@ class LiveStatsStore:
         r = (reason or "").strip()
         if not r:
             r = "Not served from cache"
-        row_key = hashlib.sha1(f"{ip}|{domain}|{r}".encode("utf-8", errors="replace")).hexdigest()
+        proxy_id = get_proxy_id()
+        row_key = hashlib.sha1(f"{proxy_id}|{ip}|{domain}|{r}".encode("utf-8", errors="replace")).hexdigest()
         conn.execute(
             f"""
-            INSERT INTO {table_name} (row_key, ip, domain, reason, requests, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, 1, ?, ?)
+            INSERT INTO {table_name} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT(row_key) DO UPDATE SET
                 requests = requests + 1,
                 first_seen = MIN(first_seen, excluded.first_seen),
                 last_seen = MAX(last_seen, excluded.last_seen);
             """,
-            (row_key, ip, domain, r, ts, ts),
+            (row_key, proxy_id, ip, domain, r, ts, ts),
         )
 
     def ingest_line(self, line: str) -> None:
@@ -648,14 +678,14 @@ class LiveStatsStore:
             return rows
 
     def get_totals(self, *, since: Optional[int] = None) -> Dict[str, int]:
-        where = ""
-        params: Tuple[Any, ...] = ()
+        where = "WHERE proxy_id = ?"
+        params: List[Any] = [get_proxy_id()]
         if since is not None:
-            where = "WHERE last_seen >= ?"
-            params = (int(since),)
+            where += " AND last_seen >= ?"
+            params.append(int(since))
         with self._connect() as conn:
-            d = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'domains')} {where}", params).fetchone()
-            c = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'clients')} {where}", params).fetchone()
+            d = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'domains')} {where}", tuple(params)).fetchone()
+            c = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'clients')} {where}", tuple(params)).fetchone()
         return {
             "domain_requests": int(d[0]) if d else 0,
             "domain_hit_requests": int(d[1]) if d else 0,
@@ -673,8 +703,8 @@ class LiveStatsStore:
         search: str = "",
     ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
-        where = []
-        params: List[Any] = []
+        where = ["proxy_id = ?"]
+        params: List[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= ?")
             params.append(int(since))
@@ -719,8 +749,8 @@ class LiveStatsStore:
         search: str = "",
     ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
-        where = []
-        params: List[Any] = []
+        where = ["proxy_id = ?"]
+        params: List[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= ?")
             params.append(int(since))
@@ -758,16 +788,17 @@ class LiveStatsStore:
     def list_client_domains(self, ip: str, sort: str = "top", limit: int = 50) -> List[Dict[str, Any]]:
         if not ip:
             return []
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             client_domains_table = self._table(conn, "client_domains")
         if sort == "recent":
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE ip=? ORDER BY last_seen DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=? AND ip=? ORDER BY last_seen DESC LIMIT ?"
         elif sort == "cache":
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE ip=? ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) DESC, requests DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=? AND ip=? ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) DESC, requests DESC LIMIT ?"
         else:
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE ip=? ORDER BY requests DESC, last_seen DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=? AND ip=? ORDER BY requests DESC, last_seen DESC LIMIT ?"
 
-        rows = self._query_rows(sql, (ip, int(limit)))
+        rows = self._query_rows(sql, (proxy_id, ip, int(limit)))
         total = sum(r.requests for r in rows) or 0
         out: List[Dict[str, Any]] = []
         for r in rows:
@@ -786,6 +817,7 @@ class LiveStatsStore:
         if not ip:
             return []
         lim = max(10, min(500, int(limit)))
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
             client_domains_table = self._table(conn, "client_domains")
@@ -799,7 +831,7 @@ class LiveStatsStore:
             (
                 SELECT n.reason
                 FROM {nocache_table} n
-                WHERE n.ip = cd.ip AND n.domain = cd.domain
+                WHERE n.proxy_id = cd.proxy_id AND n.ip = cd.ip AND n.domain = cd.domain
                 ORDER BY
                     n.requests DESC,
                     (CASE WHEN n.reason IN ('Cache miss (object not in cache)', 'Not served from cache') THEN 1 ELSE 0 END) ASC,
@@ -807,12 +839,12 @@ class LiveStatsStore:
                 LIMIT 1
             ) AS reason
         FROM {client_domains_table} cd
-        WHERE cd.ip = ? AND cd.requests > cd.hit_requests
+        WHERE cd.proxy_id = ? AND cd.ip = ? AND cd.requests > cd.hit_requests
         ORDER BY miss_requests DESC, cd.last_seen DESC
         LIMIT ?
         """
         with self._connect() as conn:
-            rows = conn.execute(sql, (ip, lim)).fetchall()
+            rows = conn.execute(sql, (proxy_id, ip, lim)).fetchall()
 
         out: List[Dict[str, Any]] = []
         for r in rows:
@@ -841,11 +873,12 @@ class LiveStatsStore:
             return []
 
         lim = max(3, min(50, int(limit)))
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
             total_row = conn.execute(
-                f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE domain=?",
-                (d,),
+                f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=? AND domain=?",
+                (proxy_id, d),
             ).fetchone()
             total = int(total_row[0] or 0) if total_row else 0
 
@@ -853,12 +886,12 @@ class LiveStatsStore:
                 f"""
                 SELECT reason, COALESCE(SUM(requests),0) AS req, COALESCE(MAX(last_seen),0) AS last_seen
                 FROM {nocache_table}
-                WHERE domain=?
+                WHERE proxy_id=? AND domain=?
                 GROUP BY reason
                 ORDER BY req DESC, last_seen DESC
                 LIMIT ?
                 """,
-                (d, lim),
+                (proxy_id, d, lim),
             ).fetchall()
 
         out: List[Dict[str, Any]] = []
@@ -876,20 +909,22 @@ class LiveStatsStore:
 
     def list_global_not_cached_reasons(self, limit: int = 50) -> Tuple[int, List[Dict[str, Any]]]:
         lim = max(3, min(200, int(limit)))
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
-            total_row = conn.execute(f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table}").fetchone()
+            total_row = conn.execute(f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=?", (proxy_id,)).fetchone()
             total = int(total_row[0] or 0) if total_row else 0
 
             rows = conn.execute(
                 f"""
                 SELECT reason, COALESCE(SUM(requests),0) AS req, COALESCE(MAX(last_seen),0) AS last_seen
                 FROM {nocache_table}
+                WHERE proxy_id=?
                 GROUP BY reason
                 ORDER BY req DESC, last_seen DESC
                 LIMIT ?
                 """,
-                (lim,),
+                (proxy_id, lim),
             ).fetchall()
 
         out: List[Dict[str, Any]] = []

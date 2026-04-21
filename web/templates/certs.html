@@ -4,7 +4,12 @@
 
 {% block content %}
 <h1 class="page-title">Certificates</h1>
-<p class="page-subtitle">Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores.</p>
+<p class="page-subtitle">
+    Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores.
+    {% if remote_control_mode %}
+        The active CA bundle is versioned in MySQL and shared across all registered proxy containers.
+    {% endif %}
+</p>
 
 {% if message %}
 <div class="card" style="margin-bottom: 12px;">
@@ -33,6 +38,17 @@
             <div class="small">
                 This certificate must be installed on client devices to avoid HTTPS warnings when using SSL-bump.
             </div>
+            {% if bundle %}
+            <div class="small" style="margin-top: 12px;">
+                <div><strong>Source:</strong> {{ bundle.source_kind }}</div>
+                {% if bundle.subject_dn %}<div><strong>Subject:</strong> {{ bundle.subject_dn }}</div>{% endif %}
+                {% if bundle.not_before or bundle.not_after %}
+                    <div><strong>Validity:</strong> {{ bundle.not_before or 'unknown' }} → {{ bundle.not_after or 'unknown' }}</div>
+                {% endif %}
+                {% if bundle.cert_sha256 %}<div><strong>Fingerprint:</strong> <code>{{ bundle.cert_sha256 }}</code></div>{% endif %}
+                {% if remote_control_mode and bundle.created_ts %}<div><strong>Published:</strong> {{ fmt_ts(bundle.created_ts) }}</div>{% endif %}
+            </div>
+            {% endif %}
             <div class="actions" style="margin-top: 12px;">
                 <form action="{{ url_for('generate_certificate') }}" method="post">
                     {{ csrf_field() }}
@@ -64,6 +80,36 @@
                     </div>
                 </form>
             </div>
+
+            {% if remote_control_mode %}
+            <div style="margin-top: 16px;">
+                <h3 class="card-title" style="margin-bottom: 8px;">Fleet Apply Status</h3>
+                {% if proxy_cert_statuses %}
+                    <div class="small">
+                        {% for row in proxy_cert_statuses %}
+                            <div style="margin-bottom: 10px;">
+                                <strong>{{ row.display_name }}</strong>
+                                {% if row.ok is sameas true %}
+                                    <span class="badge ok">Applied</span>
+                                {% elif row.ok is sameas false %}
+                                    <span class="badge danger">Failed</span>
+                                {% else %}
+                                    <span class="badge warn">Pending</span>
+                                {% endif %}
+                                {% if row.applied_ts %}
+                                    <span style="margin-left: 6px;">{{ fmt_ts(row.applied_ts) }}</span>
+                                {% endif %}
+                                {% if row.detail %}
+                                    <div>{{ row.detail }}</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="small">Registered proxies will appear here after they report certificate apply status.</div>
+                {% endif %}
+            </div>
+            {% endif %}
         </div>
     </section>
 
@@ -75,7 +121,7 @@
             <div class="small">
                 - Only the public CA cert is downloadable.
                 <br>
-                - The private key stays in the container.
+                - The private key stays on the server side and is materialized locally on each proxy.
                 <br>
                 - Treat SSL-bump as MITM; use with explicit authorization.
             </div>

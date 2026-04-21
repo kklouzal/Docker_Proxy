@@ -8,8 +8,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.db import connect, create_index_if_not_exists
+from services.db import column_exists, connect, create_index_if_not_exists
 from services.logutil import log_exception_throttled
+from services.proxy_context import get_proxy_id
 
 
 logger = logging.getLogger(__name__)
@@ -192,10 +193,11 @@ class SocksStore:
         action, _ = _classify(s)
         protocol = _extract_protocol(s)
         src_ip, src_port, dst, dst_port = _extract_endpoints(s)
+        proxy_id = get_proxy_id()
 
         conn.execute(
-            "INSERT INTO socks_events(ts, action, protocol, src_ip, src_port, dst, dst_port, msg) VALUES(?,?,?,?,?,?,?,?)",
-            (ts, action, protocol, src_ip, int(src_port or 0), dst, int(dst_port or 0), s[:600]),
+            "INSERT INTO socks_events(proxy_id, ts, action, protocol, src_ip, src_port, dst, dst_port, msg) VALUES(?,?,?,?,?,?,?,?,?)",
+            (proxy_id, ts, action, protocol, src_ip, int(src_port or 0), dst, int(dst_port or 0), s[:600]),
         )
         # Cheap periodic prune.
         if (ts % 97) == 0:
@@ -208,6 +210,7 @@ class SocksStore:
                 """
                 CREATE TABLE IF NOT EXISTS socks_events (
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     ts BIGINT NOT NULL,
                     action VARCHAR(32) NOT NULL,
                     protocol VARCHAR(32) NOT NULL,
@@ -219,9 +222,11 @@ class SocksStore:
                 )
                 """
             )
-            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_ts", columns_sql="ts")
-            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_src", columns_sql="src_ip, ts")
-            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_dst", columns_sql="dst, ts")
+            if not column_exists(conn, "socks_events", "proxy_id"):
+                conn.execute("ALTER TABLE socks_events ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
+            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_proxy_ts", columns_sql="proxy_id, ts")
+            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_proxy_src", columns_sql="proxy_id, src_ip, ts")
+            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_proxy_dst", columns_sql="proxy_id, dst, ts")
             self._prune(conn)
 
     def _prune(self, conn) -> None:
@@ -256,9 +261,10 @@ class SocksStore:
 
     def seed_from_recent_log(self) -> None:
         # Only seed when empty to avoid duplicating historical log lines on restarts.
+        proxy_id = get_proxy_id()
         try:
             with self._connect() as conn:
-                n = conn.execute("SELECT COUNT(*) AS n FROM socks_events").fetchone()[0]
+                n = conn.execute("SELECT COUNT(*) AS n FROM socks_events WHERE proxy_id=?", (proxy_id,)).fetchone()[0]
                 if int(n or 0) > 0:
                     return
         except Exception:
@@ -407,6 +413,7 @@ class SocksStore:
                 time.sleep(max(1.0, poll_interval))
 
     def summary(self, since: int) -> Dict[str, Any]:
+        proxy_id = get_proxy_id()
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -417,16 +424,16 @@ class SocksStore:
                     SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
                     SUM(CASE WHEN action = 'error' THEN 1 ELSE 0 END) AS errors
                 FROM socks_events
-                WHERE ts >= ?
+                WHERE proxy_id = ? AND ts >= ?
                 """,
-                (since,),
+                (proxy_id, since),
             ).fetchone()
             return dict(row or {})
 
     def top_clients(self, since: int, limit: int = 20, search: str = "") -> List[Dict[str, Any]]:
         like = None
-        params: List[Any] = [since]
-        where = "WHERE ts >= ? AND src_ip != ''"
+        params: List[Any] = [get_proxy_id(), since]
+        where = "WHERE proxy_id = ? AND ts >= ? AND src_ip != ''"
         if search:
             like = f"%{_escape_like(search)}%"
             where += " AND src_ip LIKE ? ESCAPE '\\'"
@@ -448,8 +455,8 @@ class SocksStore:
 
     def top_destinations(self, since: int, limit: int = 20, search: str = "") -> List[Dict[str, Any]]:
         like = None
-        params: List[Any] = [since]
-        where = "WHERE ts >= ? AND dst != ''"
+        params: List[Any] = [get_proxy_id(), since]
+        where = "WHERE proxy_id = ? AND ts >= ? AND dst != ''"
         if search:
             like = f"%{_escape_like(search)}%"
             where += " AND dst LIKE ? ESCAPE '\\'"
@@ -470,8 +477,8 @@ class SocksStore:
             return [dict(r) for r in rows]
 
     def recent(self, limit: int = 200, since: Optional[int] = None, search: str = "") -> List[SocksEventRow]:
-        where = []
-        params: List[Any] = []
+        where = ["proxy_id = ?"]
+        params: List[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= ?")
             params.append(int(since))

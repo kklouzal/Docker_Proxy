@@ -15,9 +15,31 @@
                 <div class="brand-mark" aria-hidden="true"></div>
                 <div class="brand-title">
                     <strong>Squid Flask Proxy</strong>
-                    <span>Proxy + admin UI</span>
+                    <span>
+                        Proxy + admin UI
+                        {% if remote_control_mode and active_proxy %}
+                            · active proxy: {{ active_proxy.display_name }}
+                        {% endif %}
+                    </span>
                 </div>
             </div>
+            {% if session.get('user') and remote_control_mode and fleet_proxies %}
+            <form method="get" action="{{ request.path }}" class="proxy-switcher" style="display:flex; align-items:center; gap:8px;">
+                {% for key, value in request.args.items() %}
+                    {% if key != 'proxy_id' %}
+                    <input type="hidden" name="{{ key }}" value="{{ value }}">
+                    {% endif %}
+                {% endfor %}
+                <label for="proxy-id" class="small">Proxy</label>
+                <select id="proxy-id" name="proxy_id" onchange="this.form.submit()">
+                    {% for proxy in fleet_proxies %}
+                    <option value="{{ proxy.proxy_id }}" {{ 'selected' if proxy.proxy_id == active_proxy_id else '' }}>
+                        {{ proxy.display_name }} ({{ proxy.status }})
+                    </option>
+                    {% endfor %}
+                </select>
+            </form>
+            {% endif %}
             {% if session.get('user') %}
             <nav class="nav" aria-label="Primary">
                 <div class="nav-dropdown">
@@ -50,6 +72,9 @@
                 </div>
 
                 <a class="nav-pill" href="{{ url_for('health') }}">Diagnostics</a>
+                {% if remote_control_mode %}
+                <a class="nav-pill {{ 'active' if request.endpoint == 'fleet' else '' }}" href="{{ url_for('fleet') }}">Fleet</a>
+                {% endif %}
                 <a class="nav-pill" href="{{ url_for('pac_builder') }}">PAC</a>
                 <a class="nav-pill {{ 'active' if request.endpoint == 'administration' else '' }}" href="{{ url_for('administration') }}">Administration</a>
 

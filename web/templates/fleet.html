@@ -1,0 +1,65 @@
+{% extends "layout.html" %}
+
+{% block title %}Fleet · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Fleet</h1>
+<p class="page-subtitle">Registered proxy runtimes and their direct management status.</p>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Proxy instances</h2>
+        <span class="badge">{{ proxies|length }} total</span>
+    </div>
+    <div class="card-body">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Proxy</th>
+                    <th>Status</th>
+                    <th>Heartbeat</th>
+                    <th>Config SHA</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for proxy in proxies %}
+                {% set health = live_health.get(proxy.proxy_id, {}) %}
+                <tr>
+                    <td>
+                        <strong>{{ proxy.display_name }}</strong><br>
+                        <span class="small">{{ proxy.proxy_id }}</span>
+                        {% if proxy.hostname %}<div class="small">{{ proxy.hostname }}</div>{% endif %}
+                    </td>
+                    <td>
+                        {% if health and health.ok %}
+                        <span class="badge ok">healthy</span>
+                        {% else %}
+                        <span class="badge warn">{{ health.status if health and health.status else proxy.status }}</span>
+                        {% endif %}
+                        <div class="small">{{ health.detail if health and health.detail else proxy.detail }}</div>
+                    </td>
+                    <td>{{ fmt_ts(proxy.last_heartbeat) if proxy.last_heartbeat else 'n/a' }}</td>
+                    <td><code>{{ (proxy.current_config_sha or '')[:12] or 'n/a' }}</code></td>
+                    <td>
+                        <div class="actions">
+                            <a class="btn" href="{{ url_for('index', proxy_id=proxy.proxy_id) }}">Select</a>
+                            <form action="{{ url_for('reload_squid') }}" method="post">
+                                {{ csrf_field() }}
+                                <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
+                                <button class="btn primary" type="submit">Sync now</button>
+                            </form>
+                            <form action="{{ url_for('clear_caches') }}" method="post">
+                                {{ csrf_field() }}
+                                <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
+                                <button class="btn" type="submit">Clear cache</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
