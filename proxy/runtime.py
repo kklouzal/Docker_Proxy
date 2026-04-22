@@ -16,6 +16,7 @@ from services.certificate_bundles import get_certificate_bundles
 from services.cert_manager import CertManager, materialize_certificate_bundle
 from services.config_revisions import get_config_revisions
 from services.errors import public_error_message
+from services.health_checks import check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener as _shared_check_local_listener, check_tcp as _shared_check_tcp, is_local_host as _shared_is_local_host
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
@@ -47,83 +48,23 @@ def _decode_completed(proc: Any) -> str:
 
 
 def _check_tcp(host: str, port: int, timeout: float = 0.75) -> Dict[str, Any]:
-    try:
-        with socket.create_connection((host, int(port)), timeout=timeout):
-            return {"ok": True, "detail": "tcp connect ok"}
-    except Exception as exc:
-        return {"ok": False, "detail": str(exc)}
+    return _shared_check_tcp(host, port, timeout=timeout, error_formatter=str)
 
 
 def _is_local_host(host: str) -> bool:
-    normalized = (host or "").strip().lower()
-    return normalized in ("", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::")
-
-
-def _has_listen_socket(path: str, port: int) -> bool:
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            next(fh, None)
-            for line in fh:
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                local_addr = parts[1]
-                state = parts[3]
-                if state != "0A":
-                    continue
-                try:
-                    _addr, port_hex = local_addr.rsplit(":", 1)
-                    if int(port_hex, 16) == int(port):
-                        return True
-                except Exception:
-                    continue
-    except FileNotFoundError:
-        return False
-    except Exception:
-        return False
-    return False
+    return _shared_is_local_host(host)
 
 
 def _check_local_listener(service_name: str, host: str, port: int) -> Dict[str, Any]:
-    if _has_listen_socket("/proc/net/tcp", port) or _has_listen_socket("/proc/net/tcp6", port):
-        return {"ok": True, "detail": f"{service_name} listening on {host}:{port}"}
-    return {"ok": False, "detail": f"{service_name} is not listening on {host}:{port}"}
+    return _shared_check_local_listener(service_name, host, port)
 
 
 def _check_clamd() -> Dict[str, Any]:
-    host = (os.environ.get("CLAMD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-    try:
-        port = int((os.environ.get("CLAMD_PORT") or "3310").strip())
-    except Exception:
-        port = 3310
-    try:
-        with socket.create_connection((host, port), timeout=1.0) as sock:
-            sock.settimeout(1.0)
-            sock.sendall(b"PING\n")
-            data = sock.recv(64)
-        detail = data.decode("utf-8", errors="replace").strip() or "no data"
-        return {"ok": data.startswith(b"PONG"), "detail": f"{detail} ({host}:{port})"}
-    except Exception as exc:
-        return {"ok": False, "detail": f"{host}:{port}: {exc}"}
+    return _shared_check_clamd(error_formatter=str)
 
 
 def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
-    path = service if service.startswith("/") else f"/{service}"
-    req = (
-        f"OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\n"
-        f"Host: {host}\r\n"
-        "User-Agent: squid-flask-proxy-proxy\r\n"
-        "Encapsulated: null-body=0\r\n\r\n"
-    ).encode("ascii", errors="replace")
-    try:
-        with socket.create_connection((host, int(port)), timeout=1.0) as sock:
-            sock.settimeout(1.0)
-            sock.sendall(req)
-            data = sock.recv(512)
-        first = data.split(b"\r\n", 1)[0].decode("ascii", errors="replace") if data else "no data"
-        return {"ok": data.startswith(b"ICAP/1.0 200"), "detail": first}
-    except Exception as exc:
-        return {"ok": False, "detail": str(exc)}
+    return _shared_check_icap_service(host, port, service, error_formatter=str)
 
 
 class ProxyRuntime:

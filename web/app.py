@@ -29,6 +29,9 @@ from services.proxy_registry import get_proxy_registry
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.errors import public_error_message
+from services.health_checks import check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener, check_tcp as _shared_check_tcp, is_local_host
+from services.logutil import log_exception_throttled
+from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
 
 import socket
 import re
@@ -111,6 +114,48 @@ except Exception:
 def _is_logged_in() -> bool:
     u = session.get('user')
     return bool(u and isinstance(u, str))
+
+
+def _query_flag(value: bool) -> str | None:
+    return '1' if value else None
+
+
+def _redirect_to(endpoint: str, **params):
+    return redirect(url_for(endpoint, **{k: v for k, v in params.items() if v is not None}))
+
+
+def _redirect_with_message(endpoint: str, *, ok: bool, msg: str, **params):
+    return _redirect_to(endpoint, ok=('1' if ok else '0'), msg=msg, **params)
+
+
+def _redirect_config(tab: str, *, ok: bool = False, error: bool = False, subtab: str | None = None):
+    return _redirect_to('squid_config', tab=tab, subtab=subtab, ok=_query_flag(ok), error=_query_flag(error))
+
+
+def _redirect_index_status():
+    return redirect(url_for('index') + '#status')
+
+
+def _record_audit_event(
+    kind: str,
+    *,
+    ok: bool,
+    detail: str = '',
+    config_text: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        'kind': kind,
+        'ok': ok,
+        'remote_addr': request.remote_addr,
+        'user_agent': request.headers.get('User-Agent'),
+        'detail': str(detail or '')[:4000],
+    }
+    if config_text is not None:
+        payload['config_text'] = config_text
+    try:
+        get_audit_store().record(**payload)
+    except Exception:
+        pass
 
 
 def _safe_next_url(next_url: str) -> str:
@@ -210,7 +255,7 @@ def _require_login_guard():
         return None
 
     # Redirect everything else to login.
-    return redirect(url_for('login', next=request.full_path))
+    return _redirect_to('login', next=request.full_path)
 
 
 def _resolve_selected_proxy_id() -> str:
@@ -287,32 +332,14 @@ def login():
                 session['_csrf_token'] = secrets.token_urlsafe(32)
             session['user'] = username
             session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
-            try:
-                get_audit_store().record(
-                    kind='login_success',
-                    ok=True,
-                    remote_addr=request.remote_addr,
-                    user_agent=request.headers.get('User-Agent'),
-                    detail=f'user={username}',
-                )
-            except Exception:
-                pass
+            _record_audit_event('login_success', ok=True, detail=f'user={username}')
             return redirect(next_url or url_for('index'))
         # Log failed login attempt for security auditing
-        try:
-            get_audit_store().record(
-                kind='login_failed',
-                ok=False,
-                remote_addr=request.remote_addr,
-                user_agent=request.headers.get('User-Agent'),
-                detail=f'user={username}',
-            )
-        except Exception:
-            pass
+        _record_audit_event('login_failed', ok=False, detail=f'user={username}')
         return render_template('login.html', error='Invalid username or password.', next=next_url)
 
     if _is_logged_in():
-        return redirect(url_for('index'))
+        return _redirect_to('index')
     next_url = _safe_next_url(request.args.get('next') or '')
     return render_template('login.html', error=None, next=next_url)
 
@@ -320,91 +347,11 @@ def login():
 @app.route('/logout', methods=['POST'])
 def logout():
     session.clear()
-    return redirect(url_for('login'))
+    return _redirect_to('login')
 
 
 def _options_from_tunables(tunables: Dict[str, Any]) -> Dict[str, Any]:
-    # Centralize the Squid template option defaults derived from an existing config.
-    # Keep behavior identical to the prior inline dicts.
-    return {
-        'cache_dir_size_mb': tunables.get('cache_dir_size_mb') or 10000,
-        'cache_mem_mb': tunables.get('cache_mem_mb') or 96,
-        'maximum_object_size_mb': tunables.get('maximum_object_size_mb') or 64,
-        'maximum_object_size_in_memory_kb': tunables.get('maximum_object_size_in_memory_kb') or 1024,
-        'minimum_object_size_kb': tunables.get('minimum_object_size_kb') if tunables.get('minimum_object_size_kb') is not None else 0,
-        'cache_swap_low': tunables.get('cache_swap_low') or 90,
-        'cache_swap_high': tunables.get('cache_swap_high') or 95,
-        'collapsed_forwarding_on': bool(tunables.get('collapsed_forwarding') if tunables.get('collapsed_forwarding') is not None else True),
-        'range_cache_on': (tunables.get('range_offset_limit') != 0) if tunables.get('range_offset_limit') is not None else True,
-        'workers': min(_max_workers(), max(1, int(tunables.get('workers') or 1))),
-        'cache_replacement_policy': tunables.get('cache_replacement_policy') or 'heap GDSF',
-        'memory_replacement_policy': tunables.get('memory_replacement_policy') or 'heap GDSF',
-        'pipeline_prefetch_on': bool(tunables.get('pipeline_prefetch') if tunables.get('pipeline_prefetch') is not None else True),
-        'client_persistent_connections_on': bool(tunables.get('client_persistent_connections') if tunables.get('client_persistent_connections') is not None else True),
-        'server_persistent_connections_on': bool(tunables.get('server_persistent_connections') if tunables.get('server_persistent_connections') is not None else True),
-        'negative_ttl_seconds': tunables.get('negative_ttl_seconds'),
-        'positive_dns_ttl_seconds': tunables.get('positive_dns_ttl_seconds'),
-        'negative_dns_ttl_seconds': tunables.get('negative_dns_ttl_seconds'),
-        'read_ahead_gap_kb': tunables.get('read_ahead_gap_kb'),
-        'quick_abort_min_kb': tunables.get('quick_abort_min_kb') if tunables.get('quick_abort_min_kb') is not None else 0,
-        'quick_abort_max_kb': tunables.get('quick_abort_max_kb') if tunables.get('quick_abort_max_kb') is not None else 0,
-        'quick_abort_pct': tunables.get('quick_abort_pct') if tunables.get('quick_abort_pct') is not None else 100,
-
-        # Timeouts (seconds)
-        'connect_timeout_seconds': tunables.get('connect_timeout_seconds') if tunables.get('connect_timeout_seconds') is not None else 90,
-        'request_timeout_seconds': tunables.get('request_timeout_seconds') if tunables.get('request_timeout_seconds') is not None else 1800,
-        'read_timeout_seconds': tunables.get('read_timeout_seconds') if tunables.get('read_timeout_seconds') is not None else 1800,
-        'forward_timeout_seconds': tunables.get('forward_timeout_seconds') if tunables.get('forward_timeout_seconds') is not None else 1800,
-        'shutdown_lifetime_seconds': tunables.get('shutdown_lifetime_seconds') if tunables.get('shutdown_lifetime_seconds') is not None else 30,
-
-        # Logging
-        'logfile_rotate': tunables.get('logfile_rotate') if tunables.get('logfile_rotate') is not None else 10,
-
-        # Network
-        'pconn_timeout_seconds': tunables.get('pconn_timeout_seconds') if tunables.get('pconn_timeout_seconds') is not None else 120,
-        'client_lifetime_seconds': tunables.get('client_lifetime_seconds') if tunables.get('client_lifetime_seconds') is not None else 3600,
-        'max_filedescriptors': tunables.get('max_filedescriptors') if tunables.get('max_filedescriptors') is not None else 8192,
-
-        # DNS
-        'dns_timeout_seconds': tunables.get('dns_timeout_seconds') if tunables.get('dns_timeout_seconds') is not None else 5,
-        'dns_nameservers': (tunables.get('dns_nameservers') or ''),
-        'hosts_file': (tunables.get('hosts_file') or ''),
-        'ipcache_size': tunables.get('ipcache_size') if tunables.get('ipcache_size') is not None else 8192,
-        'fqdncache_size': tunables.get('fqdncache_size') if tunables.get('fqdncache_size') is not None else 8192,
-
-        # SSL
-        'sslcrtd_children': tunables.get('sslcrtd_children') if tunables.get('sslcrtd_children') is not None else 8,
-
-        # ICAP
-        'icap_enable_on': bool(tunables.get('icap_enable') if tunables.get('icap_enable') is not None else True),
-        'icap_send_client_ip_on': bool(tunables.get('icap_send_client_ip') if tunables.get('icap_send_client_ip') is not None else True),
-        'icap_send_client_username_on': bool(tunables.get('icap_send_client_username') if tunables.get('icap_send_client_username') is not None else False),
-        'icap_preview_enable_on': bool(tunables.get('icap_preview_enable') if tunables.get('icap_preview_enable') is not None else False),
-        'icap_preview_size_kb': tunables.get('icap_preview_size_kb'),
-        'icap_connect_timeout_seconds': tunables.get('icap_connect_timeout_seconds') if tunables.get('icap_connect_timeout_seconds') is not None else 60,
-        'icap_io_timeout_seconds': tunables.get('icap_io_timeout_seconds') if tunables.get('icap_io_timeout_seconds') is not None else 600,
-
-        # Privacy (optional: only applied when present/posted)
-        'forwarded_for_value': (tunables.get('forwarded_for_value') or ''),
-        'via_on': (tunables.get('via') if tunables.get('via') is not None else None),
-        'follow_x_forwarded_for_value': (tunables.get('follow_x_forwarded_for_value') or ''),
-
-        # Limits (optional)
-        'request_header_max_size_kb': tunables.get('request_header_max_size_kb'),
-        'reply_header_max_size_kb': tunables.get('reply_header_max_size_kb'),
-        'request_body_max_size_mb': tunables.get('request_body_max_size_mb'),
-        'client_request_buffer_max_size_kb': tunables.get('client_request_buffer_max_size_kb'),
-
-        # Performance (optional)
-        'memory_pools_on': (tunables.get('memory_pools') if tunables.get('memory_pools') is not None else None),
-        'memory_pools_limit_mb': tunables.get('memory_pools_limit_mb'),
-        'store_avg_object_size_kb': tunables.get('store_avg_object_size_kb'),
-        'store_objects_per_bucket': tunables.get('store_objects_per_bucket'),
-
-        # HTTP (optional)
-        'visible_hostname': (tunables.get('visible_hostname') or ''),
-        'httpd_suppress_version_string_on': (tunables.get('httpd_suppress_version_string') if tunables.get('httpd_suppress_version_string') is not None else None),
-    }
+    return build_template_options(tunables, max_workers=_max_workers())
 
 _disable_background = (os.environ.get('DISABLE_BACKGROUND') or '').strip() == '1'
 
@@ -502,11 +449,19 @@ def inject_now():
 
 
 def _check_tcp(host: str, port: int, timeout: float = 0.6) -> Dict[str, Any]:
-    try:
-        with socket.create_connection((host, int(port)), timeout=timeout):
-            return {"ok": True, "detail": "tcp connect ok"}
-    except Exception as e:
-        return {"ok": False, "detail": public_error_message(e)}
+    return _shared_check_tcp(host, port, timeout=timeout, error_formatter=public_error_message)
+
+
+def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
+    return _shared_check_icap_service(
+        host=host,
+        port=port,
+        service=service,
+        timeout=0.8,
+        user_agent='squid-flask-proxy-ui',
+        success_detail='OPTIONS 200',
+        error_formatter=public_error_message,
+    )
 
 
 def _csv_safe(value: object) -> str:
@@ -663,6 +618,18 @@ def _apply_local_policy_include(store: Any) -> None:
     subprocess.run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
 
 
+def _best_effort_init_store(store: Any, *, key: str, description: str) -> None:
+    try:
+        store.init_db()
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f'web.app.{key}.init_db',
+            interval_seconds=30.0,
+            message=f'Failed to initialize {description} store',
+        )
+
+
 def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> None:
     try:
         if _is_remote_control_mode():
@@ -670,7 +637,12 @@ def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> No
         else:
             _apply_local_policy_include(store)
     except Exception:
-        pass
+        log_exception_throttled(
+            app.logger,
+            'web.app.refresh_managed_policy',
+            interval_seconds=30.0,
+            message='Failed to refresh managed policy state',
+        )
 
 
 def _best_effort_refresh_pac_runtime() -> None:
@@ -680,7 +652,12 @@ def _best_effort_refresh_pac_runtime() -> None:
         else:
             _materialize_local_pac_state()
     except Exception:
-        pass
+        log_exception_throttled(
+            app.logger,
+            'web.app.refresh_pac_runtime',
+            interval_seconds=30.0,
+            message='Failed to refresh PAC runtime state',
+        )
 
 
 @app.route('/')
@@ -768,7 +745,12 @@ def index():
     icap_health = _check_icap_adblock()
     clamav_health = _check_clamd()
     dante_port = int(os.environ.get('DANTE_PORT', 1080))
-    dante_health = _check_tcp(os.environ.get('DANTE_HOST', '127.0.0.1'), dante_port)
+    dante_host = os.environ.get('DANTE_HOST', '127.0.0.1')
+    dante_health = (
+        check_local_listener('dante', dante_host, dante_port)
+        if is_local_host(dante_host)
+        else _check_tcp(dante_host, dante_port, timeout=0.6)
+    )
 
     last_config = None
     try:
@@ -813,7 +795,7 @@ def api_squid_config():
 @app.route('/fleet', methods=['GET'])
 def fleet():
     if not _is_remote_control_mode():
-        return redirect(url_for('index'))
+        return _redirect_to('index')
 
     registry = get_proxy_registry()
     proxies = registry.list_proxies()
@@ -866,7 +848,7 @@ def ssl_errors_exclude():
         except Exception:
             pass
         _best_effort_refresh_pac_runtime()
-    return redirect(url_for('ssl_errors', q=domain))
+    return _redirect_to('ssl_errors', q=domain)
 
 
 @app.route('/ssl-errors/export', methods=['GET'])
@@ -973,10 +955,7 @@ def socks():
 @app.route('/adblock', methods=['GET', 'POST'])
 def adblock():
     store = get_adblock_store()
-    try:
-        store.init_db()
-    except Exception:
-        pass
+    _best_effort_init_store(store, key='adblock', description='adblock')
 
     if request.method == 'POST':
         action = (request.form.get('action') or '').strip()
@@ -1010,9 +989,9 @@ def adblock():
             except Exception:
                 any_enabled = False
             if not any_enabled:
-                return redirect(url_for('adblock', refresh_no_lists='1'))
+                return _redirect_to('adblock', refresh_no_lists='1')
             store.request_refresh_now()
-            return redirect(url_for('adblock', refresh_requested='1'))
+            return _redirect_to('adblock', refresh_requested='1')
         elif action == 'flush_cache':
             store.request_cache_flush()
             if _is_remote_control_mode():
@@ -1025,8 +1004,8 @@ def adblock():
                     _apply_local_adblock_runtime(force=True, clear_cache=True)
                 except Exception:
                     pass
-            return redirect(url_for('adblock', cache_flushed='1'))
-        return redirect(url_for('adblock'))
+            return _redirect_to('adblock', cache_flushed='1')
+        return _redirect_to('adblock')
 
     statuses = store.list_statuses()
     try:
@@ -1087,10 +1066,7 @@ def adblock():
 @app.route('/webfilter', methods=['GET', 'POST'])
 def webfilter():
     store = get_webfilter_store()
-    try:
-        store.init_db()
-    except Exception:
-        pass
+    _best_effort_init_store(store, key='webfilter', description='web filter')
 
     tab = (request.args.get('tab') or request.form.get('tab') or 'categories').strip().lower()
     if tab not in ('categories', 'whitelist', 'blockedlog'):
@@ -1106,19 +1082,18 @@ def webfilter():
 
             # Enabling requires a source URL so auto-download works.
             if enabled and not source_url:
-                return redirect(url_for('webfilter', tab='categories', err_source='1'))
+                return _redirect_to('webfilter', tab='categories', err_source='1')
 
             # Validate URL scheme before saving
             if source_url:
-                from urllib.parse import urlparse as _urlparse
-                _u = _urlparse(source_url)
+                _u = urlparse(source_url)
                 if _u.scheme not in ('http', 'https'):
-                    return redirect(url_for('webfilter', tab='categories', err_source='1'))
+                    return _redirect_to('webfilter', tab='categories', err_source='1')
 
             store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
             _best_effort_refresh_managed_policy(store, force=True)
 
-            return redirect(url_for('webfilter', tab='categories'))
+            return _redirect_to('webfilter', tab='categories')
 
         if action == 'whitelist_add':
             entry = (request.form.get('whitelist_domain') or '').strip()
@@ -1126,8 +1101,8 @@ def webfilter():
             _best_effort_refresh_managed_policy(store, force=True)
 
             if not ok:
-                return redirect(url_for('webfilter', tab='whitelist', wl_err=(err or '1')))
-            return redirect(url_for('webfilter', tab='whitelist', wl_ok='1'))
+                return _redirect_to('webfilter', tab='whitelist', wl_err=(err or '1'))
+            return _redirect_to('webfilter', tab='whitelist', wl_ok='1')
 
         if action == 'whitelist_remove':
             pat = (request.form.get('pattern') or '').strip()
@@ -1136,9 +1111,9 @@ def webfilter():
             except Exception:
                 pass
             _best_effort_refresh_managed_policy(store, force=True)
-            return redirect(url_for('webfilter', tab='whitelist'))
+            return _redirect_to('webfilter', tab='whitelist')
 
-        return redirect(url_for('webfilter', tab=tab))
+        return _redirect_to('webfilter', tab=tab)
 
     settings = store.get_settings()
     available = store.list_available_categories()
@@ -1162,10 +1137,7 @@ def webfilter():
 @app.route('/webfilter/test', methods=['POST'])
 def webfilter_test_domain():
     store = get_webfilter_store()
-    try:
-        store.init_db()
-    except Exception:
-        pass
+    _best_effort_init_store(store, key='webfilter_test', description='web filter')
 
     payload = request.get_json(silent=True) or {}
     domain = (payload.get('domain') or request.form.get('domain') or '').strip()
@@ -1179,10 +1151,7 @@ def webfilter_test_domain():
 @app.route('/sslfilter', methods=['GET', 'POST'])
 def sslfilter():
     store = get_sslfilter_store()
-    try:
-        store.init_db()
-    except Exception:
-        pass
+    _best_effort_init_store(store, key='sslfilter', description='SSL filter')
 
     if request.method == 'POST':
         action = (request.form.get('action') or '').strip().lower()
@@ -1191,8 +1160,8 @@ def sslfilter():
             ok, err, _canonical = store.add_nobump(entry)
             _best_effort_refresh_managed_policy(store, force=True)
             if not ok:
-                return redirect(url_for('sslfilter', err=(err or '1')))
-            return redirect(url_for('sslfilter', ok='1'))
+                return _redirect_to('sslfilter', err=(err or '1'))
+            return _redirect_to('sslfilter', ok='1')
 
         if action == 'remove':
             cidr = (request.form.get('cidr') or '').strip()
@@ -1201,9 +1170,9 @@ def sslfilter():
             except Exception:
                 pass
             _best_effort_refresh_managed_policy(store, force=True)
-            return redirect(url_for('sslfilter'))
+            return _redirect_to('sslfilter')
 
-        return redirect(url_for('sslfilter'))
+        return _redirect_to('sslfilter')
 
     rows = store.list_nobump()
     return render_template(
@@ -1214,40 +1183,14 @@ def sslfilter():
     )
 
 
-def _check_icap_service(host: str, port: int, service: str):
-    # Best-effort local health check: connect and issue ICAP OPTIONS.
-    # Keep timeouts tight so the UI can't hang.
-    path = (service or "/")
-    if not path.startswith("/"):
-        path = "/" + path
-    req = (
-        f"OPTIONS icap://{host}:{port}{path} ICAP/1.0\r\n"
-        f"Host: {host}\r\n"
-        "User-Agent: squid-flask-proxy-ui\r\n"
-        "Encapsulated: null-body=0\r\n"
-        "\r\n"
-    ).encode("ascii", errors="replace")
-
-    try:
-        with socket.create_connection((host, int(port)), timeout=0.8) as s:
-            s.settimeout(0.8)
-            s.sendall(req)
-            data = s.recv(512)
-        ok = data.startswith(b"ICAP/1.0 200")
-        if ok:
-            return {"ok": True, "detail": "OPTIONS 200"}
-        first = data.split(b"\r\n", 1)[0].decode("ascii", errors="replace") if data else "no data"
-        return {"ok": False, "detail": first}
-    except Exception as e:
-        return {"ok": False, "detail": public_error_message(e)}
-
-
 def _check_icap_adblock() -> Dict[str, Any]:
     host = os.environ.get('CICAP_HOST', '127.0.0.1')
     try:
         port = int(os.environ.get('CICAP_PORT', 14000))
     except Exception:
         port = 14000
+    if is_local_host(host):
+        return check_local_listener('c-icap', host, port)
     return _check_icap_service(host=host, port=port, service='/adblockreq')
 
 
@@ -1312,18 +1255,8 @@ def _recv_clamd_reply(sock: socket.socket, max_bytes: int = 4096) -> bytes:
 
 
 def _check_clamd() -> Dict[str, Any]:
-    # Best-effort health check for the remote ClamAV backend used by c-icap.
     host, port = _clamd_host_port()
-    try:
-        with socket.create_connection((host, port), timeout=0.8) as s:
-            s.settimeout(0.8)
-            s.sendall(b"PING\n")
-            data = _recv_clamd_reply(s, max_bytes=64)
-        ok = data.startswith(b"PONG")
-        detail = data.replace(b'\0', b'\n').decode('ascii', errors='replace').strip() or 'no data'
-        return {"ok": bool(ok), "detail": f"{detail} ({host}:{port})"}
-    except Exception as e:
-        return {"ok": False, "detail": f"{host}:{port}: {public_error_message(e)}"}
+    return _shared_check_clamd(host=host, port=port, timeout=0.8, error_formatter=public_error_message)
 
 
 def _test_eicar() -> Dict[str, Any]:
@@ -1353,10 +1286,12 @@ def _test_eicar() -> Dict[str, Any]:
 @app.route('/clamav', methods=['GET'])
 def clamav():
     clamd_health = _check_clamd()
-    cicap_health = _check_icap_service(
-        host=os.environ.get('CICAP_HOST', '127.0.0.1'),
-        port=int(os.environ.get('CICAP_AV_PORT', 14001)),
-        service='/avrespmod',
+    cicap_host = os.environ.get('CICAP_HOST', '127.0.0.1')
+    cicap_port = int(os.environ.get('CICAP_AV_PORT', 14001))
+    cicap_health = (
+        check_local_listener('c-icap av', cicap_host, cicap_port)
+        if is_local_host(cicap_host)
+        else _check_icap_service(host=cicap_host, port=cicap_port, service='/avrespmod')
     )
 
     ok = bool(clamd_health.get('ok')) and bool(cicap_health.get('ok'))
@@ -1451,8 +1386,8 @@ def clamav_toggle():
     new_cfg = _set_clamav_enabled(cfg, desired)
     ok, _details = _publish_config_for_current_mode(new_cfg, source_kind='clamav')
     if ok:
-        return redirect(url_for('clamav'))
-    return redirect(url_for('clamav', error='1'))
+        return _redirect_to('clamav')
+    return _redirect_to('clamav', error='1')
 
 
 
@@ -1471,33 +1406,13 @@ def squid_config():
         if action == 'validate':
             ok, details = _validate_config_for_current_mode(config_text)
             validation = {'ok': ok, 'detail': (details or '').strip()}
-            try:
-                get_audit_store().record(
-                    kind='config_validate_manual',
-                    ok=ok,
-                    remote_addr=request.remote_addr,
-                    user_agent=request.headers.get('User-Agent'),
-                    detail=(details or '')[:4000],
-                    config_text=config_text,
-                )
-            except Exception:
-                pass
+            _record_audit_event('config_validate_manual', ok=ok, detail=(details or ''), config_text=config_text)
         else:
             ok, details = _publish_config_for_current_mode(config_text, source_kind='manual')
-            try:
-                get_audit_store().record(
-                    kind='config_apply_manual',
-                    ok=ok,
-                    remote_addr=request.remote_addr,
-                    user_agent=request.headers.get('User-Agent'),
-                    detail=(details or '')[:4000],
-                    config_text=config_text,
-                )
-            except Exception:
-                pass
+            _record_audit_event('config_apply_manual', ok=ok, detail=(details or ''), config_text=config_text)
             if ok:
-                return redirect(url_for('squid_config', tab=tab, ok='1'))
-            return redirect(url_for('squid_config', tab=tab, error='1'))
+                return _redirect_config(tab, ok=True)
+            return _redirect_config(tab, error=True)
     current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
     overrides = squid_controller.get_cache_override_options(current_config)
@@ -1556,203 +1471,19 @@ def squid_config():
 
 @app.route('/squid/config/apply-safe', methods=['POST'])
 def apply_safe_caching():
-    def as_int(name: str, default: int) -> int:
-        v = (request.form.get(name) or '').strip()
-        try:
-            return int(v)
-        except ValueError:
-            return default
-
-    def as_optional_int(name: str) -> int | None:
-        v = (request.form.get(name) or '').strip()
-        if v == '':
-            return None
-        try:
-            return int(v)
-        except ValueError:
-            return None
-
-    def as_optional_str(name: str) -> str | None:
-        v = (request.form.get(name) or '').strip()
-        return v if v != '' else None
-
-    # Start from current tunables so partial forms (different tabs) don't reset unrelated settings.
+    form_kind = normalize_safe_form_kind(request.form.get('form_kind'))
     try:
         current = _current_managed_config()
         tunables = squid_controller.get_tunable_options(current)
-        options = _options_from_tunables(tunables)
     except Exception:
-        options = _options_from_tunables({})
+        tunables = {}
 
-    form_kind = (request.form.get('form_kind') or 'caching').strip().lower()
-
-    # Numeric caching options (always override when present)
-    if request.form.get('cache_dir_size_mb') is not None:
-        options['cache_dir_size_mb'] = as_int('cache_dir_size_mb', int(options.get('cache_dir_size_mb') or 10000))
-    if request.form.get('cache_mem_mb') is not None:
-        options['cache_mem_mb'] = as_int('cache_mem_mb', int(options.get('cache_mem_mb') or 96))
-    if request.form.get('maximum_object_size_mb') is not None:
-        options['maximum_object_size_mb'] = as_int('maximum_object_size_mb', int(options.get('maximum_object_size_mb') or 64))
-    if request.form.get('maximum_object_size_in_memory_kb') is not None:
-        options['maximum_object_size_in_memory_kb'] = as_int('maximum_object_size_in_memory_kb', int(options.get('maximum_object_size_in_memory_kb') or 1024))
-    if request.form.get('minimum_object_size_kb') is not None:
-        options['minimum_object_size_kb'] = as_int('minimum_object_size_kb', int(options.get('minimum_object_size_kb') if options.get('minimum_object_size_kb') is not None else 0))
-    if request.form.get('cache_swap_low') is not None:
-        options['cache_swap_low'] = as_int('cache_swap_low', int(options.get('cache_swap_low') or 90))
-    if request.form.get('cache_swap_high') is not None:
-        options['cache_swap_high'] = as_int('cache_swap_high', int(options.get('cache_swap_high') or 95))
-
-    # Checkbox semantics: if the tab posts them, treat presence as True, absence as False.
-    if form_kind in ('caching', 'timeouts'):
-        if 'collapsed_forwarding_on' in request.form or form_kind == 'caching':
-            options['collapsed_forwarding_on'] = ('collapsed_forwarding_on' in request.form)
-        if 'range_cache_on' in request.form or form_kind == 'caching':
-            options['range_cache_on'] = ('range_cache_on' in request.form)
-        if 'pipeline_prefetch_on' in request.form or form_kind == 'caching':
-            options['pipeline_prefetch_on'] = ('pipeline_prefetch_on' in request.form)
-        if 'client_persistent_connections_on' in request.form or form_kind == 'caching':
-            options['client_persistent_connections_on'] = ('client_persistent_connections_on' in request.form)
-        if 'server_persistent_connections_on' in request.form or form_kind == 'caching':
-            options['server_persistent_connections_on'] = ('server_persistent_connections_on' in request.form)
-    # Selects/strings
-    if request.form.get('cache_replacement_policy') is not None:
-        options['cache_replacement_policy'] = (request.form.get('cache_replacement_policy') or (options.get('cache_replacement_policy') or 'heap GDSF')).strip()
-    if request.form.get('memory_replacement_policy') is not None:
-        options['memory_replacement_policy'] = (request.form.get('memory_replacement_policy') or (options.get('memory_replacement_policy') or 'heap GDSF')).strip()
-
-    # Optional ints: only override if not blank
-    v = as_optional_int('negative_ttl_seconds')
-    if v is not None:
-        options['negative_ttl_seconds'] = v
-    v = as_optional_int('positive_dns_ttl_seconds')
-    if v is not None:
-        options['positive_dns_ttl_seconds'] = v
-    v = as_optional_int('negative_dns_ttl_seconds')
-    if v is not None:
-        options['negative_dns_ttl_seconds'] = v
-    v = as_optional_int('read_ahead_gap_kb')
-    if v is not None:
-        options['read_ahead_gap_kb'] = v
-
-    # Quick abort (numbers always present on caching form)
-    if request.form.get('quick_abort_min_kb') is not None:
-        options['quick_abort_min_kb'] = as_int('quick_abort_min_kb', int(options.get('quick_abort_min_kb') if options.get('quick_abort_min_kb') is not None else 0))
-    if request.form.get('quick_abort_max_kb') is not None:
-        options['quick_abort_max_kb'] = as_int('quick_abort_max_kb', int(options.get('quick_abort_max_kb') if options.get('quick_abort_max_kb') is not None else 0))
-    if request.form.get('quick_abort_pct') is not None:
-        options['quick_abort_pct'] = as_int('quick_abort_pct', int(options.get('quick_abort_pct') if options.get('quick_abort_pct') is not None else 100))
-
-    # Workers (numbers always present on caching form)
-    if request.form.get('workers') is not None:
-        workers_i = as_int('workers', int(options.get('workers') or 1))
-        if workers_i < 1:
-            workers_i = 1
-        max_w = _max_workers()
-        if workers_i > max_w:
-            workers_i = max_w
-        options['workers'] = workers_i
-
-    # Timeouts (seconds)
-    if request.form.get('connect_timeout_seconds') is not None:
-        options['connect_timeout_seconds'] = as_int('connect_timeout_seconds', int(options.get('connect_timeout_seconds') or 90))
-    if request.form.get('request_timeout_seconds') is not None:
-        options['request_timeout_seconds'] = as_int('request_timeout_seconds', int(options.get('request_timeout_seconds') or 1800))
-    if request.form.get('read_timeout_seconds') is not None:
-        options['read_timeout_seconds'] = as_int('read_timeout_seconds', int(options.get('read_timeout_seconds') or 1800))
-    if request.form.get('forward_timeout_seconds') is not None:
-        options['forward_timeout_seconds'] = as_int('forward_timeout_seconds', int(options.get('forward_timeout_seconds') or 1800))
-    if request.form.get('shutdown_lifetime_seconds') is not None:
-        options['shutdown_lifetime_seconds'] = as_int('shutdown_lifetime_seconds', int(options.get('shutdown_lifetime_seconds') or 30))
-
-    # Logging
-    if request.form.get('logfile_rotate') is not None:
-        options['logfile_rotate'] = as_int('logfile_rotate', int(options.get('logfile_rotate') or 10))
-
-    # Network
-    if request.form.get('pconn_timeout_seconds') is not None:
-        options['pconn_timeout_seconds'] = as_int('pconn_timeout_seconds', int(options.get('pconn_timeout_seconds') or 120))
-    if request.form.get('client_lifetime_seconds') is not None:
-        options['client_lifetime_seconds'] = as_int('client_lifetime_seconds', int(options.get('client_lifetime_seconds') or 3600))
-    if request.form.get('max_filedescriptors') is not None:
-        options['max_filedescriptors'] = as_int('max_filedescriptors', int(options.get('max_filedescriptors') or 8192))
-
-    # DNS
-    if form_kind == 'dns':
-        v = as_optional_str('dns_nameservers')
-        if v is not None:
-            options['dns_nameservers'] = v
-        v = as_optional_str('hosts_file')
-        if v is not None:
-            options['hosts_file'] = v
-    if request.form.get('dns_timeout_seconds') is not None:
-        options['dns_timeout_seconds'] = as_int('dns_timeout_seconds', int(options.get('dns_timeout_seconds') or 5))
-    if request.form.get('ipcache_size') is not None:
-        options['ipcache_size'] = as_int('ipcache_size', int(options.get('ipcache_size') or 8192))
-    if request.form.get('fqdncache_size') is not None:
-        options['fqdncache_size'] = as_int('fqdncache_size', int(options.get('fqdncache_size') or 8192))
-
-    # SSL
-    if request.form.get('sslcrtd_children') is not None:
-        options['sslcrtd_children'] = as_int('sslcrtd_children', int(options.get('sslcrtd_children') or 8))
-
-    # ICAP
-    if form_kind == 'icap':
-        options['icap_enable_on'] = ('icap_enable_on' in request.form)
-        options['icap_send_client_ip_on'] = ('icap_send_client_ip_on' in request.form)
-        options['icap_send_client_username_on'] = ('icap_send_client_username_on' in request.form)
-        options['icap_preview_enable_on'] = ('icap_preview_enable_on' in request.form)
-        v = as_optional_int('icap_preview_size_kb')
-        if v is not None:
-            options['icap_preview_size_kb'] = v
-    if request.form.get('icap_connect_timeout_seconds') is not None:
-        options['icap_connect_timeout_seconds'] = as_int('icap_connect_timeout_seconds', int(options.get('icap_connect_timeout_seconds') or 60))
-    if request.form.get('icap_io_timeout_seconds') is not None:
-        options['icap_io_timeout_seconds'] = as_int('icap_io_timeout_seconds', int(options.get('icap_io_timeout_seconds') or 600))
-
-    # Privacy
-    if form_kind == 'privacy':
-        options['via_on'] = ('via_on' in request.form)
-        v = as_optional_str('forwarded_for_value')
-        if v is not None:
-            options['forwarded_for_value'] = v
-        v = as_optional_str('follow_x_forwarded_for_value')
-        if v is not None:
-            options['follow_x_forwarded_for_value'] = v
-
-    # Limits
-    if form_kind == 'limits':
-        v = as_optional_int('request_header_max_size_kb')
-        if v is not None:
-            options['request_header_max_size_kb'] = v
-        v = as_optional_int('reply_header_max_size_kb')
-        if v is not None:
-            options['reply_header_max_size_kb'] = v
-        v = as_optional_int('request_body_max_size_mb')
-        if v is not None:
-            options['request_body_max_size_mb'] = v
-        v = as_optional_int('client_request_buffer_max_size_kb')
-        if v is not None:
-            options['client_request_buffer_max_size_kb'] = v
-
-    # Performance
-    if form_kind == 'performance':
-        options['memory_pools_on'] = ('memory_pools_on' in request.form)
-        v = as_optional_int('memory_pools_limit_mb')
-        if v is not None:
-            options['memory_pools_limit_mb'] = v
-        v = as_optional_int('store_avg_object_size_kb')
-        if v is not None:
-            options['store_avg_object_size_kb'] = v
-        v = as_optional_int('store_objects_per_bucket')
-        if v is not None:
-            options['store_objects_per_bucket'] = v
-
-    # HTTP
-    if form_kind == 'http':
-        options['httpd_suppress_version_string_on'] = ('httpd_suppress_version_string_on' in request.form)
-        v = as_optional_str('visible_hostname')
-        if v is not None:
-            options['visible_hostname'] = v
+    options = build_template_options_from_form(
+        tunables,
+        request.form,
+        form_kind=form_kind,
+        max_workers=_max_workers(),
+    )
 
     try:
         # Preserve any previously-applied cache override toggles.
@@ -1762,24 +1493,11 @@ def apply_safe_caching():
         config_text = squid_controller.generate_config_from_template_with_exclusions(options, exclusions)
         config_text = squid_controller.apply_cache_overrides(config_text, overrides)
     except Exception:
-        return redirect(url_for('squid_config', tab='caching', error='1'))
+        return _redirect_config('caching', error=True)
 
     ok, _details = _publish_config_for_current_mode(config_text, source_kind='template')
-    try:
-        get_audit_store().record(
-            kind='config_apply_template',
-            ok=ok,
-            remote_addr=request.remote_addr,
-            user_agent=request.headers.get('User-Agent'),
-            detail=(_details or '')[:4000],
-            config_text=config_text,
-        )
-    except Exception:
-        pass
-    target_tab = form_kind if form_kind in ('timeouts', 'logging', 'network', 'dns', 'ssl', 'icap', 'privacy', 'limits', 'performance', 'http') else 'caching'
-    if ok:
-        return redirect(url_for('squid_config', tab=target_tab, ok='1'))
-    return redirect(url_for('squid_config', tab=target_tab, error='1'))
+    _record_audit_event('config_apply_template', ok=ok, detail=(_details or ''), config_text=config_text)
+    return _redirect_config(form_kind, ok=ok, error=not ok)
 
 
 @app.route('/squid/config/apply-overrides', methods=['POST'])
@@ -1794,33 +1512,14 @@ def apply_cache_overrides():
         exclusions = get_exclusions_store().list_all()
         config_text = squid_controller.generate_config_from_template_with_exclusions(options, exclusions)
 
-        overrides = {
-            'client_no_cache': request.form.get('override_client_no_cache') == 'on',
-            'origin_private': request.form.get('override_origin_private') == 'on',
-            'client_no_store': request.form.get('override_client_no_store') == 'on',
-            'origin_no_store': request.form.get('override_origin_no_store') == 'on',
-            'origin_no_cache': request.form.get('override_origin_no_cache') == 'on',
-            'ignore_auth': request.form.get('override_ignore_auth') == 'on',
-        }
+        overrides = parse_cache_override_form(request.form)
         config_text = squid_controller.apply_cache_overrides(config_text, overrides)
     except Exception:
-        return redirect(url_for('squid_config', tab='caching', subtab='overrides', error='1'))
+        return _redirect_config('caching', subtab='overrides', error=True)
 
     ok, _details = _publish_config_for_current_mode(config_text, source_kind='overrides')
-    try:
-        get_audit_store().record(
-            kind='config_apply_overrides',
-            ok=ok,
-            remote_addr=request.remote_addr,
-            user_agent=request.headers.get('User-Agent'),
-            detail=(_details or '')[:4000],
-            config_text=config_text,
-        )
-    except Exception:
-        pass
-    if ok:
-        return redirect(url_for('squid_config', tab='caching', subtab='overrides', ok='1'))
-    return redirect(url_for('squid_config', tab='caching', subtab='overrides', error='1'))
+    _record_audit_event('config_apply_overrides', ok=ok, detail=(_details or ''), config_text=config_text)
+    return _redirect_config('caching', subtab='overrides', ok=ok, error=not ok)
 
 
 @app.route('/exclusions', methods=['GET', 'POST'])
@@ -1853,19 +1552,10 @@ def exclusions():
             cfg = squid_controller.generate_config_from_template_with_exclusions(options, ex)
             cfg = squid_controller.apply_cache_overrides(cfg, overrides)
             ok, _ = _publish_config_for_current_mode(cfg, source_kind='exclusions')
-            try:
-                get_audit_store().record(
-                    kind='config_apply_exclusions',
-                    ok=ok,
-                    remote_addr=request.remote_addr,
-                    user_agent=request.headers.get('User-Agent'),
-                    config_text=cfg,
-                )
-            except Exception:
-                pass
-            return redirect(url_for('exclusions', ok='1' if ok else None, error='1' if not ok else None))
+            _record_audit_event('config_apply_exclusions', ok=ok, config_text=cfg)
+            return _redirect_to('exclusions', ok=_query_flag(ok), error=_query_flag(not ok))
 
-        return redirect(url_for('exclusions'))
+        return _redirect_to('exclusions')
 
     ex = store.list_all()
     return render_template('exclusions.html', ex=ex)
@@ -1927,9 +1617,9 @@ def pac_builder():
                     direct_dst_nets_text=request.form.get('direct_dst_nets') or '',
                 )
                 if not ok:
-                    return redirect(url_for('pac_builder', error='1', msg=err))
+                    return _redirect_to('pac_builder', error='1', msg=err)
                 _best_effort_refresh_pac_runtime()
-                return redirect(url_for('pac_builder', ok='1'))
+                return _redirect_to('pac_builder', ok='1')
 
             if action == 'update':
                 pid = int(request.form.get('profile_id') or '0')
@@ -1944,19 +1634,19 @@ def pac_builder():
                     direct_dst_nets_text=request.form.get('direct_dst_nets') or '',
                 )
                 if not ok:
-                    return redirect(url_for('pac_builder', error='1', msg=err))
+                    return _redirect_to('pac_builder', error='1', msg=err)
                 _best_effort_refresh_pac_runtime()
-                return redirect(url_for('pac_builder', ok='1'))
+                return _redirect_to('pac_builder', ok='1')
 
             if action == 'delete':
                 pid = int(request.form.get('profile_id') or '0')
                 store.delete_profile(pid)
                 _best_effort_refresh_pac_runtime()
-                return redirect(url_for('pac_builder', ok='1'))
+                return _redirect_to('pac_builder', ok='1')
         except Exception as e:
-            return redirect(url_for('pac_builder', error='1', msg=public_error_message(e)))
+            return _redirect_to('pac_builder', error='1', msg=public_error_message(e))
 
-        return redirect(url_for('pac_builder'))
+        return _redirect_to('pac_builder')
 
     profiles = []
     try:
@@ -1969,7 +1659,7 @@ def pac_builder():
 
 @app.route('/status')
 def status():
-    return redirect(url_for('index') + '#status')
+    return _redirect_index_status()
 
 
 @app.route('/api/timeseries', methods=['GET'])
@@ -2125,34 +1815,16 @@ def live_export():
 @app.route('/reload', methods=['POST'])
 def reload_squid():
     ok, detail = _trigger_proxy_sync(force=True)
-    try:
-        get_audit_store().record(
-            kind='proxy_sync',
-            ok=ok,
-            remote_addr=request.remote_addr,
-            user_agent=request.headers.get('User-Agent'),
-            detail=detail[:4000],
-        )
-    except Exception:
-        pass
-    return redirect(url_for('index') + '#status')
+    _record_audit_event('proxy_sync', ok=ok, detail=detail)
+    return _redirect_index_status()
 
 
 @app.route('/cache/clear', methods=['POST'])
 def clear_caches():
     # Clear Squid disk cache (best-effort) and restart Squid.
     ok, detail = _trigger_proxy_cache_clear()
-    try:
-        get_audit_store().record(
-            kind='cache_clear',
-            ok=ok,
-            remote_addr=request.remote_addr,
-            user_agent=request.headers.get('User-Agent'),
-            detail=detail[:4000],
-        )
-    except Exception:
-        pass
-    return redirect(url_for('index') + '#status')
+    _record_audit_event('cache_clear', ok=ok, detail=detail)
+    return _redirect_index_status()
 
 @app.route('/certs', methods=['GET'])
 def certs():
@@ -2197,30 +1869,13 @@ def generate_certificate():
         else:
             cert_manager.ensure_ca()
             ok, detail = True, 'CA generated.'
-        try:
-            get_audit_store().record(
-                kind='ca_ensure',
-                ok=ok,
-                remote_addr=request.remote_addr,
-                user_agent=request.headers.get('User-Agent'),
-                detail=detail[:4000],
-            )
-        except Exception:
-            pass
-        return redirect(url_for('certs', ok='1' if ok else '0', msg=detail))
+        _record_audit_event('ca_ensure', ok=ok, detail=detail)
+        return _redirect_with_message('certs', ok=ok, msg=detail)
     except Exception as e:
         app.logger.exception("CA generation failed")
-        try:
-            get_audit_store().record(
-                kind='ca_ensure',
-                ok=False,
-                remote_addr=request.remote_addr,
-                user_agent=request.headers.get('User-Agent'),
-                detail=public_error_message(e),
-            )
-        except Exception:
-            pass
-        return redirect(url_for('certs', ok='0', msg=public_error_message(e)))
+        message = public_error_message(e)
+        _record_audit_event('ca_ensure', ok=False, detail=message)
+        return _redirect_with_message('certs', ok=False, msg=message)
 
 
 @app.route('/certs/upload', methods=['POST'])
@@ -2230,16 +1885,16 @@ def upload_certificate_pfx():
     password = request.form.get('pfx_password', '')
 
     if not pfx_file or not getattr(pfx_file, 'filename', ''):
-        return redirect(url_for('certs', ok='0', msg='No PFX file selected.'))
+        return _redirect_with_message('certs', ok=False, msg='No PFX file selected.')
 
     filename = (pfx_file.filename or '').lower()
     _, ext = os.path.splitext(filename)
     if ext not in ['.pfx', '.p12']:
-        return redirect(url_for('certs', ok='0', msg='Unsupported file type. Please upload a .pfx or .p12.'))
+        return _redirect_with_message('certs', ok=False, msg='Unsupported file type. Please upload a .pfx or .p12.')
 
     # Basic guard against accidental huge uploads.
     if request.content_length is not None and request.content_length > (10 * 1024 * 1024):
-        return redirect(url_for('certs', ok='0', msg='Upload too large (max 10MB).'))
+        return _redirect_with_message('certs', ok=False, msg='Upload too large (max 10MB).')
 
     # Read with a hard cap even if Content-Length is missing or incorrect.
     max_pfx_bytes = 10 * 1024 * 1024
@@ -2252,9 +1907,9 @@ def upload_certificate_pfx():
                 break
             buf.extend(chunk)
             if len(buf) > max_pfx_bytes:
-                return redirect(url_for('certs', ok='0', msg='Upload too large (max 10MB).'))
+                return _redirect_with_message('certs', ok=False, msg='Upload too large (max 10MB).')
     except Exception:
-        return redirect(url_for('certs', ok='0', msg='Failed to read upload.'))
+        return _redirect_with_message('certs', ok=False, msg='Failed to read upload.')
 
     pfx_bytes = bytes(buf)
     if _is_remote_control_mode():
@@ -2277,18 +1932,9 @@ def upload_certificate_pfx():
             except Exception:
                 pass
 
-    try:
-        get_audit_store().record(
-            kind='ca_upload_pfx',
-            ok=ok,
-            remote_addr=request.remote_addr,
-            user_agent=request.headers.get('User-Agent'),
-            detail=detail,
-        )
-    except Exception:
-        pass
+    _record_audit_event('ca_upload_pfx', ok=ok, detail=detail)
 
-    return redirect(url_for('certs', ok='1' if ok else '0', msg=detail))
+    return _redirect_with_message('certs', ok=ok, msg=detail)
 
 
 @app.route('/certs/download/<path:filename>', methods=['GET'])
@@ -2322,28 +1968,28 @@ def administration():
                 username = (request.form.get('username') or '').strip()
                 password = request.form.get('password') or ''
                 store.add_user(username, password)
-                return redirect(url_for('administration', ok='1', msg='User added.'))
+                return _redirect_with_message('administration', ok=True, msg='User added.')
 
             if action == 'set_password':
                 username = (request.form.get('username') or '').strip()
                 new_password = request.form.get('new_password') or ''
                 store.set_password(username, new_password)
-                return redirect(url_for('administration', ok='1', msg='Password updated.'))
+                return _redirect_with_message('administration', ok=True, msg='Password updated.')
 
             if action == 'delete_user':
                 username = (request.form.get('username') or '').strip()
                 if username == current_user or username.casefold() == current_user.casefold():
-                    return redirect(url_for('administration', ok='0', msg='Cannot remove the currently signed-in user.'))
+                    return _redirect_with_message('administration', ok=False, msg='Cannot remove the currently signed-in user.')
                 users = store.list_users()
                 if len(users) <= 1:
-                    return redirect(url_for('administration', ok='0', msg='Cannot remove the last user.'))
+                    return _redirect_with_message('administration', ok=False, msg='Cannot remove the last user.')
                 store.delete_user(username)
-                return redirect(url_for('administration', ok='1', msg='User removed.'))
+                return _redirect_with_message('administration', ok=True, msg='User removed.')
 
-            return redirect(url_for('administration', ok='0', msg='Unknown action.'))
+            return _redirect_with_message('administration', ok=False, msg='Unknown action.')
         except Exception as e:
             app.logger.exception("Administration action failed")
-            return redirect(url_for('administration', ok='0', msg=public_error_message(e)))
+            return _redirect_with_message('administration', ok=False, msg=public_error_message(e))
 
     users = []
     try:

@@ -1,5 +1,19 @@
 name: squid-flask-proxy
 
+x-shared-app-env: &shared-app-env
+  DEFAULT_PROXY_ID: ${DEFAULT_PROXY_ID:-default}
+  PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
+  WEB_WORKERS: ${WEB_WORKERS:-}
+  WEB_THREADS: ${WEB_THREADS:-}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-}
+  DATABASE_URL: ${DATABASE_URL:-}
+  MYSQL_HOST: ${MYSQL_HOST:-}
+  MYSQL_PORT: ${MYSQL_PORT:-3306}
+  MYSQL_USER: ${MYSQL_USER:-}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+  MYSQL_DATABASE: ${MYSQL_DATABASE:-}
+  MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
+
 services:
   admin-ui:
     restart: unless-stopped
@@ -12,20 +26,9 @@ services:
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
     environment:
+      <<: *shared-app-env
       PROXY_CONTROL_MODE: remote
       DISABLE_BACKGROUND: 0
-      DEFAULT_PROXY_ID: ${DEFAULT_PROXY_ID:-default}
-      PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
-      WEB_WORKERS: ${WEB_WORKERS:-}
-      WEB_THREADS: ${WEB_THREADS:-}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-}
-      DATABASE_URL: ${DATABASE_URL:-}
-      MYSQL_HOST: ${MYSQL_HOST:-}
-      MYSQL_PORT: ${MYSQL_PORT:-3306}
-      MYSQL_USER: ${MYSQL_USER:-}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-}
-      MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
     healthcheck:
       test: ["CMD", "/healthcheck.admin.sh"]
       interval: 15s
@@ -53,11 +56,10 @@ services:
       - squid_cache:/var/spool/squid
       - proxy_data:/var/lib/squid-flask-proxy
     environment:
+      <<: *shared-app-env
       PROXY_INSTANCE_ID: ${PROXY_INSTANCE_ID:-default}
       PROXY_DISPLAY_NAME: ${PROXY_DISPLAY_NAME:-Default Proxy}
       PROXY_MANAGEMENT_URL: ${PROXY_MANAGEMENT_URL:-http://proxy:5000}
-      PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
-      DEFAULT_PROXY_ID: ${DEFAULT_PROXY_ID:-default}
       DISABLE_IPV6: ${DISABLE_IPV6:-1}
       SQUID_WORKERS: ${SQUID_WORKERS:-}
       SQUID_CACHE_MEM_MB: ${SQUID_CACHE_MEM_MB:-}
@@ -68,19 +70,9 @@ services:
       CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
       CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
       CLAMD_PORT: ${CLAMD_PORT:-3310}
-      WEB_WORKERS: ${WEB_WORKERS:-}
-      WEB_THREADS: ${WEB_THREADS:-}
       DANTE_SERVERS: ${DANTE_SERVERS:-}
       ULIMIT_NOFILE: ${ULIMIT_NOFILE:-}
       WEBFILTER_HELPERS: ${WEBFILTER_HELPERS:-}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-}
-      DATABASE_URL: ${DATABASE_URL:-}
-      MYSQL_HOST: ${MYSQL_HOST:-}
-      MYSQL_PORT: ${MYSQL_PORT:-3306}
-      MYSQL_USER: ${MYSQL_USER:-}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-}
-      MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s
