@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import socket
@@ -16,6 +17,7 @@ from services.cert_manager import CertManager, materialize_certificate_bundle
 from services.config_revisions import get_config_revisions
 from services.errors import public_error_message
 from services.live_stats import get_store
+from services.logutil import log_exception_throttled
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
 from services.proxy_context import get_proxy_id
 from services.proxy_registry import get_proxy_registry
@@ -25,6 +27,9 @@ from services.squidctl import SquidController
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
+
+
+logger = logging.getLogger(__name__)
 
 
 def _decode_bytes(value: bytes) -> str:
@@ -47,6 +52,42 @@ def _check_tcp(host: str, port: int, timeout: float = 0.75) -> Dict[str, Any]:
             return {"ok": True, "detail": "tcp connect ok"}
     except Exception as exc:
         return {"ok": False, "detail": str(exc)}
+
+
+def _is_local_host(host: str) -> bool:
+    normalized = (host or "").strip().lower()
+    return normalized in ("", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::")
+
+
+def _has_listen_socket(path: str, port: int) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            next(fh, None)
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                local_addr = parts[1]
+                state = parts[3]
+                if state != "0A":
+                    continue
+                try:
+                    _addr, port_hex = local_addr.rsplit(":", 1)
+                    if int(port_hex, 16) == int(port):
+                        return True
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+    return False
+
+
+def _check_local_listener(service_name: str, host: str, port: int) -> Dict[str, Any]:
+    if _has_listen_socket("/proc/net/tcp", port) or _has_listen_socket("/proc/net/tcp6", port):
+        return {"ok": True, "detail": f"{service_name} listening on {host}:{port}"}
+    return {"ok": False, "detail": f"{service_name} is not listening on {host}:{port}"}
 
 
 def _check_clamd() -> Dict[str, Any]:
@@ -569,10 +610,14 @@ class ProxyRuntime:
             dante_port = int(os.environ.get("DANTE_PORT", 1080))
         except Exception:
             dante_port = 1080
+        dante_host = os.environ.get("DANTE_HOST", "127.0.0.1")
+
+        icap_health = _check_local_listener("c-icap", icap_host, icap_port) if _is_local_host(icap_host) else _check_icap_service(icap_host, icap_port, "/adblockreq")
+        dante_health = _check_local_listener("dante", dante_host, dante_port) if _is_local_host(dante_host) else _check_tcp(dante_host, dante_port)
         services = {
-            "icap": _check_icap_service(icap_host, icap_port, "/adblockreq"),
+            "icap": icap_health,
             "clamav": _check_clamd(),
-            "dante": _check_tcp(os.environ.get("DANTE_HOST", "127.0.0.1"), dante_port),
+            "dante": dante_health,
         }
         active_revision = self.revisions.get_active_revision(self.proxy_id)
         active_certificate = self.certificate_bundles.get_active_bundle()
@@ -580,11 +625,43 @@ class ProxyRuntime:
         current_sha = self._current_config_sha()
         current_certificate_sha = self._current_certificate_bundle_sha()
         current_adblock_sha = self._current_adblock_artifact_sha()
-        desired_policy = build_proxy_policy_state(self.proxy_id)
-        current_policy_sha = self._current_policy_sha()
-        desired_pac = build_proxy_pac_state(self.proxy_id)
+        state_errors: list[str] = []
+        desired_policy_sha = ""
+        current_policy_sha = ""
+        desired_pac_sha = ""
         current_pac_sha = self._current_pac_state_sha()
-        ok = proxy_ok and all(bool(item.get("ok")) for item in services.values())
+
+        try:
+            desired_policy = build_proxy_policy_state(self.proxy_id)
+            desired_policy_sha = desired_policy.policy_sha256
+            current_policy_sha = calculate_policy_sha(
+                tuple(
+                    MaterializedPolicyFile(path=item.path, content=self._read_text_file(item.path))
+                    for item in desired_policy.files
+                )
+            )
+        except Exception as exc:
+            state_errors.append(f"policy: {public_error_message(exc, default='Failed to inspect desired proxy policy state.')}")
+            log_exception_throttled(
+                logger,
+                "proxy_runtime.collect_health.policy",
+                interval_seconds=30.0,
+                message="Failed to collect proxy policy health state",
+            )
+
+        try:
+            desired_pac = build_proxy_pac_state(self.proxy_id)
+            desired_pac_sha = desired_pac.state_sha256
+        except Exception as exc:
+            state_errors.append(f"pac: {public_error_message(exc, default='Failed to inspect desired PAC state.')}")
+            log_exception_throttled(
+                logger,
+                "proxy_runtime.collect_health.pac",
+                interval_seconds=30.0,
+                message="Failed to collect proxy PAC health state",
+            )
+
+        ok = proxy_ok and all(bool(item.get("ok")) for item in services.values()) and not state_errors
         return {
             "ok": ok,
             "status": "healthy" if ok else "degraded",
@@ -601,10 +678,11 @@ class ProxyRuntime:
             "active_adblock_revision_id": active_adblock_artifact.revision_id if active_adblock_artifact else None,
             "active_adblock_sha": active_adblock_artifact.artifact_sha256 if active_adblock_artifact else "",
             "current_adblock_sha": current_adblock_sha,
-            "desired_policy_sha": desired_policy.policy_sha256,
+            "desired_policy_sha": desired_policy_sha,
             "current_policy_sha": current_policy_sha,
-            "desired_pac_sha": desired_pac.state_sha256,
+            "desired_pac_sha": desired_pac_sha,
             "current_pac_sha": current_pac_sha,
+            "state_errors": state_errors,
             "timestamp": int(time.time()),
         }
 

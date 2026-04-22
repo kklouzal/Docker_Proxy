@@ -1325,6 +1325,10 @@ class SquidController:
             p = run(["squid", "-k", "check"], capture_output=True, timeout=15)
             stdout = p.stdout or b""
             stderr = p.stderr or b""
+            if p.returncode == 0:
+                if stdout:
+                    return stdout, b""
+                return b"Squid check ok.", b""
             if p.returncode != 0 and not stderr:
                 stderr = stdout or f"squid check failed rc={p.returncode}".encode("utf-8")
             return stdout, stderr

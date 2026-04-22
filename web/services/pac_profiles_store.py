@@ -97,6 +97,17 @@ class PacProfilesStore:
                 )
                 """
             )
+
+            # Lightweight schema migration for existing DBs.
+            if not column_exists(conn, "pac_profiles", "proxy_id"):
+                conn.execute("ALTER TABLE pac_profiles ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
+            if not column_exists(conn, "pac_profiles", "socks_enabled"):
+                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_enabled TINYINT(1) NOT NULL DEFAULT 0")
+            if not column_exists(conn, "pac_profiles", "socks_host"):
+                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_host VARCHAR(255) NOT NULL DEFAULT ''")
+            if not column_exists(conn, "pac_profiles", "socks_port"):
+                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_port INT NOT NULL DEFAULT 1080")
+
             create_index_if_not_exists(
                 conn,
                 table_name="pac_profiles",
@@ -109,16 +120,6 @@ class PacProfilesStore:
                 index_name="idx_pac_profiles_proxy",
                 columns_sql="proxy_id, id",
             )
-
-            # Lightweight schema migration for existing DBs.
-            if not column_exists(conn, "pac_profiles", "proxy_id"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
-            if not column_exists(conn, "pac_profiles", "socks_enabled"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_enabled TINYINT(1) NOT NULL DEFAULT 0")
-            if not column_exists(conn, "pac_profiles", "socks_host"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_host VARCHAR(255) NOT NULL DEFAULT ''")
-            if not column_exists(conn, "pac_profiles", "socks_port"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_port INT NOT NULL DEFAULT 1080")
 
     def list_profiles(self) -> List[PacProfile]:
         self.init_db()

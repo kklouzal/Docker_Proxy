@@ -53,6 +53,22 @@ class TestProxyManagementApi(unittest.TestCase):
         self.assertIn('services', payload)
         self.assertIn('stats', payload)
 
+    def test_health_returns_degraded_payload_when_runtime_raises(self):
+        import proxy.app as proxy_module  # type: ignore
+
+        original = proxy_module.runtime.collect_health
+        proxy_module.runtime.collect_health = lambda: (_ for _ in ()).throw(RuntimeError('boom'))
+        try:
+            response = self.app.get('/api/manage/health', headers={'Authorization': 'Bearer test-token'})
+        finally:
+            proxy_module.runtime.collect_health = original
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload['ok'])
+        self.assertEqual(payload['status'], 'degraded')
+        self.assertIn('state_errors', payload)
+
     def test_sync_endpoint_delegates_to_runtime(self):
         import proxy.app as proxy_module  # type: ignore
 

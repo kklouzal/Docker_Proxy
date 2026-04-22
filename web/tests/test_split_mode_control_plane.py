@@ -89,6 +89,20 @@ class TestSplitModeControlPlane(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('Edge 1', response.get_data(as_text=True))
 
+    def test_registry_refresh_does_not_reset_existing_proxy_status(self):
+        from services.proxy_registry import get_proxy_registry  # type: ignore
+
+        registry = get_proxy_registry()
+        registry.ensure_proxy('edge-1', display_name='Edge 1', management_url='http://edge-1:5000', status='healthy')
+
+        os.environ['PROXY_INSTANCE_ID'] = 'edge-1'
+        os.environ['PROXY_DISPLAY_NAME'] = 'Edge 1'
+        os.environ['PROXY_MANAGEMENT_URL'] = 'http://edge-1:5000'
+
+        refreshed = registry.register_local_proxy()
+
+        self.assertEqual(refreshed.status, 'healthy')
+
 
 if __name__ == '__main__':
     unittest.main()

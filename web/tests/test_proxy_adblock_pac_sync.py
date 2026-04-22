@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from types import SimpleNamespace
 
 from .proxy_runtime_test_helpers import import_proxy_runtime
 
@@ -180,6 +181,80 @@ def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
         text = body.decode("utf-8", errors="replace")
         assert "SOCKS5 proxy.example:1080; PROXY proxy.example:3128; DIRECT" in text
         assert "FindProxyForURL" in text
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_pac_profiles_init_db_migrates_legacy_schema_before_proxy_index(tmp_path):
+    env_backup = {
+        key: os.environ.get(key)
+        for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND")
+    }
+    try:
+        import_proxy_runtime(tmp_path)
+        from services.db import column_exists, connect  # type: ignore
+        from services.pac_profiles_store import get_pac_profiles_store  # type: ignore
+
+        with connect() as conn:
+            conn.execute("DROP TABLE IF EXISTS pac_direct_dst_nets")
+            conn.execute("DROP TABLE IF EXISTS pac_direct_domains")
+            conn.execute("DROP TABLE IF EXISTS pac_profiles")
+            conn.execute(
+                """
+                CREATE TABLE pac_profiles (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    name VARCHAR(255) NOT NULL,
+                    client_cidr VARCHAR(64) NOT NULL DEFAULT '',
+                    created_ts BIGINT NOT NULL
+                )
+                """
+            )
+
+        store = get_pac_profiles_store()
+        store.init_db()
+
+        with connect() as conn:
+            assert column_exists(conn, "pac_profiles", "proxy_id") is True
+
+        assert store.list_profiles() == []
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path, monkeypatch):
+    env_backup = {
+        key: os.environ.get(key)
+        for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "PAC_RENDER_DIR")
+    }
+    try:
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "PAC_RENDER_DIR": tmp_path / "pac",
+            },
+        )
+
+        runtime = runtime_module.ProxyRuntime()
+        monkeypatch.setattr(runtime.controller, "get_status", lambda: (b"proxy ok", b""))
+        monkeypatch.setattr(runtime_module, "_check_local_listener", lambda *args, **kwargs: {"ok": True, "detail": "listening"})
+        monkeypatch.setattr(runtime_module, "_check_clamd", lambda: {"ok": True, "detail": "PONG"})
+        monkeypatch.setattr(runtime_module, "build_proxy_policy_state", lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]))
+        monkeypatch.setattr(runtime_module, "build_proxy_pac_state", lambda _proxy_id: (_ for _ in ()).throw(RuntimeError("legacy pac schema")))
+
+        health = runtime.collect_health()
+
+        assert health["ok"] is False
+        assert health["status"] == "degraded"
+        assert any(str(item).startswith("pac:") for item in health["state_errors"])
+        assert health["services"]["dante"]["ok"] is True
     finally:
         for key, value in env_backup.items():
             if value is None:

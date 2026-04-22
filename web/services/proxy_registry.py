@@ -89,7 +89,7 @@ class ProxyRegistry:
         display_name: str | None = None,
         hostname: str | None = None,
         management_url: str | None = None,
-        status: str = "unknown",
+        status: str | None = None,
         detail: str | None = None,
     ) -> ProxyInstance:
         self.init_db()
@@ -133,7 +133,8 @@ class ProxyRegistry:
                 next_display = (display_name or row["display_name"] or proxy_key).strip() or proxy_key
                 next_hostname = (hostname or row["hostname"] or "").strip()
                 next_url = (management_url or row["management_url"] or "").strip()
-                next_status = (status or row["status"] or "unknown").strip() or "unknown"
+                next_status = (row["status"] if status is None else status)
+                next_status = (next_status or "unknown").strip() or "unknown"
                 next_detail = (detail if detail is not None else row["detail"] or "").strip()
                 conn.execute(
                     """
@@ -259,12 +260,13 @@ class ProxyRegistry:
         display_name = (os.environ.get("PROXY_DISPLAY_NAME") or proxy_id).strip() or proxy_id
         hostname = (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip()
         management_url = (os.environ.get("PROXY_MANAGEMENT_URL") or "").strip()
+        existing = self.get_proxy(proxy_id)
         return self.ensure_proxy(
             proxy_id,
             display_name=display_name,
             hostname=hostname,
             management_url=management_url,
-            status="starting",
+            status="starting" if existing is None else None,
         )
 
 

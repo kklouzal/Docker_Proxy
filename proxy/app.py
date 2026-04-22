@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
@@ -8,6 +9,7 @@ from flask import Flask, abort, jsonify, request
 
 from proxy.agent import start_agent
 from proxy.runtime import get_runtime
+from services.errors import public_error_message
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -50,7 +52,22 @@ def health() -> Any:
 @app.route("/api/manage/health", methods=["GET"])
 @_require_management_auth
 def manage_health() -> Any:
-    return jsonify(runtime.collect_health()), 200
+    try:
+        return jsonify(runtime.collect_health()), 200
+    except Exception as exc:
+        detail = public_error_message(exc, default="Proxy health collection failed.")
+        return jsonify(
+            {
+                "ok": False,
+                "status": "degraded",
+                "proxy_id": runtime.proxy_id,
+                "proxy_status": detail,
+                "stats": {},
+                "services": {},
+                "state_errors": [detail],
+                "timestamp": int(time.time()),
+            }
+        ), 200
 
 
 @app.route("/api/manage/sync", methods=["POST"])
