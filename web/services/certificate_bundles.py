@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from services.cert_manager import CertificateBundle
+from services.certificate_runtime import CertificateBundle
 from services.db import connect, create_index_if_not_exists
 from services.proxy_context import normalize_proxy_id
 

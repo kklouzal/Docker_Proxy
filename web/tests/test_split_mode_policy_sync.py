@@ -23,11 +23,12 @@ def _import_runtime():
     configure_test_mysql_env(tempfile.mkdtemp(prefix='proxy_policy_mysql_'))
 
     from proxy.runtime import ProxyRuntime  # type: ignore
+    from services.proxy_webfilter_store import get_proxy_webfilter_store  # type: ignore
     from services.webfilter_store import get_webfilter_store  # type: ignore
     from services.sslfilter_store import get_sslfilter_store  # type: ignore
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
 
-    return ProxyRuntime, get_webfilter_store, get_sslfilter_store, set_proxy_id, reset_proxy_id
+    return ProxyRuntime, get_webfilter_store, get_proxy_webfilter_store, get_sslfilter_store, set_proxy_id, reset_proxy_id
 
 
 class TestProxyPolicyMaterialization(unittest.TestCase):
@@ -46,15 +47,16 @@ class TestProxyPolicyMaterialization(unittest.TestCase):
                 os.environ[key] = value
 
     def test_proxy_sync_materializes_policy_files_and_reloads(self):
-        ProxyRuntime, get_webfilter_store, get_sslfilter_store, _set_proxy_id, _reset_proxy_id = _import_runtime()
+        ProxyRuntime, get_webfilter_store, get_proxy_webfilter_store, get_sslfilter_store, _set_proxy_id, _reset_proxy_id = _import_runtime()
 
         runtime = ProxyRuntime()
         webfilter_store = get_webfilter_store()
+        proxy_webfilter_store = get_proxy_webfilter_store()
         sslfilter_store = get_sslfilter_store()
 
         temp_root = Path(tempfile.mkdtemp(prefix='proxy_policy_files_'))
-        webfilter_store.squid_include_path = str(temp_root / '30-webfilter.conf')
-        webfilter_store.whitelist_path = str(temp_root / 'webfilter_whitelist.txt')
+        proxy_webfilter_store.squid_include_path = str(temp_root / '30-webfilter.conf')
+        proxy_webfilter_store.whitelist_path = str(temp_root / 'webfilter_whitelist.txt')
         sslfilter_store.squid_include_path = str(temp_root / '10-sslfilter.conf')
         sslfilter_store.nobump_list_path = str(temp_root / 'sslfilter_nobump.txt')
 
@@ -82,8 +84,8 @@ class TestProxyPolicyMaterialization(unittest.TestCase):
         self.assertFalse(result['config_changed'])
         self.assertIn('policy reload ok', result['detail'])
 
-        webfilter_include = Path(webfilter_store.squid_include_path).read_text(encoding='utf-8')
-        whitelist = Path(webfilter_store.whitelist_path).read_text(encoding='utf-8')
+        webfilter_include = Path(proxy_webfilter_store.squid_include_path).read_text(encoding='utf-8')
+        whitelist = Path(proxy_webfilter_store.whitelist_path).read_text(encoding='utf-8')
         sslfilter_include = Path(sslfilter_store.squid_include_path).read_text(encoding='utf-8')
         nobump = Path(sslfilter_store.nobump_list_path).read_text(encoding='utf-8')
 
@@ -94,7 +96,7 @@ class TestProxyPolicyMaterialization(unittest.TestCase):
         self.assertIn('10.0.0.0/8', nobump)
 
     def test_webfilter_settings_are_scoped_per_proxy(self):
-        _ProxyRuntime, get_webfilter_store, _get_sslfilter_store, _set_proxy_id, _reset_proxy_id = _import_runtime()
+        _ProxyRuntime, get_webfilter_store, _get_proxy_webfilter_store, _get_sslfilter_store, _set_proxy_id, _reset_proxy_id = _import_runtime()
         webfilter_store = get_webfilter_store()
 
         token = _set_proxy_id('edge-1')

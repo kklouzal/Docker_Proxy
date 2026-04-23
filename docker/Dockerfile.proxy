@@ -56,16 +56,58 @@ RUN set -eu; \
 
 FROM alpine:${ALPINE_VERSION}
 
+# Proxy container responsibilities only:
+# - Squid / Dante / c-icap runtime
+# - Proxy management API and background sync agent
+# - PAC/WPAD serving and local policy materialization
+# - Certificate / config / adblock application from shared DB state
+#
+# Intentionally excluded from this image:
+# - Admin UI Flask app (`web/app.py`, `web/wsgi.py`)
+# - HTML templates and static assets
+# - Admin-only service modules (auth, audit, housekeeping, form parsing)
+
 RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn py3-pip supervisor openssl ca-certificates libatomic \
         pcre2 \
         file
 
 WORKDIR /app
 
-COPY web /app
 COPY proxy /app/proxy
+COPY web/requirements.txt /app/requirements.txt
+COPY web/services/__init__.py /app/services/__init__.py
+COPY web/services/adblock_artifacts.py \
+    web/services/adblock_store.py \
+    web/services/certificate_bundles.py \
+    web/services/certificate_runtime.py \
+    web/services/config_revisions.py \
+    web/services/db.py \
+    web/services/errors.py \
+    web/services/exclusions_store.py \
+    web/services/health_checks.py \
+    web/services/live_stats.py \
+    web/services/logutil.py \
+    web/services/pac_profiles_store.py \
+    web/services/pac_renderer.py \
+    web/services/policy_materializer.py \
+    web/services/proxy_context.py \
+    web/services/proxy_registry.py \
+    web/services/proxy_webfilter_store.py \
+    web/services/socks_store.py \
+    web/services/squid_runtime.py \
+    web/services/ssl_errors_store.py \
+    web/services/sslfilter_store.py \
+    web/services/stats.py \
+    web/services/timeseries_store.py \
+    /app/services/
+COPY web/tools/adblock_compile.py \
+    web/tools/pac_http_server.py \
+    web/tools/sslfilter_apply.py \
+    web/tools/webcat_acl.py \
+    web/tools/webfilter_apply.py \
+    /app/tools/
 COPY squid /squid
-COPY scripts /scripts
+COPY scripts/generate_ca.sh scripts/init_ssl_db.sh /scripts/
 COPY docker/load-env.sh /usr/local/bin/load-env.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/supervisord.proxy.conf /etc/supervisord.conf

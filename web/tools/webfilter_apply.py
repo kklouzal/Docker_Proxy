@@ -14,12 +14,12 @@ def main() -> int:
     # Import from the app package (works in container where /app is present).
     sys.path.insert(0, "/app")
     try:
-        from services.webfilter_store import WebFilterStore
+        from services.proxy_webfilter_store import ProxyWebFilterStore
     except Exception as e:
         print(f"[webfilter] import failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
-    store = WebFilterStore(squid_include_path=args.out)
+    store = ProxyWebFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
         return 0

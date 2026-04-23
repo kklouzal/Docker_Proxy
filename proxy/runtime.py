@@ -13,7 +13,7 @@ from typing import Any, Dict
 from services.adblock_artifacts import get_adblock_artifacts, materialize_archive_to_directory, read_materialized_artifact_sha
 from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
-from services.cert_manager import CertManager, materialize_certificate_bundle
+from services.certificate_runtime import CertManager, materialize_certificate_bundle
 from services.config_revisions import get_config_revisions
 from services.errors import public_error_message
 from services.health_checks import check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener as _shared_check_local_listener, check_tcp as _shared_check_tcp, is_local_host as _shared_is_local_host
@@ -24,7 +24,7 @@ from services.proxy_context import get_proxy_id
 from services.proxy_registry import get_proxy_registry
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
 from services.socks_store import get_socks_store
-from services.squidctl import SquidController
+from services.squid_runtime import SquidController
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store

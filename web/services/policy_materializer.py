@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
+from services.proxy_webfilter_store import get_proxy_webfilter_store
 from services.sslfilter_store import get_sslfilter_store
-from services.webfilter_store import get_webfilter_store
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ def build_proxy_policy_state(proxy_id: object | None = None) -> ProxyPolicyState
     normalized_proxy_id = normalize_proxy_id(proxy_id)
     token = set_proxy_id(normalized_proxy_id)
     try:
-        webfilter_store = get_webfilter_store()
+        webfilter_store = get_proxy_webfilter_store()
         webfilter_state = webfilter_store.render_materialized_state()
         sslfilter_store = get_sslfilter_store()
         sslfilter_state = sslfilter_store.render_materialized_state()
