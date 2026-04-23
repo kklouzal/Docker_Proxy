@@ -21,6 +21,7 @@
 
 *{ box-sizing:border-box; }
 html{ height:100%; }
+button, input, select, textarea{ font: inherit; }
 body{
   margin:0;
   font-family: var(--sans);
@@ -50,6 +51,31 @@ a:hover{ color: white; }
   backdrop-filter: blur(10px);
   background: rgba(11,18,32,.66);
   border-bottom: 1px solid var(--border);
+}
+
+.context-strip{
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.04);
+  backdrop-filter: blur(8px);
+}
+
+.context-strip-local{
+  background: rgba(46,229,157,.06);
+}
+
+.context-strip-inner{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 16px;
+  padding: 10px 0;
+}
+
+.context-strip-copy{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .header-inner{
@@ -90,6 +116,13 @@ a:hover{ color: white; }
   gap: 12px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.proxy-switcher{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap: wrap;
 }
 
 .nav-dropdown{
@@ -250,6 +283,161 @@ a:hover{ color: white; }
   background: rgba(255,255,255,.05);
   color: var(--muted);
   font-size: 12px;
+}
+
+.scope-chip{
+  display:inline-flex;
+  align-items:center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.06);
+  color: rgba(255,255,255,.92);
+}
+
+.scope-chip-proxy{
+  border-color: rgba(122,162,255,.30);
+  background: rgba(122,162,255,.16);
+}
+
+.scope-chip-global{
+  border-color: rgba(155,135,255,.30);
+  background: rgba(155,135,255,.16);
+}
+
+.scope-chip-mixed{
+  border-color: rgba(46,229,157,.30);
+  background: rgba(46,229,157,.14);
+}
+
+.scope-chip-local{
+  border-color: rgba(46,229,157,.30);
+  background: rgba(46,229,157,.12);
+}
+
+.scope-notice{
+  margin: 0 0 18px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(255,255,255,.10);
+  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.04));
+  box-shadow: var(--shadow);
+}
+
+.scope-notice-proxy{
+  border-color: rgba(122,162,255,.24);
+  background: linear-gradient(180deg, rgba(122,162,255,.12), rgba(255,255,255,.04));
+}
+
+.scope-notice-global{
+  border-color: rgba(155,135,255,.24);
+  background: linear-gradient(180deg, rgba(155,135,255,.12), rgba(255,255,255,.04));
+}
+
+.scope-notice-mixed{
+  border-color: rgba(46,229,157,.24);
+  background: linear-gradient(180deg, rgba(46,229,157,.11), rgba(255,255,255,.04));
+}
+
+.scope-notice-header{
+  display:flex;
+  align-items:flex-start;
+  gap: 14px;
+}
+
+.scope-notice-copy{
+  display:flex;
+  flex-direction:column;
+  gap: 6px;
+}
+
+.scope-notice-title{
+  margin: 0;
+  font-size: 16px;
+}
+
+.scope-notice-summary{
+  margin: 0;
+  color: var(--muted);
+}
+
+.scope-notice-details,
+.help,
+.label,
+.alert{
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scope-notice-details{
+  display:grid;
+  gap: 6px;
+}
+
+.scope-details-list{
+  margin: 0;
+  padding-left: 18px;
+}
+
+.scope-details-list li + li{
+  margin-top: 4px;
+}
+
+.page-tabs{
+  display:flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 14px;
+}
+
+.form-row{
+  display:flex;
+  flex-direction:column;
+  gap: 8px;
+}
+
+.label{
+  color: var(--muted);
+  letter-spacing: .2px;
+}
+
+.alert{
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.04);
+}
+
+.alert.error{
+  border-color: rgba(255,107,107,.24);
+  background: rgba(255,107,107,.10);
+  color: rgba(255,255,255,.92);
+}
+
+.stat{
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.04);
+}
+
+.stat-k{
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: .2px;
+}
+
+.stat-v{
+  margin-top: 6px;
+  color: rgba(255,255,255,.94);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: .2px;
 }
 
 .badge.ok{ border-color: rgba(46,229,157,.25); color: rgba(46,229,157,.95); background: rgba(46,229,157,.10); }
@@ -599,4 +787,12 @@ pre{
   .card.split-left{ grid-column: span 8; }
   .card.split-right{ grid-column: span 4; }
   .split-right{ grid-column: span 4; }
+}
+
+@media (max-width: 899px){
+  .context-strip-inner,
+  .scope-notice-header{
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

@@ -1,10 +1,15 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice, scope_chip %}
 
 {% block title %}Fleet · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Fleet</h1>
 <p class="page-subtitle">Registered proxy runtimes and their direct management status.</p>
+
+{% call scope_notice('global', 'Fleet-wide inventory and targeting', 'This page shows every registered proxy and lets you deliberately switch the active proxy for subsequent UI pages.') %}
+<div>Selecting a proxy updates the pinned context for the next page you open, while existing tabs keep their current target.</div>
+{% endcall %}
 
 <div class="card">
     <div class="card-header">
@@ -29,6 +34,7 @@
                     <td>
                         <strong>{{ proxy.display_name }}</strong><br>
                         <span class="small">{{ proxy.proxy_id }}</span>
+                        {% if proxy.proxy_id == active_proxy_id %}<div style="margin-top: 6px;">{{ scope_chip('proxy', 'Active in this tab') }}</div>{% endif %}
                         {% if proxy.hostname %}<div class="small">{{ proxy.hostname }}</div>{% endif %}
                     </td>
                     <td>

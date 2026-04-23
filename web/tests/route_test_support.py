@@ -140,7 +140,7 @@ class FakeWebFilterStore:
 
     def test_domain(self, domain: str):
         d = (domain or "").strip().lower()
-        return {"ok": True, "domain": d, "verdict": "allow", "reason": "stub"}
+        return {"ok": True, "domain": d, "verdict": "allowed", "reason": "stub"}
 
 
 class FakeSSLFilterStore:

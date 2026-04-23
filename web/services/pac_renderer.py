@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from services.exclusions_store import get_exclusions_store
 from services.pac_profiles_store import PacProfile, get_pac_profiles_store
@@ -62,9 +62,13 @@ def format_proxy_host(raw_host: str) -> str:
     return host or "127.0.0.1"
 
 
-def build_public_pac_url(raw_host: str) -> str:
+def build_public_pac_url(raw_host: str, *, proxy_id: object | None = None) -> str:
     host = format_proxy_host(raw_host)
-    return f"http://{host}/proxy.pac"
+    url = f"http://{host}/proxy.pac"
+    normalized_proxy_id = normalize_proxy_id(proxy_id) if proxy_id is not None else ""
+    if normalized_proxy_id:
+        return f"{url}?{urlencode({'proxy_id': normalized_proxy_id})}"
+    return url
 
 
 def _cidr_to_mask(cidr: str) -> str:

@@ -1,10 +1,17 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}Administration · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Administration</h1>
 <p class="page-subtitle">Manage admin users for the web panel.</p>
+
+{% if remote_control_mode %}
+{% call scope_notice('global', 'Fleet-wide control plane access', 'Admin users are shared across the web control plane, not tied to an individual proxy.') %}
+<div>Changes here affect who can manage the fleet defaults and per-proxy settings from the admin UI.</div>
+{% endcall %}
+{% endif %}
 
 {% if message %}
 <div class="card" style="margin-bottom: 12px;">

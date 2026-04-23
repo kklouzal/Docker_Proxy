@@ -1,10 +1,23 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}Home · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 id="status" class="page-title">Status</h1>
-<p class="page-subtitle">Live process + configuration checks.</p>
+<p class="page-subtitle">
+    {% if remote_control_mode and active_proxy %}
+        Live process, service health, and quick actions for {{ active_proxy.display_name }}.
+    {% else %}
+        Live process + configuration checks.
+    {% endif %}
+</p>
+
+{% if remote_control_mode and active_proxy %}
+{% call scope_notice('proxy', 'Selected proxy only', 'The health cards and quick actions on this page target ' ~ active_proxy.display_name ~ ' only.') %}
+<div>Use the proxy selector in the header or the Fleet page to move to another runtime. This tab stays pinned to the proxy that rendered it.</div>
+{% endcall %}
+{% endif %}
 
 <div class="grid">
     <section class="card">

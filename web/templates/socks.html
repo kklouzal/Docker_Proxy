@@ -1,10 +1,23 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}SOCKS · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">SOCKS</h1>
-<p class="page-subtitle">Best-effort analytics parsed from Dante (<span style="font-family: var(--mono);">sockd</span>) connection logs.</p>
+<p class="page-subtitle">
+  {% if remote_control_mode and active_proxy %}
+    Best-effort SOCKS analytics parsed from Dante (<span style="font-family: var(--mono);">sockd</span>) logs for {{ active_proxy.display_name }}.
+  {% else %}
+    Best-effort analytics parsed from Dante (<span style="font-family: var(--mono);">sockd</span>) connection logs.
+  {% endif %}
+</p>
+
+{% if remote_control_mode and active_proxy %}
+{% call scope_notice('proxy', 'Selected proxy only', 'SOCKS summaries, client trends, and recent events on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
+<div>This makes it easier to investigate one runtime without cross-contaminating analytics from the rest of the fleet.</div>
+{% endcall %}
+{% endif %}
 
 <form method="get" class="filter-form" style="margin: 0 0 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
   <label class="small">Window

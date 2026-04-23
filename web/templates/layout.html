@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+{% from "_scope_macros.html" import scope_chip %}
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -8,7 +9,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='spa.js') }}" defer></script>
 </head>
-<body>
+<body data-active-proxy-id="{{ active_proxy_id or '' }}">
     <header class="site-header">
         <div class="container header-inner">
             <div class="brand">
@@ -16,15 +17,17 @@
                 <div class="brand-title">
                     <strong>Squid Flask Proxy</strong>
                     <span>
-                        Proxy + admin UI
+                        Admin control plane
                         {% if remote_control_mode and active_proxy %}
-                            · active proxy: {{ active_proxy.display_name }}
+                            · fleet mode
+                        {% else %}
+                            · local runtime
                         {% endif %}
                     </span>
                 </div>
             </div>
             {% if session.get('user') and remote_control_mode and fleet_proxies %}
-            <form method="get" action="{{ request.path }}" class="proxy-switcher" style="display:flex; align-items:center; gap:8px;">
+            <form method="get" action="{{ request.path }}" class="proxy-switcher">
                 {% for key, value in request.args.items() %}
                     {% if key != 'proxy_id' %}
                     <input type="hidden" name="{{ key }}" value="{{ value }}">
@@ -86,6 +89,29 @@
             {% endif %}
         </div>
     </header>
+
+    {% if session.get('user') and remote_control_mode and active_proxy %}
+    <div class="context-strip">
+        <div class="container context-strip-inner">
+            <div class="context-strip-copy">
+                {{ scope_chip('proxy') }}
+                <strong>{{ active_proxy.display_name }}</strong>
+                <span class="small">This tab keeps navigation and form actions pinned to this proxy until you switch it.</span>
+            </div>
+            <a class="btn ghost" href="{{ url_for('fleet') }}">Manage fleet</a>
+        </div>
+    </div>
+    {% elif session.get('user') %}
+    <div class="context-strip context-strip-local">
+        <div class="container context-strip-inner">
+            <div class="context-strip-copy">
+                {{ scope_chip('local') }}
+                <strong>Single local proxy</strong>
+                <span class="small">All pages in this session are working against the local runtime in this container.</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <main class="main">
         <div class="container" id="spa-content">

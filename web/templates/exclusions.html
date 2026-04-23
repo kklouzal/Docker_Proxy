@@ -1,10 +1,23 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}Exclusions · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Exclusions</h1>
-<p class="page-subtitle">Define what should not be SSL-bumped/cached: specific destination domains, or requests coming from source IP ranges. (Client-side bypass is available via PAC.)</p>
+<p class="page-subtitle">
+  {% if remote_control_mode and active_proxy %}
+    Define destination and source-IP exclusions for {{ active_proxy.display_name }}. Client-side bypass is available through this proxy&apos;s PAC file.
+  {% else %}
+    Define what should not be SSL-bumped/cached: specific destination domains, or requests coming from source IP ranges. (Client-side bypass is available via PAC.)
+  {% endif %}
+</p>
+
+{% if remote_control_mode and active_proxy %}
+{% call scope_notice('proxy', 'Selected proxy only', 'Exclusions, private-network bypass, PAC output, and apply actions on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
+<div>This lets you tune bypass behavior for one proxy without surprising the rest of the fleet.</div>
+{% endcall %}
+{% endif %}
 
 {% if request.args.get('ok') %}
   <div style="margin: 0 0 14px;"><span class="badge ok">Applied</span> <span class="small">Squid reloaded with updated exclusions.</span></div>
@@ -79,7 +92,7 @@
       <div class="actions" style="margin-top: 8px;">
         <a class="btn" href="{{ url_for('proxy_pac') }}">Download proxy.pac</a>
       </div>
-      <div class="small" style="margin-top: 8px;">Configure your clients to use this PAC to send excluded destinations DIRECT and everything else via the proxy.</div>
+      <div class="small" style="margin-top: 8px;">Configure clients to use this PAC to send excluded destinations DIRECT and everything else through this proxy runtime.</div>
     </div>
   </aside>
 

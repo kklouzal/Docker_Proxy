@@ -174,6 +174,7 @@
     const testOut = container.querySelector('#webfilter-test-result');
     if (testInp && testBtn && testOut && !testBtn.dataset.spaBound) {
       testBtn.dataset.spaBound = '1';
+      const testUrl = testBtn.getAttribute('data-url') || '/webfilter/test';
 
       const setResult = (kind, text) => {
         testOut.classList.remove('is-hidden');
@@ -191,7 +192,7 @@
         }
         setResult('', 'Testing…');
         try {
-          const r = await fetch('/webfilter/test', {
+          const r = await fetch(testUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

@@ -1,12 +1,25 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}Squid Config · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Squid Configuration</h1>
-<p class="page-subtitle">Manage the running <span style="font-family: var(--mono);">squid.conf</span> and common caching settings.</p>
+<p class="page-subtitle">
+    {% if remote_control_mode and active_proxy %}
+        Manage the live <span style="font-family: var(--mono);">squid.conf</span> revision and template-backed settings for {{ active_proxy.display_name }}.
+    {% else %}
+        Manage the running <span style="font-family: var(--mono);">squid.conf</span> and common caching settings.
+    {% endif %}
+</p>
 
-<div class="actions" style="margin: 10px 0 14px;">
+{% if remote_control_mode and active_proxy %}
+{% call scope_notice('proxy', 'Selected proxy configuration', 'Every tab on this page edits only ' ~ active_proxy.display_name ~ '.') %}
+<div>Navigation and form submissions here are pinned to this proxy, so a different tab switching proxies will not accidentally retarget these changes.</div>
+{% endcall %}
+{% endif %}
+
+<div class="page-tabs">
     <a class="btn {{ 'primary' if tab == 'config' else 'ghost' }}" href="{{ url_for('squid_config', tab='config') }}">Config</a>
     <a class="btn {{ 'primary' if tab == 'caching' else 'ghost' }}" href="{{ url_for('squid_config', tab='caching') }}">Caching</a>
     <a class="btn {{ 'primary' if tab == 'timeouts' else 'ghost' }}" href="{{ url_for('squid_config', tab='timeouts') }}">Timeouts</a>

@@ -120,8 +120,32 @@ def _query_flag(value: bool) -> str | None:
     return '1' if value else None
 
 
+_NON_PROXY_ENDPOINTS = frozenset({'static', 'login', 'logout', 'health'})
+
+
+def _filter_none_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in params.items() if v is not None}
+
+
+def _should_preserve_proxy(endpoint: str, params: Dict[str, Any] | None = None) -> bool:
+    if not _is_remote_control_mode():
+        return False
+    if endpoint in _NON_PROXY_ENDPOINTS:
+        return False
+    if params and params.get('proxy_id') is not None:
+        return False
+    return True
+
+
+def _endpoint_url(endpoint: str, **params: Any) -> str:
+    values = _filter_none_params(params)
+    if _should_preserve_proxy(endpoint, values):
+        values['proxy_id'] = get_proxy_id()
+    return url_for(endpoint, **values)
+
+
 def _redirect_to(endpoint: str, **params):
-    return redirect(url_for(endpoint, **{k: v for k, v in params.items() if v is not None}))
+    return redirect(_endpoint_url(endpoint, **params))
 
 
 def _redirect_with_message(endpoint: str, *, ok: bool, msg: str, **params):
@@ -133,7 +157,7 @@ def _redirect_config(tab: str, *, ok: bool = False, error: bool = False, subtab:
 
 
 def _redirect_index_status():
-    return redirect(url_for('index') + '#status')
+    return redirect(_endpoint_url('index') + '#status')
 
 
 def _record_audit_event(
@@ -344,6 +368,17 @@ def _inject_csrf():
     }
 
 
+@app.context_processor
+def _inject_route_helpers():
+    def scoped_url_for(endpoint: str, **values: Any) -> str:
+        return _endpoint_url(endpoint, **values)
+
+    return {
+        'proxy_url': scoped_url_for,
+        'url_for': scoped_url_for,
+    }
+
+
 @app.before_request
 def _require_login_guard():
     # Allow liveness and static assets unauthenticated.
@@ -366,7 +401,7 @@ def _require_login_guard():
 
 
 def _resolve_selected_proxy_id() -> str:
-    requested_proxy = request.args.get('proxy_id') or request.form.get('proxy_id')
+    requested_proxy = request.form.get('proxy_id') or request.args.get('proxy_id')
     if requested_proxy is not None:
         session['active_proxy_id'] = normalize_proxy_id(requested_proxy)
 
@@ -440,7 +475,7 @@ def login():
             session['user'] = username
             session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
             _record_audit_event('login_success', ok=True, detail=f'user={username}')
-            return redirect(next_url or url_for('index'))
+            return redirect(next_url or _endpoint_url('index'))
         # Log failed login attempt for security auditing
         _record_audit_event('login_failed', ok=False, detail=f'user={username}')
         return render_template('login.html', error='Invalid username or password.', next=next_url)
@@ -1739,7 +1774,10 @@ def pac_builder():
     except Exception:
         profiles = []
 
-    pac_url = build_public_pac_url(request.host or '')
+    pac_url = build_public_pac_url(
+        request.host or '',
+        proxy_id=(get_proxy_id() if _is_remote_control_mode() else None),
+    )
     return render_template('pac.html', profiles=profiles, pac_url=pac_url)
 
 @app.route('/status')

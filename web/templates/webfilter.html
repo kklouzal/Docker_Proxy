@@ -1,13 +1,37 @@
 {% extends 'layout.html' %}
+{% from "_scope_macros.html" import scope_notice, scope_chip %}
 {% block title %}Web Filtering - Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Web Filtering</h1>
-<p class="page-subtitle">Block destinations by category, with whitelist overrides.</p>
+<p class="page-subtitle">
+  {% if remote_control_mode and active_proxy %}
+    Manage the fleet-wide category feed and the category enforcement rules for {{ active_proxy.display_name }}.
+  {% else %}
+    Block destinations by category, with whitelist overrides.
+  {% endif %}
+</p>
 
 {% set feed_url = settings.source_url or 'https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz' %}
 
-<div class="actions" style="margin: 10px 0 14px;">
+{% if remote_control_mode and active_proxy and tab == 'categories' %}
+{% call scope_notice('mixed', 'Fleet category feed + selected proxy enforcement', 'The category catalog is shared across the fleet. Enablement and blocked categories on this screen belong only to ' ~ active_proxy.display_name ~ '.') %}
+<ul class="scope-details-list">
+  <li><strong>Fleet-wide:</strong> category feed URL, refresh status, and downloaded category catalog.</li>
+  <li><strong>{{ active_proxy.display_name }} only:</strong> whether filtering is enabled here, which categories are blocked here, and the domain test on this page.</li>
+</ul>
+{% endcall %}
+{% elif remote_control_mode and active_proxy and tab == 'whitelist' %}
+{% call scope_notice('proxy', 'Selected proxy only', 'Whitelist entries on this page apply only to ' ~ active_proxy.display_name ~ '.') %}
+<div>Whitelist rules are evaluated before category blocking for this proxy.</div>
+{% endcall %}
+{% elif remote_control_mode and active_proxy and tab == 'blockedlog' %}
+{% call scope_notice('proxy', 'Selected proxy only', 'Blocked-request logs on this page are showing activity from ' ~ active_proxy.display_name ~ ' only.') %}
+<div>This keeps incident review and policy tuning scoped to the proxy you intentionally selected.</div>
+{% endcall %}
+{% endif %}
+
+<div class="page-tabs">
   <a class="btn {{ 'primary' if tab == 'categories' else 'ghost' }}" href="{{ url_for('webfilter', tab='categories') }}">Categories</a>
   <a class="btn {{ 'primary' if tab == 'whitelist' else 'ghost' }}" href="{{ url_for('webfilter', tab='whitelist') }}">Whitelist</a>
   <a class="btn {{ 'primary' if tab == 'blockedlog' else 'ghost' }}" href="{{ url_for('webfilter', tab='blockedlog') }}">Blocked Log</a>
@@ -17,7 +41,10 @@
   <section class="card">
     <div class="card-header">
       <h2 class="card-title">Whitelist</h2>
-      <span class="badge">Allowed first</span>
+      <div class="actions">
+        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% endif %}
+        <span class="badge">Allowed first</span>
+      </div>
     </div>
     <div class="card-body">
       {% if wl_ok %}
@@ -78,7 +105,10 @@
   <section class="card">
     <div class="card-header">
       <h2 class="card-title">Blocked Log</h2>
-      <span class="badge">Most recent first</span>
+      <div class="actions">
+        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% endif %}
+        <span class="badge">Most recent first</span>
+      </div>
     </div>
     <div class="card-body">
       {% if blocked_log_rows and blocked_log_rows|length > 0 %}
@@ -110,96 +140,153 @@
   </section>
 
 {% else %}
-  <form method="post" class="card" action="{{ url_for('webfilter', tab='categories') }}">
-    {{ csrf_field() }}
-    <input type="hidden" name="tab" value="categories">
-    <input type="hidden" name="action" value="save">
+  <div class="grid">
+    <form method="post" class="card split-left" action="{{ url_for('webfilter', tab='categories') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="tab" value="categories">
+      <input type="hidden" name="action" value="save">
+      <input type="hidden" name="source_url" value="{{ feed_url }}">
 
-    {% if err_source %}
-      <div class="alert error" style="margin-bottom: 12px;">
-        Source URL is required to enable web filtering.
-      </div>
-    {% endif %}
-
-    <div class="webfilter-toolbar">
-      <div>
-        <div id="webfilter-enabled-hidden">
-          {% if settings.enabled %}
-            <input type="hidden" name="enabled" value="on">
-          {% endif %}
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Selected proxy enforcement</h2>
+          <div class="small">Choose whether filtering is enabled here and which categories this proxy blocks.</div>
         </div>
-        <button
-          id="webfilter-enabled-toggle"
-          class="webfilter-toggle{% if settings.enabled %} is-enabled{% else %} is-disabled{% endif %}"
-          type="button"
-          aria-pressed="{% if settings.enabled %}true{% else %}false{% endif %}"
-        >
-          <span class="webfilter-toggle-title">Web filtering</span>
-          <span class="webfilter-toggle-state">{% if settings.enabled %}Enabled{% else %}Disabled{% endif %}</span>
-        </button>
+        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% else %}{{ scope_chip('local') }}{% endif %}
       </div>
 
-      <div class="webfilter-actions">
-        <button class="btn" type="submit">Save</button>
-        <div class="help" style="text-align:right;">
-          Last update: {{ fmt_ts(settings.last_success) if settings.last_success else 'never' }}
-          {% if settings.last_error %}
-            <br>
-            Last error: {{ settings.last_error }}
-          {% endif %}
-        </div>
-      </div>
-    </div>
+      <div class="card-body">
+        {% if err_source %}
+          <div class="alert error" style="margin-bottom: 12px;">
+            A valid fleet category source URL is required before web filtering can be enabled.
+          </div>
+        {% endif %}
 
-    <div class="form-row" style="margin-bottom: 16px;">
-      <label>
-        <div class="label">Category feed URL</div>
-        <input class="input" type="text" name="source_url" value="{{ feed_url }}" readonly>
-        <div class="help">Downloaded automatically at enable-time and daily at midnight (local time).</div>
-      </label>
-    </div>
-
-    <div class="form-row" style="margin-bottom: 16px;">
-      <div class="label">Test domain</div>
-      <div style="display:flex; gap:10px; align-items:center;">
-        <input id="webfilter-test-domain" class="input" type="text" placeholder="example.com" style="flex: 1 1 auto;">
-        <button id="webfilter-test-btn" class="btn" type="button">Test Domain</button>
-        <span id="webfilter-test-result" class="webfilter-test-result is-hidden" aria-live="polite"></span>
-      </div>
-      <div class="help">Checks whether this domain would be allowed or blocked by the current web filtering settings.</div>
-    </div>
-
-    <div class="form-row" style="margin-bottom: 16px;">
-      <div class="label">Categories to block</div>
-
-      {% if available_categories and available_categories|length > 0 %}
-        <div id="webfilter-selected">
-          {% for c in selected %}
-            <input type="hidden" name="categories" value="{{ c }}">
-          {% endfor %}
-        </div>
-
-        <div class="webfilter-categories">
-          {% for c, domains in available_categories %}
+        <div class="webfilter-toolbar">
+          <div>
+            <div id="webfilter-enabled-hidden">
+              {% if settings.enabled %}
+                <input type="hidden" name="enabled" value="on">
+              {% endif %}
+            </div>
             <button
-              class="webfilter-cat{% if c in selected %} is-blocked{% else %} is-allowed{% endif %}"
+              id="webfilter-enabled-toggle"
+              class="webfilter-toggle{% if settings.enabled %} is-enabled{% else %} is-disabled{% endif %}"
               type="button"
-              data-category="{{ c }}"
-              aria-pressed="{% if c in selected %}true{% else %}false{% endif %}"
+              aria-pressed="{% if settings.enabled %}true{% else %}false{% endif %}"
             >
-              <span class="webfilter-cat-name">{{ c }}</span>
-              <span class="webfilter-cat-count">{{ domains }} domains</span>
+              <span class="webfilter-toggle-title">Web filtering</span>
+              <span class="webfilter-toggle-state">{% if settings.enabled %}Enabled{% else %}Disabled{% endif %}</span>
             </button>
-          {% endfor %}
-        </div>
-      {% else %}
-        <div class="help">
-          No categories are loaded yet. Enable filtering to trigger the first download, then return here to select categories.
-        </div>
-      {% endif %}
-    </div>
+          </div>
 
-  </form>
+          <div class="webfilter-actions">
+            <button class="btn primary" type="submit">Save enforcement</button>
+            <div class="help" style="text-align:right;">
+              Blocking {{ selected|length }} categor{{ 'y' if selected|length == 1 else 'ies' }}
+              <br>
+              Whitelist entries {{ whitelist_rows|length }}
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row" style="margin-bottom: 16px;">
+          <div class="label">Test this proxy's current rules</div>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <input id="webfilter-test-domain" class="input" type="text" placeholder="example.com" style="flex: 1 1 auto;">
+            <button id="webfilter-test-btn" class="btn" type="button" data-url="{{ url_for('webfilter_test_domain') }}">Test Domain</button>
+            <span id="webfilter-test-result" class="webfilter-test-result is-hidden" aria-live="polite"></span>
+          </div>
+          <div class="help">Checks whether this domain would be allowed or blocked by the effective rules for this proxy.</div>
+        </div>
+
+        <div class="form-row" style="margin-bottom: 16px;">
+          <div class="label">Categories to block on this proxy</div>
+
+          {% if available_categories and available_categories|length > 0 %}
+            <div id="webfilter-selected">
+              {% for c in selected %}
+                <input type="hidden" name="categories" value="{{ c }}">
+              {% endfor %}
+            </div>
+
+            <div class="webfilter-categories">
+              {% for c, domains in available_categories %}
+                <button
+                  class="webfilter-cat{% if c in selected %} is-blocked{% else %} is-allowed{% endif %}"
+                  type="button"
+                  data-category="{{ c }}"
+                  aria-pressed="{% if c in selected %}true{% else %}false{% endif %}"
+                >
+                  <span class="webfilter-cat-name">{{ c }}</span>
+                  <span class="webfilter-cat-count">{{ domains }} domains</span>
+                </button>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="help">
+              No categories are loaded yet. The fleet feed must be downloaded before you can select categories for this proxy.
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </form>
+
+    <aside class="split-right">
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Fleet category feed</h2>
+            <div class="small">Shared category catalog and refresh status for all proxies.</div>
+          </div>
+          {% if remote_control_mode %}{{ scope_chip('global') }}{% else %}{{ scope_chip('local') }}{% endif %}
+        </div>
+        <div class="card-body">
+          <div class="kv">
+            <div class="k">Source URL</div>
+            <div class="v"><span style="font-family: var(--mono); overflow-wrap: anywhere;">{{ feed_url }}</span></div>
+
+            <div class="k">Last update</div>
+            <div class="v">{{ fmt_ts(settings.last_success) if settings.last_success else 'never' }}</div>
+
+            <div class="k">Last attempt</div>
+            <div class="v">{{ fmt_ts(settings.last_attempt) if settings.last_attempt else 'n/a' }}</div>
+
+            <div class="k">Next refresh</div>
+            <div class="v">{{ fmt_ts(settings.next_run_ts) if settings.next_run_ts else 'Automatically scheduled' }}</div>
+
+            <div class="k">Available categories</div>
+            <div class="v">{{ available_categories|length }}</div>
+          </div>
+          {% if settings.last_error %}
+          <div class="alert error" style="margin-top: 12px;">
+            Last refresh error: {{ settings.last_error }}
+          </div>
+          {% endif %}
+          <div class="small" style="margin-top: 12px;">The feed is downloaded automatically when filtering is first enabled and refreshed on a schedule in the background.</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">Effective summary</h2>
+          <span class="badge">{{ selected|length }} blocked</span>
+        </div>
+        <div class="card-body">
+          <div class="grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+            <div class="stat">
+              <div class="stat-k">Filtering</div>
+              <div class="stat-v">{{ 'On' if settings.enabled else 'Off' }}</div>
+            </div>
+            <div class="stat">
+              <div class="stat-k">Whitelist</div>
+              <div class="stat-v">{{ whitelist_rows|length }}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
 {% endif %}
 
 {% endblock %}

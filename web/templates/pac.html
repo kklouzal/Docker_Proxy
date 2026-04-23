@@ -1,10 +1,23 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}PAC Builder · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">PAC Builder</h1>
-<p class="page-subtitle">Define multiple PAC profiles and serve different PAC content based on the client IP requesting the PAC.</p>
+<p class="page-subtitle">
+  {% if remote_control_mode and active_proxy %}
+    Define PAC profiles for {{ active_proxy.display_name }} and serve PAC content based on the requesting client IP.
+  {% else %}
+    Define multiple PAC profiles and serve different PAC content based on the client IP requesting the PAC.
+  {% endif %}
+</p>
+
+{% if remote_control_mode and active_proxy %}
+{% call scope_notice('proxy', 'Selected proxy only', 'PAC profiles on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
+<div>The published PAC URL below is pinned to this proxy so you can safely manage distinct fleet members side-by-side.</div>
+{% endcall %}
+{% endif %}
 
 {% if request.args.get('ok') %}
   <div style="margin: 0 0 14px;"><span class="badge ok">Saved</span> <span class="small">PAC profiles updated.</span></div>
@@ -21,7 +34,10 @@
     <div class="card-body">
       <div class="small">Configure your clients to use:</div>
       <div style="margin-top: 8px; font-family: var(--mono);">{{ pac_url }}</div>
-      <div class="small" style="margin-top: 8px;">The server chooses which PAC content to return based on the requester IP (e.g. <span style="font-family: var(--mono);">REMOTE_ADDR</span> or <span style="font-family: var(--mono);">X-Forwarded-For</span>).</div>
+      <div class="small" style="margin-top: 8px;">The server chooses which PAC content to return based on the requester IP (for example <span style="font-family: var(--mono);">REMOTE_ADDR</span> or <span style="font-family: var(--mono);">X-Forwarded-For</span>).</div>
+      {% if remote_control_mode and active_proxy %}
+      <div class="small" style="margin-top: 8px;">In fleet mode the <span style="font-family: var(--mono);">proxy_id</span> in this URL keeps clients pinned to {{ active_proxy.display_name }}.</div>
+      {% endif %}
     </div>
   </section>
 

@@ -1,204 +1,247 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice, scope_chip %}
 
 {% block title %}Ad Blocking · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Ad Blocking</h1>
-<p class="page-subtitle">ICAP-based blocking using EasyList-style subscriptions.</p>
+<p class="page-subtitle">
+  {% if remote_control_mode and active_proxy %}
+    Manage fleet-wide ad-blocking subscriptions and the live runtime statistics for {{ active_proxy.display_name }}.
+  {% else %}
+    ICAP-based blocking using EasyList-style subscriptions.
+  {% endif %}
+</p>
 
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">Settings</h2>
-  </div>
-  <div class="card-body">
-    <form method="post">
-      {{ csrf_field() }}
-      <div class="actions" style="margin-bottom: 12px;">
-        <button class="btn primary" type="submit" name="action" value="save_settings">Save settings</button>
-      </div>
+{% if remote_control_mode and active_proxy %}
+{% call scope_notice('mixed', 'Fleet subscriptions + selected proxy runtime', 'Ad-blocking subscriptions and baseline settings are shared across the fleet. Runtime cache metrics and recent blocks below belong only to ' ~ active_proxy.display_name ~ '.') %}
+<ul class="scope-details-list">
+  <li><strong>Fleet-wide:</strong> overall enablement, cache defaults, enabled subscription lists, and manual subscription refresh.</li>
+  <li><strong>{{ active_proxy.display_name }} only:</strong> live cache statistics, recent blocks, and flush-cache requests.</li>
+</ul>
+{% endcall %}
+{% endif %}
 
-      <div class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: end;">
-        <div>
-          <label class="small" style="display:block; margin-bottom: 6px;">Enabled</label>
-          <label class="small" style="display:flex; align-items:center; gap:8px;">
-            <input class="check" type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
-            Enable ad blocking
-          </label>
-        </div>
-
-        <div>
-          <label class="small" style="display:block; margin-bottom: 6px;">Decision cache TTL (seconds)</label>
-          <input class="input" type="number" name="cache_ttl" value="{{ settings.cache_ttl }}" min="0" max="604800" step="1" />
-          <div class="small" style="margin-top: 6px;">0 disables caching.</div>
-        </div>
-
-        <div>
-          <label class="small" style="display:block; margin-bottom: 6px;">Decision cache max entries</label>
-          <input class="input" type="number" name="cache_max" value="{{ settings.cache_max }}" min="0" max="1000000" step="1" />
-          <div class="small" style="margin-top: 6px;">0 disables caching.</div>
-        </div>
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Fleet baseline settings</h2>
+        <div class="small">Shared settings applied to ad blocking across the fleet.</div>
       </div>
-
-      <div class="small" style="margin-top: 10px;">
-        Notes: This proxy always performs full URL matching (no CONNECT pre-block and no host gating). If performance is an issue, increase caching.
-      </div>
-    </form>
-  </div>
-</section>
-
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">Decision cache</h2>
-    <span class="badge">LRU</span>
-  </div>
-  <div class="card-body">
-    <div class="actions" style="margin-bottom: 10px; gap: 12px; align-items: center;">
-      <div class="stat" style="padding: 0;">
-        <div class="stat-k">Hit rate</div>
-        {% set hits = cache_stats.hits or 0 %}
-        {% set misses = cache_stats.misses or 0 %}
-        {% set total = hits + misses %}
-        {% if total > 0 %}
-          {% set rate = (100.0 * hits / total) %}
-          <div class="stat-v">{{ "%.1f"|format(rate) }}%</div>
-        {% else %}
-          <div class="stat-v">n/a</div>
-        {% endif %}
-      </div>
-      <div class="stat" style="padding: 0;">
-        <div class="stat-k">Entries</div>
-        <div class="stat-v">{{ cache_stats.current_size }}/{{ cache_max }}</div>
-        <div class="small">TTL {{ cache_ttl }}s</div>
-      </div>
-      <div class="stat" style="padding: 0;">
-        <div class="stat-k">Hits / Misses</div>
-        <div class="stat-v">{{ hits }} / {{ misses }}</div>
-        <div class="small">Evictions {{ cache_stats.evictions }}</div>
-      </div>
-      <form method="post" style="margin-left: auto;">
+      {% if remote_control_mode %}{{ scope_chip('global') }}{% else %}{{ scope_chip('local') }}{% endif %}
+    </div>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('adblock') }}">
         {{ csrf_field() }}
-        <input type="hidden" name="action" value="flush_cache">
-        <button class="btn" type="submit">Flush cache</button>
-        {% if cache_flushed %}<span class="small" style="margin-left:8px;">Requested</span>{% endif %}
+        <div class="actions" style="margin-bottom: 12px;">
+          <button class="btn primary" type="submit" name="action" value="save_settings">Save settings</button>
+        </div>
+
+        <div class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: end;">
+          <div>
+            <label class="small" style="display:block; margin-bottom: 6px;">Enabled</label>
+            <label class="small" style="display:flex; align-items:center; gap:8px;">
+              <input class="check" type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
+              Enable ad blocking
+            </label>
+          </div>
+
+          <div>
+            <label class="small" style="display:block; margin-bottom: 6px;">Decision cache TTL (seconds)</label>
+            <input class="input" type="number" name="cache_ttl" value="{{ settings.cache_ttl }}" min="0" max="604800" step="1" />
+            <div class="small" style="margin-top: 6px;">0 disables caching.</div>
+          </div>
+
+          <div>
+            <label class="small" style="display:block; margin-bottom: 6px;">Decision cache max entries</label>
+            <input class="input" type="number" name="cache_max" value="{{ settings.cache_max }}" min="0" max="1000000" step="1" />
+            <div class="small" style="margin-top: 6px;">0 disables caching.</div>
+          </div>
+        </div>
+
+        <div class="small" style="margin-top: 10px;">
+          This proxy always performs full URL matching (no CONNECT pre-block and no host gating). If performance is an issue, raise caching before trimming coverage.
+        </div>
       </form>
     </div>
-    <div class="small">Cache size and hit/miss totals come from the ICAP runtime; flush requests clear the live in-memory cache.</div>
-  </div>
-</section>
+  </section>
 
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">Block statistics</h2>
-  </div>
-  <div class="card-body">
-    <div class="grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
-      <div class="stat">
-        <div class="stat-k">Total blocked</div>
-        <div class="stat-v">{{ stats.total }}</div>
+  <aside class="split-right">
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Decision cache</h2>
+          <div class="small">Live runtime cache for the currently selected proxy.</div>
+        </div>
+        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% else %}{{ scope_chip('local') }}{% endif %}
       </div>
-      <div class="stat">
-        <div class="stat-k">Blocked (last 24h)</div>
-        <div class="stat-v">{{ stats.last_24h }}</div>
+      <div class="card-body">
+        <div class="actions" style="margin-bottom: 10px; gap: 12px; align-items: center;">
+          <div class="stat" style="padding: 0;">
+            <div class="stat-k">Hit rate</div>
+            {% set hits = cache_stats.hits or 0 %}
+            {% set misses = cache_stats.misses or 0 %}
+            {% set total = hits + misses %}
+            {% if total > 0 %}
+              {% set rate = (100.0 * hits / total) %}
+              <div class="stat-v">{{ "%.1f"|format(rate) }}%</div>
+            {% else %}
+              <div class="stat-v">n/a</div>
+            {% endif %}
+          </div>
+          <div class="stat" style="padding: 0;">
+            <div class="stat-k">Entries</div>
+            <div class="stat-v">{{ cache_stats.current_size }}/{{ cache_max }}</div>
+            <div class="small">TTL {{ cache_ttl }}s</div>
+          </div>
+          <div class="stat" style="padding: 0;">
+            <div class="stat-k">Hits / Misses</div>
+            <div class="stat-v">{{ hits }} / {{ misses }}</div>
+            <div class="small">Evictions {{ cache_stats.evictions }}</div>
+          </div>
+        </div>
+        <form method="post" action="{{ url_for('adblock') }}">
+          {{ csrf_field() }}
+          <input type="hidden" name="action" value="flush_cache">
+          <button class="btn" type="submit">Flush cache</button>
+          {% if cache_flushed %}<span class="small" style="margin-left:8px;">Requested</span>{% endif %}
+        </form>
+        <div class="small" style="margin-top: 10px;">Cache size and hit/miss totals come from the ICAP runtime; flush requests clear the live in-memory cache for this proxy.</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Block statistics</h2>
+          <div class="small">Recent activity observed on the selected proxy.</div>
+        </div>
+        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% else %}{{ scope_chip('local') }}{% endif %}
+      </div>
+      <div class="card-body">
+        <div class="grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+          <div class="stat">
+            <div class="stat-k">Total blocked</div>
+            <div class="stat-v">{{ stats.total }}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-k">Blocked (last 24h)</div>
+            <div class="stat-v">{{ stats.last_24h }}</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </aside>
+
+  <section class="card split-left">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Subscriptions</h2>
+        <div class="small">Shared subscription catalog and refresh controls.</div>
+      </div>
+      <div class="actions">
+        {% if remote_control_mode %}{{ scope_chip('global') }}{% else %}{{ scope_chip('local') }}{% endif %}
+        <span class="badge">{{ statuses|length }} lists</span>
       </div>
     </div>
-  </div>
-</section>
 
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">Recent blocks</h2>
-    <span class="badge">MySQL-backed</span>
-  </div>
-  <div class="card-body">
-    {% if recent_blocks and recent_blocks|length > 0 %}
-      <table class="table">
-        <thead>
-          <tr>
-            <th class="num">Time</th>
-            <th>Client</th>
-            <th>Method</th>
-            <th>URL</th>
-            <th>Result</th>
-            <th class="num">HTTP</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for e in recent_blocks %}
-          <tr>
-            <td class="num"><span class="small">{% if e.ts %}{{ fmt_ts(e.ts) }}{% else %}-{% endif %}</span></td>
-            <td><span class="small" style="font-family: var(--mono);">{{ e.src_ip }}</span></td>
-            <td><span class="small" style="font-family: var(--mono);">{{ e.method }}</span></td>
-            <td><span class="small" style="font-family: var(--mono); max-width: 720px; overflow-wrap: anywhere;">{{ e.url }}</span></td>
-            <td><span class="small" style="font-family: var(--mono);">{{ e.result }}</span></td>
-            <td class="num"><span class="small" style="font-family: var(--mono);">{{ e.status }}</span></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <div class="small" style="margin-top: 10px;">Shows up to the most recent 100 blocks stored in MySQL.</div>
-    {% else %}
-      <div class="small">No blocks recorded in the database yet.</div>
-    {% endif %}
-  </div>
-</section>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('adblock') }}">
+        {{ csrf_field() }}
+        <div class="actions" style="margin-bottom: 12px;">
+          <button class="btn primary" type="submit" name="action" value="save_lists">Save lists</button>
+          <button class="btn" type="submit" name="action" value="refresh">Update now</button>
+          {% if refresh_no_lists %}<span class="small" style="margin-left:8px;">No lists enabled — check one and click “Save lists” first.</span>{% endif %}
+          {% if refresh_requested %}<span class="small" style="margin-left:8px;">Refresh requested — downloads run in background (may take ~30s).</span>{% endif %}
+        </div>
 
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">Subscriptions</h2>
-    <span class="badge">{{ statuses|length }} lists</span>
-  </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Enabled</th>
+              <th>List</th>
+              <th class="num">Rules</th>
+              <th class="num">Bytes</th>
+              <th class="num">Last refresh</th>
+              <th class="num">Last failure</th>
+              <th class="num">Next refresh</th>
+              <th>Last error</th>
+              <th class="num">Blocked (24h)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for st in statuses %}
+            <tr>
+              <td>
+                <input class="check" type="checkbox" name="enabled_{{ st.key }}" {% if st.enabled %}checked{% endif %} />
+              </td>
+              <td>
+                <div><strong>{{ st.key }}</strong></div>
+                <div class="small" style="font-family: var(--mono); max-width: 560px; overflow-wrap: anywhere;">{{ st.url }}</div>
+              </td>
+              <td class="num">{{ st.rules }}</td>
+              <td class="num">{{ st.bytes }}</td>
+              <td class="num"><span class="small">{% if st.last_success %}{{ fmt_ts(st.last_success) }}{% else %}-{% endif %}</span></td>
+              <td class="num"><span class="small">{% if st.last_failure_ts %}{{ fmt_ts(st.last_failure_ts) }}{% else %}-{% endif %}</span></td>
+              <td class="num"><span class="small">{% if st.enabled %}{{ fmt_ts(st.next_refresh) }}{% else %}-{% endif %}</span></td>
+              <td><div class="small" style="font-family: var(--mono); max-width: 420px; overflow-wrap: anywhere;">{{ st.last_error }}</div></td>
+              <td class="num">{{ stats.by_list_24h.get(st.key, 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
 
-  <div class="card-body">
-    <form method="post">
-      {{ csrf_field() }}
-      <div class="actions" style="margin-bottom: 12px;">
-        <button class="btn primary" type="submit" name="action" value="save_lists">Save lists</button>
-        <button class="btn" type="submit" name="action" value="refresh">Update now</button>
-        {% if refresh_no_lists %}<span class="small" style="margin-left:8px;">No lists enabled — check one and click “Save lists” first.</span>{% endif %}
-        {% if refresh_requested %}<span class="small" style="margin-left:8px;">Refresh requested — downloads run in background (may take ~30s).</span>{% endif %}
+        <div class="small" style="margin-top: 10px;">
+          If ad blocking is disabled or no lists are enabled, the ICAP service returns <span style="font-family: var(--mono);">204 No Content</span> and nothing is blocked.
+          Lists refresh automatically about every 6 hours after a successful download. Next refresh times assume the service is running.
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Recent blocks</h2>
+        <div class="small">Most recent block events captured for the selected proxy.</div>
       </div>
-
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Enabled</th>
-            <th>List</th>
-            <th class="num">Rules</th>
-            <th class="num">Bytes</th>
-            <th class="num">Last refresh</th>
-            <th class="num">Last failure</th>
-            <th class="num">Next refresh</th>
-            <th>Last error</th>
-            <th class="num">Blocked (24h)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for st in statuses %}
-          <tr>
-            <td>
-              <input class="check" type="checkbox" name="enabled_{{ st.key }}" {% if st.enabled %}checked{% endif %} />
-            </td>
-            <td>
-              <div><strong>{{ st.key }}</strong></div>
-              <div class="small" style="font-family: var(--mono); max-width: 560px; overflow-wrap: anywhere;">{{ st.url }}</div>
-            </td>
-            <td class="num">{{ st.rules }}</td>
-            <td class="num">{{ st.bytes }}</td>
-            <td class="num"><span class="small">{% if st.last_success %}{{ fmt_ts(st.last_success) }}{% else %}-{% endif %}</span></td>
-            <td class="num"><span class="small">{% if st.last_failure_ts %}{{ fmt_ts(st.last_failure_ts) }}{% else %}-{% endif %}</span></td>
-            <td class="num"><span class="small">{% if st.enabled %}{{ fmt_ts(st.next_refresh) }}{% else %}-{% endif %}</span></td>
-            <td><div class="small" style="font-family: var(--mono); max-width: 420px; overflow-wrap: anywhere;">{{ st.last_error }}</div></td>
-            <td class="num">{{ stats.by_list_24h.get(st.key, 0) }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-
-      <div class="small" style="margin-top: 10px;">
-        Notes: If ad blocking is disabled or no lists are enabled, the ICAP service returns <span style="font-family: var(--mono);">204 No Content</span> and nothing is blocked.
-        Lists refresh automatically about every 6 hours after a successful download. Next refresh times assume the service is running.
+      <div class="actions">
+        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% else %}{{ scope_chip('local') }}{% endif %}
+        <span class="badge">MySQL-backed</span>
       </div>
-    </form>
-  </div>
-</section>
+    </div>
+    <div class="card-body">
+      {% if recent_blocks and recent_blocks|length > 0 %}
+        <table class="table">
+          <thead>
+            <tr>
+              <th class="num">Time</th>
+              <th>Client</th>
+              <th>Method</th>
+              <th>URL</th>
+              <th>Result</th>
+              <th class="num">HTTP</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in recent_blocks %}
+            <tr>
+              <td class="num"><span class="small">{% if e.ts %}{{ fmt_ts(e.ts) }}{% else %}-{% endif %}</span></td>
+              <td><span class="small" style="font-family: var(--mono);">{{ e.src_ip }}</span></td>
+              <td><span class="small" style="font-family: var(--mono);">{{ e.method }}</span></td>
+              <td><span class="small" style="font-family: var(--mono); max-width: 720px; overflow-wrap: anywhere;">{{ e.url }}</span></td>
+              <td><span class="small" style="font-family: var(--mono);">{{ e.result }}</span></td>
+              <td class="num"><span class="small" style="font-family: var(--mono);">{{ e.status }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="small" style="margin-top: 10px;">Shows up to the most recent 100 blocks stored in MySQL.</div>
+      {% else %}
+        <div class="small">No blocks recorded in the database yet.</div>
+      {% endif %}
+    </div>
+  </section>
+</div>
 {% endblock %}

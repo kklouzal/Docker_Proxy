@@ -1,10 +1,23 @@
 {% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}SSL Errors · Squid Flask Proxy{% endblock %}
 
 {% block content %}
 <h1 class="page-title">SSL Errors</h1>
-<p class="page-subtitle">Aggregated TLS/SSL-related errors parsed from <span style="font-family: var(--mono);">cache.log</span>.</p>
+<p class="page-subtitle">
+  {% if remote_control_mode and active_proxy %}
+    Aggregated TLS/SSL-related errors parsed from <span style="font-family: var(--mono);">cache.log</span> for {{ active_proxy.display_name }}.
+  {% else %}
+    Aggregated TLS/SSL-related errors parsed from <span style="font-family: var(--mono);">cache.log</span>.
+  {% endif %}
+</p>
+
+{% if remote_control_mode and active_proxy %}
+{% call scope_notice('proxy', 'Selected proxy only', 'The SSL/TLS errors and exclusion actions on this page apply only to ' ~ active_proxy.display_name ~ '.') %}
+<div>This keeps certificate troubleshooting tied to the proxy that actually observed the failures.</div>
+{% endcall %}
+{% endif %}
 
 <section class="card">
   <div class="card-header">
