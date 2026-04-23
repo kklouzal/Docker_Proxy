@@ -4,13 +4,22 @@
 {% block title %}Certificates · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<h1 class="page-title">Certificates</h1>
-<p class="page-subtitle">
-    Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores.
-    {% if remote_control_mode %}
-        The active CA bundle is versioned in MySQL and shared across all registered proxy containers.
-    {% endif %}
-</p>
+<section class="page-heading">
+    <div class="page-hero-copy">
+        <span class="page-eyebrow">Certificate authority</span>
+        <h1 class="page-title">Certificates</h1>
+        <p class="page-subtitle">
+            Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores.
+            {% if remote_control_mode %}
+                The active CA bundle is versioned in MySQL and shared across all registered proxy containers.
+            {% endif %}
+        </p>
+        <div class="hero-badges">
+            <span class="badge {{ 'ok' if certificate else 'warn' }}">{{ 'Available' if certificate else 'Not generated' }}</span>
+            {% if bundle and bundle.source_kind %}<span class="badge">{{ bundle.source_kind }}</span>{% endif %}
+        </div>
+    </div>
+</section>
 
 {% if remote_control_mode %}
 {% call scope_notice('global', 'Fleet-wide certificate authority', 'The active CA bundle on this page is shared across the entire proxy fleet.') %}
@@ -19,14 +28,11 @@
 {% endif %}
 
 {% if message %}
-<div class="card" style="margin-bottom: 12px;">
-    <div class="card-body">
-        {% if message_ok %}
-            <span class="badge ok">Success</span>
-        {% else %}
-            <span class="badge danger">Error</span>
-        {% endif %}
-        <span class="small" style="margin-left: 8px;">{{ message }}</span>
+<div class="banner {{ 'success' if message_ok else 'error' }}">
+    <span class="badge {{ 'ok' if message_ok else 'danger' }}">{{ 'Success' if message_ok else 'Error' }}</span>
+    <div class="banner-copy">
+        <strong>{{ 'Certificate state updated' if message_ok else 'Certificate action failed' }}</strong>
+        <span class="small">{{ message }}</span>
     </div>
 </div>
 {% endif %}
@@ -42,21 +48,21 @@
             {% endif %}
         </div>
         <div class="card-body">
-            <div class="small">
+            <div class="surface-note small">
                 This certificate must be installed on client devices to avoid HTTPS warnings when using SSL-bump.
             </div>
             {% if bundle %}
-            <div class="small" style="margin-top: 12px;">
+            <div class="surface-note small">
                 <div><strong>Source:</strong> {{ bundle.source_kind }}</div>
                 {% if bundle.subject_dn %}<div><strong>Subject:</strong> {{ bundle.subject_dn }}</div>{% endif %}
                 {% if bundle.not_before or bundle.not_after %}
                     <div><strong>Validity:</strong> {{ bundle.not_before or 'unknown' }} → {{ bundle.not_after or 'unknown' }}</div>
                 {% endif %}
-                {% if bundle.cert_sha256 %}<div><strong>Fingerprint:</strong> <code>{{ bundle.cert_sha256 }}</code></div>{% endif %}
+                {% if bundle.cert_sha256 %}<div><strong>Fingerprint:</strong> <code class="mono">{{ bundle.cert_sha256 }}</code></div>{% endif %}
                 {% if remote_control_mode and bundle.created_ts %}<div><strong>Published:</strong> {{ fmt_ts(bundle.created_ts) }}</div>{% endif %}
             </div>
             {% endif %}
-            <div class="actions" style="margin-top: 12px;">
+            <div class="actions">
                 <form action="{{ url_for('generate_certificate') }}" method="post">
                     {{ csrf_field() }}
                     <button class="btn primary" type="submit">Generate/Ensure CA</button>
@@ -68,8 +74,8 @@
                 {% endif %}
             </div>
 
-            <div style="margin-top: 16px;">
-                <div class="small" style="margin-bottom: 8px;">
+            <div class="content-stack">
+                <div class="surface-note small">
                     Upload a PKCS#12 bundle (.pfx/.p12) that contains a certificate and private key. If valid, it will replace the current CA used by Squid SSL-bump.
                 </div>
                 <form class="form" action="{{ url_for('upload_certificate_pfx') }}" method="post" enctype="multipart/form-data">
@@ -89,23 +95,25 @@
             </div>
 
             {% if remote_control_mode %}
-            <div style="margin-top: 16px;">
-                <h3 class="card-title" style="margin-bottom: 8px;">Fleet Apply Status</h3>
+            <div class="content-stack">
+                <h3 class="page-section-title">Fleet Apply Status</h3>
                 {% if proxy_cert_statuses %}
-                    <div class="small">
+                    <div class="status-list small">
                         {% for row in proxy_cert_statuses %}
-                            <div style="margin-bottom: 10px;">
+                            <div class="status-item">
                                 <strong>{{ row.display_name }}</strong>
-                                {% if row.ok is sameas true %}
-                                    <span class="badge ok">Applied</span>
-                                {% elif row.ok is sameas false %}
-                                    <span class="badge danger">Failed</span>
-                                {% else %}
-                                    <span class="badge warn">Pending</span>
-                                {% endif %}
-                                {% if row.applied_ts %}
-                                    <span style="margin-left: 6px;">{{ fmt_ts(row.applied_ts) }}</span>
-                                {% endif %}
+                                <div class="status-item-meta">
+                                    {% if row.ok is sameas true %}
+                                        <span class="badge ok">Applied</span>
+                                    {% elif row.ok is sameas false %}
+                                        <span class="badge danger">Failed</span>
+                                    {% else %}
+                                        <span class="badge warn">Pending</span>
+                                    {% endif %}
+                                    {% if row.applied_ts %}
+                                        <span>{{ fmt_ts(row.applied_ts) }}</span>
+                                    {% endif %}
+                                </div>
                                 {% if row.detail %}
                                     <div>{{ row.detail }}</div>
                                 {% endif %}
@@ -113,7 +121,7 @@
                         {% endfor %}
                     </div>
                 {% else %}
-                    <div class="small">Registered proxies will appear here after they report certificate apply status.</div>
+                    <div class="surface-note small">Registered proxies will appear here after they report certificate apply status.</div>
                 {% endif %}
             </div>
             {% endif %}
@@ -125,7 +133,7 @@
             <h2 class="card-title">Security Notes</h2>
         </div>
         <div class="card-body">
-            <div class="small">
+            <div class="surface-note small">
                 - Only the public CA cert is downloadable.
                 <br>
                 - The private key stays on the server side and is materialized locally on each proxy.

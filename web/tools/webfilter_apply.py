@@ -14,7 +14,7 @@ def main() -> int:
     # Import from the app package (works in container where /app is present).
     sys.path.insert(0, "/app")
     try:
-        from services.proxy_webfilter_store import ProxyWebFilterStore
+        from services.webfilter_core import ProxyWebFilterStore
     except Exception as e:
         print(f"[webfilter] import failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 2

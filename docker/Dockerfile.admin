@@ -6,7 +6,48 @@ RUN apk add --no-cache python3 py3-flask py3-gunicorn py3-pip supervisor openssl
 
 WORKDIR /app
 
-COPY web /app
+COPY web/app.py /app/app.py
+COPY web/wsgi.py /app/wsgi.py
+COPY web/requirements.txt /app/requirements.txt
+COPY web/services/__init__.py /app/services/__init__.py
+COPY web/services/adblock_artifacts.py \
+	web/services/adblock_store.py \
+	web/services/audit_store.py \
+	web/services/auth_store.py \
+	web/services/background_guard.py \
+	web/services/certificate_core.py \
+	web/services/cert_manager.py \
+	web/services/certificate_bundles.py \
+	web/services/config_revisions.py \
+	web/services/db.py \
+	web/services/errors.py \
+	web/services/exclusions_store.py \
+	web/services/health_checks.py \
+	web/services/housekeeping.py \
+	web/services/live_stats.py \
+	web/services/logutil.py \
+	web/services/pac_profiles_store.py \
+	web/services/pac_renderer.py \
+	web/services/proxy_client.py \
+	web/services/proxy_context.py \
+	web/services/proxy_registry.py \
+	web/services/socks_store.py \
+	web/services/squid_core.py \
+	web/services/squid_config_forms.py \
+	web/services/squidctl.py \
+	web/services/ssl_errors_store.py \
+	web/services/sslfilter_store.py \
+	web/services/stats.py \
+	web/services/timeseries_store.py \
+	web/services/webfilter_core.py \
+	web/services/webfilter_store.py \
+	/app/services/
+COPY web/static /app/static
+COPY web/templates /app/templates
+COPY web/tools/adblock_compile.py \
+	web/tools/webcat_acl.py \
+	web/tools/webcat_build.py \
+	/app/tools/
 COPY squid /squid
 COPY docker/load-env.sh /usr/local/bin/load-env.sh
 COPY docker/entrypoint.admin.sh /entrypoint.admin.sh

@@ -4,14 +4,25 @@
 {% block title %}Squid Config · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<h1 class="page-title">Squid Configuration</h1>
-<p class="page-subtitle">
-    {% if remote_control_mode and active_proxy %}
-        Manage the live <span style="font-family: var(--mono);">squid.conf</span> revision and template-backed settings for {{ active_proxy.display_name }}.
-    {% else %}
-        Manage the running <span style="font-family: var(--mono);">squid.conf</span> and common caching settings.
-    {% endif %}
-</p>
+<section class="page-heading">
+    <div class="page-hero-copy">
+        <span class="page-eyebrow">Proxy tuning</span>
+        <h1 class="page-title">Squid Configuration</h1>
+        <p class="page-subtitle">
+            {% if remote_control_mode and active_proxy %}
+                Manage the live <span class="mono">squid.conf</span> revision and template-backed settings for {{ active_proxy.display_name }}.
+            {% else %}
+                Manage the running <span class="mono">squid.conf</span> and common caching settings.
+            {% endif %}
+        </p>
+        <div class="hero-badges">
+            {% if summary.workers %}<span class="badge">{{ summary.workers }} worker{{ '' if summary.workers == 1 else 's' }}</span>{% endif %}
+            {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
+            <span class="badge {{ 'warn' if summary.overrides_on else 'ok' }}">Overrides {{ 'on' if summary.overrides_on else 'off' }}</span>
+            <span class="badge">{{ summary.exclusions_count }} exclusions</span>
+        </div>
+    </div>
+</section>
 
 {% if remote_control_mode and active_proxy %}
 {% call scope_notice('proxy', 'Selected proxy configuration', 'Every tab on this page edits only ' ~ active_proxy.display_name ~ '.') %}
@@ -35,23 +46,25 @@
 </div>
 
 {% if request.args.get('ok') %}
-    <div style="margin: 0 0 14px;"><span class="badge ok">Applied</span> <span class="small">Config validated and Squid reloaded.</span></div>
+    <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">Config validated and Squid reloaded.</span></div></div>
 {% elif request.args.get('error') %}
-    <div style="margin: 0 0 14px;"><span class="badge danger">Failed</span> <span class="small">Config validation/reload failed; previous config kept.</span></div>
+    <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Config validation/reload failed; previous config kept.</span></div></div>
 {% endif %}
 
 {% if validation %}
-    <div style="margin: 0 0 14px;">
+    <div class="banner {{ 'success' if validation.ok else 'error' }}">
         {% if validation.ok %}
             <span class="badge ok">Validation passed</span>
         {% else %}
             <span class="badge danger">Validation failed</span>
         {% endif %}
-        <pre class="small" style="white-space: pre-wrap; margin-top: 6px;">{{ validation.detail }}</pre>
+        <div class="banner-copy">
+            <pre class="small pre-wrap">{{ validation.detail }}</pre>
+        </div>
     </div>
 {% endif %}
 
-<div class="grid">
+<div class="grid config-page">
     {% if tab == 'config' %}
         <section class="card">
             <div class="card-header">
@@ -80,9 +93,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key caching directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key caching directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if caching_lines and caching_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ caching_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ caching_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No caching directives detected.</div>
                 {% endif %}
@@ -254,7 +267,7 @@
                 <div class="actions">
                     <button class="btn primary" type="submit" form="safe-caching-form">Save & Apply (template)</button>
                 </div>
-                <div class="small" style="margin-top: 8px;">Generates config from the template, validates it, applies it, and reloads Squid. No aggressive cache overrides are enabled.</div>
+                <div class="small config-apply-note">Generates config from the template, validates it, applies it, and reloads Squid. No aggressive cache overrides are enabled.</div>
             </div>
         </section>
 
@@ -266,7 +279,7 @@
             <div class="card-body">
                 <form class="form" action="{{ url_for('apply_cache_overrides') }}" method="post">
                     {{ csrf_field() }}
-                    <div class="small" style="margin-bottom: 10px;">
+                    <div class="small config-note">
                         These settings intentionally override cache-control semantics to increase caching. Use with care.
                     </div>
 
@@ -304,7 +317,7 @@
                         <button class="btn primary" type="submit">Save & Apply (template)</button>
                     </div>
 
-                    <div class="small">Applies overrides via <span style="font-family: var(--mono);">refresh_pattern</span> options and reloads Squid.</div>
+                    <div class="small">Applies overrides via <span class="mono">refresh_pattern</span> options and reloads Squid.</div>
                 </form>
             </div>
         </section>
@@ -317,9 +330,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key timeout directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key timeout directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if timeout_lines and timeout_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ timeout_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ timeout_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No timeout directives detected.</div>
                 {% endif %}
@@ -376,7 +389,7 @@
                 <div class="actions">
                     <button class="btn primary" type="submit" form="safe-timeouts-form">Save & Apply (template)</button>
                 </div>
-                <div class="small" style="margin-top: 8px;">Updates the template-driven config, validates it, applies it, and reloads Squid.</div>
+                <div class="small config-apply-note">Updates the template-driven config, validates it, applies it, and reloads Squid.</div>
             </div>
         </section>
     {% endif %}
@@ -388,9 +401,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key log directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key log directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if logging_lines and logging_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ logging_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ logging_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No log directives detected.</div>
                 {% endif %}
@@ -425,7 +438,7 @@
                 <div class="actions">
                     <button class="btn primary" type="submit" form="safe-logging-form">Save & Apply (template)</button>
                 </div>
-                <div class="small" style="margin-top: 8px;">Updates the template-driven config, validates it, applies it, and reloads Squid.</div>
+                <div class="small config-apply-note">Updates the template-driven config, validates it, applies it, and reloads Squid.</div>
             </div>
         </section>
     {% endif %}
@@ -437,9 +450,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key network directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key network directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if network_lines and network_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ network_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ network_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No network directives detected.</div>
                 {% endif %}
@@ -483,6 +496,21 @@
 
         <section class="card">
             <div class="card-header">
+                <h2 class="card-title">Web destination ports</h2>
+                <span class="badge ok">Default allow</span>
+            </div>
+            <div class="card-body">
+                <div class="surface-note small">
+                    Non-standard HTTP and HTTPS destination ports are allowed by default. This deployment intentionally does <strong>not</strong> enforce restrictive <span class="mono">Safe_ports</span> or <span class="mono">SSL_ports</span> ACLs unless you add them manually.
+                </div>
+                <div class="surface-note small">
+                    If you ever need tighter port controls, use the raw <span class="mono">Config</span> tab to add explicit ACL restrictions for your environment.
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-header">
                 <h2 class="card-title">Apply network</h2>
                 <span class="badge ok">Template</span>
             </div>
@@ -501,9 +529,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key DNS directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key DNS directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if dns_lines and dns_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ dns_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ dns_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No DNS directives detected.</div>
                 {% endif %}
@@ -527,7 +555,7 @@
 
                     <label for="dns_nameservers">dns_nameservers</label>
                     <input form="safe-dns-form" id="dns_nameservers" name="dns_nameservers" type="text" value="{{ (tunables.dns_nameservers if tunables and tunables.dns_nameservers else '') }}" />
-                    <div class="small">Space-separated IPs (example: <span style="font-family: var(--mono);">1.1.1.1 8.8.8.8</span>). Leave blank to keep current/default.</div>
+                    <div class="small">Space-separated IPs (example: <span class="mono">1.1.1.1 8.8.8.8</span>). Leave blank to keep current/default.</div>
 
                     <label for="hosts_file">hosts_file</label>
                     <input form="safe-dns-form" id="hosts_file" name="hosts_file" type="text" value="{{ (tunables.hosts_file if tunables and tunables.hosts_file else '') }}" />
@@ -572,9 +600,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key SSL directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key SSL directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if ssl_lines and ssl_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ ssl_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ ssl_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No SSL directives detected.</div>
                 {% endif %}
@@ -619,9 +647,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key ICAP directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key ICAP directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if icap_lines and icap_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ icap_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ icap_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No ICAP directives detected.</div>
                 {% endif %}
@@ -703,9 +731,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key privacy-related directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key privacy-related directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if privacy_lines and privacy_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ privacy_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ privacy_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No privacy directives detected.</div>
                 {% endif %}
@@ -771,9 +799,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key limit directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key limit directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if limits_lines and limits_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ limits_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ limits_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No limit directives detected.</div>
                 {% endif %}
@@ -839,9 +867,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key performance directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key performance directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if performance_lines and performance_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ performance_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ performance_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No performance directives detected.</div>
                 {% endif %}
@@ -909,9 +937,9 @@
                 <span class="badge">Running config</span>
             </div>
             <div class="card-body">
-                <div class="small" style="margin-bottom: 8px;">Key HTTP identity directives detected in the current running <span style="font-family: var(--mono);">squid.conf</span>.</div>
+                <div class="small config-note">Key HTTP identity directives detected in the current running <span class="mono">squid.conf</span>.</div>
                 {% if http_lines and http_lines|length %}
-                    <pre class="small" style="white-space: pre-wrap;">{{ http_lines | join('\n') }}</pre>
+                    <pre class="small pre-wrap">{{ http_lines | join('\n') }}</pre>
                 {% else %}
                     <div class="small">No HTTP identity directives detected.</div>
                 {% endif %}

@@ -13,10 +13,10 @@ from typing import Any, Dict
 from services.adblock_artifacts import get_adblock_artifacts, materialize_archive_to_directory, read_materialized_artifact_sha
 from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
-from services.certificate_runtime import CertManager, materialize_certificate_bundle
+from services.certificate_core import CertManager, materialize_certificate_bundle
 from services.config_revisions import get_config_revisions
 from services.errors import public_error_message
-from services.health_checks import check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener as _shared_check_local_listener, check_tcp as _shared_check_tcp, is_local_host as _shared_is_local_host
+from services.health_checks import annotate_service_target as _shared_annotate_service_target, build_clamav_health as _shared_build_clamav_health, check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener as _shared_check_local_listener, check_tcp as _shared_check_tcp, is_local_host as _shared_is_local_host, resolve_host_port as _shared_resolve_host_port, send_sample_respmod_to as _shared_send_sample_respmod_to, test_clamd_eicar as _shared_test_clamd_eicar
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
@@ -24,7 +24,7 @@ from services.proxy_context import get_proxy_id
 from services.proxy_registry import get_proxy_registry
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
 from services.socks_store import get_socks_store
-from services.squid_runtime import SquidController
+from services.squid_core import SquidController
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
@@ -60,11 +60,33 @@ def _check_local_listener(service_name: str, host: str, port: int) -> Dict[str, 
 
 
 def _check_clamd() -> Dict[str, Any]:
-    return _shared_check_clamd(error_formatter=str)
+    host, port = _shared_resolve_host_port(host_env="CLAMD_HOST", port_env="CLAMD_PORT", default_port=3310)
+    return _shared_annotate_service_target(
+        _shared_check_clamd(host=host, port=port, error_formatter=str),
+        host=host,
+        port=port,
+    )
 
 
 def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
     return _shared_check_icap_service(host, port, service, error_formatter=str)
+
+
+def _check_av_icap() -> Dict[str, Any]:
+    host, port = _shared_resolve_host_port(host_env="CICAP_HOST", port_env="CICAP_AV_PORT", default_port=14001)
+    result = (
+        _check_local_listener("c-icap av", host, port)
+        if _is_local_host(host)
+        else _check_icap_service(host, port, "/avrespmod")
+    )
+    return _shared_annotate_service_target(result, host=host, port=port, service="/avrespmod")
+
+
+def _send_sample_av_icap() -> Dict[str, Any]:
+    av_icap = _check_av_icap()
+    host = str(av_icap.get("host") or "127.0.0.1")
+    port = int(av_icap.get("port") or 14001)
+    return _shared_send_sample_respmod_to(host=host, port=port, service="/avrespmod", error_formatter=str)
 
 
 class ProxyRuntime:
@@ -554,10 +576,17 @@ class ProxyRuntime:
         dante_host = os.environ.get("DANTE_HOST", "127.0.0.1")
 
         icap_health = _check_local_listener("c-icap", icap_host, icap_port) if _is_local_host(icap_host) else _check_icap_service(icap_host, icap_port, "/adblockreq")
+        icap_health = _shared_annotate_service_target(icap_health, host=icap_host, port=icap_port, service="/adblockreq")
+        av_icap_health = _check_av_icap()
+        clamd_health = _check_clamd()
         dante_health = _check_local_listener("dante", dante_host, dante_port) if _is_local_host(dante_host) else _check_tcp(dante_host, dante_port)
+        dante_health = _shared_annotate_service_target(dante_health, host=dante_host, port=dante_port)
+        clamav_health = _shared_build_clamav_health(clamd_health, av_icap_health)
         services = {
             "icap": icap_health,
-            "clamav": _check_clamd(),
+            "av_icap": av_icap_health,
+            "clamd": clamd_health,
+            "clamav": clamav_health,
             "dante": dante_health,
         }
         active_revision = self.revisions.get_active_revision(self.proxy_id)
@@ -769,6 +798,22 @@ class ProxyRuntime:
             "ok": ok,
             "proxy_id": self.proxy_id,
             "detail": detail,
+        }
+
+    def test_clamav_eicar(self) -> Dict[str, Any]:
+        result = _shared_test_clamd_eicar(error_formatter=str)
+        return {
+            "ok": bool(result.get("ok")),
+            "proxy_id": self.proxy_id,
+            "detail": str(result.get("detail") or ""),
+        }
+
+    def test_clamav_icap(self) -> Dict[str, Any]:
+        result = _send_sample_av_icap()
+        return {
+            "ok": bool(result.get("ok")),
+            "proxy_id": self.proxy_id,
+            "detail": str(result.get("detail") or ""),
         }
 
 

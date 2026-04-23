@@ -35,6 +35,34 @@ def test_socks_store_ignores_accept_noise_and_keeps_connect_events(tmp_path):
     assert recent[0].dst == "140.82.114.26"
 
 
+def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "ssl-errors-seed")
+
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+
+    cache_log = tmp_path / "cache.log"
+    cache_log.write_text(
+        "\n".join(
+            [
+                "2026/04/18 04:04:09 kid1| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)",
+                "2026/04/18 04:04:40 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    store = SslErrorsStore(cache_log_path=str(cache_log))
+    store.init_db()
+    store.seed_from_recent_log()
+    store.seed_from_recent_log()
+
+    rows = store.list_errors(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["count"] == 1
+
+
 def test_ssl_errors_store_ignores_startup_noise(tmp_path):
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors")

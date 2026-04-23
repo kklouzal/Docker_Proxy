@@ -10,9 +10,11 @@
     <script src="{{ url_for('static', filename='spa.js') }}" defer></script>
 </head>
 <body data-active-proxy-id="{{ active_proxy_id or '' }}">
-    <header class="site-header">
+    <a class="skip-link" href="#spa-content">Skip to main content</a>
+
+    <header class="site-header" id="site-header">
         <div class="container header-inner">
-            <div class="brand">
+            <a class="brand" href="{{ url_for('index') if session.get('user') else url_for('login') }}" aria-label="Squid Flask Proxy home">
                 <div class="brand-mark" aria-hidden="true"></div>
                 <div class="brand-title">
                     <strong>Squid Flask Proxy</strong>
@@ -25,96 +27,103 @@
                         {% endif %}
                     </span>
                 </div>
-            </div>
-            {% if session.get('user') and remote_control_mode and fleet_proxies %}
-            <form method="get" action="{{ request.path }}" class="proxy-switcher">
-                {% for key, value in request.args.items() %}
-                    {% if key != 'proxy_id' %}
-                    <input type="hidden" name="{{ key }}" value="{{ value }}">
-                    {% endif %}
-                {% endfor %}
-                <label for="proxy-id" class="small">Proxy</label>
-                <select id="proxy-id" name="proxy_id" onchange="this.form.submit()">
-                    {% for proxy in fleet_proxies %}
-                    <option value="{{ proxy.proxy_id }}" {{ 'selected' if proxy.proxy_id == active_proxy_id else '' }}>
-                        {{ proxy.display_name }} ({{ proxy.status }})
-                    </option>
-                    {% endfor %}
-                </select>
-            </form>
-            {% endif %}
+            </a>
+
             {% if session.get('user') %}
-            <nav class="nav" aria-label="Primary">
-                <div class="nav-dropdown">
-                    <button class="nav-trigger {{ 'active' if request.endpoint in ['index','live','ssl_errors'] else '' }}" type="button">Status</button>
-                    <div class="nav-menu">
-                        <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
-                        <a class="{{ 'active' if request.endpoint == 'live' else '' }}" href="{{ url_for('live') }}">Live</a>
-                        <a class="{{ 'active' if request.endpoint == 'ssl_errors' else '' }}" href="{{ url_for('ssl_errors') }}">SSL Errors</a>
+            <div class="header-actions">
+                <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+                    Menu
+                </button>
+
+                <nav class="nav" id="primary-nav" aria-label="Primary">
+                    <div class="nav-dropdown">
+                        <button class="nav-trigger {{ 'active' if request.endpoint in ['index','live','ssl_errors'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Status</button>
+                        <div class="nav-menu">
+                            <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
+                            <a class="{{ 'active' if request.endpoint == 'live' else '' }}" href="{{ url_for('live') }}">Live</a>
+                            <a class="{{ 'active' if request.endpoint == 'ssl_errors' else '' }}" href="{{ url_for('ssl_errors') }}">SSL Errors</a>
+                        </div>
                     </div>
-                </div>
 
-                <div class="nav-dropdown">
-                    <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','clamav','webfilter','sslfilter'] else '' }}" type="button">Policy</button>
-                    <div class="nav-menu">
-                        <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
-                        <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
-                        <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
-                        <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
-                        <a class="{{ 'active' if request.endpoint == 'webfilter' else '' }}" href="{{ url_for('webfilter') }}">Web Filtering</a>
-                        <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
-                        <a class="{{ 'active' if request.endpoint == 'sslfilter' else '' }}" href="{{ url_for('sslfilter') }}">SSL Filtering</a>
+                    <div class="nav-dropdown">
+                        <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','exclusions','certs','adblock','clamav','webfilter','sslfilter'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Policy</button>
+                        <div class="nav-menu">
+                            <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
+                            <a class="{{ 'active' if request.endpoint == 'exclusions' else '' }}" href="{{ url_for('exclusions') }}">Exclusions</a>
+                            <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
+                            <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
+                            <a class="{{ 'active' if request.endpoint == 'webfilter' else '' }}" href="{{ url_for('webfilter') }}">Web Filtering</a>
+                            <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
+                            <a class="{{ 'active' if request.endpoint == 'sslfilter' else '' }}" href="{{ url_for('sslfilter') }}">SSL Filtering</a>
+                        </div>
                     </div>
-                </div>
 
-                <div class="nav-dropdown">
-                    <button class="nav-trigger {{ 'active' if request.endpoint in ['socks'] else '' }}" type="button">Access</button>
-                    <div class="nav-menu">
-                        <a class="{{ 'active' if request.endpoint == 'socks' else '' }}" href="{{ url_for('socks') }}">SOCKS</a>
+                    <div class="nav-dropdown">
+                        <button class="nav-trigger {{ 'active' if request.endpoint in ['socks'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Access</button>
+                        <div class="nav-menu">
+                            <a class="{{ 'active' if request.endpoint == 'socks' else '' }}" href="{{ url_for('socks') }}">SOCKS</a>
+                        </div>
                     </div>
-                </div>
 
-                <a class="nav-pill" href="{{ url_for('health') }}">Diagnostics</a>
-                {% if remote_control_mode %}
-                <a class="nav-pill {{ 'active' if request.endpoint == 'fleet' else '' }}" href="{{ url_for('fleet') }}">Fleet</a>
-                {% endif %}
-                <a class="nav-pill" href="{{ url_for('pac_builder') }}">PAC</a>
-                <a class="nav-pill {{ 'active' if request.endpoint == 'administration' else '' }}" href="{{ url_for('administration') }}">Administration</a>
+                    <a class="nav-pill" href="{{ url_for('pac_builder') }}">PAC</a>
+                    <a class="nav-pill {{ 'active' if request.endpoint == 'administration' else '' }}" href="{{ url_for('administration') }}">Administration</a>
 
-                <form action="{{ url_for('logout') }}" method="post" style="display:inline;">
-                    {{ csrf_field() }}
-                    <button class="nav-pill" type="submit">Logout</button>
-                </form>
-            </nav>
+                    <form action="{{ url_for('logout') }}" method="post" class="nav-inline-form">
+                        {{ csrf_field() }}
+                        <button class="nav-pill" type="submit">Logout</button>
+                    </form>
+                </nav>
+            </div>
             {% endif %}
         </div>
     </header>
 
-    {% if session.get('user') and remote_control_mode and active_proxy %}
-    <div class="context-strip">
-        <div class="container context-strip-inner">
-            <div class="context-strip-copy">
-                {{ scope_chip('proxy') }}
-                <strong>{{ active_proxy.display_name }}</strong>
-                <span class="small">This tab keeps navigation and form actions pinned to this proxy until you switch it.</span>
+    <div id="context-strip-slot">
+        {% if session.get('user') and remote_control_mode and active_proxy %}
+        <div class="context-strip">
+            <div class="container context-strip-inner">
+                <div class="context-strip-copy">
+                    {{ scope_chip('proxy') }}
+                    <strong>{{ active_proxy.display_name }}</strong>
+                    <span class="small">This tab keeps navigation and form actions pinned to this proxy until you switch it.</span>
+                </div>
+                <div class="context-strip-actions">
+                    {% if fleet_proxies %}
+                    <form method="get" action="{{ request.path }}" class="proxy-switcher">
+                        {% for key, value in request.args.items() %}
+                            {% if key != 'proxy_id' %}
+                            <input type="hidden" name="{{ key }}" value="{{ value }}">
+                            {% endif %}
+                        {% endfor %}
+                        <label for="proxy-id" class="small">Proxy</label>
+                        <select id="proxy-id" name="proxy_id" onchange="this.form.submit()">
+                            {% for proxy in fleet_proxies %}
+                            <option value="{{ proxy.proxy_id }}" {{ 'selected' if proxy.proxy_id == active_proxy_id else '' }}>
+                                {{ proxy.display_name }} ({{ proxy.status }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </form>
+                    {% endif %}
+                    <a class="btn ghost" href="{{ url_for('fleet') }}">Manage fleet</a>
+                </div>
             </div>
-            <a class="btn ghost" href="{{ url_for('fleet') }}">Manage fleet</a>
         </div>
-    </div>
-    {% elif session.get('user') %}
-    <div class="context-strip context-strip-local">
-        <div class="container context-strip-inner">
-            <div class="context-strip-copy">
-                {{ scope_chip('local') }}
-                <strong>Single local proxy</strong>
-                <span class="small">All pages in this session are working against the local runtime in this container.</span>
+        {% elif session.get('user') %}
+        <div class="context-strip context-strip-local">
+            <div class="container context-strip-inner">
+                <div class="context-strip-copy">
+                    {{ scope_chip('local') }}
+                    <strong>Single local proxy</strong>
+                    <span class="small">All pages in this session are working against the local runtime in this container.</span>
+                </div>
             </div>
         </div>
+        {% endif %}
     </div>
-    {% endif %}
 
     <main class="main">
-        <div class="container" id="spa-content">
+        <div class="container page-shell" id="spa-content" tabindex="-1">
             {% block content %}{% endblock %}
         </div>
     </main>
@@ -124,52 +133,5 @@
             <div class="small">&copy; {{ current_year }} Squid Flask Proxy</div>
         </div>
     </footer>
-
-    <script>
-        // Keep top-nav dropdowns open briefly after mouse leaves.
-        // This prevents the menu from disappearing when moving the cursor
-        // from the trigger button to the dropdown items across a small gap.
-        (() => {
-            const CLOSE_DELAY_MS = 1000;
-            const dropdowns = Array.from(document.querySelectorAll('.nav-dropdown'));
-            const closeTimers = new WeakMap();
-
-            const clearCloseTimer = (dropdown) => {
-                const timer = closeTimers.get(dropdown);
-                if (timer) {
-                    window.clearTimeout(timer);
-                    closeTimers.delete(dropdown);
-                }
-            };
-
-            const closeAllExcept = (keepOpen) => {
-                dropdowns.forEach((dropdown) => {
-                    if (dropdown === keepOpen) return;
-                    clearCloseTimer(dropdown);
-                    dropdown.classList.remove('open');
-                });
-            };
-
-            const open = (dropdown) => {
-                clearCloseTimer(dropdown);
-                closeAllExcept(dropdown);
-                dropdown.classList.add('open');
-            };
-
-            const scheduleClose = (dropdown) => {
-                clearCloseTimer(dropdown);
-                const timer = window.setTimeout(() => {
-                    dropdown.classList.remove('open');
-                    closeTimers.delete(dropdown);
-                }, CLOSE_DELAY_MS);
-                closeTimers.set(dropdown, timer);
-            };
-
-            dropdowns.forEach((dropdown) => {
-                dropdown.addEventListener('mouseenter', () => open(dropdown));
-                dropdown.addEventListener('mouseleave', () => scheduleClose(dropdown));
-            });
-        })();
-    </script>
 </body>
 </html>

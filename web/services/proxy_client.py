@@ -106,6 +106,24 @@ class ProxyClient:
             timeout_seconds=timeout_seconds,
         ).data
 
+    def test_clamav_eicar(self, proxy_id: object | None, *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+        return self._request(
+            proxy_id,
+            method="POST",
+            path="/api/manage/clamav/test-eicar",
+            payload={},
+            timeout_seconds=timeout_seconds,
+        ).data
+
+    def test_clamav_icap(self, proxy_id: object | None, *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+        return self._request(
+            proxy_id,
+            method="POST",
+            path="/api/manage/clamav/test-icap",
+            payload={},
+            timeout_seconds=timeout_seconds,
+        ).data
+
 
 _store: Optional[ProxyClient] = None
 _store_lock = threading.Lock()

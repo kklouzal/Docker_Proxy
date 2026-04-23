@@ -29,16 +29,15 @@ from services.proxy_registry import get_proxy_registry
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.errors import public_error_message
-from services.health_checks import check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener, check_tcp as _shared_check_tcp, is_local_host
+from services.health_checks import annotate_service_target as _shared_annotate_service_target, build_clamav_health as _shared_build_clamav_health, check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener, check_tcp as _shared_check_tcp, is_local_host, resolve_host_port as _shared_resolve_host_port, send_sample_respmod_to as _shared_send_sample_respmod_to, test_clamd_eicar as _shared_test_clamd_eicar
 from services.logutil import log_exception_throttled
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
 
-import socket
 import re
 import secrets
 import csv
 import io
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from typing import Any, Dict, Iterable, Sequence
 from markupsafe import Markup
 
@@ -220,6 +219,197 @@ def _normalized_domain(value: str | None) -> str:
     return (value or '').strip().lower().lstrip('.')
 
 
+_SSL_ERROR_CATEGORY_META: Dict[str, Dict[str, str]] = {
+    'CERT_VERIFY': {
+        'label': 'Trust / chain failure',
+        'tone': 'danger',
+        'note': 'Certificate validation failed. Confirm the upstream issuer chain and only bypass inspection if the destination is intentionally exempt.',
+    },
+    'CERT_EXPIRED': {
+        'label': 'Expired certificate',
+        'tone': 'danger',
+        'note': 'The remote certificate appears expired. Verify with the service owner before using an exclusion as a workaround.',
+    },
+    'CERT_NAME': {
+        'label': 'Hostname mismatch',
+        'tone': 'danger',
+        'note': 'The certificate subject does not match the requested hostname. Double-check the destination and whether interception is appropriate.',
+    },
+    'CERT': {
+        'label': 'Certificate issue',
+        'tone': 'warn',
+        'note': 'A certificate-related failure was detected. Inspect the latest sample for the specific OpenSSL or Squid message.',
+    },
+    'TLS_HANDSHAKE': {
+        'label': 'Handshake failed',
+        'tone': 'warn',
+        'note': 'TLS negotiation failed before a session was established. Compare client expectations, upstream TLS support, and bump policy.',
+    },
+    'TLS_CIPHER': {
+        'label': 'Cipher mismatch',
+        'tone': 'warn',
+        'note': 'Client and server could not agree on a cipher. Review allowed cipher suites and legacy TLS compatibility requirements.',
+    },
+    'TLS_PROTOCOL': {
+        'label': 'Protocol mismatch',
+        'tone': 'warn',
+        'note': 'The requested TLS version was unsupported or mismatched. Check whether the app or upstream requires a legacy or newer protocol.',
+    },
+    'SSL_BUMP': {
+        'label': 'Inspection policy conflict',
+        'tone': 'warn',
+        'note': 'The failure occurred while Squid was applying SSL bump logic. Review bump/splice rules before adding exclusions.',
+    },
+    'TLS_OTHER': {
+        'label': 'Other TLS failure',
+        'tone': 'warn',
+        'note': 'A generic TLS error was captured. Use the latest sample and timestamps to correlate with Live traffic or application logs.',
+    },
+}
+
+
+def _ssl_error_category_meta(category: str | None) -> Dict[str, str]:
+    key = (category or 'TLS_OTHER').strip().upper() or 'TLS_OTHER'
+    meta = _SSL_ERROR_CATEGORY_META.get(key, _SSL_ERROR_CATEGORY_META['TLS_OTHER'])
+    return {
+        'key': key,
+        'label': meta['label'],
+        'tone': meta['tone'],
+        'note': meta['note'],
+    }
+
+
+def _window_label(seconds: int) -> str:
+    value = max(60, int(seconds or 0))
+    if value % (24 * 3600) == 0:
+        return f"{value // (24 * 3600)}d"
+    if value % 3600 == 0:
+        return f"{value // 3600}h"
+    if value % 60 == 0:
+        return f"{value // 60}m"
+    return f"{value}s"
+
+
+def _present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
+    presented: list[Dict[str, Any]] = []
+    total_events = 0
+    unknown_target_buckets = 0
+    unknown_target_events = 0
+    known_domains: set[str] = set()
+    latest_seen = 0
+    category_totals: Dict[str, int] = {}
+
+    for row in rows:
+        domain = _normalized_domain(getattr(row, 'domain', ''))
+        category = str(getattr(row, 'category', '') or 'TLS_OTHER').strip().upper() or 'TLS_OTHER'
+        count = int(getattr(row, 'count', 0) or 0)
+        first_seen = int(getattr(row, 'first_seen', 0) or 0)
+        last_seen = int(getattr(row, 'last_seen', 0) or 0)
+        sample = str(getattr(row, 'sample', '') or '').strip()
+        meta = _ssl_error_category_meta(category)
+
+        total_events += count
+        latest_seen = max(latest_seen, last_seen)
+        category_totals[category] = category_totals.get(category, 0) + count
+
+        if domain:
+            known_domains.add(domain)
+        else:
+            unknown_target_buckets += 1
+            unknown_target_events += count
+
+        presented.append(
+            {
+                'domain': domain,
+                'target_display': domain or 'Hostname not captured',
+                'has_domain': bool(domain),
+                'category': category,
+                'category_label': meta['label'],
+                'badge_tone': meta['tone'],
+                'operator_note': meta['note'],
+                'reason': str(getattr(row, 'reason', '') or ''),
+                'count': count,
+                'first_seen': first_seen,
+                'last_seen': last_seen,
+                'sample': sample,
+            }
+        )
+
+    top_category = ''
+    top_category_total = 0
+    for category, total in category_totals.items():
+        if total > top_category_total:
+            top_category = category
+            top_category_total = total
+
+    top_meta = _ssl_error_category_meta(top_category) if top_category else {
+        'label': 'No active errors',
+        'tone': 'ok',
+        'note': 'No SSL/TLS error buckets were recorded in the selected window.',
+    }
+
+    hints: list[Dict[str, str]] = []
+    if presented:
+        hints.append(
+            {
+                'kind': 'info',
+                'title': 'Treat exclusions as a last-mile workaround',
+                'body': 'Prefer fixing certificate trust, expiry, hostname mismatches, or bump rules before bypassing SSL inspection for a destination.',
+            }
+        )
+        if unknown_target_buckets:
+            hints.append(
+                {
+                    'kind': 'warning',
+                    'title': 'Some events do not include a hostname',
+                    'body': 'Use the latest sample text and last-seen timestamp to correlate with Live traffic, access logs, or the affected application before creating exclusions.',
+                }
+            )
+    else:
+        hints.append(
+            {
+                'kind': 'success',
+                'title': 'No current SSL/TLS buckets in this window',
+                'body': 'This view stays empty until Squid records a matching TLS error in cache.log for the selected time range.',
+            }
+        )
+
+    return {
+        'rows': presented,
+        'summary': {
+            'bucket_count': len(presented),
+            'total_events': total_events,
+            'known_domains': len(known_domains),
+            'unknown_target_buckets': unknown_target_buckets,
+            'unknown_target_events': unknown_target_events,
+            'latest_seen': latest_seen,
+            'top_category_label': top_meta['label'],
+            'top_category_tone': top_meta['tone'],
+            'top_category_total': top_category_total,
+        },
+        'hints': hints,
+    }
+
+
+def _present_ssl_top_domains(rows: Sequence[Dict[str, Any]], *, limit: int = 15) -> list[Dict[str, Any]]:
+    presented: list[Dict[str, Any]] = []
+    for row in rows:
+        domain = _normalized_domain(str(row.get('domain') or ''))
+        if not domain:
+            continue
+        presented.append(
+            {
+                'domain': domain,
+                'total': int(row.get('total') or 0),
+                'buckets': int(row.get('buckets') or 0),
+                'last_seen': int(row.get('last_seen') or 0),
+            }
+        )
+        if len(presented) >= limit:
+            break
+    return presented
+
+
 def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=';', lineterminator='\n')
@@ -237,6 +427,83 @@ def _redirect_after_policy_refresh(endpoint: str, store: Any, *, force: bool = T
 def _redirect_after_pac_refresh(endpoint: str, **params):
     _best_effort_refresh_pac_runtime()
     return _redirect_to(endpoint, **params)
+
+
+def _safe_local_return_url(value: str | None) -> str | None:
+    raw = (value or '').strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return None
+    if not parsed.path.startswith('/') or parsed.path.startswith('//'):
+        return None
+    return urlunsplit(('', '', parsed.path, parsed.query, parsed.fragment))
+
+
+def _append_query_to_local_return(return_to: str | None, **params: Any) -> str | None:
+    safe = _safe_local_return_url(return_to)
+    if not safe:
+        return None
+    parsed = urlsplit(safe)
+    replace_keys = {k for k, v in params.items() if v is not None}
+    items = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k not in replace_keys]
+    for key, value in params.items():
+        if value is not None:
+            items.append((key, str(value)))
+    return urlunsplit(('', '', parsed.path, urlencode(items, doseq=True), parsed.fragment))
+
+
+def _redirect_after_pac_refresh_to_return(return_to: str | None, fallback_endpoint: str, **params: Any):
+    _best_effort_refresh_pac_runtime()
+    target = _append_query_to_local_return(return_to, **params)
+    if target:
+        return redirect(target)
+    return _redirect_to(fallback_endpoint, **params)
+
+
+def _coerce_store_result(result: Any, *, success_default: bool = True, error_default: str = '') -> tuple[bool, str]:
+    if isinstance(result, tuple):
+        ok = bool(result[0])
+        err = str(result[1] or '') if len(result) > 1 else ''
+        return ok, err
+    if result is None:
+        return success_default, error_default
+    if isinstance(result, bool):
+        return bool(result), ('' if result else (error_default or 'Operation failed.'))
+    return success_default, error_default
+
+
+def _add_exclusion_domain(store: Any, value: str) -> tuple[bool, str, str]:
+    domain = _normalized_domain(value)
+    if not domain:
+        return False, 'Domain is required.', ''
+    try:
+        ok, err = _coerce_store_result(store.add_domain(value), success_default=True)
+        return ok, err, domain
+    except Exception as exc:
+        return False, public_error_message(exc), domain
+
+
+def _add_exclusion_cidr(store: Any, value: str) -> tuple[bool, str, str]:
+    cidr = (value or '').strip()
+    if not cidr:
+        return False, 'CIDR is required.', ''
+    try:
+        ok, err = _coerce_store_result(store.add_net('src_nets', cidr), success_default=True)
+        return ok, err, cidr
+    except Exception as exc:
+        return False, public_error_message(exc), cidr
+
+
+def _bulk_lines(value: str | None) -> list[str]:
+    lines: list[str] = []
+    for raw in (value or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        lines.append(line)
+    return lines
 
 
 def _render_template_config_text(
@@ -902,19 +1169,60 @@ def _handle_sslfilter_post(store: Any):
 
 def _handle_exclusions_post(store: Any):
     action = _form_action()
+    return_to = request.form.get('return_to')
     if action == 'add_domain':
-        store.add_domain(request.form.get('domain') or '')
-        return _redirect_after_pac_refresh('exclusions')
+        ok, err, domain = _add_exclusion_domain(store, request.form.get('domain') or '')
+        if ok:
+            return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_added=domain, added_domain=domain)
+        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error=(err or 'Unable to add domain.'))
+    if action == 'add_domain_bulk':
+        lines = _bulk_lines(request.form.get('domains_bulk'))
+        added = 0
+        errors: list[str] = []
+        for line in lines:
+            ok, err, _domain = _add_exclusion_domain(store, line)
+            if ok:
+                added += 1
+            elif err:
+                errors.append(f"{line}: {err}")
+        return _redirect_after_pac_refresh_to_return(
+            return_to,
+            'exclusions',
+            bulk_added=added,
+            bulk_failed=len(errors),
+            exclude_error=(' | '.join(errors[:3]) if errors else None),
+        )
     if action == 'remove_domain':
         store.remove_domain(request.form.get('domain') or '')
-        return _redirect_after_pac_refresh('exclusions')
+        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_removed='1')
     if action == 'add_src':
-        store.add_net('src_nets', request.form.get('cidr') or '')
+        ok, err, cidr = _add_exclusion_cidr(store, request.form.get('cidr') or '')
+        if ok:
+            return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', cidr_added=cidr)
+        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error=(err or 'Unable to add CIDR.'))
+    if action == 'add_src_bulk':
+        lines = _bulk_lines(request.form.get('src_bulk'))
+        added = 0
+        errors: list[str] = []
+        for line in lines:
+            ok, err, _cidr = _add_exclusion_cidr(store, line)
+            if ok:
+                added += 1
+            elif err:
+                errors.append(f"{line}: {err}")
+        return _redirect_after_pac_refresh_to_return(
+            return_to,
+            'exclusions',
+            bulk_cidrs_added=added,
+            bulk_cidrs_failed=len(errors),
+            exclude_error=(' | '.join(errors[:3]) if errors else None),
+        )
     elif action == 'remove_src':
         store.remove_net('src_nets', request.form.get('cidr') or '')
+        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_removed='1')
     elif action == 'toggle_private':
         store.set_exclude_private_nets(request.form.get('exclude_private_nets') == 'on')
-        return _redirect_after_pac_refresh('exclusions')
+        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', private_saved='1')
     elif action == 'apply':
         current = _current_managed_config()
         tunables = squid_controller.get_tunable_options(current)
@@ -1148,13 +1456,28 @@ def ssl_errors():
     since_ts = int(time.time()) - window_i
 
     try:
-        rows = store.list_recent(since=since_ts, search=q, limit=limit)
-        top_domains = store.top_domains(since=since_ts, search=q, limit=15)
+        raw_rows = store.list_recent(since=since_ts, search=q, limit=limit)
+        raw_top_domains = store.top_domains(since=since_ts, search=q, limit=30)
     except Exception:
-        rows = []
-        top_domains = []
+        raw_rows = []
+        raw_top_domains = []
 
-    return render_template('ssl_errors.html', rows=rows, top_domains=top_domains, window=window_i, search=q)
+    presented = _present_ssl_error_rows(raw_rows)
+    rows = presented['rows']
+    summary = presented['summary']
+    hints = presented['hints']
+    top_domains = _present_ssl_top_domains(raw_top_domains, limit=15)
+
+    return render_template(
+        'ssl_errors.html',
+        rows=rows,
+        top_domains=top_domains,
+        summary=summary,
+        hints=hints,
+        window=window_i,
+        window_label=_window_label(window_i),
+        search=q,
+    )
 
 
 @app.route('/ssl-errors/exclude', methods=['POST'])
@@ -1393,114 +1716,137 @@ def _check_icap_adblock() -> Dict[str, Any]:
     return _check_icap_service(host=host, port=port, service='/adblockreq')
 
 
-def _send_sample_respmod_to(host: str, port: int, service: str = "/avrespmod") -> Dict[str, Any]:
-    path = service or '/avrespmod'
-    if not path.startswith('/'):
-        path = '/' + path
+def _unavailable_service(detail: str, *, target: str = 'unavailable', service: str = '') -> Dict[str, Any]:
+    status: Dict[str, Any] = {
+        'ok': False,
+        'detail': str(detail or 'unavailable'),
+        'host': '',
+        'port': 0,
+        'target': target,
+    }
+    if service:
+        status['service'] = service
+    return status
 
-    http_body = b"Hello from ICAP sample"
-    http_hdr = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n"
-    chunk = f"{len(http_body):X}\r\n".encode('ascii') + http_body + b"\r\n0\r\n\r\n"
-    res_body_off = len(http_hdr)
-    icap_req = (
-        f"RESPMOD icap://{host}:{port}{path} ICAP/1.0\r\n"
-        f"Host: {host}\r\n"
-        "Allow: 204\r\n"
-        f"Encapsulated: res-hdr=0, res-body={res_body_off}\r\n"
-        "\r\n"
-    ).encode('ascii') + http_hdr + chunk
 
+def _normalize_service_health(result: Any, *, default_target: str = 'unavailable', service: str = '') -> Dict[str, Any]:
+    if not isinstance(result, dict):
+        return _unavailable_service('unavailable', target=default_target, service=service)
+    detail = str(result.get('detail') or 'unavailable')
+    host = str(result.get('host') or '')
     try:
-        with socket.create_connection((host, port), timeout=1.2) as s:
-            s.settimeout(1.2)
-            s.sendall(icap_req)
-            resp = s.recv(512)
-        line = resp.split(b"\r\n", 1)[0].decode('ascii', errors='replace') if resp else "no data"
-        ok = line.startswith("ICAP/1.0 20")
-        return {"ok": ok, "detail": line or "no data"}
-    except Exception as e:
-        return {"ok": False, "detail": public_error_message(e)}
+        port = int(result.get('port') or 0)
+    except Exception:
+        port = 0
+    target = str(result.get('target') or (f'{host}:{port}' if host and port else default_target))
+    normalized = {
+        'ok': bool(result.get('ok')),
+        'detail': detail,
+        'host': host,
+        'port': port,
+        'target': target,
+    }
+    effective_service = str(result.get('service') or service)
+    if effective_service:
+        normalized['service'] = effective_service
+    return normalized
+
+
+def _check_icap_av() -> Dict[str, Any]:
+    host, port = _shared_resolve_host_port(host_env='CICAP_HOST', port_env='CICAP_AV_PORT', default_port=14001)
+    result = (
+        check_local_listener('c-icap av', host, port)
+        if is_local_host(host)
+        else _check_icap_service(host=host, port=port, service='/avrespmod')
+    )
+    return _shared_annotate_service_target(result, host=host, port=port, service='/avrespmod')
+
+
+def _clamav_remote_health(proxy_id: str) -> Dict[str, Any]:
+    try:
+        return get_proxy_client().get_health(proxy_id)
+    except ProxyClientError as exc:
+        proxy = get_proxy_registry().get_proxy(proxy_id)
+        unavailable = _unavailable_service('unavailable')
+        return {
+            'ok': False,
+            'status': proxy.status if proxy else 'offline',
+            'proxy_status': str(exc),
+            'stats': {},
+            'services': {
+                'icap': unavailable,
+                'av_icap': _unavailable_service('unavailable', service='/avrespmod'),
+                'clamd': unavailable,
+                'clamav': {
+                    'ok': False,
+                    'detail': str(exc),
+                    'components': {
+                        'av_icap': _unavailable_service('unavailable', service='/avrespmod'),
+                        'clamd': unavailable,
+                    },
+                },
+                'dante': unavailable,
+            },
+        }
 
 
 def _send_sample_av_icap() -> Dict[str, Any]:
-    # Send a tiny RESPMOD sample to the c-icap AV service (avrespmod).
-    host = os.environ.get('CICAP_HOST', '127.0.0.1')
-    try:
-        port = int(os.environ.get('CICAP_AV_PORT', 14001))
-    except Exception:
-        port = 14001
-    return _send_sample_respmod_to(host=host, port=port, service='/avrespmod')
-
-
-def _clamd_host_port() -> tuple[str, int]:
-    host = (os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'
-    try:
-        port = int((os.environ.get('CLAMD_PORT') or '3310').strip())
-    except Exception:
-        port = 3310
-    return host, port
-
-
-def _recv_clamd_reply(sock: socket.socket, max_bytes: int = 4096) -> bytes:
-    buf = b''
-    while len(buf) < max_bytes:
-        chunk = sock.recv(min(512, max_bytes - len(buf)))
-        if not chunk:
-            break
-        buf += chunk
-        if b'\0' in buf or b'\n' in buf:
-            break
-    return buf
+    av_icap = _check_icap_av()
+    host = str(av_icap.get('host') or '127.0.0.1')
+    port = int(av_icap.get('port') or 14001)
+    return _shared_send_sample_respmod_to(host=host, port=port, service='/avrespmod', error_formatter=public_error_message)
 
 
 def _check_clamd() -> Dict[str, Any]:
-    host, port = _clamd_host_port()
-    return _shared_check_clamd(host=host, port=port, timeout=0.8, error_formatter=public_error_message)
+    host, port = _shared_resolve_host_port(host_env='CLAMD_HOST', port_env='CLAMD_PORT', default_port=3310)
+    result = _shared_check_clamd(host=host, port=port, timeout=0.8, error_formatter=public_error_message)
+    return _shared_annotate_service_target(result, host=host, port=port)
 
 
 def _test_eicar() -> Dict[str, Any]:
-    # Send EICAR string to the remote clamd backend using INSTREAM.
-    data = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
-    try:
-        host, port = _clamd_host_port()
-        with socket.create_connection((host, port), timeout=2.0) as s:
-            s.settimeout(2.0)
-            s.sendall(b"zINSTREAM\0")
-            view = memoryview(data)
-            chunk_size = 8192
-            for offset in range(0, len(data), chunk_size):
-                chunk = view[offset:offset + chunk_size]
-                s.sendall(len(chunk).to_bytes(4, 'big'))
-                s.sendall(chunk.tobytes())
-            s.sendall((0).to_bytes(4, 'big'))
-            buf = _recv_clamd_reply(s)
-
-        text = buf.replace(b'\0', b'\n').decode('ascii', errors='replace').strip() if buf else ''
-        ok = ('Eicar' in text) or ('FOUND' in text)
-        return {"ok": ok, "detail": text or f'no data from {host}:{port}'}
-    except Exception as e:
-        return {"ok": False, "detail": public_error_message(e)}
+    return _shared_test_clamd_eicar(error_formatter=public_error_message)
 
 
 @app.route('/clamav', methods=['GET'])
 def clamav():
-    clamd_health = _check_clamd()
-    cicap_host = os.environ.get('CICAP_HOST', '127.0.0.1')
-    cicap_port = int(os.environ.get('CICAP_AV_PORT', 14001))
-    cicap_health = (
-        check_local_listener('c-icap av', cicap_host, cicap_port)
-        if is_local_host(cicap_host)
-        else _check_icap_service(host=cicap_host, port=cicap_port, service='/avrespmod')
-    )
-
-    ok = bool(clamd_health.get('ok')) and bool(cicap_health.get('ok'))
-    detail = f"clamd={clamd_health.get('detail')} | cicap={cicap_health.get('detail')}"
-
-    cfg = squid_controller.get_current_config() or ""
+    cfg = _current_managed_config()
     clamav_enabled = _is_clamav_enabled(cfg)
+    if _is_remote_control_mode():
+        proxy_id = get_proxy_id()
+        health_payload = _clamav_remote_health(proxy_id)
+        services = health_payload.get('services') or {}
+        aggregate = services.get('clamav') if isinstance(services.get('clamav'), dict) else {}
+        components = aggregate.get('components') if isinstance(aggregate, dict) else {}
+        clamd_health = _normalize_service_health(
+            services.get('clamd') or (components.get('clamd') if isinstance(components, dict) else None) or aggregate,
+        )
+        av_icap_health = _normalize_service_health(
+            services.get('av_icap') or (components.get('av_icap') if isinstance(components, dict) else None),
+            service='/avrespmod',
+        )
+        health = dict(aggregate) if isinstance(aggregate, dict) else {}
+        if not health:
+            health = _shared_build_clamav_health(clamd_health, av_icap_health)
+        else:
+            health['ok'] = bool(health.get('ok'))
+            health['detail'] = str(health.get('detail') or _shared_build_clamav_health(clamd_health, av_icap_health).get('detail'))
+            health['components'] = {
+                'clamd': clamd_health,
+                'av_icap': av_icap_health,
+            }
+        health_source = str(health_payload.get('proxy_status') or health_payload.get('detail') or '')
+    else:
+        clamd_health = _check_clamd()
+        av_icap_health = _check_icap_av()
+        health = _shared_build_clamav_health(clamd_health, av_icap_health)
+        health_source = ''
+
     return render_template(
         'clamav.html',
-        health={"ok": ok, "detail": detail},
+        health=health,
+        clamd_health=clamd_health,
+        av_icap_health=av_icap_health,
+        health_source=health_source,
         clamav_enabled=clamav_enabled,
         eicar_result=request.args.get('eicar'),
         eicar_detail=request.args.get('eicar_detail'),
@@ -1511,7 +1857,13 @@ def clamav():
 
 @app.route('/clamav/test-eicar', methods=['POST'])
 def clamav_test_eicar():
-    res = _test_eicar()
+    if _is_remote_control_mode():
+        try:
+            res = get_proxy_client().test_clamav_eicar(get_proxy_id())
+        except ProxyClientError as exc:
+            res = {'ok': False, 'detail': str(exc)}
+    else:
+        res = _test_eicar()
     return _redirect_to(
         'clamav',
         eicar='ok' if res.get('ok') else 'fail',
@@ -1521,7 +1873,13 @@ def clamav_test_eicar():
 
 @app.route('/clamav/test-icap', methods=['POST'])
 def clamav_test_icap():
-    res = _send_sample_av_icap()
+    if _is_remote_control_mode():
+        try:
+            res = get_proxy_client().test_clamav_icap(get_proxy_id())
+        except ProxyClientError as exc:
+            res = {'ok': False, 'detail': str(exc)}
+    else:
+        res = _send_sample_av_icap()
     return _redirect_to(
         'clamav',
         icap_sample='ok' if res.get('ok') else 'fail',
@@ -1810,6 +2168,7 @@ def live():
     search = (request.args.get('q') or '').strip().lower()
     window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
+    window_label = _window_label(window_i)
 
     limit_i = _bounded_int(limit, default=100, minimum=10, maximum=500)
 
@@ -1836,6 +2195,7 @@ def live():
             totals=totals,
             search=search,
             window=window_i,
+            window_label=window_label,
         )
 
     subtab = 'activity'
@@ -1890,6 +2250,7 @@ def live():
         totals=totals,
         search=search,
         window=window_i,
+        window_label=window_label,
     )
 
 

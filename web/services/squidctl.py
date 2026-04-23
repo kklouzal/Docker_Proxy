@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
-import shutil
-from pathlib import Path
-from subprocess import run
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import logging
 
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.squid_core import SquidController as _CoreSquidController
 
 
 logger = logging.getLogger(__name__)
@@ -22,16 +19,8 @@ except Exception:  # pragma: no cover
     Exclusions = None  # type: ignore[assignment]
     PRIVATE_NETS_V4 = []  # type: ignore[assignment]
 
-class SquidController:
-    def __init__(self, squid_conf_path: str = "/etc/squid/squid.conf"):
-        self.squid_conf_path = squid_conf_path
-        self.squid_conf_template_path = "/etc/squid/squid.conf.template"
-        self.persisted_squid_conf_path = os.environ.get(
-            "PERSISTED_SQUID_CONF_PATH", "/var/lib/squid-flask-proxy/squid.conf"
-        )
-        if (not os.path.exists(self.squid_conf_template_path)) and os.path.exists("/squid/squid.conf.template"):
-            self.squid_conf_template_path = "/squid/squid.conf.template"
 
+class SquidController(_CoreSquidController):
     # -------------------------------------------------------------------------
     # Input validation helpers for config injection prevention
     # -------------------------------------------------------------------------
@@ -39,8 +28,13 @@ class SquidController:
     _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
     _IPV6_SIMPLE_RE = re.compile(r"^[a-fA-F0-9:]+$")
 
+    def __init__(self, squid_conf_path: str = "/etc/squid/squid.conf", *, cmd_run=None):
+        super().__init__(squid_conf_path=squid_conf_path, cmd_run=cmd_run or __import__("subprocess").run)
+        self.squid_conf_template_path = "/etc/squid/squid.conf.template"
+        if (not os.path.exists(self.squid_conf_template_path)) and os.path.exists("/squid/squid.conf.template"):
+            self.squid_conf_template_path = "/squid/squid.conf.template"
+
     def _sanitize_single_line(self, value: str, field_name: str) -> str:
-        """Strip and reject multi-line values to prevent config injection."""
         if not value:
             return ""
         clean = value.strip()
@@ -49,7 +43,6 @@ class SquidController:
         return clean
 
     def _validate_hostname(self, value: str, field_name: str = "hostname") -> str:
-        """Validate and sanitize a hostname value."""
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
             return ""
@@ -60,35 +53,26 @@ class SquidController:
         return clean
 
     def _validate_hosts_file_path(self, value: str, field_name: str = "hosts_file") -> str:
-        """Validate hosts_file is a safe filesystem path."""
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
             return ""
-        # Reject shell metacharacters, quotes, semicolons, pipes
         forbidden = set('|;&$`"\'\\<>(){}[]!#~')
-        if any(c in clean for c in forbidden):
+        if any(char in clean for char in forbidden):
             raise ValueError(f"{field_name} contains forbidden characters")
-        # Must be an absolute path
         if not clean.startswith("/"):
             raise ValueError(f"{field_name} must be an absolute path")
         return clean
 
     def _validate_dns_nameservers(self, value: str, field_name: str = "dns_nameservers") -> str:
-        """Validate dns_nameservers is a space-separated list of IPs/hostnames."""
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
             return ""
-        parts = clean.split()
-        for part in parts:
-            # Each part must be an IP or valid hostname
+        for part in clean.split():
             if self._IP_RE.match(part):
-                # Validate IP octets
-                octets = part.split(".")
-                for o in octets:
-                    if int(o) > 255:
+                for octet in part.split("."):
+                    if int(octet) > 255:
                         raise ValueError(f"{field_name} contains invalid IP address: {part}")
             elif self._IPV6_SIMPLE_RE.match(part):
-                # Basic IPv6 format check (allow :: shorthand)
                 pass
             elif self._HOSTNAME_RE.match(part):
                 pass
@@ -97,211 +81,123 @@ class SquidController:
         return clean
 
     def _read_file(self, path: str) -> str:
-        with open(path, 'r', encoding='utf-8') as f:
-            return f.read()
-
-    def _write_file(self, path: str, content: str) -> None:
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
-
-    def _atomic_write_file(self, path: str, content: str) -> None:
-        # Write within the destination directory so os.replace is atomic on POSIX.
-        d = os.path.dirname(path) or "."
-        os.makedirs(d, exist_ok=True)
-        tmp_path = ""
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, dir=d, prefix=".tmp-") as f:
-                tmp_path = f.name
-                f.write(content)
-            os.replace(tmp_path, path)
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-
-    def _render_icap_include(self) -> str:
-        try:
-            cicap_adblock_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
-        except Exception:
-            cicap_adblock_port = 14000
-        try:
-            cicap_av_port = int((os.environ.get("CICAP_AV_PORT") or "14001").strip())
-        except Exception:
-            cicap_av_port = 14001
-
-        lines = [
-            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
-            f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass=on",
-            "adaptation_service_set adblock_req_set adblock_req",
-            "adaptation_service_set av_resp_set av_resp",
-            "acl icap_identity_methods method GET HEAD",
-            "request_header_access Accept-Encoding deny icap_identity_methods",
-            "request_header_add Accept-Encoding identity icap_identity_methods",
-        ]
-        return "\n".join(lines) + "\n"
-
-    def _generate_icap_include(self, workers: int) -> None:
-        # Generates /etc/squid/conf.d/20-icap.conf.
-        #
-        # The runtime uses one local c-icap endpoint per function (REQMOD and
-        # RESPMOD). Duplicating multiple `icap_service` directives that point to
-        # the same URI does not create extra capacity and can trigger duplicate
-        # URI warnings in Squid. Keep the include aligned with the entrypoint's
-        # single-endpoint design even when the Squid worker count changes.
-        conf_dir = Path("/etc/squid/conf.d")
-        conf_dir.mkdir(parents=True, exist_ok=True)
-        out_path = conf_dir / "20-icap.conf"
-        out_path.write_text(self._render_icap_include(), encoding="utf-8")
-
-    def _supervisor_reread_update(self) -> Tuple[bool, str]:
-        try:
-            p1 = run(["supervisorctl", "-c", "/etc/supervisord.conf", "reread"], capture_output=True, timeout=12)
-            if p1.returncode != 0:
-                return False, self._decode_completed(p1) or "supervisorctl reread failed"
-            p2 = run(["supervisorctl", "-c", "/etc/supervisord.conf", "update"], capture_output=True, timeout=20)
-            if p2.returncode != 0:
-                return False, self._decode_completed(p2) or "supervisorctl update failed"
-            return True, (self._decode_completed(p1) + "\n" + self._decode_completed(p2)).strip()
-        except Exception as e:
-            logger.exception("supervisorctl reread/update failed")
-            return False, public_error_message(e, default="supervisorctl failed. Check server logs for details.")
-
-    def apply_icap_scaling(self, workers: int) -> Tuple[bool, str]:
-        """Update Squid ICAP service-set include.
-
-        ICAP services are handled by c-icap instances in this container.
-        Scaling updates the Squid service-set include to point at the right
-        c-icap endpoints.
-        """
-        try:
-            self._generate_icap_include(workers)
-            return True, "ICAP include updated."
-        except Exception as e:
-            logger.exception("ICAP scaling apply failed")
-            return False, public_error_message(e)
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
 
     def _replace_or_append_line(self, text: str, key: str, new_line: str) -> str:
-        # Replace the first matching directive line, else append.
         pattern = re.compile(rf"^(\s*{re.escape(key)}\s+).*$", re.M)
         if pattern.search(text):
             return pattern.sub(new_line, text, count=1)
         return text.rstrip() + "\n" + new_line + "\n"
 
     def _replace_cache_dir_size_mb(self, text: str, size_mb: int) -> str:
-        # cache_dir ufs /var/spool/squid <size_mb> 16 256
         pattern = re.compile(r"^(\s*cache_dir\s+ufs\s+\S+\s+)(\d+)(\s+\d+\s+\d+.*)$", re.M)
         if pattern.search(text):
-            return pattern.sub(lambda m: f"{m.group(1)}{int(size_mb)}{m.group(3)}", text, count=1)
+            return pattern.sub(lambda match: f"{match.group(1)}{int(size_mb)}{match.group(3)}", text, count=1)
         return text.rstrip() + f"\ncache_dir ufs /var/spool/squid {int(size_mb)} 16 256\n"
 
     def get_tunable_options(self, config_text: Optional[str] = None) -> Dict[str, Any]:
-        # Best-effort parse of current config for UI defaults.
         text = config_text if config_text is not None else (self.get_current_config() or "")
 
         def find_int(pattern: str) -> Optional[int]:
-            m = re.search(pattern, text, re.M | re.I)
-            return int(m.group(1)) if m else None
+            match = re.search(pattern, text, re.M | re.I)
+            return int(match.group(1)) if match else None
 
         def find_on_off(key: str) -> Optional[bool]:
-            m = re.search(rf"^\s*{re.escape(key)}\s+(on|off)\s*$", text, re.M | re.I)
-            if not m:
+            match = re.search(rf"^\s*{re.escape(key)}\s+(on|off)\s*$", text, re.M | re.I)
+            if not match:
                 return None
-            return m.group(1).lower() == "on"
+            return match.group(1).lower() == "on"
 
         def find_time_seconds(key: str) -> Optional[int]:
-            m = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([a-zA-Z]+)?\s*$", text, re.M)
-            if not m:
+            match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([a-zA-Z]+)?\s*$", text, re.M)
+            if not match:
                 return None
             try:
-                n = int(m.group(1))
+                value = int(match.group(1))
             except Exception:
                 return None
-            unit = (m.group(2) or "").strip().lower()
+            unit = (match.group(2) or "").strip().lower()
             if not unit:
-                return n
+                return value
             if unit in ("s", "sec", "secs", "second", "seconds"):
-                return n
+                return value
             if unit in ("m", "min", "mins", "minute", "minutes"):
-                return n * 60
+                return value * 60
             if unit in ("h", "hr", "hrs", "hour", "hours"):
-                return n * 3600
+                return value * 3600
             if unit in ("d", "day", "days"):
-                return n * 86400
-            return n
+                return value * 86400
+            return value
 
         def find_str(key: str) -> Optional[str]:
-            m = re.search(rf"^\s*{re.escape(key)}\s+(.+?)\s*$", text, re.M | re.I)
-            return m.group(1).strip() if m else None
+            match = re.search(rf"^\s*{re.escape(key)}\s+(.+?)\s*$", text, re.M | re.I)
+            return match.group(1).strip() if match else None
 
         def find_kb(key: str) -> Optional[int]:
-            m = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*(KB|K|KBYTES)?\s*$", text, re.M | re.I)
-            return int(m.group(1)) if m else None
+            match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*(KB|K|KBYTES)?\s*$", text, re.M | re.I)
+            return int(match.group(1)) if match else None
 
         def find_pct(key: str) -> Optional[int]:
-            m = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*%?\s*$", text, re.M | re.I)
-            return int(m.group(1)) if m else None
+            match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*%?\s*$", text, re.M | re.I)
+            return int(match.group(1)) if match else None
 
         def _size_to_bytes(value: str, unit: str) -> Optional[int]:
             try:
-                n = int(value)
+                number = int(value)
             except Exception:
                 return None
-            u = (unit or "").strip().lower()
-            if u in ("", "b", "bytes"):
-                return n
-            if u in ("k", "kb", "kib", "kbytes"):
-                return n * 1024
-            if u in ("m", "mb", "mib", "mbytes"):
-                return n * 1024 * 1024
-            if u in ("g", "gb", "gib", "gbytes"):
-                return n * 1024 * 1024 * 1024
+            normalized_unit = (unit or "").strip().lower()
+            if normalized_unit in ("", "b", "bytes"):
+                return number
+            if normalized_unit in ("k", "kb", "kib", "kbytes"):
+                return number * 1024
+            if normalized_unit in ("m", "mb", "mib", "mbytes"):
+                return number * 1024 * 1024
+            if normalized_unit in ("g", "gb", "gib", "gbytes"):
+                return number * 1024 * 1024 * 1024
             return None
 
         def find_size_kb(key: str) -> Optional[int]:
-            # Accept: 64 KB, 64K, 65536 (bytes), etc.
-            m = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
-            if not m:
+            match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
+            if not match:
                 return None
-            b = _size_to_bytes(m.group(1), m.group(2) or "")
-            if b is None:
+            size_bytes = _size_to_bytes(match.group(1), match.group(2) or "")
+            if size_bytes is None:
                 return None
-            return int(b // 1024)
+            return int(size_bytes // 1024)
 
         def find_size_mb(key: str) -> Optional[int]:
-            m = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
-            if not m:
+            match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
+            if not match:
                 return None
-            b = _size_to_bytes(m.group(1), m.group(2) or "")
-            if b is None:
+            size_bytes = _size_to_bytes(match.group(1), match.group(2) or "")
+            if size_bytes is None:
                 return None
-            return int(b // (1024 * 1024))
+            return int(size_bytes // (1024 * 1024))
 
         def find_range_offset_limit_mb() -> Optional[int]:
-            m = re.search(r"^\s*range_offset_limit\s+(-?\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
-            if not m:
+            match = re.search(r"^\s*range_offset_limit\s+(-?\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
+            if not match:
                 return None
-            if m.group(1) == "-1":
+            if match.group(1) == "-1":
                 return -1
-            b = _size_to_bytes(m.group(1), m.group(2) or "")
-            if b is None:
+            size_bytes = _size_to_bytes(match.group(1), match.group(2) or "")
+            if size_bytes is None:
                 return None
-            return int(b // (1024 * 1024))
+            return int(size_bytes // (1024 * 1024))
 
         def find_pipeline_prefetch_bool() -> Optional[bool]:
-            # Squid supports either legacy on/off or numeric values.
-            # Squid 6 warns that "pipeline_prefetch on" is deprecated.
-            m = re.search(r"^\s*pipeline_prefetch\s+(\S+)\s*$", text, re.M | re.I)
-            if not m:
+            match = re.search(r"^\s*pipeline_prefetch\s+(\S+)\s*$", text, re.M | re.I)
+            if not match:
                 return None
-            v = (m.group(1) or "").strip().lower()
-            if v in ("on", "true", "yes"):
+            value = (match.group(1) or "").strip().lower()
+            if value in ("on", "true", "yes"):
                 return True
-            if v in ("off", "false", "no"):
+            if value in ("off", "false", "no"):
                 return False
             try:
-                return int(v) >= 1
+                return int(value) >= 1
             except Exception:
                 return None
 
@@ -315,54 +211,34 @@ class SquidController:
             "cache_swap_high": find_int(r"^\s*cache_swap_high\s+(\d+)\s*$"),
             "collapsed_forwarding": find_on_off("collapsed_forwarding"),
             "range_offset_limit": find_range_offset_limit_mb(),
-
             "client_persistent_connections": find_on_off("client_persistent_connections"),
             "server_persistent_connections": find_on_off("server_persistent_connections"),
-
             "negative_ttl_seconds": find_time_seconds("negative_ttl"),
             "positive_dns_ttl_seconds": find_time_seconds("positive_dns_ttl"),
             "negative_dns_ttl_seconds": find_time_seconds("negative_dns_ttl"),
             "read_ahead_gap_kb": find_kb("read_ahead_gap"),
-
-            # SMP
             "workers": find_int(r"^\s*workers\s+(\d+)\s*$"),
-
-            # Cache effectiveness/performance
             "cache_replacement_policy": find_str("cache_replacement_policy"),
             "memory_replacement_policy": find_str("memory_replacement_policy"),
             "pipeline_prefetch": find_pipeline_prefetch_bool(),
-
-            # Cache-first tuning (whether to continue fetching when clients abort)
             "quick_abort_min_kb": find_kb("quick_abort_min"),
             "quick_abort_max_kb": find_kb("quick_abort_max"),
             "quick_abort_pct": find_pct("quick_abort_pct"),
-
-            # Timeouts (normalize to seconds)
             "connect_timeout_seconds": find_time_seconds("connect_timeout"),
             "request_timeout_seconds": find_time_seconds("request_timeout"),
             "read_timeout_seconds": find_time_seconds("read_timeout"),
             "forward_timeout_seconds": find_time_seconds("forward_timeout"),
             "shutdown_lifetime_seconds": find_time_seconds("shutdown_lifetime"),
-
-            # Logging
             "logfile_rotate": find_int(r"^\s*logfile_rotate\s+(\d+)\s*$"),
-
-            # Network / connection lifecycle
             "pconn_timeout_seconds": find_time_seconds("pconn_timeout"),
             "client_lifetime_seconds": find_time_seconds("client_lifetime"),
             "max_filedescriptors": find_int(r"^\s*max_filedescriptors\s+(\d+)\s*$"),
-
-            # DNS / name resolution
             "dns_timeout_seconds": find_time_seconds("dns_timeout"),
             "dns_nameservers": find_str("dns_nameservers"),
             "hosts_file": find_str("hosts_file"),
             "ipcache_size": find_int(r"^\s*ipcache_size\s+(\d+)\s*$"),
             "fqdncache_size": find_int(r"^\s*fqdncache_size\s+(\d+)\s*$"),
-
-            # SSL / bump helpers
             "sslcrtd_children": find_int(r"^\s*sslcrtd_children\s+(\d+)\s*$"),
-
-            # ICAP
             "icap_enable": find_on_off("icap_enable"),
             "icap_send_client_ip": find_on_off("icap_send_client_ip"),
             "icap_send_client_username": find_on_off("icap_send_client_username"),
@@ -370,212 +246,72 @@ class SquidController:
             "icap_preview_size_kb": find_size_kb("icap_preview_size"),
             "icap_connect_timeout_seconds": find_time_seconds("icap_connect_timeout"),
             "icap_io_timeout_seconds": find_time_seconds("icap_io_timeout"),
-
-            # Privacy
             "forwarded_for_value": find_str("forwarded_for"),
             "via": find_on_off("via"),
             "follow_x_forwarded_for_value": find_str("follow_x_forwarded_for"),
-
-            # Limits
             "request_header_max_size_kb": find_size_kb("request_header_max_size"),
             "reply_header_max_size_kb": find_size_kb("reply_header_max_size"),
             "request_body_max_size_mb": find_size_mb("request_body_max_size"),
             "client_request_buffer_max_size_kb": find_size_kb("client_request_buffer_max_size"),
-
-            # Performance
             "memory_pools": find_on_off("memory_pools"),
             "memory_pools_limit_mb": find_size_mb("memory_pools_limit"),
             "store_avg_object_size_kb": find_size_kb("store_avg_object_size"),
             "store_objects_per_bucket": find_int(r"^\s*store_objects_per_bucket\s+(\d+)\s*$"),
-
-            # HTTP / identity
             "visible_hostname": find_str("visible_hostname"),
             "httpd_suppress_version_string": find_on_off("httpd_suppress_version_string"),
         }
 
-    def get_network_lines(self, config_text: Optional[str] = None) -> list[str]:
+    def _get_lines(self, config_text: Optional[str], keys: tuple[str, ...], *, include_icap_include: bool = False) -> list[str]:
         text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "pconn_timeout",
-            "client_lifetime",
-            "max_filedescriptors",
-        )
         out: list[str] = []
         for line in (text or "").splitlines():
             stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
+            if not stripped or stripped.startswith("#"):
                 continue
             lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
+            if include_icap_include and lower.startswith("include") and "/etc/squid/conf.d/20-icap.conf" in lower:
+                out.append(line)
+                continue
+            if any(lower.startswith(key) for key in keys):
                 out.append(line)
         return out
+
+    def get_network_lines(self, config_text: Optional[str] = None) -> list[str]:
+        return self._get_lines(config_text, ("pconn_timeout", "client_lifetime", "max_filedescriptors"))
 
     def get_dns_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "dns_timeout",
-            "dns_nameservers",
-            "hosts_file",
-            "positive_dns_ttl",
-            "negative_dns_ttl",
-            "ipcache_size",
-            "fqdncache_size",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("dns_timeout", "dns_nameservers", "hosts_file", "positive_dns_ttl", "negative_dns_ttl", "ipcache_size", "fqdncache_size"))
 
     def get_ssl_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "sslcrtd_program",
-            "sslcrtd_children",
-            "ssl_bump",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("sslcrtd_program", "sslcrtd_children", "ssl_bump"))
 
     def get_icap_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if lower.startswith("include") and "/etc/squid/conf.d/20-icap.conf" in lower:
-                out.append(line)
-                continue
-            if lower.startswith("icap_") or lower.startswith("adaptation_"):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("icap_", "adaptation_"), include_icap_include=True)
 
     def get_privacy_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "forwarded_for",
-            "via",
-            "follow_x_forwarded_for",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("forwarded_for", "via", "follow_x_forwarded_for"))
 
     def get_limits_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "request_header_max_size",
-            "reply_header_max_size",
-            "request_body_max_size",
-            "client_request_buffer_max_size",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("request_header_max_size", "reply_header_max_size", "request_body_max_size", "client_request_buffer_max_size"))
 
     def get_performance_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "memory_pools",
-            "memory_pools_limit",
-            "store_avg_object_size",
-            "store_objects_per_bucket",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("memory_pools", "memory_pools_limit", "store_avg_object_size", "store_objects_per_bucket"))
 
     def get_http_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "visible_hostname",
-            "httpd_suppress_version_string",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("visible_hostname", "httpd_suppress_version_string"))
 
     def get_logging_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "logformat",
-            "access_log",
-            "cache_log",
-            "cache_store_log",
-            "logfile_rotate",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("logformat", "access_log", "cache_log", "cache_store_log", "logfile_rotate"))
 
     def get_timeout_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "connect_timeout",
-            "request_timeout",
-            "read_timeout",
-            "forward_timeout",
-            "shutdown_lifetime",
-        )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
+        return self._get_lines(config_text, ("connect_timeout", "request_timeout", "read_timeout", "forward_timeout", "shutdown_lifetime"))
 
     def get_cache_override_options(self, config_text: Optional[str] = None) -> Dict[str, bool]:
         text = config_text if config_text is not None else self.get_current_config()
 
         def find_bool(name: str) -> bool:
-            m = re.search(rf"^\s*#\s*{re.escape(name)}\s*=\s*([01])\s*$", text or "", re.M)
-            return bool(m and m.group(1) == "1")
+            match = re.search(rf"^\s*#\s*{re.escape(name)}\s*=\s*([01])\s*$", text or "", re.M)
+            return bool(match and match.group(1) == "1")
 
         return {
             "client_no_cache": find_bool("override_client_no_cache"),
@@ -587,85 +323,59 @@ class SquidController:
         }
 
     def get_caching_lines(self, config_text: Optional[str] = None) -> list[str]:
-        text = config_text if config_text is not None else (self.get_current_config() or "")
-        keys = (
-            "cache_dir",
-            "cache_mem",
-            "minimum_object_size",
-            "maximum_object_size",
-            "maximum_object_size_in_memory",
-            "cache_swap_low",
-            "cache_swap_high",
-            "cache_replacement_policy",
-            "memory_replacement_policy",
-            "pipeline_prefetch",
-            "collapsed_forwarding",
-            "range_offset_limit",
-            "quick_abort_min",
-            "quick_abort_max",
-            "quick_abort_pct",
-            "client_persistent_connections",
-            "server_persistent_connections",
-            "read_ahead_gap",
-            "refresh_pattern",
-            "negative_ttl",
-            "positive_dns_ttl",
-            "negative_dns_ttl",
+        return self._get_lines(
+            config_text,
+            (
+                "cache_dir",
+                "cache_mem",
+                "minimum_object_size",
+                "maximum_object_size",
+                "maximum_object_size_in_memory",
+                "cache_swap_low",
+                "cache_swap_high",
+                "cache_replacement_policy",
+                "memory_replacement_policy",
+                "pipeline_prefetch",
+                "collapsed_forwarding",
+                "range_offset_limit",
+                "quick_abort_min",
+                "quick_abort_max",
+                "quick_abort_pct",
+                "client_persistent_connections",
+                "server_persistent_connections",
+                "read_ahead_gap",
+                "refresh_pattern",
+                "negative_ttl",
+                "positive_dns_ttl",
+                "negative_dns_ttl",
+            ),
         )
-        out: list[str] = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            lower = stripped.lower()
-            if any(lower.startswith(k) for k in keys):
-                out.append(line)
-        return out
 
     def apply_cache_overrides(self, config_text: str, overrides: Dict[str, bool]) -> str:
-        # Map UI override toggles to Squid refresh_pattern options.
-        # NOTE: These are aggressive and can reduce privacy; keep them opt-in.
-        ov = overrides or {}
+        values = overrides or {}
         flags = []
-        if bool(ov.get("client_no_cache")):
-            # Best-effort: ignore client reload/no-cache requests.
+        if bool(values.get("client_no_cache")):
             flags.append("ignore-reload")
-        if bool(ov.get("origin_no_cache")):
-            # Squid 7+ removed "ignore-no-cache" (replaced by ignore-reload
-            # behaviour).  We now use "ignore-reload" which covers the same
-            # semantics without triggering obsolete-option warnings.
+        if bool(values.get("origin_no_cache")):
             flags.append("ignore-reload")
-        if bool(ov.get("origin_private")):
+        if bool(values.get("origin_private")):
             flags.append("ignore-private")
-        if bool(ov.get("client_no_store")) or bool(ov.get("origin_no_store")):
+        if bool(values.get("client_no_store")) or bool(values.get("origin_no_store")):
             flags.append("ignore-no-store")
-        if bool(ov.get("ignore_auth")):
-            # Squid 7+ removed "ignore-auth"; the cache deny has_auth ACL
-            # already controls auth caching.  Skip emitting the obsolete token.
-            pass
 
-        # Remove any existing managed override metadata block.
         start_marker = "# Cache overrides (managed by web UI)"
         end_marker = "# End cache overrides"
-        text = (config_text or "")
         text = re.sub(
             rf"^\s*{re.escape(start_marker)}\s*$.*?^\s*{re.escape(end_marker)}\s*$\n?",
             "",
-            text,
+            config_text or "",
             flags=re.M | re.S,
         )
 
-        # Normalize refresh_pattern lines by removing known override flags, then
-        # re-appending the enabled ones.
-        # Note: ignore-no-cache and ignore-auth are obsolete in Squid 7+ and
-        # are no longer emitted, but we still strip them from existing configs.
         override_tokens = ("ignore-reload", "ignore-no-cache", "ignore-no-store", "ignore-private", "ignore-auth")
 
         def should_skip_refresh_pattern(line: str) -> bool:
-            # Keep the explicit no-cache rule intact.
-            if "(/cgi-bin/|\\?)" in line:
-                return True
-            return False
+            return "(/cgi-bin/|\\?)" in line
 
         out_lines = []
         saw_refresh = False
@@ -675,36 +385,27 @@ class SquidController:
                 if should_skip_refresh_pattern(line):
                     out_lines.append(line)
                     continue
-
-                # Strip any existing override tokens.
                 stripped = line
-                for tok in override_tokens:
-                    stripped = re.sub(rf"\s+{re.escape(tok)}\b", "", stripped)
-
-                # Append enabled flags.
+                for token in override_tokens:
+                    stripped = re.sub(rf"\s+{re.escape(token)}\b", "", stripped)
                 if flags:
-                    # preserve trailing newline
-                    nl = "\n" if stripped.endswith("\n") else ""
-                    core = stripped.rstrip("\r\n")
-                    core = core.rstrip()
-                    stripped = core + " " + " ".join(flags) + nl
+                    newline = "\n" if stripped.endswith("\n") else ""
+                    core = stripped.rstrip("\r\n").rstrip()
+                    stripped = core + " " + " ".join(flags) + newline
                 out_lines.append(stripped)
                 continue
-
             out_lines.append(line)
 
         rendered = "".join(out_lines)
-
-        # Insert managed metadata block before the first refresh_pattern line.
         meta_block = "\n".join(
             [
                 start_marker,
-                f"# override_client_no_cache={'1' if bool(ov.get('client_no_cache')) else '0'}",
-                f"# override_client_no_store={'1' if bool(ov.get('client_no_store')) else '0'}",
-                f"# override_origin_private={'1' if bool(ov.get('origin_private')) else '0'}",
-                f"# override_origin_no_store={'1' if bool(ov.get('origin_no_store')) else '0'}",
-                f"# override_origin_no_cache={'1' if bool(ov.get('origin_no_cache')) else '0'}",
-                f"# override_ignore_auth={'1' if bool(ov.get('ignore_auth')) else '0'}",
+                f"# override_client_no_cache={'1' if bool(values.get('client_no_cache')) else '0'}",
+                f"# override_client_no_store={'1' if bool(values.get('client_no_store')) else '0'}",
+                f"# override_origin_private={'1' if bool(values.get('origin_private')) else '0'}",
+                f"# override_origin_no_store={'1' if bool(values.get('origin_no_store')) else '0'}",
+                f"# override_origin_no_cache={'1' if bool(values.get('origin_no_cache')) else '0'}",
+                f"# override_ignore_auth={'1' if bool(values.get('ignore_auth')) else '0'}",
                 end_marker,
                 "",
             ]
@@ -714,7 +415,6 @@ class SquidController:
             rendered = re.sub(r"^(\s*refresh_pattern\b)", meta_block + "\n" + r"\1", rendered, count=1, flags=re.M)
         else:
             rendered = rendered.rstrip() + "\n\n" + meta_block + "\n"
-
         return rendered
 
     def generate_config_from_template(self, options: Dict[str, Any]) -> str:
@@ -730,44 +430,32 @@ class SquidController:
         minimum_object_size_kb = int(options.get("minimum_object_size_kb") if options.get("minimum_object_size_kb") is not None else 0)
         cache_swap_low = int(options.get("cache_swap_low") or 90)
         cache_swap_high = int(options.get("cache_swap_high") or 95)
-
         collapsed_forwarding_on = bool(options.get("collapsed_forwarding_on", True))
         range_cache_on = bool(options.get("range_cache_on", True))
-
         cache_replacement_policy = (options.get("cache_replacement_policy") or "heap GDSF").strip()
         memory_replacement_policy = (options.get("memory_replacement_policy") or "heap GDSF").strip()
         pipeline_prefetch_on = bool(options.get("pipeline_prefetch_on", True))
-
         client_persistent_connections_on = bool(options.get("client_persistent_connections_on", True))
         server_persistent_connections_on = bool(options.get("server_persistent_connections_on", True))
-
         negative_ttl_seconds = options.get("negative_ttl_seconds")
         positive_dns_ttl_seconds = options.get("positive_dns_ttl_seconds")
         negative_dns_ttl_seconds = options.get("negative_dns_ttl_seconds")
         read_ahead_gap_kb = options.get("read_ahead_gap_kb")
-
         connect_timeout_seconds = options.get("connect_timeout_seconds")
         request_timeout_seconds = options.get("request_timeout_seconds")
         read_timeout_seconds = options.get("read_timeout_seconds")
         forward_timeout_seconds = options.get("forward_timeout_seconds")
         shutdown_lifetime_seconds = options.get("shutdown_lifetime_seconds")
-        # half_closed_clients MUST remain off. Squid 7.x can trigger fatal
-        # assertions when it is enabled, so this deployment hardcodes it off.
-
         logfile_rotate = options.get("logfile_rotate")
-
         pconn_timeout_seconds = options.get("pconn_timeout_seconds")
         client_lifetime_seconds = options.get("client_lifetime_seconds")
         max_filedescriptors = options.get("max_filedescriptors")
-
         dns_timeout_seconds = options.get("dns_timeout_seconds")
         dns_nameservers = self._validate_dns_nameservers(options.get("dns_nameservers") or "")
         hosts_file = self._validate_hosts_file_path(options.get("hosts_file") or "")
         ipcache_size = options.get("ipcache_size")
         fqdncache_size = options.get("fqdncache_size")
-
         sslcrtd_children = options.get("sslcrtd_children")
-
         icap_enable_on = bool(options.get("icap_enable_on", True))
         icap_send_client_ip_on = bool(options.get("icap_send_client_ip_on", True))
         icap_send_client_username_on = bool(options.get("icap_send_client_username_on", False))
@@ -775,28 +463,22 @@ class SquidController:
         icap_preview_size_kb = options.get("icap_preview_size_kb")
         icap_connect_timeout_seconds = options.get("icap_connect_timeout_seconds")
         icap_io_timeout_seconds = options.get("icap_io_timeout_seconds")
-
         forwarded_for_value = (options.get("forwarded_for_value") or "").strip()
         follow_x_forwarded_for_value = (options.get("follow_x_forwarded_for_value") or "").strip()
         via_on = options.get("via_on")
-
         request_header_max_size_kb = options.get("request_header_max_size_kb")
         reply_header_max_size_kb = options.get("reply_header_max_size_kb")
         request_body_max_size_mb = options.get("request_body_max_size_mb")
         client_request_buffer_max_size_kb = options.get("client_request_buffer_max_size_kb")
-
         memory_pools_on = options.get("memory_pools_on")
         memory_pools_limit_mb = options.get("memory_pools_limit_mb")
         store_avg_object_size_kb = options.get("store_avg_object_size_kb")
         store_objects_per_bucket = options.get("store_objects_per_bucket")
-
         visible_hostname = self._validate_hostname(options.get("visible_hostname") or "", "visible_hostname")
         httpd_suppress_version_string_on = options.get("httpd_suppress_version_string_on")
-
         workers = int(options.get("workers") or 1)
         if workers < 1:
             workers = 1
-        # Keep in sync with the web UI clamp.
         try:
             max_workers = int((os.environ.get("MAX_WORKERS") or "4").strip())
         except Exception:
@@ -804,8 +486,6 @@ class SquidController:
         max_workers = min(4, max(1, max_workers))
         if workers > max_workers:
             workers = max_workers
-
-        # For cache-first deployments, defaults aim to keep filling cache even if clients abort.
         quick_abort_min_kb = int(options.get("quick_abort_min_kb") if options.get("quick_abort_min_kb") is not None else 0)
         quick_abort_max_kb = int(options.get("quick_abort_max_kb") if options.get("quick_abort_max_kb") is not None else 0)
         quick_abort_pct = int(options.get("quick_abort_pct") if options.get("quick_abort_pct") is not None else 100)
@@ -819,15 +499,10 @@ class SquidController:
         out = self._replace_or_append_line(out, "cache_swap_low", f"cache_swap_low {cache_swap_low}")
         out = self._replace_or_append_line(out, "cache_swap_high", f"cache_swap_high {cache_swap_high}")
         out = self._replace_or_append_line(out, "collapsed_forwarding", f"collapsed_forwarding {'on' if collapsed_forwarding_on else 'off'}")
-        # Use a bounded limit when range caching is enabled.  -1 (unlimited)
-        # causes Squid to fetch entire objects before serving the first byte,
-        # which makes browser downloads appear stalled at 0 KB/s.
         out = self._replace_or_append_line(out, "range_offset_limit", f"range_offset_limit {'128 MB' if range_cache_on else '0'}")
-
         out = self._replace_or_append_line(out, "cache_replacement_policy", f"cache_replacement_policy {cache_replacement_policy}")
         out = self._replace_or_append_line(out, "memory_replacement_policy", f"memory_replacement_policy {memory_replacement_policy}")
         out = self._replace_or_append_line(out, "pipeline_prefetch", f"pipeline_prefetch {1 if pipeline_prefetch_on else 0}")
-
         out = self._replace_or_append_line(out, "client_persistent_connections", f"client_persistent_connections {'on' if client_persistent_connections_on else 'off'}")
         out = self._replace_or_append_line(out, "server_persistent_connections", f"server_persistent_connections {'on' if server_persistent_connections_on else 'off'}")
 
@@ -839,7 +514,6 @@ class SquidController:
             out = self._replace_or_append_line(out, "negative_dns_ttl", f"negative_dns_ttl {int(negative_dns_ttl_seconds)} seconds")
         if read_ahead_gap_kb is not None:
             out = self._replace_or_append_line(out, "read_ahead_gap", f"read_ahead_gap {int(read_ahead_gap_kb)} KB")
-
         if connect_timeout_seconds is not None:
             out = self._replace_or_append_line(out, "connect_timeout", f"connect_timeout {int(connect_timeout_seconds)} seconds")
         if request_timeout_seconds is not None:
@@ -851,19 +525,14 @@ class SquidController:
         if shutdown_lifetime_seconds is not None:
             out = self._replace_or_append_line(out, "shutdown_lifetime", f"shutdown_lifetime {int(shutdown_lifetime_seconds)} seconds")
         out = self._replace_or_append_line(out, "half_closed_clients", "half_closed_clients off")
-
         if logfile_rotate is not None:
             out = self._replace_or_append_line(out, "logfile_rotate", f"logfile_rotate {int(logfile_rotate)}")
-
-        # Network / connection lifecycle
         if pconn_timeout_seconds is not None:
             out = self._replace_or_append_line(out, "pconn_timeout", f"pconn_timeout {int(pconn_timeout_seconds)} seconds")
         if client_lifetime_seconds is not None:
             out = self._replace_or_append_line(out, "client_lifetime", f"client_lifetime {int(client_lifetime_seconds)} seconds")
         if max_filedescriptors is not None:
             out = self._replace_or_append_line(out, "max_filedescriptors", f"max_filedescriptors {int(max_filedescriptors)}")
-
-        # DNS
         if dns_timeout_seconds is not None:
             out = self._replace_or_append_line(out, "dns_timeout", f"dns_timeout {int(dns_timeout_seconds)} seconds")
         if dns_nameservers:
@@ -874,12 +543,8 @@ class SquidController:
             out = self._replace_or_append_line(out, "ipcache_size", f"ipcache_size {int(ipcache_size)}")
         if fqdncache_size is not None:
             out = self._replace_or_append_line(out, "fqdncache_size", f"fqdncache_size {int(fqdncache_size)}")
-
-        # SSL
         if sslcrtd_children is not None:
             out = self._replace_or_append_line(out, "sslcrtd_children", f"sslcrtd_children {int(sslcrtd_children)}")
-
-        # ICAP
         out = self._replace_or_append_line(out, "icap_enable", f"icap_enable {'on' if icap_enable_on else 'off'}")
         out = self._replace_or_append_line(out, "icap_send_client_ip", f"icap_send_client_ip {'on' if icap_send_client_ip_on else 'off'}")
         out = self._replace_or_append_line(out, "icap_send_client_username", f"icap_send_client_username {'on' if icap_send_client_username_on else 'off'}")
@@ -890,16 +555,12 @@ class SquidController:
             out = self._replace_or_append_line(out, "icap_connect_timeout", f"icap_connect_timeout {int(icap_connect_timeout_seconds)} seconds")
         if icap_io_timeout_seconds is not None:
             out = self._replace_or_append_line(out, "icap_io_timeout", f"icap_io_timeout {int(icap_io_timeout_seconds)} seconds")
-
-        # Privacy
         if forwarded_for_value:
             out = self._replace_or_append_line(out, "forwarded_for", f"forwarded_for {forwarded_for_value}")
         if via_on is not None:
             out = self._replace_or_append_line(out, "via", f"via {'on' if bool(via_on) else 'off'}")
         if follow_x_forwarded_for_value:
             out = self._replace_or_append_line(out, "follow_x_forwarded_for", f"follow_x_forwarded_for {follow_x_forwarded_for_value}")
-
-        # Limits
         if request_header_max_size_kb is not None:
             out = self._replace_or_append_line(out, "request_header_max_size", f"request_header_max_size {int(request_header_max_size_kb)} KB")
         if reply_header_max_size_kb is not None:
@@ -908,8 +569,6 @@ class SquidController:
             out = self._replace_or_append_line(out, "request_body_max_size", f"request_body_max_size {int(request_body_max_size_mb)} MB")
         if client_request_buffer_max_size_kb is not None:
             out = self._replace_or_append_line(out, "client_request_buffer_max_size", f"client_request_buffer_max_size {int(client_request_buffer_max_size_kb)} KB")
-
-        # Performance
         if memory_pools_on is not None:
             out = self._replace_or_append_line(out, "memory_pools", f"memory_pools {'on' if bool(memory_pools_on) else 'off'}")
         if memory_pools_limit_mb is not None:
@@ -918,26 +577,20 @@ class SquidController:
             out = self._replace_or_append_line(out, "store_avg_object_size", f"store_avg_object_size {int(store_avg_object_size_kb)} KB")
         if store_objects_per_bucket is not None:
             out = self._replace_or_append_line(out, "store_objects_per_bucket", f"store_objects_per_bucket {int(store_objects_per_bucket)}")
-
-        # HTTP
         if visible_hostname:
             out = self._replace_or_append_line(out, "visible_hostname", f"visible_hostname {visible_hostname}")
         if httpd_suppress_version_string_on is not None:
             out = self._replace_or_append_line(out, "httpd_suppress_version_string", f"httpd_suppress_version_string {'on' if bool(httpd_suppress_version_string_on) else 'off'}")
-
         out = self._replace_or_append_line(out, "workers", f"workers {workers}")
-
         out = self._replace_or_append_line(out, "quick_abort_min", f"quick_abort_min {quick_abort_min_kb} KB")
         out = self._replace_or_append_line(out, "quick_abort_max", f"quick_abort_max {quick_abort_max_kb} KB")
         out = self._replace_or_append_line(out, "quick_abort_pct", f"quick_abort_pct {quick_abort_pct}")
         return out
 
     def generate_config_from_template_with_exclusions(self, options: Dict[str, Any], exclusions: Any) -> str:
-        # exclusions should look like Exclusions (domains, src_nets, exclude_private_nets).
         base = self.generate_config_from_template(options)
-
-        domains = [d.strip().lower().lstrip(".") for d in (getattr(exclusions, "domains", []) or []) if d.strip()]
-        src_nets = [c.strip() for c in (getattr(exclusions, "src_nets", []) or []) if c.strip()]
+        domains = [domain.strip().lower().lstrip(".") for domain in (getattr(exclusions, "domains", []) or []) if domain.strip()]
+        src_nets = [cidr.strip() for cidr in (getattr(exclusions, "src_nets", []) or []) if cidr.strip()]
         private_dst_nets = PRIVATE_NETS_V4 if bool(getattr(exclusions, "exclude_private_nets", False)) else []
 
         acl_lines = []
@@ -948,28 +601,22 @@ class SquidController:
             acl_lines.append("acl excluded_domains dstdomain " + " ".join(domains))
             splice_lines.append("ssl_bump splice excluded_domains")
             cache_deny_lines.append("cache deny excluded_domains")
-
         if private_dst_nets:
             acl_lines.append("acl excluded_private_dst dst " + " ".join(private_dst_nets))
             splice_lines.append("ssl_bump splice excluded_private_dst")
             cache_deny_lines.append("cache deny excluded_private_dst")
-
         if src_nets:
             acl_lines.append("acl excluded_src src " + " ".join(src_nets))
             splice_lines.append("ssl_bump splice excluded_src")
             cache_deny_lines.append("cache deny excluded_src")
-
         if not (acl_lines or splice_lines or cache_deny_lines):
             return base
 
-        # Insert ssl_bump splice rules before the catch-all bump.
         insert_ssl = "\n".join(["", "# Exclusions (managed by web UI)"] + acl_lines + splice_lines) + "\n"
         base = base.replace("ssl_bump bump all", insert_ssl + "ssl_bump bump all", 1)
 
-        # Insert cache deny rules after cache settings header if present, else append.
         deny_block = "\n".join(["", "# Exclusions (managed by web UI)"] + cache_deny_lines) + "\n"
         if "# Cache settings" in base:
-            # Put deny lines after the cache settings section (before log settings) if possible.
             marker = "# Log settings"
             if marker in base:
                 base = base.replace(marker, deny_block + "\n" + marker, 1)
@@ -977,312 +624,17 @@ class SquidController:
                 base = base.rstrip() + deny_block
         else:
             base = base.rstrip() + deny_block
-
         return base
 
-    def validate_config_text(self, config_text: str) -> Tuple[bool, str]:
-        # Validate by writing to a temp file and invoking Squid's parser.
-        tmp_path = ""
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, prefix="squid-conf-", dir="/tmp") as f:
-                tmp_path = f.name
-                f.write(config_text)
-
-            p = run(["squid", "-k", "parse", "-f", tmp_path], capture_output=True, text=True, timeout=15)
-            combined = (p.stdout or "") + ("\n" if p.stdout and p.stderr else "") + (p.stderr or "")
-            return p.returncode == 0, combined.strip()
-        except Exception as e:
-            logger.exception("Squid config validation failed")
-            return False, public_error_message(e)
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-
-    def _extract_workers(self, config_text: str) -> Optional[int]:
-        try:
-            m = re.search(r"^\s*workers\s+(\d+)\s*$", config_text or "", re.M | re.I)
-            return int(m.group(1)) if m else None
-        except Exception:
-            return None
-
-    def _decode_completed(self, p: Any) -> str:
-        out = getattr(p, "stdout", b"")
-        err = getattr(p, "stderr", b"")
-        if isinstance(out, bytes):
-            out_s = out.decode("utf-8", errors="replace")
-        else:
-            out_s = str(out or "")
-        if isinstance(err, bytes):
-            err_s = err.decode("utf-8", errors="replace")
-        else:
-            err_s = str(err or "")
-        if out_s and err_s:
-            return (out_s + "\n" + err_s).strip()
-        return (out_s or err_s).strip()
-
-    def restart_squid(self) -> Tuple[bool, str]:
-        # Preferred: ask supervisord to restart only Squid.
-        try:
-            p = run(["supervisorctl", "-c", "/etc/supervisord.conf", "restart", "squid"], capture_output=True, timeout=12)
-            if p.returncode == 0:
-                return True, self._decode_completed(p) or "Squid restarted."
-            details = self._decode_completed(p) or "supervisorctl restart squid failed"
-        except Exception as e:
-            details = str(e)
-
-        # Fallback: request Squid shutdown. supervisord should restart it (autorestart=true).
-        try:
-            p2 = run(["squid", "-k", "shutdown"], capture_output=True, timeout=8)
-            if p2.returncode == 0:
-                return True, (details + "\n" if details else "") + (self._decode_completed(p2) or "Squid shutdown requested (supervisor will restart).")
-            return False, (details + "\n" if details else "") + (self._decode_completed(p2) or "Squid shutdown request failed.")
-        except Exception as e2:
-            return False, (details + "\n" if details else "") + str(e2)
-
-    def _get_first_cache_dir_path(self, config_text: Optional[str] = None) -> str:
-        # Best-effort: parse the first `cache_dir ufs <path> ...`.
-        text = config_text if config_text is not None else self.get_current_config()
-        try:
-            m = re.search(r"^\s*cache_dir\s+ufs\s+(\S+)\s+\d+\s+\d+\s+\d+", text or "", re.M | re.I)
-            if m:
-                return (m.group(1) or "").strip()
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "squidctl.parse_cache_dir",
-                interval_seconds=300.0,
-                message="Failed to parse cache_dir from squid config; using default",
-            )
-        return "/var/spool/squid"
-
-    def clear_disk_cache(self) -> Tuple[bool, str]:
-        """Clear Squid on-disk cache (cache_dir) and restart Squid.
-
-        This deletes cached objects under the configured cache_dir, then runs
-        `squid -z` to recreate the directory structure.
-        """
-        cache_path = self._get_first_cache_dir_path()
-
-        # Guardrails: avoid deleting unexpected locations.
-        if not cache_path.startswith("/") or cache_path in ("/", "/etc", "/bin", "/usr", "/var"):
-            return False, f"Refusing to clear cache_dir at unsafe path: {cache_path}"
-
-        details_parts = []
-
-        # Stop Squid first (avoid corrupting swap.state).
-        try:
-            p_stop = run(["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"], capture_output=True, timeout=20)
-            details_parts.append(self._decode_completed(p_stop) or "supervisorctl stop squid")
-        except Exception as e:
-            details_parts.append(f"stop failed: {e}")
-            try:
-                run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "squidctl.shutdown_fallback",
-                    interval_seconds=300.0,
-                    message="Squid shutdown fallback failed while clearing disk cache",
-                )
-
-        # Delete contents (but not the cache_dir itself).
-        try:
-            if os.path.isdir(cache_path):
-                for name in os.listdir(cache_path):
-                    p = os.path.join(cache_path, name)
-                    try:
-                        if os.path.isdir(p) and not os.path.islink(p):
-                            shutil.rmtree(p, ignore_errors=True)
-                        else:
-                            os.unlink(p)
-                    except IsADirectoryError:
-                        shutil.rmtree(p, ignore_errors=True)
-                    except FileNotFoundError:
-                        pass
-            else:
-                os.makedirs(cache_path, exist_ok=True)
-            details_parts.append(f"cleared: {cache_path}")
-        except Exception as e:
-            return False, ("\n".join(details_parts) + "\n" if details_parts else "") + f"cache delete failed: {e}"
-
-        # Recreate cache structure.
-        try:
-            p_z = run(["squid", "-z", "-f", self.squid_conf_path], capture_output=True, timeout=90)
-            if p_z.returncode != 0:
-                details_parts.append(self._decode_completed(p_z) or "squid -z failed")
-                # Attempt restart anyway.
-            else:
-                details_parts.append(self._decode_completed(p_z) or "squid -z OK")
-        except Exception as e:
-            details_parts.append(f"squid -z error: {e}")
-
-        ok_restart, restart_details = self.restart_squid()
-        details_parts.append(restart_details or ("Squid restarted." if ok_restart else "Squid restart failed."))
-        return ok_restart, "\n".join([p for p in details_parts if p]).strip()
-
-    def apply_config_text(self, config_text: str) -> Tuple[bool, str]:
-        # Validate -> swap in -> reconfigure -> revert on failure.
-        ok, details = self.validate_config_text(config_text)
-        if not ok:
-            return False, details or "Squid config validation failed."
-
-        backup_path = self.squid_conf_path + ".bak"
-        new_path = self.squid_conf_path + ".new"
-        try:
-            current = self.get_current_config()
-            old_workers = self._extract_workers(current)
-            new_workers = self._extract_workers(config_text)
-            workers_changed = (new_workers is not None and new_workers != old_workers)
-
-            old_icap_include = None
-            old_icap_supervisor = None
-            if workers_changed and new_workers is not None:
-                try:
-                    old_icap_include = Path("/etc/squid/conf.d/20-icap.conf").read_text(encoding="utf-8")
-                except Exception:
-                    old_icap_include = None
-                try:
-                    old_icap_supervisor = Path("/etc/supervisor.d/icap.conf").read_text(encoding="utf-8")
-                except Exception:
-                    old_icap_supervisor = None
-
-            self._write_file(new_path, config_text)
-            if current:
-                self._write_file(backup_path, current)
-            os.replace(new_path, self.squid_conf_path)
-
-            if workers_changed:
-                ok_scale, scale_details = self.apply_icap_scaling(new_workers or 1)
-                if not ok_scale:
-                    if os.path.exists(backup_path):
-                        os.replace(backup_path, self.squid_conf_path)
-                    try:
-                        if old_icap_include is not None:
-                            Path("/etc/squid/conf.d/20-icap.conf").write_text(old_icap_include, encoding="utf-8")
-                    except Exception:
-                        log_exception_throttled(
-                            logger,
-                            "squidctl.revert_icap_include",
-                            interval_seconds=300.0,
-                            message="Failed to revert /etc/squid/conf.d/20-icap.conf",
-                        )
-                    try:
-                        if old_icap_supervisor is not None:
-                            Path("/etc/supervisor.d/icap.conf").write_text(old_icap_supervisor, encoding="utf-8")
-                    except Exception:
-                        log_exception_throttled(
-                            logger,
-                            "squidctl.revert_icap_supervisor",
-                            interval_seconds=300.0,
-                            message="Failed to revert /etc/supervisor.d/icap.conf",
-                        )
-                    self._supervisor_reread_update()
-                    self.restart_squid()
-                    return False, scale_details or "Failed to scale ICAP processes."
-
-                ok_restart, restart_details = self.clear_disk_cache()
-                if not ok_restart:
-                    if os.path.exists(backup_path):
-                        os.replace(backup_path, self.squid_conf_path)
-                        try:
-                            if old_icap_include is not None:
-                                Path("/etc/squid/conf.d/20-icap.conf").write_text(old_icap_include, encoding="utf-8")
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                "squidctl.revert_icap_include.restart",
-                                interval_seconds=300.0,
-                                message="Failed to revert /etc/squid/conf.d/20-icap.conf after restart failure",
-                            )
-                        try:
-                            if old_icap_supervisor is not None:
-                                Path("/etc/supervisor.d/icap.conf").write_text(old_icap_supervisor, encoding="utf-8")
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                "squidctl.revert_icap_supervisor.restart",
-                                interval_seconds=300.0,
-                                message="Failed to revert /etc/supervisor.d/icap.conf after restart failure",
-                            )
-                        self._supervisor_reread_update()
-                        self.restart_squid()
-                        return False, restart_details or "Squid restart failed after cache reinitialization."
-                # Persist only after the new config is actually active.
-                try:
-                    persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
-                    if persisted_dir:
-                        os.makedirs(persisted_dir, exist_ok=True)
-                    self._atomic_write_file(self.persisted_squid_conf_path, config_text)
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "squidctl.persist_config.workers",
-                        interval_seconds=300.0,
-                        message="Failed to persist squid config after workers change",
-                    )
-
-                msg = (restart_details or "Squid restarted.").strip()
-                if scale_details:
-                    msg = (msg + "\n" + scale_details).strip()
-                return True, msg
-
-            p = run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-            if p.returncode != 0:
-                if os.path.exists(backup_path):
-                    os.replace(backup_path, self.squid_conf_path)
-                    run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-                return False, self._decode_completed(p) or "Squid reconfigure failed."
-
-            # Persist only after the new config is actually active.
-            try:
-                persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
-                if persisted_dir:
-                    os.makedirs(persisted_dir, exist_ok=True)
-                self._atomic_write_file(self.persisted_squid_conf_path, config_text)
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "squidctl.persist_config",
-                    interval_seconds=300.0,
-                    message="Failed to persist squid config after reconfigure",
-                )
-
-            return True, self._decode_completed(p) or "Squid reconfigured."
-        except Exception as e:
-            # Best-effort revert.
-            try:
-                if os.path.exists(backup_path):
-                    os.replace(backup_path, self.squid_conf_path)
-                    run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "squidctl.revert_failed",
-                    interval_seconds=300.0,
-                    message="Squid config revert failed after reconfigure error",
-                )
-            logger.exception("Squid reconfigure failed")
-            return False, public_error_message(e)
-        finally:
-            try:
-                if os.path.exists(new_path):
-                    os.unlink(new_path)
-            except OSError:
-                pass
-
     def start_squid(self):
-        # Best-effort. Prefer supervisor-managed start when available.
         try:
-            p = run(
+            proc = self._run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
                 capture_output=True,
                 timeout=12,
             )
-            if p.returncode == 0:
-                return p.stdout or b"", p.stderr or b""
+            if proc.returncode == 0:
+                return proc.stdout or b"", proc.stderr or b""
         except FileNotFoundError:
             pass
         except Exception:
@@ -1293,56 +645,22 @@ class SquidController:
                 message="supervisorctl start squid failed",
             )
 
-        # Fallback: attempt direct start (daemonizes by default).
         try:
-            p = run(["squid", "-f", self.squid_conf_path], capture_output=True, timeout=12)
-            return p.stdout or b"", p.stderr or b""
+            proc = self._run(["squid", "-f", self.squid_conf_path], capture_output=True, timeout=12)
+            return proc.stdout or b"", proc.stderr or b""
         except FileNotFoundError:
             return b"", b"squid binary not found"
-        except Exception as e:
-            return b"", str(e).encode("utf-8", errors="replace")
+        except Exception as exc:
+            return b"", str(exc).encode("utf-8", errors="replace")
 
     def stop_squid(self):
         try:
-            p = run(["squid", "-k", "shutdown"], capture_output=True, timeout=12)
-            return p.stdout or b"", p.stderr or b""
+            proc = self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=12)
+            return proc.stdout or b"", proc.stderr or b""
         except FileNotFoundError:
             return b"", b"squid binary not found"
-        except Exception as e:
-            return b"", str(e).encode("utf-8", errors="replace")
-
-    def reload_squid(self):
-        try:
-            p = run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-            return p.stdout or b"", p.stderr or b""
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as e:
-            return b"", str(e).encode("utf-8", errors="replace")
-
-    def get_status(self):
-        try:
-            p = run(["squid", "-k", "check"], capture_output=True, timeout=15)
-            stdout = p.stdout or b""
-            stderr = p.stderr or b""
-            if p.returncode == 0:
-                if stdout:
-                    return stdout, b""
-                return b"Squid check ok.", b""
-            if p.returncode != 0 and not stderr:
-                stderr = stdout or f"squid check failed rc={p.returncode}".encode("utf-8")
-            return stdout, stderr
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as e:
-            return b"", str(e).encode("utf-8", errors="replace")
-
-    def get_current_config(self):
-        if os.path.exists(self.squid_conf_path):
-            with open(self.squid_conf_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        return ""
+        except Exception as exc:
+            return b"", str(exc).encode("utf-8", errors="replace")
 
     def update_config(self, config_text: str):
-        # Backwards-compatible: validate + apply with revert on failure.
         self.apply_config_text(config_text)

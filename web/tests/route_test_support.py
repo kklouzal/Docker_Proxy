@@ -210,6 +210,7 @@ class FakeExclusionsStore:
         normalized = domain.strip().lower().lstrip(".")
         self.domains.append(normalized)
         self.added_domains.append(normalized)
+        return True, ""
 
     def remove_domain(self, domain: str):
         normalized = domain.strip().lower().lstrip(".")
@@ -221,7 +222,7 @@ class FakeExclusionsStore:
             self.src_nets.append(cidr)
         elif kind == "dst_nets":
             self.dst_nets.append(cidr)
-        return None
+        return True, ""
 
     def remove_net(self, kind: str, cidr: str):
         target = self.src_nets if kind == "src_nets" else self.dst_nets
@@ -288,6 +289,7 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
     # Avoid real socket/subprocess health checks during unit tests.
     monkeypatch.setattr(app_module, "_check_icap_adblock", lambda: {"ok": True, "detail": "stub"})
     monkeypatch.setattr(app_module, "_check_clamd", lambda: {"ok": True, "detail": "stub"})
+    monkeypatch.setattr(app_module, "_check_icap_av", lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:14001"})
     monkeypatch.setattr(app_module, "_check_tcp", lambda host, port, timeout=0.6: {"ok": True, "detail": "stub"})
     monkeypatch.setattr(app_module, "_check_icap_service", lambda host, port, service: {"ok": True, "detail": "stub"})
 

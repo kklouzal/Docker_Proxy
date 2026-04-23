@@ -17,12 +17,23 @@ WEB_ROOT = REPO_ROOT / "web"
 _LOADED_ENV = False
 _REGISTERED_DATABASES: set[str] = set()
 _CLEANUP_REGISTERED = False
+_TEST_ENV_MAP = {
+    "MYSQL_TEST_DATABASE_URL": "DATABASE_URL",
+    "MYSQL_TEST_HOST": "MYSQL_HOST",
+    "MYSQL_TEST_PORT": "MYSQL_PORT",
+    "MYSQL_TEST_USER": "MYSQL_USER",
+    "MYSQL_TEST_PASSWORD": "MYSQL_PASSWORD",
+    "MYSQL_TEST_DATABASE": "MYSQL_DATABASE",
+    "MYSQL_TEST_CHARSET": "MYSQL_CHARSET",
+    "MYSQL_TEST_CONNECT_TIMEOUT": "MYSQL_CONNECT_TIMEOUT",
+}
 _MODULES_TO_PURGE = [
     "app",
     "services.adblock_artifacts",
     "services.adblock_store",
     "services.audit_store",
     "services.auth_store",
+    "services.certificate_core",
     "services.certificate_bundles",
     "services.config_revisions",
     "services.exclusions_store",
@@ -33,10 +44,12 @@ _MODULES_TO_PURGE = [
     "services.proxy_client",
     "services.proxy_context",
     "services.proxy_registry",
+    "services.squid_core",
     "services.socks_store",
     "services.ssl_errors_store",
     "services.sslfilter_store",
     "services.timeseries_store",
+    "services.webfilter_core",
     "services.webfilter_store",
     "proxy",
     "proxy.agent",
@@ -79,6 +92,24 @@ def _load_mysql_env_if_needed() -> None:
     if os.environ.get("DATABASE_URL") or os.environ.get("MYSQL_HOST"):
         return
 
+    explicit_test_env = False
+    for source_key, target_key in _TEST_ENV_MAP.items():
+        value = (os.environ.get(source_key) or "").strip()
+        if value:
+            os.environ[target_key] = value
+            explicit_test_env = True
+    if explicit_test_env:
+        return
+
+    allow_env_files = (os.environ.get("MYSQL_TEST_ALLOW_ENV_FILES") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not allow_env_files:
+        return
+
     for env_path in (REPO_ROOT / ".env", REPO_ROOT / "config" / "app.env"):
         values = _parse_env_file(env_path)
         for key in (
@@ -119,7 +150,10 @@ def _base_connection_params() -> dict[str, Any]:
     host = (os.environ.get("MYSQL_HOST") or "").strip()
     user = (os.environ.get("MYSQL_USER") or "").strip()
     if not host and not user:
-        raise SkipTest("MySQL test configuration is not available. Set DATABASE_URL or MYSQL_* variables.")
+        raise SkipTest(
+            "MySQL test configuration is not available. Set DATABASE_URL, MYSQL_* variables, or MYSQL_TEST_* variables. "
+            "To opt into loading local env files for tests, set MYSQL_TEST_ALLOW_ENV_FILES=1."
+        )
 
     return {
         "host": host or "127.0.0.1",

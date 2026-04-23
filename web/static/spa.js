@@ -2,13 +2,79 @@
   'use strict';
 
   const SPA_CONTAINER_ID = 'spa-content';
+  const SHELL_SELECTORS = {
+    header: '#site-header',
+    context: '#context-strip-slot',
+  };
+  const DESKTOP_NAV_MEDIA = '(min-width: 1101px)';
+  let shellListenersBound = false;
 
   const getCsrfToken = () => {
     const meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? (meta.getAttribute('content') || '') : '';
   };
 
+  const setCsrfToken = (value) => {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) {
+      meta.setAttribute('content', value || '');
+    }
+  };
+
   const getSpaContainer = (root = document) => root.getElementById(SPA_CONTAINER_ID);
+
+  const getHeader = () => document.querySelector('.site-header');
+
+  const closeHeaderDropdowns = () => {
+    const header = getHeader();
+    if (!header) return;
+    header.querySelectorAll('.nav-dropdown.open').forEach((dropdown) => {
+      dropdown.classList.remove('open');
+      const trigger = dropdown.querySelector('.nav-trigger');
+      if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    });
+  };
+
+  const setHeaderMenuOpen = (open) => {
+    const header = getHeader();
+    if (!header) return;
+    header.classList.toggle('menu-open', Boolean(open));
+    const toggle = header.querySelector('#nav-toggle');
+    if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+
+  const focusPageHeading = (container) => {
+    if (!container) return;
+    const heading = container.querySelector('.page-title');
+    if (!(heading instanceof HTMLElement)) return;
+    if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+    heading.focus({ preventScroll: true });
+  };
+
+  const syncShellFromDocument = (parsed) => {
+    const nextHeader = parsed.querySelector(SHELL_SELECTORS.header);
+    const currentHeader = document.querySelector(SHELL_SELECTORS.header);
+    if (currentHeader && nextHeader) {
+      currentHeader.replaceWith(nextHeader);
+    }
+
+    const nextContext = parsed.querySelector(SHELL_SELECTORS.context);
+    const currentContext = document.querySelector(SHELL_SELECTORS.context);
+    if (currentContext && nextContext) {
+      currentContext.innerHTML = nextContext.innerHTML;
+    }
+
+    const nextMeta = parsed.querySelector('meta[name="csrf-token"]');
+    if (nextMeta) {
+      setCsrfToken(nextMeta.getAttribute('content') || '');
+    }
+
+    if (parsed.body) {
+      document.body.dataset.activeProxyId = parsed.body.dataset.activeProxyId || '';
+    }
+
+    bindShell();
+  };
 
   const isSameOrigin = (url) => {
     try {
@@ -53,7 +119,10 @@
     if (!nav) return;
 
     const links = Array.from(nav.querySelectorAll('a[href]'));
-    links.forEach((a) => a.classList.remove('active'));
+    links.forEach((a) => {
+      a.classList.remove('active');
+      a.removeAttribute('aria-current');
+    });
 
     // Mark matching link active (by pathname; query-less nav items in this UI).
     for (const a of links) {
@@ -61,6 +130,7 @@
         const linkUrl = new URL(a.href, window.location.href);
         if (linkUrl.origin === window.location.origin && linkUrl.pathname === currentPath) {
           a.classList.add('active');
+          a.setAttribute('aria-current', 'page');
         }
       } catch {
         // ignore
@@ -77,11 +147,124 @@
     });
 
     // Close any open dropdown after navigation.
-    dropdowns.forEach((dropdown) => dropdown.classList.remove('open'));
+    dropdowns.forEach((dropdown) => {
+      dropdown.classList.remove('open');
+      const trigger = dropdown.querySelector('.nav-trigger');
+      if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    });
+    setHeaderMenuOpen(false);
+  };
+
+  const bindShell = () => {
+    const header = getHeader();
+    if (!header || header.dataset.spaBound === '1') return;
+    header.dataset.spaBound = '1';
+
+    const closeTimers = new WeakMap();
+    const dropdowns = Array.from(header.querySelectorAll('.nav-dropdown'));
+    const navToggle = header.querySelector('#nav-toggle');
+
+    const clearCloseTimer = (dropdown) => {
+      const timer = closeTimers.get(dropdown);
+      if (timer) {
+        window.clearTimeout(timer);
+        closeTimers.delete(dropdown);
+      }
+    };
+
+    const closeDropdown = (dropdown) => {
+      clearCloseTimer(dropdown);
+      dropdown.classList.remove('open');
+      const trigger = dropdown.querySelector('.nav-trigger');
+      if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    };
+
+    const openDropdown = (dropdown) => {
+      dropdowns.forEach((item) => {
+        if (item !== dropdown) closeDropdown(item);
+      });
+      clearCloseTimer(dropdown);
+      dropdown.classList.add('open');
+      const trigger = dropdown.querySelector('.nav-trigger');
+      if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    };
+
+    const scheduleClose = (dropdown) => {
+      clearCloseTimer(dropdown);
+      const timer = window.setTimeout(() => closeDropdown(dropdown), 240);
+      closeTimers.set(dropdown, timer);
+    };
+
+    dropdowns.forEach((dropdown) => {
+      const trigger = dropdown.querySelector('.nav-trigger');
+      if (trigger && trigger.dataset.spaBound !== '1') {
+        trigger.dataset.spaBound = '1';
+        trigger.addEventListener('click', (event) => {
+          event.preventDefault();
+          const isOpen = dropdown.classList.contains('open');
+          if (isOpen) {
+            closeDropdown(dropdown);
+          } else {
+            openDropdown(dropdown);
+          }
+        });
+      }
+
+      dropdown.addEventListener('mouseenter', () => {
+        if (window.matchMedia(DESKTOP_NAV_MEDIA).matches) {
+          openDropdown(dropdown);
+        }
+      });
+      dropdown.addEventListener('mouseleave', () => {
+        if (window.matchMedia(DESKTOP_NAV_MEDIA).matches) {
+          scheduleClose(dropdown);
+        }
+      });
+    });
+
+    if (navToggle && navToggle.dataset.spaBound !== '1') {
+      navToggle.dataset.spaBound = '1';
+      navToggle.addEventListener('click', () => {
+        const shouldOpen = !header.classList.contains('menu-open');
+        setHeaderMenuOpen(shouldOpen);
+        if (!shouldOpen) closeHeaderDropdowns();
+      });
+      setHeaderMenuOpen(header.classList.contains('menu-open'));
+    }
+
+    if (!shellListenersBound) {
+      shellListenersBound = true;
+
+      document.addEventListener('click', (event) => {
+        const headerEl = getHeader();
+        if (!headerEl || !(event.target instanceof Element)) return;
+        if (!headerEl.contains(event.target)) {
+          closeHeaderDropdowns();
+          setHeaderMenuOpen(false);
+        }
+      }, true);
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        closeHeaderDropdowns();
+        setHeaderMenuOpen(false);
+      });
+
+      window.addEventListener('resize', () => {
+        if (window.matchMedia(DESKTOP_NAV_MEDIA).matches) {
+          setHeaderMenuOpen(false);
+        }
+      });
+    }
   };
 
   const enhanceContainer = (container) => {
     if (!container) return;
+
+    const heading = container.querySelector('.page-title');
+    if (heading && !heading.hasAttribute('tabindex')) {
+      heading.setAttribute('tabindex', '-1');
+    }
 
     // Squid Config: "Reload from running config" button.
     // This used to live as an inline <script> in the template, which won't execute after SPA swaps.
@@ -257,6 +440,7 @@
         return false;
       }
 
+      syncShellFromDocument(parsed);
       container.innerHTML = nextContainer.innerHTML;
       enhanceContainer(container);
 
@@ -273,6 +457,7 @@
 
       updateNavActive(finalUrl);
       window.scrollTo(0, 0);
+      focusPageHeading(container);
       return true;
     } catch {
       window.location.assign(url);
@@ -336,6 +521,7 @@
 
   const init = () => {
     // Mark initial nav state based on the current URL (useful after client-side swaps).
+    bindShell();
     updateNavActive(window.location.href);
 
     enhanceContainer(getSpaContainer());

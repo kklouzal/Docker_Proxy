@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
-from services.proxy_webfilter_store import get_proxy_webfilter_store
+from services.webfilter_core import get_proxy_webfilter_store
 from services.sslfilter_store import get_sslfilter_store
 
 

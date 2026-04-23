@@ -131,6 +131,58 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
         self.assertIsNotNone(active)
         self.assertIn('adaptation_access av_resp_set allow icap_adblockable', active.config_text)
 
+    def test_clamav_page_uses_selected_proxy_health(self):
+        from services.proxy_registry import get_proxy_registry  # type: ignore
+
+        registry = get_proxy_registry()
+        registry.ensure_proxy('edge-1', display_name='Edge 1', management_url='http://edge-1:5000')
+
+        fake_client = FakeProxyClient(proxy_status='healthy')
+        original_client = self.app_module.get_proxy_client
+        original_get_current_config = self.app_module.squid_controller.get_current_config
+        self.app_module.get_proxy_client = lambda: fake_client
+        self.app_module.squid_controller.get_current_config = lambda: 'adaptation_access av_resp_set allow icap_adblockable\n'
+        try:
+            response = self.app.get('/clamav?proxy_id=edge-1')
+        finally:
+            self.app_module.get_proxy_client = original_client
+            self.app_module.squid_controller.get_current_config = original_get_current_config
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn('clamav.internal:3310', body)
+        self.assertIn('clamav.internal:14001', body)
+        self.assertIn('Enable changes the Squid adaptation rule only', body)
+        self.assertEqual(fake_client.health_calls, ['edge-1'])
+
+    def test_clamav_remote_test_actions_call_selected_proxy(self):
+        from services.proxy_registry import get_proxy_registry  # type: ignore
+
+        registry = get_proxy_registry()
+        registry.ensure_proxy('edge-1', display_name='Edge 1', management_url='http://edge-1:5000')
+
+        fake_client = FakeProxyClient()
+        original_client = self.app_module.get_proxy_client
+        self.app_module.get_proxy_client = lambda: fake_client
+        try:
+            eicar_response = self.app.post(
+                '/clamav/test-eicar',
+                data={'proxy_id': 'edge-1', 'csrf_token': self.csrf_token},
+                follow_redirects=False,
+            )
+            icap_response = self.app.post(
+                '/clamav/test-icap',
+                data={'proxy_id': 'edge-1', 'csrf_token': self.csrf_token},
+                follow_redirects=False,
+            )
+        finally:
+            self.app_module.get_proxy_client = original_client
+
+        self.assertIn(eicar_response.status_code, (301, 302, 303, 307, 308))
+        self.assertIn(icap_response.status_code, (301, 302, 303, 307, 308))
+        self.assertEqual(fake_client.eicar_calls, ['edge-1'])
+        self.assertEqual(fake_client.icap_calls, ['edge-1'])
+
     def test_adblock_flush_cache_nudges_selected_proxy(self):
         from services.proxy_registry import get_proxy_registry  # type: ignore
 

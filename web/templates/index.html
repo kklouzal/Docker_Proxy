@@ -4,14 +4,32 @@
 {% block title %}Home · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<h1 id="status" class="page-title">Status</h1>
-<p class="page-subtitle">
-    {% if remote_control_mode and active_proxy %}
-        Live process, service health, and quick actions for {{ active_proxy.display_name }}.
-    {% else %}
-        Live process + configuration checks.
-    {% endif %}
-</p>
+<section class="page-hero">
+    <div class="page-hero-copy">
+        <span class="page-eyebrow">Operational overview</span>
+        <h1 id="status" class="page-title">Status</h1>
+        <p class="page-subtitle">
+            {% if remote_control_mode and active_proxy %}
+                Live process, service health, and quick actions for {{ active_proxy.display_name }}.
+            {% else %}
+                Live process + configuration checks.
+            {% endif %}
+        </p>
+        <div class="hero-badges">
+            <span class="badge {{ 'ok' if proxy_ok else 'warn' }}">Proxy {{ 'ready' if proxy_ok else 'check' }}</span>
+            <span class="badge {{ 'ok' if icap_health and icap_health.ok else 'warn' }}">ICAP</span>
+            <span class="badge {{ 'ok' if clamav_health and clamav_health.ok else 'warn' }}">ClamAV</span>
+            <span class="badge {{ 'ok' if dante_health and dante_health.ok else 'warn' }}">SOCKS</span>
+        </div>
+    </div>
+    <div class="page-actions">
+        <a class="btn ghost" href="{{ url_for('live') }}">Open Live view</a>
+        <a class="btn ghost" href="{{ url_for('squid_config') }}">Tune config</a>
+        {% if remote_control_mode %}
+        <a class="btn ghost" href="{{ url_for('fleet') }}">View fleet</a>
+        {% endif %}
+    </div>
+</section>
 
 {% if remote_control_mode and active_proxy %}
 {% call scope_notice('proxy', 'Selected proxy only', 'The health cards and quick actions on this page target ' ~ active_proxy.display_name ~ ' only.') %}
@@ -104,30 +122,32 @@
             <span class="badge">averages</span>
         </div>
         <div class="card-body">
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Window</th>
-                        <th class="num">Samples</th>
-                        <th class="num">CPU avg</th>
-                        <th class="num">Mem avg</th>
-                        <th class="num">Hit avg</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for k in ['60s','1h','24h','7d'] %}
-                        {% set t = (trends[k] if trends and k in trends else None) %}
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
                         <tr>
-                            <td>{{ k }}</td>
-                            <td class="num">{{ t.count if t else 0 }}</td>
-                            <td class="num">{% if t and t.cpu_avg is not none %}{{ "%.1f"|format(t.cpu_avg) }}%{% else %}n/a{% endif %}</td>
-                            <td class="num">{% if t and t.mem_avg is not none %}{{ "%.1f"|format(t.mem_avg) }}%{% else %}n/a{% endif %}</td>
-                            <td class="num">{% if t and t.hit_rate_avg is not none %}{{ "%.1f"|format(t.hit_rate_avg) }}%{% else %}n/a{% endif %}</td>
+                            <th>Window</th>
+                            <th class="num">Samples</th>
+                            <th class="num">CPU avg</th>
+                            <th class="num">Mem avg</th>
+                            <th class="num">Hit avg</th>
                         </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            <div class="small" style="margin-top: 10px;">Backed by MySQL rollups (1s → 1m → 1h → 1d …). API: <span style="font-family: var(--mono);">/api/timeseries</span></div>
+                    </thead>
+                    <tbody>
+                        {% for k in ['60s','1h','24h','7d'] %}
+                            {% set t = (trends[k] if trends and k in trends else None) %}
+                            <tr>
+                                <td>{{ k }}</td>
+                                <td class="num">{{ t.count if t else 0 }}</td>
+                                <td class="num">{% if t and t.cpu_avg is not none %}{{ "%.1f"|format(t.cpu_avg) }}%{% else %}n/a{% endif %}</td>
+                                <td class="num">{% if t and t.mem_avg is not none %}{{ "%.1f"|format(t.mem_avg) }}%{% else %}n/a{% endif %}</td>
+                                <td class="num">{% if t and t.hit_rate_avg is not none %}{{ "%.1f"|format(t.hit_rate_avg) }}%{% else %}n/a{% endif %}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="surface-note small">Backed by MySQL rollups (1s → 1m → 1h → 1d …). API: <span class="mono">/api/timeseries</span></div>
         </div>
     </section>
 
@@ -142,7 +162,7 @@
         </div>
         <div class="card-body">
             <pre>{{ proxy_status }}</pre>
-            <div class="actions" style="margin-top: 12px;">
+            <div class="actions">
                 <form action="{{ url_for('reload_squid') }}" method="post">
                     {{ csrf_field() }}
                     <button class="btn primary" type="submit">Reload Squid</button>
@@ -156,11 +176,11 @@
             </div>
 
             {% if last_config %}
-                <div class="small" style="margin-top: 12px;">
+                <div class="surface-note small">
                     Last config apply: {{ fmt_ts(last_config.ts) }} ({{ last_config.remote_addr or 'n/a' }}) · {{ 'ok' if last_config.ok else 'failed' }}
                 </div>
             {% else %}
-                <div class="small" style="margin-top: 12px;">No config apply events recorded yet.</div>
+                <div class="surface-note small">No config apply events recorded yet.</div>
             {% endif %}
         </div>
     </section>

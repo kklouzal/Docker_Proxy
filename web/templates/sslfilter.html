@@ -3,14 +3,19 @@
 {% block title %}SSL Filtering - Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<h1 class="page-title">SSL Filtering</h1>
-<p class="page-subtitle">
-  {% if remote_control_mode and active_proxy %}
-    Control which clients are exempt from TLS interception on {{ active_proxy.display_name }}.
-  {% else %}
-    Control which clients are exempt from TLS interception (ssl-bump).
-  {% endif %}
-</p>
+<section class="page-heading">
+  <div class="page-hero-copy">
+    <span class="page-eyebrow">TLS bypass rules</span>
+    <h1 class="page-title">SSL Filtering</h1>
+    <p class="page-subtitle">
+      {% if remote_control_mode and active_proxy %}
+        Control which clients are exempt from TLS interception on {{ active_proxy.display_name }}.
+      {% else %}
+        Control which clients are exempt from TLS interception (ssl-bump).
+      {% endif %}
+    </p>
+  </div>
+</section>
 
 {% if remote_control_mode and active_proxy %}
 {% call scope_notice('proxy', 'Selected proxy only', 'The no-bump CIDRs configured here apply only to ' ~ active_proxy.display_name ~ '.') %}
@@ -18,12 +23,12 @@
 {% endcall %}
 {% endif %}
 
-<section class="card" style="margin-bottom: 14px;">
+<section class="card">
   <div class="card-header">
     <h2 class="card-title">Why this matters</h2>
   </div>
   <div class="card-body">
-    <div class="help" style="max-width: 980px;">
+    <div class="surface-note help">
       Some networks contain unmanaged devices (guest BYOD, IoT, consoles, printers) that cannot have a custom CA certificate installed.
       If Squid "bumps" TLS for these clients, they will see certificate errors or fail to connect.
       <br><br>
@@ -43,50 +48,52 @@
   </div>
   <div class="card-body">
     {% if ok %}
-      <div style="margin: 0 0 12px;"><span class="badge ok">Saved</span></div>
+      <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">No-bump CIDRs updated.</span></div></div>
     {% endif %}
     {% if err %}
-      <div style="margin: 0 0 12px;"><span class="badge danger">Error</span> <span class="small">{{ err }}</span></div>
+      <div class="banner error"><span class="badge danger">Error</span><div class="banner-copy"><span class="small">{{ err }}</span></div></div>
     {% endif %}
 
     <form method="post" class="form" action="{{ url_for('sslfilter') }}">
       {{ csrf_field() }}
       <input type="hidden" name="action" value="add">
       <label for="cidr">Add CIDR</label>
-      <div style="display:flex; gap:10px; align-items:center;">
-        <input id="cidr" class="input" type="text" name="cidr" placeholder="10.0.0.0/8 or 192.168.1.50" style="flex: 1 1 auto;">
+      <div class="inline-form">
+        <input id="cidr" class="input inline-fill" type="text" name="cidr" placeholder="10.0.0.0/8 or 192.168.1.50">
         <button class="btn" type="submit">Add</button>
       </div>
       <div class="help">Matches client IPs; matching clients will be spliced (no TLS interception). Changes apply immediately.</div>
     </form>
 
-    <div style="margin-top: 14px;">
+    <div class="stack-sm">
       {% if rows and rows|length > 0 %}
-        <table class="table">
-          <thead>
-            <tr>
-              <th>CIDR</th>
-              <th>Added</th>
-              <th style="width: 1%;">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for cidr, ts in rows %}
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
               <tr>
-                <td style="font-family: var(--mono);">{{ cidr }}</td>
-                <td class="small">{{ fmt_ts(ts) if ts else '' }}</td>
-                <td>
-                  <form method="post" action="{{ url_for('sslfilter') }}" style="margin:0;">
-                    {{ csrf_field() }}
-                    <input type="hidden" name="action" value="remove">
-                    <input type="hidden" name="cidr" value="{{ cidr }}">
-                    <button class="btn ghost" type="submit">Remove</button>
-                  </form>
-                </td>
+                <th>CIDR</th>
+                <th>Added</th>
+                <th>Action</th>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {% for cidr, ts in rows %}
+                <tr>
+                  <td class="mono">{{ cidr }}</td>
+                  <td class="small">{{ fmt_ts(ts) if ts else '' }}</td>
+                  <td>
+                    <form method="post" action="{{ url_for('sslfilter') }}">
+                      {{ csrf_field() }}
+                      <input type="hidden" name="action" value="remove">
+                      <input type="hidden" name="cidr" value="{{ cidr }}">
+                      <button class="btn ghost" type="submit">Remove</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
       {% else %}
         <div class="help">No no-bump CIDRs configured.</div>
       {% endif %}

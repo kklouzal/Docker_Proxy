@@ -79,7 +79,7 @@ COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
     web/services/adblock_store.py \
     web/services/certificate_bundles.py \
-    web/services/certificate_runtime.py \
+    web/services/certificate_core.py \
     web/services/config_revisions.py \
     web/services/db.py \
     web/services/errors.py \
@@ -92,13 +92,13 @@ COPY web/services/adblock_artifacts.py \
     web/services/policy_materializer.py \
     web/services/proxy_context.py \
     web/services/proxy_registry.py \
-    web/services/proxy_webfilter_store.py \
     web/services/socks_store.py \
-    web/services/squid_runtime.py \
+    web/services/squid_core.py \
     web/services/ssl_errors_store.py \
     web/services/sslfilter_store.py \
     web/services/stats.py \
     web/services/timeseries_store.py \
+    web/services/webfilter_core.py \
     /app/services/
 COPY web/tools/adblock_compile.py \
     web/tools/pac_http_server.py \

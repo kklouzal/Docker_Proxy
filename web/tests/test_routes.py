@@ -201,6 +201,7 @@ class TestRoutes(unittest.TestCase):
     def test_squid_config_network_tab(self):
         response = self.app.get('/squid/config?tab=network')
         self.assertEqual(response.status_code, 200)
+        self.assertIn('Non-standard HTTP and HTTPS destination ports are allowed by default', response.get_data(as_text=True))
 
     def test_squid_config_dns_tab(self):
         response = self.app.get('/squid/config?tab=dns')

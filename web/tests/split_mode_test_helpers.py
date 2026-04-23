@@ -42,13 +42,19 @@ class FakeProxyClient:
         proxy_status: str = "healthy",
         sync_detail: str = "sync requested",
         clear_detail: str = "cache clear requested",
+        eicar_detail: str = "Eicar FOUND",
+        icap_detail: str = "ICAP/1.0 200 OK",
     ):
         self.health_calls: list[str] = []
         self.sync_calls: list[tuple[str, bool]] = []
         self.clear_calls: list[str] = []
+        self.eicar_calls: list[str] = []
+        self.icap_calls: list[str] = []
         self.proxy_status = proxy_status
         self.sync_detail = sync_detail
         self.clear_detail = clear_detail
+        self.eicar_detail = eicar_detail
+        self.icap_detail = icap_detail
 
     def get_health(self, proxy_id, *, timeout_seconds=2.0):
         self.health_calls.append(str(proxy_id))
@@ -58,8 +64,10 @@ class FakeProxyClient:
             "proxy_status": self.proxy_status,
             "stats": {},
             "services": {
-                "icap": {"ok": True, "detail": "ok"},
-                "clamav": {"ok": True, "detail": "ok"},
+                "icap": {"ok": True, "detail": "ok", "host": "127.0.0.1", "port": 14000, "target": "127.0.0.1:14000", "service": "/adblockreq"},
+                "av_icap": {"ok": True, "detail": "av ok", "host": "clamav.internal", "port": 14001, "target": "clamav.internal:14001", "service": "/avrespmod"},
+                "clamd": {"ok": True, "detail": "PONG (clamav.internal:3310)", "host": "clamav.internal", "port": 3310, "target": "clamav.internal:3310"},
+                "clamav": {"ok": True, "detail": "AV c-icap=av ok | clamd=PONG (clamav.internal:3310)", "components": {"av_icap": {"ok": True, "detail": "av ok", "host": "clamav.internal", "port": 14001, "target": "clamav.internal:14001", "service": "/avrespmod"}, "clamd": {"ok": True, "detail": "PONG (clamav.internal:3310)", "host": "clamav.internal", "port": 3310, "target": "clamav.internal:3310"}}},
                 "dante": {"ok": True, "detail": "ok"},
             },
         }
@@ -71,3 +79,11 @@ class FakeProxyClient:
     def clear_proxy_cache(self, proxy_id, *, timeout_seconds=60.0):
         self.clear_calls.append(str(proxy_id))
         return {"ok": True, "detail": self.clear_detail}
+
+    def test_clamav_eicar(self, proxy_id, *, timeout_seconds=10.0):
+        self.eicar_calls.append(str(proxy_id))
+        return {"ok": True, "detail": self.eicar_detail}
+
+    def test_clamav_icap(self, proxy_id, *, timeout_seconds=10.0):
+        self.icap_calls.append(str(proxy_id))
+        return {"ok": True, "detail": self.icap_detail}

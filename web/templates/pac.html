@@ -4,14 +4,22 @@
 {% block title %}PAC Builder · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<h1 class="page-title">PAC Builder</h1>
-<p class="page-subtitle">
-  {% if remote_control_mode and active_proxy %}
-    Define PAC profiles for {{ active_proxy.display_name }} and serve PAC content based on the requesting client IP.
-  {% else %}
-    Define multiple PAC profiles and serve different PAC content based on the client IP requesting the PAC.
-  {% endif %}
-</p>
+<section class="page-heading">
+  <div class="page-hero-copy">
+    <span class="page-eyebrow">Client routing</span>
+    <h1 class="page-title">PAC Builder</h1>
+    <p class="page-subtitle">
+      {% if remote_control_mode and active_proxy %}
+        Define PAC profiles for {{ active_proxy.display_name }} and serve PAC content based on the requesting client IP.
+      {% else %}
+        Define multiple PAC profiles and serve different PAC content based on the client IP requesting the PAC.
+      {% endif %}
+    </p>
+    <div class="hero-badges">
+      <span class="badge">{{ profiles|length }} profile{{ '' if profiles|length == 1 else 's' }}</span>
+    </div>
+  </div>
+</section>
 
 {% if remote_control_mode and active_proxy %}
 {% call scope_notice('proxy', 'Selected proxy only', 'PAC profiles on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
@@ -20,9 +28,9 @@
 {% endif %}
 
 {% if request.args.get('ok') %}
-  <div style="margin: 0 0 14px;"><span class="badge ok">Saved</span> <span class="small">PAC profiles updated.</span></div>
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">PAC profiles updated.</span></div></div>
 {% elif request.args.get('error') %}
-  <div style="margin: 0 0 14px;"><span class="badge danger">Error</span> <span class="small">{{ request.args.get('msg') or 'Request failed.' }}</span></div>
+  <div class="banner error"><span class="badge danger">Error</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Request failed.' }}</span></div></div>
 {% endif %}
 
 <div class="grid">
@@ -33,10 +41,10 @@
     </div>
     <div class="card-body">
       <div class="small">Configure your clients to use:</div>
-      <div style="margin-top: 8px; font-family: var(--mono);">{{ pac_url }}</div>
-      <div class="small" style="margin-top: 8px;">The server chooses which PAC content to return based on the requester IP (for example <span style="font-family: var(--mono);">REMOTE_ADDR</span> or <span style="font-family: var(--mono);">X-Forwarded-For</span>).</div>
+      <div class="surface-note mono text-break">{{ pac_url }}</div>
+      <div class="surface-note small">The server chooses which PAC content to return based on the requester IP (for example <span class="mono">REMOTE_ADDR</span> or <span class="mono">X-Forwarded-For</span>).</div>
       {% if remote_control_mode and active_proxy %}
-      <div class="small" style="margin-top: 8px;">In fleet mode the <span style="font-family: var(--mono);">proxy_id</span> in this URL keeps clients pinned to {{ active_proxy.display_name }}.</div>
+      <div class="surface-note small">In fleet mode the <span class="mono">proxy_id</span> in this URL keeps clients pinned to {{ active_proxy.display_name }}.</div>
       {% endif %}
     </div>
   </section>
@@ -59,7 +67,7 @@
           <div>
             <label for="client_cidr">Client CIDR (who gets this PAC)</label>
             <input id="client_cidr" name="client_cidr" type="text" placeholder="192.168.10.0/24" />
-            <div class="small" style="margin-top: 6px;">Leave blank to make a catch-all fallback (matched only if no CIDR profile matches).</div>
+            <div class="small">Leave blank to make a catch-all fallback (matched only if no CIDR profile matches).</div>
           </div>
         </div>
 
@@ -69,7 +77,7 @@
               <input class="check" type="checkbox" name="socks_enabled" />
               <span>Include SOCKS5 first (then fall back to HTTP proxy)</span>
             </label>
-            <div class="small" style="margin-top: 6px;">Returned chain becomes <span style="font-family: var(--mono);">SOCKS5 ...; PROXY ...; DIRECT</span> when enabled.</div>
+            <div class="small">Returned chain becomes <span class="mono">SOCKS5 ...; PROXY ...; DIRECT</span> when enabled.</div>
           </div>
           <div>
             <div class="row-2">
@@ -88,11 +96,11 @@
         <div class="row-2">
           <div>
             <label for="direct_domains">Domains that go DIRECT (one per line)</label>
-            <textarea id="direct_domains" name="direct_domains" style="min-height: 140px;" placeholder="example.com\ninternal.corp"></textarea>
+            <textarea id="direct_domains" name="direct_domains" placeholder="example.com\ninternal.corp"></textarea>
           </div>
           <div>
             <label for="direct_dst_nets">Destination CIDR that go DIRECT (one per line)</label>
-            <textarea id="direct_dst_nets" name="direct_dst_nets" style="min-height: 140px;" placeholder="10.0.0.0/8\n192.168.0.0/16"></textarea>
+            <textarea id="direct_dst_nets" name="direct_dst_nets" placeholder="10.0.0.0/8\n192.168.0.0/16"></textarea>
           </div>
         </div>
 
@@ -110,11 +118,11 @@
     </div>
     <div class="card-body">
       {% if profiles|length == 0 %}
-        <div class="small">No PAC profiles yet. Create one above. Until you do, <span style="font-family: var(--mono);">/proxy.pac</span> falls back to the exclusions-based PAC.</div>
+        <div class="surface-note small">No PAC profiles yet. Create one above. Until you do, <span class="mono">/proxy.pac</span> falls back to the exclusions-based PAC.</div>
       {% endif %}
 
       {% for p in profiles %}
-        <div class="card" style="margin: 0 0 14px;">
+        <div class="card">
           <div class="card-header">
             <h3 class="card-title">{{ p.name }}</h3>
             {% if p.client_cidr %}
@@ -164,25 +172,25 @@
               <div class="row-2">
                 <div>
                   <label>Domains that go DIRECT (one per line)</label>
-                  <textarea name="direct_domains" style="min-height: 140px;">{{ p.direct_domains|join('\n') }}</textarea>
+                  <textarea name="direct_domains">{{ p.direct_domains|join('\n') }}</textarea>
                 </div>
                 <div>
                   <label>Destination CIDR that go DIRECT (one per line)</label>
-                  <textarea name="direct_dst_nets" style="min-height: 140px;">{{ p.direct_dst_nets|join('\n') }}</textarea>
+                  <textarea name="direct_dst_nets">{{ p.direct_dst_nets|join('\n') }}</textarea>
                 </div>
               </div>
 
-              <div class="actions" style="display:flex; gap: 8px; align-items: center;">
+              <div class="actions">
                 <button class="btn primary" type="submit">Save</button>
               </div>
             </form>
 
-            <form method="post" action="{{ url_for('pac_builder') }}" style="margin-top: 8px;">
+            <form method="post" action="{{ url_for('pac_builder') }}">
               {{ csrf_field() }}
               <input type="hidden" name="action" value="delete" />
               <input type="hidden" name="profile_id" value="{{ p.id }}" />
               <button class="btn" type="submit">Delete</button>
-              <span class="small" style="margin-left: 8px;">Deletes this PAC profile and its rules.</span>
+              <span class="small">Deletes this PAC profile and its rules.</span>
             </form>
           </div>
         </div>

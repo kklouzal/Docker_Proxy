@@ -4,14 +4,23 @@
 {% block title %}ClamAV · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<h1 class="page-title">ClamAV</h1>
-<p class="page-subtitle">
-  {% if remote_control_mode and active_proxy %}
-    REQMOD/RESPMOD antivirus controls and health for {{ active_proxy.display_name }}.
-  {% else %}
-    RESPMOD antivirus scan via local c-icap (virus_scan) and a remote clamd backend.
-  {% endif %}
-</p>
+<section class="page-heading">
+  <div class="page-hero-copy">
+    <span class="page-eyebrow">Antivirus controls</span>
+    <h1 class="page-title">ClamAV</h1>
+    <p class="page-subtitle">
+      {% if remote_control_mode and active_proxy %}
+        REQMOD/RESPMOD antivirus policy and health for {{ active_proxy.display_name }}.
+      {% else %}
+        RESPMOD antivirus scan via local c-icap (virus_scan) and a remote clamd backend.
+      {% endif %}
+    </p>
+    <div class="hero-badges">
+      <span class="badge {{ 'ok' if clamav_enabled else 'danger' }}">{{ 'Active' if clamav_enabled else 'Disabled' }}</span>
+      <span class="badge {{ 'ok' if health and health.ok else 'warn' }}">{{ 'Healthy' if health and health.ok else 'Needs attention' }}</span>
+    </div>
+  </div>
+</section>
 
 {% if remote_control_mode and active_proxy %}
 {% call scope_notice('proxy', 'Selected proxy only', 'Enable/disable state, health checks, and test actions here affect only ' ~ active_proxy.display_name ~ '.') %}
@@ -19,14 +28,8 @@
 {% endcall %}
 {% endif %}
 
-<div class="actions" style="margin-bottom: 12px;">
-  {% if clamav_enabled %}
-    <span class="badge ok">Active</span>
-  {% else %}
-    <span class="badge danger">Disabled</span>
-  {% endif %}
-
-  <form method="post" action="{{ url_for('clamav_toggle') }}" style="display:inline;">
+<div class="actions">
+  <form method="post" action="{{ url_for('clamav_toggle') }}">
     {{ csrf_field() }}
     {% if clamav_enabled %}
       <button class="btn" type="submit" name="action" value="disable">Disable</button>
@@ -35,47 +38,118 @@
     {% endif %}
   </form>
 
-  {% if health and health.ok %}
-    <span class="badge ok">Running</span>
-  {% else %}
-    <span class="badge danger">Not responding</span>
-  {% endif %}
-  {% if health and health.detail %}
-    <span class="small" style="font-family: var(--mono);">{{ health.detail }}</span>
-  {% endif %}
-
-  <form method="post" action="{{ url_for('clamav_test_eicar') }}" style="display:inline; margin-left: 12px;">
+  <form method="post" action="{{ url_for('clamav_test_eicar') }}">
     {{ csrf_field() }}
     <button class="btn" type="submit">Test EICAR</button>
   </form>
-  <form method="post" action="{{ url_for('clamav_test_icap') }}" style="display:inline; margin-left: 8px;">
+  <form method="post" action="{{ url_for('clamav_test_icap') }}">
     {{ csrf_field() }}
     <button class="btn" type="submit">Send sample ICAP</button>
   </form>
 
   {% if eicar_result %}
     {% if eicar_result == 'ok' %}<span class="badge ok">EICAR detected</span>{% else %}<span class="badge danger">EICAR failed</span>{% endif %}
-    {% if eicar_detail %}<span class="small" style="font-family: var(--mono);">{{ eicar_detail }}</span>{% endif %}
+    {% if eicar_detail %}<span class="small mono">{{ eicar_detail }}</span>{% endif %}
   {% endif %}
   {% if icap_result %}
     {% if icap_result == 'ok' %}<span class="badge ok">ICAP sample ok</span>{% else %}<span class="badge danger">ICAP sample failed</span>{% endif %}
-    {% if icap_detail %}<span class="small" style="font-family: var(--mono);">{{ icap_detail }}</span>{% endif %}
+    {% if icap_detail %}<span class="small mono">{{ icap_detail }}</span>{% endif %}
   {% endif %}
 </div>
 
 <div class="grid">
-  <section class="card" style="grid-column: 1 / -1;">
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">At a glance</h2>
+      <span class="badge {{ 'ok' if health and health.ok else 'warn' }}">{{ 'All checks green' if health and health.ok else 'Investigate' }}</span>
+    </div>
+    <div class="card-body stack-list">
+      <div class="stats-grid compact-stats">
+        <article class="stat-card">
+          <span class="stat-label">Policy</span>
+          <strong class="stat-value">{{ 'Active' if clamav_enabled else 'Disabled' }}</strong>
+          <span class="small">Enable changes policy only</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">AV c-icap service</span>
+          <strong class="stat-value">{{ 'Running' if av_icap_health and av_icap_health.ok else 'Not responding' }}</strong>
+          <span class="small mono">{{ av_icap_health.target if av_icap_health else 'unavailable' }}</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Clamd backend</span>
+          <strong class="stat-value">{{ 'Reachable' if clamd_health and clamd_health.ok else 'Not reachable' }}</strong>
+          <span class="small mono">{{ clamd_health.target if clamd_health else 'unavailable' }}</span>
+        </article>
+      </div>
+      {% if health and health.detail %}
+        <div class="surface-note small">
+          <strong>Overall status:</strong> {{ health.detail }}
+        </div>
+      {% endif %}
+      {% if health_source %}
+        <div class="surface-note small">
+          <strong>Proxy status:</strong> {{ health_source }}
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Operator checks</h2>
+      <span class="badge">Per component</span>
+    </div>
+    <div class="card-body stack-list">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Status</th>
+              <th>Endpoint</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>AV c-icap service</td>
+              <td><span class="badge {{ 'ok' if av_icap_health and av_icap_health.ok else 'danger' }}">{{ 'Running' if av_icap_health and av_icap_health.ok else 'Not responding' }}</span></td>
+              <td class="mono">{{ av_icap_health.target if av_icap_health else 'unavailable' }}</td>
+              <td class="small">{{ av_icap_health.detail if av_icap_health else 'unavailable' }}</td>
+            </tr>
+            <tr>
+              <td>Clamd backend</td>
+              <td><span class="badge {{ 'ok' if clamd_health and clamd_health.ok else 'danger' }}">{{ 'Reachable' if clamd_health and clamd_health.ok else 'Not reachable' }}</span></td>
+              <td class="mono">{{ clamd_health.target if clamd_health else 'unavailable' }}</td>
+              <td class="small">{{ clamd_health.detail if clamd_health else 'unavailable' }}</td>
+            </tr>
+            <tr>
+              <td>Proxy AV policy</td>
+              <td><span class="badge {{ 'ok' if clamav_enabled else 'warn' }}">{{ 'Active' if clamav_enabled else 'Disabled' }}</span></td>
+              <td class="mono">squid.conf</td>
+              <td class="small">Enable changes the Squid adaptation rule only; it does not start or stop daemons.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
     <div class="card-header">
       <h2 class="card-title">Notes</h2>
       <span class="badge">c-icap</span>
     </div>
     <div class="card-body">
-      <div class="small">
-        Squid is configured with <span style="font-family: var(--mono);">bypass=on</span> for ICAP services.
+      <div class="surface-note small">
+        Squid is configured with <span class="mono">bypass=on</span> for ICAP services.
         If ClamAV or c-icap is down, browsing should continue (fail-open) but scans won’t occur.
       </div>
-      <div class="small" style="margin-top: 10px;">
-        AV scanning behavior is controlled by the local c-icap service inside the container (for example <span style="font-family: var(--mono);">/etc/virus_scan.conf</span>), which forwards scan requests to the configured remote ClamAV daemon at <span style="font-family: var(--mono);">CLAMD_HOST:CLAMD_PORT</span>.
+      <div class="surface-note small">
+        The <strong>Enable</strong> button changes the proxy's AV policy only. It does <strong>not</strong> supervise or start the <span class="mono">clamd</span> daemon or the AV <span class="mono">c-icap</span> service.
+      </div>
+      <div class="surface-note small">
+        AV scanning behavior is controlled by the local c-icap service inside the container (for example <span class="mono">/etc/virus_scan.conf</span>), which forwards scan requests to the configured remote ClamAV daemon at <span class="mono">CLAMD_HOST:CLAMD_PORT</span>.
       </div>
     </div>
   </section>

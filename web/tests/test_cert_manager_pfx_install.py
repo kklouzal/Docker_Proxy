@@ -21,33 +21,29 @@ def test_install_pfx_empty_bytes(tmp_path):
     assert "Empty PFX" in r.message
 
 
-def test_install_pfx_openssl_missing(tmp_path, monkeypatch):
+def test_install_pfx_openssl_missing(tmp_path):
     m = _import_cert_manager_module()
 
     def fake_run_checked(_args, *, timeout: int = 30):
         raise FileNotFoundError("openssl")
 
-    monkeypatch.setattr(m, "_run_checked", fake_run_checked)
-
-    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="")
+    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="", run_checked=fake_run_checked)
     assert r.ok is False
     assert "openssl not found" in r.message
 
 
-def test_install_pfx_openssl_parse_error_is_sanitized(tmp_path, monkeypatch):
+def test_install_pfx_openssl_parse_error_is_sanitized(tmp_path):
     m = _import_cert_manager_module()
 
     def fake_run_checked(_args, *, timeout: int = 30):
         raise subprocess.CalledProcessError(returncode=1, cmd=_args, stderr="bad\ninput")
 
-    monkeypatch.setattr(m, "_run_checked", fake_run_checked)
-
-    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="")
+    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="", run_checked=fake_run_checked)
     assert r.ok is False
     assert "OpenSSL failed" in r.message
 
 
-def test_install_pfx_cert_key_mismatch(tmp_path, monkeypatch):
+def test_install_pfx_cert_key_mismatch(tmp_path):
     m = _import_cert_manager_module()
 
     class FakeCP:
@@ -77,14 +73,12 @@ def test_install_pfx_cert_key_mismatch(tmp_path, monkeypatch):
 
         return FakeCP("")
 
-    monkeypatch.setattr(m, "_run_checked", fake_run_checked)
-
-    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="")
+    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="", run_checked=fake_run_checked)
     assert r.ok is False
     assert "do not match" in r.message
 
 
-def test_install_pfx_happy_path_writes_files(tmp_path, monkeypatch):
+def test_install_pfx_happy_path_writes_files(tmp_path):
     m = _import_cert_manager_module()
 
     class FakeCP:
@@ -111,9 +105,7 @@ def test_install_pfx_happy_path_writes_files(tmp_path, monkeypatch):
 
         return FakeCP("")
 
-    monkeypatch.setattr(m, "_run_checked", fake_run_checked)
-
-    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="secret")
+    r = m.install_pfx_as_ca(str(tmp_path), b"abc", password="secret", run_checked=fake_run_checked)
     assert r.ok is True
 
     # Ensure expected outputs are present.

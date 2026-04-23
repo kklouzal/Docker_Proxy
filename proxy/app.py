@@ -85,5 +85,19 @@ def manage_cache_clear() -> Any:
     return jsonify(result), (200 if result.get("ok") else 500)
 
 
+@app.route("/api/manage/clamav/test-eicar", methods=["POST"])
+@_require_management_auth
+def manage_clamav_test_eicar() -> Any:
+    result = runtime.test_clamav_eicar()
+    return jsonify(result), (200 if result.get("ok") else 503)
+
+
+@app.route("/api/manage/clamav/test-icap", methods=["POST"])
+@_require_management_auth
+def manage_clamav_test_icap() -> Any:
+    result = runtime.test_clamav_icap()
+    return jsonify(result), (200 if result.get("ok") else 503)
+
+
 if (os.environ.get("DISABLE_PROXY_AGENT") or "").strip() != "1":
     start_agent()

@@ -107,6 +107,33 @@ class TestProxyManagementApi(unittest.TestCase):
         self.assertTrue(payload['ok'])
         self.assertIn('cache', payload['detail'])
 
+    def test_clamav_test_endpoints_delegate_to_runtime(self):
+        import proxy.app as proxy_module  # type: ignore
+
+        original_eicar = proxy_module.runtime.test_clamav_eicar
+        original_icap = proxy_module.runtime.test_clamav_icap
+        proxy_module.runtime.test_clamav_eicar = lambda: {'ok': True, 'detail': 'Eicar FOUND'}
+        proxy_module.runtime.test_clamav_icap = lambda: {'ok': False, 'detail': 'ICAP/1.0 500'}
+        try:
+            eicar_response = self.app.post(
+                '/api/manage/clamav/test-eicar',
+                json={},
+                headers={'Authorization': 'Bearer test-token'},
+            )
+            icap_response = self.app.post(
+                '/api/manage/clamav/test-icap',
+                json={},
+                headers={'Authorization': 'Bearer test-token'},
+            )
+        finally:
+            proxy_module.runtime.test_clamav_eicar = original_eicar
+            proxy_module.runtime.test_clamav_icap = original_icap
+
+        self.assertEqual(eicar_response.status_code, 200)
+        self.assertEqual(icap_response.status_code, 503)
+        self.assertTrue(eicar_response.get_json()['ok'])
+        self.assertFalse(icap_response.get_json()['ok'])
+
 
 if __name__ == '__main__':
     unittest.main()

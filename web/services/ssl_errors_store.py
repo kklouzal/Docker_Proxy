@@ -49,7 +49,12 @@ class SslErrorRow:
     sample: str
 
 
-_TS_PREFIX = re.compile(r"^(?P<date>\d{4}/\d{2}/\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2})\|\s*(?P<msg>.*)$")
+_TS_PREFIX = re.compile(
+    r"^(?P<date>\d{4}/\d{2}/\d{2})\s+"
+    r"(?P<time>\d{2}:\d{2}:\d{2})"
+    r"(?:\|\s*|\s+[^|]+\|\s*)?"
+    r"(?P<msg>.*)$"
+)
 
 # Best-effort extraction of a destination domain from cache.log lines.
 _DOMAIN_PATTERNS: List[re.Pattern[str]] = [
@@ -101,17 +106,22 @@ def _normalize_reason(msg: str) -> str:
     return s[:300]
 
 
+def _is_startup_noise(msg: str) -> bool:
+    sl = (msg or "").lower()
+    return (
+        "processing configuration file:" in sl
+        or ("helperopenservers: starting" in sl and "ssl_crtd" in sl)
+        or "accepting ssl bumped http socket connections" in sl
+    )
+
+
 def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
     # Returns (category, reason) or None if not SSL/TLS-related.
     s = (msg or "")
     sl = s.lower()
 
     # Ignore common startup/config noise that mentions ssl/tls but is not an error.
-    if sl.startswith("processing configuration file:"):
-        return None
-    if "helperopenservers: starting" in sl and "ssl_crtd" in sl:
-        return None
-    if "accepting ssl bumped http socket connections" in sl:
+    if _is_startup_noise(s):
         return None
 
     # Fast keyword gate.
@@ -197,6 +207,8 @@ class SslErrorsStore:
             create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_domain", columns_sql="proxy_id, domain, last_seen")
             create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_category", columns_sql="proxy_id, category, last_seen")
 
+            self._cleanup_known_false_positives(conn)
+
             # Retention: keep aggregates that have been seen recently.
             cutoff = _now() - (30 * 24 * 60 * 60)
             conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (cutoff,))
@@ -221,6 +233,25 @@ class SslErrorsStore:
                 sample = excluded.sample;
             """,
             (row_key, proxy_id, domain, category, reason, ts, ts, sample[:400]),
+        )
+
+    def _latest_seen_ts(self, conn) -> int:
+        proxy_id = get_proxy_id()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(last_seen), 0) FROM ssl_errors WHERE proxy_id = ?",
+            (proxy_id,),
+        ).fetchone()
+        return int((row[0] if row else 0) or 0)
+
+    def _cleanup_known_false_positives(self, conn) -> None:
+        proxy_id = get_proxy_id()
+        conn.execute(
+            """
+            DELETE FROM ssl_errors
+            WHERE proxy_id = ?
+              AND (reason LIKE ? OR sample LIKE ?)
+            """,
+            (proxy_id, "%Processing Configuration File:%", "%Processing Configuration File:%"),
         )
 
     def ingest_line(self, line: str) -> None:
@@ -248,8 +279,11 @@ class SslErrorsStore:
         if not lines:
             return
         with self._connect() as conn:
+            latest_seen_ts = self._latest_seen_ts(conn)
             for line in lines:
                 ts, msg = _parse_cache_log_ts(line)
+                if latest_seen_ts and ts <= latest_seen_ts:
+                    continue
                 classified = _classify_ssl_error(msg)
                 if not classified:
                     continue

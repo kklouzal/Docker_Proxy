@@ -13,6 +13,7 @@ The repository now supports a **two-container split**:
   - health checks
   - immediate config sync from MySQL
   - cache clear actions
+  - on-demand ClamAV verification actions from the admin UI (EICAR and sample ICAP probes)
 
 MySQL remains the source of truth for desired state, audit, stats, and proxy registration. The direct HTTP path is intentionally tiny and internal-only.
 
@@ -181,6 +182,11 @@ Default published ports:
 - `80/tcp`: WPAD/PAC dedicated listener (NOT the admin UI)
 - `1080/tcp`: SOCKS5 proxy (Dante)
 
+Destination-port policy note:
+- Squid allows non-standard HTTP and HTTPS destination ports by default.
+- The baseline template intentionally does **not** enforce restrictive `Safe_ports` / `SSL_ports` deny ACLs unless you add them manually.
+- Operators can review this in the **Squid Config → Network** tab and add explicit restrictions later through the raw config editor if their environment requires it.
+
 Admin UI routes (port 5000):
 - `/` UI home
 - `/proxy.pac` dynamic PAC (public)
@@ -308,14 +314,14 @@ Admin UI (Gunicorn) tuning:
 
 ## Features (current)
 
-- **Status/Diagnostics** pages for live proxy activity and health.
+- **Operational visibility** pages for proxy health, live traffic, SSL/TLS error buckets, SOCKS activity, and fleet status.
 - **Policy controls** from the web UI:
   - Squid config editor (with safe defaults)
   - Exclusions (domain/CIDR policies for problematic destinations)
   - Certificates (CA management for SSL-bump)
   - Ad Blocking (ICAP REQMOD)
   - Web Filtering (UT1 categories, domain-based)
-  - ClamAV scanning (ICAP RESPMOD)
+  - ClamAV scanning (ICAP RESPMOD) with per-proxy health and on-demand verification actions
   - SSL Filtering (client CIDRs that must be spliced)
 - **PAC Builder** UI at `/pac` + PAC generation at `/proxy.pac`.
 - **WPAD** support via the dedicated port 80 listener (`/wpad.dat`).
@@ -443,6 +449,15 @@ Configuration:
 - Set `CLAMD_HOST` / `CLAMD_PORT` for the remote backend.
 - c-icap module configuration is provided in `docker/clamd_mod.conf` and `docker/virus_scan.conf`.
 
+Operator workflow:
+- In split mode, the **ClamAV** tab is intentionally per-proxy.
+- The page separates three concerns so operators can troubleshoot accurately:
+  - **Policy**: whether Squid currently routes responses through the AV ICAP service
+  - **AV c-icap service**: whether the proxy-local `avrespmod` listener is reachable
+  - **Clamd backend**: whether the configured remote `clamd` endpoint is reachable
+- The **Enable** button changes Squid AV policy only. It does **not** start or stop the `clamd` daemon or the AV `c-icap` process.
+- The **Test EICAR** and **Send sample ICAP** actions are executed against the selected proxy runtime through the internal management API, so the results reflect that proxy rather than the admin container.
+
 ## Caching notes (safe baseline)
 The default baseline config in [squid/squid.conf.template](squid/squid.conf.template) is tuned to be a **bandwidth saver** while staying conservative:
 - It caches HTTP and bumped-HTTPS content only when the origin server permits caching (no aggressive overrides of `private` / `no-store` / `no-cache`).
@@ -460,6 +475,7 @@ Recommended mitigations (lowest-risk first):
 
 Troubleshooting tips:
 - Check the **SSL Errors** page (`/ssl-errors`) for repeated TLS/certificate/handshake failures.
+- Use the **ClamAV** page to verify whether the issue is policy-disabled AV, a missing proxy-local AV c-icap listener, or an unreachable remote `clamd` backend.
 - If changing Squid `workers` to improve throughput, note it triggers a full Squid restart.
 
 ## SSL Filtering (no-bump client CIDRs)

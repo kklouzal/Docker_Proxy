@@ -4,19 +4,91 @@
 {% block title %}SSL Errors · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<h1 class="page-title">SSL Errors</h1>
-<p class="page-subtitle">
-  {% if remote_control_mode and active_proxy %}
-    Aggregated TLS/SSL-related errors parsed from <span style="font-family: var(--mono);">cache.log</span> for {{ active_proxy.display_name }}.
-  {% else %}
-    Aggregated TLS/SSL-related errors parsed from <span style="font-family: var(--mono);">cache.log</span>.
-  {% endif %}
-</p>
+<section class="page-heading">
+  <div class="page-hero-copy">
+    <span class="page-eyebrow">TLS diagnostics</span>
+    <h1 class="page-title">SSL Errors</h1>
+    <p class="page-subtitle">
+      {% if remote_control_mode and active_proxy %}
+        Operator view of aggregated TLS/SSL-related errors parsed from <span class="mono">cache.log</span> for {{ active_proxy.display_name }} over the last {{ window_label }}.
+      {% else %}
+        Operator view of aggregated TLS/SSL-related errors parsed from <span class="mono">cache.log</span> over the last {{ window_label }}.
+      {% endif %}
+    </p>
+  </div>
+</section>
 
 {% if remote_control_mode and active_proxy %}
 {% call scope_notice('proxy', 'Selected proxy only', 'The SSL/TLS errors and exclusion actions on this page apply only to ' ~ active_proxy.display_name ~ '.') %}
 <div>This keeps certificate troubleshooting tied to the proxy that actually observed the failures.</div>
 {% endcall %}
+{% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">At a glance</h2>
+    <span class="badge">window {{ window_label }}</span>
+  </div>
+  <div class="card-body card-stack">
+    <div class="summary-grid">
+      <div class="stat compact-stat">
+        <div class="stat-k">Visible buckets</div>
+        <div class="stat-v">{{ summary.bucket_count }}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Aggregated events</div>
+        <div class="stat-v">{{ summary.total_events }}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Known domains</div>
+        <div class="stat-v">{{ summary.known_domains }}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Missing hostnames</div>
+        <div class="stat-v">{{ summary.unknown_target_buckets }}</div>
+      </div>
+    </div>
+    <div class="status-list">
+      <div class="status-item">
+        <div class="status-item-meta">
+          <span class="badge {{ summary.top_category_tone if summary.top_category_total else '' }}">Dominant signal</span>
+          {% if summary.top_category_total %}
+            <span class="small">{{ summary.top_category_total }} events</span>
+          {% endif %}
+        </div>
+        <div>{{ summary.top_category_label }}</div>
+        <div class="small">
+          {% if summary.latest_seen %}
+            Most recent bucket last updated {{ fmt_ts(summary.latest_seen) }}.
+          {% else %}
+            No recent SSL/TLS error buckets were recorded in the selected window.
+          {% endif %}
+          {% if summary.unknown_target_events %}
+            {{ summary.unknown_target_events }} event{{ '' if summary.unknown_target_events == 1 else 's' }} did not capture a hostname.
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{% if hints %}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Operator guidance</h2>
+    <span class="badge">recommended workflow</span>
+  </div>
+  <div class="card-body content-stack">
+    {% for hint in hints %}
+      <div class="banner {{ hint.kind }}">
+        <div class="banner-copy">
+          <strong>{{ hint.title }}</strong>
+          <div class="small">{{ hint.body }}</div>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</section>
 {% endif %}
 
 <section class="card">
@@ -36,61 +108,85 @@
           <input id="q" name="q" type="text" placeholder="contains..." value="{{ search or '' }}" />
         </div>
       </div>
-      <div class="actions" style="margin-top: 10px;">
+      <div class="actions">
         <button class="btn primary" type="submit">Apply</button>
         <a class="btn" href="{{ url_for('ssl_errors_export', window=window, q=search) }}">Export CSV</a>
       </div>
-      <div class="small">Filters apply to aggregates based on last_seen timestamps.</div>
+      <div class="surface-note small">Filters apply to aggregated buckets based on <span class="mono">last_seen</span>. Domain search only works when a hostname was captured from the original log line.</div>
     </form>
   </div>
 </section>
 
 <section class="card">
   <div class="card-header">
-    <h2 class="card-title">Recent errors</h2>
+    <h2 class="card-title">Recent error buckets</h2>
     <span class="badge">{{ rows|length }} rows</span>
   </div>
   <div class="card-body">
-    <table class="table">
+    <div class="table-wrap"><table class="table">
       <thead>
         <tr>
-          <th>Domain</th>
-          <th>Category</th>
-          <th>Reason</th>
+          <th>Target</th>
+          <th>Signal</th>
+          <th>What happened</th>
           <th class="num">Count</th>
-          <th class="num">Last seen</th>
+          <th class="num">Seen</th>
           <th class="num">Action</th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
           <tr>
-            <td style="font-family: var(--mono);">{{ r.domain if r.domain else '-' }}</td>
-            <td style="font-family: var(--mono);">{{ r.category }}</td>
             <td>
-              <div>{{ r.reason }}</div>
-              <div class="small" style="margin-top: 6px; font-family: var(--mono);">{{ r.sample }}</div>
+              <div class="mono">{{ r.target_display }}</div>
+              {% if not r.has_domain %}
+                <div class="small">No hostname was captured from the log line.</div>
+              {% endif %}
+            </td>
+            <td>
+              <div class="stack-sm">
+                <span class="badge {{ r.badge_tone }}">{{ r.category_label }}</span>
+                <div class="small mono">{{ r.category }}</div>
+              </div>
+            </td>
+            <td>
+              <div class="stack-sm">
+                <div>{{ r.reason }}</div>
+                <div class="small">{{ r.operator_note }}</div>
+                {% if r.sample %}
+                  <div class="small mono text-break">Latest sample: {{ r.sample }}</div>
+                {% endif %}
+              </div>
             </td>
             <td class="num">{{ r.count }}</td>
-            <td class="num"><span class="small">{{ fmt_ts(r.last_seen) }}</span></td>
             <td class="num">
-              <form method="post" action="{{ url_for('ssl_errors_exclude') }}">
-                {{ csrf_field() }}
-                <input type="hidden" name="domain" value="{{ r.domain }}" />
-                <button class="btn" type="submit">Add to exclusions</button>
-              </form>
+              <div class="stack-sm">
+                <span class="small">Last {{ fmt_ts(r.last_seen) }}</span>
+                <span class="small">First {{ fmt_ts(r.first_seen) }}</span>
+              </div>
+            </td>
+            <td class="num">
+              {% if r.has_domain %}
+                <form method="post" action="{{ url_for('ssl_errors_exclude') }}">
+                  {{ csrf_field() }}
+                  <input type="hidden" name="domain" value="{{ r.domain }}" />
+                  <button class="btn" type="submit">Add to exclusions</button>
+                </form>
+              {% else %}
+                <span class="small">Correlate first; there is no domain to exclude yet.</span>
+              {% endif %}
             </td>
           </tr>
         {% endfor %}
       </tbody>
-    </table>
+    </table></div>
 
     {% if rows|length == 0 %}
-      <div class="small">No SSL/TLS errors recorded yet.</div>
+      <div class="surface-note small">No SSL/TLS errors recorded yet.</div>
     {% endif %}
 
-    <div class="small" style="margin-top: 10px;">
-      Notes: This is best-effort pattern matching. Some client-side breakage (e.g., pinning errors in apps) may not appear here.
+    <div class="surface-note small">
+      Notes: This is best-effort pattern matching. Some client-side breakage (for example app certificate pinning) may not appear here, and buckets without a hostname usually need correlation against other logs before action.
     </div>
   </div>
 </section>
@@ -98,11 +194,11 @@
 {% if top_domains %}
 <section class="card">
   <div class="card-header">
-    <h2 class="card-title">Top domains</h2>
+    <h2 class="card-title">Top domains worth checking</h2>
     <span class="badge">clustered</span>
   </div>
   <div class="card-body">
-    <table class="table">
+    <div class="table-wrap"><table class="table">
       <thead>
         <tr>
           <th>Domain</th>
@@ -115,7 +211,7 @@
       <tbody>
         {% for d in top_domains %}
           <tr>
-            <td style="font-family: var(--mono);">{{ d.domain if d.domain else '-' }}</td>
+            <td class="mono">{{ d.domain if d.domain else '-' }}</td>
             <td class="num">{{ d.total }}</td>
             <td class="num">{{ d.buckets }}</td>
             <td class="num"><span class="small">{{ fmt_ts(d.last_seen) }}</span></td>
@@ -129,7 +225,8 @@
           </tr>
         {% endfor %}
       </tbody>
-    </table>
+    </table></div>
+    <div class="table-note">Use this shortlist to identify repeat offenders. Confirm the destination is expected to bypass inspection before adding it to exclusions.</div>
   </div>
 </section>
 {% endif %}
