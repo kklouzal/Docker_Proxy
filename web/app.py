@@ -39,7 +39,7 @@ import secrets
 import csv
 import io
 from urllib.parse import urlparse
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Sequence
 from markupsafe import Markup
 
 app = Flask(__name__)
@@ -156,6 +156,113 @@ def _record_audit_event(
         get_audit_store().record(**payload)
     except Exception:
         pass
+
+
+def _normalize_choice(value: str | None, allowed: tuple[str, ...] | list[str] | set[str], default: str) -> str:
+    candidate = (value or '').strip().lower()
+    return candidate if candidate in allowed else default
+
+
+def _form_action(*, default: str = '', lower: bool = False) -> str:
+    action = (request.form.get('action') or default).strip()
+    return action.lower() if lower else action
+
+
+def _posted_int(name: str, default: int) -> int:
+    value = (request.form.get(name) or '').strip()
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _bounded_int(value: object, *, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        parsed = int(default)
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _query_int_arg(name: str, *, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    return _bounded_int(request.args.get(name), default=default, minimum=minimum, maximum=maximum)
+
+
+def _normalized_domain(value: str | None) -> str:
+    return (value or '').strip().lower().lstrip('.')
+
+
+def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=';', lineterminator='\n')
+    writer.writerow(list(headers))
+    for row in rows:
+        writer.writerow([_csv_safe(value) for value in row])
+    return app.response_class(buf.getvalue(), mimetype='text/csv; charset=utf-8')
+
+
+def _redirect_after_policy_refresh(endpoint: str, store: Any, *, force: bool = True, **params):
+    _best_effort_refresh_managed_policy(store, force=force)
+    return _redirect_to(endpoint, **params)
+
+
+def _redirect_after_pac_refresh(endpoint: str, **params):
+    _best_effort_refresh_pac_runtime()
+    return _redirect_to(endpoint, **params)
+
+
+def _render_template_config_text(
+    options: Dict[str, Any],
+    *,
+    overrides: Dict[str, bool] | None = None,
+    exclusions: Any | None = None,
+) -> str:
+    current = _current_managed_config()
+    effective_overrides = overrides if overrides is not None else squid_controller.get_cache_override_options(current)
+    effective_exclusions = exclusions if exclusions is not None else get_exclusions_store().list_all()
+    config_text = squid_controller.generate_config_from_template_with_exclusions(options, effective_exclusions)
+    return squid_controller.apply_cache_overrides(config_text, effective_overrides)
+
+
+def _publish_template_config(
+    options: Dict[str, Any],
+    *,
+    source_kind: str,
+    audit_kind: str,
+    overrides: Dict[str, bool] | None = None,
+    exclusions: Any | None = None,
+) -> tuple[bool, str]:
+    config_text = _render_template_config_text(options, overrides=overrides, exclusions=exclusions)
+    ok, detail = _publish_config_for_current_mode(config_text, source_kind=source_kind)
+    _record_audit_event(audit_kind, ok=ok, detail=detail, config_text=config_text)
+    return ok, str(detail or '')
+
+
+def _best_effort_apply_adblock_flush() -> None:
+    try:
+        if _is_remote_control_mode():
+            _trigger_proxy_sync()
+        else:
+            _apply_local_adblock_runtime(force=True, clear_cache=True)
+    except Exception:
+        pass
+
+
+def _pac_profile_form_data(*, profile_id: int | None) -> Dict[str, Any]:
+    return {
+        'profile_id': profile_id,
+        'name': request.form.get('name') or '',
+        'client_cidr': request.form.get('client_cidr') or '',
+        'socks_enabled': (request.form.get('socks_enabled') == 'on'),
+        'socks_host': request.form.get('socks_host') or '',
+        'socks_port': request.form.get('socks_port') or '',
+        'direct_domains_text': request.form.get('direct_domains') or '',
+        'direct_dst_nets_text': request.form.get('direct_dst_nets') or '',
+    }
 
 
 def _safe_next_url(next_url: str) -> str:
@@ -474,6 +581,12 @@ def _csv_safe(value: object) -> str:
 
 
 def _current_managed_config() -> str:
+    """Return the effective config for the active proxy.
+
+    Remote mode treats config revisions as the source of truth. Local mode keeps a
+    live Squid fallback for dev/test scenarios where the admin UI still manages a
+    colocated proxy process directly.
+    """
     if _is_remote_control_mode():
         revisions = get_config_revisions()
         current = revisions.get_active_config_text(get_proxy_id())
@@ -487,6 +600,7 @@ def _current_managed_config() -> str:
 
 
 def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
+    """Validate locally when possible, or defer to proxy sync in split mode."""
     if not _is_remote_control_mode():
         return squid_controller.validate_config_text(config_text)
     if shutil.which('squid') is None:
@@ -517,6 +631,7 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
 
 
 def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
+    """Apply or request config sync for the active proxy in local or remote mode."""
     if not _is_remote_control_mode():
         result = squid_controller.reload_squid()
         if isinstance(result, tuple) and len(result) == 2:
@@ -534,6 +649,7 @@ def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
 
 
 def _trigger_proxy_cache_clear() -> tuple[bool, str]:
+    """Clear cache for the active proxy in local or remote mode."""
     if not _is_remote_control_mode():
         result = squid_controller.clear_disk_cache()
         if isinstance(result, tuple) and len(result) == 2:
@@ -548,6 +664,7 @@ def _trigger_proxy_cache_clear() -> tuple[bool, str]:
 
 
 def _nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
+    """Best-effort sync request across all registered proxies."""
     if not _is_remote_control_mode():
         ok, _detail = _trigger_proxy_sync(force=force)
         return (1 if ok else 0), (1 if ok else 0)
@@ -658,6 +775,180 @@ def _best_effort_refresh_pac_runtime() -> None:
             interval_seconds=30.0,
             message='Failed to refresh PAC runtime state',
         )
+
+
+def _handle_adblock_post(store: Any):
+    action = _form_action()
+    if action == 'save_lists':
+        enabled_map = {}
+        for st in store.list_statuses():
+            enabled_map[st.key] = request.form.get(f'enabled_{st.key}') == 'on'
+        store.set_enabled(enabled_map)
+        store.request_refresh_now()
+    elif action == 'save_settings':
+        enabled = request.form.get('adblock_enabled') == 'on'
+        cur = store.get_settings()
+        cache_ttl = _posted_int('cache_ttl', int(cur.get('cache_ttl') or 0))
+        cache_max = _posted_int('cache_max', int(cur.get('cache_max') or 0))
+        store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
+        store.request_refresh_now()
+    elif action == 'refresh':
+        any_enabled = False
+        try:
+            any_enabled = any(st.enabled for st in store.list_statuses())
+        except Exception:
+            any_enabled = False
+        if not any_enabled:
+            return _redirect_to('adblock', refresh_no_lists='1')
+        store.request_refresh_now()
+        return _redirect_to('adblock', refresh_requested='1')
+    elif action == 'flush_cache':
+        store.request_cache_flush()
+        _best_effort_apply_adblock_flush()
+        return _redirect_to('adblock', cache_flushed='1')
+    return _redirect_to('adblock')
+
+
+def _handle_webfilter_post(store: Any, tab: str):
+    action = _form_action()
+    if action == 'save':
+        enabled = request.form.get('enabled') == 'on'
+        source_url = (request.form.get('source_url') or '').strip()
+        categories = [c.strip() for c in request.form.getlist('categories') if (c or '').strip()]
+
+        if enabled and not source_url:
+            return _redirect_to('webfilter', tab='categories', err_source='1')
+
+        if source_url:
+            parsed = urlparse(source_url)
+            if parsed.scheme not in ('http', 'https'):
+                return _redirect_to('webfilter', tab='categories', err_source='1')
+
+        store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
+        return _redirect_after_policy_refresh('webfilter', store, force=True, tab='categories')
+
+    if action == 'whitelist_add':
+        entry = (request.form.get('whitelist_domain') or '').strip()
+        ok, err, _pat = store.add_whitelist(entry)
+        if not ok:
+            return _redirect_after_policy_refresh('webfilter', store, force=True, tab='whitelist', wl_err=(err or '1'))
+        return _redirect_after_policy_refresh('webfilter', store, force=True, tab='whitelist', wl_ok='1')
+
+    if action == 'whitelist_remove':
+        pat = (request.form.get('pattern') or '').strip()
+        try:
+            store.remove_whitelist(pat)
+        except Exception:
+            pass
+        return _redirect_after_policy_refresh('webfilter', store, force=True, tab='whitelist')
+
+    return _redirect_to('webfilter', tab=tab)
+
+
+def _handle_sslfilter_post(store: Any):
+    action = _form_action(lower=True)
+    if action == 'add':
+        entry = (request.form.get('cidr') or '').strip()
+        ok, err, _canonical = store.add_nobump(entry)
+        if not ok:
+            return _redirect_after_policy_refresh('sslfilter', store, force=True, err=(err or '1'))
+        return _redirect_after_policy_refresh('sslfilter', store, force=True, ok='1')
+
+    if action == 'remove':
+        cidr = (request.form.get('cidr') or '').strip()
+        try:
+            store.remove_nobump(cidr)
+        except Exception:
+            pass
+        return _redirect_after_policy_refresh('sslfilter', store, force=True)
+
+    return _redirect_to('sslfilter')
+
+
+def _handle_exclusions_post(store: Any):
+    action = _form_action()
+    if action == 'add_domain':
+        store.add_domain(request.form.get('domain') or '')
+        return _redirect_after_pac_refresh('exclusions')
+    if action == 'remove_domain':
+        store.remove_domain(request.form.get('domain') or '')
+        return _redirect_after_pac_refresh('exclusions')
+    if action == 'add_src':
+        store.add_net('src_nets', request.form.get('cidr') or '')
+    elif action == 'remove_src':
+        store.remove_net('src_nets', request.form.get('cidr') or '')
+    elif action == 'toggle_private':
+        store.set_exclude_private_nets(request.form.get('exclude_private_nets') == 'on')
+        return _redirect_after_pac_refresh('exclusions')
+    elif action == 'apply':
+        current = _current_managed_config()
+        tunables = squid_controller.get_tunable_options(current)
+        options = _options_from_tunables(tunables)
+        ok, _details = _publish_template_config(
+            options,
+            source_kind='exclusions',
+            audit_kind='config_apply_exclusions',
+            exclusions=store.list_all(),
+        )
+        return _redirect_to('exclusions', ok=_query_flag(ok), error=_query_flag(not ok))
+    return _redirect_to('exclusions')
+
+
+def _handle_pac_builder_post(store: Any):
+    action = _form_action()
+    try:
+        if action == 'create':
+            ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
+            if not ok:
+                return _redirect_to('pac_builder', error='1', msg=err)
+            return _redirect_after_pac_refresh('pac_builder', ok='1')
+
+        if action == 'update':
+            pid = int(request.form.get('profile_id') or '0')
+            ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
+            if not ok:
+                return _redirect_to('pac_builder', error='1', msg=err)
+            return _redirect_after_pac_refresh('pac_builder', ok='1')
+
+        if action == 'delete':
+            pid = int(request.form.get('profile_id') or '0')
+            store.delete_profile(pid)
+            return _redirect_after_pac_refresh('pac_builder', ok='1')
+    except Exception as e:
+        return _redirect_to('pac_builder', error='1', msg=public_error_message(e))
+
+    return _redirect_to('pac_builder')
+
+
+def _handle_administration_post(store: Any, current_user: str):
+    action = _form_action()
+    try:
+        if action == 'add_user':
+            username = (request.form.get('username') or '').strip()
+            password = request.form.get('password') or ''
+            store.add_user(username, password)
+            return _redirect_with_message('administration', ok=True, msg='User added.')
+
+        if action == 'set_password':
+            username = (request.form.get('username') or '').strip()
+            new_password = request.form.get('new_password') or ''
+            store.set_password(username, new_password)
+            return _redirect_with_message('administration', ok=True, msg='Password updated.')
+
+        if action == 'delete_user':
+            username = (request.form.get('username') or '').strip()
+            if username == current_user or username.casefold() == current_user.casefold():
+                return _redirect_with_message('administration', ok=False, msg='Cannot remove the currently signed-in user.')
+            users = store.list_users()
+            if len(users) <= 1:
+                return _redirect_with_message('administration', ok=False, msg='Cannot remove the last user.')
+            store.delete_user(username)
+            return _redirect_with_message('administration', ok=True, msg='User removed.')
+
+        return _redirect_with_message('administration', ok=False, msg='Unknown action.')
+    except Exception as e:
+        app.logger.exception('Administration action failed')
+        return _redirect_with_message('administration', ok=False, msg=public_error_message(e))
 
 
 @app.route('/')
@@ -816,17 +1107,9 @@ def fleet():
 @app.route('/ssl-errors', methods=['GET'])
 def ssl_errors():
     store = get_ssl_errors_store()
-    limit_s = (request.args.get('limit') or '200').strip()
+    limit = _query_int_arg('limit', default=200)
     q = (request.args.get('q') or '').strip().lower()
-    window_s = (request.args.get('window') or '86400').strip()
-    try:
-        limit = int(limit_s)
-    except ValueError:
-        limit = 200
-    try:
-        window_i = max(300, min(90 * 24 * 3600, int(window_s)))
-    except ValueError:
-        window_i = 86400
+    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600)
     since_ts = int(time.time()) - window_i
 
     try:
@@ -841,13 +1124,13 @@ def ssl_errors():
 
 @app.route('/ssl-errors/exclude', methods=['POST'])
 def ssl_errors_exclude():
-    domain = (request.form.get('domain') or '').strip().lower().lstrip('.')
+    domain = _normalized_domain(request.form.get('domain'))
     if domain:
         try:
             get_exclusions_store().add_domain(domain)
         except Exception:
             pass
-        _best_effort_refresh_pac_runtime()
+        return _redirect_after_pac_refresh('ssl_errors', q=domain)
     return _redirect_to('ssl_errors', q=domain)
 
 
@@ -855,43 +1138,31 @@ def ssl_errors_exclude():
 def ssl_errors_export():
     store = get_ssl_errors_store()
     q = (request.args.get('q') or '').strip().lower()
-    window_s = (request.args.get('window') or '86400').strip()
-    try:
-        window_i = max(300, min(90 * 24 * 3600, int(window_s)))
-    except ValueError:
-        window_i = 86400
+    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     rows = store.list_recent(since=since_ts, search=q, limit=1000)
 
-    headers = ["domain", "category", "reason", "count", "last_seen", "sample"]
-    buf = io.StringIO()
-    w = csv.writer(buf, delimiter=";", lineterminator="\n")
-    w.writerow(headers)
-    for r in rows:
-        w.writerow(
+    return _csv_response(
+        ["domain", "category", "reason", "count", "last_seen", "sample"],
+        (
             [
-                _csv_safe(getattr(r, "domain", "")),
-                _csv_safe(getattr(r, "category", "")),
-                _csv_safe(getattr(r, "reason", "")),
-                _csv_safe(getattr(r, "count", 0)),
-                _csv_safe(getattr(r, "last_seen", 0)),
-                _csv_safe(getattr(r, "sample", "")),
+                getattr(r, 'domain', ''),
+                getattr(r, 'category', ''),
+                getattr(r, 'reason', ''),
+                getattr(r, 'count', 0),
+                getattr(r, 'last_seen', 0),
+                getattr(r, 'sample', ''),
             ]
-        )
-    body = buf.getvalue()
-    return app.response_class(body, mimetype='text/csv; charset=utf-8')
+            for r in rows
+        ),
+    )
 
 
 @app.route('/socks', methods=['GET'])
 def socks():
     store = get_socks_store()
-    window_s = (request.args.get('window') or '3600').strip()
+    window = _query_int_arg('window', default=3600, minimum=60, maximum=7 * 24 * 3600)
     q = (request.args.get('q') or '').strip()
-    try:
-        window = int(window_s)
-    except ValueError:
-        window = 3600
-    window = max(60, min(7 * 24 * 3600, window))
     since = int(time.time()) - window
 
     def window_label() -> str:
@@ -958,54 +1229,7 @@ def adblock():
     _best_effort_init_store(store, key='adblock', description='adblock')
 
     if request.method == 'POST':
-        action = (request.form.get('action') or '').strip()
-        if action == 'save_lists':
-            enabled_map = {}
-            for st in store.list_statuses():
-                enabled_map[st.key] = request.form.get(f'enabled_{st.key}') == 'on'
-            store.set_enabled(enabled_map)
-            store.request_refresh_now()
-        elif action == 'save_settings':
-            enabled = request.form.get('adblock_enabled') == 'on'
-
-            def as_int(name: str, default: int) -> int:
-                v = (request.form.get(name) or '').strip()
-                try:
-                    return int(v)
-                except ValueError:
-                    return default
-
-            cur = store.get_settings()
-            cache_ttl = as_int('cache_ttl', int(cur.get('cache_ttl') or 0))
-            cache_max = as_int('cache_max', int(cur.get('cache_max') or 0))
-            store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
-            store.request_refresh_now()
-        elif action == 'refresh':
-            # Refresh is handled asynchronously by background workers.
-            # If no lists are enabled, a refresh won't download anything.
-            any_enabled = False
-            try:
-                any_enabled = any(st.enabled for st in store.list_statuses())
-            except Exception:
-                any_enabled = False
-            if not any_enabled:
-                return _redirect_to('adblock', refresh_no_lists='1')
-            store.request_refresh_now()
-            return _redirect_to('adblock', refresh_requested='1')
-        elif action == 'flush_cache':
-            store.request_cache_flush()
-            if _is_remote_control_mode():
-                try:
-                    _trigger_proxy_sync()
-                except Exception:
-                    pass
-            else:
-                try:
-                    _apply_local_adblock_runtime(force=True, clear_cache=True)
-                except Exception:
-                    pass
-            return _redirect_to('adblock', cache_flushed='1')
-        return _redirect_to('adblock')
+        return _handle_adblock_post(store)
 
     statuses = store.list_statuses()
     try:
@@ -1068,52 +1292,10 @@ def webfilter():
     store = get_webfilter_store()
     _best_effort_init_store(store, key='webfilter', description='web filter')
 
-    tab = (request.args.get('tab') or request.form.get('tab') or 'categories').strip().lower()
-    if tab not in ('categories', 'whitelist', 'blockedlog'):
-        tab = 'categories'
+    tab = _normalize_choice(request.args.get('tab') or request.form.get('tab') or 'categories', ('categories', 'whitelist', 'blockedlog'), 'categories')
 
     if request.method == 'POST':
-        action = (request.form.get('action') or '').strip()
-
-        if action == 'save':
-            enabled = request.form.get('enabled') == 'on'
-            source_url = (request.form.get('source_url') or '').strip()
-            categories = [c.strip() for c in request.form.getlist('categories') if (c or '').strip()]
-
-            # Enabling requires a source URL so auto-download works.
-            if enabled and not source_url:
-                return _redirect_to('webfilter', tab='categories', err_source='1')
-
-            # Validate URL scheme before saving
-            if source_url:
-                _u = urlparse(source_url)
-                if _u.scheme not in ('http', 'https'):
-                    return _redirect_to('webfilter', tab='categories', err_source='1')
-
-            store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
-            _best_effort_refresh_managed_policy(store, force=True)
-
-            return _redirect_to('webfilter', tab='categories')
-
-        if action == 'whitelist_add':
-            entry = (request.form.get('whitelist_domain') or '').strip()
-            ok, err, _pat = store.add_whitelist(entry)
-            _best_effort_refresh_managed_policy(store, force=True)
-
-            if not ok:
-                return _redirect_to('webfilter', tab='whitelist', wl_err=(err or '1'))
-            return _redirect_to('webfilter', tab='whitelist', wl_ok='1')
-
-        if action == 'whitelist_remove':
-            pat = (request.form.get('pattern') or '').strip()
-            try:
-                store.remove_whitelist(pat)
-            except Exception:
-                pass
-            _best_effort_refresh_managed_policy(store, force=True)
-            return _redirect_to('webfilter', tab='whitelist')
-
-        return _redirect_to('webfilter', tab=tab)
+        return _handle_webfilter_post(store, tab)
 
     settings = store.get_settings()
     available = store.list_available_categories()
@@ -1154,25 +1336,7 @@ def sslfilter():
     _best_effort_init_store(store, key='sslfilter', description='SSL filter')
 
     if request.method == 'POST':
-        action = (request.form.get('action') or '').strip().lower()
-        if action == 'add':
-            entry = (request.form.get('cidr') or '').strip()
-            ok, err, _canonical = store.add_nobump(entry)
-            _best_effort_refresh_managed_policy(store, force=True)
-            if not ok:
-                return _redirect_to('sslfilter', err=(err or '1'))
-            return _redirect_to('sslfilter', ok='1')
-
-        if action == 'remove':
-            cidr = (request.form.get('cidr') or '').strip()
-            try:
-                store.remove_nobump(cidr)
-            except Exception:
-                pass
-            _best_effort_refresh_managed_policy(store, force=True)
-            return _redirect_to('sslfilter')
-
-        return _redirect_to('sslfilter')
+        return _handle_sslfilter_post(store)
 
     rows = store.list_nobump()
     return render_template(
@@ -1313,24 +1477,20 @@ def clamav():
 @app.route('/clamav/test-eicar', methods=['POST'])
 def clamav_test_eicar():
     res = _test_eicar()
-    return redirect(
-        url_for(
-            'clamav',
-            eicar='ok' if res.get('ok') else 'fail',
-            eicar_detail=(res.get('detail') or '')[:300],
-        )
+    return _redirect_to(
+        'clamav',
+        eicar='ok' if res.get('ok') else 'fail',
+        eicar_detail=(res.get('detail') or '')[:300],
     )
 
 
 @app.route('/clamav/test-icap', methods=['POST'])
 def clamav_test_icap():
     res = _send_sample_av_icap()
-    return redirect(
-        url_for(
-            'clamav',
-            icap_sample='ok' if res.get('ok') else 'fail',
-            icap_detail=(res.get('detail') or '')[:300],
-        )
+    return _redirect_to(
+        'clamav',
+        icap_sample='ok' if res.get('ok') else 'fail',
+        icap_detail=(res.get('detail') or '')[:300],
     )
 
 
@@ -1372,7 +1532,7 @@ def _set_clamav_enabled(cfg_text: str, enabled: bool) -> str:
 
 @app.route('/clamav/toggle', methods=['POST'])
 def clamav_toggle():
-    action = (request.form.get('action') or '').strip().lower()
+    action = _form_action(lower=True)
     cfg = _current_managed_config()
     currently_enabled = _is_clamav_enabled(cfg)
 
@@ -1393,14 +1553,16 @@ def clamav_toggle():
 
 @app.route('/squid/config', methods=['GET', 'POST'])
 def squid_config():
-    tab = (request.args.get('tab') or request.form.get('tab') or 'config').strip().lower()
-    if tab not in ('config', 'caching', 'timeouts', 'logging', 'network', 'dns', 'ssl', 'icap', 'privacy', 'limits', 'performance', 'http'):
-        tab = 'config'
+    tab = _normalize_choice(
+        request.args.get('tab') or request.form.get('tab') or 'config',
+        ('config', 'caching', 'timeouts', 'logging', 'network', 'dns', 'ssl', 'icap', 'privacy', 'limits', 'performance', 'http'),
+        'config',
+    )
 
     validation = None
     posted_config = None
     if request.method == 'POST':
-        action = (request.form.get('action') or 'apply').strip().lower()
+        action = _form_action(default='apply', lower=True)
         config_text = request.form.get('config_text', '')
         posted_config = config_text
         if action == 'validate':
@@ -1442,9 +1604,7 @@ def squid_config():
         'exclusions_count': exclusions_count,
     }
     config_text = posted_config if posted_config is not None else current_config
-    subtab = (request.args.get('subtab') or 'safe').strip().lower()
-    if subtab not in ('safe', 'overrides'):
-        subtab = 'safe'
+    subtab = _normalize_choice(request.args.get('subtab') or 'safe', ('safe', 'overrides'), 'safe')
     return render_template(
         'squid_config.html',
         tab=tab,
@@ -1486,17 +1646,14 @@ def apply_safe_caching():
     )
 
     try:
-        # Preserve any previously-applied cache override toggles.
-        cur = _current_managed_config()
-        overrides = squid_controller.get_cache_override_options(cur)
-        exclusions = get_exclusions_store().list_all()
-        config_text = squid_controller.generate_config_from_template_with_exclusions(options, exclusions)
-        config_text = squid_controller.apply_cache_overrides(config_text, overrides)
+        ok, _details = _publish_template_config(
+            options,
+            source_kind='template',
+            audit_kind='config_apply_template',
+        )
     except Exception:
         return _redirect_config('caching', error=True)
 
-    ok, _details = _publish_config_for_current_mode(config_text, source_kind='template')
-    _record_audit_event('config_apply_template', ok=ok, detail=(_details or ''), config_text=config_text)
     return _redirect_config(form_kind, ok=ok, error=not ok)
 
 
@@ -1508,17 +1665,16 @@ def apply_cache_overrides():
         tunables = squid_controller.get_tunable_options(current)
 
         options = _options_from_tunables(tunables)
-
-        exclusions = get_exclusions_store().list_all()
-        config_text = squid_controller.generate_config_from_template_with_exclusions(options, exclusions)
-
         overrides = parse_cache_override_form(request.form)
-        config_text = squid_controller.apply_cache_overrides(config_text, overrides)
+        ok, _details = _publish_template_config(
+            options,
+            source_kind='overrides',
+            audit_kind='config_apply_overrides',
+            overrides=overrides,
+        )
     except Exception:
         return _redirect_config('caching', subtab='overrides', error=True)
 
-    ok, _details = _publish_config_for_current_mode(config_text, source_kind='overrides')
-    _record_audit_event('config_apply_overrides', ok=ok, detail=(_details or ''), config_text=config_text)
     return _redirect_config('caching', subtab='overrides', ok=ok, error=not ok)
 
 
@@ -1527,35 +1683,7 @@ def exclusions():
     store = get_exclusions_store()
 
     if request.method == 'POST':
-        action = (request.form.get('action') or '').strip()
-
-        if action == 'add_domain':
-            store.add_domain(request.form.get('domain') or '')
-            _best_effort_refresh_pac_runtime()
-        elif action == 'remove_domain':
-            store.remove_domain(request.form.get('domain') or '')
-            _best_effort_refresh_pac_runtime()
-        elif action == 'add_src':
-            store.add_net('src_nets', request.form.get('cidr') or '')
-        elif action == 'remove_src':
-            store.remove_net('src_nets', request.form.get('cidr') or '')
-        elif action == 'toggle_private':
-            store.set_exclude_private_nets(request.form.get('exclude_private_nets') == 'on')
-            _best_effort_refresh_pac_runtime()
-        elif action == 'apply':
-            # Apply current tunables + exclusions as a regenerated config.
-            current = _current_managed_config()
-            tunables = squid_controller.get_tunable_options(current)
-            overrides = squid_controller.get_cache_override_options(current)
-            options = _options_from_tunables(tunables)
-            ex = store.list_all()
-            cfg = squid_controller.generate_config_from_template_with_exclusions(options, ex)
-            cfg = squid_controller.apply_cache_overrides(cfg, overrides)
-            ok, _ = _publish_config_for_current_mode(cfg, source_kind='exclusions')
-            _record_audit_event('config_apply_exclusions', ok=ok, config_text=cfg)
-            return _redirect_to('exclusions', ok=_query_flag(ok), error=_query_flag(not ok))
-
-        return _redirect_to('exclusions')
+        return _handle_exclusions_post(store)
 
     ex = store.list_all()
     return render_template('exclusions.html', ex=ex)
@@ -1603,50 +1731,7 @@ def pac_builder():
     store = get_pac_profiles_store()
 
     if request.method == 'POST':
-        action = (request.form.get('action') or '').strip()
-        try:
-            if action == 'create':
-                ok, err, _ = store.upsert_profile(
-                    profile_id=None,
-                    name=request.form.get('name') or '',
-                    client_cidr=request.form.get('client_cidr') or '',
-                    socks_enabled=(request.form.get('socks_enabled') == 'on'),
-                    socks_host=request.form.get('socks_host') or '',
-                    socks_port=request.form.get('socks_port') or '',
-                    direct_domains_text=request.form.get('direct_domains') or '',
-                    direct_dst_nets_text=request.form.get('direct_dst_nets') or '',
-                )
-                if not ok:
-                    return _redirect_to('pac_builder', error='1', msg=err)
-                _best_effort_refresh_pac_runtime()
-                return _redirect_to('pac_builder', ok='1')
-
-            if action == 'update':
-                pid = int(request.form.get('profile_id') or '0')
-                ok, err, _ = store.upsert_profile(
-                    profile_id=pid,
-                    name=request.form.get('name') or '',
-                    client_cidr=request.form.get('client_cidr') or '',
-                    socks_enabled=(request.form.get('socks_enabled') == 'on'),
-                    socks_host=request.form.get('socks_host') or '',
-                    socks_port=request.form.get('socks_port') or '',
-                    direct_domains_text=request.form.get('direct_domains') or '',
-                    direct_dst_nets_text=request.form.get('direct_dst_nets') or '',
-                )
-                if not ok:
-                    return _redirect_to('pac_builder', error='1', msg=err)
-                _best_effort_refresh_pac_runtime()
-                return _redirect_to('pac_builder', ok='1')
-
-            if action == 'delete':
-                pid = int(request.form.get('profile_id') or '0')
-                store.delete_profile(pid)
-                _best_effort_refresh_pac_runtime()
-                return _redirect_to('pac_builder', ok='1')
-        except Exception as e:
-            return _redirect_to('pac_builder', error='1', msg=public_error_message(e))
-
-        return _redirect_to('pac_builder')
+        return _handle_pac_builder_post(store)
 
     profiles = []
     try:
@@ -1665,16 +1750,8 @@ def status():
 @app.route('/api/timeseries', methods=['GET'])
 def api_timeseries():
     res = (request.args.get('resolution') or '1s').strip()
-    window = request.args.get('window') or '60'
-    limit = request.args.get('limit') or '500'
-    try:
-        window_i = max(10, min(365 * 24 * 3600, int(window)))
-    except ValueError:
-        window_i = 60
-    try:
-        limit_i = int(limit)
-    except ValueError:
-        limit_i = 500
+    window_i = _query_int_arg('window', default=60, minimum=10, maximum=365 * 24 * 3600)
+    limit_i = _query_int_arg('limit', default=500)
 
     since = int(time.time()) - window_i
     points = get_timeseries_store().query(resolution=res, since=since, limit=limit_i)
@@ -1693,18 +1770,10 @@ def live():
     detail = (request.args.get('detail') or 'top').strip().lower()
     domain = (request.args.get('domain') or '').strip().lower().lstrip('.')
     search = (request.args.get('q') or '').strip().lower()
-    window_s = (request.args.get('window') or '3600').strip()
-
-    try:
-        window_i = max(300, min(7 * 24 * 3600, int(window_s)))
-    except ValueError:
-        window_i = 3600
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
 
-    try:
-        limit_i = max(10, min(500, int(limit)))
-    except ValueError:
-        limit_i = 100
+    limit_i = _bounded_int(limit, default=100, minimum=10, maximum=500)
 
     # Sub-tab: global view of why content was not served from cache.
     if subtab == 'reasons':
@@ -1791,25 +1860,11 @@ def live_export():
     store = get_store()
     mode = (request.args.get('mode') or 'domains').strip().lower()
     search = (request.args.get('q') or '').strip().lower()
-    window_s = (request.args.get('window') or '3600').strip()
-    try:
-        window_i = max(300, min(7 * 24 * 3600, int(window_s)))
-    except ValueError:
-        window_i = 3600
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     rows = store.export_rows(mode, since=since_ts, search=search, limit=1000)
-
-    def to_csv(data: list[dict]) -> str:
-        headers = list(data[0].keys()) if data else []
-        buf = io.StringIO()
-        w = csv.writer(buf, delimiter=";", lineterminator="\n")
-        w.writerow(headers)
-        for r in data:
-            w.writerow([_csv_safe(r.get(h, "")) for h in headers])
-        return buf.getvalue()
-
-    body = to_csv(rows)
-    return app.response_class(body, mimetype='text/csv; charset=utf-8')
+    headers = list(rows[0].keys()) if rows else []
+    return _csv_response(headers, ([row.get(header, '') for header in headers] for row in rows))
 
 
 @app.route('/reload', methods=['POST'])
@@ -1962,34 +2017,7 @@ def administration():
     current_user = (session.get('user') or '').strip()
 
     if request.method == 'POST':
-        action = (request.form.get('action') or '').strip()
-        try:
-            if action == 'add_user':
-                username = (request.form.get('username') or '').strip()
-                password = request.form.get('password') or ''
-                store.add_user(username, password)
-                return _redirect_with_message('administration', ok=True, msg='User added.')
-
-            if action == 'set_password':
-                username = (request.form.get('username') or '').strip()
-                new_password = request.form.get('new_password') or ''
-                store.set_password(username, new_password)
-                return _redirect_with_message('administration', ok=True, msg='Password updated.')
-
-            if action == 'delete_user':
-                username = (request.form.get('username') or '').strip()
-                if username == current_user or username.casefold() == current_user.casefold():
-                    return _redirect_with_message('administration', ok=False, msg='Cannot remove the currently signed-in user.')
-                users = store.list_users()
-                if len(users) <= 1:
-                    return _redirect_with_message('administration', ok=False, msg='Cannot remove the last user.')
-                store.delete_user(username)
-                return _redirect_with_message('administration', ok=True, msg='User removed.')
-
-            return _redirect_with_message('administration', ok=False, msg='Unknown action.')
-        except Exception as e:
-            app.logger.exception("Administration action failed")
-            return _redirect_with_message('administration', ok=False, msg=public_error_message(e))
+        return _handle_administration_post(store, current_user)
 
     users = []
     try:

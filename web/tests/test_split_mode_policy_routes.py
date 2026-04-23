@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import unittest
-from types import SimpleNamespace
 
 from .flask_test_helpers import login
+from .route_test_support import FakeAdblockStore, FakeExclusionsStore, FakePacProfilesStore, FakeSSLFilterStore, FakeWebFilterStore
 from .split_mode_test_helpers import FakeProxyClient, import_remote_app_module
 
 
@@ -37,36 +37,7 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
 
         fake_client = FakeProxyClient()
 
-        class FakeWebFilterStore:
-            def __init__(self):
-                self.saved = None
-
-            def init_db(self):
-                return None
-
-            def set_settings(self, *, enabled: bool, source_url: str, blocked_categories: list[str]):
-                self.saved = {
-                    'enabled': enabled,
-                    'source_url': source_url,
-                    'blocked_categories': blocked_categories,
-                }
-
-            def apply_squid_include(self):
-                raise AssertionError('remote mode should not apply local webfilter includes')
-
-            def get_settings(self):
-                return SimpleNamespace(enabled=False, source_url='', blocked_categories=[])
-
-            def list_available_categories(self):
-                return []
-
-            def list_whitelist(self):
-                return []
-
-            def list_blocked_log(self, limit: int = 200):
-                return []
-
-        fake_store = FakeWebFilterStore()
+        fake_store = FakeWebFilterStore(local_apply_allowed=False)
         original_client = self.app_module.get_proxy_client
         original_store = self.app_module.get_webfilter_store
         self.app_module.get_proxy_client = lambda: fake_client
@@ -108,20 +79,7 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
 
         fake_client = FakeProxyClient()
 
-        class FakeSSLFilterStore:
-            def init_db(self):
-                return None
-
-            def add_nobump(self, entry: str):
-                return True, '', entry
-
-            def apply_squid_include(self):
-                raise AssertionError('remote mode should not apply local sslfilter includes')
-
-            def list_nobump(self):
-                return []
-
-        fake_store = FakeSSLFilterStore()
+        fake_store = FakeSSLFilterStore(local_apply_allowed=False)
         original_client = self.app_module.get_proxy_client
         original_store = self.app_module.get_sslfilter_store
         self.app_module.get_proxy_client = lambda: fake_client
@@ -181,17 +139,7 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
 
         fake_client = FakeProxyClient()
 
-        class FakeAdblockStore:
-            def __init__(self):
-                self.flush_requested = False
-
-            def init_db(self):
-                return None
-
-            def request_cache_flush(self):
-                self.flush_requested = True
-
-        fake_store = FakeAdblockStore()
+        fake_store = FakeAdblockStore(statuses=[])
         original_client = self.app_module.get_proxy_client
         original_store = self.app_module.get_adblock_store
         self.app_module.get_proxy_client = lambda: fake_client
@@ -222,14 +170,8 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
 
         fake_client = FakeProxyClient()
 
-        class FakePacProfilesStore:
-            def upsert_profile(self, **kwargs):
-                return True, '', 101
-
-            def list_profiles(self):
-                return []
-
         fake_store = FakePacProfilesStore()
+        fake_store.upsert_result = (True, '', 101)
         original_client = self.app_module.get_proxy_client
         original_store = self.app_module.get_pac_profiles_store
         self.app_module.get_proxy_client = lambda: fake_client
@@ -265,16 +207,6 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
         registry.ensure_proxy('edge-1', display_name='Edge 1', management_url='http://edge-1:5000')
 
         fake_client = FakeProxyClient()
-
-        class FakeExclusionsStore:
-            def __init__(self):
-                self.domains: list[str] = []
-
-            def add_domain(self, domain: str):
-                self.domains.append(domain)
-
-            def list_all(self):
-                return SimpleNamespace(domains=list(self.domains), src_nets=[], dst_nets=[], exclude_private_nets=False)
 
         fake_store = FakeExclusionsStore()
         original_client = self.app_module.get_proxy_client
