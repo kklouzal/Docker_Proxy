@@ -9,28 +9,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.db import column_exists, connect, create_index_if_not_exists
+from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now
 
 
 logger = logging.getLogger(__name__)
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(minimum, min(maximum, value))
-
-
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    try:
-        value = float((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = float(default)
-    return max(minimum, min(maximum, value))
 
 
 def _escape_like(value: str) -> str:
@@ -64,12 +49,6 @@ _DOMAIN_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"\bsni=([A-Za-z0-9.-]+)\b", re.I),
     re.compile(r"\bSNI\s*[:=]\s*([A-Za-z0-9.-]+)\b", re.I),
 ]
-
-
-def _now() -> int:
-    return int(time.time())
-
-
 def _parse_cache_log_ts(line: str) -> Tuple[int, str]:
     s = (line or "").strip("\r\n")
     m = _TS_PREFIX.match(s)
@@ -197,27 +176,25 @@ class SslErrorsStore:
                     count BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
                     last_seen BIGINT NOT NULL,
-                    sample TEXT NOT NULL
+                    sample TEXT NOT NULL,
+                    KEY idx_ssl_errors_proxy_last_seen (proxy_id, last_seen),
+                    KEY idx_ssl_errors_proxy_domain (proxy_id, domain, last_seen),
+                    KEY idx_ssl_errors_proxy_category (proxy_id, category, last_seen)
                 )
                 """
             )
-            if not column_exists(conn, "ssl_errors", "proxy_id"):
-                conn.execute("ALTER TABLE ssl_errors ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER row_key")
-            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_last_seen", columns_sql="proxy_id, last_seen")
-            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_domain", columns_sql="proxy_id, domain, last_seen")
-            create_index_if_not_exists(conn, table_name="ssl_errors", index_name="idx_ssl_errors_proxy_category", columns_sql="proxy_id, category, last_seen")
 
             self._cleanup_known_false_positives(conn)
 
             # Retention: keep aggregates that have been seen recently.
             cutoff = _now() - (30 * 24 * 60 * 60)
-            conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (cutoff,))
+            conn.execute("DELETE FROM ssl_errors WHERE last_seen < %s", (cutoff,))
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
         with self._connect() as conn:
-            conn.execute("DELETE FROM ssl_errors WHERE last_seen < ?", (int(cutoff),))
+            conn.execute("DELETE FROM ssl_errors WHERE last_seen < %s", (int(cutoff),))
 
     def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
         proxy_id = get_proxy_id()
@@ -225,12 +202,12 @@ class SslErrorsStore:
         conn.execute(
             """
             INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
-            VALUES(?,?,?,?,?,1,?,?,?)
-            ON CONFLICT(row_key) DO UPDATE SET
+            VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
                 count = count + 1,
-                first_seen = MIN(first_seen, excluded.first_seen),
-                last_seen = MAX(last_seen, excluded.last_seen),
-                sample = excluded.sample;
+                first_seen = LEAST(first_seen, VALUES(first_seen)),
+                last_seen = GREATEST(last_seen, VALUES(last_seen)),
+                sample = VALUES(sample);
             """,
             (row_key, proxy_id, domain, category, reason, ts, ts, sample[:400]),
         )
@@ -238,7 +215,7 @@ class SslErrorsStore:
     def _latest_seen_ts(self, conn) -> int:
         proxy_id = get_proxy_id()
         row = conn.execute(
-            "SELECT COALESCE(MAX(last_seen), 0) FROM ssl_errors WHERE proxy_id = ?",
+            "SELECT COALESCE(MAX(last_seen), 0) FROM ssl_errors WHERE proxy_id = %s",
             (proxy_id,),
         ).fetchone()
         return int((row[0] if row else 0) or 0)
@@ -248,8 +225,8 @@ class SslErrorsStore:
         conn.execute(
             """
             DELETE FROM ssl_errors
-            WHERE proxy_id = ?
-              AND (reason LIKE ? OR sample LIKE ?)
+            WHERE proxy_id = %s
+                            AND (reason LIKE %s OR sample LIKE %s)
             """,
             (proxy_id, "%Processing Configuration File:%", "%Processing Configuration File:%"),
         )
@@ -293,19 +270,19 @@ class SslErrorsStore:
                 self._upsert(conn, domain, category, reason, ts, sample)
 
     def list_recent(self, *, since: Optional[int] = None, search: str = "", limit: int = 200) -> List[SslErrorRow]:
-        where = ["proxy_id = ?"]
+        where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
-            where.append("last_seen >= ?")
+            where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("domain LIKE ? ESCAPE '\\'")
+            where.append("domain LIKE %s ESCAPE '\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         lim = max(10, min(500, int(limit)))
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors {where_sql} ORDER BY last_seen DESC LIMIT ?",
+                f"SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors {where_sql} ORDER BY last_seen DESC LIMIT %s",
                 tuple(params + [lim]),
             ).fetchall()
         return [
@@ -322,13 +299,13 @@ class SslErrorsStore:
         ]
 
     def top_domains(self, *, since: Optional[int] = None, search: str = "", limit: int = 20) -> List[Dict[str, Any]]:
-        where = ["proxy_id = ?"]
+        where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
-            where.append("last_seen >= ?")
+            where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("domain LIKE ? ESCAPE '\\'")
+            where.append("domain LIKE %s ESCAPE '\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         lim = max(5, min(100, int(limit)))
@@ -340,7 +317,7 @@ class SslErrorsStore:
                 {where_sql}
                 GROUP BY domain
                 ORDER BY total DESC, last_seen DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 tuple(params + [lim]),
             ).fetchall()
@@ -489,7 +466,7 @@ class SslErrorsStore:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors WHERE proxy_id=? ORDER BY last_seen DESC, count DESC LIMIT ?",
+                "SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors WHERE proxy_id=%s ORDER BY last_seen DESC, count DESC LIMIT %s",
                 (proxy_id, lim),
             ).fetchall()
 

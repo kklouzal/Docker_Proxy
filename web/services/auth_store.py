@@ -103,7 +103,7 @@ class AuthStore:
             return False
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT password_hash FROM users WHERE username = ?",
+                "SELECT password_hash FROM users WHERE username = %s",
                 (u,),
             ).fetchone()
         if not row:
@@ -129,7 +129,7 @@ class AuthStore:
         with self._connect() as conn:
             try:
                 conn.execute(
-                    "INSERT INTO users(username, password_hash, created_ts, updated_ts) VALUES (?,?,?,?)",
+                    "INSERT INTO users(username, password_hash, created_ts, updated_ts) VALUES (%s,%s,%s,%s)",
                     (u, pw_hash, now, now),
                 )
             except INTEGRITY_ERRORS:
@@ -149,7 +149,7 @@ class AuthStore:
         pw_hash = generate_password_hash(new_password)
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE users SET password_hash = ?, updated_ts = ? WHERE username = ?",
+                "UPDATE users SET password_hash = %s, updated_ts = %s WHERE username = %s",
                 (pw_hash, now, u),
             )
             if cur.rowcount < 1:
@@ -161,7 +161,7 @@ class AuthStore:
         if not u:
             raise ValueError("Username is required.")
         with self._connect() as conn:
-            cur = conn.execute("DELETE FROM users WHERE username = ?", (u,))
+            cur = conn.execute("DELETE FROM users WHERE username = %s", (u,))
             if cur.rowcount < 1:
                 raise ValueError("User not found.")
 

@@ -7,18 +7,9 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
-from services.db import column_exists, connect, create_index_if_not_exists, table_exists
+from services.db import connect, table_exists
 from services.proxy_context import get_proxy_id
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(minimum, min(maximum, value))
-
-
+from services.runtime_helpers import env_int as _env_int, now_ts as _now
 _DEFAULT_SOURCE_URL = "https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz"
 _DEFAULT_BLOCKED_CATEGORIES: List[str] = [
     "adult",
@@ -42,7 +33,6 @@ _DEFAULTS: dict[str, str] = {
     "enabled": "0",
     "source_url": _DEFAULT_SOURCE_URL,
     "blocked_categories": ",".join(_DEFAULT_BLOCKED_CATEGORIES),
-    "whitelist_domains": "",
     "last_success": "0",
     "last_attempt": "0",
     "last_error": "",
@@ -69,12 +59,6 @@ class WebFilterSettings:
 class WebFilterMaterializedState:
     include_text: str
     whitelist_text: str
-
-
-def _now() -> int:
-    return int(time.time())
-
-
 def _next_midnight_ts(now: Optional[int] = None) -> int:
     current = int(now if now is not None else _now())
     local = time.localtime(current)
@@ -208,76 +192,21 @@ class WebFilterStoreBase:
             )
             conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
             conn.execute(
-                f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern))"
+                f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern), KEY idx_{whitelist_table}_proxy_ts (proxy_id, added_ts))"
             )
-            if not column_exists(conn, settings_table, "proxy_id"):
-                conn.execute(f"ALTER TABLE {settings_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
-                conn.execute(f"ALTER TABLE {settings_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, k)")
-            if not column_exists(conn, whitelist_table, "proxy_id"):
-                conn.execute(f"ALTER TABLE {whitelist_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
-                conn.execute(f"ALTER TABLE {whitelist_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, pattern)")
-            create_index_if_not_exists(conn, table_name=settings_table, index_name=f"idx_{settings_table}_proxy_key", columns_sql="proxy_id, k")
-            create_index_if_not_exists(conn, table_name=whitelist_table, index_name=f"idx_{whitelist_table}_proxy_ts", columns_sql="proxy_id, added_ts")
             for key, value in _DEFAULTS.items():
                 conn.execute(
-                    f"INSERT OR IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(?,?,?)",
+                    f"INSERT IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(%s,%s,%s)",
                     (self._settings_scope_for_key(key), key, value),
                 )
-            conn.execute(f"INSERT OR IGNORE INTO {meta_table}(k,v) VALUES('whitelist_v1_migrated','0')")
-
-            for key in _GLOBAL_SETTINGS_KEYS:
-                row = conn.execute(
-                    f"SELECT 1 FROM {settings_table} WHERE proxy_id=? AND k=? LIMIT 1",
-                    (_GLOBAL_SCOPE, key),
-                ).fetchone()
-                if row is not None:
-                    continue
-                src = conn.execute(
-                    f"SELECT v FROM {settings_table} WHERE k=? ORDER BY CASE WHEN proxy_id='default' THEN 0 ELSE 1 END, proxy_id ASC LIMIT 1",
-                    (key,),
-                ).fetchone()
-                if src and src[0] is not None:
-                    conn.execute(
-                        f"INSERT OR IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(?,?,?)",
-                        (_GLOBAL_SCOPE, key, str(src[0])),
-                    )
-
-            self._migrate_defaults(conn)
-            self._migrate_whitelist(conn)
             self._init_extra_schema(conn)
-            self._migrate_extra_state(conn)
-
-    def _migrate_defaults(self, conn) -> None:
-        return None
 
     def _init_extra_schema(self, conn) -> None:
         return None
 
-    def _migrate_extra_state(self, conn) -> None:
-        return None
-
-    def _migrate_whitelist(self, conn) -> None:
-        meta_table = self._table("meta")
-        whitelist_table = self._table("whitelist")
-        migrated = conn.execute(f"SELECT v FROM {meta_table} WHERE k='whitelist_v1_migrated'").fetchone()
-        if migrated and str(migrated[0] or "0") == "1":
-            return
-        raw = self._get(conn, "whitelist_domains", "")
-        patterns = _parse_whitelist_lines([line for line in str(raw or "").splitlines()])
-        now = _now()
-        for pattern in patterns:
-            conn.execute(
-                f"INSERT OR IGNORE INTO {whitelist_table}(proxy_id, pattern, added_ts) VALUES(?,?,?)",
-                (get_proxy_id(), pattern, int(now)),
-            )
-        self._set(conn, "whitelist_domains", "")
-        conn.execute(
-            f"INSERT INTO {meta_table}(k,v) VALUES('whitelist_v1_migrated','1') ON CONFLICT(k) DO UPDATE SET v=excluded.v"
-        )
-
     def _list_whitelist(self, conn, limit: int) -> List[Tuple[str, int]]:
         rows = conn.execute(
-            f"SELECT pattern, added_ts FROM {self._table('whitelist')} WHERE proxy_id=? ORDER BY added_ts DESC, pattern ASC LIMIT ?",
+            f"SELECT pattern, added_ts FROM {self._table('whitelist')} WHERE proxy_id=%s ORDER BY added_ts DESC, pattern ASC LIMIT %s",
             (get_proxy_id(), int(limit)),
         ).fetchall()
         return [(str(row[0]), int(row[1]) if row[1] is not None else 0) for row in rows]
@@ -295,7 +224,7 @@ class WebFilterStoreBase:
         pattern = patterns[0]
         with self._connect() as conn:
             conn.execute(
-                f"INSERT OR IGNORE INTO {self._table('whitelist')}(proxy_id, pattern, added_ts) VALUES(?,?,?)",
+                f"INSERT IGNORE INTO {self._table('whitelist')}(proxy_id, pattern, added_ts) VALUES(%s,%s,%s)",
                 (get_proxy_id(), pattern, int(_now())),
             )
         return True, "", pattern
@@ -306,7 +235,7 @@ class WebFilterStoreBase:
         if not candidate:
             return
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table('whitelist')} WHERE proxy_id=? AND pattern=?", (get_proxy_id(), candidate))
+            conn.execute(f"DELETE FROM {self._table('whitelist')} WHERE proxy_id=%s AND pattern=%s", (get_proxy_id(), candidate))
 
     def _get_whitelist_patterns(self, conn) -> List[str]:
         rows = self._list_whitelist(conn, limit=10000)
@@ -325,7 +254,7 @@ class WebFilterStoreBase:
     def _get(self, conn, key: str, default: str = "") -> str:
         scope = self._settings_scope_for_key(key)
         row = conn.execute(
-            f"SELECT v FROM {self._table('settings')} WHERE proxy_id=? AND k=?",
+            f"SELECT v FROM {self._table('settings')} WHERE proxy_id=%s AND k=%s",
             (scope, key),
         ).fetchone()
         return str(row[0]) if row and row[0] is not None else default
@@ -333,24 +262,24 @@ class WebFilterStoreBase:
     def _set(self, conn, key: str, value: str) -> None:
         scope = self._settings_scope_for_key(key)
         conn.execute(
-            f"INSERT INTO {self._table('settings')}(proxy_id, k, v) VALUES(?,?,?) ON CONFLICT(proxy_id, k) DO UPDATE SET v=excluded.v",
+            f"INSERT INTO {self._table('settings')}(proxy_id, k, v) VALUES(%s,%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
             (scope, key, value),
         )
 
     def _get_global_setting_conn(self, conn, key: str, default: str = "") -> str:
         row = conn.execute(
-            f"SELECT v FROM {self._table('settings')} WHERE proxy_id=? AND k=?",
+            f"SELECT v FROM {self._table('settings')} WHERE proxy_id=%s AND k=%s",
             (_GLOBAL_SCOPE, key),
         ).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
     def _get_meta(self, conn, key: str, default: str = "") -> str:
-        row = conn.execute(f"SELECT v FROM {self._table('meta')} WHERE k=?", (key,)).fetchone()
+        row = conn.execute(f"SELECT v FROM {self._table('meta')} WHERE k=%s", (key,)).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
     def _set_meta(self, conn, key: str, value: str) -> None:
         conn.execute(
-            f"INSERT INTO {self._table('meta')}(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            f"INSERT INTO {self._table('meta')}(k,v) VALUES(%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
             (key, value),
         )
 
@@ -388,7 +317,7 @@ class WebFilterStoreBase:
             with self._connect_webcat() as conn:
                 if not table_exists(conn, "webcat_aliases"):
                     return normalized
-                placeholders = ",".join(["?"] * len(normalized))
+                placeholders = ",".join(["%s"] * len(normalized))
                 rows = conn.execute(
                     f"SELECT alias, canonical FROM webcat_aliases WHERE alias IN ({placeholders})",
                     tuple(normalized),

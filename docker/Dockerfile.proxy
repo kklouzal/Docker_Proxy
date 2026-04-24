@@ -91,7 +91,9 @@ COPY web/services/adblock_artifacts.py \
     web/services/pac_renderer.py \
     web/services/policy_materializer.py \
     web/services/proxy_context.py \
+    web/services/proxy_health.py \
     web/services/proxy_registry.py \
+    web/services/runtime_helpers.py \
     web/services/socks_store.py \
     web/services/squid_core.py \
     web/services/ssl_errors_store.py \

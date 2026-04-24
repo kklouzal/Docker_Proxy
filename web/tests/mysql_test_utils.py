@@ -4,6 +4,7 @@ import atexit
 import hashlib
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest import SkipTest
@@ -27,36 +28,36 @@ _TEST_ENV_MAP = {
     "MYSQL_TEST_CHARSET": "MYSQL_CHARSET",
     "MYSQL_TEST_CONNECT_TIMEOUT": "MYSQL_CONNECT_TIMEOUT",
 }
-_MODULES_TO_PURGE = [
-    "app",
-    "services.adblock_artifacts",
-    "services.adblock_store",
-    "services.audit_store",
-    "services.auth_store",
-    "services.certificate_core",
-    "services.certificate_bundles",
-    "services.config_revisions",
-    "services.exclusions_store",
-    "services.live_stats",
-    "services.policy_materializer",
-    "services.pac_profiles_store",
-    "services.pac_renderer",
-    "services.proxy_client",
-    "services.proxy_context",
-    "services.proxy_registry",
-    "services.squid_core",
-    "services.socks_store",
-    "services.ssl_errors_store",
-    "services.sslfilter_store",
-    "services.timeseries_store",
-    "services.webfilter_core",
-    "services.webfilter_store",
-    "proxy",
-    "proxy.agent",
-    "proxy.app",
-    "proxy.runtime",
-    "proxy.wsgi",
-]
+_MODULES_TO_PURGE_EXACT = {"app", "proxy"}
+_MODULES_TO_PURGE_PREFIXES = ("services.", "proxy.")
+
+
+def ensure_python_import_paths(*paths: str | Path) -> None:
+    for path in paths:
+        path_text = str(path)
+        if path_text not in sys.path:
+            sys.path.insert(0, path_text)
+
+
+def ensure_web_import_path() -> None:
+    ensure_python_import_paths(WEB_ROOT)
+
+
+def ensure_proxy_runtime_import_path() -> None:
+    ensure_python_import_paths(REPO_ROOT, WEB_ROOT)
+
+
+def make_temp_dir(prefix: str) -> Path:
+    return Path(tempfile.mkdtemp(prefix=prefix))
+
+
+def make_temp_secret_path(prefix: str, *, filename: str = "flask_secret.key") -> Path:
+    return make_temp_dir(prefix) / filename
+
+
+def apply_test_environment(overrides: dict[str, object] | None = None) -> None:
+    for key, value in (overrides or {}).items():
+        os.environ[str(key)] = str(value)
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -192,8 +193,7 @@ def _register_cleanup() -> None:
 
 
 def _reset_db_module_cache() -> None:
-    if str(WEB_ROOT) not in sys.path:
-        sys.path.insert(0, str(WEB_ROOT))
+    ensure_web_import_path()
     try:
         from services.db import reset_mysql_ready_for_tests
     except Exception:
@@ -211,8 +211,9 @@ def _set_database_name(database_name: str) -> None:
 
 
 def _purge_runtime_modules() -> None:
-    for module_name in _MODULES_TO_PURGE:
-        sys.modules.pop(module_name, None)
+    for module_name in list(sys.modules):
+        if module_name in _MODULES_TO_PURGE_EXACT or module_name.startswith(_MODULES_TO_PURGE_PREFIXES):
+            sys.modules.pop(module_name, None)
 
 
 def configure_test_mysql_env(seed: object, *, secret_path: str | Path | None = None) -> str:

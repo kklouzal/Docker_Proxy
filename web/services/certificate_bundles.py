@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from services.certificate_core import CertificateBundle
-from services.db import connect, create_index_if_not_exists
+from services.db import connect
 from services.proxy_context import normalize_proxy_id
 
 
@@ -82,7 +82,9 @@ class CertificateBundleStore:
                     original_pfx_blob LONGBLOB NULL,
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
-                    is_active TINYINT(1) NOT NULL DEFAULT 1
+                    is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    KEY idx_certificate_bundle_revisions_active (is_active, created_ts),
+                    KEY idx_certificate_bundle_revisions_sha (bundle_sha256, created_ts)
                 )
                 """
             )
@@ -96,27 +98,10 @@ class CertificateBundleStore:
                     detail TEXT,
                     applied_by VARCHAR(255) NOT NULL DEFAULT '',
                     applied_ts BIGINT NOT NULL,
-                    bundle_sha256 CHAR(64) NOT NULL DEFAULT ''
+                    bundle_sha256 CHAR(64) NOT NULL DEFAULT '',
+                    KEY idx_proxy_certificate_applications_proxy_ts (proxy_id, applied_ts)
                 )
                 """
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="certificate_bundle_revisions",
-                index_name="idx_certificate_bundle_revisions_active",
-                columns_sql="is_active, created_ts",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="certificate_bundle_revisions",
-                index_name="idx_certificate_bundle_revisions_sha",
-                columns_sql="bundle_sha256, created_ts",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="proxy_certificate_applications",
-                index_name="idx_proxy_certificate_applications_proxy_ts",
-                columns_sql="proxy_id, applied_ts",
             )
 
     def _row_to_revision(self, row: object | None) -> Optional[CertificateBundleRevision]:
@@ -198,7 +183,7 @@ class CertificateBundleStore:
                     source_kind, subject_dn, not_before, not_after,
                     original_filename, original_pfx_blob, created_by, created_ts, is_active
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     bundle.bundle_sha256,
@@ -218,7 +203,7 @@ class CertificateBundleStore:
                 ),
             )
             row = conn.execute(
-                "SELECT * FROM certificate_bundle_revisions WHERE id=? LIMIT 1",
+                "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
                 (int(cur.lastrowid or 0),),
             ).fetchone()
         revision = self._row_to_revision(row)
@@ -244,7 +229,7 @@ class CertificateBundleStore:
                 INSERT INTO proxy_certificate_applications(
                     proxy_id, revision_id, ok, detail, applied_by, applied_ts, bundle_sha256
                 )
-                VALUES(?,?,?,?,?,?,?)
+                VALUES(%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     proxy_key,
@@ -257,7 +242,7 @@ class CertificateBundleStore:
                 ),
             )
             row = conn.execute(
-                "SELECT * FROM proxy_certificate_applications WHERE id=? LIMIT 1",
+                "SELECT * FROM proxy_certificate_applications WHERE id=%s LIMIT 1",
                 (int(cur.lastrowid or 0),),
             ).fetchone()
         application = self._row_to_application(row)
@@ -271,7 +256,7 @@ class CertificateBundleStore:
             row = conn.execute(
                 """
                 SELECT * FROM proxy_certificate_applications
-                WHERE proxy_id=?
+                WHERE proxy_id=%s
                 ORDER BY applied_ts DESC, id DESC
                 LIMIT 1
                 """,

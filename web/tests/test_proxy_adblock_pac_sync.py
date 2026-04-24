@@ -189,36 +189,30 @@ def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
                 os.environ[key] = value
 
 
-def test_pac_profiles_init_db_migrates_legacy_schema_before_proxy_index(tmp_path):
+def test_pac_profiles_init_db_creates_current_schema(tmp_path):
     env_backup = {
         key: os.environ.get(key)
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND")
     }
     try:
         import_proxy_runtime(tmp_path)
-        from services.db import column_exists, connect  # type: ignore
+        from services.db import connect  # type: ignore
         from services.pac_profiles_store import get_pac_profiles_store  # type: ignore
 
         with connect() as conn:
             conn.execute("DROP TABLE IF EXISTS pac_direct_dst_nets")
             conn.execute("DROP TABLE IF EXISTS pac_direct_domains")
             conn.execute("DROP TABLE IF EXISTS pac_profiles")
-            conn.execute(
-                """
-                CREATE TABLE pac_profiles (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    name VARCHAR(255) NOT NULL,
-                    client_cidr VARCHAR(64) NOT NULL DEFAULT '',
-                    created_ts BIGINT NOT NULL
-                )
-                """
-            )
 
         store = get_pac_profiles_store()
         store.init_db()
 
         with connect() as conn:
-            assert column_exists(conn, "pac_profiles", "proxy_id") is True
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s LIMIT 1",
+                ("pac_profiles", "proxy_id"),
+            ).fetchone()
+            assert row is not None
 
         assert store.list_profiles() == []
     finally:
@@ -247,7 +241,7 @@ def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path,
         monkeypatch.setattr(runtime_module, "_check_local_listener", lambda *args, **kwargs: {"ok": True, "detail": "listening"})
         monkeypatch.setattr(runtime_module, "_check_clamd", lambda: {"ok": True, "detail": "PONG"})
         monkeypatch.setattr(runtime_module, "build_proxy_policy_state", lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]))
-        monkeypatch.setattr(runtime_module, "build_proxy_pac_state", lambda _proxy_id: (_ for _ in ()).throw(RuntimeError("legacy pac schema")))
+        monkeypatch.setattr(runtime_module, "build_proxy_pac_state", lambda _proxy_id: (_ for _ in ()).throw(RuntimeError("pac state unavailable")))
 
         health = runtime.collect_health()
 

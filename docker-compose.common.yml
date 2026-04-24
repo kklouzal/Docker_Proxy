@@ -1,0 +1,79 @@
+x-shared-app-env: &shared-app-env
+  DEFAULT_PROXY_ID: ${DEFAULT_PROXY_ID:-default}
+  PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
+  WEB_WORKERS: ${WEB_WORKERS:-}
+  WEB_THREADS: ${WEB_THREADS:-}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-}
+  DATABASE_URL: ${DATABASE_URL:-}
+  MYSQL_HOST: ${MYSQL_HOST:-}
+  MYSQL_PORT: ${MYSQL_PORT:-3306}
+  MYSQL_USER: ${MYSQL_USER:-}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+  MYSQL_DATABASE: ${MYSQL_DATABASE:-}
+  MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
+
+services:
+  admin-ui:
+    restart: unless-stopped
+    depends_on:
+      proxy:
+        condition: service_healthy
+    ports:
+      - "0.0.0.0:5000:5000"       # Flask UI
+    volumes:
+      - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+    environment:
+      <<: *shared-app-env
+      PROXY_CONTROL_MODE: remote
+      DISABLE_BACKGROUND: 0
+    healthcheck:
+      test: ["CMD", "/healthcheck.admin.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - control
+
+  proxy:
+    restart: unless-stopped
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.lo.disable_ipv6: ${DISABLE_IPV6:-1}
+    ports:
+      - "0.0.0.0:80:80"           # WPAD / PAC via dedicated port 80 listener
+      - "0.0.0.0:3128:3128"       # HTTP proxy
+      - "0.0.0.0:${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
+    volumes:
+      - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - ./squid/ssl/certs:/etc/squid/ssl/certs
+      - squid_ssl_db:/var/lib/ssl_db
+      - squid_cache:/var/spool/squid
+      - proxy_data:/var/lib/squid-flask-proxy
+    environment:
+      <<: *shared-app-env
+      PROXY_INSTANCE_ID: ${PROXY_INSTANCE_ID:-default}
+      PROXY_DISPLAY_NAME: ${PROXY_DISPLAY_NAME:-Default Proxy}
+      PROXY_MANAGEMENT_URL: ${PROXY_MANAGEMENT_URL:-http://proxy:5000}
+      DISABLE_IPV6: ${DISABLE_IPV6:-1}
+      SQUID_WORKERS: ${SQUID_WORKERS:-}
+      SQUID_CACHE_MEM_MB: ${SQUID_CACHE_MEM_MB:-}
+      SQUID_SSLCRTD_CHILDREN: ${SQUID_SSLCRTD_CHILDREN:-}
+      SQUID_DYNAMIC_CERT_MEM_CACHE_MB: ${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}
+      SQUID_MAX_FILEDESCRIPTORS: ${SQUID_MAX_FILEDESCRIPTORS:-}
+      CICAP_PORT: ${CICAP_PORT:-14000}
+      CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
+      CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
+      CLAMD_PORT: ${CLAMD_PORT:-3310}
+      DANTE_SERVERS: ${DANTE_SERVERS:-}
+      ULIMIT_NOFILE: ${ULIMIT_NOFILE:-}
+      WEBFILTER_HELPERS: ${WEBFILTER_HELPERS:-}
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    networks:
+      - control

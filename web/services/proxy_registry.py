@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from services.db import connect, create_index_if_not_exists
+from services.db import connect
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 
 
@@ -47,21 +47,11 @@ class ProxyRegistry:
                     current_config_sha CHAR(64) NOT NULL DEFAULT '',
                     detail TEXT,
                     created_ts BIGINT NOT NULL,
-                    updated_ts BIGINT NOT NULL
+                    updated_ts BIGINT NOT NULL,
+                    KEY idx_proxy_instances_status (status, last_heartbeat),
+                    KEY idx_proxy_instances_updated (updated_ts)
                 )
                 """
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="proxy_instances",
-                index_name="idx_proxy_instances_status",
-                columns_sql="status, last_heartbeat",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="proxy_instances",
-                index_name="idx_proxy_instances_updated",
-                columns_sql="updated_ts",
             )
 
     def _row_to_instance(self, row: object | None) -> Optional[ProxyInstance]:
@@ -97,7 +87,7 @@ class ProxyRegistry:
         now = int(time.time())
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM proxy_instances WHERE proxy_id=? LIMIT 1",
+                "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                 (proxy_key,),
             ).fetchone()
             if row is None:
@@ -108,7 +98,7 @@ class ProxyRegistry:
                         last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha,
                         detail, created_ts, updated_ts
                     )
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         proxy_key,
@@ -126,7 +116,7 @@ class ProxyRegistry:
                     ),
                 )
                 row = conn.execute(
-                    "SELECT * FROM proxy_instances WHERE proxy_id=? LIMIT 1",
+                    "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                     (proxy_key,),
                 ).fetchone()
             else:
@@ -139,13 +129,13 @@ class ProxyRegistry:
                 conn.execute(
                     """
                     UPDATE proxy_instances
-                    SET display_name=?, hostname=?, management_url=?, status=?, detail=?, updated_ts=?
-                    WHERE proxy_id=?
+                    SET display_name=%s, hostname=%s, management_url=%s, status=%s, detail=%s, updated_ts=%s
+                    WHERE proxy_id=%s
                     """,
                     (next_display, next_hostname, next_url, next_status, next_detail, now, proxy_key),
                 )
                 row = conn.execute(
-                    "SELECT * FROM proxy_instances WHERE proxy_id=? LIMIT 1",
+                    "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                     (proxy_key,),
                 ).fetchone()
         instance = self._row_to_instance(row)
@@ -161,7 +151,7 @@ class ProxyRegistry:
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM proxy_instances WHERE proxy_id=? LIMIT 1",
+                "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                 (proxy_key,),
             ).fetchone()
         return self._row_to_instance(row)
@@ -209,9 +199,9 @@ class ProxyRegistry:
             conn.execute(
                 """
                 UPDATE proxy_instances
-                SET status=?, hostname=?, management_url=?, last_heartbeat=?,
-                    current_config_sha=?, detail=?, updated_ts=?
-                WHERE proxy_id=?
+                SET status=%s, hostname=%s, management_url=%s, last_heartbeat=%s,
+                    current_config_sha=%s, detail=%s, updated_ts=%s
+                WHERE proxy_id=%s
                 """,
                 (
                     (status or instance.status).strip() or "unknown",
@@ -242,8 +232,8 @@ class ProxyRegistry:
             conn.execute(
                 """
                 UPDATE proxy_instances
-                SET last_apply_ts=?, last_apply_ok=?, current_config_sha=?, detail=?, updated_ts=?
-                WHERE proxy_id=?
+                SET last_apply_ts=%s, last_apply_ok=%s, current_config_sha=%s, detail=%s, updated_ts=%s
+                WHERE proxy_id=%s
                 """,
                 (now, 1 if ok else 0, current_config_sha.strip(), detail[:4000], now, instance.proxy_id),
             )

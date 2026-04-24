@@ -4,6 +4,8 @@ A Dockerized Squid HTTP proxy bundled with a Flask admin UI for managing policy 
 
 Runtime state now targets an **external MySQL 8+ backend**.
 
+The SQLite migration window has closed: the project now supports **MySQL 8+ only**, and runtime services create/use the current schema directly rather than attempting in-place upgrades from legacy layouts.
+
 ## Split architecture (admin-ui + proxy)
 
 The repository now supports a **two-container split**:
@@ -33,6 +35,8 @@ The default source-build Compose file now brings up **both** services:
 
 Set the external database connection in the root `.env` file (gitignored) or via your shell/launch environment.
 
+If you still have data in an older SQLite or pre-split schema layout, export it before upgrading; this repository no longer contains compatibility code to auto-migrate legacy databases in place.
+
 Example:
 
 ```dotenv
@@ -47,6 +51,10 @@ MYSQL_CREATE_DATABASE=1
 ```powershell
 docker compose up -d --build
 ```
+
+Maintenance note:
+- `docker-compose.common.yml` is the shared source of truth for service definitions, environment defaults, ports, volumes, and healthchecks.
+- Keep `docker-compose.yml` and `docker-compose.ghcr.yml` focused on the source-build vs prebuilt-image differences so the two deployment paths do not drift.
 
 By default, source builds now track Alpine's `latest` stable image tag and
 install the newest `squid` package available in that Alpine repository at
@@ -273,7 +281,7 @@ services:
 ```
 
 Common environment variables:
-- `DATABASE_URL`: optional full DSN for the external database (for example `mysql+pymysql://user:pass@host:3306/squid_proxy`).
+- `DATABASE_URL`: optional full DSN for the external database (for example `mysql+pymysql://user:pass@host:3306/squid_proxy`). SQLite DSNs are no longer supported.
 - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`: discrete MySQL connection settings.
 - `MYSQL_CREATE_DATABASE=1|0`: auto-create the configured MySQL database if the user has permission.
 - `DISABLE_IPV6=1|0`: when enabled, the container disables IPv6 via sysctls, normalizes local binds to IPv4, and the Compose examples publish ports on `0.0.0.0` only.

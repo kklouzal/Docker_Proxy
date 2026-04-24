@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Optional
 
-from services.db import column_exists, connect, create_index_if_not_exists
+from services.db import connect
 from services.proxy_context import get_proxy_id
 
 
@@ -31,15 +31,13 @@ class AuditStore:
                     user_agent VARCHAR(256),
                     detail TEXT,
                     config_sha256 CHAR(64),
-                    config_text LONGTEXT
+                    config_text LONGTEXT,
+                    KEY idx_audit_ts (ts),
+                    KEY idx_audit_kind (kind),
+                    KEY idx_audit_proxy_ts (proxy_id, ts)
                 )
                 """
             )
-            if not column_exists(conn, "audit_events", "proxy_id"):
-                conn.execute("ALTER TABLE audit_events ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
-            create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_ts", columns_sql="ts")
-            create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_kind", columns_sql="kind")
-            create_index_if_not_exists(conn, table_name="audit_events", index_name="idx_audit_proxy_ts", columns_sql="proxy_id, ts")
 
     def record(
         self,
@@ -80,7 +78,7 @@ class AuditStore:
             conn.execute(
                 """
                 INSERT INTO audit_events(proxy_id, ts, kind, ok, remote_addr, user_agent, detail, config_sha256, config_text)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     proxy_id,
@@ -109,7 +107,7 @@ class AuditStore:
                 """
                 SELECT ts, kind, ok, remote_addr, user_agent, detail
                 FROM audit_events
-                WHERE proxy_id=? AND kind LIKE 'config_apply%'
+                WHERE proxy_id=%s AND kind LIKE 'config_apply%'
                 ORDER BY ts DESC, id DESC
                 LIMIT 1
                 """
@@ -128,7 +126,7 @@ class AuditStore:
         days = max(1, int(retention_days or 30))
         cutoff = int(time.time()) - (days * 24 * 60 * 60)
         with self._connect() as conn:
-            conn.execute("DELETE FROM audit_events WHERE ts < ?", (int(cutoff),))
+            conn.execute("DELETE FROM audit_events WHERE ts < %s", (int(cutoff),))
 
 
 _store: Optional[AuditStore] = None

@@ -8,9 +8,10 @@ from typing import Any, Dict, List, Optional
 
 import logging
 
-from services.db import column_exists, connect, create_index_if_not_exists
+from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
+from services.runtime_helpers import now_ts as _now
 
 
 logger = logging.getLogger(__name__)
@@ -32,12 +33,6 @@ RESOLUTIONS: List[Resolution] = [
     Resolution("1mo", "ts_1mo", 60 * 60 * 24 * 30),
     Resolution("1y", "ts_1y", 60 * 60 * 24 * 365),
 ]
-
-
-def _now() -> int:
-    return int(time.time())
-
-
 def _get_metric(stats: Dict[str, Any], path: str) -> Optional[float]:
     # path like "cpu.util_percent"
     cur: Any = stats
@@ -79,10 +74,6 @@ class TimeSeriesStore:
                     )
                     """
                 )
-                if not column_exists(conn, r.table, "proxy_id"):
-                    conn.execute(f"ALTER TABLE {r.table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
-                    conn.execute(f"ALTER TABLE {r.table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, ts)")
-                create_index_if_not_exists(conn, table_name=r.table, index_name=f"idx_{r.table}_proxy_ts", columns_sql="proxy_id, ts")
 
     def insert_snapshot(self, stats: Dict[str, Any], ts: Optional[int] = None) -> None:
         self.init_db()
@@ -98,8 +89,15 @@ class TimeSeriesStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE
+                    count = VALUES(count),
+                    cpu = VALUES(cpu),
+                    mem = VALUES(mem),
+                    disk_used = VALUES(disk_used),
+                    cache_dir_size = VALUES(cache_dir_size),
+                    hit_rate = VALUES(hit_rate)
                 """,
                 (proxy_id, ts_i, 1, cpu, mem, disk_used, cache_dir_size, hit_rate),
             )
@@ -113,10 +111,10 @@ class TimeSeriesStore:
         with self._connect() as conn:
             conn.execute(
                 f"""
-                INSERT OR REPLACE INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+                INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
                 SELECT
                     proxy_id,
-                    (ts / ?) * ? AS bucket_start,
+                    (ts / %s) * %s AS bucket_start,
                     SUM(count) AS cnt,
                     CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END,
                     CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END,
@@ -124,13 +122,20 @@ class TimeSeriesStore:
                     CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END,
                     CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END
                 FROM {src_table}
-                WHERE proxy_id = ? AND ts < ?
+                WHERE proxy_id = %s AND ts < %s
                 GROUP BY proxy_id, bucket_start
+                ON DUPLICATE KEY UPDATE
+                    count = VALUES(count),
+                    cpu = VALUES(cpu),
+                    mem = VALUES(mem),
+                    disk_used = VALUES(disk_used),
+                    cache_dir_size = VALUES(cache_dir_size),
+                    hit_rate = VALUES(hit_rate)
                 """,
                 (dst_seconds, dst_seconds, proxy_id, aligned_end),
             )
 
-            conn.execute(f"DELETE FROM {src_table} WHERE proxy_id = ? AND ts < ?", (proxy_id, aligned_end))
+            conn.execute(f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_end))
 
     def rollup_and_prune(self, ts: Optional[int] = None) -> None:
         self.init_db()
@@ -164,7 +169,7 @@ class TimeSeriesStore:
         aligned_y = (cutoff_y // (60 * 60 * 24 * 365)) * (60 * 60 * 24 * 365)
         if aligned_y > 0:
             with self._connect() as conn:
-                conn.execute("DELETE FROM ts_1y WHERE proxy_id = ? AND ts < ?", (proxy_id, aligned_y))
+                conn.execute("DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_y))
 
     def summary(self) -> Dict[str, Any]:
         # Returns weighted averages for recent windows.
@@ -189,7 +194,7 @@ class TimeSeriesStore:
                         CASE WHEN SUM(count) > 0 THEN SUM(mem * count)/SUM(count) ELSE NULL END AS mem,
                         CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count)/SUM(count) ELSE NULL END AS hit
                     FROM {table}
-                    WHERE proxy_id = ? AND ts >= ?
+                    WHERE proxy_id = %s AND ts >= %s
                     """,
                     (proxy_id, int(since)),
                 ).fetchone()
@@ -210,7 +215,7 @@ class TimeSeriesStore:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT ts, count, cpu, mem, hit_rate FROM {res.table} WHERE proxy_id = ? AND ts >= ? ORDER BY ts ASC LIMIT ?",
+                f"SELECT ts, count, cpu, mem, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s ORDER BY ts ASC LIMIT %s",
                 (proxy_id, int(since), lim),
             ).fetchall()
 

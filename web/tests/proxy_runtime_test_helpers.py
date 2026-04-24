@@ -2,16 +2,9 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
 from pathlib import Path
 
-from .mysql_test_utils import REPO_ROOT, WEB_ROOT, configure_test_mysql_env
-
-
-def ensure_proxy_runtime_import_path() -> None:
-    for path in (str(REPO_ROOT), str(WEB_ROOT)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
+from .mysql_test_utils import apply_test_environment, configure_test_mysql_env, ensure_proxy_runtime_import_path
 
 
 def import_proxy_runtime(
@@ -21,12 +14,14 @@ def import_proxy_runtime(
 ):
     ensure_proxy_runtime_import_path()
 
-    os.environ["PROXY_INSTANCE_ID"] = "edge-1"
-    os.environ["DEFAULT_PROXY_ID"] = "edge-1"
-    os.environ["DISABLE_BACKGROUND"] = "1"
-
-    for key, value in (extra_env or {}).items():
-        os.environ[str(key)] = str(value)
+    apply_test_environment(
+        {
+            "PROXY_INSTANCE_ID": "edge-1",
+            "DEFAULT_PROXY_ID": "edge-1",
+            "DISABLE_BACKGROUND": "1",
+            **{str(key): value for key, value in (extra_env or {}).items()},
+        }
+    )
 
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
 

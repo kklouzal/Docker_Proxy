@@ -6,7 +6,6 @@ import csv
 import os
 import re
 import sys
-import time
 import tarfile
 import urllib.request
 import zipfile
@@ -23,18 +22,13 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from services.db import connect
+from services.runtime_helpers import now_ts as _now
 
 
 _HOST_RE = re.compile(
     r"^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
     re.IGNORECASE,
 )
-
-
-def _now() -> int:
-    return int(time.time())
-
-
 def _norm_domain(s: str) -> str:
     d = (s or "").strip().lower().rstrip(".")
     if d.startswith("."):
@@ -351,7 +345,7 @@ def _init_db(conn) -> None:
 
 def _upsert_meta(conn, k: str, v: str) -> None:
     conn.execute(
-        "INSERT INTO webcat_meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        "INSERT INTO webcat_meta(k,v) VALUES(%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
         (k, v),
     )
 
@@ -383,13 +377,13 @@ def _build_db(
         conn.execute("DELETE FROM webcat_aliases")
         for domain, cats in by_domain.items():
             conn.execute(
-                "INSERT OR REPLACE INTO webcat_domains(domain,categories) VALUES(?,?)",
+                "INSERT INTO webcat_domains(domain,categories) VALUES(%s,%s) ON DUPLICATE KEY UPDATE categories=VALUES(categories)",
                 (domain, "|".join(sorted(cats))),
             )
 
         for c, n in sorted(cat_counts.items()):
             conn.execute(
-                "INSERT OR REPLACE INTO webcat_categories(category,domains) VALUES(?,?)",
+                "INSERT INTO webcat_categories(category,domains) VALUES(%s,%s) ON DUPLICATE KEY UPDATE domains=VALUES(domains)",
                 (c, int(n)),
             )
 
@@ -397,7 +391,7 @@ def _build_db(
             for alias, canonical in sorted(aliases.items()):
                 if alias and canonical and alias != canonical:
                     conn.execute(
-                        "INSERT OR REPLACE INTO webcat_aliases(alias,canonical) VALUES(?,?)",
+                        "INSERT INTO webcat_aliases(alias,canonical) VALUES(%s,%s) ON DUPLICATE KEY UPDATE canonical=VALUES(canonical)",
                         (alias, canonical),
                     )
         _upsert_meta(conn, "built_ts", str(_now()))

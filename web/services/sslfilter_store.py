@@ -3,18 +3,12 @@ from __future__ import annotations
 import ipaddress
 import os
 import threading
-import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from services.db import column_exists, connect, create_index_if_not_exists
+from services.db import connect
 from services.proxy_context import get_proxy_id
-
-
-def _now() -> int:
-    return int(time.time())
-
-
+from services.runtime_helpers import now_ts as _now
 @dataclass(frozen=True)
 class SslFilterSettings:
     nobump_cidrs: List[Tuple[str, int]]
@@ -44,21 +38,18 @@ class SslFilterStore:
                 "CREATE TABLE IF NOT EXISTS nobump_cidrs("
                 "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
                 "cidr VARCHAR(64) NOT NULL, "
-                "added_ts BIGINT NOT NULL"
-                ", PRIMARY KEY(proxy_id, cidr)"
+                "added_ts BIGINT NOT NULL, "
+                "PRIMARY KEY(proxy_id, cidr), "
+                "KEY idx_nobump_cidrs_proxy_ts (proxy_id, added_ts)"
                 ")"
             )
-            if not column_exists(conn, "nobump_cidrs", "proxy_id"):
-                conn.execute("ALTER TABLE nobump_cidrs ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
-                conn.execute("ALTER TABLE nobump_cidrs DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, cidr)")
-            create_index_if_not_exists(conn, table_name="nobump_cidrs", index_name="idx_nobump_cidrs_proxy_ts", columns_sql="proxy_id, added_ts")
 
     def list_nobump(self, limit: int = 5000) -> List[Tuple[str, int]]:
         self.init_db()
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT cidr, added_ts FROM nobump_cidrs WHERE proxy_id=? ORDER BY added_ts DESC, cidr ASC LIMIT ?",
+                "SELECT cidr, added_ts FROM nobump_cidrs WHERE proxy_id=%s ORDER BY added_ts DESC, cidr ASC LIMIT %s",
                 (proxy_id, int(limit)),
             ).fetchall()
             out: List[Tuple[str, int]] = []
@@ -87,7 +78,7 @@ class SslFilterStore:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO nobump_cidrs(proxy_id, cidr, added_ts) VALUES(?,?,?)",
+                "INSERT IGNORE INTO nobump_cidrs(proxy_id, cidr, added_ts) VALUES(%s,%s,%s)",
                 (proxy_id, canonical, int(_now())),
             )
         return True, "", canonical
@@ -99,7 +90,7 @@ class SslFilterStore:
             return
         proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute("DELETE FROM nobump_cidrs WHERE proxy_id=? AND cidr=?", (proxy_id, t))
+            conn.execute("DELETE FROM nobump_cidrs WHERE proxy_id=%s AND cidr=%s", (proxy_id, t))
 
     def render_materialized_state(self) -> SslFilterMaterializedState:
         self.init_db()

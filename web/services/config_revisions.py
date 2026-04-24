@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from services.db import connect, create_index_if_not_exists
+from services.db import connect
 from services.proxy_context import normalize_proxy_id
 
 
@@ -49,7 +49,9 @@ class ConfigRevisionStore:
                     source_kind VARCHAR(64) NOT NULL DEFAULT 'manual',
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
-                    is_active TINYINT(1) NOT NULL DEFAULT 1
+                    is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    KEY idx_proxy_config_revisions_proxy_active (proxy_id, is_active, created_ts),
+                    KEY idx_proxy_config_revisions_proxy_sha (proxy_id, config_sha256)
                 )
                 """
             )
@@ -62,27 +64,10 @@ class ConfigRevisionStore:
                     ok TINYINT(1) NOT NULL,
                     detail TEXT,
                     applied_by VARCHAR(255) NOT NULL DEFAULT '',
-                    applied_ts BIGINT NOT NULL
+                    applied_ts BIGINT NOT NULL,
+                    KEY idx_proxy_config_applications_proxy_ts (proxy_id, applied_ts)
                 )
                 """
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="proxy_config_revisions",
-                index_name="idx_proxy_config_revisions_proxy_active",
-                columns_sql="proxy_id, is_active, created_ts",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="proxy_config_revisions",
-                index_name="idx_proxy_config_revisions_proxy_sha",
-                columns_sql="proxy_id, config_sha256",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="proxy_config_applications",
-                index_name="idx_proxy_config_applications_proxy_ts",
-                columns_sql="proxy_id, applied_ts",
             )
 
     def _row_to_revision(self, row: object | None) -> Optional[ConfigRevision]:
@@ -119,7 +104,7 @@ class ConfigRevisionStore:
             row = conn.execute(
                 """
                 SELECT * FROM proxy_config_revisions
-                WHERE proxy_id=? AND is_active=1
+                WHERE proxy_id=%s AND is_active=1
                 ORDER BY created_ts DESC, id DESC
                 LIMIT 1
                 """,
@@ -153,7 +138,7 @@ class ConfigRevisionStore:
         with self._connect() as conn:
             if activate:
                 conn.execute(
-                    "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=? AND is_active=1",
+                    "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1",
                     (proxy_key,),
                 )
             cur = conn.execute(
@@ -161,7 +146,7 @@ class ConfigRevisionStore:
                 INSERT INTO proxy_config_revisions(
                     proxy_id, config_sha256, config_text, source_kind, created_by, created_ts, is_active
                 )
-                VALUES(?,?,?,?,?,?,?)
+                VALUES(%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     proxy_key,
@@ -174,7 +159,7 @@ class ConfigRevisionStore:
                 ),
             )
             row = conn.execute(
-                "SELECT * FROM proxy_config_revisions WHERE id=? LIMIT 1",
+                "SELECT * FROM proxy_config_revisions WHERE id=%s LIMIT 1",
                 (int(cur.lastrowid or 0),),
             ).fetchone()
         revision = self._row_to_revision(row)
@@ -216,12 +201,12 @@ class ConfigRevisionStore:
             cur = conn.execute(
                 """
                 INSERT INTO proxy_config_applications(proxy_id, revision_id, ok, detail, applied_by, applied_ts)
-                VALUES(?,?,?,?,?,?)
+                VALUES(%s,%s,%s,%s,%s,%s)
                 """,
                 (proxy_key, int(revision_id), 1 if ok else 0, (detail or "")[:4000], (applied_by or "proxy")[:255], now),
             )
             row = conn.execute(
-                "SELECT * FROM proxy_config_applications WHERE id=? LIMIT 1",
+                "SELECT * FROM proxy_config_applications WHERE id=%s LIMIT 1",
                 (int(cur.lastrowid or 0),),
             ).fetchone()
         application = self._row_to_application(row)
@@ -235,7 +220,7 @@ class ConfigRevisionStore:
             row = conn.execute(
                 """
                 SELECT * FROM proxy_config_applications
-                WHERE proxy_id=?
+                WHERE proxy_id=%s
                 ORDER BY applied_ts DESC, id DESC
                 LIMIT 1
                 """,

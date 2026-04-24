@@ -6,11 +6,10 @@ import time
 from subprocess import run
 from typing import Dict, List, Optional, Set, Tuple
 
-from services.db import column_exists, create_index_if_not_exists
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.webfilter_core import _DEFAULT_BLOCKED_CATEGORIES, _DEFAULT_SOURCE_URL, _env_int, _looks_like_host, _next_midnight_ts, _norm_domain, _now, _parent_domains, _parse_whitelist_lines, _whitelist_match, WebFilterStoreBase
+from services.webfilter_core import _DEFAULT_SOURCE_URL, _env_int, _looks_like_host, _next_midnight_ts, _norm_domain, _now, _parent_domains, _parse_whitelist_lines, _whitelist_match, WebFilterStoreBase
 
 
 logger = logging.getLogger(__name__)
@@ -33,19 +32,6 @@ class WebFilterStore(WebFilterStoreBase):
         self._started = False
         self._lock = threading.Lock()
 
-    def _migrate_defaults(self, conn) -> None:
-        meta_table = self._table("meta")
-        applied = conn.execute(f"SELECT v FROM {meta_table} WHERE k='defaults_v1_applied'").fetchone()
-        if applied:
-            return
-        current_source = self._get(conn, "source_url", "")
-        current_categories = self._get(conn, "blocked_categories", "")
-        if not str(current_source or "").strip():
-            self._set(conn, "source_url", _DEFAULT_SOURCE_URL)
-        if not str(current_categories or "").strip():
-            self._set(conn, "blocked_categories", ",".join(_DEFAULT_BLOCKED_CATEGORIES))
-        self._set_meta(conn, "defaults_v1_applied", "1")
-
     def _init_extra_schema(self, conn) -> None:
         blocked_log_table = self._table("blocked_log")
         conn.execute(
@@ -55,16 +41,9 @@ class WebFilterStore(WebFilterStoreBase):
             "ts BIGINT NOT NULL, "
             "src_ip VARCHAR(64) NOT NULL, "
             "url TEXT NOT NULL, "
-            "category VARCHAR(128) NOT NULL"
+            "category VARCHAR(128) NOT NULL, "
+            f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
             ")"
-        )
-        if not column_exists(conn, blocked_log_table, "proxy_id"):
-            conn.execute(f"ALTER TABLE {blocked_log_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
-        create_index_if_not_exists(
-            conn,
-            table_name=blocked_log_table,
-            index_name=f"idx_{blocked_log_table}_proxy_ts",
-            columns_sql="proxy_id, ts, id",
         )
 
     def list_blocked_log(self, limit: int = 200) -> List[Dict[str, object]]:
@@ -76,7 +55,7 @@ class WebFilterStore(WebFilterStoreBase):
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    f"SELECT ts, src_ip, url, category FROM {self._table('blocked_log')} WHERE proxy_id=? ORDER BY ts DESC LIMIT ?",
+                    f"SELECT ts, src_ip, url, category FROM {self._table('blocked_log')} WHERE proxy_id=%s ORDER BY ts DESC LIMIT %s",
                     (get_proxy_id(), int(limit)),
                 ).fetchall()
                 out: List[Dict[str, object]] = []
@@ -134,7 +113,7 @@ class WebFilterStore(WebFilterStoreBase):
         try:
             with self._connect_webcat() as conn:
                 rows = conn.execute(
-                    "SELECT category, domains FROM webcat_categories ORDER BY category ASC LIMIT ?",
+                    "SELECT category, domains FROM webcat_categories ORDER BY category ASC LIMIT %s",
                     (int(limit),),
                 ).fetchall()
             out: List[Tuple[str, int]] = []
@@ -152,7 +131,7 @@ class WebFilterStore(WebFilterStoreBase):
             with self._connect_webcat() as conn:
                 for candidate in _parent_domains(domain):
                     row = conn.execute(
-                        "SELECT categories FROM webcat_domains WHERE domain=?",
+                        "SELECT categories FROM webcat_domains WHERE domain=%s",
                         (candidate,),
                     ).fetchone()
                     if row and row[0]:

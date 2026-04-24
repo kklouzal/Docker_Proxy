@@ -30,7 +30,9 @@ COPY web/services/adblock_artifacts.py \
 	web/services/pac_renderer.py \
 	web/services/proxy_client.py \
 	web/services/proxy_context.py \
+	web/services/proxy_health.py \
 	web/services/proxy_registry.py \
+	web/services/runtime_helpers.py \
 	web/services/socks_store.py \
 	web/services/squid_core.py \
 	web/services/squid_config_forms.py \
@@ -39,6 +41,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/sslfilter_store.py \
 	web/services/stats.py \
 	web/services/timeseries_store.py \
+	web/services/ui_support.py \
 	web/services/webfilter_core.py \
 	web/services/webfilter_store.py \
 	/app/services/

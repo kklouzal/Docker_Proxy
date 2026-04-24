@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 import re
 import threading
-import time
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
 from typing import List, Optional, Tuple
 
-from services.db import column_exists, connect, create_index_if_not_exists
+from services.db import connect
 from services.proxy_context import get_proxy_id
+from services.runtime_helpers import now_ts as _now
 
 
 # Hostname validation pattern: alphanumeric labels separated by dots
@@ -27,12 +27,6 @@ class PacProfile:
     direct_domains: List[str]
     direct_dst_nets: List[str]
     created_ts: int
-
-
-def _now() -> int:
-    return int(time.time())
-
-
 def _normalize_domain(domain: str) -> Tuple[Optional[str], str]:
     d = (domain or "").strip().lower()
     if not d:
@@ -75,7 +69,9 @@ class PacProfilesStore:
                     socks_enabled TINYINT(1) NOT NULL DEFAULT 0,
                     socks_host VARCHAR(255) NOT NULL DEFAULT '',
                     socks_port INT NOT NULL DEFAULT 1080,
-                    created_ts BIGINT NOT NULL
+                    created_ts BIGINT NOT NULL,
+                    KEY idx_pac_profiles_created (created_ts, id),
+                    KEY idx_pac_profiles_proxy (proxy_id, id)
                 )
                 """
             )
@@ -98,35 +94,13 @@ class PacProfilesStore:
                 """
             )
 
-            # Lightweight schema migration for existing DBs.
-            if not column_exists(conn, "pac_profiles", "proxy_id"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
-            if not column_exists(conn, "pac_profiles", "socks_enabled"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_enabled TINYINT(1) NOT NULL DEFAULT 0")
-            if not column_exists(conn, "pac_profiles", "socks_host"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_host VARCHAR(255) NOT NULL DEFAULT ''")
-            if not column_exists(conn, "pac_profiles", "socks_port"):
-                conn.execute("ALTER TABLE pac_profiles ADD COLUMN socks_port INT NOT NULL DEFAULT 1080")
-
-            create_index_if_not_exists(
-                conn,
-                table_name="pac_profiles",
-                index_name="idx_pac_profiles_created",
-                columns_sql="created_ts, id",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="pac_profiles",
-                index_name="idx_pac_profiles_proxy",
-                columns_sql="proxy_id, id",
-            )
 
     def list_profiles(self) -> List[PacProfile]:
         self.init_db()
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             profiles = conn.execute(
-                "SELECT id, name, client_cidr, socks_enabled, socks_host, socks_port, created_ts FROM pac_profiles WHERE proxy_id=? ORDER BY id ASC",
+                "SELECT id, name, client_cidr, socks_enabled, socks_host, socks_port, created_ts FROM pac_profiles WHERE proxy_id=%s ORDER BY id ASC",
                 (proxy_id,),
             ).fetchall()
             res: List[PacProfile] = []
@@ -135,13 +109,13 @@ class PacProfilesStore:
                 domains = [
                     str(r[0])
                     for r in conn.execute(
-                        "SELECT domain FROM pac_direct_domains WHERE profile_id=? ORDER BY domain ASC", (pid,)
+                        "SELECT domain FROM pac_direct_domains WHERE profile_id=%s ORDER BY domain ASC", (pid,)
                     ).fetchall()
                 ]
                 nets = [
                     str(r[0])
                     for r in conn.execute(
-                        "SELECT cidr FROM pac_direct_dst_nets WHERE profile_id=? ORDER BY cidr ASC", (pid,)
+                        "SELECT cidr FROM pac_direct_dst_nets WHERE profile_id=%s ORDER BY cidr ASC", (pid,)
                     ).fetchall()
                 ]
                 res.append(
@@ -227,29 +201,29 @@ class PacProfilesStore:
             proxy_id = get_proxy_id()
             if profile_id is None:
                 cur = conn.execute(
-                    "INSERT INTO pac_profiles(proxy_id, name, client_cidr, socks_enabled, socks_host, socks_port, created_ts) VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO pac_profiles(proxy_id, name, client_cidr, socks_enabled, socks_host, socks_port, created_ts) VALUES(%s,%s,%s,%s,%s,%s,%s)",
                     (proxy_id, nm, cidr_norm or "", 1 if socks_on else 0, shost, int(sport), _now()),
                 )
                 pid = int(cur.lastrowid)
             else:
                 pid = int(profile_id)
                 conn.execute(
-                    "UPDATE pac_profiles SET name=?, client_cidr=?, socks_enabled=?, socks_host=?, socks_port=? WHERE id=? AND proxy_id=?",
+                    "UPDATE pac_profiles SET name=%s, client_cidr=%s, socks_enabled=%s, socks_host=%s, socks_port=%s WHERE id=%s AND proxy_id=%s",
                     (nm, cidr_norm or "", 1 if socks_on else 0, shost, int(sport), pid, proxy_id),
                 )
 
                 # Clear old rules.
-                conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=?", (pid,))
-                conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=?", (pid,))
+                conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
+                conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
 
             for d in domains:
                 conn.execute(
-                    "INSERT OR IGNORE INTO pac_direct_domains(profile_id, domain) VALUES(?,?)",
+                    "INSERT IGNORE INTO pac_direct_domains(profile_id, domain) VALUES(%s,%s)",
                     (pid, d),
                 )
             for c in nets:
                 conn.execute(
-                    "INSERT OR IGNORE INTO pac_direct_dst_nets(profile_id, cidr) VALUES(?,?)",
+                    "INSERT IGNORE INTO pac_direct_dst_nets(profile_id, cidr) VALUES(%s,%s)",
                     (pid, c),
                 )
 
@@ -260,12 +234,12 @@ class PacProfilesStore:
         pid = int(profile_id)
         proxy_id = get_proxy_id()
         with self._connect() as conn:
-            row = conn.execute("SELECT 1 FROM pac_profiles WHERE id=? AND proxy_id=? LIMIT 1", (pid, proxy_id)).fetchone()
+            row = conn.execute("SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1", (pid, proxy_id)).fetchone()
             if row is None:
                 return
-            conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=?", (pid,))
-            conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=?", (pid,))
-            conn.execute("DELETE FROM pac_profiles WHERE id=? AND proxy_id=?", (pid, proxy_id))
+            conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
+            conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
+            conn.execute("DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s", (pid, proxy_id))
 
     def match_profile_for_client_ip(self, client_ip: str) -> Optional[PacProfile]:
         """Return the first matching profile for client_ip.

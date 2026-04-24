@@ -11,28 +11,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
-from services.db import column_exists, connect, create_index_if_not_exists
+from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now
 
 
 logger = logging.getLogger(__name__)
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(minimum, min(maximum, value))
-
-
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    try:
-        value = float((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = float(default)
-    return max(minimum, min(maximum, value))
 
 
 def _escape_like(value: str) -> str:
@@ -50,12 +35,6 @@ class Row:
     hit_bytes: int
     first_seen: int
     last_seen: int
-
-
-def _now() -> int:
-    return int(time.time())
-
-
 def _pct(numer: int, denom: int) -> float:
     if denom <= 0:
         return 0.0
@@ -102,12 +81,9 @@ def _extract_domain(url: str) -> Optional[str]:
         return None
 
 
-def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Optional[str], str, Dict[str, str]]]:
-    # Supports both:
-    #  1) Squid default format:
-    #     ts elapsed client result_code/status bytes method url ...
-    #  2) Our structured TSV logformat (see squid.conf.template).
-    # Returns: (ts, client_ip, result_code, bytes, domain, method, extras)
+def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Optional[str], str]]:
+    # Supported input is the current structured TSV logformat emitted by
+    # squid.conf.template.
     s = (line or "").strip("\r\n")
     if not s:
         return None
@@ -121,85 +97,32 @@ def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Opti
             row = next(csv.reader(io.StringIO(s), delimiter="\t", quotechar='"'))
         except Exception:
             row = []
-        if len(row) >= 7:
-            try:
-                ts = int(float(row[0]))
-            except ValueError:
-                ts = _now()
-            client_ip = row[2]
-            method = row[3]
-            url = row[4]
-            result_code = row[5]
-            try:
-                size_bytes = int(row[6])
-            except ValueError:
-                size_bytes = 0
-            domain = _extract_domain(url)
+        if len(row) < 7:
+            return None
 
-            # Three known TSV schemas for our structured Squid logformat:
-            # - Lean current default (7 cols): ts, ms, client_ip, method, url, result/status, bytes.
-            # - Prior default (>=14 cols): header-level cache diagnostics without credentials.
-            # - Legacy (>=16 cols): included Authorization/Cookie request headers.
-            # We never persist raw Authorization/Cookie values; we only track presence.
-            if len(row) >= 16:
-                req_auth = row[9] if len(row) > 9 else ""
-                req_cookie = row[10] if len(row) > 10 else ""
-                extras = {
-                    "req_cc": row[7] if len(row) > 7 else "",
-                    "req_pragma": row[8] if len(row) > 8 else "",
-                    "req_has_auth": "1" if (req_auth and req_auth != "-") else "",
-                    "req_has_cookie": "1" if (req_cookie and req_cookie != "-") else "",
-                    "rep_cc": row[11] if len(row) > 11 else "",
-                    "rep_pragma": row[12] if len(row) > 12 else "",
-                    "rep_expires": row[13] if len(row) > 13 else "",
-                    "rep_vary": row[14] if len(row) > 14 else "",
-                    "rep_set_cookie": row[15] if len(row) > 15 else "",
-                }
-            else:
-                extras = {
-                        "req_cc": row[7] if len(row) > 7 else "",
-                        "req_pragma": row[8] if len(row) > 8 else "",
-                        "rep_cc": row[9] if len(row) > 9 else "",
-                        "rep_pragma": row[10] if len(row) > 10 else "",
-                        "rep_expires": row[11] if len(row) > 11 else "",
-                        "rep_vary": row[12] if len(row) > 12 else "",
-                        "rep_set_cookie": row[13] if len(row) > 13 else "",
-                    }
-            return ts, client_ip, result_code, max(size_bytes, 0), domain, method, extras
+        try:
+            ts = int(float(row[0]))
+        except ValueError:
+            ts = _now()
+        client_ip = row[2]
+        method = row[3]
+        url = row[4]
+        result_code = row[5]
+        try:
+            size_bytes = int(row[6])
+        except ValueError:
+            size_bytes = 0
+        domain = _extract_domain(url)
+        return ts, client_ip, result_code, max(size_bytes, 0), domain, method
 
-    # Default whitespace format.
-    parts = s.split()
-    if len(parts) < 7:
-        return None
-
-    try:
-        ts = int(float(parts[0]))
-    except ValueError:
-        ts = _now()
-
-    client_ip = parts[2]
-    result_code = parts[3]
-
-    try:
-        size_bytes = int(parts[4])
-    except ValueError:
-        size_bytes = 0
-
-    method = parts[5]
-    url = parts[6]
-    domain = _extract_domain(url)
-
-    return ts, client_ip, result_code, max(size_bytes, 0), domain, method, {}
+    return None
 
 
-def _derive_not_cached_reason(domain: str, method: str, result_code: str, extras: Optional[Dict[str, str]] = None) -> str:
-    # Best-effort reasons based on Squid access.log result codes and HTTP method.
-    # Squid does not log response headers by default, so we cannot reliably detect
-    # Cache-Control: private/no-store/etc without changing logformat.
+def _derive_not_cached_reason(method: str, result_code: str) -> str:
+    # Best-effort reasons based on the current result/status column and method.
     m = (method or "").upper()
     rc = (result_code or "").upper()
 
-    # Extract HTTP status (best-effort) from e.g. TCP_MISS/200
     status: Optional[int] = None
     try:
         if "/" in rc:
@@ -213,50 +136,6 @@ def _derive_not_cached_reason(domain: str, method: str, result_code: str, extras
     if m == "CONNECT" or rc.startswith("TCP_TUNNEL") or rc.startswith("TCP_CONNECT"):
         return "HTTPS tunnel (CONNECT) — not cacheable without SSL-bump"
 
-    ex = extras or {}
-    req_cc = (ex.get("req_cc") or "").lower()
-    req_pragma = (ex.get("req_pragma") or "").lower()
-    req_has_auth = (ex.get("req_has_auth") or "") == "1"
-    req_has_cookie = (ex.get("req_has_cookie") or "") == "1"
-    rep_cc = (ex.get("rep_cc") or "").lower()
-    rep_pragma = (ex.get("rep_pragma") or "").lower()
-    rep_vary = (ex.get("rep_vary") or "").lower()
-    rep_set_cookie = (ex.get("rep_set_cookie") or "")
-
-    def cc_has(header: str, token: str) -> bool:
-        # token match for Cache-Control directives
-        h = (header or "").lower()
-        t = token.lower()
-        # handle both "token" and "token=" forms
-        return (t in h) or (t + "=") in h
-
-    # Client/request-driven reasons.
-    if cc_has(req_cc, "no-store"):
-        return "Client forbids storage (Cache-Control: no-store)"
-    if cc_has(req_cc, "no-cache") or cc_has(req_cc, "max-age=0") or ("no-cache" in req_pragma):
-        return "Client requested no-cache (Cache-Control/Pragma)"
-    if cc_has(req_cc, "only-if-cached"):
-        return "Client requested only-if-cached (offline cache mode)"
-    if req_has_auth:
-        return "Authorization header present (often not cacheable by default)"
-    if req_has_cookie:
-        return "Cookie header present (often reduces cacheability)"
-
-    # Origin/response-driven reasons.
-    if cc_has(rep_cc, "no-store") or ("no-store" in rep_pragma):
-        return "Origin forbids caching (Cache-Control/Pragma: no-store)"
-    if cc_has(rep_cc, "private"):
-        return "Origin marks response private (Cache-Control: private)"
-    if cc_has(rep_cc, "no-cache"):
-        return "Origin requires revalidation (Cache-Control: no-cache)"
-    if cc_has(rep_cc, "max-age=0") or cc_has(rep_cc, "s-maxage=0"):
-        return "Origin sets max-age=0 (immediate expiry)"
-    if rep_set_cookie and rep_set_cookie != "-":
-        return "Set-Cookie present (often not cacheable by default)"
-    if rep_vary.strip() == "*":
-        return "Vary: * (not cacheable)"
-
-    # Status-code heuristics (only if we didn't find a header-driven reason).
     if status is not None:
         if status in (301, 302, 303, 307, 308):
             return f"Redirect response ({status}) (often not cached without explicit freshness)"
@@ -273,7 +152,6 @@ def _derive_not_cached_reason(domain: str, method: str, result_code: str, extras
     if "MISS" in rc:
         return "Cache miss (object not in cache)"
 
-    # Fall back to a short generic reason.
     return "Not served from cache"
 
 
@@ -305,12 +183,12 @@ class LiveStatsStore:
         parsed = _parse_access_log_line(line)
         if not parsed:
             return False
-        ts, ip, result_code, size_bytes, domain, method, extras = parsed
+        ts, ip, result_code, size_bytes, domain, method = parsed
         if not domain:
             return False
 
         hit = _is_hit(result_code)
-        reason = _derive_not_cached_reason(domain, method, result_code, extras=extras) if not hit else ""
+        reason = _derive_not_cached_reason(method, result_code) if not hit else ""
 
         self._upsert_agg(conn, "domains", "domain", domain, ts, size_bytes, hit)
         self._upsert_agg(conn, "clients", "ip", ip, ts, size_bytes, hit)
@@ -336,7 +214,8 @@ class LiveStatsStore:
                     hit_bytes BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
                     last_seen BIGINT NOT NULL,
-                    PRIMARY KEY (proxy_id, domain)
+                    PRIMARY KEY (proxy_id, domain),
+                    KEY idx_{domains_table}_proxy_last_seen (proxy_id, last_seen)
                 )
                 """
             )
@@ -351,7 +230,8 @@ class LiveStatsStore:
                     hit_bytes BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
                     last_seen BIGINT NOT NULL,
-                    PRIMARY KEY (proxy_id, ip)
+                    PRIMARY KEY (proxy_id, ip),
+                    KEY idx_{clients_table}_proxy_last_seen (proxy_id, last_seen)
                 )
                 """
             )
@@ -367,7 +247,8 @@ class LiveStatsStore:
                     hit_bytes BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
                     last_seen BIGINT NOT NULL,
-                    PRIMARY KEY (proxy_id, ip, domain)
+                    PRIMARY KEY (proxy_id, ip, domain),
+                    KEY idx_{client_domains_table}_proxy_ip (proxy_id, ip)
                 )
                 """
             )
@@ -381,35 +262,12 @@ class LiveStatsStore:
                     reason VARCHAR(300) NOT NULL,
                     requests BIGINT NOT NULL DEFAULT 0,
                     first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL
+                    last_seen BIGINT NOT NULL,
+                    KEY idx_{nocache_table}_proxy_ip (proxy_id, ip, last_seen),
+                    KEY idx_{nocache_table}_proxy_domain (proxy_id, domain, last_seen)
                 )
                 """
             )
-            if not column_exists(conn, domains_table, "proxy_id"):
-                conn.execute(f"ALTER TABLE {domains_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
-            try:
-                conn.execute(f"ALTER TABLE {domains_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, domain)")
-            except Exception:
-                pass
-            if not column_exists(conn, clients_table, "proxy_id"):
-                conn.execute(f"ALTER TABLE {clients_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
-            try:
-                conn.execute(f"ALTER TABLE {clients_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, ip)")
-            except Exception:
-                pass
-            if not column_exists(conn, client_domains_table, "proxy_id"):
-                conn.execute(f"ALTER TABLE {client_domains_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST")
-            try:
-                conn.execute(f"ALTER TABLE {client_domains_table} DROP PRIMARY KEY, ADD PRIMARY KEY(proxy_id, ip, domain)")
-            except Exception:
-                pass
-            if not column_exists(conn, nocache_table, "proxy_id"):
-                conn.execute(f"ALTER TABLE {nocache_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER row_key")
-            create_index_if_not_exists(conn, table_name=domains_table, index_name=f"idx_{domains_table}_proxy_last_seen", columns_sql="proxy_id, last_seen")
-            create_index_if_not_exists(conn, table_name=clients_table, index_name=f"idx_{clients_table}_proxy_last_seen", columns_sql="proxy_id, last_seen")
-            create_index_if_not_exists(conn, table_name=client_domains_table, index_name=f"idx_{client_domains_table}_proxy_ip", columns_sql="proxy_id, ip")
-            create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_proxy_ip", columns_sql="proxy_id, ip, last_seen")
-            create_index_if_not_exists(conn, table_name=nocache_table, index_name=f"idx_{nocache_table}_proxy_domain", columns_sql="proxy_id, domain, last_seen")
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune stale aggregate rows.
@@ -420,10 +278,10 @@ class LiveStatsStore:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table(conn, 'client_domain_nocache')} WHERE last_seen < ?", (int(cutoff),))
-            conn.execute(f"DELETE FROM {self._table(conn, 'client_domains')} WHERE last_seen < ?", (int(cutoff),))
-            conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE last_seen < ?", (int(cutoff),))
-            conn.execute(f"DELETE FROM {self._table(conn, 'clients')} WHERE last_seen < ?", (int(cutoff),))
+            conn.execute(f"DELETE FROM {self._table(conn, 'client_domain_nocache')} WHERE last_seen < %s", (int(cutoff),))
+            conn.execute(f"DELETE FROM {self._table(conn, 'client_domains')} WHERE last_seen < %s", (int(cutoff),))
+            conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE last_seen < %s", (int(cutoff),))
+            conn.execute(f"DELETE FROM {self._table(conn, 'clients')} WHERE last_seen < %s", (int(cutoff),))
 
     def _upsert_agg(self, conn, table: str, key_col: str, key: str, ts: int, size_bytes: int, is_hit: bool) -> None:
         table_name = self._table(conn, table)
@@ -433,14 +291,14 @@ class LiveStatsStore:
         conn.execute(
             f"""
             INSERT INTO {table_name} (proxy_id, {key_col}, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
-            VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT(proxy_id, {key_col}) DO UPDATE SET
+            VALUES (%s, %s, 1, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
                 requests = requests + 1,
-                hit_requests = hit_requests + excluded.hit_requests,
-                bytes = bytes + excluded.bytes,
-                hit_bytes = hit_bytes + excluded.hit_bytes,
-                first_seen = MIN(first_seen, excluded.first_seen),
-                last_seen = MAX(last_seen, excluded.last_seen);
+                hit_requests = hit_requests + VALUES(hit_requests),
+                bytes = bytes + VALUES(bytes),
+                hit_bytes = hit_bytes + VALUES(hit_bytes),
+                first_seen = LEAST(first_seen, VALUES(first_seen)),
+                last_seen = GREATEST(last_seen, VALUES(last_seen));
             """ ,
             (proxy_id, key, hit, size_bytes, hit_bytes, ts, ts),
         )
@@ -453,14 +311,14 @@ class LiveStatsStore:
         conn.execute(
             f"""
             INSERT INTO {table_name} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
-            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT(proxy_id, ip, domain) DO UPDATE SET
+            VALUES (%s, %s, %s, 1, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
                 requests = requests + 1,
-                hit_requests = hit_requests + excluded.hit_requests,
-                bytes = bytes + excluded.bytes,
-                hit_bytes = hit_bytes + excluded.hit_bytes,
-                first_seen = MIN(first_seen, excluded.first_seen),
-                last_seen = MAX(last_seen, excluded.last_seen);
+                hit_requests = hit_requests + VALUES(hit_requests),
+                bytes = bytes + VALUES(bytes),
+                hit_bytes = hit_bytes + VALUES(hit_bytes),
+                first_seen = LEAST(first_seen, VALUES(first_seen)),
+                last_seen = GREATEST(last_seen, VALUES(last_seen));
             """,
             (proxy_id, ip, domain, hit, size_bytes, hit_bytes, ts, ts),
         )
@@ -475,11 +333,11 @@ class LiveStatsStore:
         conn.execute(
             f"""
             INSERT INTO {table_name} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            ON CONFLICT(row_key) DO UPDATE SET
+            VALUES (%s, %s, %s, %s, %s, 1, %s, %s)
+            ON DUPLICATE KEY UPDATE
                 requests = requests + 1,
-                first_seen = MIN(first_seen, excluded.first_seen),
-                last_seen = MAX(last_seen, excluded.last_seen);
+                first_seen = LEAST(first_seen, VALUES(first_seen)),
+                last_seen = GREATEST(last_seen, VALUES(last_seen));
             """,
             (row_key, proxy_id, ip, domain, r, ts, ts),
         )
@@ -513,11 +371,11 @@ class LiveStatsStore:
                 parsed = _parse_access_log_line(line)
                 if not parsed:
                     continue
-                ts, ip, result_code, size_bytes, domain, method, extras = parsed
+                ts, ip, result_code, size_bytes, domain, method = parsed
                 if not domain:
                     continue
                 hit = _is_hit(result_code)
-                reason = _derive_not_cached_reason(domain, method, result_code, extras=extras) if not hit else ""
+                reason = _derive_not_cached_reason(method, result_code) if not hit else ""
                 self._upsert_agg(conn, "domains", "domain", domain, ts, size_bytes, hit)
                 self._upsert_agg(conn, "clients", "ip", ip, ts, size_bytes, hit)
                 self._upsert_client_domain(conn, ip, domain, ts, size_bytes, hit)
@@ -678,10 +536,10 @@ class LiveStatsStore:
             return rows
 
     def get_totals(self, *, since: Optional[int] = None) -> Dict[str, int]:
-        where = "WHERE proxy_id = ?"
+        where = "WHERE proxy_id = %s"
         params: List[Any] = [get_proxy_id()]
         if since is not None:
-            where += " AND last_seen >= ?"
+            where += " AND last_seen >= %s"
             params.append(int(since))
         with self._connect() as conn:
             d = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'domains')} {where}", tuple(params)).fetchone()
@@ -703,13 +561,13 @@ class LiveStatsStore:
         search: str = "",
     ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
-        where = ["proxy_id = ?"]
+        where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
-            where.append("last_seen >= ?")
+            where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("domain LIKE ? ESCAPE '\\'")
+            where.append("domain LIKE %s ESCAPE '\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -717,11 +575,11 @@ class LiveStatsStore:
             domains_table = self._table(conn, "domains")
 
         if sort == "top":
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {domains_table} {where_sql} ORDER BY requests {order_sql}, last_seen DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {domains_table} {where_sql} ORDER BY requests {order_sql}, last_seen DESC LIMIT %s"
         elif sort == "cache":
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {domains_table} {where_sql} ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {domains_table} {where_sql} ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT %s"
         else:
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {domains_table} {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {domains_table} {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT %s"
 
         rows = self._query_rows(sql, tuple(params + [int(limit)]))
         totals = self.get_totals(since=since)
@@ -749,13 +607,13 @@ class LiveStatsStore:
         search: str = "",
     ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
-        where = ["proxy_id = ?"]
+        where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
-            where.append("last_seen >= ?")
+            where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("ip LIKE ? ESCAPE '\\'")
+            where.append("ip LIKE %s ESCAPE '\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -763,11 +621,11 @@ class LiveStatsStore:
             clients_table = self._table(conn, "clients")
 
         if sort == "top":
-            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {clients_table} {where_sql} ORDER BY requests {order_sql}, last_seen DESC LIMIT ?"
+            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {clients_table} {where_sql} ORDER BY requests {order_sql}, last_seen DESC LIMIT %s"
         elif sort == "cache":
-            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {clients_table} {where_sql} ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT ?"
+            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {clients_table} {where_sql} ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) {order_sql}, requests DESC LIMIT %s"
         else:
-            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {clients_table} {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT ?"
+            sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {clients_table} {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT %s"
 
         rows = self._query_rows(sql, tuple(params + [int(limit)]))
         totals = self.get_totals(since=since)
@@ -792,11 +650,11 @@ class LiveStatsStore:
         with self._connect() as conn:
             client_domains_table = self._table(conn, "client_domains")
         if sort == "recent":
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=? AND ip=? ORDER BY last_seen DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=%s AND ip=%s ORDER BY last_seen DESC LIMIT %s"
         elif sort == "cache":
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=? AND ip=? ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) DESC, requests DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=%s AND ip=%s ORDER BY (CASE WHEN requests>0 THEN (1.0*hit_requests/requests) ELSE 0 END) DESC, requests DESC LIMIT %s"
         else:
-            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=? AND ip=? ORDER BY requests DESC, last_seen DESC LIMIT ?"
+            sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {client_domains_table} WHERE proxy_id=%s AND ip=%s ORDER BY requests DESC, last_seen DESC LIMIT %s"
 
         rows = self._query_rows(sql, (proxy_id, ip, int(limit)))
         total = sum(r.requests for r in rows) or 0
@@ -839,9 +697,9 @@ class LiveStatsStore:
                 LIMIT 1
             ) AS reason
         FROM {client_domains_table} cd
-        WHERE cd.proxy_id = ? AND cd.ip = ? AND cd.requests > cd.hit_requests
+        WHERE cd.proxy_id = %s AND cd.ip = %s AND cd.requests > cd.hit_requests
         ORDER BY miss_requests DESC, cd.last_seen DESC
-        LIMIT ?
+        LIMIT %s
         """
         with self._connect() as conn:
             rows = conn.execute(sql, (proxy_id, ip, lim)).fetchall()
@@ -877,7 +735,7 @@ class LiveStatsStore:
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
             total_row = conn.execute(
-                f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=? AND domain=?",
+                f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=%s AND domain=%s",
                 (proxy_id, d),
             ).fetchone()
             total = int(total_row[0] or 0) if total_row else 0
@@ -886,10 +744,10 @@ class LiveStatsStore:
                 f"""
                 SELECT reason, COALESCE(SUM(requests),0) AS req, COALESCE(MAX(last_seen),0) AS last_seen
                 FROM {nocache_table}
-                WHERE proxy_id=? AND domain=?
+                WHERE proxy_id=%s AND domain=%s
                 GROUP BY reason
                 ORDER BY req DESC, last_seen DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (proxy_id, d, lim),
             ).fetchall()
@@ -912,17 +770,17 @@ class LiveStatsStore:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
-            total_row = conn.execute(f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=?", (proxy_id,)).fetchone()
+            total_row = conn.execute(f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=%s", (proxy_id,)).fetchone()
             total = int(total_row[0] or 0) if total_row else 0
 
             rows = conn.execute(
                 f"""
                 SELECT reason, COALESCE(SUM(requests),0) AS req, COALESCE(MAX(last_seen),0) AS last_seen
                 FROM {nocache_table}
-                WHERE proxy_id=?
+                WHERE proxy_id=%s
                 GROUP BY reason
                 ORDER BY req DESC, last_seen DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (proxy_id, lim),
             ).fetchall()

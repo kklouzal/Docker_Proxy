@@ -6,6 +6,7 @@ import threading
 import time
 
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import env_float as _env_float
 from proxy.runtime import get_runtime
 
 
@@ -13,16 +14,6 @@ logger = logging.getLogger(__name__)
 
 _started = False
 _start_lock = threading.Lock()
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        value = float((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = float(default)
-    return max(1.0, min(3600.0, value))
-
-
 def _loop(interval: float, func) -> None:
     loop_name = getattr(func, "__name__", "agent-loop")
     while True:
@@ -59,8 +50,8 @@ def start_agent() -> None:
                 message="Initial proxy sync failed",
             )
 
-        heartbeat_interval = _env_float("PROXY_HEARTBEAT_INTERVAL_SECONDS", 15.0)
-        sync_interval = _env_float("PROXY_SYNC_INTERVAL_SECONDS", 30.0)
+        heartbeat_interval = _env_float("PROXY_HEARTBEAT_INTERVAL_SECONDS", 15.0, minimum=1.0, maximum=3600.0)
+        sync_interval = _env_float("PROXY_SYNC_INTERVAL_SECONDS", 30.0, minimum=1.0, maximum=3600.0)
 
         threading.Thread(target=_loop, args=(heartbeat_interval, runtime.heartbeat), name="proxy-heartbeat", daemon=True).start()
         threading.Thread(target=_loop, args=(sync_interval, runtime.sync_from_db), name="proxy-sync-loop", daemon=True).start()

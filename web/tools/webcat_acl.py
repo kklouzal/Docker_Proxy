@@ -16,30 +16,9 @@ APP_ROOT = os.path.abspath(os.path.join(HERE, ".."))
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
-from services.db import connect, create_index_if_not_exists
+from services.db import connect
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
-
-
-def _now() -> int:
-    return int(time.time())
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(minimum, min(maximum, value))
-
-
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    try:
-        value = float((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = float(default)
-    return max(minimum, min(maximum, value))
-
-
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now
 def _norm_domain(s: str) -> str:
     d = (s or "").strip().lower().rstrip(".")
     if d.startswith("."):
@@ -129,7 +108,7 @@ class _Db:
         candidates = list(_parent_domains(normalized))
         if not candidates:
             return self._cache_put(normalized, set())
-        placeholders = ",".join(["?"] * len(candidates))
+        placeholders = ",".join(["%s"] * len(candidates))
         params = tuple(candidates + candidates)
         try:
             row = conn.execute(
@@ -186,19 +165,10 @@ class _BlockedLogDb:
                 "ts BIGINT NOT NULL, "
                 "src_ip VARCHAR(64) NOT NULL, "
                 "url TEXT NOT NULL, "
-                "category VARCHAR(128) NOT NULL"
+                "category VARCHAR(128) NOT NULL, "
+                f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
                 ")"
             )
-            try:
-                row = conn.execute(
-                    "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1",
-                    (blocked_log_table, "proxy_id"),
-                ).fetchone()
-                if row is None:
-                    conn.execute(f"ALTER TABLE {blocked_log_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
-            except Exception:
-                pass
-            create_index_if_not_exists(conn, table_name=blocked_log_table, index_name=f"idx_{blocked_log_table}_proxy_ts", columns_sql="proxy_id, ts, id")
             self._conn = conn
             return conn
         except Exception:
@@ -231,7 +201,7 @@ class _BlockedLogDb:
     def _flush(self, conn, batch: list[tuple[int, str, str, str, str]]) -> None:
         blocked_log_table = self._table(conn)
         conn.executemany(
-            f"INSERT INTO {blocked_log_table}(ts, proxy_id, src_ip, url, category) VALUES(?,?,?,?,?)",
+            f"INSERT INTO {blocked_log_table}(ts, proxy_id, src_ip, url, category) VALUES(%s,%s,%s,%s,%s)",
             batch,
         )
         conn.commit()

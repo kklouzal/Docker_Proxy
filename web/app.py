@@ -25,19 +25,21 @@ from services.pac_profiles_store import get_pac_profiles_store
 from services.pac_renderer import build_public_pac_url, build_proxy_pac_state, materialize_proxy_pac_state, render_proxy_pac_for_request
 from services.proxy_client import ProxyClientError, get_proxy_client
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
+from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, check_dante_health, check_tcp_service as _shared_check_tcp_service, normalize_service_health as _shared_normalize_service_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar, unavailable_service as _shared_unavailable_service
 from services.proxy_registry import get_proxy_registry
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.errors import public_error_message
-from services.health_checks import annotate_service_target as _shared_annotate_service_target, build_clamav_health as _shared_build_clamav_health, check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener, check_tcp as _shared_check_tcp, is_local_host, resolve_host_port as _shared_resolve_host_port, send_sample_respmod_to as _shared_send_sample_respmod_to, test_clamd_eicar as _shared_test_clamd_eicar
+from services.health_checks import build_clamav_health as _shared_build_clamav_health, check_icap_service as _shared_check_icap_service
 from services.logutil import log_exception_throttled
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
+from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, present_ssl_error_rows as _present_ssl_error_rows, present_ssl_top_domains as _present_ssl_top_domains, safe_local_return_url as _safe_local_return_url, window_label as _window_label
 
 import re
 import secrets
 import csv
 import io
-from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.parse import urlparse, urlsplit
 from typing import Any, Dict, Iterable, Sequence
 from markupsafe import Markup
 
@@ -215,201 +217,6 @@ def _query_int_arg(name: str, *, default: int, minimum: int | None = None, maxim
     return _bounded_int(request.args.get(name), default=default, minimum=minimum, maximum=maximum)
 
 
-def _normalized_domain(value: str | None) -> str:
-    return (value or '').strip().lower().lstrip('.')
-
-
-_SSL_ERROR_CATEGORY_META: Dict[str, Dict[str, str]] = {
-    'CERT_VERIFY': {
-        'label': 'Trust / chain failure',
-        'tone': 'danger',
-        'note': 'Certificate validation failed. Confirm the upstream issuer chain and only bypass inspection if the destination is intentionally exempt.',
-    },
-    'CERT_EXPIRED': {
-        'label': 'Expired certificate',
-        'tone': 'danger',
-        'note': 'The remote certificate appears expired. Verify with the service owner before using an exclusion as a workaround.',
-    },
-    'CERT_NAME': {
-        'label': 'Hostname mismatch',
-        'tone': 'danger',
-        'note': 'The certificate subject does not match the requested hostname. Double-check the destination and whether interception is appropriate.',
-    },
-    'CERT': {
-        'label': 'Certificate issue',
-        'tone': 'warn',
-        'note': 'A certificate-related failure was detected. Inspect the latest sample for the specific OpenSSL or Squid message.',
-    },
-    'TLS_HANDSHAKE': {
-        'label': 'Handshake failed',
-        'tone': 'warn',
-        'note': 'TLS negotiation failed before a session was established. Compare client expectations, upstream TLS support, and bump policy.',
-    },
-    'TLS_CIPHER': {
-        'label': 'Cipher mismatch',
-        'tone': 'warn',
-        'note': 'Client and server could not agree on a cipher. Review allowed cipher suites and legacy TLS compatibility requirements.',
-    },
-    'TLS_PROTOCOL': {
-        'label': 'Protocol mismatch',
-        'tone': 'warn',
-        'note': 'The requested TLS version was unsupported or mismatched. Check whether the app or upstream requires a legacy or newer protocol.',
-    },
-    'SSL_BUMP': {
-        'label': 'Inspection policy conflict',
-        'tone': 'warn',
-        'note': 'The failure occurred while Squid was applying SSL bump logic. Review bump/splice rules before adding exclusions.',
-    },
-    'TLS_OTHER': {
-        'label': 'Other TLS failure',
-        'tone': 'warn',
-        'note': 'A generic TLS error was captured. Use the latest sample and timestamps to correlate with Live traffic or application logs.',
-    },
-}
-
-
-def _ssl_error_category_meta(category: str | None) -> Dict[str, str]:
-    key = (category or 'TLS_OTHER').strip().upper() or 'TLS_OTHER'
-    meta = _SSL_ERROR_CATEGORY_META.get(key, _SSL_ERROR_CATEGORY_META['TLS_OTHER'])
-    return {
-        'key': key,
-        'label': meta['label'],
-        'tone': meta['tone'],
-        'note': meta['note'],
-    }
-
-
-def _window_label(seconds: int) -> str:
-    value = max(60, int(seconds or 0))
-    if value % (24 * 3600) == 0:
-        return f"{value // (24 * 3600)}d"
-    if value % 3600 == 0:
-        return f"{value // 3600}h"
-    if value % 60 == 0:
-        return f"{value // 60}m"
-    return f"{value}s"
-
-
-def _present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
-    presented: list[Dict[str, Any]] = []
-    total_events = 0
-    unknown_target_buckets = 0
-    unknown_target_events = 0
-    known_domains: set[str] = set()
-    latest_seen = 0
-    category_totals: Dict[str, int] = {}
-
-    for row in rows:
-        domain = _normalized_domain(getattr(row, 'domain', ''))
-        category = str(getattr(row, 'category', '') or 'TLS_OTHER').strip().upper() or 'TLS_OTHER'
-        count = int(getattr(row, 'count', 0) or 0)
-        first_seen = int(getattr(row, 'first_seen', 0) or 0)
-        last_seen = int(getattr(row, 'last_seen', 0) or 0)
-        sample = str(getattr(row, 'sample', '') or '').strip()
-        meta = _ssl_error_category_meta(category)
-
-        total_events += count
-        latest_seen = max(latest_seen, last_seen)
-        category_totals[category] = category_totals.get(category, 0) + count
-
-        if domain:
-            known_domains.add(domain)
-        else:
-            unknown_target_buckets += 1
-            unknown_target_events += count
-
-        presented.append(
-            {
-                'domain': domain,
-                'target_display': domain or 'Hostname not captured',
-                'has_domain': bool(domain),
-                'category': category,
-                'category_label': meta['label'],
-                'badge_tone': meta['tone'],
-                'operator_note': meta['note'],
-                'reason': str(getattr(row, 'reason', '') or ''),
-                'count': count,
-                'first_seen': first_seen,
-                'last_seen': last_seen,
-                'sample': sample,
-            }
-        )
-
-    top_category = ''
-    top_category_total = 0
-    for category, total in category_totals.items():
-        if total > top_category_total:
-            top_category = category
-            top_category_total = total
-
-    top_meta = _ssl_error_category_meta(top_category) if top_category else {
-        'label': 'No active errors',
-        'tone': 'ok',
-        'note': 'No SSL/TLS error buckets were recorded in the selected window.',
-    }
-
-    hints: list[Dict[str, str]] = []
-    if presented:
-        hints.append(
-            {
-                'kind': 'info',
-                'title': 'Treat exclusions as a last-mile workaround',
-                'body': 'Prefer fixing certificate trust, expiry, hostname mismatches, or bump rules before bypassing SSL inspection for a destination.',
-            }
-        )
-        if unknown_target_buckets:
-            hints.append(
-                {
-                    'kind': 'warning',
-                    'title': 'Some events do not include a hostname',
-                    'body': 'Use the latest sample text and last-seen timestamp to correlate with Live traffic, access logs, or the affected application before creating exclusions.',
-                }
-            )
-    else:
-        hints.append(
-            {
-                'kind': 'success',
-                'title': 'No current SSL/TLS buckets in this window',
-                'body': 'This view stays empty until Squid records a matching TLS error in cache.log for the selected time range.',
-            }
-        )
-
-    return {
-        'rows': presented,
-        'summary': {
-            'bucket_count': len(presented),
-            'total_events': total_events,
-            'known_domains': len(known_domains),
-            'unknown_target_buckets': unknown_target_buckets,
-            'unknown_target_events': unknown_target_events,
-            'latest_seen': latest_seen,
-            'top_category_label': top_meta['label'],
-            'top_category_tone': top_meta['tone'],
-            'top_category_total': top_category_total,
-        },
-        'hints': hints,
-    }
-
-
-def _present_ssl_top_domains(rows: Sequence[Dict[str, Any]], *, limit: int = 15) -> list[Dict[str, Any]]:
-    presented: list[Dict[str, Any]] = []
-    for row in rows:
-        domain = _normalized_domain(str(row.get('domain') or ''))
-        if not domain:
-            continue
-        presented.append(
-            {
-                'domain': domain,
-                'total': int(row.get('total') or 0),
-                'buckets': int(row.get('buckets') or 0),
-                'last_seen': int(row.get('last_seen') or 0),
-            }
-        )
-        if len(presented) >= limit:
-            break
-    return presented
-
-
 def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=';', lineterminator='\n')
@@ -427,31 +234,6 @@ def _redirect_after_policy_refresh(endpoint: str, store: Any, *, force: bool = T
 def _redirect_after_pac_refresh(endpoint: str, **params):
     _best_effort_refresh_pac_runtime()
     return _redirect_to(endpoint, **params)
-
-
-def _safe_local_return_url(value: str | None) -> str | None:
-    raw = (value or '').strip()
-    if not raw:
-        return None
-    parsed = urlsplit(raw)
-    if parsed.scheme or parsed.netloc:
-        return None
-    if not parsed.path.startswith('/') or parsed.path.startswith('//'):
-        return None
-    return urlunsplit(('', '', parsed.path, parsed.query, parsed.fragment))
-
-
-def _append_query_to_local_return(return_to: str | None, **params: Any) -> str | None:
-    safe = _safe_local_return_url(return_to)
-    if not safe:
-        return None
-    parsed = urlsplit(safe)
-    replace_keys = {k for k, v in params.items() if v is not None}
-    items = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k not in replace_keys]
-    for key, value in params.items():
-        if value is not None:
-            items.append((key, str(value)))
-    return urlunsplit(('', '', parsed.path, urlencode(items, doseq=True), parsed.fragment))
 
 
 def _redirect_after_pac_refresh_to_return(return_to: str | None, fallback_endpoint: str, **params: Any):
@@ -494,16 +276,6 @@ def _add_exclusion_cidr(store: Any, value: str) -> tuple[bool, str, str]:
         return ok, err, cidr
     except Exception as exc:
         return False, public_error_message(exc), cidr
-
-
-def _bulk_lines(value: str | None) -> list[str]:
-    lines: list[str] = []
-    for raw in (value or '').splitlines():
-        line = raw.strip()
-        if not line or line.startswith('#'):
-            continue
-        lines.append(line)
-    return lines
 
 
 def _render_template_config_text(
@@ -858,7 +630,7 @@ def inject_now():
 
 
 def _check_tcp(host: str, port: int, timeout: float = 0.6) -> Dict[str, Any]:
-    return _shared_check_tcp(host, port, timeout=timeout, error_formatter=public_error_message)
+    return _shared_check_tcp_service(host, port, timeout=timeout, error_formatter=public_error_message)
 
 
 def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
@@ -873,13 +645,8 @@ def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
     )
 
 
-def _csv_safe(value: object) -> str:
-    """Prevent CSV injection by prefixing formula-like values."""
-    s = "" if value is None else str(value)
-    probe = s.lstrip()
-    if probe and probe[0] in ("=", "+", "-", "@"):  # Excel/Sheets formula prefixes
-        return "'" + s
-    return s
+def _check_dante() -> Dict[str, Any]:
+    return check_dante_health(timeout=0.6, error_formatter=public_error_message)
 
 
 def _current_managed_config() -> str:
@@ -1375,16 +1142,9 @@ def index():
     except Exception:
         trends = {}
 
-    # ICAP health check: verify the adblock REQMOD c-icap instance is reachable.
     icap_health = _check_icap_adblock()
     clamav_health = _check_clamd()
-    dante_port = int(os.environ.get('DANTE_PORT', 1080))
-    dante_host = os.environ.get('DANTE_HOST', '127.0.0.1')
-    dante_health = (
-        check_local_listener('dante', dante_host, dante_port)
-        if is_local_host(dante_host)
-        else _check_tcp(dante_host, dante_port, timeout=0.6)
-    )
+    dante_health = _check_dante()
 
     last_config = None
     try:
@@ -1706,60 +1466,19 @@ def sslfilter():
 
 
 def _check_icap_adblock() -> Dict[str, Any]:
-    host = os.environ.get('CICAP_HOST', '127.0.0.1')
-    try:
-        port = int(os.environ.get('CICAP_PORT', 14000))
-    except Exception:
-        port = 14000
-    if is_local_host(host):
-        return check_local_listener('c-icap', host, port)
-    return _check_icap_service(host=host, port=port, service='/adblockreq')
+    return check_adblock_icap_health(timeout=0.8, error_formatter=public_error_message)
 
 
 def _unavailable_service(detail: str, *, target: str = 'unavailable', service: str = '') -> Dict[str, Any]:
-    status: Dict[str, Any] = {
-        'ok': False,
-        'detail': str(detail or 'unavailable'),
-        'host': '',
-        'port': 0,
-        'target': target,
-    }
-    if service:
-        status['service'] = service
-    return status
+    return _shared_unavailable_service(detail, target=target, service=service)
 
 
 def _normalize_service_health(result: Any, *, default_target: str = 'unavailable', service: str = '') -> Dict[str, Any]:
-    if not isinstance(result, dict):
-        return _unavailable_service('unavailable', target=default_target, service=service)
-    detail = str(result.get('detail') or 'unavailable')
-    host = str(result.get('host') or '')
-    try:
-        port = int(result.get('port') or 0)
-    except Exception:
-        port = 0
-    target = str(result.get('target') or (f'{host}:{port}' if host and port else default_target))
-    normalized = {
-        'ok': bool(result.get('ok')),
-        'detail': detail,
-        'host': host,
-        'port': port,
-        'target': target,
-    }
-    effective_service = str(result.get('service') or service)
-    if effective_service:
-        normalized['service'] = effective_service
-    return normalized
+    return _shared_normalize_service_health(result, default_target=default_target, service=service)
 
 
 def _check_icap_av() -> Dict[str, Any]:
-    host, port = _shared_resolve_host_port(host_env='CICAP_HOST', port_env='CICAP_AV_PORT', default_port=14001)
-    result = (
-        check_local_listener('c-icap av', host, port)
-        if is_local_host(host)
-        else _check_icap_service(host=host, port=port, service='/avrespmod')
-    )
-    return _shared_annotate_service_target(result, host=host, port=port, service='/avrespmod')
+    return check_av_icap_health(timeout=0.8, error_formatter=public_error_message)
 
 
 def _clamav_remote_health(proxy_id: str) -> Dict[str, Any]:
@@ -1767,44 +1486,19 @@ def _clamav_remote_health(proxy_id: str) -> Dict[str, Any]:
         return get_proxy_client().get_health(proxy_id)
     except ProxyClientError as exc:
         proxy = get_proxy_registry().get_proxy(proxy_id)
-        unavailable = _unavailable_service('unavailable')
-        return {
-            'ok': False,
-            'status': proxy.status if proxy else 'offline',
-            'proxy_status': str(exc),
-            'stats': {},
-            'services': {
-                'icap': unavailable,
-                'av_icap': _unavailable_service('unavailable', service='/avrespmod'),
-                'clamd': unavailable,
-                'clamav': {
-                    'ok': False,
-                    'detail': str(exc),
-                    'components': {
-                        'av_icap': _unavailable_service('unavailable', service='/avrespmod'),
-                        'clamd': unavailable,
-                    },
-                },
-                'dante': unavailable,
-            },
-        }
+        return build_unavailable_runtime_health(str(exc), proxy_status=proxy.status if proxy else 'offline')
 
 
 def _send_sample_av_icap() -> Dict[str, Any]:
-    av_icap = _check_icap_av()
-    host = str(av_icap.get('host') or '127.0.0.1')
-    port = int(av_icap.get('port') or 14001)
-    return _shared_send_sample_respmod_to(host=host, port=port, service='/avrespmod', error_formatter=public_error_message)
+    return _shared_send_sample_av_icap(error_formatter=public_error_message)
 
 
 def _check_clamd() -> Dict[str, Any]:
-    host, port = _shared_resolve_host_port(host_env='CLAMD_HOST', port_env='CLAMD_PORT', default_port=3310)
-    result = _shared_check_clamd(host=host, port=port, timeout=0.8, error_formatter=public_error_message)
-    return _shared_annotate_service_target(result, host=host, port=port)
+    return check_clamd_health(timeout=0.8, error_formatter=public_error_message)
 
 
 def _test_eicar() -> Dict[str, Any]:
-    return _shared_test_clamd_eicar(error_formatter=public_error_message)
+    return _shared_test_eicar(error_formatter=public_error_message)
 
 
 @app.route('/clamav', methods=['GET'])
@@ -1814,27 +1508,11 @@ def clamav():
     if _is_remote_control_mode():
         proxy_id = get_proxy_id()
         health_payload = _clamav_remote_health(proxy_id)
-        services = health_payload.get('services') or {}
-        aggregate = services.get('clamav') if isinstance(services.get('clamav'), dict) else {}
-        components = aggregate.get('components') if isinstance(aggregate, dict) else {}
-        clamd_health = _normalize_service_health(
-            services.get('clamd') or (components.get('clamd') if isinstance(components, dict) else None) or aggregate,
-        )
-        av_icap_health = _normalize_service_health(
-            services.get('av_icap') or (components.get('av_icap') if isinstance(components, dict) else None),
-            service='/avrespmod',
-        )
-        health = dict(aggregate) if isinstance(aggregate, dict) else {}
-        if not health:
-            health = _shared_build_clamav_health(clamd_health, av_icap_health)
-        else:
-            health['ok'] = bool(health.get('ok'))
-            health['detail'] = str(health.get('detail') or _shared_build_clamav_health(clamd_health, av_icap_health).get('detail'))
-            health['components'] = {
-                'clamd': clamd_health,
-                'av_icap': av_icap_health,
-            }
-        health_source = str(health_payload.get('proxy_status') or health_payload.get('detail') or '')
+        clamav_view = build_remote_clamav_view(health_payload)
+        health = clamav_view['health']
+        clamd_health = clamav_view['clamd_health']
+        av_icap_health = clamav_view['av_icap_health']
+        health_source = clamav_view['health_source']
     else:
         clamd_health = _check_clamd()
         av_icap_health = _check_icap_av()

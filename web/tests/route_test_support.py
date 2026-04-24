@@ -290,6 +290,8 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
     monkeypatch.setattr(app_module, "_check_icap_adblock", lambda: {"ok": True, "detail": "stub"})
     monkeypatch.setattr(app_module, "_check_clamd", lambda: {"ok": True, "detail": "stub"})
     monkeypatch.setattr(app_module, "_check_icap_av", lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:14001"})
+    if hasattr(app_module, "_check_dante"):
+        monkeypatch.setattr(app_module, "_check_dante", lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:1080"})
     monkeypatch.setattr(app_module, "_check_tcp", lambda host, port, timeout=0.6: {"ok": True, "detail": "stub"})
     monkeypatch.setattr(app_module, "_check_icap_service", lambda host, port, service: {"ok": True, "detail": "stub"})
 

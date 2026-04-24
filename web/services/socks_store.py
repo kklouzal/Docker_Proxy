@@ -8,28 +8,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.db import column_exists, connect, create_index_if_not_exists
+from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now
 
 
 logger = logging.getLogger(__name__)
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(minimum, min(maximum, value))
-
-
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    try:
-        value = float((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = float(default)
-    return max(minimum, min(maximum, value))
 
 
 def _escape_like(value: str) -> str:
@@ -47,12 +32,6 @@ class SocksEventRow:
     dst: str
     dst_port: int
     msg: str
-
-
-def _now() -> int:
-    return int(time.time())
-
-
 # Dante log lines often include an epoch-ish float in parentheses:
 #  Dec 12 22:33:24 (1765578804.943147) sockd[32]: ...
 _EPOCH_IN_PARENS = re.compile(r"\((?P<epoch>\d{9,12})(?:\.\d+)?\)")
@@ -196,7 +175,7 @@ class SocksStore:
         proxy_id = get_proxy_id()
 
         conn.execute(
-            "INSERT INTO socks_events(proxy_id, ts, action, protocol, src_ip, src_port, dst, dst_port, msg) VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO socks_events(proxy_id, ts, action, protocol, src_ip, src_port, dst, dst_port, msg) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (proxy_id, ts, action, protocol, src_ip, int(src_port or 0), dst, int(dst_port or 0), s[:600]),
         )
         # Cheap periodic prune.
@@ -218,26 +197,24 @@ class SocksStore:
                     src_port INT NOT NULL,
                     dst VARCHAR(255) NOT NULL,
                     dst_port INT NOT NULL,
-                    msg TEXT NOT NULL
+                    msg TEXT NOT NULL,
+                    KEY idx_socks_events_proxy_ts (proxy_id, ts),
+                    KEY idx_socks_events_proxy_src (proxy_id, src_ip, ts),
+                    KEY idx_socks_events_proxy_dst (proxy_id, dst, ts)
                 )
                 """
             )
-            if not column_exists(conn, "socks_events", "proxy_id"):
-                conn.execute("ALTER TABLE socks_events ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id")
-            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_proxy_ts", columns_sql="proxy_id, ts")
-            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_proxy_src", columns_sql="proxy_id, src_ip, ts")
-            create_index_if_not_exists(conn, table_name="socks_events", index_name="idx_socks_events_proxy_dst", columns_sql="proxy_id, dst, ts")
             self._prune(conn)
 
     def _prune(self, conn) -> None:
         cutoff = _now() - int(self.retention_days * 24 * 60 * 60)
-        conn.execute("DELETE FROM socks_events WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM socks_events WHERE ts < %s", (cutoff,))
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - int(days * 24 * 60 * 60)
         with self._connect() as conn:
-            conn.execute("DELETE FROM socks_events WHERE ts < ?", (int(cutoff),))
+            conn.execute("DELETE FROM socks_events WHERE ts < %s", (int(cutoff),))
 
     def ingest_line(self, line: str) -> None:
         with self._connect() as conn:
@@ -264,7 +241,7 @@ class SocksStore:
         proxy_id = get_proxy_id()
         try:
             with self._connect() as conn:
-                n = conn.execute("SELECT COUNT(*) AS n FROM socks_events WHERE proxy_id=?", (proxy_id,)).fetchone()[0]
+                n = conn.execute("SELECT COUNT(*) AS n FROM socks_events WHERE proxy_id=%s", (proxy_id,)).fetchone()[0]
                 if int(n or 0) > 0:
                     return
         except Exception:
@@ -424,7 +401,7 @@ class SocksStore:
                     SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
                     SUM(CASE WHEN action = 'error' THEN 1 ELSE 0 END) AS errors
                 FROM socks_events
-                WHERE proxy_id = ? AND ts >= ?
+                WHERE proxy_id = %s AND ts >= %s
                 """,
                 (proxy_id, since),
             ).fetchone()
@@ -433,13 +410,13 @@ class SocksStore:
     def top_clients(self, since: int, limit: int = 20, search: str = "") -> List[Dict[str, Any]]:
         like = None
         params: List[Any] = [get_proxy_id(), since]
-        where = "WHERE proxy_id = ? AND ts >= ? AND src_ip != ''"
+        where = "WHERE proxy_id = %s AND ts >= %s AND src_ip != ''"
         if search:
             like = f"%{_escape_like(search)}%"
-            where += " AND src_ip LIKE ? ESCAPE '\\'"
+            where += " AND src_ip LIKE %s ESCAPE '\\'"
             params.append(like)
         sql = f"""
-            SELECT src_ip, COUNT(*) AS events,
+                 SELECT src_ip, COUNT(*) AS events,
                    SUM(CASE WHEN action = 'connect' THEN 1 ELSE 0 END) AS connects,
                    SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
                    MAX(ts) AS last_seen
@@ -447,7 +424,7 @@ class SocksStore:
             {where}
             GROUP BY src_ip
             ORDER BY events DESC
-            LIMIT ?
+                 LIMIT %s
             """
         with self._connect() as conn:
             rows = conn.execute(sql, tuple(params + [int(limit)])).fetchall()
@@ -456,13 +433,13 @@ class SocksStore:
     def top_destinations(self, since: int, limit: int = 20, search: str = "") -> List[Dict[str, Any]]:
         like = None
         params: List[Any] = [get_proxy_id(), since]
-        where = "WHERE proxy_id = ? AND ts >= ? AND dst != ''"
+        where = "WHERE proxy_id = %s AND ts >= %s AND dst != ''"
         if search:
             like = f"%{_escape_like(search)}%"
-            where += " AND dst LIKE ? ESCAPE '\\'"
+            where += " AND dst LIKE %s ESCAPE '\\'"
             params.append(like)
         sql = f"""
-            SELECT dst, dst_port, COUNT(*) AS events,
+                 SELECT dst, dst_port, COUNT(*) AS events,
                    SUM(CASE WHEN action = 'connect' THEN 1 ELSE 0 END) AS connects,
                    SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked,
                    MAX(ts) AS last_seen
@@ -470,21 +447,21 @@ class SocksStore:
             {where}
             GROUP BY dst, dst_port
             ORDER BY events DESC
-            LIMIT ?
+                 LIMIT %s
             """
         with self._connect() as conn:
             rows = conn.execute(sql, tuple(params + [int(limit)])).fetchall()
             return [dict(r) for r in rows]
 
     def recent(self, limit: int = 200, since: Optional[int] = None, search: str = "") -> List[SocksEventRow]:
-        where = ["proxy_id = ?"]
+        where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
-            where.append("ts >= ?")
+            where.append("ts >= %s")
             params.append(int(since))
         if search:
             escaped = _escape_like(search)
-            where.append("(src_ip LIKE ? ESCAPE '\\' OR dst LIKE ? ESCAPE '\\')")
+            where.append("(src_ip LIKE %s ESCAPE '\\' OR dst LIKE %s ESCAPE '\\')")
             params.extend([f"%{escaped}%", f"%{escaped}%"])
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         with self._connect() as conn:
@@ -494,7 +471,7 @@ class SocksStore:
                 FROM socks_events
                 {where_sql}
                 ORDER BY ts DESC, id DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 tuple(params + [int(limit)]),
             ).fetchall()

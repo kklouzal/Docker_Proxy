@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from services.db import connect, create_index_if_not_exists
+from services.db import connect
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import env_int as _env_int, now_ts as _now
 
 
 logger = logging.getLogger(__name__)
@@ -25,18 +26,6 @@ logger = logging.getLogger(__name__)
 _ARTIFACT_SHA_FILENAME = ".artifact-sha256"
 _DEFAULT_COMPILED_DIR = "/var/lib/squid-flask-proxy/adblock/compiled"
 _DEFAULT_SETTINGS_FILENAME = "settings.json"
-
-
-def _now() -> int:
-    return int(time.time())
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(minimum, min(maximum, value))
 
 
 @dataclass(frozen=True)
@@ -106,7 +95,9 @@ class AdblockArtifactStore:
                     enabled_lists_json LONGTEXT NOT NULL,
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
-                    is_active TINYINT(1) NOT NULL DEFAULT 1
+                    is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    KEY idx_adblock_artifact_revisions_active (is_active, created_ts),
+                    KEY idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts)
                 )
                 """
             )
@@ -120,27 +111,10 @@ class AdblockArtifactStore:
                     detail TEXT,
                     applied_by VARCHAR(255) NOT NULL DEFAULT '',
                     applied_ts BIGINT NOT NULL,
-                    artifact_sha256 CHAR(64) NOT NULL DEFAULT ''
+                    artifact_sha256 CHAR(64) NOT NULL DEFAULT '',
+                    KEY idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts)
                 )
                 """
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="adblock_artifact_revisions",
-                index_name="idx_adblock_artifact_revisions_active",
-                columns_sql="is_active, created_ts",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="adblock_artifact_revisions",
-                index_name="idx_adblock_artifact_revisions_sha",
-                columns_sql="artifact_sha256, created_ts",
-            )
-            create_index_if_not_exists(
-                conn,
-                table_name="proxy_adblock_artifact_applications",
-                index_name="idx_proxy_adblock_artifact_apply_proxy_ts",
-                columns_sql="proxy_id, applied_ts",
             )
 
     def _row_to_revision(self, row: object | None) -> Optional[AdblockArtifactRevision]:
@@ -220,7 +194,7 @@ class AdblockArtifactStore:
                     artifact_sha256, archive_blob, report_json, settings_version,
                     source_kind, enabled_lists_json, created_by, created_ts, is_active
                 )
-                VALUES(?,?,?,?,?,?,?,?,?)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     (artifact_sha256 or "")[:64],
@@ -235,7 +209,7 @@ class AdblockArtifactStore:
                 ),
             )
             row = conn.execute(
-                "SELECT * FROM adblock_artifact_revisions WHERE id=? LIMIT 1",
+                "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
                 (int(cur.lastrowid or 0),),
             ).fetchone()
         revision = self._row_to_revision(row)
@@ -288,7 +262,7 @@ class AdblockArtifactStore:
                 INSERT INTO proxy_adblock_artifact_applications(
                     proxy_id, revision_id, ok, detail, applied_by, applied_ts, artifact_sha256
                 )
-                VALUES(?,?,?,?,?,?,?)
+                VALUES(%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     proxy_key,
@@ -301,7 +275,7 @@ class AdblockArtifactStore:
                 ),
             )
             row = conn.execute(
-                "SELECT * FROM proxy_adblock_artifact_applications WHERE id=? LIMIT 1",
+                "SELECT * FROM proxy_adblock_artifact_applications WHERE id=%s LIMIT 1",
                 (int(cur.lastrowid or 0),),
             ).fetchone()
         application = self._row_to_application(row)
@@ -317,7 +291,7 @@ class AdblockArtifactStore:
             row = conn.execute(
                 """
                 SELECT * FROM proxy_adblock_artifact_applications
-                WHERE proxy_id=?
+                WHERE proxy_id=%s
                 ORDER BY applied_ts DESC, id DESC
                 LIMIT 1
                 """,

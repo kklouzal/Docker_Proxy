@@ -1,17 +1,9 @@
 from __future__ import annotations
 
 import os
-import sys
-import tempfile
 from pathlib import Path
 
-from .mysql_test_utils import WEB_ROOT, configure_test_mysql_env
-
-
-def ensure_web_import_path() -> None:
-    web_dir = str(WEB_ROOT)
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
+from .mysql_test_utils import apply_test_environment, configure_test_mysql_env, ensure_web_import_path, make_temp_secret_path
 
 
 def import_remote_app_module(
@@ -21,13 +13,17 @@ def import_remote_app_module(
 ):
     ensure_web_import_path()
 
-    os.environ["PROXY_CONTROL_MODE"] = "remote"
-    os.environ["DISABLE_BACKGROUND"] = "1"
-    os.environ["PROXY_MANAGEMENT_TOKEN"] = "test-token"
-    os.environ["DEFAULT_PROXY_ID"] = "edge-1"
+    apply_test_environment(
+        {
+            "PROXY_CONTROL_MODE": "remote",
+            "DISABLE_BACKGROUND": "1",
+            "PROXY_MANAGEMENT_TOKEN": "test-token",
+            "DEFAULT_PROXY_ID": "edge-1",
+        }
+    )
 
-    secret_path = Path(tempfile.mkdtemp(prefix=secret_prefix)) / "flask_secret.key"
-    configure_test_mysql_env(tempfile.mkdtemp(prefix=mysql_prefix), secret_path=secret_path)
+    secret_path = make_temp_secret_path(secret_prefix)
+    configure_test_mysql_env(str(make_temp_secret_path(mysql_prefix, filename="mysql-marker")), secret_path=secret_path)
 
     import app as app_module  # type: ignore
 

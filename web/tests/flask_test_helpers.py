@@ -2,18 +2,11 @@ from __future__ import annotations
 
 import importlib
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .mysql_test_utils import WEB_ROOT, configure_test_mysql_env
-
-
-def ensure_web_import_path() -> None:
-    web_dir = str(WEB_ROOT)
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
+from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path, make_temp_secret_path
 
 
 def _require_flask() -> None:
@@ -30,8 +23,8 @@ def import_local_app_module(
 ):
     _require_flask()
     ensure_web_import_path()
-    secret_path = Path(tempfile.mkdtemp(prefix=secret_prefix)) / "flask_secret.key"
-    configure_test_mysql_env(tempfile.mkdtemp(prefix=mysql_prefix), secret_path=secret_path)
+    secret_path = make_temp_secret_path(secret_prefix)
+    configure_test_mysql_env(str(make_temp_secret_path(mysql_prefix, filename="mysql-marker")), secret_path=secret_path)
 
     import app as app_module  # type: ignore
 

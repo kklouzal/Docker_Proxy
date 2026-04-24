@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -85,19 +84,17 @@ class CompatConnection:
         self._discard_on_close = False
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> CompatResult:
-        translated = translate_sql(sql)
-        if not translated.strip():
+        if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
         cur = self.native.cursor()
-        cur.execute(translated, tuple(params or ()))
+        cur.execute(sql, tuple(params or ()))
         return CompatResult(cur)
 
     def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> CompatResult:
-        translated = translate_sql(sql)
-        if not translated.strip():
+        if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
         cur = self.native.cursor()
-        cur.executemany(translated, [tuple(p) for p in seq_of_params])
+        cur.executemany(sql, [tuple(p) for p in seq_of_params])
         return CompatResult(cur)
 
     def commit(self) -> None:
@@ -335,63 +332,12 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
         _mysql_ready = True
 
 
-def translate_sql(sql: str) -> str:
-    s = sql or ""
-
-    if re.match(r"^\s*PRAGMA\b", s, flags=re.I):
-        return ""
-
-    s = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT IGNORE INTO", s, flags=re.I)
-    s = re.sub(r"\bINSERT\s+OR\s+REPLACE\s+INTO\b", "REPLACE INTO", s, flags=re.I)
-    s = s.replace("AUTOINCREMENT", "AUTO_INCREMENT")
-
-    m = re.search(r"ON\s+CONFLICT\s*\([^)]+\)\s*DO\s+UPDATE\s+SET\s*(.+?)(;?\s*)$", s, flags=re.I | re.S)
-    if m:
-        update_clause = m.group(1)
-        update_clause = re.sub(r"excluded\.([A-Za-z0-9_]+)", r"VALUES(\1)", update_clause, flags=re.I)
-        update_clause = re.sub(r"\bMIN\(", "LEAST(", update_clause, flags=re.I)
-        update_clause = re.sub(r"\bMAX\(", "GREATEST(", update_clause, flags=re.I)
-        s = s[: m.start()] + "ON DUPLICATE KEY UPDATE " + update_clause + m.group(2)
-
-    return s.replace("?", "%s")
-
-
 def table_exists(conn: CompatConnection, table_name: str) -> bool:
     row = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ? LIMIT 1",
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s LIMIT 1",
         (table_name,),
     ).fetchone()
     return row is not None
-
-
-def column_exists(conn: CompatConnection, table_name: str, column_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1",
-        (table_name, column_name),
-    ).fetchone()
-    return row is not None
-
-
-def index_exists(conn: CompatConnection, index_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = ? LIMIT 1",
-        (index_name,),
-    ).fetchone()
-    return row is not None
-
-
-def create_index_if_not_exists(
-    conn: CompatConnection,
-    *,
-    table_name: str,
-    index_name: str,
-    columns_sql: str,
-    unique: bool = False,
-) -> None:
-    if index_exists(conn, index_name):
-        return
-    unique_sql = "UNIQUE " if unique else ""
-    conn.execute(f"CREATE {unique_sql}INDEX {index_name} ON {table_name}({columns_sql})")
 
 
 def reset_mysql_ready_for_tests() -> None:

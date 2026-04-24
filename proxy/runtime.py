@@ -16,10 +16,10 @@ from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import CertManager, materialize_certificate_bundle
 from services.config_revisions import get_config_revisions
 from services.errors import public_error_message
-from services.health_checks import annotate_service_target as _shared_annotate_service_target, build_clamav_health as _shared_build_clamav_health, check_clamd as _shared_check_clamd, check_icap_service as _shared_check_icap_service, check_local_listener as _shared_check_local_listener, check_tcp as _shared_check_tcp, is_local_host as _shared_is_local_host, resolve_host_port as _shared_resolve_host_port, send_sample_respmod_to as _shared_send_sample_respmod_to, test_clamd_eicar as _shared_test_clamd_eicar
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
+from services.proxy_health import build_local_runtime_services, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_context import get_proxy_id
 from services.proxy_registry import get_proxy_registry
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
@@ -45,48 +45,6 @@ def _decode_completed(proc: Any) -> str:
     if stdout_text and stderr_text:
         return (stdout_text + "\n" + stderr_text).strip()
     return (stdout_text or stderr_text).strip()
-
-
-def _check_tcp(host: str, port: int, timeout: float = 0.75) -> Dict[str, Any]:
-    return _shared_check_tcp(host, port, timeout=timeout, error_formatter=str)
-
-
-def _is_local_host(host: str) -> bool:
-    return _shared_is_local_host(host)
-
-
-def _check_local_listener(service_name: str, host: str, port: int) -> Dict[str, Any]:
-    return _shared_check_local_listener(service_name, host, port)
-
-
-def _check_clamd() -> Dict[str, Any]:
-    host, port = _shared_resolve_host_port(host_env="CLAMD_HOST", port_env="CLAMD_PORT", default_port=3310)
-    return _shared_annotate_service_target(
-        _shared_check_clamd(host=host, port=port, error_formatter=str),
-        host=host,
-        port=port,
-    )
-
-
-def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
-    return _shared_check_icap_service(host, port, service, error_formatter=str)
-
-
-def _check_av_icap() -> Dict[str, Any]:
-    host, port = _shared_resolve_host_port(host_env="CICAP_HOST", port_env="CICAP_AV_PORT", default_port=14001)
-    result = (
-        _check_local_listener("c-icap av", host, port)
-        if _is_local_host(host)
-        else _check_icap_service(host, port, "/avrespmod")
-    )
-    return _shared_annotate_service_target(result, host=host, port=port, service="/avrespmod")
-
-
-def _send_sample_av_icap() -> Dict[str, Any]:
-    av_icap = _check_av_icap()
-    host = str(av_icap.get("host") or "127.0.0.1")
-    port = int(av_icap.get("port") or 14001)
-    return _shared_send_sample_respmod_to(host=host, port=port, service="/avrespmod", error_formatter=str)
 
 
 class ProxyRuntime:
@@ -564,31 +522,7 @@ class ProxyRuntime:
         proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
         proxy_ok = not bool(stderr)
         stats = get_stats()
-        icap_host = os.environ.get("CICAP_HOST", "127.0.0.1")
-        try:
-            icap_port = int(os.environ.get("CICAP_PORT", 14000))
-        except Exception:
-            icap_port = 14000
-        try:
-            dante_port = int(os.environ.get("DANTE_PORT", 1080))
-        except Exception:
-            dante_port = 1080
-        dante_host = os.environ.get("DANTE_HOST", "127.0.0.1")
-
-        icap_health = _check_local_listener("c-icap", icap_host, icap_port) if _is_local_host(icap_host) else _check_icap_service(icap_host, icap_port, "/adblockreq")
-        icap_health = _shared_annotate_service_target(icap_health, host=icap_host, port=icap_port, service="/adblockreq")
-        av_icap_health = _check_av_icap()
-        clamd_health = _check_clamd()
-        dante_health = _check_local_listener("dante", dante_host, dante_port) if _is_local_host(dante_host) else _check_tcp(dante_host, dante_port)
-        dante_health = _shared_annotate_service_target(dante_health, host=dante_host, port=dante_port)
-        clamav_health = _shared_build_clamav_health(clamd_health, av_icap_health)
-        services = {
-            "icap": icap_health,
-            "av_icap": av_icap_health,
-            "clamd": clamd_health,
-            "clamav": clamav_health,
-            "dante": dante_health,
-        }
+        services = build_local_runtime_services(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
         active_revision = self.revisions.get_active_revision(self.proxy_id)
         active_certificate = self.certificate_bundles.get_active_bundle()
         active_adblock_artifact = self.adblock_artifacts.get_active_artifact()
@@ -801,7 +735,7 @@ class ProxyRuntime:
         }
 
     def test_clamav_eicar(self) -> Dict[str, Any]:
-        result = _shared_test_clamd_eicar(error_formatter=str)
+        result = _shared_test_eicar(error_formatter=str)
         return {
             "ok": bool(result.get("ok")),
             "proxy_id": self.proxy_id,
@@ -809,7 +743,7 @@ class ProxyRuntime:
         }
 
     def test_clamav_icap(self) -> Dict[str, Any]:
-        result = _send_sample_av_icap()
+        result = _shared_send_sample_av_icap(error_formatter=str)
         return {
             "ok": bool(result.get("ok")),
             "proxy_id": self.proxy_id,
