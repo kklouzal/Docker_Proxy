@@ -153,6 +153,9 @@
               <div class="stack-sm">
                 <div>{{ r.reason }}</div>
                 <div class="small">{{ r.operator_note }}</div>
+                {% for diag in r.diagnostics %}
+                  <div class="small">{{ diag }}</div>
+                {% endfor %}
                 {% if r.sample %}
                   <div class="small mono text-break">Latest sample: {{ r.sample }}</div>
                 {% endif %}

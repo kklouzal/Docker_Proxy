@@ -1,5 +1,15 @@
 ARG ALPINE_VERSION=latest
 
+FROM alpine:${ALPINE_VERSION} AS python_deps
+
+RUN apk add --no-cache python3 py3-pip ca-certificates
+
+WORKDIR /tmp/deps
+
+COPY web/requirements.txt /tmp/deps/requirements.txt
+
+RUN python3 -m pip install --no-cache-dir --no-compile --target /python-deps -r /tmp/deps/requirements.txt
+
 FROM alpine:${ALPINE_VERSION} AS cicap_builder
 
 ARG CICAP_GIT_REF=C_ICAP_0.6.4
@@ -67,14 +77,14 @@ FROM alpine:${ALPINE_VERSION}
 # - HTML templates and static assets
 # - Admin-only service modules (auth, audit, housekeeping, form parsing)
 
-RUN apk add --no-cache squid dante-server python3 py3-flask py3-gunicorn py3-pip supervisor openssl ca-certificates libatomic \
+RUN apk add --no-cache squid dante-server python3 supervisor openssl ca-certificates libatomic \
         pcre2 \
         file
 
 WORKDIR /app
 
+COPY --from=python_deps /python-deps/ /usr/lib/python3.12/site-packages/
 COPY proxy /app/proxy
-COPY web/requirements.txt /app/requirements.txt
 COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
     web/services/adblock_store.py \
@@ -109,26 +119,21 @@ COPY web/tools/adblock_compile.py \
     web/tools/webfilter_apply.py \
     /app/tools/
 COPY squid /squid
-COPY scripts/generate_ca.sh scripts/init_ssl_db.sh /scripts/
-COPY docker/load-env.sh /usr/local/bin/load-env.sh
-COPY docker/entrypoint.sh /entrypoint.sh
+COPY --chmod=755 scripts/generate_ca.sh scripts/init_ssl_db.sh /scripts/
+COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
+COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 COPY docker/supervisord.proxy.conf /etc/supervisord.conf
 COPY docker/pac_http.conf /etc/supervisor.d/pac_http.conf
-COPY docker/healthcheck.sh /healthcheck.sh
-COPY docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
+COPY --chmod=755 docker/healthcheck.sh /healthcheck.sh
+COPY --chmod=755 docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
 
 COPY --from=cicap_builder /out/ /
 COPY docker/c-icap.conf /etc/c-icap/c-icap.conf
 COPY docker/adblock_req.conf /etc/adblock_req.conf
-COPY docker/clamd_mod.conf /etc/clamd_mod.conf
 COPY docker/virus_scan.conf /etc/virus_scan.conf
 
-RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
-
-RUN chmod +x /usr/local/bin/load-env.sh /entrypoint.sh /healthcheck.sh /usr/local/bin/squid_logrotate.sh /scripts/*.sh \
-    && mkdir -p /etc/squid/ssl/certs /var/lib/ssl_db /var/spool/squid
-
-RUN if [ -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED ] && [ -d /usr/share/squid/errors/en ]; then \
+RUN mkdir -p /etc/squid/ssl/certs /var/lib/ssl_db /var/spool/squid \
+    && if [ -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED ] && [ -d /usr/share/squid/errors/en ]; then \
         cp -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED /usr/share/squid/errors/en/; \
     fi
 

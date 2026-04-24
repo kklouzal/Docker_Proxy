@@ -33,6 +33,7 @@ _TS_PREFIX = re.compile(
     r"(?:\|\s*|\s+[^|]+\|\s*)?"
     r"(?P<msg>.*)$"
 )
+_TLS_ERROR_SIGNATURE = re.compile(r"\b(SQUID_TLS_ERR_[A-Z_]+(?:\+TLS_LIB_ERR=[0-9A-F]+)?(?:\+TLS_IO_ERR=\d+)?)\b", re.I)
 
 # Best-effort extraction of a destination domain from cache.log lines.
 _DOMAIN_PATTERNS: List[re.Pattern[str]] = [
@@ -78,6 +79,23 @@ def _normalize_reason(msg: str) -> str:
     return s[:300]
 
 
+def _canonical_reason(msg: str) -> str:
+    m = _TLS_ERROR_SIGNATURE.search(msg or "")
+    if m:
+        return m.group(1).upper()
+    return _normalize_reason(msg)
+
+
+def _extract_followup_context(line: str) -> str:
+    s = (line or "").strip()
+    if not s:
+        return ""
+    sl = s.lower()
+    if sl.startswith("connection:") or sl.startswith("current master transaction:"):
+        return s[:280]
+    return ""
+
+
 def _is_startup_noise(msg: str) -> bool:
     sl = (msg or "").lower()
     return (
@@ -103,6 +121,9 @@ def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
     # Filter some noisy but not really "error" lines.
     if "accepting ssl bumped" in sl:
         return None
+
+    if "squid_tls_err_accept" in sl:
+        return "TLS_CLIENT_ACCEPT", _canonical_reason(s)
 
     # Prefer explicit OpenSSL-ish errors.
     if "x509" in sl or "certificate" in sl:
@@ -141,19 +162,61 @@ class SslErrorsStore:
 
         self._started = False
         self._start_lock = threading.Lock()
+        self._pending_error: Optional[Dict[str, Any]] = None
 
     def _connect(self):
         return connect()
 
+    def _row_key(self, proxy_id: str, domain: str, category: str, reason: str) -> str:
+        return hashlib.sha1(f"{proxy_id}|{domain}|{category}|{reason}".encode("utf-8", errors="replace")).hexdigest()
+
+    def _update_sample(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
+        proxy_id = get_proxy_id()
+        row_key = self._row_key(proxy_id, domain, category, reason)
+        conn.execute(
+            "UPDATE ssl_errors SET last_seen = GREATEST(last_seen, %s), sample = %s WHERE row_key = %s",
+            (int(ts), sample[:400], row_key),
+        )
+
     def _ingest_line_with_conn(self, conn, line: str) -> bool:
-        ts, msg = _parse_cache_log_ts(line)
+        raw_line = (line or "").strip("\r\n")
+        followup = _extract_followup_context(raw_line)
+        if followup:
+            pending = self._pending_error
+            if not pending:
+                return False
+            current_sample = str(pending.get("sample") or "")
+            if followup.lower() in current_sample.lower():
+                return False
+            combined = f"{current_sample}\n{followup}".strip()[:400]
+            self._update_sample(
+                conn,
+                str(pending.get("domain") or ""),
+                str(pending.get("category") or "TLS_OTHER"),
+                str(pending.get("reason") or ""),
+                int(pending.get("ts") or _now()),
+                combined,
+            )
+            pending["sample"] = combined
+            return True
+
+        ts, msg = _parse_cache_log_ts(raw_line)
         classified = _classify_ssl_error(msg)
         if not classified:
+            if (raw_line or "").strip():
+                self._pending_error = None
             return False
         category, reason = classified
         domain = _extract_domain(msg)
         sample = (msg or "").strip()[:400]
         self._upsert(conn, domain, category, reason, ts, sample)
+        self._pending_error = {
+            "ts": int(ts),
+            "domain": domain,
+            "category": category,
+            "reason": reason,
+            "sample": sample,
+        }
         return True
 
     def init_db(self) -> None:
@@ -191,7 +254,7 @@ class SslErrorsStore:
 
     def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
         proxy_id = get_proxy_id()
-        row_key = hashlib.sha1(f"{proxy_id}|{domain}|{category}|{reason}".encode("utf-8", errors="replace")).hexdigest()
+        row_key = self._row_key(proxy_id, domain, category, reason)
         conn.execute(
             """
             INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)

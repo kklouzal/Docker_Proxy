@@ -1,14 +1,25 @@
 ARG ALPINE_VERSION=latest
 
+FROM alpine:${ALPINE_VERSION} AS python_deps
+
+RUN apk add --no-cache python3 py3-pip ca-certificates
+
+WORKDIR /tmp/deps
+
+COPY web/requirements.txt /tmp/deps/requirements.txt
+
+RUN python3 -m pip install --no-cache-dir --no-compile --target /python-deps -r /tmp/deps/requirements.txt
+
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache python3 py3-flask py3-gunicorn py3-pip supervisor openssl ca-certificates libatomic file
+RUN apk add --no-cache python3 supervisor openssl ca-certificates libatomic file
 
 WORKDIR /app
 
+COPY --from=python_deps /python-deps/ /usr/lib/python3.12/site-packages/
+
 COPY web/app.py /app/app.py
 COPY web/wsgi.py /app/wsgi.py
-COPY web/requirements.txt /app/requirements.txt
 COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
 	web/services/adblock_store.py \
@@ -52,14 +63,10 @@ COPY web/tools/adblock_compile.py \
 	web/tools/webcat_build.py \
 	/app/tools/
 COPY squid /squid
-COPY docker/load-env.sh /usr/local/bin/load-env.sh
-COPY docker/entrypoint.admin.sh /entrypoint.admin.sh
+COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
+COPY --chmod=755 docker/entrypoint.admin.sh /entrypoint.admin.sh
 COPY docker/supervisord.admin.conf /etc/supervisord.conf
-COPY docker/healthcheck.admin.sh /healthcheck.admin.sh
-
-RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
-
-RUN chmod +x /usr/local/bin/load-env.sh /entrypoint.admin.sh /healthcheck.admin.sh
+COPY --chmod=755 docker/healthcheck.admin.sh /healthcheck.admin.sh
 
 EXPOSE 5000
 

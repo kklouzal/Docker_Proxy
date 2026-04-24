@@ -51,11 +51,11 @@ def test_ssl_errors_page_shows_operator_friendly_summary(app_module, monkeypatch
                 SimpleNamespace(
                     domain="",
                     category="TLS_OTHER",
-                    reason="SQUID_TLS_ERR_ACCEPT",
+                    reason="error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
                     count=2,
                     first_seen=1713446500,
                     last_seen=1713448300,
-                    sample="error detail: SQUID_TLS_ERR_ACCEPT",
+                    sample="error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1\nconnection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432",
                 ),
             ]
 
@@ -76,6 +76,12 @@ def test_ssl_errors_page_shows_operator_friendly_summary(app_module, monkeypatch
     assert "At a glance" in body
     assert "Operator guidance" in body
     assert "Treat exclusions as a last-mile workaround" in body
+    assert "Client-side TLS accept failure" in body
+    assert "Start with client trust and bump compatibility" in body
+    assert "Decoded TLS library code A000119" in body
+    assert "decryption failed or bad record MAC" in body
+    assert "This happened on the client -&gt; proxy TLS leg" in body or "This happened on the client -> proxy TLS leg" in body
+    assert "Latest connection context: client 192.0.2.10:54432 -&gt; proxy 10.0.0.5:3128 (conn23)." in body or "Latest connection context: client 192.0.2.10:54432 -> proxy 10.0.0.5:3128 (conn23)." in body
     assert "Trust / chain failure" in body
     assert "Hostname not captured" in body
     assert "Correlate first; there is no domain to exclude yet." in body

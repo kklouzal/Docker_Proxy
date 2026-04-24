@@ -78,8 +78,27 @@ def test_ssl_errors_store_ignores_startup_noise(tmp_path):
     rows = store.list_errors(limit=10)
 
     assert len(rows) == 1
-    assert rows[0]["category"] == "TLS_OTHER"
+    assert rows[0]["category"] == "TLS_CLIENT_ACCEPT"
     assert "SQUID_TLS_ERR_ACCEPT" in rows[0]["reason"]
+
+
+def test_ssl_errors_store_merges_followup_connection_context_without_double_count(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "ssl-errors-context")
+
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+
+    store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    store.init_db()
+    store.ingest_line("2026/04/18 04:04:40| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line("    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1")
+
+    rows = store.list_errors(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["count"] == 1
+    assert "connection: conn23" in rows[0]["sample"]
+    assert "remote=192.0.2.10:54432" in rows[0]["sample"]
 
 
 def test_render_icap_include_uses_single_endpoint_services_and_identity_rules(monkeypatch):
