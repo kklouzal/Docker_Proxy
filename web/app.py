@@ -1639,7 +1639,7 @@ def _set_clamav_enabled(cfg_text: str, enabled: bool) -> str:
         return _CLAMAV_ALLOW_RE.sub(repl, text, count=1)
 
     if enabled:
-        allow_line = "adaptation_access av_resp_set allow icap_adblockable"
+        allow_line = "adaptation_access av_resp_set allow icap_av_scanable"
         deny_match = _CLAMAV_DENY_RE.search(text)
         if deny_match:
             insert_at = deny_match.start()

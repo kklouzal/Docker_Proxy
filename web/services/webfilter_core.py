@@ -108,6 +108,11 @@ def _parent_domains(domain: str, *, max_levels: int = 6) -> List[str]:
     return out
 
 
+def _default_webfilter_helpers() -> int:
+    workers = _env_int("SQUID_WORKERS", 1, minimum=1, maximum=4)
+    return max(1, min(256, workers * 2))
+
+
 def _parse_whitelist_lines(lines: List[str]) -> List[str]:
     out: List[str] = []
     seen: Set[str] = set()
@@ -335,7 +340,7 @@ class WebFilterStoreBase:
 
     def render_materialized_state(self) -> WebFilterMaterializedState:
         settings = self.get_settings()
-        helpers = _env_int("WEBFILTER_HELPERS", 64, minimum=8, maximum=256)
+        helpers = _env_int("WEBFILTER_HELPERS", _default_webfilter_helpers(), minimum=1, maximum=256)
         ttl = _env_int("WEBFILTER_TTL_SECONDS", 3600, minimum=60, maximum=86400)
         neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 300, minimum=0, maximum=3600)
         fail = "open"

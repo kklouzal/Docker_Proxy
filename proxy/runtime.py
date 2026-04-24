@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Any, Dict
 
@@ -59,6 +60,13 @@ class ProxyRuntime:
         self.ssl_db_dir = (os.environ.get("SSL_DB_DIR") or "/var/lib/ssl_db/store").strip() or "/var/lib/ssl_db/store"
         self.adblock_compiled_dir = (os.environ.get("ADBLOCK_COMPILED_DIR") or self.adblock_artifacts.compiled_dir).strip() or self.adblock_artifacts.compiled_dir
         self.pac_render_dir = (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
+        try:
+            self.health_cache_ttl_seconds = max(0.0, min(30.0, float((os.environ.get("PROXY_HEALTH_CACHE_TTL_SECONDS") or "3.0").strip() or "3.0")))
+        except Exception:
+            self.health_cache_ttl_seconds = 3.0
+        self._health_cache_lock = threading.Lock()
+        self._health_cache_ts = 0.0
+        self._health_cache_value: Dict[str, Any] | None = None
 
     @property
     def proxy_id(self) -> str:
@@ -66,6 +74,11 @@ class ProxyRuntime:
 
     def ensure_registered(self) -> None:
         self.registry.register_local_proxy()
+
+    def _invalidate_health_cache(self) -> None:
+        with self._health_cache_lock:
+            self._health_cache_ts = 0.0
+            self._health_cache_value = None
 
     def _current_config_sha(self) -> str:
         current = self.controller.get_current_config() or ""
@@ -272,13 +285,13 @@ class ProxyRuntime:
         }
 
     def sync_adblock_state(self, *, force: bool = False) -> Dict[str, Any]:
-        revision = self.adblock_artifacts.get_active_artifact()
+        revision_meta = self.adblock_artifacts.get_active_artifact_metadata()
         store = get_adblock_store()
         store.init_db()
         flush_requested = bool(store.get_cache_flush_requested())
         current_sha = self._current_adblock_artifact_sha()
 
-        if revision is None:
+        if revision_meta is None:
             if not flush_requested:
                 return {
                     "ok": True,
@@ -308,27 +321,30 @@ class ProxyRuntime:
                 "detail": restart_detail.strip() or "Adblock runtime restarted.",
             }
 
-        artifact_changed = bool(force or revision.artifact_sha256 != current_sha)
+        artifact_changed = bool(force or revision_meta.artifact_sha256 != current_sha)
         if not artifact_changed and not flush_requested:
-            detail = "Proxy is already using the active adblock artifact."
-            applied = self.adblock_artifacts.record_apply_result(
-                self.proxy_id,
-                revision.revision_id,
-                ok=True,
-                detail=detail,
-                applied_by="proxy",
-                artifact_sha256=revision.artifact_sha256,
-            )
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
                 "changed": False,
                 "artifact_changed": False,
                 "cache_flushed": False,
-                "revision_id": revision.revision_id,
-                "application_id": applied.application_id,
-                "artifact_sha256": revision.artifact_sha256,
-                "detail": detail,
+                "revision_id": revision_meta.revision_id,
+                "artifact_sha256": revision_meta.artifact_sha256,
+                "detail": "Proxy is already using the active adblock artifact.",
+            }
+
+        revision = self.adblock_artifacts.get_active_artifact()
+        if revision is None:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "artifact_changed": False,
+                "cache_flushed": False,
+                "revision_id": None,
+                "artifact_sha256": "",
+                "detail": "Active adblock artifact metadata was present, but the full artifact could not be loaded.",
             }
 
         if artifact_changed:
@@ -429,8 +445,8 @@ class ProxyRuntime:
             )
 
     def sync_certificate_bundle(self, *, force: bool = False) -> Dict[str, Any]:
-        revision = self.certificate_bundles.get_active_bundle()
-        if revision is None:
+        revision_meta = self.certificate_bundles.get_active_bundle_metadata()
+        if revision_meta is None:
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
@@ -440,24 +456,25 @@ class ProxyRuntime:
             }
 
         current_sha = self._current_certificate_bundle_sha()
-        if not force and revision.bundle_sha256 == current_sha:
-            detail = "Proxy is already using the active certificate bundle."
-            applied = self.certificate_bundles.record_apply_result(
-                self.proxy_id,
-                revision.revision_id,
-                ok=True,
-                detail=detail,
-                applied_by="proxy",
-                bundle_sha256=revision.bundle_sha256,
-            )
+        if not force and revision_meta.bundle_sha256 == current_sha:
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
-                "revision_id": revision.revision_id,
-                "application_id": applied.application_id,
+                "revision_id": revision_meta.revision_id,
                 "changed": False,
-                "detail": detail,
-                "bundle_sha256": revision.bundle_sha256,
+                "detail": "Proxy is already using the active certificate bundle.",
+                "bundle_sha256": revision_meta.bundle_sha256,
+            }
+
+        revision = self.certificate_bundles.get_active_bundle()
+        if revision is None:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "revision_id": None,
+                "changed": False,
+                "detail": "Active certificate metadata was present, but the full bundle could not be loaded.",
+                "bundle_sha256": "",
             }
 
         try:
@@ -519,15 +536,22 @@ class ProxyRuntime:
         except Exception:
             pass
 
-    def collect_health(self) -> Dict[str, Any]:
+    def collect_health(self, *, force: bool = False) -> Dict[str, Any]:
+        if not force and self.health_cache_ttl_seconds > 0:
+            now_mono = time.monotonic()
+            with self._health_cache_lock:
+                cached = self._health_cache_value
+                if cached is not None and (now_mono - self._health_cache_ts) < self.health_cache_ttl_seconds:
+                    return cached
+
         stdout, stderr = self.controller.get_status()
         proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
         proxy_ok = not bool(stderr)
         stats = get_stats()
         services = build_local_runtime_services(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
-        active_revision = self.revisions.get_active_revision(self.proxy_id)
-        active_certificate = self.certificate_bundles.get_active_bundle()
-        active_adblock_artifact = self.adblock_artifacts.get_active_artifact()
+        active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
+        active_certificate = self.certificate_bundles.get_active_bundle_metadata()
+        active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
         current_sha = self._current_config_sha()
         current_certificate_sha = self._current_certificate_bundle_sha()
         current_adblock_sha = self._current_adblock_artifact_sha()
@@ -568,7 +592,7 @@ class ProxyRuntime:
             )
 
         ok = proxy_ok and all(bool(item.get("ok")) for item in services.values()) and not state_errors
-        return {
+        result = {
             "ok": ok,
             "status": "healthy" if ok else "degraded",
             "proxy_id": self.proxy_id,
@@ -591,6 +615,11 @@ class ProxyRuntime:
             "state_errors": state_errors,
             "timestamp": int(time.time()),
         }
+        if self.health_cache_ttl_seconds > 0:
+            with self._health_cache_lock:
+                self._health_cache_value = result
+                self._health_cache_ts = time.monotonic()
+        return result
 
     def heartbeat(self) -> Dict[str, Any]:
         health = self.collect_health()
@@ -605,6 +634,7 @@ class ProxyRuntime:
         return health
 
     def sync_from_db(self, *, force: bool = False) -> Dict[str, Any]:
+        self._invalidate_health_cache()
         self.ensure_registered()
         self.bootstrap_revision_if_missing()
         cert_result = self.sync_certificate_bundle(force=force)
@@ -651,8 +681,9 @@ class ProxyRuntime:
             pac_result["detail"] = detail
             return pac_result
 
-        revision = self.revisions.get_active_revision(self.proxy_id)
-        if revision is None:
+        current_sha = self._current_config_sha()
+        revision_meta = self.revisions.get_active_revision_metadata(self.proxy_id)
+        if revision_meta is None:
             reload_ok = True
             if policy_reload_required:
                 reload_ok, reload_detail = self._reload_for_policy_update()
@@ -670,14 +701,11 @@ class ProxyRuntime:
                 "config_changed": False,
                 "detail": detail,
             }
-            self.registry.mark_apply_result(self.proxy_id, ok=reload_ok, detail=detail, current_config_sha=self._current_config_sha())
+            if policy_reload_required and not reload_ok:
+                self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
             return result
 
-        normalized_revision_text = self.controller.normalize_config_text(revision.config_text)
-        normalized_revision_sha = hashlib.sha256(normalized_revision_text.encode("utf-8", errors="replace")).hexdigest()
-        current_text = self.controller.get_current_config() or ""
-        current_sha = hashlib.sha256(current_text.encode("utf-8", errors="replace")).hexdigest() if current_text else ""
-        if not force and normalized_revision_sha == current_sha:
+        if not force and revision_meta.config_sha256 == current_sha:
             reload_ok = True
             if policy_reload_required:
                 reload_ok, reload_detail = self._reload_for_policy_update()
@@ -687,12 +715,12 @@ class ProxyRuntime:
             if detail_parts:
                 detail_parts.append(detail)
                 detail = "\n".join(detail_parts).strip()
-            self.revisions.record_apply_result(self.proxy_id, revision.revision_id, ok=reload_ok, detail=detail, applied_by="proxy")
-            self.registry.mark_apply_result(self.proxy_id, ok=reload_ok, detail=detail, current_config_sha=current_sha)
+            if policy_reload_required and not reload_ok:
+                self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
             return {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
-                "revision_id": revision.revision_id,
+                "revision_id": revision_meta.revision_id,
                 "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
@@ -701,6 +729,25 @@ class ProxyRuntime:
                 "config_changed": False,
                 "detail": detail,
             }
+
+        revision = self.revisions.get_active_revision(self.proxy_id)
+        if revision is None:
+            detail = "Active config revision metadata was present, but the full config text could not be loaded."
+            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "certificate_changed": cert_changed,
+                "policy_changed": policy_changed,
+                "adblock_changed": adblock_changed,
+                "pac_changed": pac_changed,
+                "config_changed": False,
+                "detail": detail,
+            }
+
+        normalized_revision_text = self.controller.normalize_config_text(revision.config_text)
+        normalized_revision_sha = hashlib.sha256(normalized_revision_text.encode("utf-8", errors="replace")).hexdigest()
 
         ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
         if config_detail.strip():
@@ -720,7 +767,7 @@ class ProxyRuntime:
             "proxy_id": self.proxy_id,
             "revision_id": revision.revision_id,
             "application_id": applied.application_id,
-            "changed": cert_changed or policy_changed or adblock_changed or pac_changed or True,
+            "changed": True,
             "certificate_changed": cert_changed,
             "policy_changed": policy_changed,
             "adblock_changed": adblock_changed,
@@ -730,6 +777,7 @@ class ProxyRuntime:
         }
 
     def clear_cache(self) -> Dict[str, Any]:
+        self._invalidate_health_cache()
         ok, detail = self.controller.clear_disk_cache()
         self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=self._current_config_sha())
         return {

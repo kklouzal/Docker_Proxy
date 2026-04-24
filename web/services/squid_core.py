@@ -61,10 +61,10 @@ class SquidController:
         if not text:
             return ""
 
+        text = re.sub(r"^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$\n?", "", text, flags=re.M)
         text = self._replace_or_append_directive(text, r"^\s*logformat\s+liveui\s+.*$", self._LIVEUI_LOGFORMAT)
         text = self._replace_or_append_directive(text, r"^\s*logformat\s+diagnostic\s+.*$", self._DIAGNOSTIC_LOGFORMAT)
         text = self._replace_or_append_directive(text, r"^\s*logformat\s+icapobserve\s+.*$", self._ICAP_OBSERVE_LOGFORMAT)
-        text = self._replace_or_append_directive(text, r"^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$", "access_log stdio:/var/log/squid/access.log liveui")
         text = self._replace_or_append_directive(text, r"^\s*access_log\s+(?:stdio:)?/var/log/squid/access-observe\.log\b.*$", "access_log stdio:/var/log/squid/access-observe.log diagnostic")
         text = self._replace_or_append_directive(text, r"^\s*cache_log\s+(?:stdio:)?/var/log/squid/cache\.log\b.*$", "cache_log stdio:/var/log/squid/cache.log")
         text = self._replace_or_append_directive(text, r"^\s*icap_log\s+(?:stdio:)?/var/log/squid/icap\.log\b.*$", "icap_log stdio:/var/log/squid/icap.log icapobserve")
@@ -96,9 +96,6 @@ class SquidController:
             f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass=on",
             "adaptation_service_set adblock_req_set adblock_req",
             "adaptation_service_set av_resp_set av_resp",
-            "acl icap_identity_methods method GET HEAD",
-            "request_header_access Accept-Encoding deny icap_identity_methods",
-            "request_header_add Accept-Encoding identity icap_identity_methods",
         ]
         return "\n".join(lines) + "\n"
 

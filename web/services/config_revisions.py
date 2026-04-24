@@ -33,6 +33,17 @@ class ConfigApplication:
     applied_ts: int
 
 
+@dataclass(frozen=True)
+class ConfigRevisionMetadata:
+    revision_id: int
+    proxy_id: str
+    config_sha256: str
+    source_kind: str
+    created_by: str
+    created_ts: int
+    is_active: bool
+
+
 class ConfigRevisionStore:
     def _connect(self):
         return connect()
@@ -97,6 +108,19 @@ class ConfigRevisionStore:
             applied_ts=int(row["applied_ts"] or 0),
         )
 
+    def _row_to_metadata(self, row: object | None) -> Optional[ConfigRevisionMetadata]:
+        if not row:
+            return None
+        return ConfigRevisionMetadata(
+            revision_id=int(row["id"] or 0),
+            proxy_id=str(row["proxy_id"]),
+            config_sha256=str(row["config_sha256"]),
+            source_kind=str(row["source_kind"] or "manual"),
+            created_by=str(row["created_by"] or ""),
+            created_ts=int(row["created_ts"] or 0),
+            is_active=bool(int(row["is_active"] or 0)),
+        )
+
     def get_active_revision(self, proxy_id: object | None) -> Optional[ConfigRevision]:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
@@ -111,6 +135,22 @@ class ConfigRevisionStore:
                 (proxy_key,),
             ).fetchone()
         return self._row_to_revision(row)
+
+    def get_active_revision_metadata(self, proxy_id: object | None) -> Optional[ConfigRevisionMetadata]:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, proxy_id, config_sha256, source_kind, created_by, created_ts, is_active
+                FROM proxy_config_revisions
+                WHERE proxy_id=%s AND is_active=1
+                ORDER BY created_ts DESC, id DESC
+                LIMIT 1
+                """,
+                (proxy_key,),
+            ).fetchone()
+        return self._row_to_metadata(row)
 
     def get_active_config_text(self, proxy_id: object | None) -> str:
         revision = self.get_active_revision(proxy_id)

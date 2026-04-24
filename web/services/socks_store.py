@@ -134,6 +134,8 @@ class SocksStore:
 
         self._started = False
         self._start_lock = threading.Lock()
+        self._db_initialized = False
+        self._db_init_lock = threading.Lock()
 
     def _connect(self):
         return connect()
@@ -177,27 +179,33 @@ class SocksStore:
         return True
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS socks_events (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    ts BIGINT NOT NULL,
-                    action VARCHAR(32) NOT NULL,
-                    protocol VARCHAR(32) NOT NULL,
-                    src_ip VARCHAR(64) NOT NULL,
-                    src_port INT NOT NULL,
-                    dst VARCHAR(255) NOT NULL,
-                    dst_port INT NOT NULL,
-                    msg TEXT NOT NULL,
-                    KEY idx_socks_events_proxy_ts (proxy_id, ts),
-                    KEY idx_socks_events_proxy_src (proxy_id, src_ip, ts),
-                    KEY idx_socks_events_proxy_dst (proxy_id, dst, ts)
+        if self._db_initialized:
+            return
+        with self._db_init_lock:
+            if self._db_initialized:
+                return
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS socks_events (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        ts BIGINT NOT NULL,
+                        action VARCHAR(32) NOT NULL,
+                        protocol VARCHAR(32) NOT NULL,
+                        src_ip VARCHAR(64) NOT NULL,
+                        src_port INT NOT NULL,
+                        dst VARCHAR(255) NOT NULL,
+                        dst_port INT NOT NULL,
+                        msg TEXT NOT NULL,
+                        KEY idx_socks_events_proxy_ts (proxy_id, ts),
+                        KEY idx_socks_events_proxy_src (proxy_id, src_ip, ts),
+                        KEY idx_socks_events_proxy_dst (proxy_id, dst, ts)
+                    )
+                    """
                 )
-                """
-            )
-            self._prune(conn)
+                self._prune(conn)
+            self._db_initialized = True
 
     def _prune(self, conn) -> None:
         cutoff = _now() - int(self.retention_days * 24 * 60 * 60)

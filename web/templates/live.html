@@ -9,7 +9,7 @@
   <div class="page-hero-copy">
     <span class="page-eyebrow">Traffic insights</span>
     <h1 class="page-title">Live</h1>
-    <p class="page-subtitle">Recent activity aggregated from <span class="mono">access.log</span> and enriched with structured request diagnostics for {{ active_proxy.display_name }}.</p>
+    <p class="page-subtitle">Recent activity aggregated from the structured <span class="mono">access-observe.log</span> stream for {{ active_proxy.display_name }}.</p>
     <div class="hero-badges">
       <span class="badge">{{ totals.domain_requests }} requests</span>
       <span class="badge">{{ transaction_events|length }} traced rows</span>
@@ -90,7 +90,7 @@
   </div>
   <div class="card-body">
     <div class="surface-note small">
-      Percent is relative to all non-cached requests observed (best-effort from <span class="mono">access.log</span>).
+      Percent is relative to all non-cached requests observed (best-effort from <span class="mono">access-observe.log</span>).
       Total non-cached requests: {{ global_nocache_total }}.
     </div>
     <div class="table-wrap"><table class="table">
@@ -286,7 +286,7 @@
       </form>
     </div>
     <div class="surface-note small">
-      Percent is relative to non-cached requests for this domain (best-effort from <span class="mono">access.log</span>).
+      Percent is relative to non-cached requests for this domain (best-effort from <span class="mono">access-observe.log</span>).
     </div>
     <div class="table-wrap"><table class="table">
       <thead>
@@ -330,7 +330,7 @@
 
     {% if detail == 'nocache' %}
     <div class="surface-note small">
-      Reasons are best-effort from <span class="mono">access.log</span> result codes and may not reflect response headers.
+      Reasons are best-effort from <span class="mono">access-observe.log</span> result codes and may not reflect response headers.
     </div>
     <div class="table-wrap"><table class="table">
       <thead>

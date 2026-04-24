@@ -147,20 +147,18 @@ refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern . 0 20% 4320
 
 # Log settings
-# Structured access log used by the web UI aggregate dashboards.
-# Keep this intentionally lean for inexpensive counters and hit-rate summaries.
-# Fields (TSV): ts, ms, client_ip, method, url, result/status, bytes
+# Legacy lean logformat retained for compatibility with older persisted configs.
 logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st
 
-# Rich diagnostic request log kept by default for operator troubleshooting.
-# This captures correlation IDs, bump mode, SNI, selected headers, and policy notes
-# without enabling global Squid debug logging.
+# Rich structured request log kept by default for both the Live page aggregates
+# and operator troubleshooting. This captures correlation IDs, bump mode, SNI,
+# selected headers, and policy notes without enabling global Squid debug logging.
 logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note
 
 # Squid-side ICAP transaction summaries for later MySQL correlation.
 logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note
 
-# Keep up to N rotated log files (access.log.0 .. access.log.N, same for cache.log).
+# Keep up to N rotated log files (access-observe.log.0 .. access-observe.log.N, same for cache.log).
 # Rotation itself is triggered by a daily supervisor job (squid -k rotate).
 logfile_rotate 10
 
@@ -170,7 +168,6 @@ acl src_localhost src 127.0.0.1/32 ::1
 acl squid_internal_mgr urlpath_regex -i ^/squid-internal-mgr/
 access_log none src_localhost squid_internal_mgr
 
-access_log stdio:/var/log/squid/access.log liveui
 access_log stdio:/var/log/squid/access-observe.log diagnostic
 cache_log stdio:/var/log/squid/cache.log
 icap_log stdio:/var/log/squid/icap.log icapobserve
@@ -192,11 +189,12 @@ include /etc/squid/conf.d/20-icap.conf
 # - Do NOT adapt CONNECT: CONNECT only carries host:port and lacks context
 #   (third-party/resource type), so domain-only decisions can overblock.
 acl icap_adblockable method GET HEAD
+acl icap_av_scanable method GET
 adaptation_access adblock_req_set allow icap_adblockable
 adaptation_access adblock_req_set deny all
 
 # Antivirus scanning (RESPMOD): ClamAV
-adaptation_access av_resp_set allow icap_adblockable
+adaptation_access av_resp_set allow icap_av_scanable
 adaptation_access av_resp_set deny all
 
 # Error handling

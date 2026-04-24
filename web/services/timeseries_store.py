@@ -52,28 +52,36 @@ class TimeSeriesStore:
     def __init__(self):
         self._started = False
         self._start_lock = threading.Lock()
+        self._db_initialized = False
+        self._db_init_lock = threading.Lock()
 
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            for r in RESOLUTIONS:
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {r.table} (
-                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                        ts BIGINT NOT NULL,
-                        count BIGINT NOT NULL,
-                        cpu DOUBLE,
-                        mem DOUBLE,
-                        disk_used DOUBLE,
-                        cache_dir_size DOUBLE,
-                        hit_rate DOUBLE,
-                        PRIMARY KEY(proxy_id, ts)
+        if self._db_initialized:
+            return
+        with self._db_init_lock:
+            if self._db_initialized:
+                return
+            with self._connect() as conn:
+                for r in RESOLUTIONS:
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {r.table} (
+                            proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                            ts BIGINT NOT NULL,
+                            count BIGINT NOT NULL,
+                            cpu DOUBLE,
+                            mem DOUBLE,
+                            disk_used DOUBLE,
+                            cache_dir_size DOUBLE,
+                            hit_rate DOUBLE,
+                            PRIMARY KEY(proxy_id, ts)
+                        )
+                        """
                     )
-                    """
-                )
+            self._db_initialized = True
 
     def insert_snapshot(self, stats: Dict[str, Any], ts: Optional[int] = None) -> None:
         self.init_db()

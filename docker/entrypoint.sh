@@ -64,6 +64,12 @@ recommend_webfilter_helpers() {
     clamp_int "$helpers" 2 8
 }
 
+recommend_db_pool_size() {
+    workers="$1"
+    pool=$((workers + 3))
+    clamp_int "$pool" 4 8
+}
+
 extract_squid_workers_from_file() {
     file_path="$1"
     if [ ! -f "$file_path" ]; then
@@ -90,31 +96,40 @@ if [ -z "${DB_POOL_MAX_IDLE_SECONDS:-}" ]; then
     export DB_POOL_MAX_IDLE_SECONDS=30
 fi
 if [ -z "${LIVE_STATS_COMMIT_BATCH:-}" ]; then
-    export LIVE_STATS_COMMIT_BATCH=250
+    export LIVE_STATS_COMMIT_BATCH=500
 fi
 if [ -z "${LIVE_STATS_COMMIT_INTERVAL_SECONDS:-}" ]; then
-    export LIVE_STATS_COMMIT_INTERVAL_SECONDS=2.0
+    export LIVE_STATS_COMMIT_INTERVAL_SECONDS=3.0
 fi
 if [ -z "${LIVE_STATS_POLL_INTERVAL_SECONDS:-}" ]; then
-    export LIVE_STATS_POLL_INTERVAL_SECONDS=0.5
+    export LIVE_STATS_POLL_INTERVAL_SECONDS=0.75
+fi
+if [ -z "${DIAGNOSTIC_COMMIT_BATCH:-}" ]; then
+    export DIAGNOSTIC_COMMIT_BATCH=400
+fi
+if [ -z "${DIAGNOSTIC_COMMIT_INTERVAL_SECONDS:-}" ]; then
+    export DIAGNOSTIC_COMMIT_INTERVAL_SECONDS=3.0
+fi
+if [ -z "${DIAGNOSTIC_POLL_INTERVAL_SECONDS:-}" ]; then
+    export DIAGNOSTIC_POLL_INTERVAL_SECONDS=0.75
 fi
 if [ -z "${SOCKS_COMMIT_BATCH:-}" ]; then
-    export SOCKS_COMMIT_BATCH=200
+    export SOCKS_COMMIT_BATCH=300
 fi
 if [ -z "${SOCKS_COMMIT_INTERVAL_SECONDS:-}" ]; then
-    export SOCKS_COMMIT_INTERVAL_SECONDS=2.0
+    export SOCKS_COMMIT_INTERVAL_SECONDS=3.0
 fi
 if [ -z "${SOCKS_POLL_INTERVAL_SECONDS:-}" ]; then
-    export SOCKS_POLL_INTERVAL_SECONDS=0.75
+    export SOCKS_POLL_INTERVAL_SECONDS=1.0
 fi
 if [ -z "${SSL_ERRORS_COMMIT_BATCH:-}" ]; then
-    export SSL_ERRORS_COMMIT_BATCH=200
+    export SSL_ERRORS_COMMIT_BATCH=300
 fi
 if [ -z "${SSL_ERRORS_COMMIT_INTERVAL_SECONDS:-}" ]; then
-    export SSL_ERRORS_COMMIT_INTERVAL_SECONDS=2.0
+    export SSL_ERRORS_COMMIT_INTERVAL_SECONDS=3.0
 fi
 if [ -z "${SSL_ERRORS_POLL_INTERVAL_SECONDS:-}" ]; then
-    export SSL_ERRORS_POLL_INTERVAL_SECONDS=0.75
+    export SSL_ERRORS_POLL_INTERVAL_SECONDS=1.0
 fi
 if [ -z "${STATS_CACHE_DIR_SIZE_TTL_SECONDS:-}" ]; then
     export STATS_CACHE_DIR_SIZE_TTL_SECONDS=300
@@ -235,23 +250,23 @@ if [ -z "${WEBFILTER_HELPERS:-}" ]; then
     export WEBFILTER_HELPERS="$(recommend_webfilter_helpers "$WORKERS")"
 fi
 if [ -z "${DB_POOL_SIZE:-}" ]; then
-    export DB_POOL_SIZE=1
+    export DB_POOL_SIZE="$(recommend_db_pool_size "$WORKERS")"
 fi
 
 # Squid 6/7 expects logfile paths to be prefixed with a module name.
-# Normalize the logs we keep and disable store.log, which is pure per-object overhead
-# for this stack and is not consumed anywhere in-product.
+# Normalize the logs we keep, collapse the duplicate live-only access log into the
+# richer structured access log, and disable store.log, which is pure per-object
+# overhead for this stack and is not consumed anywhere in-product.
 for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
     if [ ! -f "$SQUID_CFG" ]; then
         continue
     fi
-    # access_log may include a logformat and ACLs after the path; preserve the tail.
-    sed -i -E 's#^([[:space:]]*access_log[[:space:]]+)(stdio:)?/var/log/squid/access\.log([[:space:]]+)#\1stdio:/var/log/squid/access.log\3#' "$SQUID_CFG" || true
+    sed -i -E '/^[[:space:]]*access_log[[:space:]]+(stdio:)?\/var\/log\/squid\/access\.log\b/d' "$SQUID_CFG" || true
     sed -i -E 's#^([[:space:]]*cache_log[[:space:]]+)(stdio:)?/var/log/squid/cache\.log([[:space:]]*|$)#\1stdio:/var/log/squid/cache.log\3#' "$SQUID_CFG" || true
     sed -i -E 's#^[[:space:]]*cache_store_log[[:space:]]+.*$#cache_store_log none#I' "$SQUID_CFG" || true
 done
 
-# Keep log noise down: exclude local cachemgr polling from access.log.
+# Keep log noise down: exclude local cachemgr polling from the structured access log.
 # We apply this even if squid.conf already exists (e.g., user edited via UI),
 # but only inject once.
 if [ -f /etc/squid/squid.conf ]; then
@@ -346,7 +361,7 @@ text_buffer = [text]
 replace_or_append(r'^\s*logformat\s+liveui\s+.*$', os.environ['SAFE_LIVEUI_FMT'])
 replace_or_append(r'^\s*logformat\s+diagnostic\s+.*$', os.environ['SAFE_DIAGNOSTIC_FMT'])
 replace_or_append(r'^\s*logformat\s+icapobserve\s+.*$', os.environ['SAFE_ICAP_OBSERVE_FMT'])
-replace_or_append(r'^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$', 'access_log stdio:/var/log/squid/access.log liveui')
+text_buffer[0] = re.sub(r'^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$\n?', '', text_buffer[0], flags=re.M)
 replace_or_append(r'^\s*access_log\s+(?:stdio:)?/var/log/squid/access-observe\.log\b.*$', 'access_log stdio:/var/log/squid/access-observe.log diagnostic')
 replace_or_append(r'^\s*cache_log\s+(?:stdio:)?/var/log/squid/cache\.log\b.*$', 'cache_log stdio:/var/log/squid/cache.log')
 replace_or_append(r'^\s*icap_log\s+(?:stdio:)?/var/log/squid/icap\.log\b.*$', 'icap_log stdio:/var/log/squid/icap.log icapobserve')
@@ -704,15 +719,6 @@ EOF
     echo "icap_service av_resp respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
     echo "adaptation_service_set adblock_req_set adblock_req"
     echo "adaptation_service_set av_resp_set av_resp"
-
-    # Reduce c-icap virus_scan warning noise:
-    # - Some origins respond with deflate-compressed bodies when clients advertise support.
-    # - virus_scan may fail to decompress deflate in some cases and logs warnings (PassOnError then lets it pass).
-    # Asking origins for identity encoding avoids having compressed bodies at the ICAP boundary.
-    # Scope to methods that we actually adapt (GET/HEAD) to minimize behavior changes.
-    echo "acl icap_identity_methods method GET HEAD"
-    echo "request_header_access Accept-Encoding deny icap_identity_methods"
-    echo "request_header_add Accept-Encoding identity icap_identity_methods"
 } > /etc/squid/conf.d/20-icap.conf
 
 # Normalize known distro path differences without overwriting user config
@@ -736,7 +742,7 @@ if [ "$PREV_WORKERS" != "$WORKERS" ]; then
     rm -f /var/spool/squid/swap.state* 2>/dev/null || true
 fi
 
-# SECURITY: access.log and the richer diagnostic logs may contain credentials or
+# SECURITY: structured access logs and the richer diagnostic logs may contain credentials or
 # identifying metadata from older configurations.
 # Since /var/log/squid is not persisted as a volume, it's safe to purge on startup.
 if [ "${SANITIZE_SQUID_ACCESS_LOGS_ON_START:-1}" = "1" ]; then

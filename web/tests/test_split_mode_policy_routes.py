@@ -129,7 +129,7 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
 
         active = get_config_revisions().get_active_revision('edge-1')
         self.assertIsNotNone(active)
-        self.assertIn('adaptation_access av_resp_set allow icap_adblockable', active.config_text)
+        self.assertIn('adaptation_access av_resp_set allow icap_av_scanable', active.config_text)
 
     def test_clamav_page_uses_selected_proxy_health(self):
         from services.proxy_registry import get_proxy_registry  # type: ignore
@@ -141,7 +141,7 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
         original_client = self.app_module.get_proxy_client
         original_get_current_config = self.app_module.squid_controller.get_current_config
         self.app_module.get_proxy_client = lambda: fake_client
-        self.app_module.squid_controller.get_current_config = lambda: 'adaptation_access av_resp_set allow icap_adblockable\n'
+        self.app_module.squid_controller.get_current_config = lambda: 'adaptation_access av_resp_set allow icap_av_scanable\n'
         try:
             response = self.app.get('/clamav?proxy_id=edge-1')
         finally:

@@ -124,7 +124,7 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
     assert "connection: conn23" in rows[0]["sample"]
 
 
-def test_render_icap_include_uses_single_endpoint_services_and_identity_rules(monkeypatch):
+def test_render_icap_include_uses_single_endpoint_services_without_identity_rewrite(monkeypatch):
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -141,8 +141,7 @@ def test_render_icap_include_uses_single_endpoint_services_and_identity_rules(mo
     assert "icap_service av_resp_0" not in out
     assert "icap://127.0.0.1:24000/adblockreq" in out
     assert "icap://127.0.0.1:24001/avrespmod" in out
-    assert "request_header_access Accept-Encoding deny icap_identity_methods" in out
-    assert "request_header_add Accept-Encoding identity icap_identity_methods" in out
+    assert "Accept-Encoding identity" not in out
 
 
 def test_repo_template_includes_cache_first_defaults():
@@ -179,6 +178,7 @@ http_access allow all
     assert "logformat diagnostic" in text
     assert "logformat icapobserve" in text
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
+    assert "/var/log/squid/access.log" not in text
     assert "icap_log stdio:/var/log/squid/icap.log icapobserve" in text
     assert "note ssl_exception steam steam_sites" in text
     assert "note cache_bypass auth has_auth" in text
