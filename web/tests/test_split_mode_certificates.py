@@ -16,7 +16,7 @@ class TestSplitModeCertificates(unittest.TestCase):
     def setUp(self):
         self._env_backup = {
             key: os.environ.get(key)
-            for key in ("PROXY_CONTROL_MODE", "DISABLE_BACKGROUND", "PROXY_MANAGEMENT_TOKEN", "DEFAULT_PROXY_ID")
+            for key in ("DISABLE_BACKGROUND", "PROXY_MANAGEMENT_TOKEN", "DEFAULT_PROXY_ID")
         }
         self.addCleanup(self._restore_env)
         self.app_module = import_remote_app_module(
@@ -33,7 +33,7 @@ class TestSplitModeCertificates(unittest.TestCase):
             else:
                 os.environ[key] = value
 
-    def test_generate_certificate_remote_creates_revision_and_nudges_fleet(self):
+    def test_generate_certificate_remote_creates_revision_and_nudges_registered_proxies(self):
         from services.certificate_bundles import get_certificate_bundles  # type: ignore
         from services.cert_manager import build_certificate_bundle  # type: ignore
         from services.proxy_registry import get_proxy_registry  # type: ignore

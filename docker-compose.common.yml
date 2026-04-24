@@ -24,7 +24,6 @@ services:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
     environment:
       <<: *shared-app-env
-      PROXY_CONTROL_MODE: remote
       DISABLE_BACKGROUND: 0
     healthcheck:
       test: ["CMD", "/healthcheck.admin.sh"]

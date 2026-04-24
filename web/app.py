@@ -1,6 +1,6 @@
-from flask import Flask, g, render_template, request, redirect, url_for, jsonify, send_file, abort, session
+from flask import Flask, g, render_template, request, redirect, url_for, jsonify, abort, session
 from services.squidctl import SquidController
-from services.cert_manager import CertManager, generate_self_signed_ca_bundle, install_pfx_as_ca, parse_pfx_bundle
+from services.cert_manager import generate_self_signed_ca_bundle, parse_pfx_bundle
 from services.certificate_bundles import get_certificate_bundles
 from services.auth_store import get_auth_store
 from services.config_revisions import get_config_revisions
@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 import time
 import os
 import ipaddress
-import subprocess
 import shutil
 from services.stats import get_stats
 from services.live_stats import get_store
@@ -19,11 +18,11 @@ from services.timeseries_store import get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.socks_store import get_socks_store
 from services.adblock_store import get_adblock_store
-from services.adblock_artifacts import apply_active_artifact_locally, get_adblock_artifacts
+from services.adblock_artifacts import get_adblock_artifacts
 from services.webfilter_store import get_webfilter_store
 from services.sslfilter_store import get_sslfilter_store
 from services.pac_profiles_store import get_pac_profiles_store
-from services.pac_renderer import build_public_pac_url, build_proxy_pac_state, materialize_proxy_pac_state, render_proxy_pac_for_request
+from services.pac_renderer import build_public_pac_url, render_proxy_pac_for_request
 from services.proxy_client import ProxyClientError, get_proxy_client
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, check_dante_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
@@ -31,30 +30,21 @@ from services.proxy_registry import get_proxy_registry
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.errors import public_error_message
-from services.health_checks import build_clamav_health as _shared_build_clamav_health
 from services.logutil import log_exception_throttled
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
-from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, extract_ssl_master_transaction as _extract_ssl_master_transaction, present_ssl_error_rows as _present_ssl_error_rows, present_ssl_top_domains as _present_ssl_top_domains, safe_local_return_url as _safe_local_return_url, window_label as _window_label
+from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, extract_ssl_master_transaction as _extract_ssl_master_transaction, present_icap_events as _present_icap_events, present_observability_summary as _present_observability_summary, present_ssl_error_rows as _present_ssl_error_rows, present_ssl_top_domains as _present_ssl_top_domains, present_top_tag_rows as _present_top_tag_rows, present_top_value_rows as _present_top_value_rows, present_transaction_rows as _present_transaction_rows, safe_local_return_url as _safe_local_return_url, window_label as _window_label
 
 import re
 import secrets
 import csv
 import io
 from urllib.parse import urlparse, urlsplit
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 from markupsafe import Markup
 
 app = Flask(__name__)
 squid_controller = SquidController()
-cert_manager = CertManager()
-
-
-def _control_mode() -> str:
-    return (os.environ.get('PROXY_CONTROL_MODE') or 'local').strip().lower()
-
-
-def _is_remote_control_mode() -> bool:
-    return _control_mode() == 'remote'
+_asset_version = str(int(time.time()))
 
 
 def _max_workers() -> int:
@@ -130,8 +120,6 @@ def _filter_none_params(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _should_preserve_proxy(endpoint: str, params: Dict[str, Any] | None = None) -> bool:
-    if not _is_remote_control_mode():
-        return False
     if endpoint in _NON_PROXY_ENDPOINTS:
         return False
     if params and params.get('proxy_id') is not None:
@@ -308,10 +296,7 @@ def _publish_template_config(
 
 def _best_effort_apply_adblock_flush() -> None:
     try:
-        if _is_remote_control_mode():
-            _trigger_proxy_sync()
-        else:
-            _apply_local_adblock_runtime(force=True, clear_cache=True)
+        _trigger_proxy_sync()
     except Exception:
         pass
 
@@ -446,11 +431,6 @@ def _resolve_selected_proxy_id() -> str:
         session['active_proxy_id'] = normalize_proxy_id(requested_proxy)
 
     preferred = session.get('active_proxy_id') or get_default_proxy_id()
-    if not _is_remote_control_mode():
-        active = normalize_proxy_id(preferred)
-        session['active_proxy_id'] = active
-        return active
-
     registry = get_proxy_registry()
     active = registry.resolve_proxy_id(preferred)
     session['active_proxy_id'] = active
@@ -474,24 +454,15 @@ def _reset_proxy_context(_exc):
 @app.context_processor
 def _inject_proxy_context():
     active_proxy_id = get_proxy_id()
-    if not _is_remote_control_mode():
-        return {
-            'remote_control_mode': False,
-            'active_proxy_id': active_proxy_id,
-            'active_proxy': None,
-            'fleet_proxies': [],
-        }
-
     registry = get_proxy_registry()
     proxies = registry.list_proxies()
     if not proxies:
         proxies = [registry.ensure_default_proxy()]
     active_proxy = registry.get_proxy(active_proxy_id) or proxies[0]
     return {
-        'remote_control_mode': True,
         'active_proxy_id': active_proxy.proxy_id,
         'active_proxy': active_proxy,
-        'fleet_proxies': proxies,
+        'proxy_inventory': proxies,
     }
 
 
@@ -557,51 +528,6 @@ def _datetimeformat(ts: object) -> str:
         return ''
 
 if not _disable_background:
-    if not _is_remote_control_mode():
-        # Start background ingestion of Squid access.log into the database (best-effort).
-        try:
-            get_store().start_background()
-        except Exception:
-            pass
-
-        # Start background ingestion of the richer request/ICAP diagnostic logs.
-        try:
-            get_diagnostic_store().start_background()
-        except Exception:
-            pass
-
-        # Start 1s time-series sampler + rollups (best-effort).
-        try:
-            get_timeseries_store().start_background(get_stats)
-        except Exception:
-            pass
-
-        # Start background ingestion of Squid cache.log SSL/TLS errors (best-effort).
-        try:
-            get_ssl_errors_store().start_background()
-        except Exception:
-            pass
-
-        # Start background ingestion of Dante (sockd) logs (best-effort).
-        try:
-            get_socks_store().start_background()
-        except Exception:
-            pass
-
-        # Start background ingestion of c-icap adblock (REQMOD) blocks (best-effort).
-        try:
-            get_adblock_store().start_blocklog_background()
-        except Exception:
-            pass
-
-        # Pre-render PAC assets for the local PAC listener.
-        try:
-            state = build_proxy_pac_state(get_proxy_id())
-            target_dir = (os.environ.get('PAC_RENDER_DIR') or '/var/lib/squid-flask-proxy/pac').strip() or '/var/lib/squid-flask-proxy/pac'
-            materialize_proxy_pac_state(target_dir, state=state)
-        except Exception:
-            pass
-
     # Build and activate adblock artifacts from MySQL-backed admin state.
     try:
         get_adblock_artifacts().start_background()
@@ -632,6 +558,7 @@ def inject_now():
     return {
         # Use timezone-aware UTC to avoid deprecation warnings.
         "current_year": datetime.now(UTC).year,
+        "asset_version": _asset_version,
         "fmt_ts": fmt_ts,
     }
 
@@ -640,39 +567,96 @@ def _check_dante() -> Dict[str, Any]:
     return check_dante_health(timeout=0.6, error_formatter=public_error_message)
 
 
+def _build_observability_snapshot(window_i: int = 3600) -> tuple[Dict[str, int], str]:
+    since_ts = int(time.time()) - max(300, int(window_i or 3600))
+    diagnostic_summary: Dict[str, Any] = {}
+    ssl_summary: Dict[str, Any] = {}
+    try:
+        diagnostic_summary = get_diagnostic_store().activity_summary(since=since_ts)
+    except Exception:
+        diagnostic_summary = {}
+    try:
+        ssl_rows = get_ssl_errors_store().list_recent(since=since_ts, search='', limit=100)
+        ssl_summary = _present_ssl_error_rows(ssl_rows).get('summary', {})
+    except Exception:
+        ssl_summary = {}
+    return _present_observability_summary(diagnostic_summary=diagnostic_summary, ssl_summary=ssl_summary), _window_label(window_i)
+
+
+def _top_count_rows(values: Iterable[str], *, limit: int = 5, max_label: int = 64) -> list[Dict[str, Any]]:
+    counts: Dict[str, int] = {}
+    for raw in values:
+        value = str(raw or '').strip()
+        if not value or value == '-':
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[: max(1, limit)]
+    return _present_top_value_rows(
+        [{'value': label, 'count': count, 'last_seen': 0} for label, count in ordered],
+        max_label=max_label,
+    )
+
+
+def _correlate_request_for_icap_events(diagnostic_store: Any, icap_events: List[Dict[str, Any]], *, icap_limit: int = 0) -> List[Dict[str, Any]]:
+    for event in icap_events:
+        event['correlated_request'] = None
+        tx = str(event.get('master_xaction') or '').strip()
+        if not tx:
+            continue
+        request_row = diagnostic_store.find_request_by_master_xaction(tx)
+        if request_row is None:
+            continue
+        request_event = dict(request_row)
+        request_event['related_icap'] = []
+        request_event['correlation_kind'] = 'master_xaction'
+        event['correlated_request'] = _present_transaction_rows([request_event], icap_limit=icap_limit)[0]
+    return icap_events
+
+
+def _correlate_policy_events(diagnostic_store: Any, rows: List[Dict[str, Any]], *, window_i: int, service: str = '') -> List[Dict[str, Any]]:
+    for row in rows:
+        row['correlated_candidates'] = []
+        try:
+            candidates = diagnostic_store.list_request_candidates_for_policy_event(
+                around_ts=int(row.get('ts') or 0),
+                url=str(row.get('url') or ''),
+                client_ip=str(row.get('src_ip') or ''),
+                domain=str(row.get('domain') or ''),
+                window_seconds=max(120, min(window_i, 900)),
+                limit=3,
+                service=service,
+            )
+            row['correlated_candidates'] = _present_transaction_rows(candidates, icap_limit=3)
+        except Exception:
+            row['correlated_candidates'] = []
+    return rows
+
+
 def _current_managed_config() -> str:
     """Return the effective config for the active proxy.
 
-    Remote mode treats config revisions as the source of truth. Local mode keeps a
-    live Squid fallback for dev/test scenarios where the admin UI still manages a
-    colocated proxy process directly.
+    Config revisions are the source of truth. The live Squid config is used only
+    as a bootstrap fallback for a proxy that has not yet stored its first revision.
     """
-    if _is_remote_control_mode():
-        revisions = get_config_revisions()
-        current = revisions.get_active_config_text(get_proxy_id())
-        if current:
-            return current
-        fallback = squid_controller.get_current_config() or ""
-        if fallback.strip():
-            revisions.ensure_active_revision(get_proxy_id(), fallback, created_by='system', source_kind='bootstrap')
-        return fallback
-    return squid_controller.get_current_config() or ""
+    revisions = get_config_revisions()
+    current = revisions.get_active_config_text(get_proxy_id())
+    if current:
+        return current
+    fallback = squid_controller.get_current_config() or ""
+    if fallback.strip():
+        revisions.ensure_active_revision(get_proxy_id(), fallback, created_by='system', source_kind='bootstrap')
+    return fallback
 
 
 def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
-    """Validate locally when possible, or defer to proxy sync in split mode."""
-    if not _is_remote_control_mode():
-        return squid_controller.validate_config_text(config_text)
+    """Validate locally when Squid is available in the admin image, otherwise defer to the proxy."""
     if shutil.which('squid') is None:
-        return True, 'Validation is deferred to the selected proxy during sync in split mode.'
+        return True, 'Validation is deferred to the selected proxy during sync.'
     return squid_controller.validate_config_text(config_text)
 
 
 def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> tuple[bool, str]:
     config_text = squid_controller.normalize_config_text(config_text)
-    if not _is_remote_control_mode():
-        return squid_controller.apply_config_text(config_text)
-
     proxy_id = get_proxy_id()
     created_by = str(session.get('user') or '')
     revision = get_config_revisions().create_revision(
@@ -692,16 +676,7 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
 
 
 def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
-    """Apply or request config sync for the active proxy in local or remote mode."""
-    if not _is_remote_control_mode():
-        result = squid_controller.reload_squid()
-        if isinstance(result, tuple) and len(result) == 2:
-            stdout, stderr = result
-        else:
-            stdout, stderr = b'', b''
-        detail = (stdout or b'').decode('utf-8', errors='replace') + (stderr or b'').decode('utf-8', errors='replace')
-        return (not bool(stderr)), detail.strip() or 'Squid reloaded.'
-
+    """Request an immediate config sync for the selected proxy."""
     try:
         result = get_proxy_client().sync_proxy(get_proxy_id(), force=force)
         return bool(result.get('ok', False)), str(result.get('detail') or 'Sync requested.')
@@ -710,13 +685,7 @@ def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
 
 
 def _trigger_proxy_cache_clear() -> tuple[bool, str]:
-    """Clear cache for the active proxy in local or remote mode."""
-    if not _is_remote_control_mode():
-        result = squid_controller.clear_disk_cache()
-        if isinstance(result, tuple) and len(result) == 2:
-            return bool(result[0]), str(result[1] or '')
-        return True, 'Cache clear requested.'
-
+    """Clear cache for the selected proxy."""
     try:
         result = get_proxy_client().clear_proxy_cache(get_proxy_id())
         return bool(result.get('ok', False)), str(result.get('detail') or 'Cache clear requested.')
@@ -726,10 +695,6 @@ def _trigger_proxy_cache_clear() -> tuple[bool, str]:
 
 def _nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
     """Best-effort sync request across all registered proxies."""
-    if not _is_remote_control_mode():
-        ok, _detail = _trigger_proxy_sync(force=force)
-        return (1 if ok else 0), (1 if ok else 0)
-
     proxies = get_proxy_registry().list_proxies()
     if not proxies:
         return 0, 0
@@ -770,32 +735,6 @@ def _publish_certificate_bundle_remote(bundle, *, original_filename: str = '') -
     return True, detail
 
 
-def _materialize_local_pac_state() -> tuple[bool, str]:
-    if app.testing:
-        return True, 'PAC materialization skipped while testing.'
-    try:
-        state = build_proxy_pac_state(get_proxy_id())
-        target_dir = (os.environ.get('PAC_RENDER_DIR') or '/var/lib/squid-flask-proxy/pac').strip() or '/var/lib/squid-flask-proxy/pac'
-        materialize_proxy_pac_state(target_dir, state=state)
-        return True, 'PAC state materialized locally.'
-    except Exception as exc:
-        return False, public_error_message(exc, default='Failed to materialize PAC state locally.')
-
-
-def _apply_local_adblock_runtime(*, force: bool = False, clear_cache: bool = False) -> tuple[bool, str]:
-    if app.testing:
-        return True, 'Adblock runtime apply skipped while testing.'
-    try:
-        return apply_active_artifact_locally(force=force, clear_cache=clear_cache)
-    except Exception as exc:
-        return False, public_error_message(exc, default='Failed to apply adblock runtime locally.')
-
-
-def _apply_local_policy_include(store: Any) -> None:
-    store.apply_squid_include()
-    subprocess.run(['squid', '-k', 'reconfigure'], capture_output=True, timeout=6)
-
-
 def _best_effort_init_store(store: Any, *, key: str, description: str) -> None:
     try:
         store.init_db()
@@ -810,10 +749,7 @@ def _best_effort_init_store(store: Any, *, key: str, description: str) -> None:
 
 def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> None:
     try:
-        if _is_remote_control_mode():
-            _trigger_proxy_sync(force=force)
-        else:
-            _apply_local_policy_include(store)
+        _trigger_proxy_sync(force=force)
     except Exception:
         log_exception_throttled(
             app.logger,
@@ -825,10 +761,7 @@ def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> No
 
 def _best_effort_refresh_pac_runtime() -> None:
     try:
-        if _is_remote_control_mode():
-            _trigger_proxy_sync()
-        else:
-            _materialize_local_pac_state()
+        _trigger_proxy_sync()
     except Exception:
         log_exception_throttled(
             app.logger,
@@ -1055,103 +988,62 @@ def _handle_administration_post(store: Any, current_user: str):
 
 @app.route('/')
 def index():
-    if _is_remote_control_mode():
-        proxy_id = get_proxy_id()
-        try:
-            health = get_proxy_client().get_health(proxy_id)
-        except ProxyClientError as exc:
-            proxy = get_proxy_registry().get_proxy(proxy_id)
-            health = {
-                'ok': False,
-                'status': proxy.status if proxy else 'offline',
-                'proxy_status': str(exc),
-                'stats': {},
-                'services': {
-                    'icap': {'ok': False, 'detail': 'unavailable'},
-                    'clamav': {'ok': False, 'detail': 'unavailable'},
-                    'dante': {'ok': False, 'detail': 'unavailable'},
-                },
-            }
+    observability, observability_window_label = _build_observability_snapshot(3600)
+    proxy_id = get_proxy_id()
+    try:
+        health = get_proxy_client().get_health(proxy_id)
+    except ProxyClientError as exc:
+        proxy = get_proxy_registry().get_proxy(proxy_id)
+        health = {
+            'ok': False,
+            'status': proxy.status if proxy else 'offline',
+            'proxy_status': str(exc),
+            'stats': {},
+            'services': {
+                'icap': {'ok': False, 'detail': 'unavailable'},
+                'clamav': {'ok': False, 'detail': 'unavailable'},
+                'dante': {'ok': False, 'detail': 'unavailable'},
+            },
+        }
 
-        proxy_detail = str(health.get('proxy_status') or health.get('detail') or '')
-        proxy_ok = bool(health.get('ok'))
-        stats = health.get('stats') or {}
-        try:
-            trends = get_timeseries_store().summary()
-        except Exception:
-            trends = {}
-        services = health.get('services') or {}
-        icap_health = services.get('icap') or {'ok': False, 'detail': 'n/a'}
-        clamav_health = services.get('clamav') or {'ok': False, 'detail': 'n/a'}
-        dante_health = services.get('dante') or {'ok': False, 'detail': 'n/a'}
-
-        last_config = None
-        latest_apply = get_config_revisions().latest_apply(proxy_id)
-        if latest_apply is not None:
-            last_config = {
-                'ts': latest_apply.applied_ts,
-                'kind': 'config_apply_remote',
-                'ok': latest_apply.ok,
-                'remote_addr': proxy_id,
-                'user_agent': latest_apply.applied_by,
-                'detail': latest_apply.detail,
-            }
-        else:
-            try:
-                row = get_audit_store().latest_config_apply()
-                if row:
-                    last_config = {
-                        'ts': int(row[0]),
-                        'kind': row[1],
-                        'ok': bool(row[2]),
-                        'remote_addr': row[3],
-                        'user_agent': row[4],
-                        'detail': row[5],
-                    }
-            except Exception:
-                pass
-
-        return render_template(
-            'index.html',
-            proxy_status=proxy_detail,
-            proxy_ok=proxy_ok,
-            flask_status='OK',
-            stats=stats,
-            trends=trends,
-            icap_health=icap_health,
-            clamav_health=clamav_health,
-            dante_health=dante_health,
-            last_config=last_config,
-        )
-
-    stdout, stderr = squid_controller.get_status()
-    proxy_detail = (stdout or b'').decode('utf-8', errors='replace') + (stderr or b'').decode('utf-8', errors='replace')
-    proxy_ok = not stderr
-
-    stats = get_stats()
+    proxy_detail = str(health.get('proxy_status') or health.get('detail') or '')
+    proxy_ok = bool(health.get('ok'))
+    stats = health.get('stats') or {}
     try:
         trends = get_timeseries_store().summary()
     except Exception:
         trends = {}
 
-    icap_health = _check_icap_adblock()
-    clamav_health = _check_clamd()
-    dante_health = _check_dante()
+    services = health.get('services') or {}
+    icap_health = services.get('icap') or {'ok': False, 'detail': 'n/a'}
+    clamav_health = services.get('clamav') or {'ok': False, 'detail': 'n/a'}
+    dante_health = services.get('dante') or {'ok': False, 'detail': 'n/a'}
 
     last_config = None
-    try:
-        row = get_audit_store().latest_config_apply()
-        if row:
-            last_config = {
-                "ts": int(row[0]),
-                "kind": row[1],
-                "ok": bool(row[2]),
-                "remote_addr": row[3],
-                "user_agent": row[4],
-                "detail": row[5],
-            }
-    except Exception:
-        pass
+    latest_apply = get_config_revisions().latest_apply(proxy_id)
+    if latest_apply is not None:
+        last_config = {
+            'ts': latest_apply.applied_ts,
+            'kind': 'config_apply_remote',
+            'ok': latest_apply.ok,
+            'remote_addr': proxy_id,
+            'user_agent': latest_apply.applied_by,
+            'detail': latest_apply.detail,
+        }
+    else:
+        try:
+            row = get_audit_store().latest_config_apply()
+            if row:
+                last_config = {
+                    'ts': int(row[0]),
+                    'kind': row[1],
+                    'ok': bool(row[2]),
+                    'remote_addr': row[3],
+                    'user_agent': row[4],
+                    'detail': row[5],
+                }
+        except Exception:
+            pass
 
     return render_template(
         'index.html',
@@ -1164,6 +1056,8 @@ def index():
         clamav_health=clamav_health,
         dante_health=dante_health,
         last_config=last_config,
+        observability=observability,
+        observability_window_label=observability_window_label,
     )
 
 
@@ -1179,13 +1073,17 @@ def api_squid_config():
 
 
 @app.route('/fleet', methods=['GET'])
-def fleet():
-    if not _is_remote_control_mode():
-        return _redirect_to('index')
+def fleet_legacy():
+    return redirect(url_for('proxies', **request.args.to_dict(flat=True)))
+
+
+@app.route('/proxies', methods=['GET'])
+def proxies():
 
     registry = get_proxy_registry()
     proxies = registry.list_proxies()
     live_health = {}
+    observability_by_proxy: Dict[str, Dict[str, Any]] = {}
     client = get_proxy_client()
     for proxy in proxies:
         try:
@@ -1196,7 +1094,21 @@ def fleet():
                 'status': proxy.status,
                 'detail': str(exc),
             }
-    return render_template('fleet.html', proxies=proxies, live_health=live_health)
+        token = set_proxy_id(proxy.proxy_id)
+        try:
+            diagnostic_summary = get_diagnostic_store().activity_summary(since=int(time.time()) - 3600)
+            ssl_summary = _present_ssl_error_rows(
+                get_ssl_errors_store().list_recent(since=int(time.time()) - 3600, search='', limit=100)
+            ).get('summary', {})
+            observability_by_proxy[proxy.proxy_id] = _present_observability_summary(
+                diagnostic_summary=diagnostic_summary,
+                ssl_summary=ssl_summary,
+            )
+        except Exception:
+            observability_by_proxy[proxy.proxy_id] = _present_observability_summary()
+        finally:
+            reset_proxy_id(token)
+    return render_template('fleet.html', proxies=proxies, live_health=live_health, observability_by_proxy=observability_by_proxy)
 
 
 @app.route('/ssl-errors', methods=['GET'])
@@ -1220,29 +1132,78 @@ def ssl_errors():
     summary = presented['summary']
     hints = presented['hints']
     top_domains = _present_ssl_top_domains(raw_top_domains, limit=15)
+    affected_client_values: List[str] = []
+    affected_user_agents: List[str] = []
+    affected_bump_modes: List[str] = []
+    affected_policy_tags: List[str] = []
 
     for index, row in enumerate(rows):
         row['master_transaction'] = ''
         row['correlated_request'] = None
         row['correlated_icap'] = []
+        row['correlated_candidates'] = []
+        row['correlated_icap_candidates'] = []
         if index >= 25:
             continue
         tx = _extract_ssl_master_transaction(row.get('sample'))
-        if not tx:
-            continue
-        row['master_transaction'] = tx
+        if tx:
+            row['master_transaction'] = tx
         try:
-            row['correlated_request'] = diagnostic_store.find_request_by_master_xaction(tx)
-            row['correlated_icap'] = diagnostic_store.list_icap_by_master_xaction(tx, limit=10)
+            if tx:
+                exact_request = diagnostic_store.find_request_by_master_xaction(tx)
+                exact_icap = diagnostic_store.list_icap_by_master_xaction(tx, limit=10)
+                if exact_request is not None:
+                    exact_tx = dict(exact_request)
+                    exact_tx['related_icap'] = exact_icap
+                    exact_tx['correlation_kind'] = 'master_xaction'
+                    row['correlated_request'] = _present_transaction_rows([exact_tx], icap_limit=5)[0]
+                    row['correlated_icap'] = row['correlated_request'].get('related_icap', [])
+                    affected_client_values.append(str(row['correlated_request'].get('client_ip') or ''))
+                    affected_user_agents.append(str(row['correlated_request'].get('user_agent') or ''))
+                    affected_bump_modes.append(str(row['correlated_request'].get('bump_mode') or ''))
+                    affected_policy_tags.extend(list(row['correlated_request'].get('policy_tags') or []))
+                else:
+                    row['correlated_icap'] = _present_icap_events(
+                        [dict(event, correlation_kind='master_xaction') for event in exact_icap],
+                        limit=5,
+                    )
+
+            if row['correlated_request'] is None and row.get('domain'):
+                candidates = diagnostic_store.list_request_candidates_for_domain_near_ts(
+                    domain=str(row.get('domain') or ''),
+                    around_ts=int(row.get('last_seen') or 0),
+                    window_seconds=max(120, min(window_i, 900)),
+                    limit=3,
+                )
+                row['correlated_candidates'] = _present_transaction_rows(candidates, icap_limit=3)
+                for candidate in row['correlated_candidates']:
+                    affected_client_values.append(str(candidate.get('client_ip') or ''))
+                    affected_user_agents.append(str(candidate.get('user_agent') or ''))
+                    affected_bump_modes.append(str(candidate.get('bump_mode') or ''))
+                    affected_policy_tags.extend(list(candidate.get('policy_tags') or []))
+                if not row['correlated_candidates']:
+                    icap_candidates = diagnostic_store.list_icap_candidates_for_domain_near_ts(
+                        domain=str(row.get('domain') or ''),
+                        around_ts=int(row.get('last_seen') or 0),
+                        window_seconds=max(120, min(window_i, 900)),
+                        limit=3,
+                    )
+                    row['correlated_icap_candidates'] = _present_icap_events(icap_candidates, limit=3)
         except Exception:
             row['correlated_request'] = None
             row['correlated_icap'] = []
+            row['correlated_candidates'] = []
+            row['correlated_icap_candidates'] = []
 
     return render_template(
         'ssl_errors.html',
         rows=rows,
         top_domains=top_domains,
         summary=summary,
+        affected_clients=_top_count_rows(affected_client_values, limit=5, max_label=40),
+        affected_user_agents=_top_count_rows(affected_user_agents, limit=5, max_label=72),
+        affected_bump_modes=_top_count_rows(affected_bump_modes, limit=5, max_label=40),
+        affected_policy_tags=_top_count_rows(affected_policy_tags, limit=6, max_label=64),
         hints=hints,
         window=window_i,
         window_label=_window_label(window_i),
@@ -1354,6 +1315,7 @@ def socks():
 @app.route('/adblock', methods=['GET', 'POST'])
 def adblock():
     store = get_adblock_store()
+    diagnostic_store = get_diagnostic_store()
     _best_effort_init_store(store, key='adblock', description='adblock')
 
     if request.method == 'POST':
@@ -1374,6 +1336,10 @@ def adblock():
         cache_stats = {"hits": 0, "misses": 0, "evictions": 0, "current_size": 0, "last_flush": 0, "last_flush_req": 0}
 
     interval = store.get_update_interval_seconds()
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
+    diagnostic_search = (request.args.get('q') or '').strip()
+    diagnostic_tx = (request.args.get('tx') or '').strip()
+    since_ts = int(time.time()) - window_i
     now_ts = int(time.time())
     status_rows = []
     for st in statuses:
@@ -1398,6 +1364,29 @@ def adblock():
         recent_blocks = store.list_recent_block_events(limit=100)
     except Exception:
         recent_blocks = []
+    recent_blocks = _correlate_policy_events(diagnostic_store, recent_blocks, window_i=window_i, service='adblock')
+
+    try:
+        raw_icap_events = diagnostic_store.list_recent_icap(
+            since=since_ts,
+            search=diagnostic_search,
+            master_xaction=diagnostic_tx,
+            service='adblock',
+            limit=50,
+        )
+        recent_adblock_icap_events = _correlate_request_for_icap_events(
+            diagnostic_store,
+            _present_icap_events(raw_icap_events, limit=50),
+        )
+        adblock_icap_summary = diagnostic_store.icap_summary(since=since_ts, service='adblock')
+        slow_adblock_icap = _present_icap_events(
+            diagnostic_store.slowest_icap_events(since=since_ts, service='adblock', limit=5),
+            limit=5,
+        )
+    except Exception:
+        recent_adblock_icap_events = []
+        adblock_icap_summary = {'events': 0, 'avg_icap_time_ms': 0, 'max_icap_time_ms': 0}
+        slow_adblock_icap = []
 
     return render_template(
         'adblock.html',
@@ -1411,13 +1400,21 @@ def adblock():
         cache_flushed=(request.args.get('cache_flushed') == '1'),
         refresh_requested=(request.args.get('refresh_requested') == '1'),
         refresh_no_lists=(request.args.get('refresh_no_lists') == '1'),
+        window=window_i,
+        window_label=_window_label(window_i),
+        diagnostic_search=diagnostic_search,
+        diagnostic_tx=diagnostic_tx,
         recent_blocks=recent_blocks,
+        recent_adblock_icap_events=recent_adblock_icap_events,
+        adblock_icap_summary=adblock_icap_summary,
+        slow_adblock_icap=slow_adblock_icap,
     )
 
 
 @app.route('/webfilter', methods=['GET', 'POST'])
 def webfilter():
     store = get_webfilter_store()
+    diagnostic_store = get_diagnostic_store()
     _best_effort_init_store(store, key='webfilter', description='web filter')
 
     tab = _normalize_choice(request.args.get('tab') or request.form.get('tab') or 'categories', ('categories', 'whitelist', 'blockedlog'), 'categories')
@@ -1429,7 +1426,30 @@ def webfilter():
     available = store.list_available_categories()
     selected = set(settings.blocked_categories)
     whitelist_rows = store.list_whitelist()
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
+    diagnostic_search = (request.args.get('q') or '').strip().lower()
+    since_ts = int(time.time()) - window_i
     blocked_log_rows = store.list_blocked_log(limit=200) if tab == 'blockedlog' else []
+    if tab == 'blockedlog':
+        blocked_log_rows = [
+            row for row in blocked_log_rows
+            if int(row.get('ts') or 0) >= since_ts
+            and (
+                not diagnostic_search
+                or diagnostic_search in str(row.get('url') or '').lower()
+                or diagnostic_search in str(row.get('src_ip') or '').lower()
+                or diagnostic_search in str(row.get('category') or '').lower()
+            )
+        ]
+        blocked_log_rows = _correlate_policy_events(diagnostic_store, blocked_log_rows[:200], window_i=window_i)
+
+    try:
+        webfilter_summary = {
+            'request_summary': diagnostic_store.activity_summary(since=since_ts),
+            'policy_tags': _present_top_tag_rows(diagnostic_store.top_policy_tags(since=since_ts, limit=6)),
+        }
+    except Exception:
+        webfilter_summary = {'request_summary': _present_observability_summary(), 'policy_tags': []}
     return render_template(
         'webfilter.html',
         tab=tab,
@@ -1438,6 +1458,10 @@ def webfilter():
         selected=selected,
         whitelist_rows=whitelist_rows,
         blocked_log_rows=blocked_log_rows,
+        window=window_i,
+        window_label=_window_label(window_i),
+        diagnostic_search=diagnostic_search,
+        webfilter_summary=webfilter_summary,
         err_source=(request.args.get('err_source') == '1'),
         wl_ok=(request.args.get('wl_ok') == '1'),
         wl_err=(request.args.get('wl_err') or ''),
@@ -1509,30 +1533,38 @@ def clamav():
     clamav_enabled = _is_clamav_enabled(cfg)
     window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
     diagnostic_search = (request.args.get('q') or '').strip()
+    diagnostic_tx = (request.args.get('tx') or '').strip()
     since_ts = int(time.time()) - window_i
-    if _is_remote_control_mode():
-        proxy_id = get_proxy_id()
-        health_payload = _clamav_remote_health(proxy_id)
-        clamav_view = build_remote_clamav_view(health_payload)
-        health = clamav_view['health']
-        clamd_health = clamav_view['clamd_health']
-        av_icap_health = clamav_view['av_icap_health']
-        health_source = clamav_view['health_source']
-    else:
-        clamd_health = _check_clamd()
-        av_icap_health = _check_icap_av()
-        health = _shared_build_clamav_health(clamd_health, av_icap_health)
-        health_source = ''
+    proxy_id = get_proxy_id()
+    health_payload = _clamav_remote_health(proxy_id)
+    clamav_view = build_remote_clamav_view(health_payload)
+    health = clamav_view['health']
+    clamd_health = clamav_view['clamd_health']
+    av_icap_health = clamav_view['av_icap_health']
+    health_source = clamav_view['health_source']
 
     try:
-        recent_icap_events = get_diagnostic_store().list_recent_icap(
+        diagnostic_store = get_diagnostic_store()
+        raw_icap_events = diagnostic_store.list_recent_icap(
             since=since_ts,
             search=diagnostic_search,
+            master_xaction=diagnostic_tx,
             service='av',
             limit=50,
         )
+        recent_icap_events = _correlate_request_for_icap_events(
+            diagnostic_store,
+            _present_icap_events(raw_icap_events, limit=50),
+        )
+        clamav_icap_summary = diagnostic_store.icap_summary(since=since_ts, service='av')
+        slow_av_icap = _present_icap_events(
+            diagnostic_store.slowest_icap_events(since=since_ts, service='av', limit=5),
+            limit=5,
+        )
     except Exception:
         recent_icap_events = []
+        clamav_icap_summary = {'events': 0, 'avg_icap_time_ms': 0, 'max_icap_time_ms': 0}
+        slow_av_icap = []
 
     return render_template(
         'clamav.html',
@@ -1543,6 +1575,9 @@ def clamav():
         clamav_enabled=clamav_enabled,
         recent_icap_events=recent_icap_events,
         diagnostic_search=diagnostic_search,
+        diagnostic_tx=diagnostic_tx,
+        clamav_icap_summary=clamav_icap_summary,
+        slow_av_icap=slow_av_icap,
         window=window_i,
         window_label=_window_label(window_i),
         eicar_result=request.args.get('eicar'),
@@ -1554,13 +1589,10 @@ def clamav():
 
 @app.route('/clamav/test-eicar', methods=['POST'])
 def clamav_test_eicar():
-    if _is_remote_control_mode():
-        try:
-            res = get_proxy_client().test_clamav_eicar(get_proxy_id())
-        except ProxyClientError as exc:
-            res = {'ok': False, 'detail': str(exc)}
-    else:
-        res = _test_eicar()
+    try:
+        res = get_proxy_client().test_clamav_eicar(get_proxy_id())
+    except ProxyClientError as exc:
+        res = {'ok': False, 'detail': str(exc)}
     return _redirect_to(
         'clamav',
         eicar='ok' if res.get('ok') else 'fail',
@@ -1570,13 +1602,10 @@ def clamav_test_eicar():
 
 @app.route('/clamav/test-icap', methods=['POST'])
 def clamav_test_icap():
-    if _is_remote_control_mode():
-        try:
-            res = get_proxy_client().test_clamav_icap(get_proxy_id())
-        except ProxyClientError as exc:
-            res = {'ok': False, 'detail': str(exc)}
-    else:
-        res = _send_sample_av_icap()
+    try:
+        res = get_proxy_client().test_clamav_icap(get_proxy_id())
+    except ProxyClientError as exc:
+        res = {'ok': False, 'detail': str(exc)}
     return _redirect_to(
         'clamav',
         icap_sample='ok' if res.get('ok') else 'fail',
@@ -1831,7 +1860,7 @@ def pac_builder():
 
     pac_url = build_public_pac_url(
         request.host or '',
-        proxy_id=(get_proxy_id() if _is_remote_control_mode() else None),
+        proxy_id=get_proxy_id(),
     )
     return render_template('pac.html', profiles=profiles, pac_url=pac_url)
 
@@ -1854,6 +1883,7 @@ def api_timeseries():
 @app.route('/live', methods=['GET'])
 def live():
     store = get_store()
+    diagnostic_store = get_diagnostic_store()
     subtab = (request.args.get('subtab') or 'activity').strip().lower()
     mode = (request.args.get('mode') or 'domains').strip().lower()
     sort = (request.args.get('sort') or ('recent' if mode in ('domains', 'clients') else 'top')).strip().lower()
@@ -1863,6 +1893,8 @@ def live():
     detail = (request.args.get('detail') or 'top').strip().lower()
     domain = (request.args.get('domain') or '').strip().lower().lstrip('.')
     search = (request.args.get('q') or '').strip().lower()
+    master_xaction = (request.args.get('tx') or '').strip()
+    service = (request.args.get('service') or '').strip().lower()
     window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     window_label = _window_label(window_i)
@@ -1889,9 +1921,11 @@ def live():
             domain_reasons=[],
             global_nocache_total=global_nocache_total,
             global_reasons=global_reasons,
-            request_events=[],
+            transaction_events=[],
             totals=totals,
             search=search,
+            master_xaction=master_xaction,
+            service=service,
             window=window_i,
             window_label=window_label,
         )
@@ -1930,15 +1964,30 @@ def live():
 
     totals = store.get_totals(since=since_ts)
     try:
-        request_events = get_diagnostic_store().list_recent_requests(
+        raw_transactions = diagnostic_store.list_recent_transactions(
             since=since_ts,
             search=search,
             client_ip=(ip if mode == 'clients' and ip else ''),
             domain=(domain if mode == 'domains' and domain else ''),
+            master_xaction=master_xaction,
+            service=service,
             limit=min(limit_i, 50),
         )
+        transaction_events = _present_transaction_rows(raw_transactions, icap_limit=5)
+        live_top_user_agents = _present_top_value_rows(diagnostic_store.top_request_dimension('user_agent', since=since_ts, limit=6), max_label=72)
+        live_top_bump_modes = _present_top_value_rows(diagnostic_store.top_request_dimension('bump_mode', since=since_ts, limit=6), max_label=40)
+        live_top_tls_server_versions = _present_top_value_rows(diagnostic_store.top_request_dimension('tls_server_version', since=since_ts, limit=6), max_label=40)
+        live_top_policy_tags = _present_top_tag_rows(diagnostic_store.top_policy_tags(since=since_ts, limit=8), max_label=64)
+        slow_requests = _present_transaction_rows(diagnostic_store.slowest_requests(since=since_ts, limit=5), icap_limit=0)
+        slow_icap_events = _present_icap_events(diagnostic_store.slowest_icap_events(since=since_ts, limit=5), limit=5)
     except Exception:
-        request_events = []
+        transaction_events = []
+        live_top_user_agents = []
+        live_top_bump_modes = []
+        live_top_tls_server_versions = []
+        live_top_policy_tags = []
+        slow_requests = []
+        slow_icap_events = []
     return render_template(
         'live.html',
         subtab=subtab,
@@ -1955,9 +2004,17 @@ def live():
         domain_reasons=domain_reasons,
         global_nocache_total=0,
         global_reasons=[],
-        request_events=request_events,
+        transaction_events=transaction_events,
+        live_top_user_agents=live_top_user_agents,
+        live_top_bump_modes=live_top_bump_modes,
+        live_top_tls_server_versions=live_top_tls_server_versions,
+        live_top_policy_tags=live_top_policy_tags,
+        slow_requests=slow_requests,
+        slow_icap_events=slow_icap_events,
         totals=totals,
         search=search,
+        master_xaction=master_xaction,
+        service=service,
         window=window_i,
         window_label=window_label,
     )
@@ -1991,26 +2048,21 @@ def clear_caches():
 
 @app.route('/certs', methods=['GET'])
 def certs():
-    bundle = None
+    bundle_store = get_certificate_bundles()
+    bundle = bundle_store.get_active_bundle()
+    certificate = 'ca.crt' if bundle is not None else None
     proxy_cert_statuses = []
-    if _is_remote_control_mode():
-        bundle_store = get_certificate_bundles()
-        bundle = bundle_store.get_active_bundle()
-        certificate = 'ca.crt' if bundle is not None else None
-        for proxy in get_proxy_registry().list_proxies():
-            latest_apply = bundle_store.latest_apply(proxy.proxy_id)
-            proxy_cert_statuses.append(
-                {
-                    'proxy_id': proxy.proxy_id,
-                    'display_name': proxy.display_name or proxy.proxy_id,
-                    'ok': latest_apply.ok if latest_apply is not None else None,
-                    'detail': latest_apply.detail if latest_apply is not None else '',
-                    'applied_ts': latest_apply.applied_ts if latest_apply is not None else 0,
-                }
-            )
-    else:
-        bundle = cert_manager.load_bundle()
-        certificate = "ca.crt" if cert_manager.ca_exists() else None
+    for proxy in get_proxy_registry().list_proxies():
+        latest_apply = bundle_store.latest_apply(proxy.proxy_id)
+        proxy_cert_statuses.append(
+            {
+                'proxy_id': proxy.proxy_id,
+                'display_name': proxy.display_name or proxy.proxy_id,
+                'ok': latest_apply.ok if latest_apply is not None else None,
+                'detail': latest_apply.detail if latest_apply is not None else '',
+                'applied_ts': latest_apply.applied_ts if latest_apply is not None else 0,
+            }
+        )
     message = request.args.get('msg')
     message_ok = request.args.get('ok') == '1'
     return render_template(
@@ -2026,12 +2078,8 @@ def certs():
 @app.route('/certs/generate', methods=['POST'])
 def generate_certificate():
     try:
-        if _is_remote_control_mode():
-            bundle = generate_self_signed_ca_bundle()
-            ok, detail = _publish_certificate_bundle_remote(bundle)
-        else:
-            cert_manager.ensure_ca()
-            ok, detail = True, 'CA generated.'
+        bundle = generate_self_signed_ca_bundle()
+        ok, detail = _publish_certificate_bundle_remote(bundle)
         _record_audit_event('ca_ensure', ok=ok, detail=detail)
         return _redirect_with_message('certs', ok=ok, msg=detail)
     except Exception as e:
@@ -2075,25 +2123,14 @@ def upload_certificate_pfx():
         return _redirect_with_message('certs', ok=False, msg='Failed to read upload.')
 
     pfx_bytes = bytes(buf)
-    if _is_remote_control_mode():
-        parsed = parse_pfx_bundle(pfx_bytes, password=password)
-        ok = bool(parsed.ok and parsed.bundle is not None)
-        detail = parsed.message
-        if ok and parsed.bundle is not None:
-            ok, detail = _publish_certificate_bundle_remote(
-                parsed.bundle,
-                original_filename=(pfx_file.filename or '').strip(),
-            )
-    else:
-        result = install_pfx_as_ca(cert_manager.ca_dir, pfx_bytes, password=password)
-        ok = result.ok
-        detail = result.message
-
-        if ok:
-            try:
-                squid_controller.reload_squid()
-            except Exception:
-                pass
+    parsed = parse_pfx_bundle(pfx_bytes, password=password)
+    ok = bool(parsed.ok and parsed.bundle is not None)
+    detail = parsed.message
+    if ok and parsed.bundle is not None:
+        ok, detail = _publish_certificate_bundle_remote(
+            parsed.bundle,
+            original_filename=(pfx_file.filename or '').strip(),
+        )
 
     _record_audit_event('ca_upload_pfx', ok=ok, detail=detail)
 
@@ -2105,18 +2142,12 @@ def download_certificate(filename: str):
     # Only allow downloading the public CA cert
     if filename != 'ca.crt':
         abort(404)
-    if _is_remote_control_mode():
-        bundle = get_certificate_bundles().get_active_bundle()
-        if bundle is None:
-            abort(404)
-        response = app.response_class(bundle.fullchain_pem, mimetype='application/x-pem-file')
-        response.headers['Content-Disposition'] = 'attachment; filename=squid-proxy-ca.crt'
-        return response
-    try:
-        cert_manager.ensure_ca()
-    except Exception:
-        abort(500)
-    return send_file(cert_manager.ca_cert_path, as_attachment=True, download_name='squid-proxy-ca.crt')
+    bundle = get_certificate_bundles().get_active_bundle()
+    if bundle is None:
+        abort(404)
+    response = app.response_class(bundle.fullchain_pem, mimetype='application/x-pem-file')
+    response.headers['Content-Disposition'] = 'attachment; filename=squid-proxy-ca.crt'
+    return response
 
 
 @app.route('/administration', methods=['GET', 'POST'])

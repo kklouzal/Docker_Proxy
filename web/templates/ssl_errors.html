@@ -4,25 +4,30 @@
 {% block title %}SSL Errors · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+  <div class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">TLS diagnostics</span>
     <h1 class="page-title">SSL Errors</h1>
-    <p class="page-subtitle">
-      {% if remote_control_mode and active_proxy %}
-        Operator view of aggregated TLS/SSL-related errors parsed from <span class="mono">cache.log</span> for {{ active_proxy.display_name }} over the last {{ window_label }}.
-      {% else %}
-        Operator view of aggregated TLS/SSL-related errors parsed from <span class="mono">cache.log</span> over the last {{ window_label }}.
-      {% endif %}
-    </p>
+    <p class="page-subtitle">Operator view of aggregated TLS/SSL-related errors parsed from <span class="mono">cache.log</span> for {{ active_proxy.display_name }} over the last {{ window_label }}.</p>
+    <div class="hero-badges">
+      <span class="badge">{{ summary.bucket_count }} buckets</span>
+      <span class="badge">{{ summary.total_events }} events</span>
+      <span class="badge">window {{ window_label }}</span>
+    </div>
+  </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="{{ url_for('live', window=window) }}">Open Live</a>
+    <a class="btn ghost" href="{{ url_for('exclusions') }}">Manage exclusions</a>
+  </div>
   </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
+<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'The SSL/TLS errors and exclusion actions on this page apply only to ' ~ active_proxy.display_name ~ '.') %}
 <div>This keeps certificate troubleshooting tied to the proxy that actually observed the failures.</div>
 {% endcall %}
-{% endif %}
+</section>
 
 <section class="card">
   <div class="card-header">
@@ -87,6 +92,45 @@
         </div>
       </div>
     {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if affected_clients or affected_user_agents or affected_bump_modes or affected_policy_tags %}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Affected clients and apps</h2>
+    <span class="badge">correlated requests</span>
+  </div>
+  <div class="card-body content-stack">
+    <div>
+      <div class="small"><strong>Clients</strong></div>
+      <div class="hero-badges">
+        {% for row in affected_clients %}<span class="badge">{{ row.label }} · {{ row.count }}</span>{% endfor %}
+        {% if not affected_clients %}<span class="small">No correlated client IPs yet.</span>{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="small"><strong>User agents</strong></div>
+      <div class="hero-badges">
+        {% for row in affected_user_agents %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>{% endfor %}
+        {% if not affected_user_agents %}<span class="small">No correlated user agents yet.</span>{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="small"><strong>Bump modes</strong></div>
+      <div class="hero-badges">
+        {% for row in affected_bump_modes %}<span class="badge">{{ row.label }} · {{ row.count }}</span>{% endfor %}
+        {% if not affected_bump_modes %}<span class="small">No correlated bump modes yet.</span>{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="small"><strong>Policy hints</strong></div>
+      <div class="hero-badges">
+        {% for row in affected_policy_tags %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>{% endfor %}
+        {% if not affected_policy_tags %}<span class="small">No policy hints matched correlated requests.</span>{% endif %}
+      </div>
+    </div>
   </div>
 </section>
 {% endif %}
@@ -162,15 +206,23 @@
                 {% if r.correlated_request %}
                   <div class="surface-note small">
                     <strong>Correlated request:</strong>
+                    <span class="badge {{ r.correlated_request.correlation.tone }}">{{ r.correlated_request.correlation.label }}</span>
                     <span class="mono">{{ r.correlated_request.method }} {{ r.correlated_request.target_display }}</span>
                     from <span class="mono">{{ r.correlated_request.client_ip }}</span>
-                    returned <span class="mono">{{ r.correlated_request.result_code }}</span>.
-                    {% if r.correlated_request.tls_summary %}
-                      <span>{{ r.correlated_request.tls_summary }}</span>
+                    returned <span class="mono">{{ r.correlated_request.result_summary }}</span>.
+                    {% if r.correlated_request.tls_details %}
+                      <div>
+                        {% for detail in r.correlated_request.tls_details %}
+                          <span>{{ detail }}{% if not loop.last %} · {% endif %}</span>
+                        {% endfor %}
+                      </div>
                     {% endif %}
                     {% if r.correlated_request.policy_tags %}
                       <span>Policy hints: {{ r.correlated_request.policy_tags|join(', ') }}.</span>
                     {% endif %}
+                    {% for header in r.correlated_request.header_details %}
+                      <div class="text-break"><strong>{{ header.label }}:</strong> {{ header.value }}</div>
+                    {% endfor %}
                   </div>
                 {% elif r.master_transaction %}
                   <div class="surface-note small">No structured request event was retained for this master transaction.</div>
@@ -184,9 +236,61 @@
                         {% if icap.icap_time_ms %}
                           <span>{{ icap.icap_time_ms }} ms</span>
                         {% endif %}
-                        {% if icap.adapt_summary %}
-                          <span class="text-break">{{ icap.adapt_summary }}</span>
+                        {% if icap.adapt_summary_short %}
+                          <span class="text-break">{{ icap.adapt_summary_short }}</span>
                         {% endif %}
+                        {% if icap.policy_tags %}
+                          <span> · {{ icap.policy_tags|join(', ') }}</span>
+                        {% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                {% if r.correlated_candidates %}
+                  <div class="surface-note small">
+                    <strong>Possible related transactions:</strong>
+                    {% for candidate in r.correlated_candidates %}
+                      <div class="content-stack">
+                        <div>
+                          <span class="badge {{ candidate.correlation.tone }}">{{ candidate.correlation.label }}</span>
+                          <span class="mono">{{ candidate.method }} {{ candidate.target_display }}</span>
+                          from <span class="mono">{{ candidate.client_ip }}</span>
+                          returned <span class="mono">{{ candidate.result_summary }}</span>.
+                        </div>
+                        {% if candidate.tls_details %}
+                          <div>{{ candidate.tls_details|join(' · ') }}</div>
+                        {% endif %}
+                        {% if candidate.policy_tags %}
+                          <div>Policy hints: {{ candidate.policy_tags|join(', ') }}.</div>
+                        {% endif %}
+                        {% for header in candidate.header_details %}
+                          <div class="text-break"><strong>{{ header.label }}:</strong> {{ header.value }}</div>
+                        {% endfor %}
+                        {% if candidate.related_icap %}
+                          <div>
+                            <strong>Related ICAP:</strong>
+                            {% for icap in candidate.related_icap %}
+                              <div>
+                                <span class="badge">{{ icap.service_label }}</span>
+                                {% if icap.icap_time_ms %}<span>{{ icap.icap_time_ms }} ms</span>{% endif %}
+                                {% if icap.adapt_summary_short %}<span class="text-break">{{ icap.adapt_summary_short }}</span>{% endif %}
+                              </div>
+                            {% endfor %}
+                          </div>
+                        {% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                {% if r.correlated_icap_candidates %}
+                  <div class="surface-note small">
+                    <strong>Possible related ICAP activity:</strong>
+                    {% for icap in r.correlated_icap_candidates %}
+                      <div>
+                        <span class="badge {{ icap.correlation.tone }}">{{ icap.correlation.label }}</span>
+                        <span class="badge">{{ icap.service_label }}</span>
+                        {% if icap.icap_time_ms %}<span>{{ icap.icap_time_ms }} ms</span>{% endif %}
+                        {% if icap.adapt_summary_short %}<span class="text-break">{{ icap.adapt_summary_short }}</span>{% endif %}
                       </div>
                     {% endfor %}
                   </div>

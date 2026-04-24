@@ -4,42 +4,39 @@
 {% block title %}Ad Blocking · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="page-heading" style="grid-column: 1 / -1; justify-self: stretch; width: 100%;">
   <div class="page-hero-copy">
     <span class="page-eyebrow">ICAP policy</span>
     <h1 class="page-title">Ad Blocking</h1>
-    <p class="page-subtitle">
-      {% if remote_control_mode and active_proxy %}
-        Manage fleet-wide ad-blocking subscriptions and the live runtime statistics for {{ active_proxy.display_name }}.
-      {% else %}
-        ICAP-based blocking using EasyList-style subscriptions.
-      {% endif %}
-    </p>
+    <p class="page-subtitle">Manage shared ad-blocking subscriptions and the live runtime statistics for {{ active_proxy.display_name }}.</p>
     <div class="hero-badges">
       <span class="badge {{ 'ok' if settings.enabled else 'danger' }}">{{ 'Enabled' if settings.enabled else 'Disabled' }}</span>
       <span class="badge">{{ statuses|length }} lists</span>
       <span class="badge">{{ stats.total }} blocked</span>
     </div>
   </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="{{ url_for('live', window=window, service='adblock') }}">Open Live trace</a>
+    <a class="btn ghost" href="{{ url_for('webfilter') }}">Web filtering</a>
+    <a class="btn ghost" href="{{ url_for('clamav') }}">ClamAV</a>
+  </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
-{% call scope_notice('mixed', 'Fleet subscriptions + selected proxy runtime', 'Ad-blocking subscriptions and baseline settings are shared across the fleet. Runtime cache metrics and recent blocks below belong only to ' ~ active_proxy.display_name ~ '.') %}
+{% call scope_notice('mixed', 'Shared subscriptions + selected proxy runtime', 'Ad-blocking subscriptions and baseline settings are shared across the control plane. Runtime cache metrics and recent blocks below belong only to ' ~ active_proxy.display_name ~ '.') %}
 <ul class="scope-details-list">
-  <li><strong>Fleet-wide:</strong> overall enablement, cache defaults, enabled subscription lists, and manual subscription refresh.</li>
+  <li><strong>Shared:</strong> overall enablement, cache defaults, enabled subscription lists, and manual subscription refresh.</li>
   <li><strong>{{ active_proxy.display_name }} only:</strong> live cache statistics, recent blocks, and flush-cache requests.</li>
 </ul>
 {% endcall %}
-{% endif %}
 
 <div class="grid">
   <section class="card split-left">
     <div class="card-header">
       <div>
-        <h2 class="card-title">Fleet baseline settings</h2>
-        <div class="small">Shared settings applied to ad blocking across the fleet.</div>
+        <h2 class="card-title">Shared baseline settings</h2>
+        <div class="small">Shared settings applied to ad blocking for every registered proxy.</div>
       </div>
-      {% if remote_control_mode %}{{ scope_chip('global') }}{% else %}{{ scope_chip('local') }}{% endif %}
+      {{ scope_chip('global') }}
     </div>
     <div class="card-body">
       <form method="post" action="{{ url_for('adblock') }}">
@@ -84,7 +81,7 @@
           <h2 class="card-title">Decision cache</h2>
           <div class="small">Live runtime cache for the currently selected proxy.</div>
         </div>
-        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% else %}{{ scope_chip('local') }}{% endif %}
+        {{ scope_chip('proxy') }}
       </div>
       <div class="card-body">
         <div class="summary-grid">
@@ -127,7 +124,7 @@
           <h2 class="card-title">Block statistics</h2>
           <div class="small">Recent activity observed on the selected proxy.</div>
         </div>
-        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% else %}{{ scope_chip('local') }}{% endif %}
+        {{ scope_chip('proxy') }}
       </div>
       <div class="card-body">
         <div class="summary-grid">
@@ -151,7 +148,7 @@
         <div class="small">Shared subscription catalog and refresh controls.</div>
       </div>
       <div class="actions">
-        {% if remote_control_mode %}{{ scope_chip('global') }}{% else %}{{ scope_chip('local') }}{% endif %}
+        {{ scope_chip('global') }}
         <span class="badge">{{ statuses|length }} lists</span>
       </div>
     </div>
@@ -217,11 +214,48 @@
         <div class="small">Most recent block events captured for the selected proxy.</div>
       </div>
       <div class="actions">
-        {% if remote_control_mode %}{{ scope_chip('proxy') }}{% else %}{{ scope_chip('local') }}{% endif %}
+        {{ scope_chip('proxy') }}
         <span class="badge">MySQL-backed</span>
       </div>
     </div>
     <div class="card-body">
+      <form class="form" method="get" action="{{ url_for('adblock') }}">
+        <div class="row-2">
+          <div>
+            <label for="window">Time window (seconds)</label>
+            <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+          </div>
+          <div>
+            <label for="q">Search adblock ICAP</label>
+            <input id="q" name="q" type="text" placeholder="host, URL, client" value="{{ diagnostic_search }}" />
+          </div>
+        </div>
+        <div>
+          <label for="tx">Master transaction (optional)</label>
+          <input id="tx" name="tx" type="text" placeholder="e.g. tx123" value="{{ diagnostic_tx }}" />
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="submit">Apply</button>
+          <a class="btn ghost" href="{{ url_for('adblock') }}">Reset</a>
+          <a class="btn" href="{{ url_for('live', window=window, service='adblock') }}">Open Live trace</a>
+        </div>
+      </form>
+
+      <div class="summary-grid">
+        <div class="stat compact-stat">
+          <div class="stat-k">Adblock ICAP events</div>
+          <div class="stat-v">{{ adblock_icap_summary.events }}</div>
+        </div>
+        <div class="stat compact-stat">
+          <div class="stat-k">Average ICAP time</div>
+          <div class="stat-v">{{ adblock_icap_summary.avg_icap_time_ms }} ms</div>
+        </div>
+        <div class="stat compact-stat">
+          <div class="stat-k">Peak ICAP time</div>
+          <div class="stat-v">{{ adblock_icap_summary.max_icap_time_ms }} ms</div>
+        </div>
+      </div>
+
       {% if recent_blocks and recent_blocks|length > 0 %}
         <div class="table-wrap"><table class="table">
           <thead>
@@ -232,6 +266,8 @@
               <th>URL</th>
               <th>Result</th>
               <th class="num">HTTP</th>
+              <th>Correlated request</th>
+              <th class="num">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -243,6 +279,24 @@
               <td><span class="small mono text-break">{{ e.url }}</span></td>
               <td><span class="small mono">{{ e.result }}</span></td>
               <td class="num"><span class="small mono">{{ e.status }}</span></td>
+              <td>
+                {% if e.correlated_candidates %}
+                  {% set candidate = e.correlated_candidates[0] %}
+                  <div class="surface-note small">
+                    <span class="badge {{ candidate.correlation.tone }}">{{ candidate.correlation.label }}</span>
+                    <span class="mono">{{ candidate.method }} {{ candidate.target_display }}</span>
+                    from <span class="mono">{{ candidate.client_ip }}</span>
+                  </div>
+                {% else %}
+                  <span class="small">No nearby structured request matched.</span>
+                {% endif %}
+              </td>
+              <td class="num">
+                <div class="table-action-stack">
+                  <a class="btn" href="{{ url_for('live', window=window, q=e.src_ip, service='adblock') }}">Live</a>
+                  <a class="btn" href="{{ url_for('ssl_errors', q=e.url, window=window) }}">SSL errors</a>
+                </div>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
@@ -251,6 +305,79 @@
       {% else %}
         <div class="surface-note small">No blocks recorded in the database yet.</div>
       {% endif %}
+
+      <div class="surface-note small">
+        Structured adblock ICAP traces are also retained for the last {{ window_label }} so you can follow a blocked request into Live or SSL troubleshooting without tailing the container logs.
+      </div>
+    </div>
+  </section>
+
+  <section class="card split-left">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Recent adblock ICAP transactions</h2>
+        <div class="small">Structured REQMOD observations from Squid's ICAP log.</div>
+      </div>
+      {{ scope_chip('proxy') }}
+    </div>
+    <div class="card-body">
+      {% if recent_adblock_icap_events %}
+        <div class="table-wrap"><table class="table">
+          <thead>
+            <tr>
+              <th class="num">Seen</th>
+              <th>Client</th>
+              <th>Target</th>
+              <th class="num">ICAP time</th>
+              <th>Adaptation</th>
+              <th>Correlation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for event in recent_adblock_icap_events %}
+              <tr>
+                <td class="num"><span class="small">{{ fmt_ts(event.ts) }}</span></td>
+                <td><span class="mono">{{ event.client_ip }}</span></td>
+                <td><div class="stack-sm"><span class="mono">{{ event.target_display }}</span>{% if event.url %}<span class="small text-break">{{ event.url }}</span>{% endif %}</div></td>
+                <td class="num">{{ event.icap_time_ms }} ms</td>
+                <td><div class="stack-sm"><span class="badge">{{ event.service_label }}</span>{% if event.adapt_summary_short %}<span class="small text-break">{{ event.adapt_summary_short }}</span>{% endif %}{% if event.policy_tags %}<div class="hero-badges">{% for tag in event.policy_tags %}<span class="badge">{{ tag }}</span>{% endfor %}</div>{% endif %}</div></td>
+                <td>
+                  {% if event.correlated_request %}
+                    <div class="surface-note small">
+                      <span class="mono">{{ event.correlated_request.method }} {{ event.correlated_request.target_display }}</span>
+                      · {{ event.correlated_request.result_summary }}
+                    </div>
+                  {% elif event.master_xaction %}
+                    <span class="small mono">{{ event.master_xaction }}</span>
+                  {% else %}
+                    <span class="small">No transaction captured.</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table></div>
+      {% else %}
+        <div class="surface-note small">No recent adblock ICAP transactions were captured in this window.</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header">
+      <h2 class="card-title">Slowest adblock ICAP events</h2>
+      <span class="badge">window {{ window_label }}</span>
+    </div>
+    <div class="card-body">
+      <div class="stack-sm">
+        {% for event in slow_adblock_icap %}
+          <div class="surface-note small">
+            <div><span class="badge">{{ event.service_label }}</span> {{ event.icap_time_ms }} ms</div>
+            {% if event.adapt_summary_short %}<div class="text-break">{{ event.adapt_summary_short }}</div>{% endif %}
+          </div>
+        {% endfor %}
+        {% if not slow_adblock_icap %}<div class="surface-note small">No slow adblock ICAP samples yet.</div>{% endif %}
+      </div>
     </div>
   </section>
 </div>

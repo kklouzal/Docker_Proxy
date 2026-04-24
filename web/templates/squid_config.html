@@ -4,17 +4,12 @@
 {% block title %}Squid Config · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+    <div class="page-heading">
     <div class="page-hero-copy">
         <span class="page-eyebrow">Proxy tuning</span>
         <h1 class="page-title">Squid Configuration</h1>
-        <p class="page-subtitle">
-            {% if remote_control_mode and active_proxy %}
-                Manage the live <span class="mono">squid.conf</span> revision and template-backed settings for {{ active_proxy.display_name }}.
-            {% else %}
-                Manage the running <span class="mono">squid.conf</span> and common caching settings.
-            {% endif %}
-        </p>
+        <p class="page-subtitle">Manage the live <span class="mono">squid.conf</span> revision and template-backed settings for {{ active_proxy.display_name }}.</p>
         <div class="hero-badges">
             {% if summary.workers %}<span class="badge">{{ summary.workers }} worker{{ '' if summary.workers == 1 else 's' }}</span>{% endif %}
             {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
@@ -22,27 +17,61 @@
             <span class="badge">{{ summary.exclusions_count }} exclusions</span>
         </div>
     </div>
+    <div class="page-actions">
+        <a class="btn ghost" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download config</a>
+        <a class="btn ghost" href="{{ url_for('live') }}">Open Live</a>
+        <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
+    </div>
+    </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
+<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy configuration', 'Every tab on this page edits only ' ~ active_proxy.display_name ~ '.') %}
 <div>Navigation and form submissions here are pinned to this proxy, so a different tab switching proxies will not accidentally retarget these changes.</div>
 {% endcall %}
-{% endif %}
+</section>
 
-<div class="page-tabs">
-    <a class="btn {{ 'primary' if tab == 'config' else 'ghost' }}" href="{{ url_for('squid_config', tab='config') }}">Config</a>
-    <a class="btn {{ 'primary' if tab == 'caching' else 'ghost' }}" href="{{ url_for('squid_config', tab='caching') }}">Caching</a>
-    <a class="btn {{ 'primary' if tab == 'timeouts' else 'ghost' }}" href="{{ url_for('squid_config', tab='timeouts') }}">Timeouts</a>
-    <a class="btn {{ 'primary' if tab == 'logging' else 'ghost' }}" href="{{ url_for('squid_config', tab='logging') }}">Logging</a>
-    <a class="btn {{ 'primary' if tab == 'network' else 'ghost' }}" href="{{ url_for('squid_config', tab='network') }}">Network</a>
-    <a class="btn {{ 'primary' if tab == 'dns' else 'ghost' }}" href="{{ url_for('squid_config', tab='dns') }}">DNS</a>
-    <a class="btn {{ 'primary' if tab == 'ssl' else 'ghost' }}" href="{{ url_for('squid_config', tab='ssl') }}">SSL</a>
-    <a class="btn {{ 'primary' if tab == 'icap' else 'ghost' }}" href="{{ url_for('squid_config', tab='icap') }}">ICAP</a>
-    <a class="btn {{ 'primary' if tab == 'privacy' else 'ghost' }}" href="{{ url_for('squid_config', tab='privacy') }}">Privacy</a>
-    <a class="btn {{ 'primary' if tab == 'limits' else 'ghost' }}" href="{{ url_for('squid_config', tab='limits') }}">Limits</a>
-    <a class="btn {{ 'primary' if tab == 'performance' else 'ghost' }}" href="{{ url_for('squid_config', tab='performance') }}">Performance</a>
-    <a class="btn {{ 'primary' if tab == 'http' else 'ghost' }}" href="{{ url_for('squid_config', tab='http') }}">HTTP</a>
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">Configuration snapshot</h2>
+        <span class="badge">selected tab {{ tab|title }}</span>
+    </div>
+    <div class="card-body">
+        <div class="summary-grid">
+            <div class="stat compact-stat">
+                <div class="stat-k">Workers</div>
+                <div class="stat-v">{{ summary.workers if summary.workers is not none else 'n/a' }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Disk cache</div>
+                <div class="stat-v">{{ summary.cache_dir_size_mb if summary.cache_dir_size_mb is not none else 'n/a' }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Memory cache</div>
+                <div class="stat-v">{{ summary.cache_mem_mb if summary.cache_mem_mb is not none else 'n/a' }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Exclusions</div>
+                <div class="stat-v">{{ summary.exclusions_count }}</div>
+            </div>
+        </div>
+        <div class="surface-note small">Use the raw <span class="mono">Config</span> tab for exact <span class="mono">squid.conf</span> edits, and the other tabs for safer template-backed changes that keep common settings organized.</div>
+    </div>
+</section>
+
+<div class="page-tabs config-tabs" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 10px; width: 100%; grid-column: 1 / -1; justify-self: stretch;">
+    <a class="btn {{ 'primary' if tab == 'config' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='config') }}">Config</a>
+    <a class="btn {{ 'primary' if tab == 'caching' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='caching') }}">Caching</a>
+    <a class="btn {{ 'primary' if tab == 'timeouts' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='timeouts') }}">Timeouts</a>
+    <a class="btn {{ 'primary' if tab == 'logging' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='logging') }}">Logging</a>
+    <a class="btn {{ 'primary' if tab == 'network' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='network') }}">Network</a>
+    <a class="btn {{ 'primary' if tab == 'dns' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='dns') }}">DNS</a>
+    <a class="btn {{ 'primary' if tab == 'ssl' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='ssl') }}">SSL</a>
+    <a class="btn {{ 'primary' if tab == 'icap' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='icap') }}">ICAP</a>
+    <a class="btn {{ 'primary' if tab == 'privacy' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='privacy') }}">Privacy</a>
+    <a class="btn {{ 'primary' if tab == 'limits' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='limits') }}">Limits</a>
+    <a class="btn {{ 'primary' if tab == 'performance' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='performance') }}">Performance</a>
+    <a class="btn {{ 'primary' if tab == 'http' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='http') }}">HTTP</a>
 </div>
 
 {% if request.args.get('ok') %}
@@ -64,7 +93,7 @@
     </div>
 {% endif %}
 
-<div class="grid config-page">
+<div class="config-page" style="display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; width: 100%; grid-column: 1 / -1; justify-self: stretch;">
     {% if tab == 'config' %}
         <section class="card">
             <div class="card-header">

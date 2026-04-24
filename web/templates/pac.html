@@ -4,34 +4,58 @@
 {% block title %}PAC Builder · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+  <div class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">Client routing</span>
     <h1 class="page-title">PAC Builder</h1>
-    <p class="page-subtitle">
-      {% if remote_control_mode and active_proxy %}
-        Define PAC profiles for {{ active_proxy.display_name }} and serve PAC content based on the requesting client IP.
-      {% else %}
-        Define multiple PAC profiles and serve different PAC content based on the client IP requesting the PAC.
-      {% endif %}
-    </p>
+    <p class="page-subtitle">Define PAC profiles for {{ active_proxy.display_name }} and serve PAC content based on the requesting client IP.</p>
     <div class="hero-badges">
       <span class="badge">{{ profiles|length }} profile{{ '' if profiles|length == 1 else 's' }}</span>
     </div>
   </div>
+    <div class="page-actions">
+      <a class="btn ghost" href="{{ url_for('proxy_pac') }}">Download PAC</a>
+      <a class="btn ghost" href="{{ url_for('exclusions') }}">Open exclusions</a>
+    </div>
+  </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
+<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'PAC profiles on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
-<div>The published PAC URL below is pinned to this proxy so you can safely manage distinct fleet members side-by-side.</div>
+<div>The published PAC URL below is pinned to this proxy so you can safely manage distinct proxies side-by-side.</div>
 {% endcall %}
-{% endif %}
+</section>
 
 {% if request.args.get('ok') %}
   <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">PAC profiles updated.</span></div></div>
 {% elif request.args.get('error') %}
   <div class="banner error"><span class="badge danger">Error</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Request failed.' }}</span></div></div>
 {% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Routing overview</h2>
+    <span class="badge">served dynamically</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat">
+        <div class="stat-k">Profiles</div>
+        <div class="stat-v">{{ profiles|length }}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">SOCKS-enabled profiles</div>
+        <div class="stat-v">{{ profiles|selectattr('socks_enabled')|list|length }}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Fallback mode</div>
+        <div class="stat-v">{{ 'Profile-based' if profiles|length else 'Exclusions PAC' }}</div>
+      </div>
+    </div>
+    <div class="surface-note small">Use PAC profiles when different offices or client ranges need different proxy chains; leave the catch-all profile blank for a safe default.</div>
+  </div>
+</section>
 
 <div class="grid">
   <section class="card">
@@ -43,9 +67,7 @@
       <div class="small">Configure your clients to use:</div>
       <div class="surface-note mono text-break">{{ pac_url }}</div>
       <div class="surface-note small">The server chooses which PAC content to return based on the requester IP (for example <span class="mono">REMOTE_ADDR</span> or <span class="mono">X-Forwarded-For</span>).</div>
-      {% if remote_control_mode and active_proxy %}
-      <div class="surface-note small">In fleet mode the <span class="mono">proxy_id</span> in this URL keeps clients pinned to {{ active_proxy.display_name }}.</div>
-      {% endif %}
+      <div class="surface-note small">The <span class="mono">proxy_id</span> in this URL keeps clients pinned to {{ active_proxy.display_name }}.</div>
     </div>
   </section>
 

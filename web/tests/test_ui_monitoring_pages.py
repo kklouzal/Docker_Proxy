@@ -182,7 +182,7 @@ def test_live_page_shows_recent_diagnostic_transactions(app_module, monkeypatch)
             return 0, []
 
     class FakeDiagnostic:
-        def list_recent_requests(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", limit: int = 50):
+        def list_recent_transactions(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", service: str = "", limit: int = 50, icap_limit_per_transaction: int = 5):
             return [
                 {
                     "ts": 1713448200,
@@ -195,11 +195,45 @@ def test_live_page_shows_recent_diagnostic_transactions(app_module, monkeypatch)
                     "hierarchy_status": "DIRECT",
                     "bytes": 1024,
                     "tls_summary": "bump=bump · sni=example.com",
+                    "tls_server_version": "TLSv1.3",
+                    "tls_server_cipher": "TLS_AES_256_GCM_SHA384",
+                    "tls_client_version": "TLSv1.3",
+                    "tls_client_cipher": "TLS_AES_128_GCM_SHA256",
+                    "host": "example.com",
+                    "user_agent": "Mozilla/5.0",
+                    "referer": "https://portal.example.com/",
                     "policy_tags": ["ssl:steam"],
                     "master_xaction": "tx123",
                     "domain": "example.com",
+                    "related_icap": [
+                        {
+                            "service_family": "av",
+                            "service_label": "AV / ClamAV",
+                            "icap_time_ms": 42,
+                            "adapt_summary": "avrespmod / virus_scan allow",
+                            "adapt_details": "clamd clean",
+                            "policy_tags": ["cache:cookie"],
+                            "master_xaction": "tx123",
+                            "host": "example.com",
+                            "sni": "example.com",
+                            "user_agent": "Mozilla/5.0",
+                            "referer": "-",
+                        }
+                    ],
                 }
             ]
+
+        def top_request_dimension(self, dimension: str, *, since: int | None = None, limit: int = 10):
+            return [{"value": "Mozilla/5.0" if dimension == "user_agent" else "bump", "count": 3, "last_seen": 1713448200}]
+
+        def top_policy_tags(self, *, since: int | None = None, limit: int = 10):
+            return [{"tag": "ssl:steam", "count": 3, "last_seen": 1713448200}]
+
+        def slowest_requests(self, *, since: int | None = None, limit: int = 10):
+            return self.list_recent_transactions(limit=limit)
+
+        def slowest_icap_events(self, *, since: int | None = None, service: str = "", limit: int = 10):
+            return self.list_recent_transactions(limit=1)[0]["related_icap"]
 
     monkeypatch.setattr(app_module, "get_store", lambda: FakeLive())
     monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
@@ -214,6 +248,11 @@ def test_live_page_shows_recent_diagnostic_transactions(app_module, monkeypatch)
     assert "tx123" in body
     assert "TCP_MISS/200" in body
     assert "bump=bump" in body
+    assert "AV / ClamAV" in body
+    assert "Master transaction (optional)" in body
+    assert "Referer:" in body
+    assert "Traffic facets" in body
+    assert "Slow paths" in body
 
 
 def test_ssl_errors_page_shows_correlated_request_and_icap_activity(app_module, monkeypatch):
@@ -268,11 +307,86 @@ def test_ssl_errors_page_shows_correlated_request_and_icap_activity(app_module, 
     assert "Master transaction: tx999" in body
     assert "Correlated request:" in body
     assert "AV / ClamAV" in body
+    assert "Exact master transaction match" in body
+
+
+def test_ssl_errors_page_shows_possible_matches_when_transaction_missing(app_module, monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeSSL:
+        def list_recent(self, *, since: int, search: str, limit: int):
+            return [
+                SimpleNamespace(
+                    domain="example.com",
+                    category="TLS_OTHER",
+                    reason="handshake failure",
+                    count=1,
+                    first_seen=1713446500,
+                    last_seen=1713448300,
+                    sample="CONNECT example.com:443",
+                ),
+            ]
+
+        def top_domains(self, *, since: int, search: str, limit: int):
+            return []
+
+    class FakeDiagnostic:
+        def find_request_by_master_xaction(self, master_xaction: str):
+            return None
+
+        def list_icap_by_master_xaction(self, master_xaction: str, *, limit: int = 10):
+            return []
+
+        def list_request_candidates_for_domain_near_ts(self, *, domain: str, around_ts: int, window_seconds: int = 300, limit: int = 3):
+            return [
+                {
+                    "ts": 1713448290,
+                    "duration_ms": 90,
+                    "client_ip": "192.0.2.90",
+                    "method": "CONNECT",
+                    "target_display": "example.com",
+                    "url": "example.com:443",
+                    "result_code": "TCP_TUNNEL/200",
+                    "http_status": 200,
+                    "bytes": 2048,
+                    "master_xaction": "tx-possible",
+                    "hierarchy_status": "DIRECT",
+                    "bump_mode": "splice",
+                    "sni": "example.com",
+                    "tls_server_version": "TLSv1.3",
+                    "tls_server_cipher": "TLS_AES_256_GCM_SHA384",
+                    "tls_client_version": "TLSv1.3",
+                    "tls_client_cipher": "TLS_AES_128_GCM_SHA256",
+                    "host": "example.com",
+                    "user_agent": "App/1.0",
+                    "referer": "-",
+                    "policy_tags": ["ssl:sslfilter_nobump"],
+                    "related_icap": [],
+                    "correlation_kind": "domain_time",
+                    "time_delta_seconds": 10,
+                }
+            ]
+
+        def list_icap_candidates_for_domain_near_ts(self, *, domain: str, around_ts: int, window_seconds: int = 300, limit: int = 3):
+            return []
+
+    monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSL())
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/ssl-errors?window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Possible related transactions:" in body
+    assert "Possible match (domain + time)" in body
+    assert "sslfilter_nobump" in body
 
 
 def test_clamav_page_shows_recent_av_icap_transactions(app_module, monkeypatch):
     class FakeDiagnostic:
-        def list_recent_icap(self, *, since: int | None = None, search: str = "", master_xaction: str = "", service: str = "", limit: int = 50):
+        def list_recent_icap(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", service: str = "", limit: int = 50):
             return [
                 {
                     "ts": 1713448200,
@@ -286,8 +400,44 @@ def test_clamav_page_shows_recent_av_icap_transactions(app_module, monkeypatch):
                     "adapt_details": "clamd clean",
                     "policy_tags": ["cache:cookie"],
                     "master_xaction": "tx777",
+                    "host": "downloads.example.com",
+                    "sni": "downloads.example.com",
+                    "user_agent": "Mozilla/5.0",
+                    "referer": "-",
                 }
             ]
+
+        def find_request_by_master_xaction(self, master_xaction: str):
+            return {
+                "ts": 1713448198,
+                "duration_ms": 140,
+                "client_ip": "192.0.2.10",
+                "method": "GET",
+                "target_display": "downloads.example.com",
+                "url": "https://downloads.example.com/file.exe",
+                "result_code": "TCP_MISS/200",
+                "http_status": 200,
+                "bytes": 4096,
+                "master_xaction": master_xaction,
+                "hierarchy_status": "DIRECT",
+                "bump_mode": "bump",
+                "sni": "downloads.example.com",
+                "tls_server_version": "TLSv1.3",
+                "tls_server_cipher": "TLS_AES_256_GCM_SHA384",
+                "tls_client_version": "TLSv1.3",
+                "tls_client_cipher": "TLS_AES_128_GCM_SHA256",
+                "host": "downloads.example.com",
+                "user_agent": "Mozilla/5.0",
+                "referer": "-",
+                "policy_tags": ["cache:cookie"],
+                "related_icap": [],
+            }
+
+        def icap_summary(self, *, since: int | None = None, service: str = ""):
+            return {"events": 1, "avg_icap_time_ms": 87, "max_icap_time_ms": 87}
+
+        def slowest_icap_events(self, *, since: int | None = None, service: str = "", limit: int = 10):
+            return self.list_recent_icap(limit=limit)
 
     monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
 
@@ -300,6 +450,72 @@ def test_clamav_page_shows_recent_av_icap_transactions(app_module, monkeypatch):
     assert "Recent AV ICAP transactions" in body
     assert "AV / ClamAV" in body
     assert "tx777" in body
+    assert "Request:" in body
+    assert "Master transaction (optional)" in body
+    assert "Average ICAP time" in body
+
+
+def test_ssl_errors_page_shows_affected_client_rollups(app_module, monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeSSL:
+        def list_recent(self, *, since: int, search: str, limit: int):
+            return [
+                SimpleNamespace(
+                    domain="example.com",
+                    category="TLS_OTHER",
+                    reason="broken",
+                    count=2,
+                    first_seen=1713446400,
+                    last_seen=1713448200,
+                    sample="current master transaction: txabc",
+                ),
+            ]
+
+        def top_domains(self, *, since: int, search: str, limit: int):
+            return []
+
+    class FakeDiagnostic:
+        def find_request_by_master_xaction(self, master_xaction: str):
+            return {
+                "method": "CONNECT",
+                "target_display": "example.com",
+                "client_ip": "192.0.2.22",
+                "result_code": "TCP_TUNNEL/200",
+                "http_status": 200,
+                "bump_mode": "splice",
+                "user_agent": "ExampleApp/1.0",
+                "policy_tags": ["ssl:sslfilter_nobump"],
+            }
+
+        def list_icap_by_master_xaction(self, master_xaction: str, *, limit: int = 10):
+            return []
+
+    monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSL())
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/ssl-errors?window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Affected clients and apps" in body
+    assert "192.0.2.22" in body
+    assert "ExampleApp/1.0" in body
+
+
+def test_index_page_shows_observability_shortcuts(app_module):
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Observability" in body
+    assert "Investigate Live" in body
+    assert "Review SSL errors" in body
+    assert "Trace AV ICAP" in body
 
 
 def test_exclusions_bulk_add_redirects_with_feedback(app_module):

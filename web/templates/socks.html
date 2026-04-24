@@ -4,25 +4,30 @@
 {% block title %}SOCKS · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+  <div class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">SOCKS analytics</span>
     <h1 class="page-title">SOCKS</h1>
-    <p class="page-subtitle">
-      {% if remote_control_mode and active_proxy %}
-        Best-effort SOCKS analytics parsed from Dante (<span class="mono">sockd</span>) logs for {{ active_proxy.display_name }}.
-      {% else %}
-        Best-effort analytics parsed from Dante (<span class="mono">sockd</span>) connection logs.
-      {% endif %}
-    </p>
+    <p class="page-subtitle">Best-effort SOCKS analytics parsed from Dante (<span class="mono">sockd</span>) logs for {{ active_proxy.display_name }}.</p>
+    <div class="hero-badges">
+      <span class="badge">{{ summary.total or 0 }} events</span>
+      <span class="badge">{{ summary.blocked or 0 }} blocked</span>
+      <span class="badge">window {{ window_label }}</span>
+    </div>
+  </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="{{ url_for('index') }}">Back to status</a>
+    <a class="btn ghost" href="{{ url_for('proxies') }}">View proxies</a>
+  </div>
   </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
+<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'SOCKS summaries, client trends, and recent events on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
-<div>This makes it easier to investigate one runtime without cross-contaminating analytics from the rest of the fleet.</div>
+<div>This makes it easier to investigate one runtime without cross-contaminating analytics from other proxies.</div>
 {% endcall %}
-{% endif %}
+</section>
 
 <form method="get" class="filter-bar">
   <label class="small">Window

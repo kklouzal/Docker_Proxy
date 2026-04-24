@@ -11,7 +11,7 @@ class TestSplitModeControlPlane(unittest.TestCase):
     def setUp(self):
         self._env_backup = {
             key: os.environ.get(key)
-            for key in ('PROXY_CONTROL_MODE', 'DISABLE_BACKGROUND', 'PROXY_MANAGEMENT_TOKEN', 'DEFAULT_PROXY_ID')
+            for key in ('DISABLE_BACKGROUND', 'PROXY_MANAGEMENT_TOKEN', 'DEFAULT_PROXY_ID')
         }
         self.addCleanup(self._restore_env)
         self.app_module = import_remote_app_module(
@@ -72,7 +72,7 @@ class TestSplitModeControlPlane(unittest.TestCase):
         self.assertIn(response.status_code, (301, 302, 308))
         self.assertEqual(fake_client.sync_calls, [('edge-1', True)])
 
-    def test_fleet_page_renders_registered_proxy(self):
+    def test_proxies_page_renders_registered_proxy(self):
         from services.proxy_registry import get_proxy_registry  # type: ignore
 
         registry = get_proxy_registry()
@@ -82,12 +82,13 @@ class TestSplitModeControlPlane(unittest.TestCase):
         original = self.app_module.get_proxy_client
         self.app_module.get_proxy_client = lambda: fake_client
         try:
-            response = self.app.get('/fleet')
+            response = self.app.get('/proxies')
         finally:
             self.app_module.get_proxy_client = original
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('Edge 1', response.get_data(as_text=True))
+        self.assertIn('Observability (1h)', response.get_data(as_text=True))
 
     def test_registry_refresh_does_not_reset_existing_proxy_status(self):
         from services.proxy_registry import get_proxy_registry  # type: ignore

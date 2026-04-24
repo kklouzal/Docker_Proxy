@@ -6,11 +6,11 @@ Runtime state now targets an **external MySQL 8+ backend**.
 
 The SQLite migration window has closed: the project now supports **MySQL 8+ only**, and runtime services create/use the current schema directly rather than attempting in-place upgrades from legacy layouts.
 
-## Split architecture (admin-ui + proxy)
+## Multi-container architecture (admin-ui + proxy)
 
 The repository now supports a **two-container split**:
 
-- `admin-ui`: Flask/Gunicorn control plane for login, policy editing, fleet visibility, and desired-state management
+- `admin-ui`: Flask/Gunicorn control plane for login, policy editing, proxy visibility, and desired-state management
 - `proxy`: Squid/Dante/c-icap runtime plus a tiny internal management API used only for:
   - health checks
   - immediate config sync from MySQL
@@ -103,7 +103,6 @@ services:
     ports:
       - "0.0.0.0:5000:5000"
     environment:
-      PROXY_CONTROL_MODE: remote
       PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
       DATABASE_URL: ${DATABASE_URL:-}
       MYSQL_HOST: ${MYSQL_HOST:-}
@@ -238,7 +237,7 @@ Also confirm:
 Authoritative runtime/admin state now lives in the configured external MySQL database.
 
 The container persists operational state under `/var/lib/squid-flask-proxy` (backed by the `proxy_data` named volume in the default Compose setup), including:
-- Policy artifacts and caches (compiled adblock/web filter files, cached local runtime assets)
+- Policy artifacts and caches (compiled adblock/web filter files, cached proxy-runtime assets)
 - Adblock compiled lists / caches
 
 Squid cache and SSL database use separate named volumes by default:
@@ -322,7 +321,7 @@ Admin UI (Gunicorn) tuning:
 
 ## Features (current)
 
-- **Operational visibility** pages for proxy health, live traffic, SSL/TLS error buckets, SOCKS activity, and fleet status.
+- **Operational visibility** pages for proxy health, live traffic, SSL/TLS error buckets, SOCKS activity, and proxy inventory.
 - **Policy controls** from the web UI:
   - Squid config editor (with safe defaults)
   - Exclusions (domain/CIDR policies for problematic destinations)
@@ -458,7 +457,7 @@ Configuration:
 - c-icap module configuration is provided in `docker/clamd_mod.conf` and `docker/virus_scan.conf`.
 
 Operator workflow:
-- In split mode, the **ClamAV** tab is intentionally per-proxy.
+- The **ClamAV** tab is intentionally per-proxy.
 - The page separates three concerns so operators can troubleshoot accurately:
   - **Policy**: whether Squid currently routes responses through the AV ICAP service
   - **AV c-icap service**: whether the proxy-local `avrespmod` listener is reachable

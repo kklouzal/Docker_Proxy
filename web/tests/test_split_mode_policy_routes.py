@@ -12,7 +12,7 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
     def setUp(self):
         self._env_backup = {
             key: os.environ.get(key)
-            for key in ('PROXY_CONTROL_MODE', 'DISABLE_BACKGROUND', 'PROXY_MANAGEMENT_TOKEN', 'DEFAULT_PROXY_ID')
+            for key in ('DISABLE_BACKGROUND', 'PROXY_MANAGEMENT_TOKEN', 'DEFAULT_PROXY_ID')
         }
         self.addCleanup(self._restore_env)
         self.app_module = import_remote_app_module(

@@ -5,9 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token }}">
+    <meta name="asset-version" content="{{ asset_version }}">
     <title>{% block title %}Squid Flask Proxy{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <script src="{{ url_for('static', filename='spa.js') }}" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=asset_version) }}">
+    <script src="{{ url_for('static', filename='spa.js', v=asset_version) }}" defer></script>
 </head>
 <body data-active-proxy-id="{{ active_proxy_id or '' }}">
     <a class="skip-link" href="#spa-content">Skip to main content</a>
@@ -18,14 +19,7 @@
                 <div class="brand-mark" aria-hidden="true"></div>
                 <div class="brand-title">
                     <strong>Squid Flask Proxy</strong>
-                    <span>
-                        Admin control plane
-                        {% if remote_control_mode and active_proxy %}
-                            · fleet mode
-                        {% else %}
-                            · local runtime
-                        {% endif %}
-                    </span>
+                    <span>Admin control plane{% if session.get('user') and active_proxy %} · {{ active_proxy.display_name }}{% endif %}</span>
                 </div>
             </a>
 
@@ -65,6 +59,7 @@
                         </div>
                     </div>
 
+                    <a class="nav-pill {{ 'active' if request.endpoint == 'proxies' else '' }}" href="{{ url_for('proxies') }}">Proxies</a>
                     <a class="nav-pill" href="{{ url_for('pac_builder') }}">PAC</a>
                     <a class="nav-pill {{ 'active' if request.endpoint == 'administration' else '' }}" href="{{ url_for('administration') }}">Administration</a>
 
@@ -79,7 +74,7 @@
     </header>
 
     <div id="context-strip-slot">
-        {% if session.get('user') and remote_control_mode and active_proxy %}
+        {% if session.get('user') and active_proxy %}
         <div class="context-strip">
             <div class="container context-strip-inner">
                 <div class="context-strip-copy">
@@ -88,7 +83,7 @@
                     <span class="small">This tab keeps navigation and form actions pinned to this proxy until you switch it.</span>
                 </div>
                 <div class="context-strip-actions">
-                    {% if fleet_proxies %}
+                    {% if proxy_inventory %}
                     <form method="get" action="{{ request.path }}" class="proxy-switcher">
                         {% for key, value in request.args.items() %}
                             {% if key != 'proxy_id' %}
@@ -97,7 +92,7 @@
                         {% endfor %}
                         <label for="proxy-id" class="small">Proxy</label>
                         <select id="proxy-id" name="proxy_id" onchange="this.form.submit()">
-                            {% for proxy in fleet_proxies %}
+                            {% for proxy in proxy_inventory %}
                             <option value="{{ proxy.proxy_id }}" {{ 'selected' if proxy.proxy_id == active_proxy_id else '' }}>
                                 {{ proxy.display_name }} ({{ proxy.status }})
                             </option>
@@ -105,17 +100,7 @@
                         </select>
                     </form>
                     {% endif %}
-                    <a class="btn ghost" href="{{ url_for('fleet') }}">Manage fleet</a>
-                </div>
-            </div>
-        </div>
-        {% elif session.get('user') %}
-        <div class="context-strip context-strip-local">
-            <div class="container context-strip-inner">
-                <div class="context-strip-copy">
-                    {{ scope_chip('local') }}
-                    <strong>Single local proxy</strong>
-                    <span class="small">All pages in this session are working against the local runtime in this container.</span>
+                    <a class="btn ghost" href="{{ url_for('proxies') }}">Manage proxies</a>
                 </div>
             </div>
         </div>

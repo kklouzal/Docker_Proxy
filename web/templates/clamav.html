@@ -4,29 +4,26 @@
 {% block title %}ClamAV · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="page-heading" style="grid-column: 1 / -1; justify-self: stretch; width: 100%;">
   <div class="page-hero-copy">
     <span class="page-eyebrow">Antivirus controls</span>
     <h1 class="page-title">ClamAV</h1>
-    <p class="page-subtitle">
-      {% if remote_control_mode and active_proxy %}
-        REQMOD/RESPMOD antivirus policy and health for {{ active_proxy.display_name }}.
-      {% else %}
-        RESPMOD antivirus scan via local c-icap (virus_scan) and a remote clamd backend.
-      {% endif %}
-    </p>
+    <p class="page-subtitle">REQMOD/RESPMOD antivirus policy and health for {{ active_proxy.display_name }}.</p>
     <div class="hero-badges">
       <span class="badge {{ 'ok' if clamav_enabled else 'danger' }}">{{ 'Active' if clamav_enabled else 'Disabled' }}</span>
       <span class="badge {{ 'ok' if health and health.ok else 'warn' }}">{{ 'Healthy' if health and health.ok else 'Needs attention' }}</span>
+      <span class="badge">{{ clamav_icap_summary.events }} AV traces</span>
     </div>
+  </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="{{ url_for('live', window=window, service='av') }}">Open Live trace</a>
+    <a class="btn ghost" href="{{ url_for('ssl_errors', window=window) }}">SSL errors</a>
   </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
 {% call scope_notice('proxy', 'Selected proxy only', 'Enable/disable state, health checks, and test actions here affect only ' ~ active_proxy.display_name ~ '.') %}
-<div>This page is intentionally per-proxy so you can validate AV behavior one runtime at a time across the fleet.</div>
+<div>This page is intentionally per-proxy so you can validate AV behavior one runtime at a time.</div>
 {% endcall %}
-{% endif %}
 
 <div class="actions">
   <form method="post" action="{{ url_for('clamav_toggle') }}">
@@ -101,7 +98,7 @@
     </div>
     <div class="card-body stack-list">
       <div class="table-wrap">
-        <table>
+        <table class="table">
           <thead>
             <tr>
               <th>Component</th>
@@ -160,6 +157,21 @@
       <span class="badge">window {{ window_label }}</span>
     </div>
     <div class="card-body stack-list">
+      <div class="summary-grid">
+        <div class="stat compact-stat">
+          <div class="stat-k">AV ICAP events</div>
+          <div class="stat-v">{{ clamav_icap_summary.events }}</div>
+        </div>
+        <div class="stat compact-stat">
+          <div class="stat-k">Average ICAP time</div>
+          <div class="stat-v">{{ clamav_icap_summary.avg_icap_time_ms }} ms</div>
+        </div>
+        <div class="stat compact-stat">
+          <div class="stat-k">Peak ICAP time</div>
+          <div class="stat-v">{{ clamav_icap_summary.max_icap_time_ms }} ms</div>
+        </div>
+      </div>
+
       <form class="form" method="get" action="{{ url_for('clamav') }}">
         <div class="row-2">
           <div>
@@ -170,6 +182,10 @@
             <label for="q">Search (host, URL, client, transaction)</label>
             <input id="q" name="q" type="text" placeholder="contains..." value="{{ diagnostic_search }}" />
           </div>
+        </div>
+        <div>
+          <label for="tx">Master transaction (optional)</label>
+          <input id="tx" name="tx" type="text" placeholder="e.g. tx777" value="{{ diagnostic_tx }}" />
         </div>
         <div class="actions">
           <button class="btn primary" type="submit">Apply</button>
@@ -182,7 +198,7 @@
       </div>
 
       <div class="table-wrap">
-        <table>
+        <table class="table">
           <thead>
             <tr>
               <th class="num">Seen</th>
@@ -190,7 +206,8 @@
               <th>Target</th>
               <th class="num">ICAP time</th>
               <th>Adaptation</th>
-              <th>Correlation</th>
+              <th>Request correlation</th>
+              <th class="num">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -215,11 +232,15 @@
                 <td>
                   <div class="stack-sm">
                     <span class="badge">{{ event.service_label }}</span>
-                    {% if event.adapt_summary %}
-                      <span class="small text-break">{{ event.adapt_summary }}</span>
+                    <span class="badge {{ event.correlation.tone }}">{{ event.correlation.label }}</span>
+                    {% if event.adapt_summary_short %}
+                      <span class="small text-break">{{ event.adapt_summary_short }}</span>
                     {% endif %}
-                    {% if event.adapt_details %}
-                      <span class="small text-break">{{ event.adapt_details }}</span>
+                    {% if event.adapt_details_short %}
+                      <span class="small text-break">{{ event.adapt_details_short }}</span>
+                    {% endif %}
+                    {% if event.tls_details %}
+                      <span class="small">{{ event.tls_details|join(' · ') }}</span>
                     {% endif %}
                     {% if event.policy_tags %}
                       <div class="hero-badges">
@@ -228,14 +249,43 @@
                         {% endfor %}
                       </div>
                     {% endif %}
+                    {% for header in event.header_details %}
+                      <span class="small text-break"><strong>{{ header.label }}:</strong> {{ header.value }}</span>
+                    {% endfor %}
                   </div>
                 </td>
                 <td>
+                  <div class="stack-sm">
                   {% if event.master_xaction %}
                     <span class="small mono">{{ event.master_xaction }}</span>
                   {% else %}
                     <span class="small">No master transaction recorded.</span>
                   {% endif %}
+                  {% if event.correlated_request %}
+                    <div class="surface-note small">
+                      <strong>Request:</strong>
+                      <span class="mono">{{ event.correlated_request.method }} {{ event.correlated_request.target_display }}</span>
+                      from <span class="mono">{{ event.correlated_request.client_ip }}</span>
+                      returned <span class="mono">{{ event.correlated_request.result_summary }}</span>.
+                      {% if event.correlated_request.tls_details %}
+                        <div>{{ event.correlated_request.tls_details|join(' · ') }}</div>
+                      {% endif %}
+                      {% if event.correlated_request.policy_tags %}
+                        <div>Policy hints: {{ event.correlated_request.policy_tags|join(', ') }}.</div>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                  </div>
+                </td>
+                <td class="num">
+                  <div class="table-action-stack">
+                    {% if event.master_xaction %}
+                      <a class="btn" href="{{ url_for('live', mode='domains', window=window, tx=event.master_xaction) }}">Live</a>
+                    {% endif %}
+                    {% if event.target_display and event.target_display != '-' %}
+                      <a class="btn" href="{{ url_for('ssl_errors', q=event.target_display, window=window) }}">SSL errors</a>
+                    {% endif %}
+                  </div>
                 </td>
               </tr>
             {% endfor %}
@@ -246,6 +296,16 @@
       {% if recent_icap_events|length == 0 %}
         <div class="surface-note small">No AV ICAP transactions were captured in this window yet.</div>
       {% endif %}
+
+      <div class="surface-note small"><strong>Slowest AV ICAP samples:</strong>
+        {% if slow_av_icap %}
+          {% for event in slow_av_icap %}
+            <span class="badge">{{ event.target_display }} · {{ event.icap_time_ms }} ms</span>
+          {% endfor %}
+        {% else %}
+          none yet.
+        {% endif %}
+      </div>
     </div>
   </section>
 </div>

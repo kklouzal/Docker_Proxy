@@ -1,19 +1,20 @@
 {% macro scope_chip(kind, label=None) -%}
   {% set labels = {
     'proxy': 'Selected proxy',
-    'global': 'Fleet-wide',
-    'mixed': 'Mixed scope',
-    'local': 'Local runtime'
+    'global': 'Shared',
+    'mixed': 'Shared + selected proxy'
   } %}
   <span class="scope-chip scope-chip-{{ kind }}">{{ label or labels.get(kind, kind|title) }}</span>
 {%- endmacro %}
 
 {% macro scope_notice(kind, title, summary) -%}
-<section class="scope-notice scope-notice-{{ kind }}">
+<section class="scope-notice scope-notice-{{ kind }}" style="grid-column: 1 / -1; justify-self: stretch; width: 100%;">
   <div class="scope-notice-header">
-    {{ scope_chip(kind) }}
     <div class="scope-notice-copy">
-      <h2 class="scope-notice-title">{{ title }}</h2>
+      <div class="scope-notice-title-row">
+        {{ scope_chip(kind) }}
+        <h2 class="scope-notice-title">{{ title }}</h2>
+      </div>
       <p class="scope-notice-summary">{{ summary }}</p>
       {% if caller is defined %}
       <div class="scope-notice-details">{{ caller() }}</div>

@@ -110,7 +110,7 @@ class FakeWebFilterStore:
 
     def apply_squid_include(self):
         if not self.local_apply_allowed:
-            raise AssertionError("remote mode should not apply local webfilter includes")
+            raise AssertionError("control-plane tests should not apply local webfilter includes")
         self._apply_calls += 1
         return None
 
@@ -164,7 +164,7 @@ class FakeSSLFilterStore:
 
     def apply_squid_include(self):
         if not self.local_apply_allowed:
-            raise AssertionError("remote mode should not apply local sslfilter includes")
+            raise AssertionError("control-plane tests should not apply local sslfilter includes")
         self._apply_calls += 1
         return None
 
@@ -239,7 +239,7 @@ class FakeExclusionsStore:
 
 class FakeLiveStore:
     def get_totals(self, *, since: int):
-        return {"requests": 0, "cached": 0, "not_cached": 0}
+        return {"domain_requests": 0, "domain_hit_requests": 0, "client_requests": 0, "client_hit_requests": 0}
 
     def list_global_not_cached_reasons(self, *, limit: int):
         return 0, []
@@ -261,16 +261,54 @@ class FakeLiveStore:
 
 
 class FakeDiagnosticStore:
+    def activity_summary(self, *, since: int | None = None):
+        return {
+            "requests": 0,
+            "clients": 0,
+            "domains": 0,
+            "transactions": 0,
+            "icap_events": 0,
+            "av_icap_events": 0,
+            "adblock_icap_events": 0,
+        }
+
     def list_recent_requests(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", limit: int = 50):
+        return []
+
+    def list_recent_transactions(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", service: str = "", limit: int = 50, icap_limit_per_transaction: int = 5):
         return []
 
     def find_request_by_master_xaction(self, master_xaction: str):
         return None
 
-    def list_recent_icap(self, *, since: int | None = None, search: str = "", master_xaction: str = "", service: str = "", limit: int = 50):
+    def list_recent_icap(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", service: str = "", limit: int = 50):
         return []
 
     def list_icap_by_master_xaction(self, master_xaction: str, *, limit: int = 20):
+        return []
+
+    def list_request_candidates_for_domain_near_ts(self, *, domain: str, around_ts: int, window_seconds: int = 300, limit: int = 5, service: str = "", icap_limit_per_transaction: int = 5):
+        return []
+
+    def list_icap_candidates_for_domain_near_ts(self, *, domain: str, around_ts: int, window_seconds: int = 300, service: str = "", limit: int = 5):
+        return []
+
+    def list_request_candidates_for_policy_event(self, *, around_ts: int, url: str = "", client_ip: str = "", domain: str = "", window_seconds: int = 300, limit: int = 5, service: str = "", icap_limit_per_transaction: int = 5):
+        return []
+
+    def top_request_dimension(self, dimension: str, *, since: int | None = None, limit: int = 10):
+        return []
+
+    def top_policy_tags(self, *, since: int | None = None, limit: int = 10):
+        return []
+
+    def slowest_requests(self, *, since: int | None = None, limit: int = 10):
+        return []
+
+    def icap_summary(self, *, since: int | None = None, service: str = ""):
+        return {"events": 0, "avg_icap_time_ms": 0, "max_icap_time_ms": 0}
+
+    def slowest_icap_events(self, *, since: int | None = None, service: str = "", limit: int = 10):
         return []
 
 

@@ -411,10 +411,7 @@ class AdblockArtifactStore:
                         except Exception:
                             pass
                         if bool(result.get("changed")):
-                            if _is_remote_control_mode():
-                                _nudge_registered_proxies(force=False)
-                            else:
-                                apply_active_artifact_locally(force=True, clear_cache=False, compiled_dir=self.compiled_dir)
+                            _nudge_registered_proxies(force=False)
                         sleep_seconds = 5.0
             except Exception:
                 log_exception_throttled(
@@ -425,12 +422,6 @@ class AdblockArtifactStore:
                 )
                 sleep_seconds = error_seconds
             time.sleep(sleep_seconds)
-
-
-def _is_remote_control_mode() -> bool:
-    return (os.environ.get("PROXY_CONTROL_MODE") or "local").strip().lower() == "remote"
-
-
 def _nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
     from services.proxy_client import ProxyClientError, get_proxy_client
     from services.proxy_registry import get_proxy_registry
