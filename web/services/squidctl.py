@@ -594,25 +594,29 @@ class SquidController(_CoreSquidController):
         private_dst_nets = PRIVATE_NETS_V4 if bool(getattr(exclusions, "exclude_private_nets", False)) else []
 
         acl_lines = []
+        note_lines = []
         splice_lines = []
         cache_deny_lines = []
 
         if domains:
             acl_lines.append("acl excluded_domains dstdomain " + " ".join(domains))
+            note_lines.append("note exclusion_rule domain excluded_domains")
             splice_lines.append("ssl_bump splice excluded_domains")
             cache_deny_lines.append("cache deny excluded_domains")
         if private_dst_nets:
             acl_lines.append("acl excluded_private_dst dst " + " ".join(private_dst_nets))
+            note_lines.append("note exclusion_rule private_dst excluded_private_dst")
             splice_lines.append("ssl_bump splice excluded_private_dst")
             cache_deny_lines.append("cache deny excluded_private_dst")
         if src_nets:
             acl_lines.append("acl excluded_src src " + " ".join(src_nets))
+            note_lines.append("note exclusion_rule src excluded_src")
             splice_lines.append("ssl_bump splice excluded_src")
             cache_deny_lines.append("cache deny excluded_src")
         if not (acl_lines or splice_lines or cache_deny_lines):
             return base
 
-        insert_ssl = "\n".join(["", "# Exclusions (managed by web UI)"] + acl_lines + splice_lines) + "\n"
+        insert_ssl = "\n".join(["", "# Exclusions (managed by web UI)"] + acl_lines + note_lines + splice_lines) + "\n"
         base = base.replace("ssl_bump bump all", insert_ssl + "ssl_bump bump all", 1)
 
         deny_block = "\n".join(["", "# Exclusions (managed by web UI)"] + cache_deny_lines) + "\n"

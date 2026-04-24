@@ -4,6 +4,7 @@ from services.cert_manager import CertManager, generate_self_signed_ca_bundle, i
 from services.certificate_bundles import get_certificate_bundles
 from services.auth_store import get_auth_store
 from services.config_revisions import get_config_revisions
+from services.diagnostic_store import get_diagnostic_store
 from datetime import UTC, datetime, timedelta
 import time
 import os
@@ -33,7 +34,7 @@ from services.errors import public_error_message
 from services.health_checks import build_clamav_health as _shared_build_clamav_health
 from services.logutil import log_exception_throttled
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
-from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, present_ssl_error_rows as _present_ssl_error_rows, present_ssl_top_domains as _present_ssl_top_domains, safe_local_return_url as _safe_local_return_url, window_label as _window_label
+from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, extract_ssl_master_transaction as _extract_ssl_master_transaction, present_ssl_error_rows as _present_ssl_error_rows, present_ssl_top_domains as _present_ssl_top_domains, safe_local_return_url as _safe_local_return_url, window_label as _window_label
 
 import re
 import secrets
@@ -563,6 +564,12 @@ if not _disable_background:
         except Exception:
             pass
 
+        # Start background ingestion of the richer request/ICAP diagnostic logs.
+        try:
+            get_diagnostic_store().start_background()
+        except Exception:
+            pass
+
         # Start 1s time-series sampler + rollups (best-effort).
         try:
             get_timeseries_store().start_background(get_stats)
@@ -662,6 +669,7 @@ def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
 
 
 def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> tuple[bool, str]:
+    config_text = squid_controller.normalize_config_text(config_text)
     if not _is_remote_control_mode():
         return squid_controller.apply_config_text(config_text)
 
@@ -1194,6 +1202,7 @@ def fleet():
 @app.route('/ssl-errors', methods=['GET'])
 def ssl_errors():
     store = get_ssl_errors_store()
+    diagnostic_store = get_diagnostic_store()
     limit = _query_int_arg('limit', default=200)
     q = (request.args.get('q') or '').strip().lower()
     window_i = _query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600)
@@ -1211,6 +1220,23 @@ def ssl_errors():
     summary = presented['summary']
     hints = presented['hints']
     top_domains = _present_ssl_top_domains(raw_top_domains, limit=15)
+
+    for index, row in enumerate(rows):
+        row['master_transaction'] = ''
+        row['correlated_request'] = None
+        row['correlated_icap'] = []
+        if index >= 25:
+            continue
+        tx = _extract_ssl_master_transaction(row.get('sample'))
+        if not tx:
+            continue
+        row['master_transaction'] = tx
+        try:
+            row['correlated_request'] = diagnostic_store.find_request_by_master_xaction(tx)
+            row['correlated_icap'] = diagnostic_store.list_icap_by_master_xaction(tx, limit=10)
+        except Exception:
+            row['correlated_request'] = None
+            row['correlated_icap'] = []
 
     return render_template(
         'ssl_errors.html',
@@ -1481,6 +1507,9 @@ def _test_eicar() -> Dict[str, Any]:
 def clamav():
     cfg = _current_managed_config()
     clamav_enabled = _is_clamav_enabled(cfg)
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
+    diagnostic_search = (request.args.get('q') or '').strip()
+    since_ts = int(time.time()) - window_i
     if _is_remote_control_mode():
         proxy_id = get_proxy_id()
         health_payload = _clamav_remote_health(proxy_id)
@@ -1495,6 +1524,16 @@ def clamav():
         health = _shared_build_clamav_health(clamd_health, av_icap_health)
         health_source = ''
 
+    try:
+        recent_icap_events = get_diagnostic_store().list_recent_icap(
+            since=since_ts,
+            search=diagnostic_search,
+            service='av',
+            limit=50,
+        )
+    except Exception:
+        recent_icap_events = []
+
     return render_template(
         'clamav.html',
         health=health,
@@ -1502,6 +1541,10 @@ def clamav():
         av_icap_health=av_icap_health,
         health_source=health_source,
         clamav_enabled=clamav_enabled,
+        recent_icap_events=recent_icap_events,
+        diagnostic_search=diagnostic_search,
+        window=window_i,
+        window_label=_window_label(window_i),
         eicar_result=request.args.get('eicar'),
         eicar_detail=request.args.get('eicar_detail'),
         icap_result=request.args.get('icap_sample'),
@@ -1846,6 +1889,7 @@ def live():
             domain_reasons=[],
             global_nocache_total=global_nocache_total,
             global_reasons=global_reasons,
+            request_events=[],
             totals=totals,
             search=search,
             window=window_i,
@@ -1885,6 +1929,16 @@ def live():
         domain_reasons = store.list_domain_not_cached_reasons(domain=domain, limit=10) if domain and detail == 'nocache' else []
 
     totals = store.get_totals(since=since_ts)
+    try:
+        request_events = get_diagnostic_store().list_recent_requests(
+            since=since_ts,
+            search=search,
+            client_ip=(ip if mode == 'clients' and ip else ''),
+            domain=(domain if mode == 'domains' and domain else ''),
+            limit=min(limit_i, 50),
+        )
+    except Exception:
+        request_events = []
     return render_template(
         'live.html',
         subtab=subtab,
@@ -1901,6 +1955,7 @@ def live():
         domain_reasons=domain_reasons,
         global_nocache_total=0,
         global_reasons=[],
+        request_events=request_events,
         totals=totals,
         search=search,
         window=window_i,

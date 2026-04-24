@@ -309,10 +309,58 @@ fi
 # We intentionally avoid logging request/response headers here because they add
 # measurable per-request formatting and I/O overhead on the proxy hot path.
 SAFE_LIVEUI_FMT='logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st'
+SAFE_DIAGNOSTIC_FMT='logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note'
+SAFE_ICAP_OBSERVE_FMT='logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note'
 for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
     if [ -f "$SQUID_CFG" ] && grep -q "^logformat liveui" "$SQUID_CFG" 2>/dev/null; then
         sed -i -E "s#^logformat[[:space:]]+liveui[[:space:]].*#${SAFE_LIVEUI_FMT}#" "$SQUID_CFG"
     fi
+
+    if [ ! -f "$SQUID_CFG" ]; then
+        continue
+    fi
+
+    SQUID_CFG_PATH="$SQUID_CFG" \
+    SAFE_LIVEUI_FMT="$SAFE_LIVEUI_FMT" \
+    SAFE_DIAGNOSTIC_FMT="$SAFE_DIAGNOSTIC_FMT" \
+    SAFE_ICAP_OBSERVE_FMT="$SAFE_ICAP_OBSERVE_FMT" \
+    python3 - <<'PY' || true
+from pathlib import Path
+import os
+import re
+
+path = Path(os.environ['SQUID_CFG_PATH'])
+text = path.read_text(encoding='utf-8')
+
+
+def replace_or_append(pattern: str, line: str) -> str:
+    regex = re.compile(pattern, re.M)
+    if regex.search(text_buffer[0]):
+        text_buffer[0] = regex.sub(line, text_buffer[0], count=1)
+    else:
+        text_buffer[0] = text_buffer[0].rstrip() + "\n" + line + "\n"
+    return text_buffer[0]
+
+
+text_buffer = [text]
+replace_or_append(r'^\s*logformat\s+liveui\s+.*$', os.environ['SAFE_LIVEUI_FMT'])
+replace_or_append(r'^\s*logformat\s+diagnostic\s+.*$', os.environ['SAFE_DIAGNOSTIC_FMT'])
+replace_or_append(r'^\s*logformat\s+icapobserve\s+.*$', os.environ['SAFE_ICAP_OBSERVE_FMT'])
+replace_or_append(r'^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$', 'access_log stdio:/var/log/squid/access.log liveui')
+replace_or_append(r'^\s*access_log\s+(?:stdio:)?/var/log/squid/access-observe\.log\b.*$', 'access_log stdio:/var/log/squid/access-observe.log diagnostic')
+replace_or_append(r'^\s*cache_log\s+(?:stdio:)?/var/log/squid/cache\.log\b.*$', 'cache_log stdio:/var/log/squid/cache.log')
+replace_or_append(r'^\s*icap_log\s+(?:stdio:)?/var/log/squid/icap\.log\b.*$', 'icap_log stdio:/var/log/squid/icap.log icapobserve')
+
+for note_line, acl_name in (
+    ('note ssl_exception steam steam_sites', 'steam_sites'),
+    ('note cache_bypass auth has_auth', 'has_auth'),
+    ('note cache_bypass cookie has_cookie', 'has_cookie'),
+):
+    if acl_name in text_buffer[0] and note_line not in text_buffer[0]:
+        text_buffer[0] = text_buffer[0].rstrip() + "\n" + note_line + "\n"
+
+path.write_text(text_buffer[0] if text_buffer[0].endswith('\n') else text_buffer[0] + '\n', encoding='utf-8')
+PY
 done
 
 # Stability + privacy: never cache requests that carry Authorization/Cookie.
@@ -688,10 +736,11 @@ if [ "$PREV_WORKERS" != "$WORKERS" ]; then
     rm -f /var/spool/squid/swap.state* 2>/dev/null || true
 fi
 
-# SECURITY: access.log may contain credentials from older configurations.
+# SECURITY: access.log and the richer diagnostic logs may contain credentials or
+# identifying metadata from older configurations.
 # Since /var/log/squid is not persisted as a volume, it's safe to purge on startup.
 if [ "${SANITIZE_SQUID_ACCESS_LOGS_ON_START:-1}" = "1" ]; then
-    rm -f /var/log/squid/access.log /var/log/squid/access.log.* 2>/dev/null || true
+    rm -f /var/log/squid/access.log /var/log/squid/access.log.* /var/log/squid/access-observe.log /var/log/squid/access-observe.log.* /var/log/squid/icap.log /var/log/squid/icap.log.* 2>/dev/null || true
 fi
 
 # Generate Dante (sockd) config used by supervisord.

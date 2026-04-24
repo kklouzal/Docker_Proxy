@@ -77,6 +77,8 @@ _TLS_IO_ERR_TEXT: Dict[str, str] = {
     '1': 'The TLS stack also reported an I/O failure or connection close after the TLS error.',
 }
 
+_TLS_ACCEPT_HEADER_TEXT = 'Cannot accept a TLS connection'
+
 
 def _normalized_domain(value: str | None) -> str:
     return (value or '').strip().lower().lstrip('.')
@@ -93,9 +95,18 @@ def ssl_error_category_meta(category: str | None) -> Dict[str, str]:
     }
 
 
+def extract_ssl_master_transaction(sample: str | None) -> str:
+    match = _MASTER_TRANSACTION_PATTERN.search(sample or '')
+    if not match:
+        return ''
+    return str(match.group('tx') or '').strip()
+
+
 def _infer_ssl_category(category: str, *, reason: str, sample: str) -> str:
     key = (category or 'TLS_OTHER').strip().upper() or 'TLS_OTHER'
     combined = "\n".join(part for part in (reason, sample) if part).lower()
+    if 'cannot accept a tls connection' in combined or 'failure while accepting a tls connection' in combined:
+        return 'TLS_CLIENT_ACCEPT'
     if 'squid_tls_err_accept' in combined and ('tls_lib_err=a000119' in combined or 'decryption failed or bad record mac' in combined):
         return 'TLS_CLIENT_ACCEPT'
     return key
@@ -106,6 +117,9 @@ def _display_reason(*, category: str, reason: str, sample: str) -> str:
     signature = _TLS_ERROR_SIGNATURE_PATTERN.search(combined)
     if category == 'TLS_CLIENT_ACCEPT' and signature:
         return signature.group(1).upper()
+    lowered = combined.lower()
+    if category == 'TLS_CLIENT_ACCEPT' and ('cannot accept a tls connection' in lowered or 'failure while accepting a tls connection' in lowered):
+        return _TLS_ACCEPT_HEADER_TEXT
     return reason
 
 
@@ -131,6 +145,8 @@ def _build_ssl_diagnostics(*, category: str, reason: str, sample: str) -> list[s
         decoded_io = _TLS_IO_ERR_TEXT.get(io_code)
         if decoded_io:
             diagnostics.append(f'TLS I/O code {io_code}: {decoded_io}')
+    elif category == 'TLS_CLIENT_ACCEPT' and 'cannot accept a tls connection' in combined.lower():
+        diagnostics.append('Squid only logged the generic TLS accept failure line; there was no OpenSSL detail code in the latest sample.')
 
     conn_match = _CONNECTION_CONTEXT_PATTERN.search(sample or '')
     local = ''
@@ -163,6 +179,9 @@ def _build_ssl_diagnostics(*, category: str, reason: str, sample: str) -> list[s
         tx = str(tx_match.group('tx') or '').strip()
         if tx:
             diagnostics.append(f'Latest master transaction: {tx}.')
+
+    if category == 'TLS_CLIENT_ACCEPT' and not (remote or local) and not tx_match:
+        diagnostics.append('Squid did not emit any follow-up connection or master-transaction context for the latest sample, so cache.log alone cannot identify the client or app.')
 
     return diagnostics
 

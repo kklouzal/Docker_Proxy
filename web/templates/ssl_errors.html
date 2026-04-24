@@ -156,6 +156,41 @@
                 {% for diag in r.diagnostics %}
                   <div class="small">{{ diag }}</div>
                 {% endfor %}
+                {% if r.master_transaction %}
+                  <div class="small mono">Master transaction: {{ r.master_transaction }}</div>
+                {% endif %}
+                {% if r.correlated_request %}
+                  <div class="surface-note small">
+                    <strong>Correlated request:</strong>
+                    <span class="mono">{{ r.correlated_request.method }} {{ r.correlated_request.target_display }}</span>
+                    from <span class="mono">{{ r.correlated_request.client_ip }}</span>
+                    returned <span class="mono">{{ r.correlated_request.result_code }}</span>.
+                    {% if r.correlated_request.tls_summary %}
+                      <span>{{ r.correlated_request.tls_summary }}</span>
+                    {% endif %}
+                    {% if r.correlated_request.policy_tags %}
+                      <span>Policy hints: {{ r.correlated_request.policy_tags|join(', ') }}.</span>
+                    {% endif %}
+                  </div>
+                {% elif r.master_transaction %}
+                  <div class="surface-note small">No structured request event was retained for this master transaction.</div>
+                {% endif %}
+                {% if r.correlated_icap %}
+                  <div class="surface-note small">
+                    <strong>Related ICAP activity:</strong>
+                    {% for icap in r.correlated_icap %}
+                      <div>
+                        <span class="badge">{{ icap.service_label }}</span>
+                        {% if icap.icap_time_ms %}
+                          <span>{{ icap.icap_time_ms }} ms</span>
+                        {% endif %}
+                        {% if icap.adapt_summary %}
+                          <span class="text-break">{{ icap.adapt_summary }}</span>
+                        {% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
                 {% if r.sample %}
                   <div class="small mono text-break">Latest sample: {{ r.sample }}</div>
                 {% endif %}

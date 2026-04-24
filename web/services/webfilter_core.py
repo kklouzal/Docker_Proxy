@@ -377,6 +377,7 @@ class WebFilterStoreBase:
 
         if whitelist_lines:
             lines.append(f"acl webfilter_whitelist dstdomain \"{self.whitelist_path}\"")
+            lines.append("note webfilter_allow whitelist webfilter_whitelist")
             lines.append("http_access allow webfilter_whitelist")
 
         selected = self._resolve_category_aliases(list(settings.blocked_categories or []))

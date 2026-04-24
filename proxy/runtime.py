@@ -15,6 +15,7 @@ from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import CertManager, materialize_certificate_bundle
 from services.config_revisions import get_config_revisions
+from services.diagnostic_store import get_diagnostic_store
 from services.errors import public_error_message
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
@@ -509,6 +510,7 @@ class ProxyRuntime:
         if (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1":
             return
         get_store().start_background()
+        get_diagnostic_store().start_background()
         get_timeseries_store().start_background(get_stats)
         get_ssl_errors_store().start_background()
         get_socks_store().start_background()
@@ -671,9 +673,11 @@ class ProxyRuntime:
             self.registry.mark_apply_result(self.proxy_id, ok=reload_ok, detail=detail, current_config_sha=self._current_config_sha())
             return result
 
+        normalized_revision_text = self.controller.normalize_config_text(revision.config_text)
+        normalized_revision_sha = hashlib.sha256(normalized_revision_text.encode("utf-8", errors="replace")).hexdigest()
         current_text = self.controller.get_current_config() or ""
         current_sha = hashlib.sha256(current_text.encode("utf-8", errors="replace")).hexdigest() if current_text else ""
-        if not force and revision.config_sha256 == current_sha:
+        if not force and normalized_revision_sha == current_sha:
             reload_ok = True
             if policy_reload_required:
                 reload_ok, reload_detail = self._reload_for_policy_update()
@@ -698,7 +702,7 @@ class ProxyRuntime:
                 "detail": detail,
             }
 
-        ok, config_detail = self.controller.apply_config_text(revision.config_text)
+        ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
         detail = "\n".join([part for part in detail_parts if part]).strip() or config_detail
@@ -709,7 +713,7 @@ class ProxyRuntime:
             detail=detail,
             applied_by="proxy",
         )
-        new_sha = revision.config_sha256 if ok else current_sha
+        new_sha = normalized_revision_sha if ok else current_sha
         self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=new_sha)
         return {
             "ok": ok,

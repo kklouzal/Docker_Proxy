@@ -10,9 +10,9 @@
     <h1 class="page-title">Live</h1>
     <p class="page-subtitle">
       {% if remote_control_mode and active_proxy %}
-        Recent activity aggregated from <span class="mono">access.log</span> for {{ active_proxy.display_name }}.
+        Recent activity aggregated from <span class="mono">access.log</span> and enriched with structured request diagnostics for {{ active_proxy.display_name }}.
       {% else %}
-        Recent proxy activity aggregated from <span class="mono">access.log</span>.
+        Recent proxy activity aggregated from <span class="mono">access.log</span> and enriched with structured request diagnostics.
       {% endif %}
     </p>
   </div>
@@ -389,6 +389,100 @@
   </div>
 </section>
 {% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Recent diagnostic transactions</h2>
+    <span class="badge">{{ request_events|length }} rows</span>
+  </div>
+  <div class="card-body">
+    <div class="surface-note small">
+      Structured records from <span class="mono">access-observe.log</span> are collected into MySQL by default so you can correlate client IPs, master transaction IDs, bump mode, SNI, selected headers, and policy hints without enabling Squid debug logging.
+    </div>
+
+    <div class="table-wrap"><table class="table">
+      <thead>
+        <tr>
+          <th class="num">Seen</th>
+          <th>Client</th>
+          <th>Target</th>
+          <th>Result</th>
+          <th>TLS / policy</th>
+          <th>Correlation</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in request_events %}
+          <tr>
+            <td class="num">
+              <div class="stack-sm">
+                <span class="small">{{ fmt_ts(event.ts) }}</span>
+                <span class="small">{{ event.duration_ms }} ms</span>
+              </div>
+            </td>
+            <td>
+              <div class="stack-sm">
+                <span class="mono">{{ event.client_ip }}</span>
+                <span class="small">{{ event.method }}</span>
+              </div>
+            </td>
+            <td>
+              <div class="stack-sm">
+                <span class="mono">{{ event.target_display }}</span>
+                {% if event.url %}
+                  <span class="small text-break">{{ event.url }}</span>
+                {% endif %}
+              </div>
+            </td>
+            <td>
+              <div class="stack-sm">
+                <span class="mono">{{ event.result_code }}</span>
+                {% if event.hierarchy_status %}
+                  <span class="small">{{ event.hierarchy_status }}</span>
+                {% endif %}
+                {% if event.bytes %}
+                  <span class="small">{{ event.bytes }} bytes</span>
+                {% endif %}
+              </div>
+            </td>
+            <td>
+              <div class="stack-sm">
+                {% if event.tls_summary %}
+                  <span class="small">{{ event.tls_summary }}</span>
+                {% endif %}
+                {% if event.policy_tags %}
+                  <div class="hero-badges">
+                    {% for tag in event.policy_tags %}
+                      <span class="badge">{{ tag }}</span>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <span class="small">No policy note matched.</span>
+                {% endif %}
+              </div>
+            </td>
+            <td>
+              <div class="stack-sm">
+                {% if event.master_xaction %}
+                  <span class="small mono">{{ event.master_xaction }}</span>
+                {% else %}
+                  <span class="small">No master transaction recorded.</span>
+                {% endif %}
+                {% if event.domain %}
+                  <a class="btn" href="{{ url_for('ssl_errors', q=event.domain, window=window) }}">SSL errors</a>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+
+    {% if request_events|length == 0 %}
+      <div class="surface-note small">No rich request events were captured in this window yet. Generate traffic through the proxy and refresh.</div>
+    {% endif %}
+  </div>
+</section>
 
 {% endif %}
 

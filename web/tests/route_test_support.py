@@ -260,6 +260,20 @@ class FakeLiveStore:
         return []
 
 
+class FakeDiagnosticStore:
+    def list_recent_requests(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", limit: int = 50):
+        return []
+
+    def find_request_by_master_xaction(self, master_xaction: str):
+        return None
+
+    def list_recent_icap(self, *, since: int | None = None, search: str = "", master_xaction: str = "", service: str = "", limit: int = 50):
+        return []
+
+    def list_icap_by_master_xaction(self, master_xaction: str, *, limit: int = 20):
+        return []
+
+
 class FakeAuditStore:
     def latest_config_apply(self):
         return None
@@ -336,6 +350,7 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
     monkeypatch.setattr(app_module, "get_sslfilter_store", lambda: fake_sslfilter_store)
     monkeypatch.setattr(app_module, "get_pac_profiles_store", lambda: fake_pac_profiles)
     monkeypatch.setattr(app_module, "get_store", lambda: FakeLiveStore())
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnosticStore())
     monkeypatch.setattr(app_module, "get_audit_store", lambda: FakeAuditStore())
 
     import subprocess

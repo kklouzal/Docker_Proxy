@@ -89,6 +89,38 @@ def test_ssl_errors_page_shows_operator_friendly_summary(app_module, monkeypatch
     assert "example.com" in body
 
 
+def test_ssl_errors_page_explains_missing_followup_context_for_tls_accept(app_module, monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeSSL:
+        def list_recent(self, *, since: int, search: str, limit: int):
+            return [
+                SimpleNamespace(
+                    domain="",
+                    category="TLS_OTHER",
+                    reason="2026/04/21 23:37:04 kid1| ERROR: Cannot accept a TLS connection",
+                    count=2,
+                    first_seen=1713446500,
+                    last_seen=1713448300,
+                    sample="error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
+                ),
+            ]
+
+        def top_domains(self, *, since: int, search: str, limit: int):
+            return []
+
+    monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSL())
+
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/ssl-errors?window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Client-side TLS accept failure" in body
+    assert "Squid did not emit any follow-up connection or master-transaction context" in body
+
+
 def test_live_page_offers_quick_exclusion_actions(app_module, monkeypatch):
     class FakeLive:
         def get_totals(self, *, since: int):
@@ -124,6 +156,150 @@ def test_live_page_offers_quick_exclusion_actions(app_module, monkeypatch):
     assert "Add to exclusions" in body
     assert "SSL errors" in body
     assert 'name="return_to"' in body
+
+
+def test_live_page_shows_recent_diagnostic_transactions(app_module, monkeypatch):
+    class FakeLive:
+        def get_totals(self, *, since: int):
+            return {"domain_requests": 10, "domain_hit_requests": 7, "client_requests": 4, "client_hit_requests": 1}
+
+        def list_domains(self, *, sort: str, order: str, limit: int, since: int, search: str):
+            return [{"domain": "example.com", "requests": 10, "pct": 100.0, "cache_pct": 70.0, "last_seen": 1713448200}]
+
+        def list_clients(self, *, sort: str, order: str, limit: int, since: int, search: str):
+            return []
+
+        def list_client_domains(self, *, ip: str, sort: str):
+            return []
+
+        def list_client_not_cached(self, *, ip: str, limit: int):
+            return []
+
+        def list_domain_not_cached_reasons(self, *, domain: str, limit: int):
+            return []
+
+        def list_global_not_cached_reasons(self, *, limit: int):
+            return 0, []
+
+    class FakeDiagnostic:
+        def list_recent_requests(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", limit: int = 50):
+            return [
+                {
+                    "ts": 1713448200,
+                    "duration_ms": 125,
+                    "client_ip": "192.0.2.10",
+                    "method": "GET",
+                    "target_display": "example.com",
+                    "url": "https://example.com/download.bin",
+                    "result_code": "TCP_MISS/200",
+                    "hierarchy_status": "DIRECT",
+                    "bytes": 1024,
+                    "tls_summary": "bump=bump · sni=example.com",
+                    "policy_tags": ["ssl:steam"],
+                    "master_xaction": "tx123",
+                    "domain": "example.com",
+                }
+            ]
+
+    monkeypatch.setattr(app_module, "get_store", lambda: FakeLive())
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/live?mode=domains&window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Recent diagnostic transactions" in body
+    assert "tx123" in body
+    assert "TCP_MISS/200" in body
+    assert "bump=bump" in body
+
+
+def test_ssl_errors_page_shows_correlated_request_and_icap_activity(app_module, monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeSSL:
+        def list_recent(self, *, since: int, search: str, limit: int):
+            return [
+                SimpleNamespace(
+                    domain="example.com",
+                    category="TLS_OTHER",
+                    reason="error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
+                    count=2,
+                    first_seen=1713446500,
+                    last_seen=1713448300,
+                    sample="error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1\ncurrent master transaction: tx999",
+                ),
+            ]
+
+        def top_domains(self, *, since: int, search: str, limit: int):
+            return []
+
+    class FakeDiagnostic:
+        def find_request_by_master_xaction(self, master_xaction: str):
+            return {
+                "method": "CONNECT",
+                "target_display": "example.com",
+                "client_ip": "192.0.2.55",
+                "result_code": "TCP_TUNNEL/200",
+                "tls_summary": "bump=splice · sni=example.com",
+                "policy_tags": ["ssl:sslfilter_nobump"],
+            }
+
+        def list_icap_by_master_xaction(self, master_xaction: str, *, limit: int = 10):
+            return [
+                {
+                    "service_label": "AV / ClamAV",
+                    "icap_time_ms": 42,
+                    "adapt_summary": "avrespmod / virus_scan allow",
+                }
+            ]
+
+    monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSL())
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/ssl-errors?window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Master transaction: tx999" in body
+    assert "Correlated request:" in body
+    assert "AV / ClamAV" in body
+
+
+def test_clamav_page_shows_recent_av_icap_transactions(app_module, monkeypatch):
+    class FakeDiagnostic:
+        def list_recent_icap(self, *, since: int | None = None, search: str = "", master_xaction: str = "", service: str = "", limit: int = 50):
+            return [
+                {
+                    "ts": 1713448200,
+                    "client_ip": "192.0.2.10",
+                    "method": "GET",
+                    "target_display": "downloads.example.com",
+                    "url": "https://downloads.example.com/file.exe",
+                    "icap_time_ms": 87,
+                    "service_label": "AV / ClamAV",
+                    "adapt_summary": "avrespmod / virus_scan allow",
+                    "adapt_details": "clamd clean",
+                    "policy_tags": ["cache:cookie"],
+                    "master_xaction": "tx777",
+                }
+            ]
+
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/clamav?window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Recent AV ICAP transactions" in body
+    assert "AV / ClamAV" in body
+    assert "tx777" in body
 
 
 def test_exclusions_bulk_add_redirects_with_feedback(app_module):

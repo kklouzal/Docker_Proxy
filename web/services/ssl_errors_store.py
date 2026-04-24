@@ -86,6 +86,16 @@ def _canonical_reason(msg: str) -> str:
     return _normalize_reason(msg)
 
 
+def _is_tls_accept_header(msg: str) -> bool:
+    sl = (msg or "").lower()
+    return "cannot accept a tls connection" in sl or "failure while accepting a tls connection" in sl
+
+
+def _is_tls_accept_detail(msg: str) -> bool:
+    sl = (msg or "").lower()
+    return "squid_tls_err_accept" in sl or ("error detail:" in sl and "tls_lib_err=" in sl)
+
+
 def _extract_followup_context(line: str) -> str:
     s = (line or "").strip()
     if not s:
@@ -121,6 +131,9 @@ def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
     # Filter some noisy but not really "error" lines.
     if "accepting ssl bumped" in sl:
         return None
+
+    if _is_tls_accept_header(s):
+        return "TLS_CLIENT_ACCEPT", "Cannot accept a TLS connection"
 
     if "squid_tls_err_accept" in sl:
         return "TLS_CLIENT_ACCEPT", _canonical_reason(s)
@@ -178,6 +191,21 @@ class SslErrorsStore:
             (int(ts), sample[:400], row_key),
         )
 
+    def _flush_pending_error(self, conn) -> bool:
+        pending = self._pending_error
+        if not pending or bool(pending.get("committed")):
+            return False
+        self._upsert(
+            conn,
+            str(pending.get("domain") or ""),
+            str(pending.get("category") or "TLS_OTHER"),
+            str(pending.get("reason") or ""),
+            int(pending.get("ts") or _now()),
+            str(pending.get("sample") or ""),
+        )
+        pending["committed"] = True
+        return True
+
     def _ingest_line_with_conn(self, conn, line: str) -> bool:
         raw_line = (line or "").strip("\r\n")
         followup = _extract_followup_context(raw_line)
@@ -203,12 +231,43 @@ class SslErrorsStore:
         ts, msg = _parse_cache_log_ts(raw_line)
         classified = _classify_ssl_error(msg)
         if not classified:
+            changed = False
             if (raw_line or "").strip():
+                changed = self._flush_pending_error(conn)
                 self._pending_error = None
-            return False
+            return changed
         category, reason = classified
         domain = _extract_domain(msg)
         sample = (msg or "").strip()[:400]
+
+        pending = self._pending_error
+        if pending and not bool(pending.get("committed")) and _is_tls_accept_detail(msg):
+            domain = str(pending.get("domain") or domain)
+            combined = f"{str(pending.get('sample') or '').strip()}\n{sample}".strip()[:400]
+            self._upsert(conn, domain, category, reason, ts, combined)
+            self._pending_error = {
+                "ts": int(ts),
+                "domain": domain,
+                "category": category,
+                "reason": reason,
+                "sample": combined,
+                "committed": True,
+            }
+            return True
+
+        if _is_tls_accept_header(msg):
+            self._flush_pending_error(conn)
+            self._pending_error = {
+                "ts": int(ts),
+                "domain": domain,
+                "category": category,
+                "reason": reason,
+                "sample": sample,
+                "committed": False,
+            }
+            return False
+
+        self._flush_pending_error(conn)
         self._upsert(conn, domain, category, reason, ts, sample)
         self._pending_error = {
             "ts": int(ts),
@@ -216,6 +275,7 @@ class SslErrorsStore:
             "category": category,
             "reason": reason,
             "sample": sample,
+            "committed": True,
         }
         return True
 
@@ -314,16 +374,11 @@ class SslErrorsStore:
         with self._connect() as conn:
             latest_seen_ts = self._latest_seen_ts(conn)
             for line in lines:
-                ts, msg = _parse_cache_log_ts(line)
+                ts, _msg = _parse_cache_log_ts(line)
                 if latest_seen_ts and ts <= latest_seen_ts:
                     continue
-                classified = _classify_ssl_error(msg)
-                if not classified:
-                    continue
-                category, reason = classified
-                domain = _extract_domain(msg)
-                sample = (msg or "").strip()[:400]
-                self._upsert(conn, domain, category, reason, ts, sample)
+                self._ingest_line_with_conn(conn, line)
+            self._flush_pending_error(conn)
 
     def list_recent(self, *, since: Optional[int] = None, search: str = "", limit: int = 200) -> List[SslErrorRow]:
         where = ["proxy_id = %s"]
@@ -458,6 +513,8 @@ class SslErrorsStore:
 
                             # EOF/idle: commit pending rows so results don't lag.
                             now = time.time()
+                            if self._flush_pending_error(conn):
+                                pending += 1
                             if pending and (now - last_commit) >= commit_interval:
                                 try:
                                     conn.commit()
@@ -496,6 +553,7 @@ class SslErrorsStore:
 
                             if inode2 is not None and last_inode is not None and inode2 != last_inode:
                                 last_inode = inode2
+                                self._flush_pending_error(conn)
                                 try:
                                     conn.commit()
                                 except Exception:

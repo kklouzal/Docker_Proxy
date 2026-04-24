@@ -19,6 +19,10 @@ CommandRunner = Callable[..., Any]
 
 
 class SquidController:
+    _LIVEUI_LOGFORMAT = r"logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st"
+    _DIAGNOSTIC_LOGFORMAT = r"logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note"
+    _ICAP_OBSERVE_LOGFORMAT = r"logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note"
+
     def __init__(self, squid_conf_path: str = "/etc/squid/squid.conf", *, cmd_run: CommandRunner = run):
         self.squid_conf_path = squid_conf_path
         self.persisted_squid_conf_path = os.environ.get(
@@ -45,6 +49,37 @@ class SquidController:
                     os.unlink(tmp_path)
                 except Exception:
                     pass
+
+    def _replace_or_append_directive(self, text: str, pattern: str, replacement: str) -> str:
+        regex = re.compile(pattern, re.M)
+        if regex.search(text):
+            return regex.sub(replacement, text, count=1)
+        return text.rstrip() + "\n" + replacement + "\n"
+
+    def normalize_config_text(self, config_text: str) -> str:
+        text = (config_text or "").strip()
+        if not text:
+            return ""
+
+        text = self._replace_or_append_directive(text, r"^\s*logformat\s+liveui\s+.*$", self._LIVEUI_LOGFORMAT)
+        text = self._replace_or_append_directive(text, r"^\s*logformat\s+diagnostic\s+.*$", self._DIAGNOSTIC_LOGFORMAT)
+        text = self._replace_or_append_directive(text, r"^\s*logformat\s+icapobserve\s+.*$", self._ICAP_OBSERVE_LOGFORMAT)
+        text = self._replace_or_append_directive(text, r"^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$", "access_log stdio:/var/log/squid/access.log liveui")
+        text = self._replace_or_append_directive(text, r"^\s*access_log\s+(?:stdio:)?/var/log/squid/access-observe\.log\b.*$", "access_log stdio:/var/log/squid/access-observe.log diagnostic")
+        text = self._replace_or_append_directive(text, r"^\s*cache_log\s+(?:stdio:)?/var/log/squid/cache\.log\b.*$", "cache_log stdio:/var/log/squid/cache.log")
+        text = self._replace_or_append_directive(text, r"^\s*icap_log\s+(?:stdio:)?/var/log/squid/icap\.log\b.*$", "icap_log stdio:/var/log/squid/icap.log icapobserve")
+        text = self._replace_or_append_directive(text, r"^\s*cache_store_log\s+.*$", "cache_store_log none")
+
+        note_requirements = (
+            (r"^\s*acl\s+steam_sites\b", "note ssl_exception steam steam_sites"),
+            (r"^\s*acl\s+has_auth\b", "note cache_bypass auth has_auth"),
+            (r"^\s*acl\s+has_cookie\b", "note cache_bypass cookie has_cookie"),
+        )
+        for acl_pattern, note_line in note_requirements:
+            if re.search(acl_pattern, text, re.M) and note_line not in text:
+                text = text.rstrip() + "\n" + note_line + "\n"
+
+        return text if text.endswith("\n") else text + "\n"
 
     def _render_icap_include(self) -> str:
         try:
@@ -95,11 +130,12 @@ class SquidController:
             return False, public_error_message(exc)
 
     def validate_config_text(self, config_text: str) -> Tuple[bool, str]:
+        normalized_config = self.normalize_config_text(config_text)
         tmp_path = ""
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, prefix="squid-conf-", dir="/tmp") as handle:
                 tmp_path = handle.name
-                handle.write(config_text)
+                handle.write(normalized_config)
 
             proc = self._run(["squid", "-k", "parse", "-f", tmp_path], capture_output=True, text=True, timeout=15)
             combined = (proc.stdout or "") + ("\n" if proc.stdout and proc.stderr else "") + (proc.stderr or "")
@@ -217,7 +253,8 @@ class SquidController:
         return ok_restart, "\n".join(part for part in detail_parts if part).strip()
 
     def apply_config_text(self, config_text: str) -> Tuple[bool, str]:
-        ok, details = self.validate_config_text(config_text)
+        normalized_config = self.normalize_config_text(config_text)
+        ok, details = self.validate_config_text(normalized_config)
         if not ok:
             return False, details or "Squid config validation failed."
 
@@ -226,7 +263,7 @@ class SquidController:
         try:
             current = self.get_current_config()
             old_workers = self._extract_workers(current)
-            new_workers = self._extract_workers(config_text)
+            new_workers = self._extract_workers(normalized_config)
             workers_changed = new_workers is not None and new_workers != old_workers
 
             old_icap_include = None
@@ -241,7 +278,7 @@ class SquidController:
                 except Exception:
                     old_icap_supervisor = None
 
-            self._write_file(new_path, config_text)
+            self._write_file(new_path, normalized_config)
             if current:
                 self._write_file(backup_path, current)
             os.replace(new_path, self.squid_conf_path)
@@ -307,7 +344,7 @@ class SquidController:
                     persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
                     if persisted_dir:
                         os.makedirs(persisted_dir, exist_ok=True)
-                    self._atomic_write_file(self.persisted_squid_conf_path, config_text)
+                    self._atomic_write_file(self.persisted_squid_conf_path, normalized_config)
                 except Exception:
                     log_exception_throttled(
                         logger,
@@ -332,7 +369,7 @@ class SquidController:
                 persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
                 if persisted_dir:
                     os.makedirs(persisted_dir, exist_ok=True)
-                self._atomic_write_file(self.persisted_squid_conf_path, config_text)
+                self._atomic_write_file(self.persisted_squid_conf_path, normalized_config)
             except Exception:
                 log_exception_throttled(
                     logger,

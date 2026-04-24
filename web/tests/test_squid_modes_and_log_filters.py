@@ -101,6 +101,29 @@ def test_ssl_errors_store_merges_followup_connection_context_without_double_coun
     assert "remote=192.0.2.10:54432" in rows[0]["sample"]
 
 
+def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_bucket(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "ssl-errors-block")
+
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+
+    store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    store.init_db()
+    store.ingest_line("2026/04/21 23:37:04 kid1| ERROR: Cannot accept a TLS connection")
+    store.ingest_line("2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line("    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1")
+
+    rows = store.list_errors(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["category"] == "TLS_CLIENT_ACCEPT"
+    assert rows[0]["reason"] == "SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    assert rows[0]["count"] == 1
+    assert "Cannot accept a TLS connection" in rows[0]["sample"]
+    assert "error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1" in rows[0]["sample"]
+    assert "connection: conn23" in rows[0]["sample"]
+
+
 def test_render_icap_include_uses_single_endpoint_services_and_identity_rules(monkeypatch):
     _add_web_to_path()
 
@@ -132,3 +155,31 @@ def test_repo_template_includes_cache_first_defaults():
     assert "quick_abort_min 0 KB" in text
     assert "quick_abort_max 0 KB" in text
     assert "quick_abort_pct 100" in text
+
+
+def test_squid_controller_normalize_config_text_adds_default_observability_lines():
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+    text = ctl.normalize_config_text(
+        """
+acl steam_sites ssl::server_name .steamserver.net
+acl has_auth req_header Authorization .
+acl has_cookie req_header Cookie .
+logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st
+access_log stdio:/var/log/squid/access.log liveui
+cache_log stdio:/var/log/squid/cache.log
+cache_store_log none
+http_access allow all
+""".strip()
+    )
+
+    assert "logformat diagnostic" in text
+    assert "logformat icapobserve" in text
+    assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
+    assert "icap_log stdio:/var/log/squid/icap.log icapobserve" in text
+    assert "note ssl_exception steam steam_sites" in text
+    assert "note cache_bypass auth has_auth" in text
+    assert "note cache_bypass cookie has_cookie" in text

@@ -91,6 +91,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/certificate_bundles.py \
     web/services/certificate_core.py \
     web/services/config_revisions.py \
+    web/services/diagnostic_store.py \
     web/services/db.py \
     web/services/errors.py \
     web/services/exclusions_store.py \
