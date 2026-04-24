@@ -25,12 +25,12 @@ from services.pac_profiles_store import get_pac_profiles_store
 from services.pac_renderer import build_public_pac_url, build_proxy_pac_state, materialize_proxy_pac_state, render_proxy_pac_for_request
 from services.proxy_client import ProxyClientError, get_proxy_client
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
-from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, check_dante_health, check_tcp_service as _shared_check_tcp_service, normalize_service_health as _shared_normalize_service_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar, unavailable_service as _shared_unavailable_service
+from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, check_dante_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_registry import get_proxy_registry
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.errors import public_error_message
-from services.health_checks import build_clamav_health as _shared_build_clamav_health, check_icap_service as _shared_check_icap_service
+from services.health_checks import build_clamav_health as _shared_build_clamav_health
 from services.logutil import log_exception_throttled
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
 from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, present_ssl_error_rows as _present_ssl_error_rows, present_ssl_top_domains as _present_ssl_top_domains, safe_local_return_url as _safe_local_return_url, window_label as _window_label
@@ -627,22 +627,6 @@ def inject_now():
         "current_year": datetime.now(UTC).year,
         "fmt_ts": fmt_ts,
     }
-
-
-def _check_tcp(host: str, port: int, timeout: float = 0.6) -> Dict[str, Any]:
-    return _shared_check_tcp_service(host, port, timeout=timeout, error_formatter=public_error_message)
-
-
-def _check_icap_service(host: str, port: int, service: str) -> Dict[str, Any]:
-    return _shared_check_icap_service(
-        host=host,
-        port=port,
-        service=service,
-        timeout=0.8,
-        user_agent='squid-flask-proxy-ui',
-        success_detail='OPTIONS 200',
-        error_formatter=public_error_message,
-    )
 
 
 def _check_dante() -> Dict[str, Any]:
@@ -1467,14 +1451,6 @@ def sslfilter():
 
 def _check_icap_adblock() -> Dict[str, Any]:
     return check_adblock_icap_health(timeout=0.8, error_formatter=public_error_message)
-
-
-def _unavailable_service(detail: str, *, target: str = 'unavailable', service: str = '') -> Dict[str, Any]:
-    return _shared_unavailable_service(detail, target=target, service=service)
-
-
-def _normalize_service_health(result: Any, *, default_target: str = 'unavailable', service: str = '') -> Dict[str, Any]:
-    return _shared_normalize_service_health(result, default_target=default_target, service=service)
 
 
 def _check_icap_av() -> Dict[str, Any]:

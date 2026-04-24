@@ -8,6 +8,11 @@ def now_ts() -> int:
     return int(time.time())
 
 
+def escape_like(value: str) -> str:
+    """Escape special SQL LIKE pattern characters for safe ESCAPE '\\' queries."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def env_int(
     name: str,
     default: int,

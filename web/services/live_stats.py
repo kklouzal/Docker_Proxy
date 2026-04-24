@@ -14,18 +14,10 @@ from urllib.parse import urlsplit
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, now_ts as _now
 
 
 logger = logging.getLogger(__name__)
-
-
-def _escape_like(value: str) -> str:
-    """Escape special LIKE pattern characters for safe SQL queries."""
-    # Escape %, _, and \\ itself so callers can safely use LIKE-based filtering.
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 @dataclass
 class Row:
     key: str
