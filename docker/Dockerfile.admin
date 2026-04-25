@@ -1,4 +1,4 @@
-ARG ALPINE_VERSION=latest
+ARG ALPINE_VERSION=edge
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
@@ -16,7 +16,9 @@ RUN apk add --no-cache python3 supervisor openssl ca-certificates libatomic file
 
 WORKDIR /app
 
-COPY --from=python_deps /python-deps/ /usr/lib/python3.12/site-packages/
+COPY --from=python_deps /python-deps/ /tmp/python-deps/
+RUN python3 -c "import os, shutil, site; src='/tmp/python-deps'; dst=site.getsitepackages()[0]; os.makedirs(dst, exist_ok=True); [shutil.rmtree(os.path.join(dst, name)) if os.path.isdir(os.path.join(dst, name)) and not os.path.islink(os.path.join(dst, name)) else (os.unlink(os.path.join(dst, name)) if os.path.lexists(os.path.join(dst, name)) else None) for name in os.listdir(src) if os.path.lexists(os.path.join(dst, name))]; [shutil.move(os.path.join(src, name), os.path.join(dst, name)) for name in os.listdir(src)]" \
+	&& rm -rf /tmp/python-deps
 
 COPY web/app.py /app/app.py
 COPY web/wsgi.py /app/wsgi.py

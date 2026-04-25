@@ -56,10 +56,10 @@ Maintenance note:
 - `docker-compose.common.yml` is the shared source of truth for service definitions, environment defaults, ports, volumes, and healthchecks.
 - Keep `docker-compose.yml` and `docker-compose.ghcr.yml` focused on the source-build vs prebuilt-image differences so the two deployment paths do not drift.
 
-By default, source builds now track Alpine's `latest` stable image tag and
-install the newest `squid` package available in that Alpine repository at
-build time. If you need a reproducible/pinned build instead, override the
-build arg when building:
+By default, source builds now track Alpine's `edge` image tag so both
+containers pick up the newest Alpine-packaged Squid and supporting runtime
+packages available at build time. If you want a more reproducible stable
+build instead, override the build arg when building:
 
 ```powershell
 docker compose build --build-arg ALPINE_VERSION=3.23.4

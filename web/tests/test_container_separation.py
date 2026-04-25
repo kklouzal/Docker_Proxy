@@ -15,7 +15,8 @@ def test_proxy_dockerfile_copies_only_proxy_runtime_payload() -> None:
     assert "COPY web /app" not in text
     assert "FROM alpine:${ALPINE_VERSION} AS python_deps" in text
     assert "COPY web/requirements.txt /tmp/deps/requirements.txt" in text
-    assert "COPY --from=python_deps /python-deps/ /usr/lib/python3.12/site-packages/" in text
+    assert "COPY --from=python_deps /python-deps/ /tmp/python-deps/" in text
+    assert "site.getsitepackages()[0]" in text
     assert "COPY proxy /app/proxy" in text
     assert "COPY web/requirements.txt /app/requirements.txt" not in text
     assert "COPY docker/clamd_mod.conf /etc/clamd_mod.conf" not in text
@@ -62,7 +63,8 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
     assert "COPY web /app" not in text
     assert "FROM alpine:${ALPINE_VERSION} AS python_deps" in text
     assert "COPY web/requirements.txt /tmp/deps/requirements.txt" in text
-    assert "COPY --from=python_deps /python-deps/ /usr/lib/python3.12/site-packages/" in text
+    assert "COPY --from=python_deps /python-deps/ /tmp/python-deps/" in text
+    assert "site.getsitepackages()[0]" in text
     for required in (
         "COPY web/app.py /app/app.py",
         "COPY web/wsgi.py /app/wsgi.py",
