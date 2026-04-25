@@ -4,28 +4,29 @@
 {% block title %}Certificates · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+    <div class="page-heading">
     <div class="page-hero-copy">
         <span class="page-eyebrow">Certificate authority</span>
         <h1 class="page-title">Certificates</h1>
-        <p class="page-subtitle">
-            Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores.
-            {% if remote_control_mode %}
-                The active CA bundle is versioned in MySQL and shared across all registered proxy containers.
-            {% endif %}
-        </p>
+        <p class="page-subtitle">Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores. The active CA bundle is versioned in MySQL and shared across all registered proxy containers.</p>
         <div class="hero-badges">
             <span class="badge {{ 'ok' if certificate else 'warn' }}">{{ 'Available' if certificate else 'Not generated' }}</span>
             {% if bundle and bundle.source_kind %}<span class="badge">{{ bundle.source_kind }}</span>{% endif %}
         </div>
     </div>
+    <div class="page-actions">
+        {% if certificate %}<a class="btn ghost" href="{{ url_for('download_certificate', filename=certificate) }}">Download CA</a>{% endif %}
+        <a class="btn ghost" href="{{ url_for('sslfilter') }}">Review SSL filtering</a>
+    </div>
+    </div>
 </section>
 
-{% if remote_control_mode %}
-{% call scope_notice('global', 'Fleet-wide certificate authority', 'The active CA bundle on this page is shared across the entire proxy fleet.') %}
+<section class="card section-shell">
+{% call scope_notice('global', 'Shared certificate authority', 'The active CA bundle on this page is shared across every registered proxy.') %}
 <div>Use this page for the single certificate authority that every registered proxy should publish and report apply status against.</div>
 {% endcall %}
-{% endif %}
+</section>
 
 {% if message %}
 <div class="banner {{ 'success' if message_ok else 'error' }}">
@@ -36,6 +37,32 @@
     </div>
 </div>
 {% endif %}
+
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">CA lifecycle overview</h2>
+        <span class="badge">trust distribution</span>
+    </div>
+    <div class="card-body stack-list">
+        <div class="stats-grid compact-stats">
+            <article class="stat-card">
+                <span class="stat-label">CA state</span>
+                <strong class="stat-value">{{ 'Ready' if certificate else 'Missing' }}</strong>
+                <span class="small">Generate or upload a CA bundle before enabling SSL bump on clients.</span>
+            </article>
+            <article class="stat-card">
+                <span class="stat-label">Scope</span>
+                <strong class="stat-value">Shared</strong>
+                <span class="small">One bundle published to every registered proxy.</span>
+            </article>
+            <article class="stat-card">
+                <span class="stat-label">Apply status rows</span>
+                <strong class="stat-value">{{ proxy_cert_statuses|length if proxy_cert_statuses is defined else 0 }}</strong>
+                <span class="small">Remote proxies report whether they materialized the active CA successfully.</span>
+            </article>
+        </div>
+    </div>
+</section>
 
 <div class="grid">
     <section class="card split-left">
@@ -59,7 +86,7 @@
                     <div><strong>Validity:</strong> {{ bundle.not_before or 'unknown' }} → {{ bundle.not_after or 'unknown' }}</div>
                 {% endif %}
                 {% if bundle.cert_sha256 %}<div><strong>Fingerprint:</strong> <code class="mono">{{ bundle.cert_sha256 }}</code></div>{% endif %}
-                {% if remote_control_mode and bundle.created_ts %}<div><strong>Published:</strong> {{ fmt_ts(bundle.created_ts) }}</div>{% endif %}
+                {% if bundle.created_ts %}<div><strong>Published:</strong> {{ fmt_ts(bundle.created_ts) }}</div>{% endif %}
             </div>
             {% endif %}
             <div class="actions">
@@ -94,9 +121,8 @@
                 </form>
             </div>
 
-            {% if remote_control_mode %}
             <div class="content-stack">
-                <h3 class="page-section-title">Fleet Apply Status</h3>
+                <h3 class="page-section-title">Proxy apply status</h3>
                 {% if proxy_cert_statuses %}
                     <div class="status-list small">
                         {% for row in proxy_cert_statuses %}
@@ -124,7 +150,6 @@
                     <div class="surface-note small">Registered proxies will appear here after they report certificate apply status.</div>
                 {% endif %}
             </div>
-            {% endif %}
         </div>
     </section>
 
@@ -134,11 +159,11 @@
         </div>
         <div class="card-body">
             <div class="surface-note small">
-                - Only the public CA cert is downloadable.
-                <br>
-                - The private key stays on the server side and is materialized locally on each proxy.
-                <br>
-                - Treat SSL-bump as MITM; use with explicit authorization.
+                <ul class="bullet-list small">
+                    <li>Only the public CA certificate is downloadable from the UI.</li>
+                    <li>The private key stays server-side and is materialized locally on each proxy.</li>
+                    <li>Treat SSL bump as active interception and deploy it only with explicit authorization.</li>
+                </ul>
             </div>
         </div>
     </aside>

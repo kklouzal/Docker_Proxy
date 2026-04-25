@@ -255,3 +255,69 @@ def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path,
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_proxy_collect_health_reuses_short_lived_cached_snapshot(tmp_path, monkeypatch):
+    env_backup = {
+        key: os.environ.get(key)
+        for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "PAC_RENDER_DIR", "PROXY_HEALTH_CACHE_TTL_SECONDS")
+    }
+    try:
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "PAC_RENDER_DIR": tmp_path / "pac",
+                "PROXY_HEALTH_CACHE_TTL_SECONDS": "30",
+            },
+        )
+
+        runtime = runtime_module.ProxyRuntime()
+        calls = {"status": 0, "stats": 0, "services": 0}
+
+        def fake_get_status():
+            calls["status"] += 1
+            return b"proxy ok", b""
+
+        def fake_get_stats():
+            calls["stats"] += 1
+            return {
+                "cpu": {"util_percent": 12.5, "loadavg": {"1m": 0.1, "5m": 0.2, "15m": 0.3}},
+                "memory": {"total_bytes": 1024, "available_bytes": 512, "used_bytes": 512, "used_percent": 50.0},
+                "storage": {"cache_fs_used_bytes": 1, "cache_dir_size_bytes": 1},
+                "squid": {"hit_rate": {"request_hit_ratio": 70.0}, "mgr_available": False, "hit_rate_source": "access-observe.log"},
+            }
+
+        def fake_services(**_kwargs):
+            calls["services"] += 1
+            return {
+                "icap": {"ok": True},
+                "av_icap": {"ok": True},
+                "clamd": {"ok": True},
+                "clamav": {"ok": True},
+                "dante": {"ok": True},
+            }
+
+        monkeypatch.setattr(runtime.controller, "get_status", fake_get_status)
+        monkeypatch.setattr(runtime_module, "get_stats", fake_get_stats)
+        monkeypatch.setattr(runtime_module, "build_local_runtime_services", fake_services)
+        monkeypatch.setattr(runtime_module, "build_proxy_policy_state", lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]))
+        monkeypatch.setattr(runtime_module, "build_proxy_pac_state", lambda _proxy_id: SimpleNamespace(state_sha256="pac-sha"))
+        monkeypatch.setattr(runtime.revisions, "get_active_revision_metadata", lambda _proxy_id: None)
+        monkeypatch.setattr(runtime.certificate_bundles, "get_active_bundle_metadata", lambda: None)
+        monkeypatch.setattr(runtime.adblock_artifacts, "get_active_artifact_metadata", lambda: None)
+        monkeypatch.setattr(runtime, "_current_config_sha", lambda: "config-sha")
+        monkeypatch.setattr(runtime, "_current_certificate_bundle_sha", lambda: "")
+        monkeypatch.setattr(runtime, "_current_adblock_artifact_sha", lambda: "")
+        monkeypatch.setattr(runtime, "_current_pac_state_sha", lambda: "pac-sha")
+
+        first = runtime.collect_health()
+        second = runtime.collect_health()
+
+        assert first is second
+        assert calls == {"status": 1, "stats": 1, "services": 1}
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

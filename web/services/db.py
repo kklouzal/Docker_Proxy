@@ -22,6 +22,8 @@ class DatabaseConfig:
     database: str = MYSQL_DEFAULT_DB
     charset: str = "utf8mb4"
     connect_timeout: int = 10
+    read_timeout: int = 15
+    write_timeout: int = 15
     create_database: bool = True
 
 
@@ -145,7 +147,7 @@ _pool_lock = threading.Lock()
 _pooled_connections: dict[tuple[str, int, str, str, str, str, int], list[tuple[float, Any]]] = {}
 
 
-def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int]:
+def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int, int, int]:
     return (
         cfg.host,
         int(cfg.port),
@@ -154,14 +156,16 @@ def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int]:
         cfg.database,
         cfg.charset,
         int(cfg.connect_timeout),
+        int(cfg.read_timeout),
+        int(cfg.write_timeout),
     )
 
 
 def _pool_maxsize() -> int:
     try:
-        return max(0, min(16, int((os.environ.get("DB_POOL_SIZE") or "2").strip() or "2")))
+        return max(0, min(16, int((os.environ.get("DB_POOL_SIZE") or "4").strip() or "4")))
     except Exception:
-        return 2
+        return 4
 
 
 def _pool_max_idle_seconds() -> float:
@@ -181,6 +185,8 @@ def _open_native_connection(cfg: DatabaseConfig) -> Any:
         charset=cfg.charset,
         autocommit=False,
         connect_timeout=int(cfg.connect_timeout),
+        read_timeout=int(cfg.read_timeout),
+        write_timeout=int(cfg.write_timeout),
     )
 
 
@@ -272,6 +278,8 @@ def _parse_database_url(url: str) -> DatabaseConfig:
         database=db_name,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
         connect_timeout=int((os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"),
+        read_timeout=int((os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15"),
+        write_timeout=int((os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15"),
         create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
     )
 
@@ -295,6 +303,8 @@ def resolve_database_config() -> DatabaseConfig:
         database=mysql_db or MYSQL_DEFAULT_DB,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
         connect_timeout=int((os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"),
+        read_timeout=int((os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15"),
+        write_timeout=int((os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15"),
         create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
     )
 
@@ -321,6 +331,8 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
             charset=cfg.charset,
             autocommit=True,
             connect_timeout=int(cfg.connect_timeout),
+            read_timeout=int(cfg.read_timeout),
+            write_timeout=int(cfg.write_timeout),
         )
         try:
             cur = native.cursor()

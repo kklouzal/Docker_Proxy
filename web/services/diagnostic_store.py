@@ -19,6 +19,16 @@ from services.runtime_helpers import env_float as _env_float, env_int as _env_in
 logger = logging.getLogger(__name__)
 
 
+_REQUEST_DIMENSIONS: Dict[str, str] = {
+    "client_ip": "client_ip",
+    "user_agent": "user_agent",
+    "bump_mode": "bump_mode",
+    "tls_server_version": "tls_server_version",
+    "tls_client_version": "tls_client_version",
+    "domain": "domain",
+}
+
+
 def _safe_int(value: object, default: int = 0) -> int:
     try:
         if value is None:
@@ -255,85 +265,93 @@ class DiagnosticStore:
 
         self._started = False
         self._start_lock = threading.Lock()
+        self._db_initialized = False
+        self._db_init_lock = threading.Lock()
 
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS diagnostic_requests (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    event_key CHAR(40) NOT NULL,
-                    ts BIGINT NOT NULL,
-                    duration_ms INT NOT NULL DEFAULT 0,
-                    client_ip VARCHAR(64) NOT NULL,
-                    method VARCHAR(16) NOT NULL,
-                    url TEXT NOT NULL,
-                    domain VARCHAR(255) NOT NULL,
-                    result_code VARCHAR(96) NOT NULL,
-                    http_status INT NOT NULL DEFAULT 0,
-                    bytes BIGINT NOT NULL DEFAULT 0,
-                    master_xaction VARCHAR(128) NOT NULL,
-                    hierarchy_status VARCHAR(255) NOT NULL,
-                    bump_mode VARCHAR(64) NOT NULL,
-                    sni VARCHAR(255) NOT NULL,
-                    tls_server_version VARCHAR(64) NOT NULL,
-                    tls_server_cipher VARCHAR(128) NOT NULL,
-                    tls_client_version VARCHAR(64) NOT NULL,
-                    tls_client_cipher VARCHAR(128) NOT NULL,
-                    host VARCHAR(255) NOT NULL,
-                    user_agent VARCHAR(512) NOT NULL,
-                    referer VARCHAR(512) NOT NULL,
-                    exclusion_rule VARCHAR(64) NOT NULL,
-                    ssl_exception VARCHAR(64) NOT NULL,
-                    webfilter_allow VARCHAR(64) NOT NULL,
-                    cache_bypass VARCHAR(64) NOT NULL,
-                    raw TEXT NOT NULL,
-                    created_ts BIGINT NOT NULL,
-                    UNIQUE KEY idx_diagnostic_requests_proxy_event (proxy_id, event_key),
-                    KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
-                    KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
-                    KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
-                    KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts)
+        if self._db_initialized:
+            return
+        with self._db_init_lock:
+            if self._db_initialized:
+                return
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS diagnostic_requests (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        event_key CHAR(40) NOT NULL,
+                        ts BIGINT NOT NULL,
+                        duration_ms INT NOT NULL DEFAULT 0,
+                        client_ip VARCHAR(64) NOT NULL,
+                        method VARCHAR(16) NOT NULL,
+                        url TEXT NOT NULL,
+                        domain VARCHAR(255) NOT NULL,
+                        result_code VARCHAR(96) NOT NULL,
+                        http_status INT NOT NULL DEFAULT 0,
+                        bytes BIGINT NOT NULL DEFAULT 0,
+                        master_xaction VARCHAR(128) NOT NULL,
+                        hierarchy_status VARCHAR(255) NOT NULL,
+                        bump_mode VARCHAR(64) NOT NULL,
+                        sni VARCHAR(255) NOT NULL,
+                        tls_server_version VARCHAR(64) NOT NULL,
+                        tls_server_cipher VARCHAR(128) NOT NULL,
+                        tls_client_version VARCHAR(64) NOT NULL,
+                        tls_client_cipher VARCHAR(128) NOT NULL,
+                        host VARCHAR(255) NOT NULL,
+                        user_agent VARCHAR(512) NOT NULL,
+                        referer VARCHAR(512) NOT NULL,
+                        exclusion_rule VARCHAR(64) NOT NULL,
+                        ssl_exception VARCHAR(64) NOT NULL,
+                        webfilter_allow VARCHAR(64) NOT NULL,
+                        cache_bypass VARCHAR(64) NOT NULL,
+                        raw TEXT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        UNIQUE KEY idx_diagnostic_requests_proxy_event (proxy_id, event_key),
+                        KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
+                        KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
+                        KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
+                        KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS diagnostic_icap_events (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    event_key CHAR(40) NOT NULL,
-                    ts BIGINT NOT NULL,
-                    master_xaction VARCHAR(128) NOT NULL,
-                    client_ip VARCHAR(64) NOT NULL,
-                    method VARCHAR(16) NOT NULL,
-                    url TEXT NOT NULL,
-                    domain VARCHAR(255) NOT NULL,
-                    icap_time_ms INT NOT NULL DEFAULT 0,
-                    adapt_summary VARCHAR(1024) NOT NULL,
-                    adapt_details TEXT NOT NULL,
-                    host VARCHAR(255) NOT NULL,
-                    user_agent VARCHAR(512) NOT NULL,
-                    sni VARCHAR(255) NOT NULL,
-                    exclusion_rule VARCHAR(64) NOT NULL,
-                    ssl_exception VARCHAR(64) NOT NULL,
-                    webfilter_allow VARCHAR(64) NOT NULL,
-                    cache_bypass VARCHAR(64) NOT NULL,
-                    service_family VARCHAR(32) NOT NULL,
-                    raw TEXT NOT NULL,
-                    created_ts BIGINT NOT NULL,
-                    UNIQUE KEY idx_diagnostic_icap_proxy_event (proxy_id, event_key),
-                    KEY idx_diagnostic_icap_proxy_ts (proxy_id, ts, id),
-                    KEY idx_diagnostic_icap_proxy_tx (proxy_id, master_xaction, ts),
-                    KEY idx_diagnostic_icap_proxy_domain (proxy_id, domain, ts),
-                    KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS diagnostic_icap_events (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        event_key CHAR(40) NOT NULL,
+                        ts BIGINT NOT NULL,
+                        master_xaction VARCHAR(128) NOT NULL,
+                        client_ip VARCHAR(64) NOT NULL,
+                        method VARCHAR(16) NOT NULL,
+                        url TEXT NOT NULL,
+                        domain VARCHAR(255) NOT NULL,
+                        icap_time_ms INT NOT NULL DEFAULT 0,
+                        adapt_summary VARCHAR(1024) NOT NULL,
+                        adapt_details TEXT NOT NULL,
+                        host VARCHAR(255) NOT NULL,
+                        user_agent VARCHAR(512) NOT NULL,
+                        sni VARCHAR(255) NOT NULL,
+                        exclusion_rule VARCHAR(64) NOT NULL,
+                        ssl_exception VARCHAR(64) NOT NULL,
+                        webfilter_allow VARCHAR(64) NOT NULL,
+                        cache_bypass VARCHAR(64) NOT NULL,
+                        service_family VARCHAR(32) NOT NULL,
+                        raw TEXT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        UNIQUE KEY idx_diagnostic_icap_proxy_event (proxy_id, event_key),
+                        KEY idx_diagnostic_icap_proxy_ts (proxy_id, ts, id),
+                        KEY idx_diagnostic_icap_proxy_tx (proxy_id, master_xaction, ts),
+                        KEY idx_diagnostic_icap_proxy_domain (proxy_id, domain, ts),
+                        KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts)
+                    )
+                    """
                 )
-                """
-            )
+            self._db_initialized = True
 
     def prune_old_entries(self, *, retention_days: int = 0) -> None:
         days = max(1, int(retention_days or self.retention_days))
@@ -352,14 +370,14 @@ class DiagnosticStore:
 
             request_thread = threading.Thread(
                 target=self._tail_file_loop,
-                args=(self.access_log_path, self._ingest_request_line_with_conn, "diagnostic-requests-tailer"),
+                args=(self.access_log_path, self._build_request_insert_params, self._flush_request_rows, "diagnostic-requests-tailer"),
                 daemon=True,
             )
             request_thread.start()
 
             icap_thread = threading.Thread(
                 target=self._tail_file_loop,
-                args=(self.icap_log_path, self._ingest_icap_line_with_conn, "diagnostic-icap-tailer"),
+                args=(self.icap_log_path, self._build_icap_insert_params, self._flush_icap_rows, "diagnostic-icap-tailer"),
                 daemon=True,
             )
             icap_thread.start()
@@ -384,13 +402,17 @@ class DiagnosticStore:
         icap_lines = self._read_last_lines(self.icap_log_path, max_lines=self.seed_max_lines)
         if not request_lines and not icap_lines:
             return
+        request_rows = [row for row in (self._build_request_insert_params(line) for line in request_lines) if row is not None]
+        icap_rows = [row for row in (self._build_icap_insert_params(line) for line in icap_lines) if row is not None]
+        if not request_rows and not icap_rows:
+            return
         with self._connect() as conn:
-            for line in request_lines:
-                self._ingest_request_line_with_conn(conn, line)
-            for line in icap_lines:
-                self._ingest_icap_line_with_conn(conn, line)
+            if request_rows:
+                self._flush_request_rows(conn, request_rows)
+            if icap_rows:
+                self._flush_icap_rows(conn, icap_rows)
 
-    def _tail_file_loop(self, path: str, ingest_fn, loop_name: str) -> None:
+    def _tail_file_loop(self, path: str, build_row_fn, flush_rows_fn, loop_name: str) -> None:
         commit_batch = _env_int("DIAGNOSTIC_COMMIT_BATCH", 150, minimum=25, maximum=5000)
         commit_interval = _env_float("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
         poll_interval = _env_float("DIAGNOSTIC_POLL_INTERVAL_SECONDS", 0.5, minimum=0.1, maximum=5.0)
@@ -409,6 +431,7 @@ class DiagnosticStore:
 
                 with self._connect() as conn:
                     pending = 0
+                    pending_rows: List[tuple[Any, ...]] = []
                     last_commit = time.time()
                     with open(path, "r", encoding="utf-8", errors="replace") as handle:
                         handle.seek(0, os.SEEK_END)
@@ -416,7 +439,9 @@ class DiagnosticStore:
                             line = handle.readline()
                             if line:
                                 try:
-                                    if ingest_fn(conn, line):
+                                    row = build_row_fn(line)
+                                    if row is not None:
+                                        pending_rows.append(row)
                                         pending += 1
                                 except Exception:
                                     try:
@@ -431,7 +456,11 @@ class DiagnosticStore:
                                 now = time.time()
                                 if pending >= commit_batch or (now - last_commit) >= commit_interval:
                                     try:
+                                        if pending_rows:
+                                            flush_rows_fn(conn, pending_rows)
                                         conn.commit()
+                                        pending_rows.clear()
+                                        pending = 0
                                     except Exception:
                                         try:
                                             conn.rollback()
@@ -442,14 +471,17 @@ class DiagnosticStore:
                                                 interval_seconds=300.0,
                                                 message=f"Diagnostic tailer rollback failed after commit in {loop_name}",
                                             )
-                                    pending = 0
                                     last_commit = now
                                 continue
 
                             now = time.time()
                             if pending and (now - last_commit) >= commit_interval:
                                 try:
+                                    if pending_rows:
+                                        flush_rows_fn(conn, pending_rows)
                                     conn.commit()
+                                    pending_rows.clear()
+                                    pending = 0
                                 except Exception:
                                     try:
                                         conn.rollback()
@@ -460,7 +492,6 @@ class DiagnosticStore:
                                             interval_seconds=300.0,
                                             message=f"Diagnostic tailer rollback failed after idle commit in {loop_name}",
                                         )
-                                pending = 0
                                 last_commit = now
 
                             try:
@@ -482,7 +513,11 @@ class DiagnosticStore:
                             if inode_now is not None and last_inode is not None and inode_now != last_inode:
                                 last_inode = inode_now
                                 try:
+                                    if pending_rows:
+                                        flush_rows_fn(conn, pending_rows)
                                     conn.commit()
+                                    pending_rows.clear()
+                                    pending = 0
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
@@ -560,6 +595,52 @@ class DiagnosticStore:
             "raw": (line or "").strip("\r\n")[:4000],
         }
 
+    def _build_request_insert_params(self, line: str) -> Optional[tuple[Any, ...]]:
+        row = self._parse_request_log_line(line)
+        if not row:
+            return None
+        proxy_id = get_proxy_id()
+        event_key = _event_key(
+            proxy_id,
+            row.get("ts"),
+            row.get("master_xaction"),
+            row.get("client_ip"),
+            row.get("method"),
+            row.get("url"),
+            row.get("result_code"),
+            row.get("bytes"),
+        )
+        return (
+            proxy_id,
+            event_key,
+            int(row["ts"]),
+            int(row["duration_ms"]),
+            str(row["client_ip"]),
+            str(row["method"]),
+            str(row["url"]),
+            str(row["domain"]),
+            str(row["result_code"]),
+            int(row["http_status"]),
+            int(row["bytes"]),
+            str(row["master_xaction"]),
+            str(row["hierarchy_status"]),
+            str(row["bump_mode"]),
+            str(row["sni"]),
+            str(row["tls_server_version"]),
+            str(row["tls_server_cipher"]),
+            str(row["tls_client_version"]),
+            str(row["tls_client_cipher"]),
+            str(row["host"]),
+            str(row["user_agent"]),
+            str(row["referer"]),
+            str(row["exclusion_rule"]),
+            str(row["ssl_exception"]),
+            str(row["webfilter_allow"]),
+            str(row["cache_bypass"]),
+            str(row["raw"]),
+            int(_now()),
+        )
+
     def _parse_icap_log_line(self, line: str) -> Optional[Dict[str, Any]]:
         row = _split_tsv(line)
         if len(row) < 15:
@@ -604,67 +685,10 @@ class DiagnosticStore:
             "raw": (line or "").strip("\r\n")[:4000],
         }
 
-    def _ingest_request_line_with_conn(self, conn, line: str) -> bool:
-        row = self._parse_request_log_line(line)
-        if not row:
-            return False
-        proxy_id = get_proxy_id()
-        event_key = _event_key(
-            proxy_id,
-            row.get("ts"),
-            row.get("master_xaction"),
-            row.get("client_ip"),
-            row.get("method"),
-            row.get("url"),
-            row.get("result_code"),
-            row.get("bytes"),
-        )
-        conn.execute(
-            """
-            INSERT IGNORE INTO diagnostic_requests (
-                proxy_id, event_key, ts, duration_ms, client_ip, method, url, domain, result_code, http_status,
-                bytes, master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule, ssl_exception,
-                webfilter_allow, cache_bypass, raw, created_ts
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                proxy_id,
-                event_key,
-                int(row["ts"]),
-                int(row["duration_ms"]),
-                str(row["client_ip"]),
-                str(row["method"]),
-                str(row["url"]),
-                str(row["domain"]),
-                str(row["result_code"]),
-                int(row["http_status"]),
-                int(row["bytes"]),
-                str(row["master_xaction"]),
-                str(row["hierarchy_status"]),
-                str(row["bump_mode"]),
-                str(row["sni"]),
-                str(row["tls_server_version"]),
-                str(row["tls_server_cipher"]),
-                str(row["tls_client_version"]),
-                str(row["tls_client_cipher"]),
-                str(row["host"]),
-                str(row["user_agent"]),
-                str(row["referer"]),
-                str(row["exclusion_rule"]),
-                str(row["ssl_exception"]),
-                str(row["webfilter_allow"]),
-                str(row["cache_bypass"]),
-                str(row["raw"]),
-                int(_now()),
-            ),
-        )
-        return True
-
-    def _ingest_icap_line_with_conn(self, conn, line: str) -> bool:
+    def _build_icap_insert_params(self, line: str) -> Optional[tuple[Any, ...]]:
         row = self._parse_icap_log_line(line)
         if not row:
-            return False
+            return None
         proxy_id = get_proxy_id()
         event_key = _event_key(
             proxy_id,
@@ -675,7 +699,49 @@ class DiagnosticStore:
             row.get("adapt_details"),
             row.get("service_family"),
         )
-        conn.execute(
+        return (
+            proxy_id,
+            event_key,
+            int(row["ts"]),
+            str(row["master_xaction"]),
+            str(row["client_ip"]),
+            str(row["method"]),
+            str(row["url"]),
+            str(row["domain"]),
+            int(row["icap_time_ms"]),
+            str(row["adapt_summary"]),
+            str(row["adapt_details"]),
+            str(row["host"]),
+            str(row["user_agent"]),
+            str(row["sni"]),
+            str(row["exclusion_rule"]),
+            str(row["ssl_exception"]),
+            str(row["webfilter_allow"]),
+            str(row["cache_bypass"]),
+            str(row["service_family"]),
+            str(row["raw"]),
+            int(_now()),
+        )
+
+    def _flush_request_rows(self, conn, rows: List[tuple[Any, ...]]) -> None:
+        if not rows:
+            return
+        conn.executemany(
+            """
+            INSERT IGNORE INTO diagnostic_requests (
+                proxy_id, event_key, ts, duration_ms, client_ip, method, url, domain, result_code, http_status,
+                bytes, master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
+                tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule, ssl_exception,
+                webfilter_allow, cache_bypass, raw, created_ts
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            rows,
+        )
+
+    def _flush_icap_rows(self, conn, rows: List[tuple[Any, ...]]) -> None:
+        if not rows:
+            return
+        conn.executemany(
             """
             INSERT IGNORE INTO diagnostic_icap_events (
                 proxy_id, event_key, ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
@@ -683,30 +749,21 @@ class DiagnosticStore:
                 webfilter_allow, cache_bypass, service_family, raw, created_ts
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            (
-                proxy_id,
-                event_key,
-                int(row["ts"]),
-                str(row["master_xaction"]),
-                str(row["client_ip"]),
-                str(row["method"]),
-                str(row["url"]),
-                str(row["domain"]),
-                int(row["icap_time_ms"]),
-                str(row["adapt_summary"]),
-                str(row["adapt_details"]),
-                str(row["host"]),
-                str(row["user_agent"]),
-                str(row["sni"]),
-                str(row["exclusion_rule"]),
-                str(row["ssl_exception"]),
-                str(row["webfilter_allow"]),
-                str(row["cache_bypass"]),
-                str(row["service_family"]),
-                str(row["raw"]),
-                int(_now()),
-            ),
+            rows,
         )
+
+    def _ingest_request_line_with_conn(self, conn, line: str) -> bool:
+        params = self._build_request_insert_params(line)
+        if params is None:
+            return False
+        self._flush_request_rows(conn, [params])
+        return True
+
+    def _ingest_icap_line_with_conn(self, conn, line: str) -> bool:
+        params = self._build_icap_insert_params(line)
+        if params is None:
+            return False
+        self._flush_icap_rows(conn, [params])
         return True
 
     def list_recent_requests(
@@ -781,6 +838,8 @@ class DiagnosticStore:
         *,
         since: Optional[int] = None,
         search: str = "",
+        client_ip: str = "",
+        domain: str = "",
         master_xaction: str = "",
         service: str = "",
         limit: int = 50,
@@ -790,6 +849,12 @@ class DiagnosticStore:
         if since is not None:
             where.append("ts >= %s")
             params.append(int(since))
+        if client_ip:
+            where.append("client_ip = %s")
+            params.append(client_ip.strip())
+        if domain:
+            where.append("domain = %s")
+            params.append(_normalize_hostish(domain))
         if master_xaction:
             where.append("master_xaction = %s")
             params.append(master_xaction.strip())
@@ -827,6 +892,492 @@ class DiagnosticStore:
                 FROM diagnostic_icap_events
                 {where_sql}
                 ORDER BY ts DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+        return [_normalize_icap_row(row) for row in rows]
+
+    def _batch_list_icap_by_master_xactions(
+        self,
+        master_xactions: List[str],
+        *,
+        service: str = "",
+        limit_per_transaction: int = 5,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        txs: List[str] = []
+        seen: set[str] = set()
+        for raw in master_xactions:
+            tx = (raw or "").strip()
+            if not tx or tx in seen:
+                continue
+            seen.add(tx)
+            txs.append(tx)
+        if not txs:
+            return {}
+
+        where = ["proxy_id = %s"]
+        params: List[Any] = [get_proxy_id()]
+        placeholders = ", ".join(["%s"] * len(txs))
+        where.append(f"master_xaction IN ({placeholders})")
+        params.extend(txs)
+        normalized_service = (service or "").strip().lower()
+        if normalized_service:
+            where.append("service_family = %s")
+            params.append(normalized_service)
+
+        where_sql = "WHERE " + " AND ".join(where)
+        max_per_tx = max(1, min(20, int(limit_per_transaction)))
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
+                    adapt_summary, adapt_details, host, user_agent, sni,
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family
+                FROM diagnostic_icap_events
+                {where_sql}
+                ORDER BY ts DESC, id DESC
+                """,
+                tuple(params),
+            ).fetchall()
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {tx: [] for tx in txs}
+        for row in rows:
+            normalized = _normalize_icap_row(row)
+            tx = str(normalized.get("master_xaction") or "").strip()
+            if not tx:
+                continue
+            bucket = grouped.setdefault(tx, [])
+            if len(bucket) >= max_per_tx:
+                continue
+            bucket.append(normalized)
+        return grouped
+
+    def list_recent_transactions(
+        self,
+        *,
+        since: Optional[int] = None,
+        search: str = "",
+        client_ip: str = "",
+        domain: str = "",
+        master_xaction: str = "",
+        service: str = "",
+        limit: int = 50,
+        icap_limit_per_transaction: int = 5,
+    ) -> List[Dict[str, Any]]:
+        rows = self.list_recent_requests(
+            since=since,
+            search=search,
+            client_ip=client_ip,
+            domain=domain,
+            master_xaction=master_xaction,
+            limit=limit,
+        )
+        icap_map = self._batch_list_icap_by_master_xactions(
+            [str(row.get("master_xaction") or "") for row in rows],
+            service=service,
+            limit_per_transaction=icap_limit_per_transaction,
+        )
+
+        transactions: List[Dict[str, Any]] = []
+        for row in rows:
+            related_icap = icap_map.get(str(row.get("master_xaction") or "").strip(), [])
+            if (service or "").strip() and not related_icap:
+                continue
+            enriched = dict(row)
+            enriched["related_icap"] = related_icap
+            enriched["service_families"] = sorted({str(event.get("service_family") or "") for event in related_icap if event.get("service_family")})
+            enriched["icap_event_count"] = len(related_icap)
+            transactions.append(enriched)
+        return transactions
+
+    def list_request_candidates_for_domain_near_ts(
+        self,
+        *,
+        domain: str,
+        around_ts: int,
+        window_seconds: int = 300,
+        limit: int = 5,
+        service: str = "",
+        icap_limit_per_transaction: int = 5,
+    ) -> List[Dict[str, Any]]:
+        normalized_domain = _normalize_hostish(domain)
+        if not normalized_domain:
+            return []
+
+        center = int(around_ts or _now())
+        window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
+        lim = max(1, min(20, int(limit)))
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
+                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
+                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
+                    ssl_exception, webfilter_allow, cache_bypass
+                FROM diagnostic_requests
+                WHERE proxy_id = %s
+                  AND domain = %s
+                  AND ts BETWEEN %s AND %s
+                ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
+                LIMIT %s
+                """,
+                (
+                    get_proxy_id(),
+                    normalized_domain,
+                    center - window_i,
+                    center + window_i,
+                    center,
+                    lim,
+                ),
+            ).fetchall()
+
+        normalized_rows = [_normalize_request_row(row) for row in rows]
+        icap_map = self._batch_list_icap_by_master_xactions(
+            [str(row.get("master_xaction") or "") for row in normalized_rows],
+            service=service,
+            limit_per_transaction=icap_limit_per_transaction,
+        )
+
+        out: List[Dict[str, Any]] = []
+        for row in normalized_rows:
+            enriched = dict(row)
+            enriched["related_icap"] = icap_map.get(str(row.get("master_xaction") or "").strip(), [])
+            enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
+            enriched["correlation_kind"] = "domain_time"
+            out.append(enriched)
+        return out
+
+    def list_request_candidates_for_policy_event(
+        self,
+        *,
+        around_ts: int,
+        url: str = "",
+        client_ip: str = "",
+        domain: str = "",
+        window_seconds: int = 300,
+        limit: int = 5,
+        service: str = "",
+        icap_limit_per_transaction: int = 5,
+    ) -> List[Dict[str, Any]]:
+        normalized_domain = _normalize_hostish(domain) or _extract_domain(url)
+        center = int(around_ts or _now())
+        window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
+        lim = max(1, min(20, int(limit)))
+
+        where = ["proxy_id = %s", "ts BETWEEN %s AND %s"]
+        params: List[Any] = [get_proxy_id(), center - window_i, center + window_i]
+        if client_ip:
+            where.append("client_ip = %s")
+            params.append(client_ip.strip())
+        like_parts: List[str] = []
+        if normalized_domain:
+            like_parts.append("domain = %s")
+            params.append(normalized_domain)
+        raw_url = (url or "").strip()
+        if raw_url:
+            like_parts.append("url LIKE %s ESCAPE '\\'")
+            params.append(f"%{_escape_like(raw_url)}%")
+        elif normalized_domain:
+            like_parts.append("url LIKE %s ESCAPE '\\'")
+            params.append(f"%{_escape_like(normalized_domain)}%")
+        if like_parts:
+            where.append("(" + " OR ".join(like_parts) + ")")
+
+        where_sql = "WHERE " + " AND ".join(where)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
+                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
+                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
+                    ssl_exception, webfilter_allow, cache_bypass
+                FROM diagnostic_requests
+                {where_sql}
+                ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params + [center, lim]),
+            ).fetchall()
+
+        normalized_rows = [_normalize_request_row(row) for row in rows]
+        icap_map = self._batch_list_icap_by_master_xactions(
+            [str(row.get("master_xaction") or "") for row in normalized_rows],
+            service=service,
+            limit_per_transaction=icap_limit_per_transaction,
+        )
+
+        out: List[Dict[str, Any]] = []
+        for row in normalized_rows:
+            enriched = dict(row)
+            enriched["related_icap"] = icap_map.get(str(row.get("master_xaction") or "").strip(), [])
+            enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
+            enriched["correlation_kind"] = "domain_time"
+            out.append(enriched)
+        return out
+
+    def list_icap_candidates_for_domain_near_ts(
+        self,
+        *,
+        domain: str,
+        around_ts: int,
+        window_seconds: int = 300,
+        service: str = "",
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        normalized_domain = _normalize_hostish(domain)
+        if not normalized_domain:
+            return []
+
+        center = int(around_ts or _now())
+        window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
+        lim = max(1, min(20, int(limit)))
+        normalized_service = (service or "").strip().lower()
+
+        where = ["proxy_id = %s", "domain = %s", "ts BETWEEN %s AND %s"]
+        params: List[Any] = [get_proxy_id(), normalized_domain, center - window_i, center + window_i]
+        if normalized_service:
+            where.append("service_family = %s")
+            params.append(normalized_service)
+        where_sql = " AND ".join(where)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
+                    adapt_summary, adapt_details, host, user_agent, sni,
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family
+                FROM diagnostic_icap_events
+                WHERE {where_sql}
+                ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params + [center, lim]),
+            ).fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            normalized = _normalize_icap_row(row)
+            normalized["time_delta_seconds"] = abs(int(normalized.get("ts") or 0) - center)
+            normalized["correlation_kind"] = "domain_time"
+            out.append(normalized)
+        return out
+
+    def activity_summary(self, *, since: Optional[int] = None) -> Dict[str, int]:
+        request_where = ["proxy_id = %s"]
+        request_params: List[Any] = [get_proxy_id()]
+        icap_where = ["proxy_id = %s"]
+        icap_params: List[Any] = [get_proxy_id()]
+        if since is not None:
+            request_where.append("ts >= %s")
+            request_params.append(int(since))
+            icap_where.append("ts >= %s")
+            icap_params.append(int(since))
+
+        request_where_sql = "WHERE " + " AND ".join(request_where)
+        icap_where_sql = "WHERE " + " AND ".join(icap_where)
+
+        with self._connect() as conn:
+            req_row = conn.execute(
+                f"""
+                SELECT COUNT(*), COUNT(DISTINCT client_ip), COUNT(DISTINCT domain), COUNT(DISTINCT master_xaction)
+                FROM diagnostic_requests
+                {request_where_sql}
+                """,
+                tuple(request_params),
+            ).fetchone()
+            icap_row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*),
+                    COALESCE(SUM(CASE WHEN service_family = 'av' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN service_family = 'adblock' THEN 1 ELSE 0 END), 0)
+                FROM diagnostic_icap_events
+                {icap_where_sql}
+                """,
+                tuple(icap_params),
+            ).fetchone()
+
+        return {
+            "requests": int(req_row[0] or 0) if req_row else 0,
+            "clients": int(req_row[1] or 0) if req_row else 0,
+            "domains": int(req_row[2] or 0) if req_row else 0,
+            "transactions": int(req_row[3] or 0) if req_row else 0,
+            "icap_events": int(icap_row[0] or 0) if icap_row else 0,
+            "av_icap_events": int(icap_row[1] or 0) if icap_row else 0,
+            "adblock_icap_events": int(icap_row[2] or 0) if icap_row else 0,
+        }
+
+    def top_request_dimension(self, dimension: str, *, since: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+        column = _REQUEST_DIMENSIONS.get((dimension or "").strip().lower())
+        if not column:
+            return []
+
+        lim = max(1, min(50, int(limit)))
+        where = ["proxy_id = %s", f"COALESCE(NULLIF(TRIM({column}), ''), '') <> ''"]
+        params: List[Any] = [get_proxy_id()]
+        if since is not None:
+            where.append("ts >= %s")
+            params.append(int(since))
+        where_sql = "WHERE " + " AND ".join(where)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {column} AS value, COUNT(*) AS total, MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                {where_sql}
+                GROUP BY {column}
+                ORDER BY total DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            out.append(
+                {
+                    "value": str(row[0] or ""),
+                    "count": int(row[1] or 0),
+                    "last_seen": int(row[2] or 0),
+                }
+            )
+        return out
+
+    def top_policy_tags(self, *, since: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+        lim = max(1, min(50, int(limit)))
+        params: List[Any] = [get_proxy_id()]
+        since_sql = ""
+        if since is not None:
+            since_sql = " AND ts >= %s"
+            params.append(int(since))
+
+        sql = f"""
+        SELECT tag, COUNT(*) AS total, MAX(ts) AS last_seen
+        FROM (
+            SELECT CONCAT('exclude:', exclusion_rule) AS tag, ts
+            FROM diagnostic_requests
+            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(exclusion_rule), ''), '') <> ''{since_sql}
+            UNION ALL
+            SELECT CONCAT('ssl:', ssl_exception) AS tag, ts
+            FROM diagnostic_requests
+            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(ssl_exception), ''), '') <> ''{since_sql}
+            UNION ALL
+            SELECT CONCAT('webfilter:', webfilter_allow) AS tag, ts
+            FROM diagnostic_requests
+            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(webfilter_allow), ''), '') <> ''{since_sql}
+            UNION ALL
+            SELECT CONCAT('cache:', cache_bypass) AS tag, ts
+            FROM diagnostic_requests
+            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(cache_bypass), ''), '') <> ''{since_sql}
+        ) tags
+        GROUP BY tag
+        ORDER BY total DESC, last_seen DESC
+        LIMIT %s
+        """
+
+        query_params: List[Any] = []
+        for _ in range(4):
+            query_params.extend(params)
+        query_params.append(lim)
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(query_params)).fetchall()
+
+        return [
+            {
+                "tag": str(row[0] or ""),
+                "count": int(row[1] or 0),
+                "last_seen": int(row[2] or 0),
+            }
+            for row in rows
+        ]
+
+    def slowest_requests(self, *, since: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+        where = ["proxy_id = %s"]
+        params: List[Any] = [get_proxy_id()]
+        if since is not None:
+            where.append("ts >= %s")
+            params.append(int(since))
+        where_sql = "WHERE " + " AND ".join(where)
+        lim = max(1, min(50, int(limit)))
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
+                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
+                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
+                    ssl_exception, webfilter_allow, cache_bypass
+                FROM diagnostic_requests
+                {where_sql}
+                ORDER BY duration_ms DESC, ts DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+
+        return [_normalize_request_row(row) for row in rows]
+
+    def icap_summary(self, *, since: Optional[int] = None, service: str = "") -> Dict[str, int]:
+        where = ["proxy_id = %s"]
+        params: List[Any] = [get_proxy_id()]
+        if since is not None:
+            where.append("ts >= %s")
+            params.append(int(since))
+        normalized_service = (service or "").strip().lower()
+        if normalized_service:
+            where.append("service_family = %s")
+            params.append(normalized_service)
+        where_sql = "WHERE " + " AND ".join(where)
+
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*), COALESCE(AVG(icap_time_ms),0), COALESCE(MAX(icap_time_ms),0)
+                FROM diagnostic_icap_events
+                {where_sql}
+                """,
+                tuple(params),
+            ).fetchone()
+        return {
+            "events": int(row[0] or 0) if row else 0,
+            "avg_icap_time_ms": int(float(row[1] or 0)) if row else 0,
+            "max_icap_time_ms": int(row[2] or 0) if row else 0,
+        }
+
+    def slowest_icap_events(self, *, since: Optional[int] = None, service: str = "", limit: int = 10) -> List[Dict[str, Any]]:
+        where = ["proxy_id = %s"]
+        params: List[Any] = [get_proxy_id()]
+        if since is not None:
+            where.append("ts >= %s")
+            params.append(int(since))
+        normalized_service = (service or "").strip().lower()
+        if normalized_service:
+            where.append("service_family = %s")
+            params.append(normalized_service)
+        where_sql = "WHERE " + " AND ".join(where)
+        lim = max(1, min(50, int(limit)))
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
+                    adapt_summary, adapt_details, host, user_agent, sni,
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family
+                FROM diagnostic_icap_events
+                {where_sql}
+                ORDER BY icap_time_ms DESC, ts DESC, id DESC
                 LIMIT %s
                 """,
                 tuple(params + [lim]),

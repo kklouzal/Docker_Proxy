@@ -197,6 +197,200 @@ def window_label(seconds: int) -> str:
     return f"{value}s"
 
 
+def _truncate_text(value: object, *, max_len: int = 140) -> str:
+    text = str(value or '').strip()
+    if max_len <= 0 or len(text) <= max_len:
+        return text
+    return text[: max(1, max_len - 1)].rstrip() + '…'
+
+
+def _bytes_human(value: object) -> str:
+    try:
+        size = int(value or 0)
+    except Exception:
+        size = 0
+    if size <= 0:
+        return '0 B'
+    units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+    scaled = float(size)
+    unit = units[0]
+    for unit in units:
+        if scaled < 1024.0 or unit == units[-1]:
+            break
+        scaled /= 1024.0
+    if unit == 'B':
+        return f'{int(scaled)} {unit}'
+    return f'{scaled:.1f} {unit}'
+
+
+def _request_result_tone(result_code: str, http_status: object) -> str:
+    rc = (result_code or '').upper()
+    try:
+        status = int(http_status or 0)
+    except Exception:
+        status = 0
+    if rc.startswith('TCP_DENIED') or status >= 500:
+        return 'danger'
+    if status >= 400 or 'ABORTED' in rc or 'FAIL' in rc:
+        return 'warn'
+    if 'HIT' in rc or rc.startswith('TCP_TUNNEL'):
+        return 'ok'
+    return 'ghost'
+
+
+def _build_tls_details(row: Dict[str, Any]) -> list[str]:
+    details: list[str] = []
+    bump_mode = str(row.get('bump_mode') or '').strip()
+    if bump_mode:
+        details.append(f'bump={bump_mode}')
+    sni = str(row.get('sni') or '').strip()
+    if sni:
+        details.append(f'sni={sni}')
+    host = str(row.get('host') or '').strip()
+    if host and host != sni:
+        details.append(f'host={host}')
+
+    server_version = str(row.get('tls_server_version') or '').strip()
+    server_cipher = str(row.get('tls_server_cipher') or '').strip()
+    if server_version or server_cipher:
+        suffix = f' / {server_cipher}' if server_cipher else ''
+        details.append(f'server {server_version}{suffix}'.strip())
+
+    client_version = str(row.get('tls_client_version') or '').strip()
+    client_cipher = str(row.get('tls_client_cipher') or '').strip()
+    if client_version or client_cipher:
+        suffix = f' / {client_cipher}' if client_cipher else ''
+        details.append(f'client {client_version}{suffix}'.strip())
+    return details
+
+
+def _build_header_details(row: Dict[str, Any]) -> list[Dict[str, str]]:
+    details: list[Dict[str, str]] = []
+    user_agent = _truncate_text(row.get('user_agent'), max_len=180)
+    if user_agent and user_agent != '-':
+        details.append({'label': 'UA', 'value': user_agent})
+    referer = _truncate_text(row.get('referer'), max_len=180)
+    if referer and referer != '-':
+        details.append({'label': 'Referer', 'value': referer})
+    return details
+
+
+def _correlation_meta(kind: str, *, time_delta_seconds: object = 0) -> Dict[str, str]:
+    normalized = (kind or '').strip().lower()
+    try:
+        delta = int(time_delta_seconds or 0)
+    except Exception:
+        delta = 0
+    if normalized == 'domain_time':
+        extra = f' · ±{delta}s' if delta > 0 else ''
+        return {
+            'label': f'Possible match (domain + time){extra}',
+            'tone': 'warn',
+        }
+    return {
+        'label': 'Exact master transaction match',
+        'tone': 'ok',
+    }
+
+
+def present_icap_events(rows: Sequence[Dict[str, Any]], *, limit: int = 10) -> list[Dict[str, Any]]:
+    presented: list[Dict[str, Any]] = []
+    for row in rows[: max(1, limit)]:
+        event = dict(row)
+        event['adapt_summary_short'] = _truncate_text(event.get('adapt_summary'), max_len=160)
+        event['adapt_details_short'] = _truncate_text(event.get('adapt_details'), max_len=200)
+        event['header_details'] = _build_header_details(event)
+        event['tls_details'] = _build_tls_details(event)
+        event['target_secondary'] = str(event.get('host') or event.get('sni') or '').strip()
+        event['correlation'] = _correlation_meta(
+            str(event.get('correlation_kind') or 'master_xaction'),
+            time_delta_seconds=event.get('time_delta_seconds'),
+        )
+        presented.append(event)
+    return presented
+
+
+def present_transaction_rows(rows: Sequence[Dict[str, Any]], *, icap_limit: int = 5) -> list[Dict[str, Any]]:
+    presented: list[Dict[str, Any]] = []
+    for row in rows:
+        event = dict(row)
+        event['result_tone'] = _request_result_tone(
+            str(event.get('result_code') or ''),
+            event.get('http_status'),
+        )
+        event['tls_details'] = _build_tls_details(event)
+        event['header_details'] = _build_header_details(event)
+        event['bytes_human'] = _bytes_human(event.get('bytes'))
+        event['result_summary'] = str(event.get('result_code') or '')
+        try:
+            http_status = int(event.get('http_status') or 0)
+        except Exception:
+            http_status = 0
+        if http_status > 0:
+            event['result_summary'] = f"{event['result_summary']} · HTTP {http_status}"
+        hierarchy = str(event.get('hierarchy_status') or '').strip()
+        if hierarchy:
+            event['result_summary'] = f"{event['result_summary']} · {hierarchy}"
+        related_icap = present_icap_events(list(event.get('related_icap') or []), limit=icap_limit)
+        event['related_icap'] = related_icap
+        event['correlation'] = _correlation_meta(
+            str(event.get('correlation_kind') or 'master_xaction'),
+            time_delta_seconds=event.get('time_delta_seconds'),
+        )
+        presented.append(event)
+    return presented
+
+
+def present_observability_summary(*, diagnostic_summary: Dict[str, Any] | None = None, ssl_summary: Dict[str, Any] | None = None) -> Dict[str, int]:
+    diag = diagnostic_summary or {}
+    ssl = ssl_summary or {}
+    return {
+        'requests': int(diag.get('requests') or 0),
+        'transactions': int(diag.get('transactions') or 0),
+        'clients': int(diag.get('clients') or 0),
+        'domains': int(diag.get('domains') or 0),
+        'icap_events': int(diag.get('icap_events') or 0),
+        'av_icap_events': int(diag.get('av_icap_events') or 0),
+        'adblock_icap_events': int(diag.get('adblock_icap_events') or 0),
+        'ssl_events': int(ssl.get('total_events') or 0),
+        'ssl_buckets': int(ssl.get('bucket_count') or 0),
+    }
+
+
+def present_top_value_rows(rows: Sequence[Dict[str, Any]], *, key: str = 'value', max_label: int = 64) -> list[Dict[str, Any]]:
+    presented: list[Dict[str, Any]] = []
+    for row in rows:
+        value = str(row.get(key) or '').strip()
+        if not value:
+            continue
+        presented.append(
+            {
+                'label': _truncate_text(value, max_len=max_label),
+                'full_label': value,
+                'count': int(row.get('count') or 0),
+                'last_seen': int(row.get('last_seen') or 0),
+            }
+        )
+    return presented
+
+
+def present_top_tag_rows(rows: Sequence[Dict[str, Any]], *, max_label: int = 72) -> list[Dict[str, Any]]:
+    presented: list[Dict[str, Any]] = []
+    for row in rows:
+        tag = str(row.get('tag') or '').strip()
+        if not tag:
+            continue
+        presented.append(
+            {
+                'label': _truncate_text(tag, max_len=max_label),
+                'full_label': tag,
+                'count': int(row.get('count') or 0),
+                'last_seen': int(row.get('last_seen') or 0),
+            }
+        )
+    return presented
+
+
 def present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
     presented: list[Dict[str, Any]] = []
     total_events = 0

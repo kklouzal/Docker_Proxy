@@ -80,17 +80,15 @@ def test_certs_download_requires_login():
 def test_certs_download_only_allows_ca_crt(monkeypatch, tmp_path):
     app_module = import_local_app_module()
 
-    # Replace the global cert manager with a fake so we don't run shell scripts.
-    ca_path = tmp_path / "ca.crt"
-    ca_path.write_text("dummy", encoding="utf-8")
+    from services.certificate_bundles import get_certificate_bundles  # type: ignore
+    from services.cert_manager import build_certificate_bundle  # type: ignore
 
-    class FakeCM:
-        ca_cert_path = str(ca_path)
-
-        def ensure_ca(self):
-            return str(ca_path)
-
-    monkeypatch.setattr(app_module, "cert_manager", FakeCM())
+    bundle = build_certificate_bundle(
+        "-----BEGIN CERTIFICATE-----\nMIIFREMOTE\n-----END CERTIFICATE-----\n",
+        "-----BEGIN PRIVATE KEY-----\nMIIEREMOTE\n-----END PRIVATE KEY-----\n",
+        source_kind="test",
+    )
+    get_certificate_bundles().create_revision(bundle, created_by="tester", activate=True)
 
     c = app_module.app.test_client()
     login(c)
@@ -105,6 +103,7 @@ def test_certs_download_only_allows_ca_crt(monkeypatch, tmp_path):
     disp = r.headers.get("Content-Disposition", "") or ""
     assert "attachment" in disp
     assert "squid-proxy-ca.crt" in disp
+    assert "BEGIN CERTIFICATE" in r.data.decode("utf-8", errors="replace")
 
 
 def test_ssl_errors_export_requires_login():

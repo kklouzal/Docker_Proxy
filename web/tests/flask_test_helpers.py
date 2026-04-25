@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path, make_temp_secret_path
+from .mysql_test_utils import apply_test_environment, configure_test_mysql_env, ensure_web_import_path, make_temp_secret_path
 
 
 def _require_flask() -> None:
@@ -23,6 +23,13 @@ def import_local_app_module(
 ):
     _require_flask()
     ensure_web_import_path()
+    apply_test_environment(
+        {
+            "DISABLE_BACKGROUND": "1",
+            "PROXY_MANAGEMENT_TOKEN": "test-token",
+            "DEFAULT_PROXY_ID": "default",
+        }
+    )
     secret_path = make_temp_secret_path(secret_prefix)
     configure_test_mysql_env(str(make_temp_secret_path(mysql_prefix, filename="mysql-marker")), secret_path=secret_path)
 
@@ -43,6 +50,13 @@ def import_local_flask_app(
 def import_isolated_app_module(tmp_path: Path):
     _require_flask()
     ensure_web_import_path()
+    apply_test_environment(
+        {
+            "DISABLE_BACKGROUND": "1",
+            "PROXY_MANAGEMENT_TOKEN": "test-token",
+            "DEFAULT_PROXY_ID": "default",
+        }
+    )
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
 
     if "app" in sys.modules:

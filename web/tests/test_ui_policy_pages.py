@@ -108,6 +108,54 @@ def test_adblock_flush_cache_sets_flag_and_redirects(app_module):
     assert store._flush is True
 
 
+def test_adblock_page_shows_recent_icap_observability(app_module, monkeypatch):
+    class FakeDiagnostic:
+        def list_recent_icap(self, *, since: int | None = None, search: str = "", client_ip: str = "", domain: str = "", master_xaction: str = "", service: str = "", limit: int = 50):
+            return [
+                {
+                    "ts": 1713448200,
+                    "client_ip": "192.0.2.10",
+                    "method": "GET",
+                    "target_display": "ads.example.com",
+                    "url": "https://ads.example.com/script.js",
+                    "icap_time_ms": 22,
+                    "service_label": "Adblock",
+                    "adapt_summary": "adblockreq / blocked",
+                    "policy_tags": ["cache:cookie"],
+                    "master_xaction": "tx123",
+                }
+            ]
+
+        def find_request_by_master_xaction(self, master_xaction: str):
+            return {
+                "method": "GET",
+                "target_display": "ads.example.com",
+                "client_ip": "192.0.2.10",
+                "result_code": "TCP_DENIED/403",
+                "http_status": 403,
+            }
+
+        def icap_summary(self, *, since: int | None = None, service: str = ""):
+            return {"events": 1, "avg_icap_time_ms": 22, "max_icap_time_ms": 22}
+
+        def slowest_icap_events(self, *, since: int | None = None, service: str = "", limit: int = 10):
+            return self.list_recent_icap(limit=limit)
+
+        def list_request_candidates_for_policy_event(self, **_kwargs):
+            return []
+
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+
+    c = app_module.app.test_client()
+    login(c)
+    r = c.get("/adblock?window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Recent adblock ICAP transactions" in body
+    assert "Adblock" in body
+    assert "Adblock ICAP events" in body
+
+
 def test_webfilter_save_requires_source_url_when_enabling(app_module):
     c = app_module.app.test_client()
     csrf = login(c)
@@ -205,6 +253,52 @@ def test_webfilter_whitelist_remove_calls_store(app_module):
     )
     assert r.status_code in (301, 302, 303, 307, 308)
     assert "example.com" in store._removed_patterns
+
+
+def test_webfilter_blocked_log_shows_correlation(app_module, monkeypatch):
+    store = getattr(app_module, "_test_webfilter_store")
+    store.list_blocked_log = lambda limit=200: [
+        {"ts": 1713448200, "src_ip": "192.0.2.10", "url": "https://bad.example.com/", "category": "adult"}
+    ]  # type: ignore[method-assign]
+
+    class FakeDiagnostic:
+        def activity_summary(self, *, since: int | None = None):
+            return {"requests": 2, "clients": 1, "domains": 1, "transactions": 1, "icap_events": 0, "av_icap_events": 0, "adblock_icap_events": 0}
+
+        def top_policy_tags(self, *, since: int | None = None, limit: int = 10):
+            return []
+
+        def list_request_candidates_for_policy_event(self, **_kwargs):
+            return [
+                {
+                    "ts": 1713448195,
+                    "duration_ms": 33,
+                    "client_ip": "192.0.2.10",
+                    "method": "GET",
+                    "target_display": "bad.example.com",
+                    "url": "https://bad.example.com/",
+                    "result_code": "TCP_DENIED/403",
+                    "http_status": 403,
+                    "master_xaction": "tx-web",
+                    "hierarchy_status": "NONE",
+                    "bump_mode": "bump",
+                    "policy_tags": ["webfilter:adult"],
+                    "related_icap": [],
+                    "correlation_kind": "domain_time",
+                    "time_delta_seconds": 5,
+                }
+            ]
+
+    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+
+    c = app_module.app.test_client()
+    login(c)
+    r = c.get("/webfilter?tab=blockedlog&window=3600")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Correlated request" in body
+    assert "Possible match (domain + time)" in body
+    assert "tx-web" in body or "bad.example.com" in body
 
 
 def test_sslfilter_add_ok_and_error(app_module):

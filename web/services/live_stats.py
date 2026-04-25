@@ -27,6 +27,25 @@ class Row:
     hit_bytes: int
     first_seen: int
     last_seen: int
+
+
+@dataclass
+class _AggregateAccumulator:
+    requests: int
+    hit_requests: int
+    bytes: int
+    hit_bytes: int
+    first_seen: int
+    last_seen: int
+
+
+@dataclass
+class _NoCacheAccumulator:
+    requests: int
+    first_seen: int
+    last_seen: int
+
+
 def _pct(numer: int, denom: int) -> float:
     if denom <= 0:
         return 0.0
@@ -150,7 +169,7 @@ def _derive_not_cached_reason(method: str, result_code: str) -> str:
 class LiveStatsStore:
     def __init__(
         self,
-        access_log_path: str = "/var/log/squid/access.log",
+        access_log_path: str = "/var/log/squid/access-observe.log",
         seed_max_lines: int = 5000,
     ):
         self.access_log_path = access_log_path
@@ -158,6 +177,8 @@ class LiveStatsStore:
 
         self._started = False
         self._start_lock = threading.Lock()
+        self._db_initialized = False
+        self._db_init_lock = threading.Lock()
 
     def _connect(self):
         return connect()
@@ -189,77 +210,282 @@ class LiveStatsStore:
             self._upsert_client_domain_nocache(conn, ip, domain, ts, reason)
         return True
 
+    def _new_batch(self) -> Dict[str, Dict[Any, Any]]:
+        return {
+            "domains": {},
+            "clients": {},
+            "client_domains": {},
+            "client_domain_nocache": {},
+        }
+
+    def _clear_batch(self, batch: Dict[str, Dict[Any, Any]]) -> None:
+        for bucket in batch.values():
+            bucket.clear()
+
+    def _accumulate_aggregate(
+        self,
+        bucket: Dict[Any, _AggregateAccumulator],
+        key: Any,
+        ts: int,
+        size_bytes: int,
+        is_hit: bool,
+    ) -> None:
+        entry = bucket.get(key)
+        hit_requests = 1 if is_hit else 0
+        hit_bytes = size_bytes if is_hit else 0
+        if entry is None:
+            bucket[key] = _AggregateAccumulator(
+                requests=1,
+                hit_requests=hit_requests,
+                bytes=size_bytes,
+                hit_bytes=hit_bytes,
+                first_seen=ts,
+                last_seen=ts,
+            )
+            return
+        entry.requests += 1
+        entry.hit_requests += hit_requests
+        entry.bytes += size_bytes
+        entry.hit_bytes += hit_bytes
+        entry.first_seen = min(entry.first_seen, ts)
+        entry.last_seen = max(entry.last_seen, ts)
+
+    def _accumulate_nocache(
+        self,
+        bucket: Dict[Tuple[str, str, str], _NoCacheAccumulator],
+        ip: str,
+        domain: str,
+        reason: str,
+        ts: int,
+    ) -> None:
+        r = (reason or "").strip() or "Not served from cache"
+        key = (ip, domain, r)
+        entry = bucket.get(key)
+        if entry is None:
+            bucket[key] = _NoCacheAccumulator(requests=1, first_seen=ts, last_seen=ts)
+            return
+        entry.requests += 1
+        entry.first_seen = min(entry.first_seen, ts)
+        entry.last_seen = max(entry.last_seen, ts)
+
+    def _accumulate_line(self, batch: Dict[str, Dict[Any, Any]], line: str) -> bool:
+        parsed = _parse_access_log_line(line)
+        if not parsed:
+            return False
+        ts, ip, result_code, size_bytes, domain, method = parsed
+        if not domain:
+            return False
+
+        hit = _is_hit(result_code)
+        reason = _derive_not_cached_reason(method, result_code) if not hit else ""
+        self._accumulate_aggregate(batch["domains"], domain, ts, size_bytes, hit)
+        self._accumulate_aggregate(batch["clients"], ip, ts, size_bytes, hit)
+        self._accumulate_aggregate(batch["client_domains"], (ip, domain), ts, size_bytes, hit)
+        if not hit:
+            self._accumulate_nocache(batch["client_domain_nocache"], ip, domain, reason, ts)
+        return True
+
+    def _flush_batch_with_conn(self, conn, batch: Dict[str, Dict[Any, Any]]) -> int:
+        proxy_id = get_proxy_id()
+        flushed = 0
+
+        domains = batch["domains"]
+        if domains:
+            conn.executemany(
+                f"""
+                INSERT INTO {self._table(conn, 'domains')} (proxy_id, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    requests = requests + VALUES(requests),
+                    hit_requests = hit_requests + VALUES(hit_requests),
+                    bytes = bytes + VALUES(bytes),
+                    hit_bytes = hit_bytes + VALUES(hit_bytes),
+                    first_seen = LEAST(first_seen, VALUES(first_seen)),
+                    last_seen = GREATEST(last_seen, VALUES(last_seen));
+                """,
+                [
+                    (
+                        proxy_id,
+                        str(domain),
+                        entry.requests,
+                        entry.hit_requests,
+                        entry.bytes,
+                        entry.hit_bytes,
+                        entry.first_seen,
+                        entry.last_seen,
+                    )
+                    for domain, entry in domains.items()
+                ],
+            )
+            flushed += len(domains)
+
+        clients = batch["clients"]
+        if clients:
+            conn.executemany(
+                f"""
+                INSERT INTO {self._table(conn, 'clients')} (proxy_id, ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    requests = requests + VALUES(requests),
+                    hit_requests = hit_requests + VALUES(hit_requests),
+                    bytes = bytes + VALUES(bytes),
+                    hit_bytes = hit_bytes + VALUES(hit_bytes),
+                    first_seen = LEAST(first_seen, VALUES(first_seen)),
+                    last_seen = GREATEST(last_seen, VALUES(last_seen));
+                """,
+                [
+                    (
+                        proxy_id,
+                        str(ip),
+                        entry.requests,
+                        entry.hit_requests,
+                        entry.bytes,
+                        entry.hit_bytes,
+                        entry.first_seen,
+                        entry.last_seen,
+                    )
+                    for ip, entry in clients.items()
+                ],
+            )
+            flushed += len(clients)
+
+        client_domains = batch["client_domains"]
+        if client_domains:
+            conn.executemany(
+                f"""
+                INSERT INTO {self._table(conn, 'client_domains')} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    requests = requests + VALUES(requests),
+                    hit_requests = hit_requests + VALUES(hit_requests),
+                    bytes = bytes + VALUES(bytes),
+                    hit_bytes = hit_bytes + VALUES(hit_bytes),
+                    first_seen = LEAST(first_seen, VALUES(first_seen)),
+                    last_seen = GREATEST(last_seen, VALUES(last_seen));
+                """,
+                [
+                    (
+                        proxy_id,
+                        str(ip),
+                        str(domain),
+                        entry.requests,
+                        entry.hit_requests,
+                        entry.bytes,
+                        entry.hit_bytes,
+                        entry.first_seen,
+                        entry.last_seen,
+                    )
+                    for (ip, domain), entry in client_domains.items()
+                ],
+            )
+            flushed += len(client_domains)
+
+        nocache = batch["client_domain_nocache"]
+        if nocache:
+            conn.executemany(
+                f"""
+                INSERT INTO {self._table(conn, 'client_domain_nocache')} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    requests = requests + VALUES(requests),
+                    first_seen = LEAST(first_seen, VALUES(first_seen)),
+                    last_seen = GREATEST(last_seen, VALUES(last_seen));
+                """,
+                [
+                    (
+                        hashlib.sha1(f"{proxy_id}|{ip}|{domain}|{reason}".encode("utf-8", errors="replace")).hexdigest(),
+                        proxy_id,
+                        str(ip),
+                        str(domain),
+                        str(reason),
+                        entry.requests,
+                        entry.first_seen,
+                        entry.last_seen,
+                    )
+                    for (ip, domain, reason), entry in nocache.items()
+                ],
+            )
+            flushed += len(nocache)
+
+        return flushed
+
     def init_db(self) -> None:
-        with self._connect() as conn:
-            domains_table = self._table(conn, "domains")
-            clients_table = self._table(conn, "clients")
-            client_domains_table = self._table(conn, "client_domains")
-            nocache_table = self._table(conn, "client_domain_nocache")
-            conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {domains_table} (
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    domain VARCHAR(255) NOT NULL,
-                    requests BIGINT NOT NULL DEFAULT 0,
-                    hit_requests BIGINT NOT NULL DEFAULT 0,
-                    bytes BIGINT NOT NULL DEFAULT 0,
-                    hit_bytes BIGINT NOT NULL DEFAULT 0,
-                    first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL,
-                    PRIMARY KEY (proxy_id, domain),
-                    KEY idx_{domains_table}_proxy_last_seen (proxy_id, last_seen)
+        if self._db_initialized:
+            return
+        with self._db_init_lock:
+            if self._db_initialized:
+                return
+            with self._connect() as conn:
+                domains_table = self._table(conn, "domains")
+                clients_table = self._table(conn, "clients")
+                client_domains_table = self._table(conn, "client_domains")
+                nocache_table = self._table(conn, "client_domain_nocache")
+                conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {domains_table} (
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        domain VARCHAR(255) NOT NULL,
+                        requests BIGINT NOT NULL DEFAULT 0,
+                        hit_requests BIGINT NOT NULL DEFAULT 0,
+                        bytes BIGINT NOT NULL DEFAULT 0,
+                        hit_bytes BIGINT NOT NULL DEFAULT 0,
+                        first_seen BIGINT NOT NULL,
+                        last_seen BIGINT NOT NULL,
+                        PRIMARY KEY (proxy_id, domain),
+                        KEY idx_{domains_table}_proxy_last_seen (proxy_id, last_seen)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {clients_table} (
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    ip VARCHAR(64) NOT NULL,
-                    requests BIGINT NOT NULL DEFAULT 0,
-                    hit_requests BIGINT NOT NULL DEFAULT 0,
-                    bytes BIGINT NOT NULL DEFAULT 0,
-                    hit_bytes BIGINT NOT NULL DEFAULT 0,
-                    first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL,
-                    PRIMARY KEY (proxy_id, ip),
-                    KEY idx_{clients_table}_proxy_last_seen (proxy_id, last_seen)
+                conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {clients_table} (
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        ip VARCHAR(64) NOT NULL,
+                        requests BIGINT NOT NULL DEFAULT 0,
+                        hit_requests BIGINT NOT NULL DEFAULT 0,
+                        bytes BIGINT NOT NULL DEFAULT 0,
+                        hit_bytes BIGINT NOT NULL DEFAULT 0,
+                        first_seen BIGINT NOT NULL,
+                        last_seen BIGINT NOT NULL,
+                        PRIMARY KEY (proxy_id, ip),
+                        KEY idx_{clients_table}_proxy_last_seen (proxy_id, last_seen)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {client_domains_table} (
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    ip VARCHAR(64) NOT NULL,
-                    domain VARCHAR(255) NOT NULL,
-                    requests BIGINT NOT NULL DEFAULT 0,
-                    hit_requests BIGINT NOT NULL DEFAULT 0,
-                    bytes BIGINT NOT NULL DEFAULT 0,
-                    hit_bytes BIGINT NOT NULL DEFAULT 0,
-                    first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL,
-                    PRIMARY KEY (proxy_id, ip, domain),
-                    KEY idx_{client_domains_table}_proxy_ip (proxy_id, ip)
+                conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {client_domains_table} (
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        ip VARCHAR(64) NOT NULL,
+                        domain VARCHAR(255) NOT NULL,
+                        requests BIGINT NOT NULL DEFAULT 0,
+                        hit_requests BIGINT NOT NULL DEFAULT 0,
+                        bytes BIGINT NOT NULL DEFAULT 0,
+                        hit_bytes BIGINT NOT NULL DEFAULT 0,
+                        first_seen BIGINT NOT NULL,
+                        last_seen BIGINT NOT NULL,
+                        PRIMARY KEY (proxy_id, ip, domain),
+                        KEY idx_{client_domains_table}_proxy_ip (proxy_id, ip)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {nocache_table} (
-                    row_key CHAR(40) PRIMARY KEY,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    ip VARCHAR(64) NOT NULL,
-                    domain VARCHAR(255) NOT NULL,
-                    reason VARCHAR(300) NOT NULL,
-                    requests BIGINT NOT NULL DEFAULT 0,
-                    first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL,
-                    KEY idx_{nocache_table}_proxy_ip (proxy_id, ip, last_seen),
-                    KEY idx_{nocache_table}_proxy_domain (proxy_id, domain, last_seen)
+                conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {nocache_table} (
+                        row_key CHAR(40) PRIMARY KEY,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        ip VARCHAR(64) NOT NULL,
+                        domain VARCHAR(255) NOT NULL,
+                        reason VARCHAR(300) NOT NULL,
+                        requests BIGINT NOT NULL DEFAULT 0,
+                        first_seen BIGINT NOT NULL,
+                        last_seen BIGINT NOT NULL,
+                        KEY idx_{nocache_table}_proxy_ip (proxy_id, ip, last_seen),
+                        KEY idx_{nocache_table}_proxy_domain (proxy_id, domain, last_seen)
+                    )
+                    """
                 )
-                """
-            )
+            self._db_initialized = True
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune stale aggregate rows.
@@ -336,7 +562,9 @@ class LiveStatsStore:
 
     def ingest_line(self, line: str) -> None:
         with self._connect() as conn:
-            self._ingest_line_with_conn(conn, line)
+            batch = self._new_batch()
+            if self._accumulate_line(batch, line):
+                self._flush_batch_with_conn(conn, batch)
 
     def _read_last_lines(self, max_lines: int) -> List[str]:
         path = self.access_log_path
@@ -346,7 +574,7 @@ class LiveStatsStore:
             with open(path, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
-                read_size = min(size, max_lines * 220)
+                read_size = min(size, max_lines * 512)
                 if read_size > 0:
                     f.seek(-read_size, os.SEEK_END)
                 chunk = f.read().decode("utf-8", errors="replace")
@@ -358,21 +586,15 @@ class LiveStatsStore:
         lines = self._read_last_lines(self.seed_max_lines)
         if not lines:
             return
+        batch = self._new_batch()
+        pending = 0
+        for line in lines:
+            if self._accumulate_line(batch, line):
+                pending += 1
+        if not pending:
+            return
         with self._connect() as conn:
-            for line in lines:
-                parsed = _parse_access_log_line(line)
-                if not parsed:
-                    continue
-                ts, ip, result_code, size_bytes, domain, method = parsed
-                if not domain:
-                    continue
-                hit = _is_hit(result_code)
-                reason = _derive_not_cached_reason(method, result_code) if not hit else ""
-                self._upsert_agg(conn, "domains", "domain", domain, ts, size_bytes, hit)
-                self._upsert_agg(conn, "clients", "ip", ip, ts, size_bytes, hit)
-                self._upsert_client_domain(conn, ip, domain, ts, size_bytes, hit)
-                if not hit:
-                    self._upsert_client_domain_nocache(conn, ip, domain, ts, reason)
+            self._flush_batch_with_conn(conn, batch)
 
     def start_background(self) -> None:
         with self._start_lock:
@@ -409,6 +631,7 @@ class LiveStatsStore:
 
                 with self._connect() as conn:
                     pending = 0
+                    batch = self._new_batch()
                     last_commit = time.time()
                     with open(path, "r", encoding="utf-8", errors="replace") as f:
                         # Start at end so we don't reprocess the whole file.
@@ -417,7 +640,7 @@ class LiveStatsStore:
                             line = f.readline()
                             if line:
                                 try:
-                                    if self._ingest_line_with_conn(conn, line):
+                                    if self._accumulate_line(batch, line):
                                         pending += 1
                                 except Exception:
                                     try:
@@ -432,7 +655,11 @@ class LiveStatsStore:
                                 now = time.time()
                                 if pending >= commit_batch or (now - last_commit) >= commit_interval:
                                     try:
+                                        if pending:
+                                            self._flush_batch_with_conn(conn, batch)
                                         conn.commit()
+                                        self._clear_batch(batch)
+                                        pending = 0
                                     except Exception:
                                         try:
                                             conn.rollback()
@@ -443,7 +670,6 @@ class LiveStatsStore:
                                                 interval_seconds=300.0,
                                                 message="Live stats tailer rollback failed after commit error",
                                             )
-                                    pending = 0
                                     last_commit = now
                                 continue
 
@@ -452,7 +678,10 @@ class LiveStatsStore:
                             now = time.time()
                             if pending and (now - last_commit) >= commit_interval:
                                 try:
+                                    self._flush_batch_with_conn(conn, batch)
                                     conn.commit()
+                                    self._clear_batch(batch)
+                                    pending = 0
                                 except Exception:
                                     try:
                                         conn.rollback()
@@ -463,7 +692,6 @@ class LiveStatsStore:
                                             interval_seconds=300.0,
                                             message="Live stats tailer rollback failed after idle commit error",
                                         )
-                                pending = 0
                                 last_commit = now
 
                             # Handle copytruncate: inode unchanged but file shrinks.
@@ -489,7 +717,11 @@ class LiveStatsStore:
                             if inode2 is not None and last_inode is not None and inode2 != last_inode:
                                 last_inode = inode2
                                 try:
+                                    if pending:
+                                        self._flush_batch_with_conn(conn, batch)
                                     conn.commit()
+                                    self._clear_batch(batch)
+                                    pending = 0
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
@@ -801,5 +1033,7 @@ def get_store() -> LiveStatsStore:
         return _store
     with _store_lock:
         if _store is None:
-            _store = LiveStatsStore()
+            _store = LiveStatsStore(
+                access_log_path=os.environ.get("SQUID_DIAGNOSTIC_ACCESS_LOG", "/var/log/squid/access-observe.log"),
+            )
         return _store

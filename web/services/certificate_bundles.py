@@ -59,6 +59,20 @@ class CertificateApplication:
     bundle_sha256: str
 
 
+@dataclass(frozen=True)
+class CertificateBundleMetadata:
+    revision_id: int
+    bundle_sha256: str
+    cert_sha256: str
+    source_kind: str
+    subject_dn: str
+    not_before: str
+    not_after: str
+    created_by: str
+    created_ts: int
+    is_active: bool
+
+
 class CertificateBundleStore:
     def _connect(self):
         return connect()
@@ -139,6 +153,22 @@ class CertificateBundleStore:
             bundle_sha256=str(row["bundle_sha256"] or ""),
         )
 
+    def _row_to_metadata(self, row: object | None) -> Optional[CertificateBundleMetadata]:
+        if not row:
+            return None
+        return CertificateBundleMetadata(
+            revision_id=int(row["id"] or 0),
+            bundle_sha256=str(row["bundle_sha256"] or ""),
+            cert_sha256=str(row["cert_sha256"] or ""),
+            source_kind=str(row["source_kind"] or "manual"),
+            subject_dn=str(row["subject_dn"] or ""),
+            not_before=str(row["not_before"] or ""),
+            not_after=str(row["not_after"] or ""),
+            created_by=str(row["created_by"] or ""),
+            created_ts=int(row["created_ts"] or 0),
+            is_active=bool(int(row["is_active"] or 0)),
+        )
+
     def get_active_bundle(self) -> Optional[CertificateBundleRevision]:
         self.init_db()
         with self._connect() as conn:
@@ -151,6 +181,20 @@ class CertificateBundleStore:
                 """
             ).fetchone()
         return self._row_to_revision(row)
+
+    def get_active_bundle_metadata(self) -> Optional[CertificateBundleMetadata]:
+        self.init_db()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, bundle_sha256, cert_sha256, source_kind, subject_dn, not_before, not_after, created_by, created_ts, is_active
+                FROM certificate_bundle_revisions
+                WHERE is_active=1
+                ORDER BY created_ts DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return self._row_to_metadata(row)
 
     def create_revision(
         self,

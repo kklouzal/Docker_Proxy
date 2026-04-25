@@ -176,6 +176,8 @@ class SslErrorsStore:
         self._started = False
         self._start_lock = threading.Lock()
         self._pending_error: Optional[Dict[str, Any]] = None
+        self._db_initialized = False
+        self._db_init_lock = threading.Lock()
 
     def _connect(self):
         return connect()
@@ -280,31 +282,37 @@ class SslErrorsStore:
         return True
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ssl_errors (
-                    row_key CHAR(40) PRIMARY KEY,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    domain VARCHAR(255) NOT NULL,
-                    category VARCHAR(64) NOT NULL,
-                    reason VARCHAR(300) NOT NULL,
-                    count BIGINT NOT NULL DEFAULT 0,
-                    first_seen BIGINT NOT NULL,
-                    last_seen BIGINT NOT NULL,
-                    sample TEXT NOT NULL,
-                    KEY idx_ssl_errors_proxy_last_seen (proxy_id, last_seen),
-                    KEY idx_ssl_errors_proxy_domain (proxy_id, domain, last_seen),
-                    KEY idx_ssl_errors_proxy_category (proxy_id, category, last_seen)
+        if self._db_initialized:
+            return
+        with self._db_init_lock:
+            if self._db_initialized:
+                return
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ssl_errors (
+                        row_key CHAR(40) PRIMARY KEY,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        domain VARCHAR(255) NOT NULL,
+                        category VARCHAR(64) NOT NULL,
+                        reason VARCHAR(300) NOT NULL,
+                        count BIGINT NOT NULL DEFAULT 0,
+                        first_seen BIGINT NOT NULL,
+                        last_seen BIGINT NOT NULL,
+                        sample TEXT NOT NULL,
+                        KEY idx_ssl_errors_proxy_last_seen (proxy_id, last_seen),
+                        KEY idx_ssl_errors_proxy_domain (proxy_id, domain, last_seen),
+                        KEY idx_ssl_errors_proxy_category (proxy_id, category, last_seen)
+                    )
+                    """
                 )
-                """
-            )
 
-            self._cleanup_known_false_positives(conn)
+                self._cleanup_known_false_positives(conn)
 
-            # Retention: keep aggregates that have been seen recently.
-            cutoff = _now() - (30 * 24 * 60 * 60)
-            conn.execute("DELETE FROM ssl_errors WHERE last_seen < %s", (cutoff,))
+                # Retention: keep aggregates that have been seen recently.
+                cutoff = _now() - (30 * 24 * 60 * 60)
+                conn.execute("DELETE FROM ssl_errors WHERE last_seen < %s", (cutoff,))
+            self._db_initialized = True
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         days = max(1, int(retention_days or 30))

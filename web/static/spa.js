@@ -14,6 +14,11 @@
     return meta ? (meta.getAttribute('content') || '') : '';
   };
 
+  const getAssetVersion = (root = document) => {
+    const meta = root.querySelector('meta[name="asset-version"]');
+    return meta ? (meta.getAttribute('content') || '') : '';
+  };
+
   const setCsrfToken = (value) => {
     const meta = document.querySelector('meta[name="csrf-token"]');
     if (meta) {
@@ -433,6 +438,13 @@
       const html = await response.text();
       const parsed = new DOMParser().parseFromString(html, 'text/html');
       const nextContainer = getSpaContainer(parsed);
+      const nextAssetVersion = getAssetVersion(parsed);
+      const currentAssetVersion = getAssetVersion(document);
+
+      if (nextAssetVersion && nextAssetVersion !== currentAssetVersion) {
+        window.location.assign(response.url || url);
+        return false;
+      }
 
       if (!nextContainer) {
         // Unexpected response shape; fall back to full navigation.

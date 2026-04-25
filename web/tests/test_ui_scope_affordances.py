@@ -44,9 +44,9 @@ def test_remote_layout_pins_internal_links_and_actions_to_active_proxy(remote_ap
     assert "This tab keeps navigation and form actions pinned to this proxy" in body
     assert 'href="/squid/config?proxy_id=edge-1"' in body
     assert 'href="/live?proxy_id=edge-1"' in body
-    assert 'href="/fleet?proxy_id=edge-1"' in body
+    assert 'href="/proxies?proxy_id=edge-1"' in body
     assert 'id="proxy-id"' in body
-    assert 'Manage fleet' in body
+    assert 'Manage proxies' in body
     assert 'class="nav-user"' not in body
     assert re.search(r'action="/webfilter\?tab=categories(?:&amp;|&)proxy_id=edge-1"', body)
     assert 'data-url="/webfilter/test?proxy_id=edge-1"' in body
@@ -56,11 +56,11 @@ def test_remote_layout_pins_internal_links_and_actions_to_active_proxy(remote_ap
     "path, expected_text",
     [
         ("/squid/config?proxy_id=edge-1", "Selected proxy configuration"),
-        ("/adblock?proxy_id=edge-1", "Fleet subscriptions + selected proxy runtime"),
-        ("/webfilter?proxy_id=edge-1", "Fleet category feed + selected proxy enforcement"),
-        ("/certs?proxy_id=edge-1", "Fleet-wide certificate authority"),
-        ("/administration?proxy_id=edge-1", "Fleet-wide control plane access"),
-        ("/fleet?proxy_id=edge-1", "Fleet-wide inventory and targeting"),
+        ("/adblock?proxy_id=edge-1", "Shared subscriptions + selected proxy runtime"),
+        ("/webfilter?proxy_id=edge-1", "Shared category feed + selected proxy enforcement"),
+        ("/certs?proxy_id=edge-1", "Shared certificate authority"),
+        ("/administration?proxy_id=edge-1", "Shared control-plane access"),
+        ("/proxies?proxy_id=edge-1", "Registered proxy inventory and targeting"),
     ],
 )
 def test_remote_scope_notices_render_on_key_pages(remote_app_module, path: str, expected_text: str):
@@ -133,13 +133,13 @@ def test_remote_pac_page_shows_proxy_pinned_url(remote_app_module):
     assert "http://localhost/proxy.pac?proxy_id=edge-1" in body
 
 
-def test_fleet_page_marks_active_proxy_in_current_tab(remote_app_module):
+def test_proxies_page_marks_active_proxy_in_current_tab(remote_app_module):
     _seed_registry("edge-1", "edge-2")
 
     client = remote_app_module.app.test_client()
     login(client)
 
-    response = client.get("/fleet?proxy_id=edge-1")
+    response = client.get("/proxies?proxy_id=edge-1")
     assert response.status_code == 200
     body = response.data.decode("utf-8", errors="replace")
     assert "Active in this tab" in body

@@ -4,7 +4,8 @@
 {% block title %}Administration · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+    <div class="page-heading">
     <div class="page-hero-copy">
         <span class="page-eyebrow">Access control</span>
         <h1 class="page-title">Administration</h1>
@@ -12,15 +13,20 @@
         <div class="hero-badges">
             <span class="badge">Signed in as {{ current_user }}</span>
             <span class="badge">{{ users|length }} user{{ '' if users|length == 1 else 's' }}</span>
+            <span class="badge">Shared accounts</span>
         </div>
+    </div>
+    <div class="page-actions">
+        <a class="btn ghost" href="{{ url_for('index') }}">Back to status</a>
+    </div>
     </div>
 </section>
 
-{% if remote_control_mode %}
-{% call scope_notice('global', 'Fleet-wide control plane access', 'Admin users are shared across the web control plane, not tied to an individual proxy.') %}
-<div>Changes here affect who can manage the fleet defaults and per-proxy settings from the admin UI.</div>
+<section class="card section-shell">
+{% call scope_notice('global', 'Shared control-plane access', 'Admin users are shared across the web control plane, not tied to an individual proxy.') %}
+<div>Changes here affect who can manage shared settings and per-proxy settings from the admin UI.</div>
 {% endcall %}
-{% endif %}
+</section>
 
 {% if message %}
 <div class="banner {{ 'success' if message_ok else 'error' }}">
@@ -32,6 +38,30 @@
 </div>
 {% endif %}
 
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">Operator account overview</h2>
+        <span class="badge">shared authentication</span>
+    </div>
+    <div class="card-body">
+        <div class="summary-grid">
+            <div class="stat compact-stat">
+                <div class="stat-k">Total users</div>
+                <div class="stat-v">{{ users|length }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Current session</div>
+                <div class="stat-v">{{ current_user }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Scope</div>
+                <div class="stat-v">Shared</div>
+            </div>
+        </div>
+        <div class="surface-note small">Prefer unique operator accounts over a shared login so password resets and audit events stay attributable to the right human.</div>
+    </div>
+</section>
+
 <div class="grid">
     <section class="card split-left">
         <div class="card-header">
@@ -39,7 +69,7 @@
             <span class="badge">Signed in as {{ current_user }}</span>
         </div>
         <div class="card-body">
-            <table class="table">
+            <div class="surface-note small">Rotate passwords in place from the users table, or remove accounts that no longer need access to the admin control plane.</div>
             <div class="table-wrap">
                 <table class="table">
                     <thead>
@@ -106,7 +136,7 @@
                 </div>
             </form>
             <div class="surface-note small">
-                Usernames allow letters, numbers, underscore, dash, dot.
+                Usernames allow letters, numbers, underscore, dash, dot. Use named operator accounts instead of shared credentials wherever possible.
             </div>
         </div>
     </aside>

@@ -3,25 +3,52 @@
 {% block title %}SSL Filtering - Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+  <div class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">TLS bypass rules</span>
     <h1 class="page-title">SSL Filtering</h1>
-    <p class="page-subtitle">
-      {% if remote_control_mode and active_proxy %}
-        Control which clients are exempt from TLS interception on {{ active_proxy.display_name }}.
-      {% else %}
-        Control which clients are exempt from TLS interception (ssl-bump).
-      {% endif %}
-    </p>
+    <p class="page-subtitle">Control which clients are exempt from TLS interception on {{ active_proxy.display_name }}.</p>
+    <div class="hero-badges">
+      <span class="badge">{{ rows|length if rows else 0 }} no-bump entries</span>
+      <span class="badge">TLS splice for listed clients</span>
+    </div>
+  </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
+    <a class="btn ghost" href="{{ url_for('ssl_errors') }}">SSL errors</a>
+  </div>
   </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
+<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'The no-bump CIDRs configured here apply only to ' ~ active_proxy.display_name ~ '.') %}
 <div>This is intentionally per-proxy because different sites or network segments may need different TLS interception bypass lists.</div>
 {% endcall %}
-{% endif %}
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">At a glance</h2>
+    <span class="badge">client-side trust exceptions</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat">
+        <div class="stat-k">No-bump CIDRs</div>
+        <div class="stat-v">{{ rows|length if rows else 0 }}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Proxy behavior</div>
+        <div class="stat-v">Splice</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Best fit</div>
+        <div class="stat-v">Unmanaged</div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <section class="card">
   <div class="card-header">

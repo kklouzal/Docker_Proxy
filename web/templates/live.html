@@ -4,25 +4,31 @@
 {% block title %}Live · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading">
+<section class="card section-shell">
+  <div class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">Traffic insights</span>
     <h1 class="page-title">Live</h1>
-    <p class="page-subtitle">
-      {% if remote_control_mode and active_proxy %}
-        Recent activity aggregated from <span class="mono">access.log</span> and enriched with structured request diagnostics for {{ active_proxy.display_name }}.
-      {% else %}
-        Recent proxy activity aggregated from <span class="mono">access.log</span> and enriched with structured request diagnostics.
-      {% endif %}
-    </p>
+    <p class="page-subtitle">Recent activity aggregated from the structured <span class="mono">access-observe.log</span> stream for {{ active_proxy.display_name }}.</p>
+    <div class="hero-badges">
+      <span class="badge">{{ totals.domain_requests }} requests</span>
+      <span class="badge">{{ transaction_events|length }} traced rows</span>
+      <span class="badge">window {{ window_label }}</span>
+    </div>
+  </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="{{ url_for('ssl_errors', window=window) }}">SSL errors</a>
+    <a class="btn ghost" href="{{ url_for('exclusions') }}">Exclusions</a>
+    <a class="btn ghost" href="{{ url_for('live_export', mode=mode, window=window, q=search) }}">Export CSV</a>
+  </div>
   </div>
 </section>
 
-{% if remote_control_mode and active_proxy %}
+<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'Live activity, cache-miss analysis, and exports on this page come from ' ~ active_proxy.display_name ~ ' only.') %}
 <div>Switch proxies from the header when you want to compare another runtime&apos;s traffic and cache behavior.</div>
 {% endcall %}
-{% endif %}
+</section>
 
 {% if request.args.get('exclude_added') %}
 <div class="banner success">
@@ -84,7 +90,7 @@
   </div>
   <div class="card-body">
     <div class="surface-note small">
-      Percent is relative to all non-cached requests observed (best-effort from <span class="mono">access.log</span>).
+      Percent is relative to all non-cached requests observed (best-effort from <span class="mono">access-observe.log</span>).
       Total non-cached requests: {{ global_nocache_total }}.
     </div>
     <div class="table-wrap"><table class="table">
@@ -163,6 +169,22 @@
         <div>
           <label for="q">Search (domain or client)</label>
           <input id="q" name="q" type="text" placeholder="contains..." value="{{ search }}" />
+        </div>
+      </div>
+
+      <div class="row-2">
+        <div>
+          <label for="tx">Master transaction (optional)</label>
+          <input id="tx" name="tx" type="text" placeholder="e.g. tx123" value="{{ master_xaction }}" />
+        </div>
+        <div>
+          <label for="service">ICAP service family</label>
+          <select id="service" name="service">
+            <option value="" {% if not service %}selected{% endif %}>Any</option>
+            <option value="av" {% if service == 'av' %}selected{% endif %}>AV / ClamAV</option>
+            <option value="adblock" {% if service == 'adblock' %}selected{% endif %}>Adblock</option>
+            <option value="other" {% if service == 'other' %}selected{% endif %}>Other ICAP</option>
+          </select>
         </div>
       </div>
 
@@ -264,7 +286,7 @@
       </form>
     </div>
     <div class="surface-note small">
-      Percent is relative to non-cached requests for this domain (best-effort from <span class="mono">access.log</span>).
+      Percent is relative to non-cached requests for this domain (best-effort from <span class="mono">access-observe.log</span>).
     </div>
     <div class="table-wrap"><table class="table">
       <thead>
@@ -308,7 +330,7 @@
 
     {% if detail == 'nocache' %}
     <div class="surface-note small">
-      Reasons are best-effort from <span class="mono">access.log</span> result codes and may not reflect response headers.
+      Reasons are best-effort from <span class="mono">access-observe.log</span> result codes and may not reflect response headers.
     </div>
     <div class="table-wrap"><table class="table">
       <thead>
@@ -393,11 +415,15 @@
 <section class="card">
   <div class="card-header">
     <h2 class="card-title">Recent diagnostic transactions</h2>
-    <span class="badge">{{ request_events|length }} rows</span>
+    <span class="badge">{{ transaction_events|length }} rows</span>
   </div>
   <div class="card-body">
     <div class="surface-note small">
       Structured records from <span class="mono">access-observe.log</span> are collected into MySQL by default so you can correlate client IPs, master transaction IDs, bump mode, SNI, selected headers, and policy hints without enabling Squid debug logging.
+    </div>
+
+    <div class="surface-note small">
+      Filter by <span class="mono">master_xaction</span> when you want an end-to-end trace, or by ICAP family when you only care about AV/adblock adaptation. Each transaction below includes related ICAP activity when Squid emitted it.
     </div>
 
     <div class="table-wrap"><table class="table">
@@ -409,10 +435,12 @@
           <th>Result</th>
           <th>TLS / policy</th>
           <th>Correlation</th>
+          <th>ICAP activity</th>
+          <th class="num">Action</th>
         </tr>
       </thead>
       <tbody>
-        {% for event in request_events %}
+        {% for event in transaction_events %}
           <tr>
             <td class="num">
               <div class="stack-sm">
@@ -436,19 +464,17 @@
             </td>
             <td>
               <div class="stack-sm">
-                <span class="mono">{{ event.result_code }}</span>
-                {% if event.hierarchy_status %}
-                  <span class="small">{{ event.hierarchy_status }}</span>
-                {% endif %}
-                {% if event.bytes %}
-                  <span class="small">{{ event.bytes }} bytes</span>
-                {% endif %}
+                <span class="badge {{ event.result_tone }}">{{ event.result_code }}</span>
+                <span class="small">{{ event.result_summary }}</span>
+                <span class="small">{{ event.bytes_human }}</span>
               </div>
             </td>
             <td>
               <div class="stack-sm">
-                {% if event.tls_summary %}
-                  <span class="small">{{ event.tls_summary }}</span>
+                {% if event.tls_details %}
+                  {% for detail in event.tls_details %}
+                    <span class="small">{{ detail }}</span>
+                  {% endfor %}
                 {% endif %}
                 {% if event.policy_tags %}
                   <div class="hero-badges">
@@ -456,20 +482,55 @@
                       <span class="badge">{{ tag }}</span>
                     {% endfor %}
                   </div>
-                {% else %}
-                  <span class="small">No policy note matched.</span>
+                {% endif %}
+                {% for header in event.header_details %}
+                  <span class="small text-break"><strong>{{ header.label }}:</strong> {{ header.value }}</span>
+                {% endfor %}
+                {% if not event.policy_tags and not event.header_details and not event.tls_details %}
+                  <span class="small">No extra TLS or policy metadata captured.</span>
                 {% endif %}
               </div>
             </td>
             <td>
               <div class="stack-sm">
                 {% if event.master_xaction %}
-                  <span class="small mono">{{ event.master_xaction }}</span>
+                  <a class="small mono" href="{{ url_for('live', mode=mode, sort=sort, order=order, limit=limit, ip=ip, domain=domain, detail=detail, window=window, q=search, tx=event.master_xaction, service=service) }}">{{ event.master_xaction }}</a>
                 {% else %}
                   <span class="small">No master transaction recorded.</span>
                 {% endif %}
+                <span class="badge {{ event.correlation.tone }}">{{ event.correlation.label }}</span>
+              </div>
+            </td>
+            <td>
+              <div class="stack-sm">
+                {% if event.related_icap %}
+                  {% for icap in event.related_icap %}
+                    <div class="surface-note small">
+                      <div><span class="badge">{{ icap.service_label }}</span> {% if icap.icap_time_ms %}<span>{{ icap.icap_time_ms }} ms</span>{% endif %}</div>
+                      {% if icap.adapt_summary_short %}<div class="text-break">{{ icap.adapt_summary_short }}</div>{% endif %}
+                      {% if icap.policy_tags %}
+                        <div class="hero-badges">
+                          {% for tag in icap.policy_tags %}
+                            <span class="badge">{{ tag }}</span>
+                          {% endfor %}
+                        </div>
+                      {% endif %}
+                    </div>
+                  {% endfor %}
+                {% else %}
+                  <span class="small">No related ICAP events captured.</span>
+                {% endif %}
+              </div>
+            </td>
+            <td class="num">
+              <div class="table-action-stack">
                 {% if event.domain %}
                   <a class="btn" href="{{ url_for('ssl_errors', q=event.domain, window=window) }}">SSL errors</a>
+                {% endif %}
+                {% if event.master_xaction %}
+                  <a class="btn" href="{{ url_for('clamav', window=window, tx=event.master_xaction) }}">ClamAV</a>
+                {% elif event.domain %}
+                  <a class="btn" href="{{ url_for('clamav', window=window, q=event.domain) }}">ClamAV</a>
                 {% endif %}
               </div>
             </td>
@@ -478,9 +539,91 @@
       </tbody>
     </table></div>
 
-    {% if request_events|length == 0 %}
+    {% if transaction_events|length == 0 %}
       <div class="surface-note small">No rich request events were captured in this window yet. Generate traffic through the proxy and refresh.</div>
     {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Traffic facets</h2>
+    <span class="badge">request metadata</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div>
+        <div class="small"><strong>Top user agents</strong></div>
+        <div class="hero-badges">
+          {% for row in live_top_user_agents %}
+            <span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>
+          {% endfor %}
+          {% if not live_top_user_agents %}<span class="small">No user-agent data captured.</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="small"><strong>Bump modes</strong></div>
+        <div class="hero-badges">
+          {% for row in live_top_bump_modes %}
+            <span class="badge">{{ row.label }} · {{ row.count }}</span>
+          {% endfor %}
+          {% if not live_top_bump_modes %}<span class="small">No bump-mode data captured.</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="small"><strong>Server TLS versions</strong></div>
+        <div class="hero-badges">
+          {% for row in live_top_tls_server_versions %}
+            <span class="badge">{{ row.label }} · {{ row.count }}</span>
+          {% endfor %}
+          {% if not live_top_tls_server_versions %}<span class="small">No negotiated TLS versions captured.</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="small"><strong>Policy tags</strong></div>
+        <div class="hero-badges">
+          {% for row in live_top_policy_tags %}
+            <span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>
+          {% endfor %}
+          {% if not live_top_policy_tags %}<span class="small">No policy notes matched in this window.</span>{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Slow paths</h2>
+    <span class="badge">highest latency</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div>
+        <div class="small"><strong>Slowest requests</strong></div>
+        <div class="stack-sm">
+          {% for event in slow_requests %}
+            <div class="surface-note small">
+              <div><span class="mono">{{ event.method }} {{ event.target_display }}</span> · {{ event.duration_ms }} ms</div>
+              <div>{{ event.result_summary }}</div>
+            </div>
+          {% endfor %}
+          {% if not slow_requests %}<div class="small">No slow-request samples captured.</div>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="small"><strong>Slowest ICAP events</strong></div>
+        <div class="stack-sm">
+          {% for event in slow_icap_events %}
+            <div class="surface-note small">
+              <div><span class="badge">{{ event.service_label }}</span> {{ event.icap_time_ms }} ms</div>
+              {% if event.adapt_summary_short %}<div class="text-break">{{ event.adapt_summary_short }}</div>{% endif %}
+            </div>
+          {% endfor %}
+          {% if not slow_icap_events %}<div class="small">No ICAP timing samples captured.</div>{% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 

@@ -11,6 +11,9 @@ x-shared-app-env: &shared-app-env
   MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
   MYSQL_DATABASE: ${MYSQL_DATABASE:-}
   MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
+  MYSQL_CONNECT_TIMEOUT: ${MYSQL_CONNECT_TIMEOUT:-}
+  MYSQL_READ_TIMEOUT: ${MYSQL_READ_TIMEOUT:-}
+  MYSQL_WRITE_TIMEOUT: ${MYSQL_WRITE_TIMEOUT:-}
 
 services:
   admin-ui:
@@ -24,7 +27,6 @@ services:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
     environment:
       <<: *shared-app-env
-      PROXY_CONTROL_MODE: remote
       DISABLE_BACKGROUND: 0
     healthcheck:
       test: ["CMD", "/healthcheck.admin.sh"]
@@ -69,6 +71,8 @@ services:
       DANTE_SERVERS: ${DANTE_SERVERS:-}
       ULIMIT_NOFILE: ${ULIMIT_NOFILE:-}
       WEBFILTER_HELPERS: ${WEBFILTER_HELPERS:-}
+      PROXY_HEARTBEAT_INTERVAL_SECONDS: ${PROXY_HEARTBEAT_INTERVAL_SECONDS:-}
+      PROXY_SYNC_INTERVAL_SECONDS: ${PROXY_SYNC_INTERVAL_SECONDS:-}
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 15s

@@ -212,8 +212,8 @@ def get_squid_mgr_text(section: str, host: str = "127.0.0.1", port: int = 3128) 
     return _run(["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"], env=safe_env)
 
 
-def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access.log", max_lines: int = 5000) -> Dict[str, Optional[float]]:
-    # Best-effort rolling hit rate from recent access.log lines.
+def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access-observe.log", max_lines: int = 5000) -> Dict[str, Optional[float]]:
+    # Best-effort rolling hit rate from recent structured access log lines.
     # Squid default log format typically contains:
     #   ts elapsed client result_code/status bytes method url ...
     # where result_code looks like TCP_HIT/200, TCP_MISS/200, etc.
@@ -230,8 +230,8 @@ def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access.log"
         with open(access_log_path, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
-            # Heuristic: assume avg 200 bytes/line
-            read_size = min(size, max_lines * 220)
+            # Structured diagnostic lines are longer than the old lean access log.
+            read_size = min(size, max_lines * 512)
             f.seek(-read_size, os.SEEK_END)
             chunk = f.read().decode("utf-8", errors="replace")
         lines = chunk.splitlines()[-max_lines:]
@@ -407,7 +407,7 @@ def get_stats() -> Dict[str, Any]:
                 src = "cachemgr"
             else:
                 value = parse_access_log_hit_rate()
-                src = "access.log"
+                src = "access-observe.log"
 
             mgr_available = mgr_5min is not None or mgr_info is not None
             with _CACHE_LOCK:

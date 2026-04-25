@@ -72,6 +72,18 @@ class AdblockArtifactApplication:
     artifact_sha256: str
 
 
+@dataclass(frozen=True)
+class AdblockArtifactMetadata:
+    revision_id: int
+    artifact_sha256: str
+    settings_version: int
+    source_kind: str
+    enabled_lists_json: str
+    created_by: str
+    created_ts: int
+    is_active: bool
+
+
 class AdblockArtifactStore:
     def __init__(self, *, compiled_dir: str | None = None):
         self.compiled_dir = (compiled_dir or os.environ.get("ADBLOCK_COMPILED_DIR") or _DEFAULT_COMPILED_DIR).strip() or _DEFAULT_COMPILED_DIR
@@ -147,6 +159,20 @@ class AdblockArtifactStore:
             artifact_sha256=str(row["artifact_sha256"] or ""),
         )
 
+    def _row_to_metadata(self, row: object | None) -> Optional[AdblockArtifactMetadata]:
+        if not row:
+            return None
+        return AdblockArtifactMetadata(
+            revision_id=int(row["id"] or 0),
+            artifact_sha256=str(row["artifact_sha256"] or ""),
+            settings_version=int(row["settings_version"] or 0),
+            source_kind=str(row["source_kind"] or "compile"),
+            enabled_lists_json=str(row["enabled_lists_json"] or "[]"),
+            created_by=str(row["created_by"] or ""),
+            created_ts=int(row["created_ts"] or 0),
+            is_active=bool(int(row["is_active"] or 0)),
+        )
+
     def get_active_artifact(self) -> Optional[AdblockArtifactRevision]:
         self.init_db()
         with self._connect() as conn:
@@ -159,6 +185,20 @@ class AdblockArtifactStore:
                 """
             ).fetchone()
         return self._row_to_revision(row)
+
+    def get_active_artifact_metadata(self) -> Optional[AdblockArtifactMetadata]:
+        self.init_db()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, artifact_sha256, settings_version, source_kind, enabled_lists_json, created_by, created_ts, is_active
+                FROM adblock_artifact_revisions
+                WHERE is_active=1
+                ORDER BY created_ts DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return self._row_to_metadata(row)
 
     def create_revision(
         self,
@@ -411,10 +451,7 @@ class AdblockArtifactStore:
                         except Exception:
                             pass
                         if bool(result.get("changed")):
-                            if _is_remote_control_mode():
-                                _nudge_registered_proxies(force=False)
-                            else:
-                                apply_active_artifact_locally(force=True, clear_cache=False, compiled_dir=self.compiled_dir)
+                            _nudge_registered_proxies(force=False)
                         sleep_seconds = 5.0
             except Exception:
                 log_exception_throttled(
@@ -425,12 +462,6 @@ class AdblockArtifactStore:
                 )
                 sleep_seconds = error_seconds
             time.sleep(sleep_seconds)
-
-
-def _is_remote_control_mode() -> bool:
-    return (os.environ.get("PROXY_CONTROL_MODE") or "local").strip().lower() == "remote"
-
-
 def _nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
     from services.proxy_client import ProxyClientError, get_proxy_client
     from services.proxy_registry import get_proxy_registry

@@ -6,11 +6,11 @@ Runtime state now targets an **external MySQL 8+ backend**.
 
 The SQLite migration window has closed: the project now supports **MySQL 8+ only**, and runtime services create/use the current schema directly rather than attempting in-place upgrades from legacy layouts.
 
-## Split architecture (admin-ui + proxy)
+## Multi-container architecture (admin-ui + proxy)
 
 The repository now supports a **two-container split**:
 
-- `admin-ui`: Flask/Gunicorn control plane for login, policy editing, fleet visibility, and desired-state management
+- `admin-ui`: Flask/Gunicorn control plane for login, policy editing, proxy visibility, and desired-state management
 - `proxy`: Squid/Dante/c-icap runtime plus a tiny internal management API used only for:
   - health checks
   - immediate config sync from MySQL
@@ -103,7 +103,6 @@ services:
     ports:
       - "0.0.0.0:5000:5000"
     environment:
-      PROXY_CONTROL_MODE: remote
       PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-change-me}
       DATABASE_URL: ${DATABASE_URL:-}
       MYSQL_HOST: ${MYSQL_HOST:-}
@@ -238,7 +237,7 @@ Also confirm:
 Authoritative runtime/admin state now lives in the configured external MySQL database.
 
 The container persists operational state under `/var/lib/squid-flask-proxy` (backed by the `proxy_data` named volume in the default Compose setup), including:
-- Policy artifacts and caches (compiled adblock/web filter files, cached local runtime assets)
+- Policy artifacts and caches (compiled adblock/web filter files, cached proxy-runtime assets)
 - Adblock compiled lists / caches
 
 Squid cache and SSL database use separate named volumes by default:
@@ -284,6 +283,7 @@ Common environment variables:
 - `DATABASE_URL`: optional full DSN for the external database (for example `mysql+pymysql://user:pass@host:3306/squid_proxy`). SQLite DSNs are no longer supported.
 - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`: discrete MySQL connection settings.
 - `MYSQL_CREATE_DATABASE=1|0`: auto-create the configured MySQL database if the user has permission.
+- `MYSQL_CONNECT_TIMEOUT`, `MYSQL_READ_TIMEOUT`, `MYSQL_WRITE_TIMEOUT`: MySQL client connect/read/write timeouts used by the proxy and admin services.
 - `DISABLE_IPV6=1|0`: when enabled, the container disables IPv6 via sysctls, normalizes local binds to IPv4, and the Compose examples publish ports on `0.0.0.0` only.
 - `FLASK_SECRET_KEY`: recommended; keeps login sessions stable across restarts.
 - `SESSION_COOKIE_SECURE=1`: mark cookies Secure (use when UI is served over HTTPS).
@@ -309,7 +309,9 @@ Common environment variables:
 - `DANTE_SESSION_THROTTLE`: optional rate-limit (`connections/seconds`, e.g. `50/1`).
 - `ULIMIT_NOFILE`: optional file-descriptor limit for high concurrency.
 - `WEBFILTER_HELPERS`: explicit Squid external ACL helper count for web filtering. Leave blank to derive from Squid workers (default `2 × workers`).
-- `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default `1`; rises to `2` only when the admin UI thread count is scaled up).
+- `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default now scales with local container concurrency; expect roughly `4-8` in the proxy container unless you override it).
+- `PROXY_HEARTBEAT_INTERVAL_SECONDS`: proxy heartbeat cadence (default `90`).
+- `PROXY_SYNC_INTERVAL_SECONDS`: proxy sync cadence for pulling active state from MySQL (default `30`).
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
 - `PAC_UPSTREAM`: optional upstream PAC fallback URL. Leave blank for the default proxy-local pre-rendered PAC serving path.
 
@@ -322,7 +324,7 @@ Admin UI (Gunicorn) tuning:
 
 ## Features (current)
 
-- **Operational visibility** pages for proxy health, live traffic, SSL/TLS error buckets, SOCKS activity, and fleet status.
+- **Operational visibility** pages for proxy health, live traffic, SSL/TLS error buckets, SOCKS activity, and proxy inventory.
 - **Policy controls** from the web UI:
   - Squid config editor (with safe defaults)
   - Exclusions (domain/CIDR policies for problematic destinations)
@@ -409,6 +411,7 @@ How it works:
 - When web filtering is enabled, the container downloads/compiles domain categories into MySQL-backed `webcat_*` tables automatically.
 - Refresh schedule: first download happens immediately on enable, then once per day at local midnight.
 - Squid uses an `external_acl_type` helper to check the destination domain against the selected blocked categories.
+- The helper now serves lookups from a proxy-local SQLite snapshot that is refreshed from MySQL in the background, so steady-state web-filter decisions do not depend on per-request MySQL round trips.
 - When blocked, Squid returns a custom error page (`ERR_WEBFILTER_BLOCKED`).
 
 UI tabs:
@@ -440,12 +443,15 @@ This project supports ICAP-based antivirus scanning using **ClamAV**, implemente
 
 Behavior:
 - Squid is configured with `bypass=on` for the AV ICAP service (fail-open if AV is unavailable).
+- AV scanning applies to inbound origin responses (`RESPMOD`), not to outbound client uploads/requests.
 
 Topology / startup behavior:
 - AV scanning is served by c-icap as a **RESPMOD** service at `icap://127.0.0.1:${CICAP_AV_PORT:-14001}/avrespmod`.
 - The proxy container runs two c-icap instances: the adblock instance binds immediately, while the AV instance waits for a reachable remote `clamd` backend.
 - The local AV c-icap instance talks to a remote ClamAV daemon at `CLAMD_HOST:CLAMD_PORT`.
 - The AV instance does not write a per-transaction access log by default; only the adblock REQMOD instance keeps request logging for the UI/event pipeline.
+- Squid only routes `GET` response bodies through the AV RESPMOD path by default; `HEAD` responses are no longer adapted because they do not carry a body to scan.
+- The bundled `virus_scan` settings start streaming after `32K` and allow up to `99%` of already-received data to flow while the scan continues, which keeps browsing responsive while still reserving a final tail for the scanner to complete before the client receives 100% of the payload.
 
 Remote ClamAV host:
 - Run `clamd` (and optional `freshclam`) on a separate trusted host/container.
@@ -458,7 +464,7 @@ Configuration:
 - c-icap module configuration is provided in `docker/clamd_mod.conf` and `docker/virus_scan.conf`.
 
 Operator workflow:
-- In split mode, the **ClamAV** tab is intentionally per-proxy.
+- The **ClamAV** tab is intentionally per-proxy.
 - The page separates three concerns so operators can troubleshoot accurately:
   - **Policy**: whether Squid currently routes responses through the AV ICAP service
   - **AV c-icap service**: whether the proxy-local `avrespmod` listener is reachable

@@ -15,7 +15,6 @@ def import_remote_app_module(
 
     apply_test_environment(
         {
-            "PROXY_CONTROL_MODE": "remote",
             "DISABLE_BACKGROUND": "1",
             "PROXY_MANAGEMENT_TOKEN": "test-token",
             "DEFAULT_PROXY_ID": "edge-1",
