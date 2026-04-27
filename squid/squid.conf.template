@@ -2,7 +2,7 @@ http_port 0.0.0.0:3128 ssl-bump \
 	cert=/etc/squid/ssl/certs/ca.crt \
 	key=/etc/squid/ssl/certs/ca.key \
 	generate-host-certificates=on \
-	dynamic_cert_mem_cache_size=256MB
+	dynamic_cert_mem_cache_size=128MB
 
 # SMP mode (multi-process). The entrypoint auto-tunes this upward at runtime when
 # explicit overrides are not provided.
@@ -14,7 +14,7 @@ http_access deny manager
 
 # Squid helper for on-the-fly certificate generation (ssl-bump)
 sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 16MB
-sslcrtd_children 8
+sslcrtd_children 4 startup=2 idle=1 queue-size=32
 
 # Basic bump rules (MITM). Adjust for your policy.
 acl step1 at_step SslBump1
@@ -31,11 +31,20 @@ ssl_bump splice steam_sites
 ssl_bump bump all
 
 # Cache settings
-cache_dir ufs /var/spool/squid 10000 16 256
-maximum_object_size 64 MB
-maximum_object_size_in_memory 1024 KB
+# Rock is the only SMP-aware cache_dir type in Squid 7.x and is a better default
+# for this proxy profile than legacy ufs when operators scale workers beyond 1.
+cache_dir rock /var/spool/squid 10000 slot-size=32768
+maximum_object_size 128 MB
+maximum_object_size_in_memory 2048 KB
 minimum_object_size 0 KB
-cache_mem 96 MB
+cache_mem 256 MB
+memory_cache_mode always
+memory_cache_shared on
+shared_transient_entries_limit 32768
+
+# Favor hit-rate-oriented eviction over plain LRU for this forward-proxy workload.
+cache_replacement_policy heap GDSF
+memory_replacement_policy heap GDSF
 
 # Connection behavior
 # Image-heavy pages create many parallel requests; keeping connections persistent
@@ -43,11 +52,23 @@ cache_mem 96 MB
 client_persistent_connections on
 server_persistent_connections on
 buffered_logs on
+memory_pools on
+memory_pools_limit 64 MB
+shared_memory_locking off
+max_open_disk_fds 0
+store_avg_object_size 32 KB
+store_objects_per_bucket 16
 max_filedescriptors 65535
 
 # Keep persistent upstream connections warm long enough for image/gallery bursts
 # and enable conservative request pipelining where clients/origins support it.
-pconn_timeout 120 seconds
+client_idle_pconn_timeout 120 seconds
+server_idle_pconn_timeout 120 seconds
+pconn_lifetime 0 seconds
+persistent_connection_after_error on
+detect_broken_pconn off
+connect_retries 1
+forward_max_tries 10
 client_lifetime 3600 seconds
 pipeline_prefetch 1
 
@@ -62,6 +83,8 @@ connect_timeout 90 seconds
 request_timeout 30 minutes
 read_timeout 30 minutes
 forward_timeout 30 minutes
+request_start_timeout 60 seconds
+write_timeout 15 minutes
 
 # Range/resumable download support.
 # A bounded limit lets Squid cache range responses for files up to this size
@@ -78,9 +101,29 @@ read_ahead_gap 256 KB
 # Conservative cache watermarks to reduce churn.
 cache_swap_low 90
 cache_swap_high 95
+minimum_expiry_time 60 seconds
+max_stale 7 days
+refresh_all_ims off
 
 # Collapse concurrent requests for the same object.
 collapsed_forwarding on
+
+# Preserve client conditional requests on cache MISS by default. Operators can
+# disable this from the UI when warming a mostly empty cache faster matters more
+# than forwarding the original client revalidation semantics.
+cache_miss_revalidate on
+
+# Resolver and DNS cache tuning.
+dns_timeout 15 seconds
+dns_retransmit_interval 5 seconds
+ipcache_size 8192
+ipcache_low 90
+ipcache_high 95
+fqdncache_size 8192
+
+# TLS session reuse for the origin-facing side of bumped connections.
+sslproxy_session_ttl 600 seconds
+sslproxy_session_cache_size 32 MB
 
 # Cache-first behavior for image-heavy browsing/download bursts.
 # Keep fetching cacheable objects even if the client gives up so retries do not
@@ -178,9 +221,17 @@ cache_store_log none
 icap_enable on
 icap_send_client_ip on
 icap_send_client_username off
+icap_persistent_connections on
+# Let ICAP services make early allow/block decisions without always waiting for
+# full bodies. Squid uses preview only when the service requests it via OPTIONS.
+icap_preview_enable on
+icap_preview_size 1024 KB
+icap_default_options_ttl 300
+icap_service_failure_limit 10 in 30 seconds
+icap_service_revival_delay 60 seconds
 # Allow slower ICAP/ClamAV responses before Squid aborts; reduces truncated bodies on large pages.
-icap_connect_timeout 60 seconds
-icap_io_timeout 60 seconds
+icap_connect_timeout 15 seconds
+icap_io_timeout 300 seconds
 # Generated at container start from $SQUID_WORKERS.
 include /etc/squid/conf.d/20-icap.conf
 

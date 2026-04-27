@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 from services.db import connect, table_exists
+from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_int as _env_int, now_ts as _now
+
 _DEFAULT_SOURCE_URL = "https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz"
 _DEFAULT_BLOCKED_CATEGORIES: List[str] = [
     "adult",
@@ -59,6 +61,8 @@ class WebFilterSettings:
 class WebFilterMaterializedState:
     include_text: str
     whitelist_text: str
+
+
 def _next_midnight_ts(now: Optional[int] = None) -> int:
     current = int(now if now is not None else _now())
     local = time.localtime(current)
@@ -398,17 +402,11 @@ class WebFilterStoreBase:
         )
 
     def apply_squid_include(self) -> None:
-        include_dir = os.path.dirname(self.squid_include_path)
-        if include_dir:
-            os.makedirs(include_dir, exist_ok=True)
-        whitelist_dir = os.path.dirname(self.whitelist_path)
-        if whitelist_dir:
-            os.makedirs(whitelist_dir, exist_ok=True)
         state = self.render_materialized_state()
-        with open(self.whitelist_path, "w", encoding="utf-8") as whitelist_file:
-            whitelist_file.write(state.whitelist_text)
-        with open(self.squid_include_path, "w", encoding="utf-8") as include_file:
-            include_file.write(state.include_text)
+        write_managed_text_files(
+            (self.whitelist_path, state.whitelist_text),
+            (self.squid_include_path, state.include_text),
+        )
 
 
 class ProxyWebFilterStore(WebFilterStoreBase):

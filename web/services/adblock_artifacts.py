@@ -18,6 +18,7 @@ from typing import Any, Optional
 from services.db import connect
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.proxy_sync import nudge_registered_proxies
 from services.runtime_helpers import env_int as _env_int, now_ts as _now
 
 
@@ -451,7 +452,7 @@ class AdblockArtifactStore:
                         except Exception:
                             pass
                         if bool(result.get("changed")):
-                            _nudge_registered_proxies(force=False)
+                            nudge_registered_proxies(force=False)
                         sleep_seconds = 5.0
             except Exception:
                 log_exception_throttled(
@@ -462,26 +463,6 @@ class AdblockArtifactStore:
                 )
                 sleep_seconds = error_seconds
             time.sleep(sleep_seconds)
-def _nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
-    from services.proxy_client import ProxyClientError, get_proxy_client
-    from services.proxy_registry import get_proxy_registry
-
-    proxies = get_proxy_registry().list_proxies()
-    if not proxies:
-        return 0, 0
-
-    client = get_proxy_client()
-    ok_count = 0
-    for proxy in proxies:
-        try:
-            result = client.sync_proxy(proxy.proxy_id, force=force)
-        except ProxyClientError:
-            continue
-        if bool(result.get("ok", False)):
-            ok_count += 1
-    return len(proxies), ok_count
-
-
 def _compile_current_lists(*, lists_dir: str, out_dir: str) -> None:
     from tools import adblock_compile  # type: ignore
 

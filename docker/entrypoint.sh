@@ -92,6 +92,20 @@ sanitize_positive_int() {
     esac
 }
 
+sanitize_nonnegative_int() {
+    raw="$1"
+    case "$raw" in
+        ''|*[!0-9]*) printf '' ;;
+        *) printf '%s' "$raw" ;;
+    esac
+}
+
+config_has_directive() {
+    file_path="$1"
+    key="$2"
+    grep -qiE "^[[:space:]]*${key}[[:space:]]+" "$file_path" 2>/dev/null
+}
+
 if [ -z "${DB_POOL_MAX_IDLE_SECONDS:-}" ]; then
     export DB_POOL_MAX_IDLE_SECONDS=30
 fi
@@ -102,7 +116,7 @@ if [ -z "${LIVE_STATS_COMMIT_INTERVAL_SECONDS:-}" ]; then
     export LIVE_STATS_COMMIT_INTERVAL_SECONDS=3.0
 fi
 if [ -z "${LIVE_STATS_POLL_INTERVAL_SECONDS:-}" ]; then
-    export LIVE_STATS_POLL_INTERVAL_SECONDS=0.75
+    export LIVE_STATS_POLL_INTERVAL_SECONDS=2.0
 fi
 if [ -z "${DIAGNOSTIC_COMMIT_BATCH:-}" ]; then
     export DIAGNOSTIC_COMMIT_BATCH=400
@@ -111,7 +125,7 @@ if [ -z "${DIAGNOSTIC_COMMIT_INTERVAL_SECONDS:-}" ]; then
     export DIAGNOSTIC_COMMIT_INTERVAL_SECONDS=3.0
 fi
 if [ -z "${DIAGNOSTIC_POLL_INTERVAL_SECONDS:-}" ]; then
-    export DIAGNOSTIC_POLL_INTERVAL_SECONDS=0.75
+    export DIAGNOSTIC_POLL_INTERVAL_SECONDS=2.0
 fi
 if [ -z "${SOCKS_COMMIT_BATCH:-}" ]; then
     export SOCKS_COMMIT_BATCH=300
@@ -120,7 +134,7 @@ if [ -z "${SOCKS_COMMIT_INTERVAL_SECONDS:-}" ]; then
     export SOCKS_COMMIT_INTERVAL_SECONDS=3.0
 fi
 if [ -z "${SOCKS_POLL_INTERVAL_SECONDS:-}" ]; then
-    export SOCKS_POLL_INTERVAL_SECONDS=1.0
+    export SOCKS_POLL_INTERVAL_SECONDS=2.0
 fi
 if [ -z "${SSL_ERRORS_COMMIT_BATCH:-}" ]; then
     export SSL_ERRORS_COMMIT_BATCH=300
@@ -129,7 +143,7 @@ if [ -z "${SSL_ERRORS_COMMIT_INTERVAL_SECONDS:-}" ]; then
     export SSL_ERRORS_COMMIT_INTERVAL_SECONDS=3.0
 fi
 if [ -z "${SSL_ERRORS_POLL_INTERVAL_SECONDS:-}" ]; then
-    export SSL_ERRORS_POLL_INTERVAL_SECONDS=1.0
+    export SSL_ERRORS_POLL_INTERVAL_SECONDS=2.0
 fi
 if [ -z "${STATS_CACHE_DIR_SIZE_TTL_SECONDS:-}" ]; then
     export STATS_CACHE_DIR_SIZE_TTL_SECONDS=300
@@ -154,11 +168,26 @@ apply_squid_perf_tuning() {
     fi
 
     replace_or_append_config_line "$file_path" "workers" "$SQUID_WORKERS"
-    replace_or_append_config_line "$file_path" "cache_mem" "$SQUID_CACHE_MEM_MB MB"
-    replace_or_append_config_line "$file_path" "sslcrtd_children" "$SQUID_SSLCRTD_CHILDREN"
-    replace_or_append_config_line "$file_path" "max_filedescriptors" "$SQUID_MAX_FILEDESCRIPTORS"
-    replace_or_append_config_line "$file_path" "buffered_logs" "on"
-    sed -i -E "s#(dynamic_cert_mem_cache_size=)[0-9]+MB#\1${SQUID_DYNAMIC_CERT_MEM_CACHE_MB}MB#I" "$file_path" || true
+
+    if [ -n "${EXPLICIT_SQUID_CACHE_MEM_MB:-}" ] || ! config_has_directive "$file_path" "cache_mem"; then
+        replace_or_append_config_line "$file_path" "cache_mem" "$SQUID_CACHE_MEM_MB MB"
+    fi
+
+    if [ -n "${EXPLICIT_SQUID_SSLCRTD_CHILDREN:-}" ] || ! config_has_directive "$file_path" "sslcrtd_children"; then
+        replace_or_append_config_line "$file_path" "sslcrtd_children" "$SQUID_SSLCRTD_CHILDREN"
+    fi
+
+    if [ -n "${EXPLICIT_SQUID_MAX_FILEDESCRIPTORS:-}" ] || ! config_has_directive "$file_path" "max_filedescriptors"; then
+        replace_or_append_config_line "$file_path" "max_filedescriptors" "$SQUID_MAX_FILEDESCRIPTORS"
+    fi
+
+    if ! config_has_directive "$file_path" "buffered_logs"; then
+        replace_or_append_config_line "$file_path" "buffered_logs" "on"
+    fi
+
+    if [ -n "${EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ] || ! grep -qi "dynamic_cert_mem_cache_size=" "$file_path" 2>/dev/null; then
+        sed -i -E "s#(dynamic_cert_mem_cache_size=)[0-9]+MB#\1${SQUID_DYNAMIC_CERT_MEM_CACHE_MB}MB#I" "$file_path" || true
+    fi
 }
 
 python3 /app/tools/adblock_compile.py \
@@ -203,6 +232,10 @@ fi
 #   3) current config/template value
 #   4) safe fallback of 1
 EXPLICIT_SQUID_WORKERS="$(sanitize_positive_int "${SQUID_WORKERS:-}")"
+EXPLICIT_SQUID_CACHE_MEM_MB="$(sanitize_positive_int "${SQUID_CACHE_MEM_MB:-}")"
+EXPLICIT_SQUID_SSLCRTD_CHILDREN="$(sanitize_positive_int "${SQUID_SSLCRTD_CHILDREN:-}")"
+EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(sanitize_nonnegative_int "${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}")"
+EXPLICIT_SQUID_MAX_FILEDESCRIPTORS="$(sanitize_positive_int "${SQUID_MAX_FILEDESCRIPTORS:-}")"
 PERSISTED_SQUID_WORKERS="$(extract_squid_workers_from_file "$PERSISTED_SQUID_CONF_PATH")"
 CONFIG_SQUID_WORKERS="$(extract_squid_workers_from_file /etc/squid/squid.conf)"
 
@@ -220,16 +253,24 @@ export SQUID_WORKERS="$WORKERS"
 
 # Derive the rest of the process/helper counts from the resolved Squid worker count
 # unless the user explicitly overrides them.
-if [ -z "${SQUID_CACHE_MEM_MB:-}" ]; then
+if [ -n "$EXPLICIT_SQUID_CACHE_MEM_MB" ]; then
+    export SQUID_CACHE_MEM_MB="$EXPLICIT_SQUID_CACHE_MEM_MB"
+elif [ -z "${SQUID_CACHE_MEM_MB:-}" ]; then
     export SQUID_CACHE_MEM_MB=256
 fi
-if [ -z "${SQUID_SSLCRTD_CHILDREN:-}" ]; then
+if [ -n "$EXPLICIT_SQUID_SSLCRTD_CHILDREN" ]; then
+    export SQUID_SSLCRTD_CHILDREN="$EXPLICIT_SQUID_SSLCRTD_CHILDREN"
+elif [ -z "${SQUID_SSLCRTD_CHILDREN:-}" ]; then
     export SQUID_SSLCRTD_CHILDREN="$(recommend_sslcrtd_children "$WORKERS")"
 fi
-if [ -z "${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ]; then
+if [ -n "$EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB" ]; then
+    export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB"
+elif [ -z "${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ]; then
     export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(recommend_dynamic_cert_cache_mb "$WORKERS")"
 fi
-if [ -z "${SQUID_MAX_FILEDESCRIPTORS:-}" ]; then
+if [ -n "$EXPLICIT_SQUID_MAX_FILEDESCRIPTORS" ]; then
+    export SQUID_MAX_FILEDESCRIPTORS="$EXPLICIT_SQUID_MAX_FILEDESCRIPTORS"
+elif [ -z "${SQUID_MAX_FILEDESCRIPTORS:-}" ]; then
     export SQUID_MAX_FILEDESCRIPTORS="$(recommend_nofile "$WORKERS")"
 fi
 if [ -z "${ULIMIT_NOFILE:-}" ]; then

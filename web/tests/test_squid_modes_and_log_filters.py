@@ -148,12 +148,24 @@ def test_repo_template_includes_cache_first_defaults():
     repo_root = Path(__file__).resolve().parents[2]
     text = (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8")
 
-    assert "pconn_timeout 120 seconds" in text
+    assert "cache_dir rock /var/spool/squid 10000 slot-size=32768" in text
+    assert "cache_mem 256 MB" in text
+    assert "memory_cache_mode always" in text
+    assert "memory_cache_shared on" in text
+    assert "shared_transient_entries_limit 32768" in text
+    assert "cache_replacement_policy heap GDSF" in text
+    assert "memory_replacement_policy heap GDSF" in text
+    assert "cache_miss_revalidate on" in text
+    assert "client_idle_pconn_timeout 120 seconds" in text
+    assert "server_idle_pconn_timeout 120 seconds" in text
     assert "client_lifetime 3600 seconds" in text
     assert "pipeline_prefetch 1" in text
     assert "quick_abort_min 0 KB" in text
     assert "quick_abort_max 0 KB" in text
     assert "quick_abort_pct 100" in text
+    assert "icap_preview_enable on" in text
+    assert "sslproxy_session_ttl 600 seconds" in text
+    assert "icap_service_failure_limit 10 in 30 seconds" in text
 
 
 def test_squid_controller_normalize_config_text_adds_default_observability_lines():
@@ -183,3 +195,148 @@ http_access allow all
     assert "note ssl_exception steam steam_sites" in text
     assert "note cache_bypass auth has_auth" in text
     assert "note cache_bypass cookie has_cookie" in text
+
+
+def test_squid_controller_parses_new_perf_tunables():
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+    options = ctl.get_tunable_options(
+        """
+cache_dir rock /var/spool/squid 10000 slot-size=32768 swap-timeout=250 max-swap-rate=1500
+memory_cache_mode disk
+memory_cache_shared off
+shared_transient_entries_limit 65536
+cache_miss_revalidate off
+server_idle_pconn_timeout 150 seconds
+client_idle_pconn_timeout 75 seconds
+connect_retries 2
+forward_max_tries 12
+dns_retransmit_interval 7 seconds
+ipcache_low 80
+ipcache_high 92
+sslcrtd_children 12 startup=3 idle=2 queue-size=96
+http_port 0.0.0.0:3128 ssl-bump dynamic_cert_mem_cache_size=256MB
+dns_packet_max 1232
+sslproxy_session_ttl 900
+sslproxy_session_cache_size 16 MB
+icap_persistent_connections off
+icap_default_options_ttl 120
+icap_service_failure_limit 5 in 45 seconds
+icap_service_revival_delay 90 seconds
+shared_memory_locking on
+cpu_affinity_map process_numbers=1,2 cores=1,3
+max_open_disk_fds 512
+""".strip()
+    )
+
+    assert options["cache_dir_type"] == "rock"
+    assert options["cache_dir_rock_slot_size_kb"] == 32
+    assert options["cache_dir_rock_swap_timeout_ms"] == 250
+    assert options["cache_dir_rock_max_swap_rate"] == 1500
+    assert options["memory_cache_mode"] == "disk"
+    assert options["memory_cache_shared"] is False
+    assert options["shared_transient_entries_limit"] == 65536
+    assert options["cache_miss_revalidate"] is False
+    assert options["server_idle_pconn_timeout_seconds"] == 150
+    assert options["client_idle_pconn_timeout_seconds"] == 75
+    assert options["connect_retries"] == 2
+    assert options["forward_max_tries"] == 12
+    assert options["dns_retransmit_interval_seconds"] == 7
+    assert options["ipcache_low"] == 80
+    assert options["ipcache_high"] == 92
+    assert options["sslcrtd_children"] == 12
+    assert options["sslcrtd_children_startup"] == 3
+    assert options["sslcrtd_children_idle"] == 2
+    assert options["sslcrtd_children_queue_size"] == 96
+    assert options["dynamic_cert_mem_cache_size_mb"] == 256
+    assert options["dns_packet_max"] == 1232
+    assert options["sslproxy_session_ttl_seconds"] == 900
+    assert options["sslproxy_session_cache_size_mb"] == 16
+    assert options["icap_persistent_connections"] is False
+    assert options["icap_default_options_ttl_seconds"] == 120
+    assert options["icap_service_failure_limit"] == 5
+    assert options["icap_service_failure_limit_window_seconds"] == 45
+    assert options["icap_service_revival_delay_seconds"] == 90
+    assert options["shared_memory_locking"] is True
+    assert options["cpu_affinity_map"] == "process_numbers=1,2 cores=1,3"
+    assert options["max_open_disk_fds"] == 512
+
+
+def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+
+    rendered = ctl.generate_config_from_template(
+        {
+            "cache_dir_type": "ufs",
+            "cache_dir_ufs_l1": 32,
+            "cache_dir_ufs_l2": 512,
+            "memory_cache_mode": "disk",
+            "memory_cache_shared_on": False,
+            "shared_transient_entries_limit": 65536,
+            "server_idle_pconn_timeout_seconds": 150,
+            "client_idle_pconn_timeout_seconds": 75,
+            "connect_retries": 2,
+            "forward_max_tries": 12,
+            "dns_retransmit_interval_seconds": 7,
+            "ipcache_low": 80,
+            "ipcache_high": 92,
+            "sslcrtd_children": 12,
+            "sslcrtd_children_startup": 3,
+            "sslcrtd_children_idle": 2,
+            "sslcrtd_children_queue_size": 96,
+            "dynamic_cert_mem_cache_size_mb": 256,
+            "dns_packet_max": "none",
+            "sslproxy_session_ttl_seconds": 900,
+            "sslproxy_session_cache_size_mb": 16,
+            "icap_persistent_connections_on": False,
+            "icap_default_options_ttl_seconds": 120,
+            "icap_service_failure_limit": 5,
+            "icap_service_failure_limit_window_seconds": 45,
+            "icap_service_revival_delay_seconds": 90,
+            "memory_pools_limit_mb": "none",
+            "shared_memory_locking_on": True,
+            "cpu_affinity_map": "process_numbers=1,2 cores=1,3",
+            "max_open_disk_fds": 512,
+            "cache_miss_revalidate_on": False,
+            "icap_preview_enable_on": True,
+        }
+    )
+
+    assert "cache_dir ufs /var/spool/squid 10000 32 512" in rendered
+    assert "memory_cache_mode disk" in rendered
+    assert "memory_cache_shared off" in rendered
+    assert "shared_transient_entries_limit 65536" in rendered
+    assert "server_idle_pconn_timeout 150 seconds" in rendered
+    assert "client_idle_pconn_timeout 75 seconds" in rendered
+    assert "connect_retries 2" in rendered
+    assert "forward_max_tries 12" in rendered
+    assert "dns_retransmit_interval 7 seconds" in rendered
+    assert "ipcache_low 80" in rendered
+    assert "ipcache_high 92" in rendered
+    assert "sslcrtd_children 12 startup=3 idle=2 queue-size=96" in rendered
+    assert "dynamic_cert_mem_cache_size=256MB" in rendered
+    assert "dns_packet_max none" in rendered
+    assert "sslproxy_session_ttl 900 seconds" in rendered
+    assert "sslproxy_session_cache_size 16 MB" in rendered
+    assert "icap_persistent_connections off" in rendered
+    assert "icap_default_options_ttl 120" in rendered
+    assert "icap_service_failure_limit 5 in 45 seconds" in rendered
+    assert "icap_service_revival_delay 90 seconds" in rendered
+    assert "memory_pools_limit none" in rendered
+    assert "shared_memory_locking on" in rendered
+    assert "cpu_affinity_map process_numbers=1,2 cores=1,3" in rendered
+    assert "max_open_disk_fds 512" in rendered
+    assert "cache_miss_revalidate off" in rendered
+    assert "icap_preview_enable on" in rendered

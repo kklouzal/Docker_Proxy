@@ -27,6 +27,7 @@ from services.proxy_client import ProxyClientError, get_proxy_client
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, check_dante_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_registry import get_proxy_registry
+from services.proxy_sync import nudge_registered_proxies
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.errors import public_error_message
@@ -693,24 +694,6 @@ def _trigger_proxy_cache_clear() -> tuple[bool, str]:
         return False, str(exc)
 
 
-def _nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
-    """Best-effort sync request across all registered proxies."""
-    proxies = get_proxy_registry().list_proxies()
-    if not proxies:
-        return 0, 0
-
-    client = get_proxy_client()
-    ok_count = 0
-    for proxy in proxies:
-        try:
-            result = client.sync_proxy(proxy.proxy_id, force=force)
-        except ProxyClientError:
-            continue
-        if bool(result.get('ok', False)):
-            ok_count += 1
-    return len(proxies), ok_count
-
-
 def _publish_certificate_bundle_remote(bundle, *, original_filename: str = '') -> tuple[bool, str]:
     revision = get_certificate_bundles().create_revision(
         bundle,
@@ -718,7 +701,7 @@ def _publish_certificate_bundle_remote(bundle, *, original_filename: str = '') -
         original_filename=(original_filename or '')[:255],
         activate=True,
     )
-    attempted, ok_count = _nudge_registered_proxies(force=True)
+    attempted, ok_count = nudge_registered_proxies(force=True)
     if attempted == 0:
         detail = (
             f'Certificate revision {revision.revision_id} saved. '

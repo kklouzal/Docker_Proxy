@@ -7,8 +7,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from services.db import connect
+from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import now_ts as _now
+
+
 @dataclass(frozen=True)
 class SslFilterSettings:
     nobump_cidrs: List[Tuple[str, int]]
@@ -115,17 +118,11 @@ class SslFilterStore:
 
     def apply_squid_include(self) -> None:
         """(Re)generate the Squid include file for ssl_bump splice policy."""
-        include_dir = os.path.dirname(self.squid_include_path)
-        if include_dir:
-            os.makedirs(include_dir, exist_ok=True)
-        list_dir = os.path.dirname(self.nobump_list_path)
-        if list_dir:
-            os.makedirs(list_dir, exist_ok=True)
         state = self.render_materialized_state()
-        with open(self.nobump_list_path, "w", encoding="utf-8") as f:
-            f.write(state.list_text)
-        with open(self.squid_include_path, "w", encoding="utf-8") as f:
-            f.write(state.include_text)
+        write_managed_text_files(
+            (self.nobump_list_path, state.list_text),
+            (self.squid_include_path, state.include_text),
+        )
 
 
 _store: Optional[SslFilterStore] = None

@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 _LOCK_FD: Optional[int] = None
 
 
+def _close_lock_fd(fd: int, *, log_key: str, message: str) -> None:
+    try:
+        os.close(fd)
+    except Exception:
+        log_exception_throttled(
+            logger,
+            log_key,
+            interval_seconds=300.0,
+            message=message,
+        )
+
+
 def acquire_background_lock() -> bool:
     """Best-effort multi-process guard for background workers.
 
@@ -56,38 +68,26 @@ def acquire_background_lock() -> bool:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
         except BlockingIOError:
-            try:
-                os.close(fd)
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "background_guard.close.blocking",
-                    interval_seconds=300.0,
-                    message="Failed to close background lock fd after contention",
-                )
+            _close_lock_fd(
+                fd,
+                log_key="background_guard.close.blocking",
+                message="Failed to close background lock fd after contention",
+            )
             return False
         except Exception:
-            try:
-                os.close(fd)
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "background_guard.close.flock_error",
-                    interval_seconds=300.0,
-                    message="Failed to close background lock fd after flock error",
-                )
+            _close_lock_fd(
+                fd,
+                log_key="background_guard.close.flock_error",
+                message="Failed to close background lock fd after flock error",
+            )
             return True
     except Exception:
         # Non-POSIX environment (or locking unavailable): allow background.
-        try:
-            os.close(fd)
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "background_guard.close.non_posix",
-                interval_seconds=300.0,
-                message="Failed to close background lock fd in non-POSIX environment",
-            )
+        _close_lock_fd(
+            fd,
+            log_key="background_guard.close.non_posix",
+            message="Failed to close background lock fd in non-POSIX environment",
+        )
         return True
 
     global _LOCK_FD

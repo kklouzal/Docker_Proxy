@@ -154,6 +154,16 @@ class SquidController:
         except Exception:
             return None
 
+    def _extract_cache_dir_lines(self, config_text: str) -> tuple[str, ...]:
+        lines: list[str] = []
+        for line in (config_text or "").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.lower().startswith("cache_dir "):
+                lines.append(stripped)
+        return tuple(lines)
+
     def _decode_completed(self, proc: Any) -> str:
         stdout = getattr(proc, "stdout", b"")
         stderr = getattr(proc, "stderr", b"")
@@ -183,7 +193,7 @@ class SquidController:
     def _get_first_cache_dir_path(self, config_text: Optional[str] = None) -> str:
         text = config_text if config_text is not None else self.get_current_config()
         try:
-            match = re.search(r"^\s*cache_dir\s+ufs\s+(\S+)\s+\d+\s+\d+\s+\d+", text or "", re.M | re.I)
+            match = re.search(r"^\s*cache_dir\s+\w+\s+(\S+)\b", text or "", re.M | re.I)
             if match:
                 return (match.group(1) or "").strip()
         except Exception:
@@ -262,6 +272,9 @@ class SquidController:
             old_workers = self._extract_workers(current)
             new_workers = self._extract_workers(normalized_config)
             workers_changed = new_workers is not None and new_workers != old_workers
+            old_cache_dirs = self._extract_cache_dir_lines(current)
+            new_cache_dirs = self._extract_cache_dir_lines(normalized_config)
+            cache_dirs_changed = new_cache_dirs != old_cache_dirs
 
             old_icap_include = None
             old_icap_supervisor = None
@@ -354,6 +367,29 @@ class SquidController:
                 if scale_details:
                     message = (message + "\n" + scale_details).strip()
                 return True, message
+
+            if cache_dirs_changed:
+                ok_restart, restart_details = self.clear_disk_cache()
+                if not ok_restart:
+                    if os.path.exists(backup_path):
+                        os.replace(backup_path, self.squid_conf_path)
+                        self.restart_squid()
+                    return False, restart_details or "Squid restart failed after cache reinitialization."
+
+                try:
+                    persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
+                    if persisted_dir:
+                        os.makedirs(persisted_dir, exist_ok=True)
+                    self._atomic_write_file(self.persisted_squid_conf_path, normalized_config)
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "squid_core.persist_config.cache_dir",
+                        interval_seconds=300.0,
+                        message="Failed to persist squid config after cache_dir change",
+                    )
+
+                return True, (restart_details or "Squid restarted after cache store reinitialization.").strip()
 
             reconfigure = self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
             if reconfigure.returncode != 0:

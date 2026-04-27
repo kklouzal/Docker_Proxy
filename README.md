@@ -289,10 +289,11 @@ Common environment variables:
 - `SESSION_COOKIE_SECURE=1`: mark cookies Secure (use when UI is served over HTTPS).
 - `DISABLE_CSRF=1`: disables CSRF protection (intended for debugging only; not recommended).
 - `SQUID_WORKERS`: explicit Squid SMP bootstrap override. If blank, the Squid config's `workers` value is authoritative.
-- `SQUID_CACHE_MEM_MB`: explicit per-worker Squid memory-cache override. Leave blank for the default `256`.
-- `SQUID_SSLCRTD_CHILDREN`: explicit ssl_crtd helper-process override. Leave blank to derive from Squid workers (default `2 × workers`).
-- `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`: explicit TLS dynamic certificate cache override. Leave blank to derive from Squid workers (default `128 × workers`, capped at `512`).
-- `SQUID_MAX_FILEDESCRIPTORS`: explicit Squid file-descriptor ceiling. Leave blank to derive from Squid workers (minimum `65536`).
+- `MAX_WORKERS`: admin-UI clamp for the template-backed workers form (default `4`).
+- `SQUID_CACHE_MEM_MB`: explicit Squid memory-cache override. Leave blank to keep the persisted/template value; the entrypoint no longer overwrites UI-applied values unless you set an explicit env override.
+- `SQUID_SSLCRTD_CHILDREN`: explicit ssl_crtd helper-process override. Leave blank to keep the persisted/template value; otherwise the startup default derives from Squid workers.
+- `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`: explicit TLS dynamic certificate cache override. Leave blank to keep the persisted/template value; otherwise the startup default derives from Squid workers (`128 × workers`, capped at `512`).
+- `SQUID_MAX_FILEDESCRIPTORS`: explicit Squid file-descriptor ceiling. Leave blank to keep the persisted/template value; otherwise the startup default derives from Squid workers (minimum `65536`).
 - `CICAP_PORT`, `CICAP_AV_PORT`: ICAP ports for adblock (REQMOD) and AV (RESPMOD) instances.
 - `CLAMD_HOST`, `CLAMD_PORT`: remote ClamAV daemon used by the local AV c-icap instance.
 - `ENABLE_DANTE=1|0`: enable/disable SOCKS5.
@@ -312,6 +313,7 @@ Common environment variables:
 - `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default now scales with local container concurrency; expect roughly `4-8` in the proxy container unless you override it).
 - `PROXY_HEARTBEAT_INTERVAL_SECONDS`: proxy heartbeat cadence (default `90`).
 - `PROXY_SYNC_INTERVAL_SECONDS`: proxy sync cadence for pulling active state from MySQL (default `30`).
+- `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SOCKS_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`: proxy-side log/telemetry poll cadence. Defaults now settle at `2.0` seconds to reduce idle wakeups while keeping the UI reasonably fresh.
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
 - `PAC_UPSTREAM`: optional upstream PAC fallback URL. Leave blank for the default proxy-local pre-rendered PAC serving path.
 
@@ -476,7 +478,22 @@ Operator workflow:
 The default baseline config in [squid/squid.conf.template](squid/squid.conf.template) is tuned to be a **bandwidth saver** while staying conservative:
 - It caches HTTP and bumped-HTTPS content only when the origin server permits caching (no aggressive overrides of `private` / `no-store` / `no-cache`).
 - It enables heuristic caching via `refresh_pattern` only when explicit expiry headers are absent.
-- It allows larger objects to be cached (`maximum_object_size 64 MB`) and enables bounded caching of Range responses (`range_offset_limit 128 MB`) so browsers still see progressive delivery.
+- It now defaults to the SMP-safe `rock` disk store instead of legacy `ufs`, which keeps multi-worker cache deployments within the Squid 7.x guidance.
+- It allows larger objects to be cached (`maximum_object_size 128 MB`) and enables bounded caching of Range responses (`range_offset_limit 128 MB`) so browsers still see progressive delivery.
+- It now makes the intended replacement-policy baseline explicit (`cache_replacement_policy heap GDSF`, `memory_replacement_policy heap GDSF`) instead of falling back to Squid's default `lru` on fresh template-only starts.
+- It keeps `cache_miss_revalidate on` by default for standards-friendlier MISS handling, while the admin UI can now turn that off when operators want faster cache warming on a mostly empty cache.
+- It now makes Squid's memory/SMP cache behavior explicit (`memory_cache_mode always`, `memory_cache_shared on`, `shared_transient_entries_limit 32768`) so the hot-object cache and in-flight transaction table do not depend on ambiguous build/runtime defaults.
+- It now exposes and sets defaults for more of Squid's forward-proxy hot-path knobs: idle persistent-connection lifetimes, connect/forward retry behavior, request-start and write timeouts, DNS retransmit/watermarks, origin TLS session reuse, generated-certificate cache size, ICAP persistent connections / OPTIONS TTL / service health damping, and shared-memory / store-bucket sizing.
+
+Additional forward-proxy performance knobs now exposed in **Policy → Squid Config**:
+- **Caching**: cache-store type (`rock` vs `ufs`), rock slot size / swap throttling, memory-cache mode/sharing, transient shared-entry sizing, and freshness controls (`minimum_expiry_time`, `max_stale`, `refresh_all_ims`)
+- **Timeouts / network**: request-start + write timeouts, idle client/server keepalive lifetimes, persistent-connection lifetime/error handling, connect retries, and forward retry caps
+- **DNS**: `dns_packet_max`, `dns_retransmit_interval`, `ipcache_low/high`, and larger explicit IP/FQDN caches
+- **SSL**: richer `sslcrtd_children` tuning, `dynamic_cert_mem_cache_size`, `sslproxy_session_ttl`, and `sslproxy_session_cache_size`
+- **ICAP / performance**: `icap_persistent_connections`, `icap_default_options_ttl`, `icap_service_failure_limit`, `icap_service_revival_delay`, `memory_pools_limit`, `shared_memory_locking`, `cpu_affinity_map`, `store_avg_object_size`, and `store_objects_per_bucket`
+
+ICAP performance note:
+- The managed template now keeps `icap_preview_enable on` explicitly so ICAP services can use preview-based early decisions when their OPTIONS response requests it.
 
 ## Mitigating app breakage (Slack / Google Meet / Webex / Teams)
 Some modern apps work poorly with HTTPS interception (SSL-bump) and/or rely on non-HTTP traffic paths (especially WebRTC media over UDP). Common symptoms include sign-in loops, “can’t connect”, blank calls, or meetings failing to start.
