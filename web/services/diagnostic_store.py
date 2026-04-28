@@ -63,7 +63,7 @@ def _split_tsv(line: str) -> list[str]:
 
 def _normalize_hostish(value: object) -> str:
     host = _safe_text(value, max_len=255).lower().strip().lstrip(".")
-    if not host:
+    if not host or host in {"-", "(nil)", "none", "null"}:
         return ""
     if host.startswith("[") and host.endswith("]"):
         host = host[1:-1]

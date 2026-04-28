@@ -234,6 +234,20 @@ def test_observability_page_renders_overview_pane(monkeypatch):
     assert fake_queries.calls["overview"] == (10_200, "example", 10, True)
 
 
+def test_observability_page_defaults_to_24h_window(monkeypatch):
+    app_module = import_local_app_module()
+    fake_queries = _FakeQueries()
+    monkeypatch.setattr(app_module, "get_observability_queries", lambda: fake_queries)
+    monkeypatch.setattr(app_module.time, "time", lambda: 100_000)
+
+    client = app_module.app.test_client()
+    login(client)
+
+    response = client.get("/observability")
+    assert response.status_code == 200
+    assert fake_queries.calls["overview"] == (13_600, "", 10, True)
+
+
 def test_observability_page_renders_destination_pane(monkeypatch):
     app_module = import_local_app_module()
     fake_queries = _FakeQueries()

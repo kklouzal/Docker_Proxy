@@ -753,8 +753,8 @@ def _check_dante() -> Dict[str, Any]:
     return check_dante_health(timeout=0.6, error_formatter=public_error_message)
 
 
-def _build_observability_snapshot(window_i: int = 3600) -> tuple[Dict[str, int], str]:
-    since_ts = int(time.time()) - max(300, int(window_i or 3600))
+def _build_observability_snapshot(window_i: int = 86400) -> tuple[Dict[str, int], str]:
+    since_ts = int(time.time()) - max(300, int(window_i or 86400))
     diagnostic_summary: Dict[str, Any] = {}
     ssl_summary: Dict[str, Any] = {}
     try:
@@ -1156,7 +1156,7 @@ def _handle_administration_post(store: Any, current_user: str):
 
 @app.route('/')
 def index():
-    observability, observability_window_label = _build_observability_snapshot(3600)
+    observability, observability_window_label = _build_observability_snapshot(86400)
     proxy_id = get_proxy_id()
     try:
         health = get_proxy_client().get_health(proxy_id)
@@ -1264,7 +1264,7 @@ def proxies():
             }
         token = set_proxy_id(proxy.proxy_id)
         try:
-            diagnostic_summary = get_diagnostic_store().activity_summary(since=int(time.time()) - 3600)
+            diagnostic_summary = get_diagnostic_store().activity_summary(since=int(time.time()) - 86400)
             ssl_summary = _present_ssl_error_rows(
                 get_ssl_errors_store().list_recent(since=int(time.time()) - 3600, search='', limit=100)
             ).get('summary', {})
@@ -1309,7 +1309,7 @@ def observability():
     }
     sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
     limit = _query_int_arg('limit', default=50, minimum=10, maximum=200)
-    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
+    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_values = request.args.getlist('resolve_hostnames')
@@ -1432,7 +1432,7 @@ def observability_export():
     }
     sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
     limit = _query_int_arg('limit', default=200, minimum=10, maximum=1000)
-    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
+    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_values = request.args.getlist('resolve_hostnames')

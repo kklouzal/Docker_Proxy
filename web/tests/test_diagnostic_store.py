@@ -20,6 +20,20 @@ def test_parse_request_log_line_extracts_tls_and_policy_fields() -> None:
     assert row["cache_bypass"] == "cookie"
 
 
+def test_parse_request_log_line_ignores_dash_placeholders_for_domain() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777357408\t79\t127.0.0.1\tHEAD\thttp://example.com/\tTCP_MISS/200\t482"
+        "\t54\tHIER_DIRECT\t-\t-\t-\t-\t-\t-\texample.com\tcurl/8.19.0\t-"
+        "\t-\t-\t-\t-"
+    )
+
+    row = store._parse_request_log_line(line)
+
+    assert row is not None
+    assert row["domain"] == "example.com"
+
+
 def test_parse_icap_log_line_classifies_av_service_family() -> None:
     store = DiagnosticStore()
     line = (
@@ -36,6 +50,19 @@ def test_parse_icap_log_line_classifies_av_service_family() -> None:
     assert row["icap_time_ms"] == 87
     assert row["service_family"] == "av"
     assert row["ssl_exception"] == "sslfilter_nobump"
+
+
+def test_parse_icap_log_line_ignores_dash_placeholders_for_domain() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777357408\t54\t127.0.0.1\tHEAD\thttp://example.com/\t15"
+        "\t-\t-\texample.com\tcurl/8.19.0\t-\t-\t-\t-\t-"
+    )
+
+    row = store._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["domain"] == "example.com"
 
 
 def test_list_recent_transactions_attaches_related_icap_and_filters_service() -> None:
