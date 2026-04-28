@@ -28,6 +28,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/audit_store.py \
 	web/services/auth_store.py \
 	web/services/background_guard.py \
+	web/services/client_identity_cache.py \
 	web/services/certificate_core.py \
 	web/services/cert_manager.py \
 	web/services/certificate_bundles.py \
@@ -41,6 +42,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/live_stats.py \
 	web/services/materialized_files.py \
 	web/services/logutil.py \
+	web/services/observability_queries.py \
 	web/services/pac_profiles_store.py \
 	web/services/pac_renderer.py \
 	web/services/proxy_client.py \

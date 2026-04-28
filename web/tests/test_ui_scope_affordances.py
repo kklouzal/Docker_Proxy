@@ -43,7 +43,7 @@ def test_remote_layout_pins_internal_links_and_actions_to_active_proxy(remote_ap
     body = response.data.decode("utf-8", errors="replace")
     assert "This tab keeps navigation and form actions pinned to this proxy" in body
     assert 'href="/squid/config?proxy_id=edge-1"' in body
-    assert 'href="/live?proxy_id=edge-1"' in body
+    assert 'href="/observability?proxy_id=edge-1' in body
     assert 'href="/proxies?proxy_id=edge-1"' in body
     assert 'id="proxy-id"' in body
     assert 'Manage proxies' in body
@@ -148,35 +148,12 @@ def test_proxies_page_marks_active_proxy_in_current_tab(remote_app_module):
 def test_remote_live_quick_actions_preserve_proxy_context(remote_app_module, monkeypatch):
     _seed_registry("edge-1")
 
-    class FakeLive:
-        def get_totals(self, *, since: int):
-            return {"domain_requests": 12, "domain_hit_requests": 9, "client_requests": 3, "client_hit_requests": 1}
-
-        def list_domains(self, *, sort: str, order: str, limit: int, since: int, search: str):
-            return [{"domain": "example.com", "requests": 12, "pct": 100.0, "cache_pct": 75.0, "last_seen": 1713448200}]
-
-        def list_clients(self, *, sort: str, order: str, limit: int, since: int, search: str):
-            return []
-
-        def list_client_domains(self, *, ip: str, sort: str):
-            return []
-
-        def list_client_not_cached(self, *, ip: str, limit: int):
-            return []
-
-        def list_domain_not_cached_reasons(self, *, domain: str, limit: int):
-            return []
-
-        def list_global_not_cached_reasons(self, *, limit: int):
-            return 0, []
-
-    monkeypatch.setattr(remote_app_module, "get_store", lambda: FakeLive())
 
     client = remote_app_module.app.test_client()
     login(client)
 
-    response = client.get("/live?proxy_id=edge-1&mode=domains")
-    assert response.status_code == 200
-    body = response.data.decode("utf-8", errors="replace")
-    assert 'action="/exclusions?proxy_id=edge-1"' in body
-    assert 'name="return_to"' in body
+    response = client.get("/live?proxy_id=edge-1&mode=domains", follow_redirects=False)
+    assert response.status_code in (301, 302, 303, 307, 308)
+    qs = redirect_query_params(response)
+    assert qs.get("proxy_id") == ["edge-1"]
+    assert qs.get("pane") == ["destinations"]

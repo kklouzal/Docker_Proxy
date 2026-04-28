@@ -251,7 +251,9 @@ adaptation_access av_resp_set deny all
 # Error handling
 error_directory /usr/share/squid/errors/en
 
-# MIME table for content-type detection
+# MIME table for content-type detection.
+# Use the distro-provided table at /etc/squid/mime.conf; this repository
+# intentionally does not ship its own override copy.
 mime_table /etc/squid/mime.conf
 
 # Web filtering (generated at container start). Safe if empty.

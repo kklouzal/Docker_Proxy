@@ -241,22 +241,22 @@ class FakeLiveStore:
     def get_totals(self, *, since: int):
         return {"domain_requests": 0, "domain_hit_requests": 0, "client_requests": 0, "client_hit_requests": 0}
 
-    def list_global_not_cached_reasons(self, *, limit: int):
+    def list_global_not_cached_reasons(self, *, limit: int, since: int | None = None):
         return 0, []
 
     def list_clients(self, *, sort: str, order: str, limit: int, since: int, search: str):
         return []
 
-    def list_client_domains(self, *, ip: str, sort: str):
+    def list_client_domains(self, *, ip: str, sort: str, since: int | None = None):
         return []
 
-    def list_client_not_cached(self, *, ip: str, limit: int):
+    def list_client_not_cached(self, *, ip: str, limit: int, since: int | None = None):
         return []
 
     def list_domains(self, *, sort: str, order: str, limit: int, since: int, search: str):
         return []
 
-    def list_domain_not_cached_reasons(self, *, domain: str, limit: int):
+    def list_domain_not_cached_reasons(self, *, domain: str, limit: int, since: int | None = None):
         return []
 
 
@@ -344,8 +344,10 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
     monkeypatch.setattr(app_module, "_check_icap_av", lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:14001"})
     if hasattr(app_module, "_check_dante"):
         monkeypatch.setattr(app_module, "_check_dante", lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:1080"})
-    monkeypatch.setattr(app_module, "_check_tcp", lambda host, port, timeout=0.6: {"ok": True, "detail": "stub"})
-    monkeypatch.setattr(app_module, "_check_icap_service", lambda host, port, service: {"ok": True, "detail": "stub"})
+    if hasattr(app_module, "_check_tcp"):
+        monkeypatch.setattr(app_module, "_check_tcp", lambda host, port, timeout=0.6: {"ok": True, "detail": "stub"})
+    if hasattr(app_module, "_check_icap_service"):
+        monkeypatch.setattr(app_module, "_check_icap_service", lambda host, port, service: {"ok": True, "detail": "stub"})
 
     calls = {"reload": 0, "clear": 0, "apply": 0}
 
@@ -364,6 +366,36 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
 
     def fake_clear():
         calls["clear"] += 1
+
+    class FakeProxyClient:
+        def sync_proxy(self, proxy_id: str, force: bool = False):
+            calls["reload"] += 1
+            return {"ok": True, "detail": f"sync requested for {proxy_id}", "force": force}
+
+        def clear_proxy_cache(self, proxy_id: str):
+            calls["clear"] += 1
+            return {"ok": True, "detail": f"cache clear requested for {proxy_id}"}
+
+        def get_health(self, proxy_id: str, timeout_seconds: float = 1.5):
+            return {
+                "ok": True,
+                "status": "healthy",
+                "proxy_status": "OK",
+                "stats": COMMON_STATS,
+                "services": {
+                    "icap": {"ok": True, "detail": "stub"},
+                    "clamav": {"ok": True, "detail": "stub"},
+                    "dante": {"ok": True, "detail": "stub"},
+                    "clamd": {"ok": True, "detail": "stub"},
+                    "av_icap": {"ok": True, "detail": "stub"},
+                },
+            }
+
+        def test_clamav_eicar(self, proxy_id: str):
+            return {"ok": True, "detail": f"eicar requested for {proxy_id}"}
+
+        def test_clamav_icap(self, proxy_id: str):
+            return {"ok": True, "detail": f"icap requested for {proxy_id}"}
 
     monkeypatch.setattr(app_module.squid_controller, "get_status", fake_get_status)
     monkeypatch.setattr(app_module.squid_controller, "get_current_config", fake_get_current_config)
@@ -390,6 +422,7 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
     monkeypatch.setattr(app_module, "get_store", lambda: FakeLiveStore())
     monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnosticStore())
     monkeypatch.setattr(app_module, "get_audit_store", lambda: FakeAuditStore())
+    monkeypatch.setattr(app_module, "get_proxy_client", lambda: FakeProxyClient())
 
     import subprocess
 

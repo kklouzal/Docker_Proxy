@@ -268,7 +268,7 @@ class TestRoutes(unittest.TestCase):
         response = self.app.get('/webfilter?tab=whitelist')
         self.assertEqual(response.status_code, 200)
 
-    def test_webfilter_blockedlog_tab(self):
+    def test_webfilter_unknown_tab_falls_back_to_categories(self):
         response = self.app.get('/webfilter?tab=blockedlog')
         self.assertEqual(response.status_code, 200)
 

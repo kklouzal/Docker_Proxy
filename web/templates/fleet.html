@@ -56,7 +56,7 @@
         </div>
         <div class="actions">
             <a class="btn ghost" href="{{ url_for('index') }}">Back to status</a>
-            {% if active_proxy_id %}<a class="btn ghost" href="{{ url_for('live', proxy_id=active_proxy_id, window=3600) }}">Open active Live view</a>{% endif %}
+            {% if active_proxy_id %}<a class="btn ghost" href="{{ url_for('observability', proxy_id=active_proxy_id, window=3600) }}">Open active observability</a>{% endif %}
         </div>
     </div>
 </section>
@@ -111,8 +111,8 @@
                         <td>
                             <div class="actions">
                                 <a class="btn" href="{{ url_for('index', proxy_id=proxy.proxy_id) }}">Select</a>
-                                <a class="btn" href="{{ url_for('live', proxy_id=proxy.proxy_id, window=3600) }}">Live</a>
-                                <a class="btn" href="{{ url_for('ssl_errors', proxy_id=proxy.proxy_id, window=3600) }}">SSL</a>
+                                <a class="btn" href="{{ url_for('observability', proxy_id=proxy.proxy_id, window=3600) }}">Observability</a>
+                                <a class="btn" href="{{ url_for('observability', proxy_id=proxy.proxy_id, pane='ssl', window=3600) }}">SSL pane</a>
                                 <form action="{{ url_for('reload_squid') }}" method="post">
                                     {{ csrf_field() }}
                                     <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">

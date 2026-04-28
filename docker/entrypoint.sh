@@ -475,11 +475,20 @@ pipeline_prefetch 1
 EOF
     fi
 
-    if ! grep -qiE "^\s*pconn_timeout\s+" /etc/squid/squid.conf 2>/dev/null; then
+    if ! grep -qiE "^\s*server_idle_pconn_timeout\s+" /etc/squid/squid.conf 2>/dev/null \
+        && ! grep -qiE "^\s*pconn_timeout\s+" /etc/squid/squid.conf 2>/dev/null; then
         cat >> /etc/squid/squid.conf <<'EOF'
 
 # Keep persistent upstream connections warm for bursty image/gallery browsing.
-pconn_timeout 120 seconds
+server_idle_pconn_timeout 120 seconds
+EOF
+    fi
+
+    if ! grep -qiE "^\s*client_idle_pconn_timeout\s+" /etc/squid/squid.conf 2>/dev/null; then
+        cat >> /etc/squid/squid.conf <<'EOF'
+
+# Keep client-side keepalive connections warm for bursty image/gallery browsing.
+client_idle_pconn_timeout 120 seconds
 EOF
     fi
 

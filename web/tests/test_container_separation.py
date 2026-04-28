@@ -9,6 +9,10 @@ def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def test_repo_does_not_ship_stale_squid_mime_override() -> None:
+    assert not (REPO_ROOT / "squid" / "mime.conf").exists()
+
+
 def test_proxy_dockerfile_copies_only_proxy_runtime_payload() -> None:
     text = _read("docker/Dockerfile.proxy")
 

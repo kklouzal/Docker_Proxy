@@ -8,8 +8,7 @@ from .ui_pages_test_support import app_module  # noqa: F401
     "path, expected",
     [
         ("/", "Status"),
-        ("/live", "Live"),
-        ("/ssl-errors", "SSL Errors"),
+        ("/observability", "Observability"),
         ("/squid/config", "Squid"),
         ("/exclusions", "Exclusions"),
         ("/certs", "Certificates"),
@@ -17,7 +16,6 @@ from .ui_pages_test_support import app_module  # noqa: F401
         ("/webfilter", "Web"),
         ("/clamav", "Clam"),
         ("/sslfilter", "SSL"),
-        ("/socks", "SOCKS"),
         ("/pac", "PAC"),
         ("/administration", "Administration"),
     ],

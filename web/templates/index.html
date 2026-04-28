@@ -19,7 +19,7 @@
         </div>
     </div>
     <div class="page-actions">
-        <a class="btn ghost" href="{{ url_for('live') }}">Open Live view</a>
+        <a class="btn ghost" href="{{ url_for('observability') }}">Open Observability</a>
         <a class="btn ghost" href="{{ url_for('squid_config') }}">Tune config</a>
         <a class="btn ghost" href="{{ url_for('proxies') }}">View proxies</a>
     </div>
@@ -167,12 +167,16 @@
                 </article>
             </div>
             <div class="actions">
-                <a class="btn primary" href="{{ url_for('live', window=3600) }}">Investigate Live</a>
-                <a class="btn" href="{{ url_for('ssl_errors', window=3600) }}">Review SSL errors</a>
-                <a class="btn" href="{{ url_for('clamav', window=3600) }}">Trace AV ICAP</a>
+                <a class="btn primary" href="{{ url_for('observability', window=3600) }}">Open Observability</a>
+                <a class="btn" href="{{ url_for('observability', pane='destinations', window=3600) }}">Review destinations</a>
+                <a class="btn" href="{{ url_for('observability', pane='security', window=3600) }}">Security signals</a>
+                <a class="btn" href="{{ url_for('observability', pane='performance', window=3600) }}">Performance</a>
+                <a class="btn" href="{{ url_for('observability', pane='ssl', window=3600) }}">SSL incidents</a>
+                <a class="btn" href="{{ url_for('observability', pane='transport', window=3600) }}">Transport</a>
+                <a class="btn" href="{{ url_for('clamav', window=3600) }}">AV controls</a>
             </div>
             <div class="surface-note small">
-                These shortcuts pivot directly into the structured request, SSL, and ICAP views backed by MySQL so you can correlate runtime activity without tailing logs in the container.
+                Observability is now the primary operator workflow for traffic, incidents, and latency review; the remaining policy pages focus on configuration and control actions.
             </div>
         </div>
     </section>

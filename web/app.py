@@ -8,7 +8,6 @@ from services.diagnostic_store import get_diagnostic_store
 from datetime import UTC, datetime, timedelta
 import time
 import os
-import ipaddress
 import shutil
 from services.stats import get_stats
 from services.live_stats import get_store
@@ -30,10 +29,11 @@ from services.proxy_registry import get_proxy_registry
 from services.proxy_sync import nudge_registered_proxies
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
+from services.observability_queries import get_observability_queries
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
-from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, extract_ssl_master_transaction as _extract_ssl_master_transaction, present_icap_events as _present_icap_events, present_observability_summary as _present_observability_summary, present_ssl_error_rows as _present_ssl_error_rows, present_ssl_top_domains as _present_ssl_top_domains, present_top_tag_rows as _present_top_tag_rows, present_top_value_rows as _present_top_value_rows, present_transaction_rows as _present_transaction_rows, safe_local_return_url as _safe_local_return_url, window_label as _window_label
+from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, present_icap_events as _present_icap_events, present_observability_summary as _present_observability_summary, present_ssl_error_rows as _present_ssl_error_rows, present_top_tag_rows as _present_top_tag_rows, present_top_value_rows as _present_top_value_rows, present_transaction_rows as _present_transaction_rows, window_label as _window_label
 
 import re
 import secrets
@@ -216,6 +216,166 @@ def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
     return app.response_class(buf.getvalue(), mimetype='text/csv; charset=utf-8')
 
 
+def _legacy_live_redirect_params() -> Dict[str, Any]:
+    subtab = (request.args.get('subtab') or 'activity').strip().lower()
+    mode = (request.args.get('mode') or 'domains').strip().lower()
+    detail = (request.args.get('detail') or 'top').strip().lower()
+    limit = _query_int_arg('limit', default=100, minimum=10, maximum=200)
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
+    search = (request.args.get('q') or '').strip().lower()
+    ip = (request.args.get('ip') or '').strip()
+    domain = (request.args.get('domain') or '').strip().lower().lstrip('.')
+
+    pane = 'destinations'
+    pane_search = search
+    if subtab == 'reasons' or detail == 'nocache':
+        pane = 'cache'
+        pane_search = domain or ip or search
+    elif mode == 'clients':
+        pane = 'clients'
+        pane_search = ip or search
+    else:
+        pane_search = domain or search
+
+    return {
+        'pane': pane,
+        'window': window_i,
+        'limit': limit,
+        'q': pane_search or None,
+    }
+
+
+def _empty_observability_summary() -> Dict[str, Any]:
+    return {
+        'request_records': 0,
+        'cache_hits': 0,
+        'cache_misses': 0,
+        'cache_hit_pct': 0.0,
+        'clients': 0,
+        'destinations': 0,
+        'transactions': 0,
+        'icap_events': 0,
+        'av_icap_events': 0,
+        'adblock_icap_events': 0,
+    }
+
+
+def _empty_observability_payload(pane: str, *, summary: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    base_summary = dict(summary or _empty_observability_summary())
+    ssl_payload = {
+        'summary': {
+            'bucket_count': 0,
+            'total_events': 0,
+            'known_domains': 0,
+            'unknown_target_buckets': 0,
+        },
+        'top_categories': [],
+        'hints': [],
+        'top_domains': [],
+        'rows': [],
+    }
+    security_payload = {
+        'summary': {
+            'av_events': 0,
+            'potential_findings': 0,
+            'adblock_blocks': 0,
+            'webfilter_blocks': 0,
+            'webfilter_categories': 0,
+            'combined_blocks': 0,
+        },
+        'notes': [],
+        'av_rows': [],
+        'av_top_targets': [],
+        'adblock_rows': [],
+        'adblock_top_domains': [],
+        'webfilter_rows': [],
+        'webfilter_top_categories': [],
+    }
+    performance_payload = {
+        'summary': {
+            'requests': 0,
+            'transactions': 0,
+            'icap_events': 0,
+        },
+        'av_icap_summary': {'events': 0},
+        'adblock_icap_summary': {'events': 0},
+        'slow_requests': [],
+        'slow_icap_events': [],
+        'top_user_agents': [],
+        'top_bump_modes': [],
+        'top_tls_server_versions': [],
+        'top_policy_tags': [],
+    }
+    transport_payload = {
+        'summary': {
+            'total': 0,
+            'connects': 0,
+            'blocked': 0,
+            'errors': 0,
+            'disconnects': 0,
+        },
+        'nat_warning': False,
+        'nat_warning_text': '',
+        'top_clients': [],
+        'top_destinations': [],
+        'recent': [],
+    }
+
+    if pane == 'overview':
+        return {
+            'summary': base_summary,
+            'destinations': [],
+            'clients': [],
+            'cache_reasons': [],
+            'ssl': ssl_payload,
+            'security': security_payload,
+            'performance': performance_payload,
+            'transport': transport_payload,
+        }
+    if pane in ('destinations', 'clients', 'cache'):
+        return {'rows': []}
+    if pane == 'ssl':
+        return ssl_payload
+    if pane == 'security':
+        return security_payload
+    if pane == 'performance':
+        return performance_payload
+    if pane == 'transport':
+        return transport_payload
+    return {'rows': []}
+
+
+def _empty_observability_export_response(pane: str):
+    if pane == 'overview':
+        headers = ['metric', 'value']
+        rows = ([metric, 0] for metric in (
+            'request_records',
+            'cache_hits',
+            'cache_misses',
+            'cache_hit_pct',
+            'clients',
+            'destinations',
+            'transactions',
+            'icap_events',
+            'av_icap_events',
+            'adblock_icap_events',
+        ))
+        return _csv_response(headers, rows)
+    if pane == 'clients':
+        return _csv_response(['client_ip', 'hostname', 'requests', 'percent_of_total', 'destinations', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen'], [])
+    if pane == 'cache':
+        return _csv_response(['reason', 'requests', 'percent_of_misses', 'domains', 'clients', 'last_seen'], [])
+    if pane == 'ssl':
+        return _csv_response(['domain', 'category', 'category_label', 'reason', 'count', 'first_seen', 'last_seen'], [])
+    if pane == 'security':
+        return _csv_response(['source', 'timestamp', 'client', 'target', 'detail', 'status'], [])
+    if pane == 'performance':
+        return _csv_response(['type', 'timestamp', 'subject', 'metric', 'detail'], [])
+    if pane == 'transport':
+        return _csv_response(['ts', 'action', 'protocol', 'client_ip', 'client_port', 'destination', 'destination_port', 'message'], [])
+    return _csv_response(['domain', 'requests', 'percent_of_total', 'clients', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen'], [])
+
+
 def _redirect_after_policy_refresh(endpoint: str, store: Any, *, force: bool = True, **params):
     _best_effort_refresh_managed_policy(store, force=force)
     return _redirect_to(endpoint, **params)
@@ -244,6 +404,31 @@ def _coerce_store_result(result: Any, *, success_default: bool = True, error_def
     if isinstance(result, bool):
         return bool(result), ('' if result else (error_default or 'Operation failed.'))
     return success_default, error_default
+
+
+def _normalized_domain(value: object | None) -> str:
+    raw = '' if value is None else str(value).strip()
+    if not raw:
+        return ''
+
+    candidate = raw
+    try:
+        parts = urlsplit(raw)
+        if parts.hostname:
+            candidate = parts.hostname
+    except Exception:
+        candidate = raw
+
+    candidate = candidate.strip().lower().lstrip('.')
+    if '@' in candidate:
+        candidate = candidate.split('@', 1)[1]
+    if candidate.startswith('[') and ']' in candidate:
+        candidate = candidate[1 : candidate.find(']')]
+    elif ':' in candidate:
+        host_part, port = candidate.rsplit(':', 1)
+        if port.isdigit():
+            candidate = host_part
+    return candidate.strip().lower().strip('.')
 
 
 def _add_exclusion_domain(store: Any, value: str) -> tuple[bool, str, str]:
@@ -1094,103 +1279,369 @@ def proxies():
     return render_template('fleet.html', proxies=proxies, live_health=live_health, observability_by_proxy=observability_by_proxy)
 
 
-@app.route('/ssl-errors', methods=['GET'])
-def ssl_errors():
-    store = get_ssl_errors_store()
-    diagnostic_store = get_diagnostic_store()
-    limit = _query_int_arg('limit', default=200)
-    q = (request.args.get('q') or '').strip().lower()
-    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600)
+@app.route('/observability', methods=['GET'])
+def observability():
+    queries = get_observability_queries()
+    pane = _normalize_choice(
+        request.args.get('pane') or 'overview',
+        ('overview', 'destinations', 'clients', 'cache', 'ssl', 'security', 'performance', 'transport'),
+        'overview',
+    )
+    sort_defaults = {
+        'overview': 'requests',
+        'destinations': 'requests',
+        'clients': 'requests',
+        'cache': 'requests',
+        'ssl': 'recent',
+        'security': 'recent',
+        'performance': 'recent',
+        'transport': 'recent',
+    }
+    sort_options = {
+        'overview': ('requests',),
+        'destinations': ('requests', 'recent', 'cache', 'clients'),
+        'clients': ('requests', 'recent', 'cache', 'destinations'),
+        'cache': ('requests', 'recent', 'domains', 'clients'),
+        'ssl': ('recent',),
+        'security': ('recent',),
+        'performance': ('recent',),
+        'transport': ('recent',),
+    }
+    sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
+    limit = _query_int_arg('limit', default=50, minimum=10, maximum=200)
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
+    search = (request.args.get('q') or '').strip().lower()
+    resolve_values = request.args.getlist('resolve_hostnames')
+    resolve_hostnames = True if not resolve_values else any((value or '').strip() == '1' for value in resolve_values)
 
     try:
-        raw_rows = store.list_recent(since=since_ts, search=q, limit=limit)
-        raw_top_domains = store.top_domains(since=since_ts, search=q, limit=30)
+        summary = queries.summary(since=since_ts)
     except Exception:
-        raw_rows = []
-        raw_top_domains = []
+        log_exception_throttled(
+            app.logger,
+            'web.app.observability.summary',
+            interval_seconds=30.0,
+            message='Failed to load observability summary; rendering empty state',
+        )
+        summary = _empty_observability_summary()
 
-    presented = _present_ssl_error_rows(raw_rows)
-    rows = presented['rows']
-    summary = presented['summary']
-    hints = presented['hints']
-    top_domains = _present_ssl_top_domains(raw_top_domains, limit=15)
-    affected_client_values: List[str] = []
-    affected_user_agents: List[str] = []
-    affected_bump_modes: List[str] = []
-    affected_policy_tags: List[str] = []
-
-    for index, row in enumerate(rows):
-        row['master_transaction'] = ''
-        row['correlated_request'] = None
-        row['correlated_icap'] = []
-        row['correlated_candidates'] = []
-        row['correlated_icap_candidates'] = []
-        if index >= 25:
-            continue
-        tx = _extract_ssl_master_transaction(row.get('sample'))
-        if tx:
-            row['master_transaction'] = tx
-        try:
-            if tx:
-                exact_request = diagnostic_store.find_request_by_master_xaction(tx)
-                exact_icap = diagnostic_store.list_icap_by_master_xaction(tx, limit=10)
-                if exact_request is not None:
-                    exact_tx = dict(exact_request)
-                    exact_tx['related_icap'] = exact_icap
-                    exact_tx['correlation_kind'] = 'master_xaction'
-                    row['correlated_request'] = _present_transaction_rows([exact_tx], icap_limit=5)[0]
-                    row['correlated_icap'] = row['correlated_request'].get('related_icap', [])
-                    affected_client_values.append(str(row['correlated_request'].get('client_ip') or ''))
-                    affected_user_agents.append(str(row['correlated_request'].get('user_agent') or ''))
-                    affected_bump_modes.append(str(row['correlated_request'].get('bump_mode') or ''))
-                    affected_policy_tags.extend(list(row['correlated_request'].get('policy_tags') or []))
-                else:
-                    row['correlated_icap'] = _present_icap_events(
-                        [dict(event, correlation_kind='master_xaction') for event in exact_icap],
-                        limit=5,
-                    )
-
-            if row['correlated_request'] is None and row.get('domain'):
-                candidates = diagnostic_store.list_request_candidates_for_domain_near_ts(
-                    domain=str(row.get('domain') or ''),
-                    around_ts=int(row.get('last_seen') or 0),
-                    window_seconds=max(120, min(window_i, 900)),
-                    limit=3,
+    try:
+        pane_payload: Dict[str, Any]
+        if pane == 'overview':
+            pane_payload = queries.overview_bundle(
+                since=since_ts,
+                search=search,
+                limit=min(limit, 10),
+                resolve_hostnames=resolve_hostnames,
+            )
+        elif pane == 'clients':
+            pane_payload = {
+                'rows': queries.top_clients(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                    sort=sort,
+                    resolve_hostnames=resolve_hostnames,
                 )
-                row['correlated_candidates'] = _present_transaction_rows(candidates, icap_limit=3)
-                for candidate in row['correlated_candidates']:
-                    affected_client_values.append(str(candidate.get('client_ip') or ''))
-                    affected_user_agents.append(str(candidate.get('user_agent') or ''))
-                    affected_bump_modes.append(str(candidate.get('bump_mode') or ''))
-                    affected_policy_tags.extend(list(candidate.get('policy_tags') or []))
-                if not row['correlated_candidates']:
-                    icap_candidates = diagnostic_store.list_icap_candidates_for_domain_near_ts(
-                        domain=str(row.get('domain') or ''),
-                        around_ts=int(row.get('last_seen') or 0),
-                        window_seconds=max(120, min(window_i, 900)),
-                        limit=3,
-                    )
-                    row['correlated_icap_candidates'] = _present_icap_events(icap_candidates, limit=3)
-        except Exception:
-            row['correlated_request'] = None
-            row['correlated_icap'] = []
-            row['correlated_candidates'] = []
-            row['correlated_icap_candidates'] = []
+            }
+        elif pane == 'cache':
+            pane_payload = {
+                'rows': queries.top_cache_reasons(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                    sort=sort,
+                )
+            }
+        elif pane == 'ssl':
+            pane_payload = queries.ssl_overview(
+                since=since_ts,
+                search=search,
+                limit=limit,
+            )
+        elif pane == 'security':
+            pane_payload = queries.security_overview(
+                since=since_ts,
+                search=search,
+                limit=limit,
+            )
+        elif pane == 'performance':
+            pane_payload = queries.performance_overview(since=since_ts, limit=limit)
+        elif pane == 'transport':
+            pane_payload = queries.transport_overview(since=since_ts, search=search, limit=limit)
+        else:
+            pane_payload = {
+                'rows': queries.top_destinations(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                    sort=sort,
+                )
+            }
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f'web.app.observability.pane.{pane}',
+            interval_seconds=30.0,
+            message='Failed to load observability pane; rendering empty state',
+        )
+        pane_payload = _empty_observability_payload(pane, summary=summary)
 
     return render_template(
-        'ssl_errors.html',
-        rows=rows,
-        top_domains=top_domains,
-        summary=summary,
-        affected_clients=_top_count_rows(affected_client_values, limit=5, max_label=40),
-        affected_user_agents=_top_count_rows(affected_user_agents, limit=5, max_label=72),
-        affected_bump_modes=_top_count_rows(affected_bump_modes, limit=5, max_label=40),
-        affected_policy_tags=_top_count_rows(affected_policy_tags, limit=6, max_label=64),
-        hints=hints,
+        'observability.html',
+        pane=pane,
+        sort=sort,
+        limit=limit,
         window=window_i,
         window_label=_window_label(window_i),
-        search=q,
+        search=search,
+        resolve_hostnames=resolve_hostnames,
+        summary=summary,
+        pane_payload=pane_payload,
+    )
+
+
+@app.route('/observability/export', methods=['GET'])
+def observability_export():
+    queries = get_observability_queries()
+    pane = _normalize_choice(
+        request.args.get('pane') or 'overview',
+        ('overview', 'destinations', 'clients', 'cache', 'ssl', 'security', 'performance', 'transport'),
+        'overview',
+    )
+    sort_defaults = {
+        'overview': 'requests',
+        'destinations': 'requests',
+        'clients': 'requests',
+        'cache': 'requests',
+        'ssl': 'recent',
+        'security': 'recent',
+        'performance': 'recent',
+        'transport': 'recent',
+    }
+    sort_options = {
+        'overview': ('requests',),
+        'destinations': ('requests', 'recent', 'cache', 'clients'),
+        'clients': ('requests', 'recent', 'cache', 'destinations'),
+        'cache': ('requests', 'recent', 'domains', 'clients'),
+        'ssl': ('recent',),
+        'security': ('recent',),
+        'performance': ('recent',),
+        'transport': ('recent',),
+    }
+    sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
+    limit = _query_int_arg('limit', default=200, minimum=10, maximum=1000)
+    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
+    since_ts = int(time.time()) - window_i
+    search = (request.args.get('q') or '').strip().lower()
+    resolve_values = request.args.getlist('resolve_hostnames')
+    resolve_hostnames = True if not resolve_values else any((value or '').strip() == '1' for value in resolve_values)
+    try:
+        if pane == 'overview':
+            overview = queries.overview_bundle(
+                since=since_ts,
+                search=search,
+                limit=min(limit, 10),
+                resolve_hostnames=resolve_hostnames,
+            )
+            summary = overview['summary']
+            headers = ['metric', 'value']
+            data_rows = (
+                [metric, summary.get(metric, 0)]
+                for metric in (
+                    'request_records',
+                    'cache_hits',
+                    'cache_misses',
+                    'cache_hit_pct',
+                    'clients',
+                    'destinations',
+                    'transactions',
+                    'icap_events',
+                    'av_icap_events',
+                    'adblock_icap_events',
+                )
+            )
+            return _csv_response(headers, data_rows)
+
+        if pane == 'clients':
+            rows = queries.top_clients(
+                since=since_ts,
+                search=search,
+                limit=limit,
+                sort=sort,
+                resolve_hostnames=resolve_hostnames,
+            )
+            headers = ['client_ip', 'hostname', 'requests', 'percent_of_total', 'destinations', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen']
+            data_rows = (
+                [
+                    row.get('ip', ''),
+                    row.get('hostname', ''),
+                    row.get('requests', 0),
+                    row.get('pct', 0.0),
+                    row.get('destinations', 0),
+                    row.get('transactions', 0),
+                    row.get('cache_pct', 0.0),
+                    row.get('av_icap_events', 0),
+                    row.get('adblock_icap_events', 0),
+                    row.get('last_seen', 0),
+                ]
+                for row in rows
+            )
+            return _csv_response(headers, data_rows)
+
+        if pane == 'cache':
+            rows = queries.top_cache_reasons(
+                since=since_ts,
+                search=search,
+                limit=limit,
+                sort=sort,
+            )
+            headers = ['reason', 'requests', 'percent_of_misses', 'domains', 'clients', 'last_seen']
+            data_rows = (
+                [
+                    row.get('reason', ''),
+                    row.get('requests', 0),
+                    row.get('pct', 0.0),
+                    row.get('domains', 0),
+                    row.get('clients', 0),
+                    row.get('last_seen', 0),
+                ]
+                for row in rows
+            )
+            return _csv_response(headers, data_rows)
+
+        if pane == 'ssl':
+            payload = queries.ssl_overview(since=since_ts, search=search, limit=limit)
+            rows = payload['rows']
+            headers = ['domain', 'category', 'category_label', 'reason', 'count', 'first_seen', 'last_seen']
+            data_rows = (
+                [
+                    row.get('domain', ''),
+                    row.get('category', ''),
+                    row.get('category_label', ''),
+                    row.get('reason', ''),
+                    row.get('count', 0),
+                    row.get('first_seen', 0),
+                    row.get('last_seen', 0),
+                ]
+                for row in rows
+            )
+            return _csv_response(headers, data_rows)
+
+        if pane == 'security':
+            payload = queries.security_overview(since=since_ts, search=search, limit=limit)
+            headers = ['source', 'timestamp', 'client', 'target', 'detail', 'status']
+            rows = []
+            for row in payload.get('av_rows', []):
+                rows.append([
+                    'av',
+                    row.get('ts', 0),
+                    row.get('client_ip', ''),
+                    row.get('target_display', ''),
+                    row.get('adapt_summary', ''),
+                    row.get('av_status_label', ''),
+                ])
+            for row in payload.get('adblock_rows', []):
+                rows.append([
+                    'adblock',
+                    row.get('ts', 0),
+                    row.get('src_ip', ''),
+                    row.get('url', ''),
+                    f"HTTP {row.get('http_status', 0)}",
+                    row.get('result', ''),
+                ])
+            for row in payload.get('webfilter_rows', []):
+                rows.append([
+                    'webfilter',
+                    row.get('ts', 0),
+                    row.get('src_ip', ''),
+                    row.get('url', ''),
+                    row.get('category', ''),
+                    row.get('result', ''),
+                ])
+            return _csv_response(headers, rows)
+
+        if pane == 'performance':
+            payload = queries.performance_overview(since=since_ts, limit=limit)
+            headers = ['type', 'timestamp', 'subject', 'metric', 'detail']
+            rows = []
+            for row in payload.get('slow_requests', []):
+                rows.append([
+                    'request',
+                    row.get('ts', 0),
+                    row.get('target_display', ''),
+                    row.get('duration_ms', 0),
+                    row.get('result_summary', ''),
+                ])
+            for row in payload.get('slow_icap_events', []):
+                rows.append([
+                    'icap',
+                    row.get('ts', 0),
+                    row.get('target_display', ''),
+                    row.get('icap_time_ms', 0),
+                    row.get('adapt_summary', ''),
+                ])
+            return _csv_response(headers, rows)
+
+        if pane == 'transport':
+            payload = queries.transport_overview(since=since_ts, search=search, limit=limit)
+            headers = ['ts', 'action', 'protocol', 'client_ip', 'client_port', 'destination', 'destination_port', 'message']
+            data_rows = (
+                [
+                    row.ts,
+                    row.action,
+                    row.protocol,
+                    row.src_ip,
+                    row.src_port,
+                    row.dst,
+                    row.dst_port,
+                    row.msg,
+                ]
+                for row in payload.get('recent', [])
+            )
+            return _csv_response(headers, data_rows)
+
+        rows = queries.top_destinations(
+            since=since_ts,
+            search=search,
+            limit=limit,
+            sort=sort,
+        )
+        headers = ['domain', 'requests', 'percent_of_total', 'clients', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen']
+        data_rows = (
+            [
+                row.get('domain', ''),
+                row.get('requests', 0),
+                row.get('pct', 0.0),
+                row.get('clients', 0),
+                row.get('transactions', 0),
+                row.get('cache_pct', 0.0),
+                row.get('av_icap_events', 0),
+                row.get('adblock_icap_events', 0),
+                row.get('last_seen', 0),
+            ]
+            for row in rows
+        )
+        return _csv_response(headers, data_rows)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f'web.app.observability.export.{pane}',
+            interval_seconds=30.0,
+            message='Failed to export observability pane; returning empty CSV',
+        )
+        return _empty_observability_export_response(pane)
+
+
+@app.route('/ssl-errors', methods=['GET'])
+def ssl_errors():
+    return _redirect_to(
+        'observability',
+        pane='ssl',
+        window=_query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600),
+        limit=_query_int_arg('limit', default=50, minimum=10, maximum=200),
+        q=((request.args.get('q') or '').strip().lower() or None),
     )
 
 
@@ -1202,103 +1653,35 @@ def ssl_errors_exclude():
             get_exclusions_store().add_domain(domain)
         except Exception:
             pass
-        return _redirect_after_pac_refresh('ssl_errors', q=domain)
-    return _redirect_to('ssl_errors', q=domain)
+        return _redirect_after_pac_refresh('observability', pane='ssl', q=domain)
+    return _redirect_to('observability', pane='ssl', q=domain)
 
 
 @app.route('/ssl-errors/export', methods=['GET'])
 def ssl_errors_export():
-    store = get_ssl_errors_store()
-    q = (request.args.get('q') or '').strip().lower()
-    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600)
-    since_ts = int(time.time()) - window_i
-    rows = store.list_recent(since=since_ts, search=q, limit=1000)
-
-    return _csv_response(
-        ["domain", "category", "reason", "count", "last_seen", "sample"],
-        (
-            [
-                getattr(r, 'domain', ''),
-                getattr(r, 'category', ''),
-                getattr(r, 'reason', ''),
-                getattr(r, 'count', 0),
-                getattr(r, 'last_seen', 0),
-                getattr(r, 'sample', ''),
-            ]
-            for r in rows
-        ),
+    return _redirect_to(
+        'observability_export',
+        pane='ssl',
+        window=_query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600),
+        limit=_query_int_arg('limit', default=1000, minimum=10, maximum=1000),
+        q=((request.args.get('q') or '').strip().lower() or None),
     )
 
 
 @app.route('/socks', methods=['GET'])
 def socks():
-    store = get_socks_store()
-    window = _query_int_arg('window', default=3600, minimum=60, maximum=7 * 24 * 3600)
-    q = (request.args.get('q') or '').strip()
-    since = int(time.time()) - window
-
-    def window_label() -> str:
-        if window < 3600:
-            return f"{window // 60}m"
-        if window < 24 * 3600:
-            return f"{window // 3600}h"
-        return f"{window // (24 * 3600)}d"
-
-    summary = store.summary(since=since)
-    top_clients = store.top_clients(since=since, limit=20, search=q)
-    top_dests = store.top_destinations(since=since, limit=20, search=q)
-    recent_all = store.recent(limit=200, since=since)
-    recent = store.recent(limit=200, since=since, search=q)
-
-    # Heuristic: if all activity appears from a single private IP, it's often Docker NAT
-    # masking real LAN client IPs (common on Docker Desktop).
-    def is_private_ip(s: str) -> bool:
-        try:
-            return ipaddress.ip_address((s or '').strip()).is_private
-        except Exception:
-            return False
-
-    def looks_like_docker_bridge(s: str) -> bool:
-        s = (s or '').strip()
-        return s.startswith('172.17.') or s.startswith('172.18.') or s.startswith('172.19.') or s.startswith('172.20.')
-
-    seen_ips = []
-    for e in recent_all:
-        if e.src_ip:
-            seen_ips.append(e.src_ip)
-    uniq_ips = sorted({ip for ip in seen_ips if ip})
-    nat_warning = False
-    nat_warning_text = ''
-    if len(uniq_ips) == 1 and is_private_ip(uniq_ips[0]):
-        nat_warning = True
-        if looks_like_docker_bridge(uniq_ips[0]):
-            nat_warning_text = (
-                f"All SOCKS events appear to come from {uniq_ips[0]}. "
-                "This often means Docker NAT/bridge is masking the true client IPs."
-            )
-        else:
-            nat_warning_text = (
-                f"All SOCKS events appear to come from {uniq_ips[0]}. "
-                "This may be NAT masking the true client IPs."
-            )
-    return render_template(
-        'socks.html',
-        window_label=window_label(),
-        window=window,
-        search=q,
-        summary=summary,
-        top_clients=top_clients,
-        top_dests=top_dests,
-        recent=recent,
-        nat_warning=nat_warning,
-        nat_warning_text=nat_warning_text,
+    return _redirect_to(
+        'observability',
+        pane='transport',
+        window=_query_int_arg('window', default=3600, minimum=60, maximum=7 * 24 * 3600),
+        limit=_query_int_arg('limit', default=50, minimum=10, maximum=200),
+        q=((request.args.get('q') or '').strip() or None),
     )
 
 
 @app.route('/adblock', methods=['GET', 'POST'])
 def adblock():
     store = get_adblock_store()
-    diagnostic_store = get_diagnostic_store()
     _best_effort_init_store(store, key='adblock', description='adblock')
 
     if request.method == 'POST':
@@ -1320,8 +1703,6 @@ def adblock():
 
     interval = store.get_update_interval_seconds()
     window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
-    diagnostic_search = (request.args.get('q') or '').strip()
-    diagnostic_tx = (request.args.get('tx') or '').strip()
     since_ts = int(time.time()) - window_i
     now_ts = int(time.time())
     status_rows = []
@@ -1344,32 +1725,9 @@ def adblock():
         )
 
     try:
-        recent_blocks = store.list_recent_block_events(limit=100)
+        adblock_icap_summary = get_diagnostic_store().icap_summary(since=since_ts, service='adblock')
     except Exception:
-        recent_blocks = []
-    recent_blocks = _correlate_policy_events(diagnostic_store, recent_blocks, window_i=window_i, service='adblock')
-
-    try:
-        raw_icap_events = diagnostic_store.list_recent_icap(
-            since=since_ts,
-            search=diagnostic_search,
-            master_xaction=diagnostic_tx,
-            service='adblock',
-            limit=50,
-        )
-        recent_adblock_icap_events = _correlate_request_for_icap_events(
-            diagnostic_store,
-            _present_icap_events(raw_icap_events, limit=50),
-        )
-        adblock_icap_summary = diagnostic_store.icap_summary(since=since_ts, service='adblock')
-        slow_adblock_icap = _present_icap_events(
-            diagnostic_store.slowest_icap_events(since=since_ts, service='adblock', limit=5),
-            limit=5,
-        )
-    except Exception:
-        recent_adblock_icap_events = []
         adblock_icap_summary = {'events': 0, 'avg_icap_time_ms': 0, 'max_icap_time_ms': 0}
-        slow_adblock_icap = []
 
     return render_template(
         'adblock.html',
@@ -1385,22 +1743,16 @@ def adblock():
         refresh_no_lists=(request.args.get('refresh_no_lists') == '1'),
         window=window_i,
         window_label=_window_label(window_i),
-        diagnostic_search=diagnostic_search,
-        diagnostic_tx=diagnostic_tx,
-        recent_blocks=recent_blocks,
-        recent_adblock_icap_events=recent_adblock_icap_events,
         adblock_icap_summary=adblock_icap_summary,
-        slow_adblock_icap=slow_adblock_icap,
     )
 
 
 @app.route('/webfilter', methods=['GET', 'POST'])
 def webfilter():
     store = get_webfilter_store()
-    diagnostic_store = get_diagnostic_store()
     _best_effort_init_store(store, key='webfilter', description='web filter')
 
-    tab = _normalize_choice(request.args.get('tab') or request.form.get('tab') or 'categories', ('categories', 'whitelist', 'blockedlog'), 'categories')
+    tab = _normalize_choice(request.args.get('tab') or request.form.get('tab') or 'categories', ('categories', 'whitelist'), 'categories')
 
     if request.method == 'POST':
         return _handle_webfilter_post(store, tab)
@@ -1410,29 +1762,6 @@ def webfilter():
     selected = set(settings.blocked_categories)
     whitelist_rows = store.list_whitelist()
     window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
-    diagnostic_search = (request.args.get('q') or '').strip().lower()
-    since_ts = int(time.time()) - window_i
-    blocked_log_rows = store.list_blocked_log(limit=200) if tab == 'blockedlog' else []
-    if tab == 'blockedlog':
-        blocked_log_rows = [
-            row for row in blocked_log_rows
-            if int(row.get('ts') or 0) >= since_ts
-            and (
-                not diagnostic_search
-                or diagnostic_search in str(row.get('url') or '').lower()
-                or diagnostic_search in str(row.get('src_ip') or '').lower()
-                or diagnostic_search in str(row.get('category') or '').lower()
-            )
-        ]
-        blocked_log_rows = _correlate_policy_events(diagnostic_store, blocked_log_rows[:200], window_i=window_i)
-
-    try:
-        webfilter_summary = {
-            'request_summary': diagnostic_store.activity_summary(since=since_ts),
-            'policy_tags': _present_top_tag_rows(diagnostic_store.top_policy_tags(since=since_ts, limit=6)),
-        }
-    except Exception:
-        webfilter_summary = {'request_summary': _present_observability_summary(), 'policy_tags': []}
     return render_template(
         'webfilter.html',
         tab=tab,
@@ -1440,11 +1769,8 @@ def webfilter():
         available_categories=available,
         selected=selected,
         whitelist_rows=whitelist_rows,
-        blocked_log_rows=blocked_log_rows,
         window=window_i,
         window_label=_window_label(window_i),
-        diagnostic_search=diagnostic_search,
-        webfilter_summary=webfilter_summary,
         err_source=(request.args.get('err_source') == '1'),
         wl_ok=(request.args.get('wl_ok') == '1'),
         wl_err=(request.args.get('wl_err') or ''),
@@ -1515,8 +1841,6 @@ def clamav():
     cfg = _current_managed_config()
     clamav_enabled = _is_clamav_enabled(cfg)
     window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
-    diagnostic_search = (request.args.get('q') or '').strip()
-    diagnostic_tx = (request.args.get('tx') or '').strip()
     since_ts = int(time.time()) - window_i
     proxy_id = get_proxy_id()
     health_payload = _clamav_remote_health(proxy_id)
@@ -1527,27 +1851,9 @@ def clamav():
     health_source = clamav_view['health_source']
 
     try:
-        diagnostic_store = get_diagnostic_store()
-        raw_icap_events = diagnostic_store.list_recent_icap(
-            since=since_ts,
-            search=diagnostic_search,
-            master_xaction=diagnostic_tx,
-            service='av',
-            limit=50,
-        )
-        recent_icap_events = _correlate_request_for_icap_events(
-            diagnostic_store,
-            _present_icap_events(raw_icap_events, limit=50),
-        )
-        clamav_icap_summary = diagnostic_store.icap_summary(since=since_ts, service='av')
-        slow_av_icap = _present_icap_events(
-            diagnostic_store.slowest_icap_events(since=since_ts, service='av', limit=5),
-            limit=5,
-        )
+        clamav_icap_summary = get_diagnostic_store().icap_summary(since=since_ts, service='av')
     except Exception:
-        recent_icap_events = []
         clamav_icap_summary = {'events': 0, 'avg_icap_time_ms': 0, 'max_icap_time_ms': 0}
-        slow_av_icap = []
 
     return render_template(
         'clamav.html',
@@ -1556,11 +1862,7 @@ def clamav():
         av_icap_health=av_icap_health,
         health_source=health_source,
         clamav_enabled=clamav_enabled,
-        recent_icap_events=recent_icap_events,
-        diagnostic_search=diagnostic_search,
-        diagnostic_tx=diagnostic_tx,
         clamav_icap_summary=clamav_icap_summary,
-        slow_av_icap=slow_av_icap,
         window=window_i,
         window_label=_window_label(window_i),
         eicar_result=request.args.get('eicar'),
@@ -1865,154 +2167,14 @@ def api_timeseries():
 
 @app.route('/live', methods=['GET'])
 def live():
-    store = get_store()
-    diagnostic_store = get_diagnostic_store()
-    subtab = (request.args.get('subtab') or 'activity').strip().lower()
-    mode = (request.args.get('mode') or 'domains').strip().lower()
-    sort = (request.args.get('sort') or ('recent' if mode in ('domains', 'clients') else 'top')).strip().lower()
-    order = (request.args.get('order') or 'desc').strip().lower()
-    limit = request.args.get('limit') or '100'
-    ip = (request.args.get('ip') or '').strip()
-    detail = (request.args.get('detail') or 'top').strip().lower()
-    domain = (request.args.get('domain') or '').strip().lower().lstrip('.')
-    search = (request.args.get('q') or '').strip().lower()
-    master_xaction = (request.args.get('tx') or '').strip()
-    service = (request.args.get('service') or '').strip().lower()
-    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
-    since_ts = int(time.time()) - window_i
-    window_label = _window_label(window_i)
-
-    limit_i = _bounded_int(limit, default=100, minimum=10, maximum=500)
-
-    # Sub-tab: global view of why content was not served from cache.
-    if subtab == 'reasons':
-        totals = store.get_totals(since=since_ts)
-        global_nocache_total, global_reasons = store.list_global_not_cached_reasons(limit=min(limit_i, 200))
-        return render_template(
-            'live.html',
-            subtab=subtab,
-            mode='domains',
-            sort=sort,
-            order=order,
-            limit=limit_i,
-            ip='',
-            detail='top',
-            domain='',
-            rows=[],
-            client_domains=[],
-            client_not_cached=[],
-            domain_reasons=[],
-            global_nocache_total=global_nocache_total,
-            global_reasons=global_reasons,
-            transaction_events=[],
-            totals=totals,
-            search=search,
-            master_xaction=master_xaction,
-            service=service,
-            window=window_i,
-            window_label=window_label,
-        )
-
-    subtab = 'activity'
-
-    if mode == 'clients':
-        rows = store.list_clients(sort=sort, order=order, limit=limit_i, since=since_ts, search=search)
-        client_domains = store.list_client_domains(ip=ip, sort=request.args.get('ip_sort') or 'top') if ip else []
-        client_not_cached = store.list_client_not_cached(ip=ip, limit=min(limit_i, 200)) if ip else []
-
-        # If a domain is explicitly excluded by configured rules, that is a stronger
-        # explanation than a generic MISS reason.
-        try:
-            exclusions = get_exclusions_store().list_all()
-            excluded_domains = [d.lower().lstrip('.') for d in exclusions.domains]
-
-            def is_excluded(domain: str) -> bool:
-                d = (domain or '').lower()
-                for ex in excluded_domains:
-                    if d == ex or d.endswith('.' + ex):
-                        return True
-                return False
-
-            for r in client_not_cached:
-                if is_excluded(r.get('domain', '')):
-                    r['reason'] = 'Excluded by configured domain rule'
-        except Exception:
-            pass
-    else:
-        mode = 'domains'
-        rows = store.list_domains(sort=sort, order=order, limit=limit_i, since=since_ts, search=search)
-        client_domains = []
-        client_not_cached = []
-        domain_reasons = store.list_domain_not_cached_reasons(domain=domain, limit=10) if domain and detail == 'nocache' else []
-
-    totals = store.get_totals(since=since_ts)
-    try:
-        raw_transactions = diagnostic_store.list_recent_transactions(
-            since=since_ts,
-            search=search,
-            client_ip=(ip if mode == 'clients' and ip else ''),
-            domain=(domain if mode == 'domains' and domain else ''),
-            master_xaction=master_xaction,
-            service=service,
-            limit=min(limit_i, 50),
-        )
-        transaction_events = _present_transaction_rows(raw_transactions, icap_limit=5)
-        live_top_user_agents = _present_top_value_rows(diagnostic_store.top_request_dimension('user_agent', since=since_ts, limit=6), max_label=72)
-        live_top_bump_modes = _present_top_value_rows(diagnostic_store.top_request_dimension('bump_mode', since=since_ts, limit=6), max_label=40)
-        live_top_tls_server_versions = _present_top_value_rows(diagnostic_store.top_request_dimension('tls_server_version', since=since_ts, limit=6), max_label=40)
-        live_top_policy_tags = _present_top_tag_rows(diagnostic_store.top_policy_tags(since=since_ts, limit=8), max_label=64)
-        slow_requests = _present_transaction_rows(diagnostic_store.slowest_requests(since=since_ts, limit=5), icap_limit=0)
-        slow_icap_events = _present_icap_events(diagnostic_store.slowest_icap_events(since=since_ts, limit=5), limit=5)
-    except Exception:
-        transaction_events = []
-        live_top_user_agents = []
-        live_top_bump_modes = []
-        live_top_tls_server_versions = []
-        live_top_policy_tags = []
-        slow_requests = []
-        slow_icap_events = []
-    return render_template(
-        'live.html',
-        subtab=subtab,
-        mode=mode,
-        sort=sort,
-        order=order,
-        limit=limit_i,
-        ip=ip,
-        detail=detail,
-        domain=domain,
-        rows=rows,
-        client_domains=client_domains,
-        client_not_cached=client_not_cached,
-        domain_reasons=domain_reasons,
-        global_nocache_total=0,
-        global_reasons=[],
-        transaction_events=transaction_events,
-        live_top_user_agents=live_top_user_agents,
-        live_top_bump_modes=live_top_bump_modes,
-        live_top_tls_server_versions=live_top_tls_server_versions,
-        live_top_policy_tags=live_top_policy_tags,
-        slow_requests=slow_requests,
-        slow_icap_events=slow_icap_events,
-        totals=totals,
-        search=search,
-        master_xaction=master_xaction,
-        service=service,
-        window=window_i,
-        window_label=window_label,
-    )
+    return _redirect_to('observability', **_legacy_live_redirect_params())
 
 
 @app.route('/live/export', methods=['GET'])
 def live_export():
-    store = get_store()
-    mode = (request.args.get('mode') or 'domains').strip().lower()
-    search = (request.args.get('q') or '').strip().lower()
-    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
-    since_ts = int(time.time()) - window_i
-    rows = store.export_rows(mode, since=since_ts, search=search, limit=1000)
-    headers = list(rows[0].keys()) if rows else []
-    return _csv_response(headers, ([row.get(header, '') for header in headers] for row in rows))
+    params = _legacy_live_redirect_params()
+    params['limit'] = _query_int_arg('limit', default=1000, minimum=10, maximum=1000)
+    return _redirect_to('observability_export', **params)
 
 
 @app.route('/reload', methods=['POST'])

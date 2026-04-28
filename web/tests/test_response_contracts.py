@@ -118,28 +118,31 @@ def test_ssl_errors_export_requires_login():
 def test_ssl_errors_export_csv_when_logged_in(monkeypatch):
     app_module = import_local_app_module()
 
-    class Row:
-        def __init__(self):
-            self.domain = "example.com"
-            self.category = "tls"
-            self.reason = "cert_unknown"
-            self.count = 2
-            self.last_seen = 123
-            self.sample = "https://example.com/"
+    class FakeQueries:
+        def ssl_overview(self, *, since: int, search: str, limit: int):
+            return {
+                "rows": [
+                    {
+                        "domain": "example.com",
+                        "category": "tls",
+                        "category_label": "TLS issue",
+                        "reason": "cert_unknown",
+                        "count": 2,
+                        "first_seen": 100,
+                        "last_seen": 123,
+                    }
+                ]
+            }
 
-    class FakeSSL:
-        def list_recent(self, *, since: int, search: str, limit: int):
-            return [Row()]
-
-    monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSL())
+    monkeypatch.setattr(app_module, "get_observability_queries", lambda: FakeQueries())
 
     c = app_module.app.test_client()
     login(c)
-    r = c.get("/ssl-errors/export?window=300")
+    r = c.get("/ssl-errors/export?window=300", follow_redirects=True)
     assert r.status_code == 200
     assert (r.headers.get("Content-Type", "") or "").startswith("text/csv")
     body = r.data.decode("utf-8", errors="replace")
-    assert "domain;category;reason;count;last_seen;sample" in body
+    assert "domain;category;category_label;reason;count;first_seen;last_seen" in body
     assert "example.com" in body
 
 
@@ -155,17 +158,29 @@ def test_live_export_requires_login():
 def test_live_export_csv_when_logged_in(monkeypatch):
     app_module = import_local_app_module()
 
-    class FakeLive:
-        def export_rows(self, mode: str, *, since: int, search: str, limit: int):
-            return [{"k": "v", "n": 1}]
+    class FakeQueries:
+        def top_destinations(self, *, since: int, search: str, limit: int, sort: str):
+            return [
+                {
+                    "domain": "example.com",
+                    "requests": 5,
+                    "pct": 50.0,
+                    "clients": 2,
+                    "transactions": 4,
+                    "cache_pct": 80.0,
+                    "av_icap_events": 1,
+                    "adblock_icap_events": 0,
+                    "last_seen": 123,
+                }
+            ]
 
-    monkeypatch.setattr(app_module, "get_store", lambda: FakeLive())
+    monkeypatch.setattr(app_module, "get_observability_queries", lambda: FakeQueries())
 
     c = app_module.app.test_client()
     login(c)
-    r = c.get("/live/export?mode=domains&window=300")
+    r = c.get("/live/export?mode=domains&window=300", follow_redirects=True)
     assert r.status_code == 200
     assert (r.headers.get("Content-Type", "") or "").startswith("text/csv")
     body = r.data.decode("utf-8", errors="replace")
-    assert "k;n" in body
-    assert "v;1" in body
+    assert "domain;requests;percent_of_total;clients;transactions;cache_hit_pct;av_icap_events;adblock_icap_events;last_seen" in body
+    assert "example.com" in body

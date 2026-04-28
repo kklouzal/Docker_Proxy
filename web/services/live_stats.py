@@ -759,7 +759,76 @@ class LiveStatsStore:
                 )
             return rows
 
+    def _should_use_diagnostic_windows(self, *, since: Optional[int]) -> bool:
+        return since is not None
+
+    def _diagnostic_domain_present_sql(self, column: str = "domain") -> str:
+        return f"COALESCE(NULLIF(TRIM({column}), ''), '') <> ''"
+
+    def _diagnostic_hit_sql(self, result_column: str = "result_code") -> str:
+        return (
+            f"(COALESCE({result_column}, '') <> '' "
+            f"AND {result_column} NOT LIKE 'TCP_DENIED%%' "
+            f"AND {result_column} LIKE '%%HIT%%')"
+        )
+
+    def _diagnostic_not_cached_reason_sql(
+        self,
+        *,
+        method_column: str = "method",
+        result_column: str = "result_code",
+        status_column: str = "http_status",
+    ) -> str:
+        return (
+            "CASE "
+            f"WHEN COALESCE(NULLIF(TRIM({method_column}), ''), '') <> '' "
+            f"AND UPPER({method_column}) NOT IN ('GET', 'HEAD', 'CONNECT') "
+            f"THEN CONCAT(UPPER({method_column}), ' method (not cacheable by default)') "
+            f"WHEN UPPER({method_column}) = 'CONNECT' "
+            f"OR {result_column} LIKE 'TCP_TUNNEL%%' "
+            f"OR {result_column} LIKE 'TCP_CONNECT%%' "
+            "THEN 'HTTPS tunnel (CONNECT) — not cacheable without SSL-bump' "
+            f"WHEN {status_column} IN (301, 302, 303, 307, 308) "
+            f"THEN CONCAT('Redirect response (', {status_column}, ') (often not cached without explicit freshness)') "
+            f"WHEN {status_column} >= 400 "
+            f"THEN CONCAT('Error response status ', {status_column}, ' (often not cached)') "
+            f"WHEN {result_column} LIKE 'TCP_DENIED%%' OR {result_column} LIKE '%%DENIED%%' "
+            "THEN 'Denied by ACL' "
+            f"WHEN {result_column} LIKE '%%BYPASS%%' "
+            "THEN 'Bypassed (cache deny rule or client no-cache)' "
+            f"WHEN {result_column} LIKE '%%ABORTED%%' "
+            "THEN 'Aborted (client/upstream closed connection)' "
+            f"WHEN {result_column} LIKE '%%SWAPFAIL%%' "
+            "THEN 'Cache swap failure' "
+            f"WHEN {result_column} LIKE '%%MISS%%' "
+            "THEN 'Cache miss (object not in cache)' "
+            "ELSE 'Not served from cache' END"
+        )
+
     def get_totals(self, *, since: Optional[int] = None) -> Dict[str, int]:
+        if self._should_use_diagnostic_windows(since=since):
+            hit_sql = self._diagnostic_hit_sql()
+            domain_present_sql = self._diagnostic_domain_present_sql()
+            with self._connect() as conn:
+                row = conn.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) AS requests,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests
+                    FROM diagnostic_requests
+                    WHERE proxy_id = %s AND ts >= %s AND {domain_present_sql}
+                    """,
+                    (get_proxy_id(), int(since)),
+                ).fetchone()
+            total = int(row[0] or 0) if row else 0
+            hits = int(row[1] or 0) if row else 0
+            return {
+                "domain_requests": total,
+                "domain_hit_requests": hits,
+                "client_requests": total,
+                "client_hit_requests": hits,
+            }
+
         where = "WHERE proxy_id = %s"
         params: List[Any] = [get_proxy_id()]
         if since is not None:
@@ -785,6 +854,65 @@ class LiveStatsStore:
         search: str = "",
     ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
+
+        if self._should_use_diagnostic_windows(since=since):
+            hit_sql = self._diagnostic_hit_sql()
+            domain_present_sql = self._diagnostic_domain_present_sql()
+            where = ["proxy_id = %s", "ts >= %s", domain_present_sql]
+            params: List[Any] = [get_proxy_id(), int(since)]
+            if search:
+                where.append("LOWER(domain) LIKE %s ESCAPE '\\\\'")
+                params.append(f"%{_escape_like(search)}%")
+            where_sql = "WHERE " + " AND ".join(where)
+
+            if sort == "top":
+                order_by = f"requests {order_sql}, last_seen DESC"
+            elif sort == "cache":
+                order_by = (
+                    f"(CASE WHEN COUNT(*) > 0 THEN "
+                    f"(1.0 * SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END) / COUNT(*)) ELSE 0 END) {order_sql}, "
+                    "requests DESC"
+                )
+            else:
+                order_by = f"last_seen {order_sql}, requests DESC"
+
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        domain,
+                        COUNT(*) AS requests,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,
+                        COALESCE(SUM(`bytes`), 0) AS bytes,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN `bytes` ELSE 0 END), 0) AS hit_bytes,
+                        MIN(ts) AS first_seen,
+                        MAX(ts) AS last_seen
+                    FROM diagnostic_requests
+                    {where_sql}
+                    GROUP BY domain
+                    ORDER BY {order_by}
+                    LIMIT %s
+                    """,
+                    tuple(params + [int(limit)]),
+                ).fetchall()
+
+            totals = self.get_totals(since=since)
+            total = totals["domain_requests"]
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                requests = int(r[1] or 0)
+                hit_requests = int(r[2] or 0)
+                out.append(
+                    {
+                        "domain": str(r[0]),
+                        "requests": requests,
+                        "pct": _pct(requests, total),
+                        "cache_pct": _pct(hit_requests, requests),
+                        "last_seen": int(r[6] or 0),
+                    }
+                )
+            return out
+
         where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
@@ -831,6 +959,65 @@ class LiveStatsStore:
         search: str = "",
     ) -> List[Dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
+
+        if self._should_use_diagnostic_windows(since=since):
+            hit_sql = self._diagnostic_hit_sql()
+            domain_present_sql = self._diagnostic_domain_present_sql()
+            where = ["proxy_id = %s", "ts >= %s", domain_present_sql]
+            params: List[Any] = [get_proxy_id(), int(since)]
+            if search:
+                where.append("LOWER(client_ip) LIKE %s ESCAPE '\\\\'")
+                params.append(f"%{_escape_like(search)}%")
+            where_sql = "WHERE " + " AND ".join(where)
+
+            if sort == "top":
+                order_by = f"requests {order_sql}, last_seen DESC"
+            elif sort == "cache":
+                order_by = (
+                    f"(CASE WHEN COUNT(*) > 0 THEN "
+                    f"(1.0 * SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END) / COUNT(*)) ELSE 0 END) {order_sql}, "
+                    "requests DESC"
+                )
+            else:
+                order_by = f"last_seen {order_sql}, requests DESC"
+
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        client_ip,
+                        COUNT(*) AS requests,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,
+                        COALESCE(SUM(`bytes`), 0) AS bytes,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN `bytes` ELSE 0 END), 0) AS hit_bytes,
+                        MIN(ts) AS first_seen,
+                        MAX(ts) AS last_seen
+                    FROM diagnostic_requests
+                    {where_sql}
+                    GROUP BY client_ip
+                    ORDER BY {order_by}
+                    LIMIT %s
+                    """,
+                    tuple(params + [int(limit)]),
+                ).fetchall()
+
+            totals = self.get_totals(since=since)
+            total = totals["client_requests"]
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                requests = int(r[1] or 0)
+                hit_requests = int(r[2] or 0)
+                out.append(
+                    {
+                        "ip": str(r[0]),
+                        "requests": requests,
+                        "pct": _pct(requests, total),
+                        "cache_pct": _pct(hit_requests, requests),
+                        "last_seen": int(r[6] or 0),
+                    }
+                )
+            return out
+
         where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
@@ -867,9 +1054,76 @@ class LiveStatsStore:
             )
         return out
 
-    def list_client_domains(self, ip: str, sort: str = "top", limit: int = 50) -> List[Dict[str, Any]]:
+    def list_client_domains(
+        self,
+        ip: str,
+        sort: str = "top",
+        limit: int = 50,
+        *,
+        since: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         if not ip:
             return []
+
+        if self._should_use_diagnostic_windows(since=since):
+            proxy_id = get_proxy_id()
+            hit_sql = self._diagnostic_hit_sql()
+            domain_present_sql = self._diagnostic_domain_present_sql()
+            where = ["proxy_id = %s", "client_ip = %s", "ts >= %s", domain_present_sql]
+            params: List[Any] = [proxy_id, ip, int(since)]
+            where_sql = "WHERE " + " AND ".join(where)
+
+            if sort == "recent":
+                order_by = "last_seen DESC"
+            elif sort == "cache":
+                order_by = (
+                    f"(CASE WHEN COUNT(*) > 0 THEN "
+                    f"(1.0 * SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END) / COUNT(*)) ELSE 0 END) DESC, "
+                    "requests DESC"
+                )
+            else:
+                order_by = "requests DESC, last_seen DESC"
+
+            with self._connect() as conn:
+                total_row = conn.execute(
+                    f"SELECT COUNT(*) FROM diagnostic_requests {where_sql}",
+                    tuple(params),
+                ).fetchone()
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        domain,
+                        COUNT(*) AS requests,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,
+                        COALESCE(SUM(`bytes`), 0) AS bytes,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN `bytes` ELSE 0 END), 0) AS hit_bytes,
+                        MIN(ts) AS first_seen,
+                        MAX(ts) AS last_seen
+                    FROM diagnostic_requests
+                    {where_sql}
+                    GROUP BY domain
+                    ORDER BY {order_by}
+                    LIMIT %s
+                    """,
+                    tuple(params + [int(limit)]),
+                ).fetchall()
+
+            total = int(total_row[0] or 0) if total_row else 0
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                requests = int(r[1] or 0)
+                hit_requests = int(r[2] or 0)
+                out.append(
+                    {
+                        "domain": str(r[0]),
+                        "requests": requests,
+                        "pct": _pct(requests, total),
+                        "cache_pct": _pct(hit_requests, requests),
+                        "last_seen": int(r[6] or 0),
+                    }
+                )
+            return out
+
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             client_domains_table = self._table(conn, "client_domains")
@@ -895,10 +1149,91 @@ class LiveStatsStore:
             )
         return out
 
-    def list_client_not_cached(self, ip: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_client_not_cached(
+        self,
+        ip: str,
+        limit: int = 50,
+        *,
+        since: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         if not ip:
             return []
         lim = max(10, min(500, int(limit)))
+
+        if self._should_use_diagnostic_windows(since=since):
+            hit_sql = self._diagnostic_hit_sql()
+            reason_sql = self._diagnostic_not_cached_reason_sql()
+            domain_present_sql = self._diagnostic_domain_present_sql()
+            sql = f"""
+            WITH filtered AS (
+                SELECT domain, ts, method, result_code, http_status, {hit_sql} AS is_hit
+                FROM diagnostic_requests
+                WHERE proxy_id = %s AND client_ip = %s AND ts >= %s AND {domain_present_sql}
+            ),
+            domain_counts AS (
+                SELECT
+                    domain,
+                    SUM(CASE WHEN is_hit THEN 0 ELSE 1 END) AS miss_requests,
+                    COUNT(*) AS total_requests,
+                    SUM(CASE WHEN is_hit THEN 1 ELSE 0 END) AS hit_requests,
+                    MAX(ts) AS last_seen
+                FROM filtered
+                GROUP BY domain
+                HAVING miss_requests > 0
+            ),
+            miss_rows AS (
+                SELECT domain, ts, {reason_sql} AS reason
+                FROM filtered
+                WHERE is_hit = 0
+            ),
+            reason_totals AS (
+                SELECT domain, reason, COUNT(*) AS requests, MAX(ts) AS last_seen
+                FROM miss_rows
+                GROUP BY domain, reason
+            ),
+            ranked_reasons AS (
+                SELECT
+                    domain,
+                    reason,
+                    requests,
+                    last_seen,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY domain
+                        ORDER BY requests DESC,
+                                 CASE WHEN reason IN ('Cache miss (object not in cache)', 'Not served from cache') THEN 1 ELSE 0 END ASC,
+                                 last_seen DESC
+                    ) AS rn
+                FROM reason_totals
+            )
+            SELECT
+                dc.domain,
+                dc.miss_requests,
+                dc.total_requests,
+                dc.hit_requests,
+                dc.last_seen,
+                COALESCE(rr.reason, 'Not served from cache') AS reason
+            FROM domain_counts dc
+            LEFT JOIN ranked_reasons rr ON rr.domain = dc.domain AND rr.rn = 1
+            ORDER BY dc.miss_requests DESC, dc.last_seen DESC
+            LIMIT %s
+            """
+            with self._connect() as conn:
+                rows = conn.execute(sql, (get_proxy_id(), ip, int(since), lim)).fetchall()
+
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                out.append(
+                    {
+                        "domain": str(r[0]),
+                        "miss_requests": int(r[1] or 0),
+                        "total_requests": int(r[2] or 0),
+                        "cache_pct": _pct(int(r[3] or 0), int(r[2] or 0)),
+                        "last_seen": int(r[4] or 0),
+                        "reason": str(r[5] or "Not served from cache"),
+                    }
+                )
+            return out
+
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
@@ -949,12 +1284,58 @@ class LiveStatsStore:
             return self.list_clients(sort="recent", order="desc", limit=lim, since=since, search=search)
         return self.list_domains(sort="recent", order="desc", limit=lim, since=since, search=search)
 
-    def list_domain_not_cached_reasons(self, domain: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def list_domain_not_cached_reasons(
+        self,
+        domain: str,
+        limit: int = 10,
+        *,
+        since: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         d = (domain or "").strip().lower().lstrip(".")
         if not d:
             return []
 
         lim = max(3, min(50, int(limit)))
+
+        if self._should_use_diagnostic_windows(since=since):
+            hit_sql = self._diagnostic_hit_sql()
+            reason_sql = self._diagnostic_not_cached_reason_sql()
+            domain_present_sql = self._diagnostic_domain_present_sql()
+            params = (get_proxy_id(), d, int(since))
+            where_sql = (
+                f"WHERE proxy_id = %s AND domain = %s AND ts >= %s AND {domain_present_sql} AND NOT {hit_sql}"
+            )
+            with self._connect() as conn:
+                total_row = conn.execute(
+                    f"SELECT COUNT(*) FROM diagnostic_requests {where_sql}",
+                    params,
+                ).fetchone()
+                rows = conn.execute(
+                    f"""
+                    SELECT {reason_sql} AS reason, COUNT(*) AS req, MAX(ts) AS last_seen
+                    FROM diagnostic_requests
+                    {where_sql}
+                    GROUP BY reason
+                    ORDER BY req DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    params + (lim,),
+                ).fetchall()
+
+            total = int(total_row[0] or 0) if total_row else 0
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                req = int(r[1] or 0)
+                out.append(
+                    {
+                        "reason": str(r[0]),
+                        "requests": req,
+                        "pct": _pct(req, total),
+                        "last_seen": int(r[2] or 0),
+                    }
+                )
+            return out
+
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
@@ -989,8 +1370,51 @@ class LiveStatsStore:
             )
         return out
 
-    def list_global_not_cached_reasons(self, limit: int = 50) -> Tuple[int, List[Dict[str, Any]]]:
+    def list_global_not_cached_reasons(
+        self,
+        limit: int = 50,
+        *,
+        since: Optional[int] = None,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
         lim = max(3, min(200, int(limit)))
+
+        if self._should_use_diagnostic_windows(since=since):
+            hit_sql = self._diagnostic_hit_sql()
+            reason_sql = self._diagnostic_not_cached_reason_sql()
+            domain_present_sql = self._diagnostic_domain_present_sql()
+            params = (get_proxy_id(), int(since))
+            where_sql = f"WHERE proxy_id = %s AND ts >= %s AND {domain_present_sql} AND NOT {hit_sql}"
+            with self._connect() as conn:
+                total_row = conn.execute(
+                    f"SELECT COUNT(*) FROM diagnostic_requests {where_sql}",
+                    params,
+                ).fetchone()
+                rows = conn.execute(
+                    f"""
+                    SELECT {reason_sql} AS reason, COUNT(*) AS req, MAX(ts) AS last_seen
+                    FROM diagnostic_requests
+                    {where_sql}
+                    GROUP BY reason
+                    ORDER BY req DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    params + (lim,),
+                ).fetchall()
+
+            total = int(total_row[0] or 0) if total_row else 0
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                req = int(r[1] or 0)
+                out.append(
+                    {
+                        "reason": str(r[0]),
+                        "requests": req,
+                        "pct": _pct(req, total),
+                        "last_seen": int(r[2] or 0),
+                    }
+                )
+            return total, out
+
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")

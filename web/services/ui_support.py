@@ -261,6 +261,13 @@ def _build_tls_details(row: Dict[str, Any]) -> list[str]:
     if client_version or client_cipher:
         suffix = f' / {client_cipher}' if client_cipher else ''
         details.append(f'client {client_version}{suffix}'.strip())
+
+    tls_summary = str(row.get('tls_summary') or '').strip()
+    if tls_summary:
+        for chunk in tls_summary.split('·'):
+            cleaned = chunk.strip()
+            if cleaned and cleaned not in details:
+                details.append(cleaned)
     return details
 
 

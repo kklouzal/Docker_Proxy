@@ -16,8 +16,8 @@
     </div>
   </div>
   <div class="page-actions">
-    <a class="btn ghost" href="{{ url_for('live', window=window, service='av') }}">Open Live trace</a>
-    <a class="btn ghost" href="{{ url_for('ssl_errors', window=window) }}">SSL errors</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window) }}">Observability hub</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='performance', window=window) }}">Latency pane</a>
   </div>
 </section>
 
@@ -153,10 +153,13 @@
 
   <section class="card">
     <div class="card-header">
-      <h2 class="card-title">Recent AV ICAP transactions</h2>
-      <span class="badge">window {{ window_label }}</span>
+      <h2 class="card-title">Observability handoff</h2>
+      <span class="badge">single pane of glass</span>
     </div>
     <div class="card-body stack-list">
+      <div class="surface-note small">
+        AV request traces, ICAP latency, suspicious findings, and correlated request evidence now live in <strong>Observability</strong> so operators do not have to bounce between multiple monitoring pages.
+      </div>
       <div class="summary-grid">
         <div class="stat compact-stat">
           <div class="stat-k">AV ICAP events</div>
@@ -171,140 +174,9 @@
           <div class="stat-v">{{ clamav_icap_summary.max_icap_time_ms }} ms</div>
         </div>
       </div>
-
-      <form class="form" method="get" action="{{ url_for('clamav') }}">
-        <div class="row-2">
-          <div>
-            <label for="window">Time window (seconds)</label>
-            <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
-          </div>
-          <div>
-            <label for="q">Search (host, URL, client, transaction)</label>
-            <input id="q" name="q" type="text" placeholder="contains..." value="{{ diagnostic_search }}" />
-          </div>
-        </div>
-        <div>
-          <label for="tx">Master transaction (optional)</label>
-          <input id="tx" name="tx" type="text" placeholder="e.g. tx777" value="{{ diagnostic_tx }}" />
-        </div>
-        <div class="actions">
-          <button class="btn primary" type="submit">Apply</button>
-          <a class="btn ghost" href="{{ url_for('clamav') }}">Reset</a>
-        </div>
-      </form>
-
-      <div class="surface-note small">
-        These rows come from Squid's <span class="mono">icap_log</span> and are stored in MySQL by default so you can correlate AV adaptation latency and service chains with Live traffic and SSL error events.
-      </div>
-
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th class="num">Seen</th>
-              <th>Client</th>
-              <th>Target</th>
-              <th class="num">ICAP time</th>
-              <th>Adaptation</th>
-              <th>Request correlation</th>
-              <th class="num">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for event in recent_icap_events %}
-              <tr>
-                <td class="num"><span class="small">{{ fmt_ts(event.ts) }}</span></td>
-                <td>
-                  <div class="stack-sm">
-                    <span class="mono">{{ event.client_ip }}</span>
-                    <span class="small">{{ event.method }}</span>
-                  </div>
-                </td>
-                <td>
-                  <div class="stack-sm">
-                    <span class="mono">{{ event.target_display }}</span>
-                    {% if event.url %}
-                      <span class="small text-break">{{ event.url }}</span>
-                    {% endif %}
-                  </div>
-                </td>
-                <td class="num">{{ event.icap_time_ms }} ms</td>
-                <td>
-                  <div class="stack-sm">
-                    <span class="badge">{{ event.service_label }}</span>
-                    <span class="badge {{ event.correlation.tone }}">{{ event.correlation.label }}</span>
-                    {% if event.adapt_summary_short %}
-                      <span class="small text-break">{{ event.adapt_summary_short }}</span>
-                    {% endif %}
-                    {% if event.adapt_details_short %}
-                      <span class="small text-break">{{ event.adapt_details_short }}</span>
-                    {% endif %}
-                    {% if event.tls_details %}
-                      <span class="small">{{ event.tls_details|join(' · ') }}</span>
-                    {% endif %}
-                    {% if event.policy_tags %}
-                      <div class="hero-badges">
-                        {% for tag in event.policy_tags %}
-                          <span class="badge">{{ tag }}</span>
-                        {% endfor %}
-                      </div>
-                    {% endif %}
-                    {% for header in event.header_details %}
-                      <span class="small text-break"><strong>{{ header.label }}:</strong> {{ header.value }}</span>
-                    {% endfor %}
-                  </div>
-                </td>
-                <td>
-                  <div class="stack-sm">
-                  {% if event.master_xaction %}
-                    <span class="small mono">{{ event.master_xaction }}</span>
-                  {% else %}
-                    <span class="small">No master transaction recorded.</span>
-                  {% endif %}
-                  {% if event.correlated_request %}
-                    <div class="surface-note small">
-                      <strong>Request:</strong>
-                      <span class="mono">{{ event.correlated_request.method }} {{ event.correlated_request.target_display }}</span>
-                      from <span class="mono">{{ event.correlated_request.client_ip }}</span>
-                      returned <span class="mono">{{ event.correlated_request.result_summary }}</span>.
-                      {% if event.correlated_request.tls_details %}
-                        <div>{{ event.correlated_request.tls_details|join(' · ') }}</div>
-                      {% endif %}
-                      {% if event.correlated_request.policy_tags %}
-                        <div>Policy hints: {{ event.correlated_request.policy_tags|join(', ') }}.</div>
-                      {% endif %}
-                    </div>
-                  {% endif %}
-                  </div>
-                </td>
-                <td class="num">
-                  <div class="table-action-stack">
-                    {% if event.master_xaction %}
-                      <a class="btn" href="{{ url_for('live', mode='domains', window=window, tx=event.master_xaction) }}">Live</a>
-                    {% endif %}
-                    {% if event.target_display and event.target_display != '-' %}
-                      <a class="btn" href="{{ url_for('ssl_errors', q=event.target_display, window=window) }}">SSL errors</a>
-                    {% endif %}
-                  </div>
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      {% if recent_icap_events|length == 0 %}
-        <div class="surface-note small">No AV ICAP transactions were captured in this window yet.</div>
-      {% endif %}
-
-      <div class="surface-note small"><strong>Slowest AV ICAP samples:</strong>
-        {% if slow_av_icap %}
-          {% for event in slow_av_icap %}
-            <span class="badge">{{ event.target_display }} · {{ event.icap_time_ms }} ms</span>
-          {% endfor %}
-        {% else %}
-          none yet.
-        {% endif %}
+      <div class="actions">
+        <a class="btn primary" href="{{ url_for('observability', pane='security', window=window) }}">Open security pane</a>
+        <a class="btn" href="{{ url_for('observability', pane='performance', window=window) }}">Open performance pane</a>
       </div>
     </div>
   </section>

@@ -17,8 +17,8 @@
   </div>
   <div class="page-actions">
     <a class="btn ghost" href="{{ url_for('pac_builder') }}">Open PAC builder</a>
-    <a class="btn ghost" href="{{ url_for('live') }}">Review Live traffic</a>
-    <a class="btn ghost" href="{{ url_for('ssl_errors') }}">Review SSL errors</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='destinations') }}">Review traffic</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='ssl') }}">Review SSL incidents</a>
   </div>
 </section>
 

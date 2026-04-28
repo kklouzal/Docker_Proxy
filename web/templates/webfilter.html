@@ -17,7 +17,7 @@
     </div>
   </div>
   <div class="page-actions">
-    <a class="btn ghost" href="{{ url_for('live', window=window if window is defined else 3600) }}">Open Live</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window if window is defined else 3600) }}">Observability hub</a>
     <a class="btn ghost" href="{{ url_for('exclusions') }}">Exclusions</a>
     <a class="btn ghost" href="{{ url_for('adblock') }}">Ad blocking</a>
   </div>
@@ -36,16 +36,11 @@
 {% call scope_notice('proxy', 'Selected proxy only', 'Whitelist entries on this page apply only to ' ~ active_proxy.display_name ~ '.') %}
 <div>Whitelist rules are evaluated before category blocking for this proxy.</div>
 {% endcall %}
-{% elif tab == 'blockedlog' %}
-{% call scope_notice('proxy', 'Selected proxy only', 'Blocked-request logs on this page are showing activity from ' ~ active_proxy.display_name ~ ' only.') %}
-<div>This keeps incident review and policy tuning scoped to the proxy you intentionally selected.</div>
-{% endcall %}
 {% endif %}
 
 <div class="page-tabs">
   <a class="btn {{ 'primary' if tab == 'categories' else 'ghost' }}" href="{{ url_for('webfilter', tab='categories') }}">Categories</a>
   <a class="btn {{ 'primary' if tab == 'whitelist' else 'ghost' }}" href="{{ url_for('webfilter', tab='whitelist') }}">Whitelist</a>
-  <a class="btn {{ 'primary' if tab == 'blockedlog' else 'ghost' }}" href="{{ url_for('webfilter', tab='blockedlog') }}">Blocked Log</a>
 </div>
 
 {% if tab == 'whitelist' %}
@@ -117,84 +112,6 @@
           <div class="help">No whitelist entries yet.</div>
         {% endif %}
       </div>
-    </div>
-  </section>
-
-{% elif tab == 'blockedlog' %}
-  <section class="card">
-    <div class="card-header">
-      <h2 class="card-title">Blocked Log</h2>
-      <div class="actions">
-        {{ scope_chip('proxy') }}
-        <span class="badge">Most recent first</span>
-      </div>
-    </div>
-    <div class="card-body">
-      <form class="form" method="get" action="{{ url_for('webfilter') }}">
-        <input type="hidden" name="tab" value="blockedlog">
-        <div class="row-2">
-          <div>
-            <label for="window">Time window (seconds)</label>
-            <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
-          </div>
-          <div>
-            <label for="q">Search blocked log</label>
-            <input id="q" name="q" type="text" placeholder="client, URL, category" value="{{ diagnostic_search }}" />
-          </div>
-        </div>
-        <div class="actions">
-          <button class="btn primary" type="submit">Apply</button>
-          <a class="btn ghost" href="{{ url_for('webfilter', tab='blockedlog') }}">Reset</a>
-          <a class="btn" href="{{ url_for('live', window=window) }}">Open Live trace</a>
-        </div>
-      </form>
-
-      {% if blocked_log_rows and blocked_log_rows|length > 0 %}
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Client IP</th>
-                <th>Destination URL</th>
-                <th>Category</th>
-                <th>Correlated request</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for r in blocked_log_rows %}
-                <tr>
-                  <td class="small">{{ fmt_ts(r.ts) if r.ts else '' }}</td>
-                  <td class="mono">{{ r.src_ip }}</td>
-                  <td class="mono text-break">{{ r.url }}</td>
-                  <td><span class="badge danger">{{ r.category }}</span></td>
-                  <td>
-                    {% if r.correlated_candidates %}
-                      {% set candidate = r.correlated_candidates[0] %}
-                      <div class="surface-note small">
-                        <span class="badge {{ candidate.correlation.tone }}">{{ candidate.correlation.label }}</span>
-                        <span class="mono">{{ candidate.method }} {{ candidate.target_display }}</span>
-                      </div>
-                    {% else %}
-                      <span class="small">No nearby structured request matched.</span>
-                    {% endif %}
-                  </td>
-                  <td>
-                    <div class="table-action-stack">
-                      <a class="btn" href="{{ url_for('live', window=window, q=r.src_ip) }}">Live</a>
-                      <a class="btn" href="{{ url_for('ssl_errors', window=window, q=r.url) }}">SSL errors</a>
-                    </div>
-                  </td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="help">No blocked requests have been logged yet.</div>
-      {% endif %}
-      <div class="surface-note small">This log is populated when Squid blocks a request due to a selected category (whitelisted destinations are allowed first).</div>
     </div>
   </section>
 
@@ -330,7 +247,7 @@
 
       <section class="card">
         <div class="card-header">
-          <h2 class="card-title">Effective summary</h2>
+          <h2 class="card-title">Effective policy summary</h2>
           <span class="badge">{{ selected|length }} blocked</span>
         </div>
         <div class="card-body">
@@ -340,27 +257,23 @@
               <div class="stat-v">{{ 'On' if settings.enabled else 'Off' }}</div>
             </div>
             <div class="stat">
+              <div class="stat-k">Blocked categories</div>
+              <div class="stat-v">{{ selected|length }}</div>
+            </div>
+            <div class="stat">
               <div class="stat-k">Whitelist</div>
               <div class="stat-v">{{ whitelist_rows|length }}</div>
             </div>
             <div class="stat">
-              <div class="stat-k">Requests ({{ window_label }})</div>
-              <div class="stat-v">{{ webfilter_summary.request_summary.requests }}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-k">Transactions</div>
-              <div class="stat-v">{{ webfilter_summary.request_summary.transactions }}</div>
+              <div class="stat-k">Observability</div>
+              <div class="stat-v">Hub</div>
             </div>
           </div>
           <div class="surface-note small">
-            <strong>Policy tags seen recently:</strong>
-            {% if webfilter_summary.policy_tags %}
-              {% for row in webfilter_summary.policy_tags %}
-                <span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>
-              {% endfor %}
-            {% else %}
-              none in the selected window.
-            {% endif %}
+            Blocked-request review and recent enforcement evidence now live in <strong>Observability → Security</strong>, leaving this page focused on rule configuration.
+          </div>
+          <div class="actions">
+            <a class="btn" href="{{ url_for('observability', pane='security', window=window if window is defined else 3600) }}">Open security pane</a>
           </div>
         </div>
       </section>

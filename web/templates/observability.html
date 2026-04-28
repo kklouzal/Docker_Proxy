@@ -1,0 +1,571 @@
+{% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
+
+{% block title %}Observability · Squid Flask Proxy{% endblock %}
+
+{% block content %}
+{% set payload = pane_payload %}
+<section class="card section-shell">
+  <div class="page-heading">
+    <div class="page-hero-copy">
+      <span class="page-eyebrow">Operator pane of glass</span>
+      <h1 class="page-title">Observability</h1>
+      <p class="page-subtitle">A cohesive view over structured MySQL request records for {{ active_proxy.display_name }}, organized by the question an administrator is actually trying to answer.</p>
+      <div class="hero-badges">
+        <span class="badge">{{ summary.request_records }} request records</span>
+        <span class="badge">{{ summary.transactions }} traced transactions</span>
+        <span class="badge">window {{ window_label }}</span>
+      </div>
+    </div>
+    <div class="page-actions">
+      <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window, q=search) }}">Security pane</a>
+      <a class="btn ghost" href="{{ url_for('observability', pane='performance', window=window) }}">Performance pane</a>
+      <a class="btn ghost" href="{{ url_for('observability', pane='transport', window=window, q=search) }}">Transport pane</a>
+      <a class="btn ghost" href="{{ url_for('clamav', window=window) }}">ClamAV controls</a>
+      <a class="btn ghost" href="{{ url_for('webfilter', tab='categories') }}">Web filtering controls</a>
+      <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Export CSV</a>
+    </div>
+  </div>
+</section>
+
+<section class="card section-shell">
+{% call scope_notice('proxy', 'Selected proxy only', 'Every number and quick action in this observability hub is scoped to ' ~ active_proxy.display_name ~ ' only.') %}
+<div>Use the pane tabs below to reorganize the same request facts by destination, client, cache, SSL incidents, security enforcement, performance, or SOCKS transport.</div>
+{% endcall %}
+</section>
+
+<div class="actions page-tabs">
+  <a class="btn {{ 'primary' if pane == 'overview' else 'ghost' }}" href="{{ url_for('observability', pane='overview', window=window, limit=limit, q=search, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Overview</a>
+  <a class="btn {{ 'primary' if pane == 'destinations' else 'ghost' }}" href="{{ url_for('observability', pane='destinations', window=window, limit=limit, q=search) }}">Destinations</a>
+  <a class="btn {{ 'primary' if pane == 'clients' else 'ghost' }}" href="{{ url_for('observability', pane='clients', window=window, limit=limit, q=search, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Clients</a>
+  <a class="btn {{ 'primary' if pane == 'cache' else 'ghost' }}" href="{{ url_for('observability', pane='cache', window=window, limit=limit, q=search) }}">Cache</a>
+  <a class="btn {{ 'primary' if pane == 'ssl' else 'ghost' }}" href="{{ url_for('observability', pane='ssl', window=window, limit=limit, q=search) }}">SSL</a>
+  <a class="btn {{ 'primary' if pane == 'security' else 'ghost' }}" href="{{ url_for('observability', pane='security', window=window, limit=limit, q=search) }}">Security</a>
+  <a class="btn {{ 'primary' if pane == 'performance' else 'ghost' }}" href="{{ url_for('observability', pane='performance', window=window, limit=limit) }}">Performance</a>
+  <a class="btn {{ 'primary' if pane == 'transport' else 'ghost' }}" href="{{ url_for('observability', pane='transport', window=window, limit=limit, q=search) }}">Transport</a>
+</div>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Filters</h2>
+    <span class="badge">pane {{ pane }}</span>
+  </div>
+  <div class="card-body">
+    <form class="form" method="get" action="{{ url_for('observability') }}">
+      <input type="hidden" name="pane" value="{{ pane }}" />
+
+      {% if pane in ['destinations', 'clients', 'cache'] %}
+      <div class="row-2">
+        <div>
+          <label for="sort">Sort</label>
+          <select id="sort" name="sort">
+            {% if pane == 'destinations' %}
+              <option value="requests" {% if sort == 'requests' %}selected{% endif %}>Top by requests</option>
+              <option value="recent" {% if sort == 'recent' %}selected{% endif %}>Newest activity</option>
+              <option value="cache" {% if sort == 'cache' %}selected{% endif %}>Best cache rate</option>
+              <option value="clients" {% if sort == 'clients' %}selected{% endif %}>Most clients</option>
+            {% elif pane == 'clients' %}
+              <option value="requests" {% if sort == 'requests' %}selected{% endif %}>Top by requests</option>
+              <option value="recent" {% if sort == 'recent' %}selected{% endif %}>Newest activity</option>
+              <option value="cache" {% if sort == 'cache' %}selected{% endif %}>Best cache rate</option>
+              <option value="destinations" {% if sort == 'destinations' %}selected{% endif %}>Most destinations</option>
+            {% else %}
+              <option value="requests" {% if sort == 'requests' %}selected{% endif %}>Top by misses</option>
+              <option value="recent" {% if sort == 'recent' %}selected{% endif %}>Newest activity</option>
+              <option value="domains" {% if sort == 'domains' %}selected{% endif %}>Most domains affected</option>
+              <option value="clients" {% if sort == 'clients' %}selected{% endif %}>Most clients affected</option>
+            {% endif %}
+          </select>
+        </div>
+        <div>
+          <label for="limit">Limit</label>
+          <input id="limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
+        </div>
+      </div>
+      {% else %}
+      <div class="row-2">
+        <div>
+          <label for="limit">Rows / samples</label>
+          <input id="limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
+        </div>
+        <div>
+          <label for="window">Time window (seconds)</label>
+          <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+        </div>
+      </div>
+      {% endif %}
+
+      {% if pane in ['destinations', 'clients', 'cache', 'overview', 'ssl', 'security', 'transport'] %}
+      <div class="row-2">
+        {% if pane in ['destinations', 'clients', 'cache'] %}
+        <div>
+          <label for="window">Time window (seconds)</label>
+          <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+        </div>
+        {% endif %}
+        <div>
+          <label for="q">Search</label>
+          <input id="q" name="q" type="text" placeholder="filter this pane..." value="{{ search }}" />
+        </div>
+      </div>
+      {% endif %}
+
+      {% if pane == 'clients' or pane == 'overview' %}
+      <div>
+        <input type="hidden" name="resolve_hostnames" value="0" />
+        <label class="checkbox-inline">
+          <input type="checkbox" name="resolve_hostnames" value="1" {% if resolve_hostnames %}checked{% endif %} />
+          Resolve reverse-DNS hostnames when possible
+        </label>
+        <div class="small">Hostname lookups are best-effort and cached so missing PTR records do not make the page feel sluggish.</div>
+      </div>
+      {% endif %}
+
+      <div class="actions">
+        <button class="btn primary" type="submit">Apply</button>
+        <a class="btn ghost" href="{{ url_for('observability', pane=pane) }}">Reset</a>
+      </div>
+    </form>
+  </div>
+</section>
+
+{% if pane == 'overview' %}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Largest signals</h2>
+    <span class="badge">operational snapshot</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Request records</div><div class="stat-v">{{ payload.summary.request_records }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Cache hit rate</div><div class="stat-v">{{ '%.1f'|format(payload.summary.cache_hit_pct) }}%</div></div>
+      <div class="stat compact-stat"><div class="stat-k">SSL buckets</div><div class="stat-v">{{ payload.ssl.summary.bucket_count }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Potential AV findings</div><div class="stat-v">{{ payload.security.summary.potential_findings }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Content-control blocks</div><div class="stat-v">{{ payload.security.summary.combined_blocks }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">SOCKS events</div><div class="stat-v">{{ payload.transport.summary.total or 0 }}</div></div>
+    </div>
+    <div class="surface-note small">This snapshot is intentionally opinionated: it highlights the traffic, incidents, and enforcement signals administrators usually care about first before drilling into a specialist page.</div>
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Top destinations</h2><span class="badge">{{ payload.destinations|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Domain</th><th class="num">Requests</th><th class="num">Clients</th><th class="num">Cache %</th><th class="num">Action</th></tr></thead>
+        <tbody>
+          {% for row in payload.destinations %}
+          <tr>
+            <td class="mono">{{ row.domain }}</td>
+            <td class="num">{{ row.requests }}</td>
+            <td class="num">{{ row.clients }}</td>
+            <td class="num">{{ '%.1f'|format(row.cache_pct) }}%</td>
+            <td class="num"><a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Inspect</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Top clients</h2><span class="badge">{{ payload.clients|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Client</th><th class="num">Requests</th><th class="num">Destinations</th><th class="num">Cache %</th><th class="num">Action</th></tr></thead>
+        <tbody>
+          {% for row in payload.clients %}
+          <tr>
+            <td><div class="stack-sm"><span class="mono">{{ row.ip }}</span>{% if row.hostname %}<span class="small">{{ row.hostname }}</span>{% endif %}</div></td>
+            <td class="num">{{ row.requests }}</td>
+            <td class="num">{{ row.destinations }}</td>
+            <td class="num">{{ '%.1f'|format(row.cache_pct) }}%</td>
+            <td class="num"><a class="btn" href="{{ url_for('observability', pane='clients', q=row.ip, window=window, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Inspect</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+</div>
+
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Cache reasons worth attention</h2><span class="badge">{{ payload.cache_reasons|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Reason</th><th class="num">Requests</th><th class="num">Domains</th><th class="num">Clients</th></tr></thead>
+        <tbody>
+          {% for row in payload.cache_reasons %}
+          <tr><td>{{ row.reason }}</td><td class="num">{{ row.requests }}</td><td class="num">{{ row.domains }}</td><td class="num">{{ row.clients }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Security and enforcement overview</h2><span class="badge">incident-leading indicators</span></div>
+    <div class="card-body content-stack">
+      <div>
+        <div class="small"><strong>Top SSL domains</strong></div>
+        <div class="hero-badges">
+          {% for row in payload.ssl.top_domains %}<span class="badge">{{ row.domain }} · {{ row.total }}</span>{% endfor %}
+          {% if not payload.ssl.top_domains %}<span class="small">No SSL pressure points in this window.</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="small"><strong>Potential AV targets</strong></div>
+        <div class="hero-badges">
+          {% for row in payload.security.av_top_targets %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>{% endfor %}
+          {% if not payload.security.av_top_targets %}<span class="small">No suspicious AV findings in this window.</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="small"><strong>Top web-filter categories</strong></div>
+        <div class="hero-badges">
+          {% for row in payload.security.webfilter_top_categories %}<span class="badge">{{ row.category }} · {{ row.blocks }}</span>{% endfor %}
+          {% if not payload.security.webfilter_top_categories %}<span class="small">No content-filter blocks in this window.</span>{% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Slowest request paths</h2><span class="badge">performance</span></div>
+    <div class="card-body stack-sm">
+      {% for row in payload.performance.slow_requests %}
+        <div class="surface-note small"><span class="mono">{{ row.method }} {{ row.target_display }}</span> · {{ row.duration_ms }} ms · {{ row.result_summary }}</div>
+      {% endfor %}
+      {% if not payload.performance.slow_requests %}<div class="surface-note small">No slow request samples in this window.</div>{% endif %}
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Transport health</h2><span class="badge">SOCKS</span></div>
+    <div class="card-body content-stack">
+      <div class="summary-grid">
+        <div class="stat compact-stat"><div class="stat-k">Events</div><div class="stat-v">{{ payload.transport.summary.total or 0 }}</div></div>
+        <div class="stat compact-stat"><div class="stat-k">Blocked</div><div class="stat-v">{{ payload.transport.summary.blocked or 0 }}</div></div>
+        <div class="stat compact-stat"><div class="stat-k">Errors</div><div class="stat-v">{{ payload.transport.summary.errors or 0 }}</div></div>
+      </div>
+      {% if payload.transport.nat_warning %}<div class="banner warning"><div class="banner-copy"><strong>Client IPs may be masked</strong><div class="small">{{ payload.transport.nat_warning_text }}</div></div></div>{% endif %}
+      <div class="actions"><a class="btn" href="{{ url_for('observability', pane='transport', window=window, q=search) }}">Open transport pane</a></div>
+    </div>
+  </section>
+</div>
+
+{% elif pane == 'destinations' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Requests by destination domain</h2><span class="badge">{{ payload.rows|length }} rows</span></div>
+  <div class="card-body">
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Domain</th><th class="num">Requests</th><th class="num">% total</th><th class="num">Clients</th><th class="num">Traces</th><th class="num">Cache %</th><th class="num">AV ICAP</th><th class="num">Adblock ICAP</th><th class="num">Last seen</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.rows %}
+        <tr>
+          <td class="mono">{{ row.domain }}</td>
+          <td class="num">{{ row.requests }}</td>
+          <td class="num">{{ '%.1f'|format(row.pct) }}%</td>
+          <td class="num">{{ row.clients }}</td>
+          <td class="num">{{ row.transactions }}</td>
+          <td class="num">{{ '%.1f'|format(row.cache_pct) }}%</td>
+          <td class="num">{{ row.av_icap_events }}</td>
+          <td class="num">{{ row.adblock_icap_events }}</td>
+          <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
+          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Focus</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">SSL pane</a><a class="btn" href="{{ url_for('observability', pane='security', q=row.domain, window=window) }}">Security</a><a class="btn" href="{{ url_for('exclusions') }}">Exclusions</a></div></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% if not payload.rows %}<div class="surface-note small">No destination rows matched this window.</div>{% endif %}
+  </div>
+</section>
+
+{% elif pane == 'clients' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Requests by client IP</h2><span class="badge">{{ payload.rows|length }} rows</span></div>
+  <div class="card-body">
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Client</th><th class="num">Requests</th><th class="num">% total</th><th class="num">Destinations</th><th class="num">Traces</th><th class="num">Cache %</th><th class="num">AV ICAP</th><th class="num">Adblock ICAP</th><th class="num">Last seen</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.rows %}
+        <tr>
+          <td><div class="stack-sm"><span class="mono">{{ row.ip }}</span>{% if row.hostname %}<span class="small">{{ row.hostname }}{% if row.hostname_source %} · {{ row.hostname_source }}{% endif %}</span>{% elif resolve_hostnames %}<span class="small">hostname unavailable</span>{% endif %}</div></td>
+          <td class="num">{{ row.requests }}</td>
+          <td class="num">{{ '%.1f'|format(row.pct) }}%</td>
+          <td class="num">{{ row.destinations }}</td>
+          <td class="num">{{ row.transactions }}</td>
+          <td class="num">{{ '%.1f'|format(row.cache_pct) }}%</td>
+          <td class="num">{{ row.av_icap_events }}</td>
+          <td class="num">{{ row.adblock_icap_events }}</td>
+          <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
+          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='clients', q=row.ip, window=window, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Focus</a><a class="btn" href="{{ url_for('observability', pane='security', q=row.ip, window=window) }}">Security</a><a class="btn" href="{{ url_for('observability', pane='transport', q=row.ip, window=window) }}">Transport</a></div></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% if not payload.rows %}<div class="surface-note small">No client rows matched this window.</div>{% endif %}
+  </div>
+</section>
+
+{% elif pane == 'cache' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Cache miss / bypass reasons</h2><span class="badge">{{ payload.rows|length }} reasons</span></div>
+  <div class="card-body">
+    <div class="surface-note small">These reasons are inferred from method, Squid result code, and status captured in the structured request stream. They are meant to be intuitive operational cues, not pretend-perfect HTTP cache semantics.</div>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Reason</th><th class="num">Requests</th><th class="num">% of misses</th><th class="num">Domains</th><th class="num">Clients</th><th class="num">Last seen</th></tr></thead>
+      <tbody>
+        {% for row in payload.rows %}
+        <tr><td>{{ row.reason }}</td><td class="num">{{ row.requests }}</td><td class="num">{{ '%.1f'|format(row.pct) }}%</td><td class="num">{{ row.domains }}</td><td class="num">{{ row.clients }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% if not payload.rows %}<div class="surface-note small">No non-cached request reasons matched this window.</div>{% endif %}
+  </div>
+</section>
+
+{% elif pane == 'ssl' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">SSL/TLS incident clusters</h2><span class="badge">{{ payload.summary.bucket_count }} buckets</span></div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Buckets</div><div class="stat-v">{{ payload.summary.bucket_count }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Events</div><div class="stat-v">{{ payload.summary.total_events }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Known domains</div><div class="stat-v">{{ payload.summary.known_domains }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Missing hostnames</div><div class="stat-v">{{ payload.summary.unknown_target_buckets }}</div></div>
+    </div>
+    <div class="hero-badges">
+      {% for row in payload.top_categories %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>{% endfor %}
+      {% if not payload.top_categories %}<span class="small">No SSL category signals yet.</span>{% endif %}
+    </div>
+  </div>
+</section>
+
+{% if payload.hints %}
+<section class="card"><div class="card-header"><h2 class="card-title">Operator guidance</h2><span class="badge">workflow</span></div><div class="card-body content-stack">{% for hint in payload.hints %}<div class="banner {{ hint.kind }}"><div class="banner-copy"><strong>{{ hint.title }}</strong><div class="small">{{ hint.body }}</div></div></div>{% endfor %}</div></section>
+{% endif %}
+
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Top domains</h2><span class="badge">{{ payload.top_domains|length }} rows</span></div>
+  <div class="card-body">
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Domain</th><th class="num">Total errors</th><th class="num">Buckets</th><th class="num">Last seen</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.top_domains %}
+        <tr><td class="mono">{{ row.domain }}</td><td class="num">{{ row.total }}</td><td class="num">{{ row.buckets }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td><td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">Deep dive</a><a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Destination</a></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Recent SSL error buckets</h2><span class="badge">{{ payload.rows|length }} rows</span></div>
+  <div class="card-body">
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Target</th><th>Signal</th><th>Reason</th><th class="num">Count</th><th class="num">Last seen</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.rows %}
+        <tr>
+          <td><div class="mono">{{ row.target_display }}</div>{% if not row.has_domain %}<div class="small">Hostname not captured</div>{% endif %}</td>
+          <td><div class="stack-sm"><span class="badge {{ row.badge_tone }}">{{ row.category_label }}</span><span class="small mono">{{ row.category }}</span></div></td>
+          <td><div class="stack-sm"><span>{{ row.reason }}</span><span class="small">{{ row.operator_note }}</span></div></td>
+          <td class="num">{{ row.count }}</td>
+          <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
+          <td class="num"><div class="table-action-stack">{% if row.domain %}<a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">Deep dive</a><a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Domain</a>{% else %}<a class="btn" href="{{ url_for('observability', pane='ssl', window=window) }}">Deep dive</a>{% endif %}</div></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% if not payload.rows %}<div class="surface-note small">No SSL/TLS buckets matched this window.</div>{% endif %}
+  </div>
+</section>
+
+{% elif pane == 'security' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Security and enforcement overview</h2><span class="badge">window {{ window_label }}</span></div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">AV ICAP events</div><div class="stat-v">{{ payload.summary.av_events }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Potential AV findings</div><div class="stat-v">{{ payload.summary.potential_findings }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Adblock blocks</div><div class="stat-v">{{ payload.summary.adblock_blocks }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Web-filter blocks</div><div class="stat-v">{{ payload.summary.webfilter_blocks }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Blocked categories</div><div class="stat-v">{{ payload.summary.webfilter_categories }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Combined blocks</div><div class="stat-v">{{ payload.summary.combined_blocks }}</div></div>
+    </div>
+    {% for note in payload.notes %}<div class="surface-note small">{{ note }}</div>{% endfor %}
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Potential AV findings</h2><span class="badge">{{ payload.av_rows|length }} rows</span></div>
+    <div class="card-body content-stack">
+      <div class="hero-badges">
+        {% for row in payload.av_top_targets %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>{% endfor %}
+        {% if not payload.av_top_targets %}<span class="small">No suspicious AV targets surfaced in this window.</span>{% endif %}
+      </div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th class="num">Seen</th><th>Client</th><th>Target</th><th class="num">ICAP</th><th>Status</th><th>Detail</th><th class="num">Actions</th></tr></thead>
+        <tbody>
+          {% for row in payload.av_rows %}
+          <tr>
+            <td class="num"><span class="small">{{ fmt_ts(row.ts) }}</span></td>
+            <td class="mono">{{ row.client_ip }}</td>
+            <td><div class="stack-sm"><span class="mono">{{ row.target_display }}</span>{% if row.url %}<span class="small text-break">{{ row.url }}</span>{% endif %}</div></td>
+            <td class="num">{{ row.icap_time_ms }} ms</td>
+            <td><span class="badge {{ row.av_status_tone }}">{{ row.av_status_label }}</span></td>
+            <td><div class="stack-sm">{% if row.adapt_summary_short %}<span class="small text-break">{{ row.adapt_summary_short }}</span>{% endif %}{% if row.adapt_details_short %}<span class="small text-break">{{ row.adapt_details_short }}</span>{% endif %}</div></td>
+            <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='security', q=row.target_display, window=window) }}">Focus</a><a class="btn" href="{{ url_for('clamav', window=window) }}">ClamAV</a></div></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% if not payload.av_rows %}<div class="surface-note small">No AV ICAP activity matched this window.</div>{% endif %}
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Ad-blocking blocks</h2><span class="badge">{{ payload.adblock_rows|length }} rows</span></div>
+    <div class="card-body content-stack">
+      <div class="hero-badges">
+        {% for row in payload.adblock_top_domains %}<span class="badge">{{ row.domain }} · {{ row.blocks }}</span>{% endfor %}
+        {% if not payload.adblock_top_domains %}<span class="small">No ad-block domain leaders in this window.</span>{% endif %}
+      </div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th class="num">Time</th><th>Client</th><th>Method</th><th>Target</th><th class="num">HTTP</th><th class="num">Actions</th></tr></thead>
+        <tbody>
+          {% for row in payload.adblock_rows %}
+          <tr><td class="num"><span class="small">{{ fmt_ts(row.ts) }}</span></td><td class="mono">{{ row.src_ip }}</td><td class="mono">{{ row.method }}</td><td><div class="stack-sm"><span class="mono">{{ row.domain or row.url }}</span><span class="small text-break">{{ row.url }}</span></div></td><td class="num">{{ row.http_status }}</td><td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='security', q=(row.domain or row.src_ip), window=window) }}">Focus</a><a class="btn" href="{{ url_for('adblock') }}">Adblock</a></div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% if not payload.adblock_rows %}<div class="surface-note small">No ad-block events matched this window.</div>{% endif %}
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Content-filtering blocks</h2><span class="badge">{{ payload.webfilter_rows|length }} rows</span></div>
+  <div class="card-body content-stack">
+    <div class="hero-badges">
+      {% for row in payload.webfilter_top_categories %}<span class="badge">{{ row.category }} · {{ row.blocks }}</span>{% endfor %}
+      {% if not payload.webfilter_top_categories %}<span class="small">No category blocks matched this window.</span>{% endif %}
+    </div>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th class="num">Time</th><th>Client</th><th>Target</th><th>Category</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.webfilter_rows %}
+        <tr><td class="num"><span class="small">{{ fmt_ts(row.ts) }}</span></td><td class="mono">{{ row.src_ip }}</td><td><div class="stack-sm"><span class="mono">{{ row.domain or row.url }}</span><span class="small text-break">{{ row.url }}</span></div></td><td><span class="badge danger">{{ row.category }}</span></td><td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='security', q=(row.domain or row.src_ip), window=window) }}">Focus</a><a class="btn" href="{{ url_for('webfilter', tab='categories') }}">Web filtering</a></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% if not payload.webfilter_rows %}<div class="surface-note small">No web-filter blocks matched this window.</div>{% endif %}
+  </div>
+</section>
+
+{% elif pane == 'performance' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Performance summary</h2><span class="badge">latency and metadata</span></div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Requests</div><div class="stat-v">{{ payload.summary.requests }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Transactions</div><div class="stat-v">{{ payload.summary.transactions }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">ICAP events</div><div class="stat-v">{{ payload.summary.icap_events }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">AV ICAP</div><div class="stat-v">{{ payload.av_icap_summary.events }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Adblock ICAP</div><div class="stat-v">{{ payload.adblock_icap_summary.events }}</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Slowest requests</h2><span class="badge">{{ payload.slow_requests|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th class="num">Seen</th><th>Client</th><th>Target</th><th class="num">Duration</th><th>Result</th><th class="num">Actions</th></tr></thead>
+        <tbody>
+          {% for row in payload.slow_requests %}
+          <tr><td class="num"><span class="small">{{ fmt_ts(row.ts) }}</span></td><td class="mono">{{ row.client_ip }}</td><td><div class="stack-sm"><span class="mono">{{ row.target_display }}</span>{% if row.url %}<span class="small text-break">{{ row.url }}</span>{% endif %}</div></td><td class="num">{{ row.duration_ms }} ms</td><td>{{ row.result_summary }}</td><td class="num"><div class="table-action-stack">{% if row.domain %}<a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Destination</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">SSL</a>{% else %}<a class="btn" href="{{ url_for('observability', pane='performance', window=window) }}">Performance</a>{% endif %}</div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% if not payload.slow_requests %}<div class="surface-note small">No slow request samples in this window.</div>{% endif %}
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Slowest ICAP events</h2><span class="badge">{{ payload.slow_icap_events|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th class="num">Seen</th><th>Service</th><th>Target</th><th class="num">ICAP</th><th>Detail</th><th class="num">Actions</th></tr></thead>
+        <tbody>
+          {% for row in payload.slow_icap_events %}
+          <tr><td class="num"><span class="small">{{ fmt_ts(row.ts) }}</span></td><td><span class="badge">{{ row.service_label }}</span></td><td><div class="stack-sm"><span class="mono">{{ row.target_display }}</span>{% if row.url %}<span class="small text-break">{{ row.url }}</span>{% endif %}</div></td><td class="num">{{ row.icap_time_ms }} ms</td><td>{% if row.adapt_summary_short %}<span class="small text-break">{{ row.adapt_summary_short }}</span>{% endif %}</td><td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='security', q=row.target_display, window=window) }}">Security</a>{% if row.service_family == 'av' %}<a class="btn" href="{{ url_for('clamav', window=window) }}">ClamAV</a>{% elif row.service_family == 'adblock' %}<a class="btn" href="{{ url_for('adblock') }}">Adblock</a>{% endif %}</div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% if not payload.slow_icap_events %}<div class="surface-note small">No slow ICAP samples in this window.</div>{% endif %}
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Traffic facets</h2><span class="badge">request metadata</span></div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div><div class="small"><strong>Top user agents</strong></div><div class="hero-badges">{% for row in payload.top_user_agents %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>{% endfor %}{% if not payload.top_user_agents %}<span class="small">No user-agent data captured.</span>{% endif %}</div></div>
+      <div><div class="small"><strong>Bump modes</strong></div><div class="hero-badges">{% for row in payload.top_bump_modes %}<span class="badge">{{ row.label }} · {{ row.count }}</span>{% endfor %}{% if not payload.top_bump_modes %}<span class="small">No bump-mode data captured.</span>{% endif %}</div></div>
+      <div><div class="small"><strong>Server TLS versions</strong></div><div class="hero-badges">{% for row in payload.top_tls_server_versions %}<span class="badge">{{ row.label }} · {{ row.count }}</span>{% endfor %}{% if not payload.top_tls_server_versions %}<span class="small">No TLS versions captured.</span>{% endif %}</div></div>
+      <div><div class="small"><strong>Policy tags</strong></div><div class="hero-badges">{% for row in payload.top_policy_tags %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} · {{ row.count }}</span>{% endfor %}{% if not payload.top_policy_tags %}<span class="small">No policy tags matched.</span>{% endif %}</div></div>
+    </div>
+  </div>
+</section>
+
+{% elif pane == 'transport' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">SOCKS transport summary</h2><span class="badge">window {{ window_label }}</span></div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Events</div><div class="stat-v">{{ payload.summary.total or 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Connects</div><div class="stat-v">{{ payload.summary.connects or 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Blocked</div><div class="stat-v">{{ payload.summary.blocked or 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Errors</div><div class="stat-v">{{ payload.summary.errors or 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Disconnects</div><div class="stat-v">{{ payload.summary.disconnects or 0 }}</div></div>
+    </div>
+    {% if payload.nat_warning %}<div class="banner warning"><div class="banner-copy"><strong>Client IPs may be masked</strong><div class="small">{{ payload.nat_warning_text }}</div></div></div>{% endif %}
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Top clients</h2><span class="badge">{{ payload.top_clients|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table"><thead><tr><th>Client</th><th class="num">Events</th><th class="num">Connects</th><th class="num">Blocked</th><th class="num">Last seen</th></tr></thead><tbody>{% for row in payload.top_clients %}<tr><td class="mono">{{ row.src_ip }}</td><td class="num">{{ row.events }}</td><td class="num">{{ row.connects }}</td><td class="num">{{ row.blocked }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>{% endfor %}</tbody></table></div>
+      {% if not payload.top_clients %}<div class="surface-note small">No SOCKS client activity in this window.</div>{% endif %}
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Top destinations</h2><span class="badge">{{ payload.top_destinations|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table"><thead><tr><th>Destination</th><th class="num">Port</th><th class="num">Events</th><th class="num">Blocked</th><th class="num">Last seen</th></tr></thead><tbody>{% for row in payload.top_destinations %}<tr><td class="mono">{{ row.dst }}</td><td class="num">{{ row.dst_port }}</td><td class="num">{{ row.events }}</td><td class="num">{{ row.blocked }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>{% endfor %}</tbody></table></div>
+      {% if not payload.top_destinations %}<div class="surface-note small">No SOCKS destination activity in this window.</div>{% endif %}
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Recent SOCKS events</h2><span class="badge">{{ payload.recent|length }} rows</span></div>
+  <div class="card-body">
+    <div class="table-wrap"><table class="table"><thead><tr><th class="num">Time</th><th>Action</th><th>Proto</th><th>Client</th><th>Destination</th><th>Message</th></tr></thead><tbody>{% for row in payload.recent %}<tr><td class="num"><span class="small">{{ fmt_ts(row.ts) }}</span></td><td class="mono">{{ row.action }}</td><td class="mono">{{ row.protocol }}</td><td class="mono">{{ row.src_ip if row.src_ip else '-' }}{% if row.src_port %}:{{ row.src_port }}{% endif %}</td><td class="mono">{{ row.dst if row.dst else '-' }}{% if row.dst_port %}:{{ row.dst_port }}{% endif %}</td><td class="small mono text-break">{{ row.msg }}</td></tr>{% endfor %}</tbody></table></div>
+    {% if not payload.recent %}<div class="surface-note small">No SOCKS events matched this window.</div>{% endif %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

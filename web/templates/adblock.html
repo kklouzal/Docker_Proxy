@@ -16,7 +16,7 @@
     </div>
   </div>
   <div class="page-actions">
-    <a class="btn ghost" href="{{ url_for('live', window=window, service='adblock') }}">Open Live trace</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window) }}">Observability hub</a>
     <a class="btn ghost" href="{{ url_for('webfilter') }}">Web filtering</a>
     <a class="btn ghost" href="{{ url_for('clamav') }}">ClamAV</a>
   </div>
@@ -210,37 +210,15 @@
   <section class="card split-right">
     <div class="card-header">
       <div>
-        <h2 class="card-title">Recent blocks</h2>
-        <div class="small">Most recent block events captured for the selected proxy.</div>
+        <h2 class="card-title">Observability handoff</h2>
+        <div class="small">Traffic traces and block evidence now live in the shared observability hub.</div>
       </div>
       <div class="actions">
         {{ scope_chip('proxy') }}
-        <span class="badge">MySQL-backed</span>
+        <span class="badge">single pane of glass</span>
       </div>
     </div>
-    <div class="card-body">
-      <form class="form" method="get" action="{{ url_for('adblock') }}">
-        <div class="row-2">
-          <div>
-            <label for="window">Time window (seconds)</label>
-            <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
-          </div>
-          <div>
-            <label for="q">Search adblock ICAP</label>
-            <input id="q" name="q" type="text" placeholder="host, URL, client" value="{{ diagnostic_search }}" />
-          </div>
-        </div>
-        <div>
-          <label for="tx">Master transaction (optional)</label>
-          <input id="tx" name="tx" type="text" placeholder="e.g. tx123" value="{{ diagnostic_tx }}" />
-        </div>
-        <div class="actions">
-          <button class="btn primary" type="submit">Apply</button>
-          <a class="btn ghost" href="{{ url_for('adblock') }}">Reset</a>
-          <a class="btn" href="{{ url_for('live', window=window, service='adblock') }}">Open Live trace</a>
-        </div>
-      </form>
-
+    <div class="card-body stack-list">
       <div class="summary-grid">
         <div class="stat compact-stat">
           <div class="stat-k">Adblock ICAP events</div>
@@ -255,128 +233,12 @@
           <div class="stat-v">{{ adblock_icap_summary.max_icap_time_ms }} ms</div>
         </div>
       </div>
-
-      {% if recent_blocks and recent_blocks|length > 0 %}
-        <div class="table-wrap"><table class="table">
-          <thead>
-            <tr>
-              <th class="num">Time</th>
-              <th>Client</th>
-              <th>Method</th>
-              <th>URL</th>
-              <th>Result</th>
-              <th class="num">HTTP</th>
-              <th>Correlated request</th>
-              <th class="num">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for e in recent_blocks %}
-            <tr>
-              <td class="num"><span class="small">{% if e.ts %}{{ fmt_ts(e.ts) }}{% else %}-{% endif %}</span></td>
-              <td><span class="small mono">{{ e.src_ip }}</span></td>
-              <td><span class="small mono">{{ e.method }}</span></td>
-              <td><span class="small mono text-break">{{ e.url }}</span></td>
-              <td><span class="small mono">{{ e.result }}</span></td>
-              <td class="num"><span class="small mono">{{ e.status }}</span></td>
-              <td>
-                {% if e.correlated_candidates %}
-                  {% set candidate = e.correlated_candidates[0] %}
-                  <div class="surface-note small">
-                    <span class="badge {{ candidate.correlation.tone }}">{{ candidate.correlation.label }}</span>
-                    <span class="mono">{{ candidate.method }} {{ candidate.target_display }}</span>
-                    from <span class="mono">{{ candidate.client_ip }}</span>
-                  </div>
-                {% else %}
-                  <span class="small">No nearby structured request matched.</span>
-                {% endif %}
-              </td>
-              <td class="num">
-                <div class="table-action-stack">
-                  <a class="btn" href="{{ url_for('live', window=window, q=e.src_ip, service='adblock') }}">Live</a>
-                  <a class="btn" href="{{ url_for('ssl_errors', q=e.url, window=window) }}">SSL errors</a>
-                </div>
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table></div>
-        <div class="surface-note small">Shows up to the most recent 100 blocks stored in MySQL.</div>
-      {% else %}
-        <div class="surface-note small">No blocks recorded in the database yet.</div>
-      {% endif %}
-
       <div class="surface-note small">
-        Structured adblock ICAP traces are also retained for the last {{ window_label }} so you can follow a blocked request into Live or SSL troubleshooting without tailing the container logs.
+        Recent ad-block blocks, correlated requests, and slow ICAP samples were moved out of this control page so operators can investigate everything from the same observability workflow.
       </div>
-    </div>
-  </section>
-
-  <section class="card split-left">
-    <div class="card-header">
-      <div>
-        <h2 class="card-title">Recent adblock ICAP transactions</h2>
-        <div class="small">Structured REQMOD observations from Squid's ICAP log.</div>
-      </div>
-      {{ scope_chip('proxy') }}
-    </div>
-    <div class="card-body">
-      {% if recent_adblock_icap_events %}
-        <div class="table-wrap"><table class="table">
-          <thead>
-            <tr>
-              <th class="num">Seen</th>
-              <th>Client</th>
-              <th>Target</th>
-              <th class="num">ICAP time</th>
-              <th>Adaptation</th>
-              <th>Correlation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for event in recent_adblock_icap_events %}
-              <tr>
-                <td class="num"><span class="small">{{ fmt_ts(event.ts) }}</span></td>
-                <td><span class="mono">{{ event.client_ip }}</span></td>
-                <td><div class="stack-sm"><span class="mono">{{ event.target_display }}</span>{% if event.url %}<span class="small text-break">{{ event.url }}</span>{% endif %}</div></td>
-                <td class="num">{{ event.icap_time_ms }} ms</td>
-                <td><div class="stack-sm"><span class="badge">{{ event.service_label }}</span>{% if event.adapt_summary_short %}<span class="small text-break">{{ event.adapt_summary_short }}</span>{% endif %}{% if event.policy_tags %}<div class="hero-badges">{% for tag in event.policy_tags %}<span class="badge">{{ tag }}</span>{% endfor %}</div>{% endif %}</div></td>
-                <td>
-                  {% if event.correlated_request %}
-                    <div class="surface-note small">
-                      <span class="mono">{{ event.correlated_request.method }} {{ event.correlated_request.target_display }}</span>
-                      · {{ event.correlated_request.result_summary }}
-                    </div>
-                  {% elif event.master_xaction %}
-                    <span class="small mono">{{ event.master_xaction }}</span>
-                  {% else %}
-                    <span class="small">No transaction captured.</span>
-                  {% endif %}
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table></div>
-      {% else %}
-        <div class="surface-note small">No recent adblock ICAP transactions were captured in this window.</div>
-      {% endif %}
-    </div>
-  </section>
-
-  <section class="card split-right">
-    <div class="card-header">
-      <h2 class="card-title">Slowest adblock ICAP events</h2>
-      <span class="badge">window {{ window_label }}</span>
-    </div>
-    <div class="card-body">
-      <div class="stack-sm">
-        {% for event in slow_adblock_icap %}
-          <div class="surface-note small">
-            <div><span class="badge">{{ event.service_label }}</span> {{ event.icap_time_ms }} ms</div>
-            {% if event.adapt_summary_short %}<div class="text-break">{{ event.adapt_summary_short }}</div>{% endif %}
-          </div>
-        {% endfor %}
-        {% if not slow_adblock_icap %}<div class="surface-note small">No slow adblock ICAP samples yet.</div>{% endif %}
+      <div class="actions">
+        <a class="btn primary" href="{{ url_for('observability', pane='security', window=window) }}">Open security pane</a>
+        <a class="btn" href="{{ url_for('observability', pane='performance', window=window) }}">Open performance pane</a>
       </div>
     </div>
   </section>
