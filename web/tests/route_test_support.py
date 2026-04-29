@@ -290,10 +290,92 @@ class FakeAuditStore:
         return None
 
 
-class FakeCompletedProcess:
-    returncode = 0
-    stdout = ""
-    stderr = ""
+class FakeSquidController:
+    def __init__(self, calls: dict[str, int]):
+        self._calls = calls
+        self.current_config = "http_port 3128\n"
+        self.tunable_options: dict[str, Any] = {}
+        self.cache_override_options: dict[str, bool] = {}
+        self.generated_config = "CFG"
+        self.validate_result = (True, "OK")
+        self.apply_result = (True, "ok")
+        self.generate_error: Exception | None = None
+        self.last_generated_options: dict[str, Any] | None = None
+        self.last_overrides: dict[str, bool] | None = None
+
+    def get_status(self):
+        return (b"OK\n", b"")
+
+    def get_current_config(self):
+        return self.current_config
+
+    def apply_config_text(self, cfg_text: str):
+        self._calls["apply"] += 1
+        self.current_config = cfg_text
+        return self.apply_result
+
+    def reload_squid(self):
+        self._calls["reload"] += 1
+        return (b"OK\n", b"")
+
+    def clear_disk_cache(self):
+        self._calls["clear"] += 1
+        return True, "ok"
+
+    def normalize_config_text(self, cfg_text: str):
+        return cfg_text
+
+    def validate_config_text(self, cfg_text: str):
+        return self.validate_result
+
+    def get_tunable_options(self, _cfg=None):
+        return dict(self.tunable_options)
+
+    def get_cache_override_options(self, _cfg=None):
+        return dict(self.cache_override_options)
+
+    def generate_config_from_template_with_exclusions(self, options, exclusions):
+        self.last_generated_options = dict(options)
+        if self.generate_error is not None:
+            raise self.generate_error
+        return self.generated_config
+
+    def apply_cache_overrides(self, cfg_text: str, overrides: dict[str, bool]):
+        self.last_overrides = dict(overrides)
+        return cfg_text
+
+    def get_caching_lines(self, _cfg):
+        return []
+
+    def get_timeout_lines(self, _cfg):
+        return []
+
+    def get_logging_lines(self, _cfg):
+        return []
+
+    def get_network_lines(self, _cfg):
+        return []
+
+    def get_dns_lines(self, _cfg):
+        return []
+
+    def get_ssl_lines(self, _cfg):
+        return []
+
+    def get_icap_lines(self, _cfg):
+        return []
+
+    def get_privacy_lines(self, _cfg):
+        return []
+
+    def get_limits_lines(self, _cfg):
+        return []
+
+    def get_performance_lines(self, _cfg):
+        return []
+
+    def get_http_lines(self, _cfg):
+        return []
 
 
 COMMON_STATS = {
@@ -311,34 +393,8 @@ COMMON_STATS = {
 
 
 def install_common_ui_test_doubles(monkeypatch, app_module):
-    # Avoid real socket/subprocess health checks during unit tests.
-    monkeypatch.setattr(app_module, "_check_icap_adblock", lambda: {"ok": True, "detail": "stub"})
-    monkeypatch.setattr(app_module, "_check_clamd", lambda: {"ok": True, "detail": "stub"})
-    monkeypatch.setattr(app_module, "_check_icap_av", lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:14001"})
-    if hasattr(app_module, "_check_dante"):
-        monkeypatch.setattr(app_module, "_check_dante", lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:1080"})
-    if hasattr(app_module, "_check_tcp"):
-        monkeypatch.setattr(app_module, "_check_tcp", lambda host, port, timeout=0.6: {"ok": True, "detail": "stub"})
-    if hasattr(app_module, "_check_icap_service"):
-        monkeypatch.setattr(app_module, "_check_icap_service", lambda host, port, service: {"ok": True, "detail": "stub"})
-
     calls = {"reload": 0, "clear": 0, "apply": 0}
-
-    def fake_get_status():
-        return (b"OK\n", b"")
-
-    def fake_get_current_config():
-        return "http_port 3128\n"
-
-    def fake_apply_config_text(cfg_text: str):
-        calls["apply"] += 1
-        return True, "ok"
-
-    def fake_reload():
-        calls["reload"] += 1
-
-    def fake_clear():
-        calls["clear"] += 1
+    fake_controller = FakeSquidController(calls)
 
     class FakeProxyClient:
         def sync_proxy(self, proxy_id: str, force: bool = False):
@@ -370,38 +426,33 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
         def test_clamav_icap(self, proxy_id: str):
             return {"ok": True, "detail": f"icap requested for {proxy_id}"}
 
-    monkeypatch.setattr(app_module.squid_controller, "get_status", fake_get_status)
-    monkeypatch.setattr(app_module.squid_controller, "get_current_config", fake_get_current_config)
-    monkeypatch.setattr(app_module.squid_controller, "apply_config_text", fake_apply_config_text)
-    monkeypatch.setattr(app_module.squid_controller, "reload_squid", fake_reload)
-    monkeypatch.setattr(app_module.squid_controller, "clear_disk_cache", fake_clear)
-
-    if hasattr(app_module, "get_stats"):
-        monkeypatch.setattr(app_module, "get_stats", lambda: COMMON_STATS)
-    monkeypatch.setattr(app_module, "get_timeseries_store", lambda: FakeTimeseriesStore())
-    monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSLErrorsStore())
-
     fake_ex_store = FakeExclusionsStore()
     fake_adblock_store = FakeAdblockStore()
     fake_webfilter_store = FakeWebFilterStore()
     fake_sslfilter_store = FakeSSLFilterStore()
     fake_pac_profiles = FakePacProfilesStore()
 
-    monkeypatch.setattr(app_module, "get_exclusions_store", lambda: fake_ex_store)
-    monkeypatch.setattr(app_module, "get_socks_store", lambda: FakeSocksStore())
-    monkeypatch.setattr(app_module, "get_adblock_store", lambda: fake_adblock_store)
-    monkeypatch.setattr(app_module, "get_webfilter_store", lambda: fake_webfilter_store)
-    monkeypatch.setattr(app_module, "get_sslfilter_store", lambda: fake_sslfilter_store)
-    monkeypatch.setattr(app_module, "get_pac_profiles_store", lambda: fake_pac_profiles)
-    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnosticStore())
-    monkeypatch.setattr(app_module, "get_audit_store", lambda: FakeAuditStore())
-    monkeypatch.setattr(app_module, "get_proxy_client", lambda: FakeProxyClient())
-
-    import subprocess
-
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeCompletedProcess())
+    app_module.reset_app_runtime_services_for_testing()
+    app_module.configure_app_runtime_services_for_testing(
+        controller=fake_controller,
+        get_timeseries_store=lambda: FakeTimeseriesStore(),
+        get_ssl_errors_store=lambda: FakeSSLErrorsStore(),
+        get_exclusions_store=lambda: fake_ex_store,
+        get_socks_store=lambda: FakeSocksStore(),
+        get_adblock_store=lambda: fake_adblock_store,
+        get_webfilter_store=lambda: fake_webfilter_store,
+        get_sslfilter_store=lambda: fake_sslfilter_store,
+        get_pac_profiles_store=lambda: fake_pac_profiles,
+        get_diagnostic_store=lambda: FakeDiagnosticStore(),
+        get_audit_store=lambda: FakeAuditStore(),
+        get_proxy_client=lambda: FakeProxyClient(),
+        check_icap_adblock=lambda: {"ok": True, "detail": "stub"},
+        check_icap_av=lambda: {"ok": True, "detail": "stub", "target": "127.0.0.1:14001"},
+        check_clamd=lambda: {"ok": True, "detail": "stub"},
+    )
 
     app_module._test_calls = calls  # type: ignore[attr-defined]
+    app_module._test_squid_controller = fake_controller  # type: ignore[attr-defined]
     app_module._test_fake_ex_store = fake_ex_store  # type: ignore[attr-defined]
     app_module._test_adblock_store = fake_adblock_store  # type: ignore[attr-defined]
     app_module._test_webfilter_store = fake_webfilter_store  # type: ignore[attr-defined]

@@ -60,12 +60,12 @@ def test_legacy_socks_route_redirects_to_transport_pane(app_module):
     assert qs.get("q") == ["198.51.100.7"]
 
 
-def test_clamav_page_shows_observability_handoff(app_module, monkeypatch):
+def test_clamav_page_shows_observability_handoff(app_module):
     class FakeDiagnostic:
         def icap_summary(self, *, since: int | None = None, service: str = ""):
             return {"events": 1, "avg_icap_time_ms": 87, "max_icap_time_ms": 87}
 
-    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+    app_module.configure_app_runtime_services_for_testing(get_diagnostic_store=lambda: FakeDiagnostic())
 
     c = app_module.app.test_client()
     login(c)

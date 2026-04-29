@@ -88,7 +88,8 @@ def test_squid_config_manual_apply_and_validate(app_module, monkeypatch):
         called["n"] += 1
         return True, "OK"
 
-    monkeypatch.setattr(app_module.squid_controller, "validate_config_text", fake_validate)
+    controller = getattr(app_module, "_test_squid_controller")
+    controller.validate_config_text = fake_validate  # type: ignore[method-assign]
 
     r_val = c.post(
         "/squid/config",

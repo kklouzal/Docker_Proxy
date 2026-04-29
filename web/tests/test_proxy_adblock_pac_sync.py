@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from .proxy_runtime_test_helpers import import_proxy_runtime
 
 
-def test_proxy_sync_adblock_artifact_materializes_and_records_apply(tmp_path, monkeypatch):
+def test_proxy_sync_adblock_artifact_materializes_and_records_apply(tmp_path):
     env_backup = {
         key: os.environ.get(key)
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "ADBLOCK_COMPILED_DIR", "PAC_RENDER_DIR")
@@ -51,8 +51,11 @@ def test_proxy_sync_adblock_artifact_materializes_and_records_apply(tmp_path, mo
         store = get_adblock_store()
         store.request_cache_flush()
 
-        runtime = runtime_module.ProxyRuntime()
-        monkeypatch.setattr(runtime, "_restart_adblock_service", lambda: (True, "cicap_adblock restarted"))
+        runtime = runtime_module.ProxyRuntime(
+            services=runtime_module.build_runtime_services(
+                adblock_service_restarter=lambda: (True, "cicap_adblock restarted"),
+            )
+        )
 
         result = runtime.sync_adblock_state(force=False)
 
@@ -223,7 +226,7 @@ def test_pac_profiles_init_db_creates_current_schema(tmp_path):
                 os.environ[key] = value
 
 
-def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path, monkeypatch):
+def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path):
     env_backup = {
         key: os.environ.get(key)
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "PAC_RENDER_DIR")
@@ -236,12 +239,21 @@ def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path,
             },
         )
 
-        runtime = runtime_module.ProxyRuntime()
-        monkeypatch.setattr(runtime.controller, "get_status", lambda: (b"proxy ok", b""))
-        monkeypatch.setattr(runtime_module, "_check_local_listener", lambda *args, **kwargs: {"ok": True, "detail": "listening"})
-        monkeypatch.setattr(runtime_module, "_check_clamd", lambda: {"ok": True, "detail": "PONG"})
-        monkeypatch.setattr(runtime_module, "build_proxy_policy_state", lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]))
-        monkeypatch.setattr(runtime_module, "build_proxy_pac_state", lambda _proxy_id: (_ for _ in ()).throw(RuntimeError("pac state unavailable")))
+        runtime = runtime_module.ProxyRuntime(
+            services=runtime_module.build_runtime_services(
+                controller=SimpleNamespace(get_status=lambda: (b"proxy ok", b""), get_current_config=lambda: ""),
+                stats_provider=lambda: {},
+                runtime_services_builder=lambda **_kwargs: {
+                    "icap": {"ok": True, "detail": "listening"},
+                    "av_icap": {"ok": True, "detail": "listening"},
+                    "clamd": {"ok": True, "detail": "PONG"},
+                    "clamav": {"ok": True, "detail": "PONG"},
+                    "dante": {"ok": True, "detail": "listening"},
+                },
+                policy_state_builder=lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]),
+                pac_state_builder=lambda _proxy_id: (_ for _ in ()).throw(RuntimeError("pac state unavailable")),
+            )
+        )
 
         health = runtime.collect_health()
 
@@ -257,7 +269,7 @@ def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path,
                 os.environ[key] = value
 
 
-def test_proxy_collect_health_reuses_short_lived_cached_snapshot(tmp_path, monkeypatch):
+def test_proxy_collect_health_reuses_short_lived_cached_snapshot(tmp_path):
     env_backup = {
         key: os.environ.get(key)
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "PAC_RENDER_DIR", "PROXY_HEALTH_CACHE_TTL_SECONDS")
@@ -271,7 +283,6 @@ def test_proxy_collect_health_reuses_short_lived_cached_snapshot(tmp_path, monke
             },
         )
 
-        runtime = runtime_module.ProxyRuntime()
         calls = {"status": 0, "stats": 0, "services": 0}
 
         def fake_get_status():
@@ -297,18 +308,22 @@ def test_proxy_collect_health_reuses_short_lived_cached_snapshot(tmp_path, monke
                 "dante": {"ok": True},
             }
 
-        monkeypatch.setattr(runtime.controller, "get_status", fake_get_status)
-        monkeypatch.setattr(runtime_module, "get_stats", fake_get_stats)
-        monkeypatch.setattr(runtime_module, "build_local_runtime_services", fake_services)
-        monkeypatch.setattr(runtime_module, "build_proxy_policy_state", lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]))
-        monkeypatch.setattr(runtime_module, "build_proxy_pac_state", lambda _proxy_id: SimpleNamespace(state_sha256="pac-sha"))
-        monkeypatch.setattr(runtime.revisions, "get_active_revision_metadata", lambda _proxy_id: None)
-        monkeypatch.setattr(runtime.certificate_bundles, "get_active_bundle_metadata", lambda: None)
-        monkeypatch.setattr(runtime.adblock_artifacts, "get_active_artifact_metadata", lambda: None)
-        monkeypatch.setattr(runtime, "_current_config_sha", lambda: "config-sha")
-        monkeypatch.setattr(runtime, "_current_certificate_bundle_sha", lambda: "")
-        monkeypatch.setattr(runtime, "_current_adblock_artifact_sha", lambda: "")
-        monkeypatch.setattr(runtime, "_current_pac_state_sha", lambda: "pac-sha")
+        runtime = runtime_module.ProxyRuntime(
+            services=runtime_module.build_runtime_services(
+                controller=SimpleNamespace(get_status=fake_get_status, get_current_config=lambda: ""),
+                stats_provider=fake_get_stats,
+                runtime_services_builder=fake_services,
+                policy_state_builder=lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]),
+                pac_state_builder=lambda _proxy_id: SimpleNamespace(state_sha256="pac-sha"),
+                revisions=SimpleNamespace(get_active_revision_metadata=lambda _proxy_id: None),
+                certificate_bundles=SimpleNamespace(get_active_bundle_metadata=lambda: None),
+                adblock_artifacts=SimpleNamespace(get_active_artifact_metadata=lambda: None, compiled_dir=str(tmp_path / "compiled")),
+                current_config_sha_reader=lambda: "config-sha",
+                current_certificate_sha_reader=lambda: "",
+                current_adblock_sha_reader=lambda: "",
+                current_pac_sha_reader=lambda: "pac-sha",
+            )
+        )
 
         first = runtime.collect_health()
         second = runtime.collect_health()

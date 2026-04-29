@@ -1,4 +1,10 @@
 from .flask_test_helpers import import_local_app_module, login
+from .route_test_support import FakeSquidController
+
+
+def _configure_app_services(app_module, **overrides):
+    app_module.reset_app_runtime_services_for_testing()
+    return app_module.configure_app_runtime_services_for_testing(**overrides)
 
 
 def test_proxy_pac_contract_public_and_mimetype():
@@ -21,11 +27,11 @@ def test_api_squid_config_requires_login():
     assert (r.headers.get("Location", "") or "").startswith("/login")
 
 
-def test_api_squid_config_text_plain_when_logged_in(monkeypatch):
+def test_api_squid_config_text_plain_when_logged_in():
     app_module = import_local_app_module()
-
-    # Avoid touching real Squid config paths during unit tests.
-    monkeypatch.setattr(app_module.squid_controller, "get_current_config", lambda: "test-config\n")
+    controller = FakeSquidController({"reload": 0, "clear": 0, "apply": 0})
+    controller.current_config = "test-config\n"
+    _configure_app_services(app_module, controller=controller)
 
     c = app_module.app.test_client()
     login(c)
@@ -53,7 +59,7 @@ def test_api_timeseries_returns_json_when_logged_in(monkeypatch):
         def query(self, *, resolution: str, since: int, limit: int):
             return [{"ts": since, "k": "v"}]
 
-    monkeypatch.setattr(app_module, "get_timeseries_store", lambda: FakeTS())
+    _configure_app_services(app_module, get_timeseries_store=lambda: FakeTS())
 
     c = app_module.app.test_client()
     login(c)
@@ -134,7 +140,7 @@ def test_ssl_errors_export_csv_when_logged_in(monkeypatch):
                 ]
             }
 
-    monkeypatch.setattr(app_module, "get_observability_queries", lambda: FakeQueries())
+    _configure_app_services(app_module, get_observability_queries=lambda: FakeQueries())
 
     c = app_module.app.test_client()
     login(c)

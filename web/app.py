@@ -1,32 +1,33 @@
+from dataclasses import dataclass, replace
 from flask import Flask, g, render_template, request, redirect, url_for, jsonify, abort, session
 from services.squidctl import SquidController
 from services.cert_manager import generate_self_signed_ca_bundle, install_pfx_as_ca, materialize_certificate_bundle, parse_pfx_bundle
-from services.certificate_bundles import get_certificate_bundles
+from services.certificate_bundles import get_certificate_bundles as _default_get_certificate_bundles
 from services.auth_store import get_auth_store
-from services.config_revisions import get_config_revisions
-from services.diagnostic_store import get_diagnostic_store
+from services.config_revisions import get_config_revisions as _default_get_config_revisions
+from services.diagnostic_store import get_diagnostic_store as _default_get_diagnostic_store
 from datetime import UTC, datetime, timedelta
 import time
 import os
 import shutil
-from services.exclusions_store import get_exclusions_store
-from services.audit_store import get_audit_store
-from services.timeseries_store import get_timeseries_store
-from services.ssl_errors_store import get_ssl_errors_store
-from services.socks_store import get_socks_store
-from services.adblock_store import get_adblock_store
+from services.exclusions_store import get_exclusions_store as _default_get_exclusions_store
+from services.audit_store import get_audit_store as _default_get_audit_store
+from services.timeseries_store import get_timeseries_store as _default_get_timeseries_store
+from services.ssl_errors_store import get_ssl_errors_store as _default_get_ssl_errors_store
+from services.socks_store import get_socks_store as _default_get_socks_store
+from services.adblock_store import get_adblock_store as _default_get_adblock_store
 from services.adblock_artifacts import get_adblock_artifacts
-from services.webfilter_store import get_webfilter_store
-from services.sslfilter_store import get_sslfilter_store
-from services.pac_profiles_store import get_pac_profiles_store
+from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
+from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilter_store
+from services.pac_profiles_store import get_pac_profiles_store as _default_get_pac_profiles_store
 from services.pac_renderer import build_public_pac_url, render_proxy_pac_for_request
-from services.proxy_client import ProxyClientError, get_proxy_client
+from services.proxy_client import ProxyClientError, get_proxy_client as _default_get_proxy_client
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
-from services.proxy_registry import get_proxy_registry
+from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
-from services.observability_queries import get_observability_queries
+from services.observability_queries import get_observability_queries as _default_get_observability_queries
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import extract_domain as _extract_domain
@@ -42,9 +43,161 @@ from typing import Any, Dict, Iterable, List, Sequence
 from markupsafe import Markup
 
 app = Flask(__name__)
-squid_controller = SquidController()
 _asset_version = str(int(time.time()))
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
+
+
+def _default_check_icap_adblock() -> Dict[str, Any]:
+    return check_adblock_icap_health(timeout=0.8, error_formatter=public_error_message)
+
+
+def _default_check_icap_av() -> Dict[str, Any]:
+    return check_av_icap_health(timeout=0.8, error_formatter=public_error_message)
+
+
+def _default_check_clamd() -> Dict[str, Any]:
+    return check_clamd_health(timeout=0.8, error_formatter=public_error_message)
+
+
+def _default_send_sample_av_icap() -> Dict[str, Any]:
+    return _shared_send_sample_av_icap(error_formatter=public_error_message)
+
+
+def _default_test_eicar() -> Dict[str, Any]:
+    return _shared_test_eicar(error_formatter=public_error_message)
+
+
+@dataclass(frozen=True)
+class AppRuntimeServices:
+    controller: Any
+    get_certificate_bundles: Any
+    get_config_revisions: Any
+    get_diagnostic_store: Any
+    get_exclusions_store: Any
+    get_audit_store: Any
+    get_timeseries_store: Any
+    get_ssl_errors_store: Any
+    get_socks_store: Any
+    get_adblock_store: Any
+    get_webfilter_store: Any
+    get_sslfilter_store: Any
+    get_pac_profiles_store: Any
+    get_proxy_client: Any
+    get_proxy_registry: Any
+    get_observability_queries: Any
+    check_icap_adblock: Any
+    check_icap_av: Any
+    check_clamd: Any
+    send_sample_av_icap: Any
+    test_eicar: Any
+
+
+_default_app_runtime_services = AppRuntimeServices(
+    controller=SquidController(),
+    get_certificate_bundles=_default_get_certificate_bundles,
+    get_config_revisions=_default_get_config_revisions,
+    get_diagnostic_store=_default_get_diagnostic_store,
+    get_exclusions_store=_default_get_exclusions_store,
+    get_audit_store=_default_get_audit_store,
+    get_timeseries_store=_default_get_timeseries_store,
+    get_ssl_errors_store=_default_get_ssl_errors_store,
+    get_socks_store=_default_get_socks_store,
+    get_adblock_store=_default_get_adblock_store,
+    get_webfilter_store=_default_get_webfilter_store,
+    get_sslfilter_store=_default_get_sslfilter_store,
+    get_pac_profiles_store=_default_get_pac_profiles_store,
+    get_proxy_client=_default_get_proxy_client,
+    get_proxy_registry=_default_get_proxy_registry,
+    get_observability_queries=_default_get_observability_queries,
+    check_icap_adblock=_default_check_icap_adblock,
+    check_icap_av=_default_check_icap_av,
+    check_clamd=_default_check_clamd,
+    send_sample_av_icap=_default_send_sample_av_icap,
+    test_eicar=_default_test_eicar,
+)
+
+
+def _app_runtime_services() -> AppRuntimeServices:
+    override = app.config.get('APP_RUNTIME_SERVICES')
+    return override if isinstance(override, AppRuntimeServices) else _default_app_runtime_services
+
+
+def configure_app_runtime_services_for_testing(**overrides: Any) -> AppRuntimeServices:
+    updated = replace(_app_runtime_services(), **overrides)
+    app.config['APP_RUNTIME_SERVICES'] = updated
+    return updated
+
+
+def reset_app_runtime_services_for_testing() -> None:
+    app.config.pop('APP_RUNTIME_SERVICES', None)
+
+
+class _ControllerProxy:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_app_runtime_services().controller, name)
+
+
+squid_controller = _ControllerProxy()
+
+
+def get_certificate_bundles():
+    return _app_runtime_services().get_certificate_bundles()
+
+
+def get_config_revisions():
+    return _app_runtime_services().get_config_revisions()
+
+
+def get_diagnostic_store():
+    return _app_runtime_services().get_diagnostic_store()
+
+
+def get_exclusions_store():
+    return _app_runtime_services().get_exclusions_store()
+
+
+def get_audit_store():
+    return _app_runtime_services().get_audit_store()
+
+
+def get_timeseries_store():
+    return _app_runtime_services().get_timeseries_store()
+
+
+def get_ssl_errors_store():
+    return _app_runtime_services().get_ssl_errors_store()
+
+
+def get_socks_store():
+    return _app_runtime_services().get_socks_store()
+
+
+def get_adblock_store():
+    return _app_runtime_services().get_adblock_store()
+
+
+def get_webfilter_store():
+    return _app_runtime_services().get_webfilter_store()
+
+
+def get_sslfilter_store():
+    return _app_runtime_services().get_sslfilter_store()
+
+
+def get_pac_profiles_store():
+    return _app_runtime_services().get_pac_profiles_store()
+
+
+def get_proxy_client():
+    return _app_runtime_services().get_proxy_client()
+
+
+def get_proxy_registry():
+    return _app_runtime_services().get_proxy_registry()
+
+
+def get_observability_queries():
+    return _app_runtime_services().get_observability_queries()
 
 
 def _max_workers() -> int:
@@ -1820,11 +1973,11 @@ def sslfilter():
 
 
 def _check_icap_adblock() -> Dict[str, Any]:
-    return check_adblock_icap_health(timeout=0.8, error_formatter=public_error_message)
+    return _app_runtime_services().check_icap_adblock()
 
 
 def _check_icap_av() -> Dict[str, Any]:
-    return check_av_icap_health(timeout=0.8, error_formatter=public_error_message)
+    return _app_runtime_services().check_icap_av()
 
 
 def _clamav_remote_health(proxy_id: str) -> Dict[str, Any]:
@@ -1836,15 +1989,15 @@ def _clamav_remote_health(proxy_id: str) -> Dict[str, Any]:
 
 
 def _send_sample_av_icap() -> Dict[str, Any]:
-    return _shared_send_sample_av_icap(error_formatter=public_error_message)
+    return _app_runtime_services().send_sample_av_icap()
 
 
 def _check_clamd() -> Dict[str, Any]:
-    return check_clamd_health(timeout=0.8, error_formatter=public_error_message)
+    return _app_runtime_services().check_clamd()
 
 
 def _test_eicar() -> Dict[str, Any]:
-    return _shared_test_eicar(error_formatter=public_error_message)
+    return _app_runtime_services().test_eicar()
 
 
 @app.route('/clamav', methods=['GET'])

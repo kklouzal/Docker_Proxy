@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import os
 
 from .proxy_runtime_test_helpers import import_proxy_runtime
@@ -9,7 +8,7 @@ from .proxy_runtime_test_helpers import import_proxy_runtime
 CERT_PEM = "-----BEGIN CERTIFICATE-----\nMIIFPROXY\n-----END CERTIFICATE-----\n"
 KEY_PEM = "-----BEGIN PRIVATE KEY-----\nMIIEPROXY\n-----END PRIVATE KEY-----\n"
 
-def test_proxy_sync_certificate_bundle_materializes_and_records_apply(tmp_path, monkeypatch):
+def test_proxy_sync_certificate_bundle_materializes_and_records_apply(tmp_path):
     env_backup = {
         key: os.environ.get(key)
         for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "CERTS_DIR", "SSL_DB_DIR")
@@ -30,8 +29,11 @@ def test_proxy_sync_certificate_bundle_materializes_and_records_apply(tmp_path, 
             created_by="tester",
         )
 
-        runtime = runtime_module.ProxyRuntime()
-        monkeypatch.setattr(runtime, "_reinitialize_ssl_db_and_restart", lambda: (True, "ssl db refreshed"))
+        runtime = runtime_module.ProxyRuntime(
+            services=runtime_module.build_runtime_services(
+                ssl_db_reinitializer=lambda: (True, "ssl db refreshed"),
+            )
+        )
 
         result = runtime.sync_certificate_bundle(force=True)
 

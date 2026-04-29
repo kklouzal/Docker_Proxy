@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 import hashlib
 import logging
 import os
@@ -34,6 +35,56 @@ from services.timeseries_store import get_timeseries_store
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProxyRuntimeServices:
+    controller: Any
+    registry: Any
+    revisions: Any
+    certificate_bundles: Any
+    adblock_artifacts: Any
+    cert_manager: Any
+    adblock_store: Any
+    live_stats_store: Any
+    diagnostic_store: Any
+    timeseries_store: Any
+    ssl_errors_store: Any
+    socks_store: Any
+    stats_provider: Any
+    runtime_services_builder: Any
+    policy_state_builder: Any
+    pac_state_builder: Any
+    adblock_service_restarter: Any = None
+    ssl_db_reinitializer: Any = None
+    current_config_sha_reader: Any = None
+    current_certificate_sha_reader: Any = None
+    current_adblock_sha_reader: Any = None
+    current_pac_sha_reader: Any = None
+    current_policy_sha_reader: Any = None
+
+
+def build_runtime_services(**overrides: Any) -> ProxyRuntimeServices:
+    certs_dir = (os.environ.get("CERTS_DIR") or "/etc/squid/ssl/certs").strip() or "/etc/squid/ssl/certs"
+    services = ProxyRuntimeServices(
+        controller=SquidController(),
+        registry=get_proxy_registry(),
+        revisions=get_config_revisions(),
+        certificate_bundles=get_certificate_bundles(),
+        adblock_artifacts=get_adblock_artifacts(),
+        cert_manager=CertManager(certs_dir),
+        adblock_store=get_adblock_store(),
+        live_stats_store=get_store(),
+        diagnostic_store=get_diagnostic_store(),
+        timeseries_store=get_timeseries_store(),
+        ssl_errors_store=get_ssl_errors_store(),
+        socks_store=get_socks_store(),
+        stats_provider=get_stats,
+        runtime_services_builder=build_local_runtime_services,
+        policy_state_builder=build_proxy_policy_state,
+        pac_state_builder=build_proxy_pac_state,
+    )
+    return replace(services, **overrides) if overrides else services
 
 
 def _call_health_check(func, /, **kwargs):
@@ -83,13 +134,24 @@ def _decode_completed(proc: Any) -> str:
 
 
 class ProxyRuntime:
-    def __init__(self) -> None:
-        self.controller = SquidController()
-        self.registry = get_proxy_registry()
-        self.revisions = get_config_revisions()
-        self.certificate_bundles = get_certificate_bundles()
-        self.adblock_artifacts = get_adblock_artifacts()
-        self.cert_manager = CertManager((os.environ.get("CERTS_DIR") or "/etc/squid/ssl/certs").strip() or "/etc/squid/ssl/certs")
+    def __init__(self, *, services: ProxyRuntimeServices | None = None) -> None:
+        self.services = services or build_runtime_services()
+        self.controller = self.services.controller
+        self.registry = self.services.registry
+        self.revisions = self.services.revisions
+        self.certificate_bundles = self.services.certificate_bundles
+        self.adblock_artifacts = self.services.adblock_artifacts
+        self.cert_manager = self.services.cert_manager
+        self.adblock_store = self.services.adblock_store
+        self.live_stats_store = self.services.live_stats_store
+        self.diagnostic_store = self.services.diagnostic_store
+        self.timeseries_store = self.services.timeseries_store
+        self.ssl_errors_store = self.services.ssl_errors_store
+        self.socks_store = self.services.socks_store
+        self.stats_provider = self.services.stats_provider
+        self.runtime_services_builder = self.services.runtime_services_builder
+        self.policy_state_builder = self.services.policy_state_builder
+        self.pac_state_builder = self.services.pac_state_builder
         self.ssl_db_dir = (os.environ.get("SSL_DB_DIR") or "/var/lib/ssl_db/store").strip() or "/var/lib/ssl_db/store"
         self.adblock_compiled_dir = (os.environ.get("ADBLOCK_COMPILED_DIR") or self.adblock_artifacts.compiled_dir).strip() or self.adblock_artifacts.compiled_dir
         self.pac_render_dir = (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
@@ -114,12 +176,16 @@ class ProxyRuntime:
             self._health_cache_value = None
 
     def _current_config_sha(self) -> str:
+        if self.services.current_config_sha_reader is not None:
+            return str(self.services.current_config_sha_reader() or "")
         current = self.controller.get_current_config() or ""
         if not current:
             return ""
         return hashlib.sha256(current.encode("utf-8", errors="replace")).hexdigest()
 
     def _current_certificate_bundle_sha(self) -> str:
+        if self.services.current_certificate_sha_reader is not None:
+            return str(self.services.current_certificate_sha_reader() or "")
         bundle = self.cert_manager.load_bundle()
         return bundle.bundle_sha256 if bundle is not None else ""
 
@@ -158,7 +224,9 @@ class ProxyRuntime:
                     pass
 
     def _current_policy_sha(self) -> str:
-        desired = build_proxy_policy_state(self.proxy_id)
+        if self.services.current_policy_sha_reader is not None:
+            return str(self.services.current_policy_sha_reader() or "")
+        desired = self.policy_state_builder(self.proxy_id)
         current_files = tuple(
             MaterializedPolicyFile(path=item.path, content=self._read_text_file(item.path))
             for item in desired.files
@@ -166,9 +234,13 @@ class ProxyRuntime:
         return calculate_policy_sha(current_files)
 
     def _current_adblock_artifact_sha(self) -> str:
+        if self.services.current_adblock_sha_reader is not None:
+            return str(self.services.current_adblock_sha_reader() or "")
         return read_materialized_artifact_sha(self.adblock_compiled_dir)
 
     def _current_pac_state_sha(self) -> str:
+        if self.services.current_pac_sha_reader is not None:
+            return str(self.services.current_pac_sha_reader() or "")
         return read_materialized_pac_state_sha(self.pac_render_dir)
 
     def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30) -> tuple[bool, str]:
@@ -184,6 +256,8 @@ class ProxyRuntime:
         return proc.returncode == 0, detail
 
     def _restart_adblock_service(self) -> tuple[bool, str]:
+        if self.services.adblock_service_restarter is not None:
+            return self.services.adblock_service_restarter()
         return self._restart_supervisor_program("cicap_adblock")
 
     def _reload_for_policy_update(self) -> tuple[bool, str]:
@@ -209,6 +283,8 @@ class ProxyRuntime:
         return ""
 
     def _reinitialize_ssl_db_and_restart(self) -> tuple[bool, str]:
+        if self.services.ssl_db_reinitializer is not None:
+            return self.services.ssl_db_reinitializer()
         ssl_db_dir = self.ssl_db_dir
         if not ssl_db_dir.startswith("/") or ssl_db_dir in ("/", "/etc", "/usr", "/var", "/var/lib"):
             return False, f"Refusing to reinitialize ssl_db at unsafe path: {ssl_db_dir}"
@@ -268,7 +344,7 @@ class ProxyRuntime:
         return ok_restart, "\n".join([part for part in details if part]).strip()
 
     def sync_policy_state(self, *, force: bool = False) -> Dict[str, Any]:
-        desired = build_proxy_policy_state(self.proxy_id)
+        desired = self.policy_state_builder(self.proxy_id)
         current_sha = self._current_policy_sha()
         if not force and desired.policy_sha256 == current_sha:
             return {
@@ -319,7 +395,7 @@ class ProxyRuntime:
 
     def sync_adblock_state(self, *, force: bool = False) -> Dict[str, Any]:
         revision_meta = self.adblock_artifacts.get_active_artifact_metadata()
-        store = get_adblock_store()
+        store = self.adblock_store
         store.init_db()
         flush_requested = bool(store.get_cache_flush_requested())
         current_sha = self._current_adblock_artifact_sha()
@@ -437,7 +513,7 @@ class ProxyRuntime:
         }
 
     def sync_pac_state(self, *, force: bool = False) -> Dict[str, Any]:
-        desired = build_proxy_pac_state(self.proxy_id)
+        desired = self.pac_state_builder(self.proxy_id)
         current_sha = self._current_pac_state_sha()
         if not force and desired.state_sha256 == current_sha:
             return {
@@ -559,13 +635,13 @@ class ProxyRuntime:
     def start_background_tasks(self) -> None:
         if (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1":
             return
-        get_store().start_background()
-        get_diagnostic_store().start_background()
-        get_timeseries_store().start_background(get_stats)
-        get_ssl_errors_store().start_background()
-        get_socks_store().start_background()
+        self.live_stats_store.start_background()
+        self.diagnostic_store.start_background()
+        self.timeseries_store.start_background(self.stats_provider)
+        self.ssl_errors_store.start_background()
+        self.socks_store.start_background()
         try:
-            get_adblock_store().start_blocklog_background()
+            self.adblock_store.start_blocklog_background()
         except Exception:
             pass
 
@@ -580,8 +656,8 @@ class ProxyRuntime:
         stdout, stderr = self.controller.get_status()
         proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
         proxy_ok = not bool(stderr)
-        stats = get_stats()
-        services = build_local_runtime_services(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
+        stats = self.stats_provider()
+        services = self.runtime_services_builder(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
         active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
         active_certificate = self.certificate_bundles.get_active_bundle_metadata()
         active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
@@ -595,7 +671,7 @@ class ProxyRuntime:
         current_pac_sha = self._current_pac_state_sha()
 
         try:
-            desired_policy = build_proxy_policy_state(self.proxy_id)
+            desired_policy = self.policy_state_builder(self.proxy_id)
             desired_policy_sha = desired_policy.policy_sha256
             current_policy_sha = calculate_policy_sha(
                 tuple(
@@ -613,7 +689,7 @@ class ProxyRuntime:
             )
 
         try:
-            desired_pac = build_proxy_pac_state(self.proxy_id)
+            desired_pac = self.pac_state_builder(self.proxy_id)
             desired_pac_sha = desired_pac.state_sha256
         except Exception as exc:
             state_errors.append(f"pac: {public_error_message(exc, default='Failed to inspect desired PAC state.')}")

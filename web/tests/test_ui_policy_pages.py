@@ -144,7 +144,7 @@ def test_adblock_page_shows_recent_icap_observability(app_module, monkeypatch):
         def list_request_candidates_for_policy_event(self, **_kwargs):
             return []
 
-    monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnostic())
+    app_module.configure_app_runtime_services_for_testing(get_diagnostic_store=lambda: FakeDiagnostic())
 
     c = app_module.app.test_client()
     login(c)
@@ -339,12 +339,12 @@ def test_exclusions_post_actions_and_apply(app_module, monkeypatch):
     assert r_toggle.status_code in (301, 302, 303, 307, 308)
     assert store._ex.exclude_private_nets is True
 
-    monkeypatch.setattr(app_module.squid_controller, "get_current_config", lambda: "")
-    monkeypatch.setattr(app_module.squid_controller, "get_tunable_options", lambda _cfg=None: {})
-    monkeypatch.setattr(app_module.squid_controller, "get_cache_override_options", lambda _cfg=None: {})
-    monkeypatch.setattr(app_module.squid_controller, "generate_config_from_template_with_exclusions", lambda options, ex: "CFG")
-    monkeypatch.setattr(app_module.squid_controller, "apply_cache_overrides", lambda cfg, overrides: cfg)
-    monkeypatch.setattr(app_module.squid_controller, "apply_config_text", lambda cfg: (True, "ok"))
+    controller = getattr(app_module, "_test_squid_controller")
+    controller.current_config = ""
+    controller.tunable_options = {}
+    controller.cache_override_options = {}
+    controller.generated_config = "CFG"
+    controller.apply_result = (True, "ok")
 
     r_apply = c.post(
         "/exclusions",
