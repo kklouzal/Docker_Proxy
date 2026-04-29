@@ -5,6 +5,8 @@ import re
 from typing import Any, Dict, Iterable, Sequence
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from services.runtime_helpers import normalize_hostish as _normalize_hostish
+
 
 SSL_ERROR_CATEGORY_META: Dict[str, Dict[str, str]] = {
     'CERT_VERIFY': {
@@ -78,10 +80,6 @@ _TLS_IO_ERR_TEXT: Dict[str, str] = {
 }
 
 _TLS_ACCEPT_HEADER_TEXT = 'Cannot accept a TLS connection'
-
-
-def _normalized_domain(value: str | None) -> str:
-    return (value or '').strip().lower().lstrip('.')
 
 
 def ssl_error_category_meta(category: str | None) -> Dict[str, str]:
@@ -408,7 +406,7 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
     category_totals: Dict[str, int] = {}
 
     for row in rows:
-        domain = _normalized_domain(getattr(row, 'domain', ''))
+        domain = _normalize_hostish(getattr(row, 'domain', ''))
         raw_reason = str(getattr(row, 'reason', '') or '')
         sample = str(getattr(row, 'sample', '') or '').strip()
         category = _infer_ssl_category(
@@ -517,7 +515,7 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
 def present_ssl_top_domains(rows: Sequence[Dict[str, Any]], *, limit: int = 15) -> list[Dict[str, Any]]:
     presented: list[Dict[str, Any]] = []
     for row in rows:
-        domain = _normalized_domain(str(row.get('domain') or ''))
+        domain = _normalize_hostish(str(row.get('domain') or ''))
         if not domain:
             continue
         presented.append(

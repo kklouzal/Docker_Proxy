@@ -231,10 +231,6 @@ class TestRoutes(unittest.TestCase):
         response = self.app.get('/squid/config?tab=http')
         self.assertEqual(response.status_code, 200)
 
-    def test_status(self):
-        response = self.app.get('/status', follow_redirects=False)
-        self.assertIn(response.status_code, (301, 302, 308))
-
     def test_certs(self):
         response = self.app.get('/certs')
         self.assertEqual(response.status_code, 200)

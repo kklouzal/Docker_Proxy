@@ -7,7 +7,6 @@ def test_monitoring_pages_link_back_to_observability_hub(app_module):
     login(c)
 
     expected = {
-        "/live": "destinations",
         "/ssl-errors": "ssl",
         "/socks": "transport",
     }

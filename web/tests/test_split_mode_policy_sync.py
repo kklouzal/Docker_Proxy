@@ -23,7 +23,7 @@ def _import_runtime():
     configure_test_mysql_env(tempfile.mkdtemp(prefix='proxy_policy_mysql_'))
 
     from proxy.runtime import ProxyRuntime  # type: ignore
-    from services.proxy_webfilter_store import get_proxy_webfilter_store  # type: ignore
+    from services.webfilter_core import get_proxy_webfilter_store  # type: ignore
     from services.webfilter_store import get_webfilter_store  # type: ignore
     from services.sslfilter_store import get_sslfilter_store  # type: ignore
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore

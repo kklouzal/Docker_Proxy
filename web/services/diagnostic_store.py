@@ -8,12 +8,11 @@ import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit
 
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, now_ts as _now
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, extract_domain as _extract_domain, normalize_hostish as _normalize_hostish, now_ts as _now
 
 
 logger = logging.getLogger(__name__)
@@ -59,50 +58,6 @@ def _split_tsv(line: str) -> list[str]:
     except Exception:
         return []
     return [item.strip() for item in row]
-
-
-def _normalize_hostish(value: object) -> str:
-    host = _safe_text(value, max_len=255).lower().strip().lstrip(".")
-    if not host or host in {"-", "(nil)", "none", "null"}:
-        return ""
-    if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
-    if "/" in host:
-        host = host.split("/", 1)[0]
-    if "?" in host:
-        host = host.split("?", 1)[0]
-    if "#" in host:
-        host = host.split("#", 1)[0]
-    return host
-
-
-def _extract_domain(url: object, *, host: object = "", sni: object = "") -> str:
-    for candidate in (sni, host):
-        normalized = _normalize_hostish(candidate)
-        if normalized:
-            return normalized
-
-    raw = _safe_text(url)
-    if not raw:
-        return ""
-
-    try:
-        parts = urlsplit(raw)
-        if parts.hostname:
-            return _normalize_hostish(parts.hostname)
-    except Exception:
-        pass
-
-    cand = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if "@" in cand:
-        cand = cand.split("@", 1)[1]
-    if cand.startswith("[") and "]" in cand:
-        return _normalize_hostish(cand[1 : cand.find("]")])
-    if ":" in cand:
-        host_part, port = cand.rsplit(":", 1)
-        if port.isdigit():
-            cand = host_part
-    return _normalize_hostish(cand)
 
 
 def _parse_status(result_code: str) -> int:

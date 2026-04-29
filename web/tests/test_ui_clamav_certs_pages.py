@@ -10,7 +10,7 @@ def test_clamav_toggle_calls_apply_config(app_module):
     assert r.status_code in (301, 302, 303, 307, 308)
 
     calls = getattr(app_module, "_test_calls")
-    assert calls["reload"] >= 1
+    assert (calls["apply"] + calls["reload"]) >= 1
 
 
 def test_clamav_test_endpoints_redirect_with_result(app_module):

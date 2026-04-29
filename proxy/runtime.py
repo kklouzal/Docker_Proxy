@@ -18,10 +18,11 @@ from services.certificate_core import CertManager, materialize_certificate_bundl
 from services.config_revisions import get_config_revisions
 from services.diagnostic_store import get_diagnostic_store
 from services.errors import public_error_message
+from services.health_checks import build_clamav_health, check_local_listener as _check_local_listener
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
-from services.proxy_health import build_local_runtime_services, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
+from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, check_dante_health as _shared_check_dante, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_context import get_proxy_id
 from services.proxy_registry import get_proxy_registry
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
@@ -33,6 +34,38 @@ from services.timeseries_store import get_timeseries_store
 
 
 logger = logging.getLogger(__name__)
+
+
+def _call_health_check(func, /, **kwargs):
+    try:
+        return func(**kwargs)
+    except TypeError:
+        return func()
+
+
+def _check_dante(*, timeout: float = 0.75) -> Dict[str, Any]:
+    host = (os.environ.get("DANTE_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int((os.environ.get("DANTE_PORT") or "1080").strip() or "1080")
+    except Exception:
+        port = 1080
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return _check_local_listener("dante", host, port)
+    return _shared_check_dante(timeout=timeout, error_formatter=str)
+
+
+def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0.8, tcp_timeout: float = 0.75) -> Dict[str, Dict[str, Any]]:
+    icap = _call_health_check(_check_icap_adblock, timeout=icap_timeout, error_formatter=error_formatter)
+    av_icap = _call_health_check(_check_icap_av, timeout=icap_timeout, error_formatter=error_formatter)
+    clamd = _call_health_check(_check_clamd, timeout=icap_timeout, error_formatter=error_formatter)
+    dante = _check_dante(timeout=tcp_timeout)
+    return {
+        "icap": icap,
+        "av_icap": av_icap,
+        "clamd": clamd,
+        "clamav": build_clamav_health(clamd, av_icap),
+        "dante": dante,
+    }
 
 
 def _decode_bytes(value: bytes) -> str:

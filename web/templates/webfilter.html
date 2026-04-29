@@ -17,7 +17,7 @@
     </div>
   </div>
   <div class="page-actions">
-    <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window if window is defined else 86400) }}">Observability hub</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window if window is defined else observability_default_window) }}">Observability hub</a>
     <a class="btn ghost" href="{{ url_for('exclusions') }}">Exclusions</a>
     <a class="btn ghost" href="{{ url_for('adblock') }}">Ad blocking</a>
   </div>
@@ -273,7 +273,7 @@
             Blocked-request review and recent enforcement evidence now live in <strong>Observability → Security</strong>, leaving this page focused on rule configuration.
           </div>
           <div class="actions">
-            <a class="btn" href="{{ url_for('observability', pane='security', window=window if window is defined else 86400) }}">Open security pane</a>
+            <a class="btn" href="{{ url_for('observability', pane='security', window=window if window is defined else observability_default_window) }}">Open security pane</a>
           </div>
         </div>
       </section>

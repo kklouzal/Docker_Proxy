@@ -48,43 +48,6 @@ def test_legacy_ssl_errors_route_redirects_to_observability_ssl(app_module):
     assert qs.get("q") == ["example.com"]
 
 
-def test_legacy_live_routes_redirect_to_matching_observability_panes(app_module):
-    c = app_module.app.test_client()
-    login(c)
-
-    domain_response = c.get(
-        "/live?mode=domains&window=3600&q=example.com",
-        follow_redirects=False,
-    )
-    assert domain_response.status_code in (301, 302, 303, 307, 308)
-    domain_qs = redirect_query_params(domain_response)
-    assert domain_qs.get("pane") == ["destinations"]
-    assert domain_qs.get("window") == ["3600"]
-    assert domain_qs.get("limit") == ["100"]
-    assert domain_qs.get("q") == ["example.com"]
-
-    client_response = c.get(
-        "/live?mode=clients&ip=192.0.2.55&detail=top&window=1800&limit=120",
-        follow_redirects=False,
-    )
-    assert client_response.status_code in (301, 302, 303, 307, 308)
-    client_qs = redirect_query_params(client_response)
-    assert client_qs.get("pane") == ["clients"]
-    assert client_qs.get("window") == ["1800"]
-    assert client_qs.get("limit") == ["120"]
-    assert client_qs.get("q") == ["192.0.2.55"]
-
-    cache_response = c.get(
-        "/live?subtab=reasons&window=7200&limit=150",
-        follow_redirects=False,
-    )
-    assert cache_response.status_code in (301, 302, 303, 307, 308)
-    cache_qs = redirect_query_params(cache_response)
-    assert cache_qs.get("pane") == ["cache"]
-    assert cache_qs.get("window") == ["7200"]
-    assert cache_qs.get("limit") == ["150"]
-
-
 def test_legacy_socks_route_redirects_to_transport_pane(app_module):
     c = app_module.app.test_client()
     login(c)

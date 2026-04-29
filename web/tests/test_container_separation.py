@@ -53,9 +53,6 @@ def test_proxy_dockerfile_copies_only_proxy_runtime_payload() -> None:
         "web/services/webfilter_store.py",
         "web/services/cert_manager.py",
         "web/services/squidctl.py",
-        "web/services/certificate_runtime.py",
-        "web/services/proxy_webfilter_store.py",
-        "web/services/squid_runtime.py",
         "web/tools/webcat_build.py",
         "scripts/reload_squid.sh",
     ):
@@ -95,10 +92,7 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
     assert "COPY web/requirements.txt /app/requirements.txt" not in text
 
     for excluded_copy in (
-        "web/services/proxy_webfilter_store.py",
-        "web/services/squid_runtime.py",
         "web/services/policy_materializer.py",
-        "web/services/certificate_runtime.py",
         "web/tools/pac_http_server.py",
         "web/tools/webfilter_apply.py",
         "web/tools/sslfilter_apply.py",

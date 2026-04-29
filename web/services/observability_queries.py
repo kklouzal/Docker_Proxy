@@ -3,14 +3,13 @@ from __future__ import annotations
 from collections import Counter
 import ipaddress
 from typing import Any, Dict, List
-from urllib.parse import urlsplit
 
 from services.adblock_store import get_adblock_store
 from services.client_identity_cache import get_client_identity_cache
 from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import escape_like as _escape_like
+from services.runtime_helpers import cache_hit_sql as _cache_hit_sql, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason_sql as _not_cached_reason_sql, present_value_sql as _present_value_sql
 from services.socks_store import get_socks_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.ui_support import (
@@ -47,35 +46,6 @@ def _badge_rows(counter: Counter[str], *, limit: int = 8) -> List[Dict[str, Any]
     return rows
 
 
-def _normalize_host(value: object) -> str:
-    text = str(value or "").strip().lower().lstrip(".")
-    if not text:
-        return ""
-    if text.startswith("[") and "]" in text:
-        text = text[1 : text.find("]")]
-    if ":" in text and text.count(":") == 1:
-        host_part, port = text.rsplit(":", 1)
-        if port.isdigit():
-            text = host_part
-    return text.strip().strip(".")
-
-
-def _domain_from_url(url: object) -> str:
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
-    try:
-        parsed = urlsplit(raw)
-        if parsed.hostname:
-            return _normalize_host(parsed.hostname)
-    except Exception:
-        pass
-    candidate = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if "@" in candidate:
-        candidate = candidate.split("@", 1)[1]
-    return _normalize_host(candidate)
-
-
 def _is_private_ip(value: str) -> bool:
     try:
         return ipaddress.ip_address((value or "").strip()).is_private
@@ -103,15 +73,11 @@ class ObservabilityQueries:
 
     @staticmethod
     def _hit_sql(result_column: str = "result_code") -> str:
-        return (
-            f"(COALESCE({result_column}, '') <> '' "
-            f"AND {result_column} NOT LIKE 'TCP_DENIED%%' "
-            f"AND {result_column} LIKE '%%HIT%%')"
-        )
+        return _cache_hit_sql(result_column)
 
     @staticmethod
     def _present_sql(column: str) -> str:
-        return f"COALESCE(NULLIF(TRIM({column}), ''), '') <> ''"
+        return _present_value_sql(column)
 
     @staticmethod
     def _url_host_sql(url_column: str = "url") -> str:
@@ -132,30 +98,10 @@ class ObservabilityQueries:
         result_column: str = "result_code",
         status_column: str = "http_status",
     ) -> str:
-        return (
-            "CASE "
-            f"WHEN COALESCE(NULLIF(TRIM({method_column}), ''), '') <> '' "
-            f"AND UPPER({method_column}) NOT IN ('GET', 'HEAD', 'CONNECT') "
-            f"THEN CONCAT(UPPER({method_column}), ' method (not cacheable by default)') "
-            f"WHEN UPPER({method_column}) = 'CONNECT' "
-            f"OR {result_column} LIKE 'TCP_TUNNEL%%' "
-            f"OR {result_column} LIKE 'TCP_CONNECT%%' "
-            "THEN 'HTTPS tunnel (CONNECT) — not cacheable without SSL-bump' "
-            f"WHEN {status_column} IN (301, 302, 303, 307, 308) "
-            f"THEN CONCAT('Redirect response (', {status_column}, ') (often not cached without explicit freshness)') "
-            f"WHEN {status_column} >= 400 "
-            f"THEN CONCAT('Error response status ', {status_column}, ' (often not cached)') "
-            f"WHEN {result_column} LIKE 'TCP_DENIED%%' OR {result_column} LIKE '%%DENIED%%' "
-            "THEN 'Denied by ACL' "
-            f"WHEN {result_column} LIKE '%%BYPASS%%' "
-            "THEN 'Bypassed (cache deny rule or client no-cache)' "
-            f"WHEN {result_column} LIKE '%%ABORTED%%' "
-            "THEN 'Aborted (client/upstream closed connection)' "
-            f"WHEN {result_column} LIKE '%%SWAPFAIL%%' "
-            "THEN 'Cache swap failure' "
-            f"WHEN {result_column} LIKE '%%MISS%%' "
-            "THEN 'Cache miss (object not in cache)' "
-            "ELSE 'Not served from cache' END"
+        return _not_cached_reason_sql(
+            method_column=method_column,
+            result_column=result_column,
+            status_column=status_column,
         )
 
     @staticmethod
@@ -694,7 +640,7 @@ class ObservabilityQueries:
                 'src_ip': str(row[1] or ''),
                 'method': str(row[2] or ''),
                 'url': str(row[3] or ''),
-                'domain': _domain_from_url(row[3]),
+                'domain': _extract_domain(row[3]),
                 'http_status': int(row[4] or 0),
                 'result': 'BLOCKED',
             }
@@ -705,7 +651,7 @@ class ObservabilityQueries:
                 'ts': int(row[0] or 0),
                 'src_ip': str(row[1] or ''),
                 'url': str(row[2] or ''),
-                'domain': _domain_from_url(row[2]),
+                'domain': _extract_domain(row[2]),
                 'category': str(row[3] or ''),
                 'result': 'BLOCKED',
             }

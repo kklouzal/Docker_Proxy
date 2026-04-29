@@ -1,6 +1,6 @@
 from flask import Flask, g, render_template, request, redirect, url_for, jsonify, abort, session
 from services.squidctl import SquidController
-from services.cert_manager import generate_self_signed_ca_bundle, parse_pfx_bundle
+from services.cert_manager import generate_self_signed_ca_bundle, install_pfx_as_ca, materialize_certificate_bundle, parse_pfx_bundle
 from services.certificate_bundles import get_certificate_bundles
 from services.auth_store import get_auth_store
 from services.config_revisions import get_config_revisions
@@ -9,8 +9,6 @@ from datetime import UTC, datetime, timedelta
 import time
 import os
 import shutil
-from services.stats import get_stats
-from services.live_stats import get_store
 from services.exclusions_store import get_exclusions_store
 from services.audit_store import get_audit_store
 from services.timeseries_store import get_timeseries_store
@@ -24,14 +22,14 @@ from services.pac_profiles_store import get_pac_profiles_store
 from services.pac_renderer import build_public_pac_url, render_proxy_pac_for_request
 from services.proxy_client import ProxyClientError, get_proxy_client
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
-from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, check_dante_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
+from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_registry import get_proxy_registry
-from services.proxy_sync import nudge_registered_proxies
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.observability_queries import get_observability_queries
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import extract_domain as _extract_domain
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
 from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, present_icap_events as _present_icap_events, present_observability_summary as _present_observability_summary, present_ssl_error_rows as _present_ssl_error_rows, present_top_tag_rows as _present_top_tag_rows, present_top_value_rows as _present_top_value_rows, present_transaction_rows as _present_transaction_rows, window_label as _window_label
 
@@ -39,13 +37,14 @@ import re
 import secrets
 import csv
 import io
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse
 from typing import Any, Dict, Iterable, List, Sequence
 from markupsafe import Markup
 
 app = Flask(__name__)
 squid_controller = SquidController()
 _asset_version = str(int(time.time()))
+OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
 
 
 def _max_workers() -> int:
@@ -216,35 +215,6 @@ def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
     return app.response_class(buf.getvalue(), mimetype='text/csv; charset=utf-8')
 
 
-def _legacy_live_redirect_params() -> Dict[str, Any]:
-    subtab = (request.args.get('subtab') or 'activity').strip().lower()
-    mode = (request.args.get('mode') or 'domains').strip().lower()
-    detail = (request.args.get('detail') or 'top').strip().lower()
-    limit = _query_int_arg('limit', default=100, minimum=10, maximum=200)
-    window_i = _query_int_arg('window', default=3600, minimum=300, maximum=7 * 24 * 3600)
-    search = (request.args.get('q') or '').strip().lower()
-    ip = (request.args.get('ip') or '').strip()
-    domain = (request.args.get('domain') or '').strip().lower().lstrip('.')
-
-    pane = 'destinations'
-    pane_search = search
-    if subtab == 'reasons' or detail == 'nocache':
-        pane = 'cache'
-        pane_search = domain or ip or search
-    elif mode == 'clients':
-        pane = 'clients'
-        pane_search = ip or search
-    else:
-        pane_search = domain or search
-
-    return {
-        'pane': pane,
-        'window': window_i,
-        'limit': limit,
-        'q': pane_search or None,
-    }
-
-
 def _empty_observability_summary() -> Dict[str, Any]:
     return {
         'request_records': 0,
@@ -406,33 +376,8 @@ def _coerce_store_result(result: Any, *, success_default: bool = True, error_def
     return success_default, error_default
 
 
-def _normalized_domain(value: object | None) -> str:
-    raw = '' if value is None else str(value).strip()
-    if not raw:
-        return ''
-
-    candidate = raw
-    try:
-        parts = urlsplit(raw)
-        if parts.hostname:
-            candidate = parts.hostname
-    except Exception:
-        candidate = raw
-
-    candidate = candidate.strip().lower().lstrip('.')
-    if '@' in candidate:
-        candidate = candidate.split('@', 1)[1]
-    if candidate.startswith('[') and ']' in candidate:
-        candidate = candidate[1 : candidate.find(']')]
-    elif ':' in candidate:
-        host_part, port = candidate.rsplit(':', 1)
-        if port.isdigit():
-            candidate = host_part
-    return candidate.strip().lower().strip('.')
-
-
 def _add_exclusion_domain(store: Any, value: str) -> tuple[bool, str, str]:
-    domain = _normalized_domain(value)
+    domain = _extract_domain(value)
     if not domain:
         return False, 'Domain is required.', ''
     try:
@@ -478,6 +423,17 @@ def _publish_template_config(
     ok, detail = _publish_config_for_current_mode(config_text, source_kind=source_kind)
     _record_audit_event(audit_kind, ok=ok, detail=detail, config_text=config_text)
     return ok, str(detail or '')
+
+
+def _active_proxy_management_url() -> str:
+    proxy = get_proxy_registry().get_proxy(get_proxy_id())
+    if proxy is None:
+        return ''
+    return str(proxy.management_url or '').strip()
+
+
+def _uses_remote_proxy_runtime() -> bool:
+    return bool(_active_proxy_management_url())
 
 
 def _best_effort_apply_adblock_flush() -> None:
@@ -672,7 +628,7 @@ def login():
             session['user'] = username
             session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
             _record_audit_event('login_success', ok=True, detail=f'user={username}')
-            return redirect(next_url or _endpoint_url('index'))
+            return redirect(next_url or url_for('index'))
         # Log failed login attempt for security auditing
         _record_audit_event('login_failed', ok=False, detail=f'user={username}')
         return render_template('login.html', error='Invalid username or password.', next=next_url)
@@ -746,15 +702,12 @@ def inject_now():
         "current_year": datetime.now(UTC).year,
         "asset_version": _asset_version,
         "fmt_ts": fmt_ts,
+        "observability_default_window": OBSERVABILITY_DEFAULT_WINDOW,
     }
 
 
-def _check_dante() -> Dict[str, Any]:
-    return check_dante_health(timeout=0.6, error_formatter=public_error_message)
-
-
-def _build_observability_snapshot(window_i: int = 86400) -> tuple[Dict[str, int], str]:
-    since_ts = int(time.time()) - max(300, int(window_i or 86400))
+def _build_observability_snapshot(window_i: int = OBSERVABILITY_DEFAULT_WINDOW) -> tuple[Dict[str, int], str]:
+    since_ts = int(time.time()) - max(300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW))
     diagnostic_summary: Dict[str, Any] = {}
     ssl_summary: Dict[str, Any] = {}
     try:
@@ -767,20 +720,6 @@ def _build_observability_snapshot(window_i: int = 86400) -> tuple[Dict[str, int]
     except Exception:
         ssl_summary = {}
     return _present_observability_summary(diagnostic_summary=diagnostic_summary, ssl_summary=ssl_summary), _window_label(window_i)
-
-
-def _top_count_rows(values: Iterable[str], *, limit: int = 5, max_label: int = 64) -> list[Dict[str, Any]]:
-    counts: Dict[str, int] = {}
-    for raw in values:
-        value = str(raw or '').strip()
-        if not value or value == '-':
-            continue
-        counts[value] = counts.get(value, 0) + 1
-    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[: max(1, limit)]
-    return _present_top_value_rows(
-        [{'value': label, 'count': count, 'last_seen': 0} for label, count in ordered],
-        max_label=max_label,
-    )
 
 
 def _correlate_request_for_icap_events(diagnostic_store: Any, icap_events: List[Dict[str, Any]], *, icap_limit: int = 0) -> List[Dict[str, Any]]:
@@ -836,22 +775,36 @@ def _current_managed_config() -> str:
 
 def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
     """Validate locally when Squid is available in the admin image, otherwise defer to the proxy."""
+    ok, detail = squid_controller.validate_config_text(config_text)
+    if ok:
+        return ok, detail
     if shutil.which('squid') is None:
         return True, 'Validation is deferred to the selected proxy during sync.'
-    return squid_controller.validate_config_text(config_text)
+    return ok, detail
 
 
 def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> tuple[bool, str]:
     config_text = squid_controller.normalize_config_text(config_text)
     proxy_id = get_proxy_id()
     created_by = str(session.get('user') or '')
-    revision = get_config_revisions().create_revision(
+    revisions = get_config_revisions()
+    revision = revisions.create_revision(
         proxy_id,
         config_text,
         created_by=created_by,
         source_kind=source_kind,
         activate=True,
     )
+    if not _uses_remote_proxy_runtime():
+        ok, detail = squid_controller.apply_config_text(config_text)
+        revisions.record_apply_result(
+            proxy_id,
+            revision.revision_id,
+            ok=ok,
+            detail=str(detail or ''),
+            applied_by='admin-ui',
+        )
+        return ok, str(detail or f'Revision {revision.revision_id} applied locally.')
     try:
         result = get_proxy_client().sync_proxy(proxy_id, force=True)
         ok = bool(result.get('ok', False))
@@ -879,14 +832,77 @@ def _trigger_proxy_cache_clear() -> tuple[bool, str]:
         return False, str(exc)
 
 
-def _publish_certificate_bundle_remote(bundle, *, original_filename: str = '') -> tuple[bool, str]:
-    revision = get_certificate_bundles().create_revision(
+def _record_local_certificate_apply(bundle, *, original_filename: str = '', already_materialized: bool = False) -> tuple[bool, str]:
+    bundle_store = get_certificate_bundles()
+    revision = bundle_store.create_revision(
         bundle,
         created_by=str(session.get('user') or ''),
         original_filename=(original_filename or '')[:255],
         activate=True,
     )
-    attempted, ok_count = nudge_registered_proxies(force=True)
+    detail_parts: list[str] = []
+    ok = True
+    if not already_materialized:
+        try:
+            materialize_certificate_bundle(
+                (os.environ.get('CERTS_DIR') or '/etc/squid/ssl/certs').strip() or '/etc/squid/ssl/certs',
+                bundle,
+                original_pfx_bytes=bundle.original_pfx_bytes,
+            )
+        except Exception as exc:
+            ok = False
+            detail_parts.append(public_error_message(exc, default='Failed to install certificate bundle locally.'))
+    if ok:
+        reload_result = squid_controller.reload_squid()
+        if isinstance(reload_result, tuple) and len(reload_result) == 2:
+            stdout, stderr = reload_result
+            reload_detail = ((_decode_bytes(stdout) + '\n' + _decode_bytes(stderr)).strip())
+            ok = not bool(stderr)
+            if reload_detail:
+                detail_parts.append(reload_detail)
+        else:
+            detail_parts.append('Certificate bundle installed locally.')
+    detail = '\n'.join(part for part in detail_parts if part).strip() or (
+        f'Certificate revision {revision.revision_id} applied locally.' if ok else 'Failed to apply certificate bundle locally.'
+    )
+    bundle_store.record_apply_result(
+        get_proxy_id(),
+        revision.revision_id,
+        ok=ok,
+        detail=detail,
+        applied_by='admin-ui',
+        bundle_sha256=revision.bundle_sha256,
+    )
+    return ok, detail
+
+
+def _publish_certificate_bundle_remote(bundle, *, original_filename: str = '') -> tuple[bool, str]:
+    if not _uses_remote_proxy_runtime():
+        return _record_local_certificate_apply(bundle, original_filename=original_filename)
+
+    bundle_store = get_certificate_bundles()
+    revision = bundle_store.create_revision(
+        bundle,
+        created_by=str(session.get('user') or ''),
+        original_filename=(original_filename or '')[:255],
+        activate=True,
+    )
+    proxies = get_proxy_registry().list_proxies()
+    attempted = len(proxies)
+    ok_count = 0
+    if attempted:
+        try:
+            client = get_proxy_client()
+        except Exception:
+            client = None
+        if client is not None:
+            for proxy in proxies:
+                try:
+                    result = client.sync_proxy(proxy.proxy_id, force=True)
+                except ProxyClientError:
+                    continue
+                if bool(result.get('ok', False)):
+                    ok_count += 1
     if attempted == 0:
         detail = (
             f'Certificate revision {revision.revision_id} saved. '
@@ -1156,7 +1172,7 @@ def _handle_administration_post(store: Any, current_user: str):
 
 @app.route('/')
 def index():
-    observability, observability_window_label = _build_observability_snapshot(86400)
+    observability, observability_window_label = _build_observability_snapshot(OBSERVABILITY_DEFAULT_WINDOW)
     proxy_id = get_proxy_id()
     try:
         health = get_proxy_client().get_health(proxy_id)
@@ -1240,11 +1256,6 @@ def api_squid_config():
     return app.response_class(cfg, mimetype='text/plain; charset=utf-8')
 
 
-@app.route('/fleet', methods=['GET'])
-def fleet_legacy():
-    return redirect(url_for('proxies', **request.args.to_dict(flat=True)))
-
-
 @app.route('/proxies', methods=['GET'])
 def proxies():
 
@@ -1264,7 +1275,7 @@ def proxies():
             }
         token = set_proxy_id(proxy.proxy_id)
         try:
-            diagnostic_summary = get_diagnostic_store().activity_summary(since=int(time.time()) - 86400)
+            diagnostic_summary = get_diagnostic_store().activity_summary(since=int(time.time()) - OBSERVABILITY_DEFAULT_WINDOW)
             ssl_summary = _present_ssl_error_rows(
                 get_ssl_errors_store().list_recent(since=int(time.time()) - 3600, search='', limit=100)
             ).get('summary', {})
@@ -1309,7 +1320,7 @@ def observability():
     }
     sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
     limit = _query_int_arg('limit', default=50, minimum=10, maximum=200)
-    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=7 * 24 * 3600)
+    window_i = _query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_values = request.args.getlist('resolve_hostnames')
@@ -1432,7 +1443,7 @@ def observability_export():
     }
     sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
     limit = _query_int_arg('limit', default=200, minimum=10, maximum=1000)
-    window_i = _query_int_arg('window', default=86400, minimum=300, maximum=7 * 24 * 3600)
+    window_i = _query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_values = request.args.getlist('resolve_hostnames')
@@ -1639,7 +1650,7 @@ def ssl_errors():
     return _redirect_to(
         'observability',
         pane='ssl',
-        window=_query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600),
+        window=_query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=90 * 24 * 3600),
         limit=_query_int_arg('limit', default=50, minimum=10, maximum=200),
         q=((request.args.get('q') or '').strip().lower() or None),
     )
@@ -1647,7 +1658,7 @@ def ssl_errors():
 
 @app.route('/ssl-errors/exclude', methods=['POST'])
 def ssl_errors_exclude():
-    domain = _normalized_domain(request.form.get('domain'))
+    domain = _extract_domain(request.form.get('domain'))
     if domain:
         try:
             get_exclusions_store().add_domain(domain)
@@ -1662,7 +1673,7 @@ def ssl_errors_export():
     return _redirect_to(
         'observability_export',
         pane='ssl',
-        window=_query_int_arg('window', default=86400, minimum=300, maximum=90 * 24 * 3600),
+        window=_query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=90 * 24 * 3600),
         limit=_query_int_arg('limit', default=1000, minimum=10, maximum=1000),
         q=((request.args.get('q') or '').strip().lower() or None),
     )
@@ -1673,7 +1684,7 @@ def socks():
     return _redirect_to(
         'observability',
         pane='transport',
-        window=_query_int_arg('window', default=3600, minimum=60, maximum=7 * 24 * 3600),
+        window=_query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=60, maximum=7 * 24 * 3600),
         limit=_query_int_arg('limit', default=50, minimum=10, maximum=200),
         q=((request.args.get('q') or '').strip() or None),
     )
@@ -2149,11 +2160,6 @@ def pac_builder():
     )
     return render_template('pac.html', profiles=profiles, pac_url=pac_url)
 
-@app.route('/status')
-def status():
-    return _redirect_index_status()
-
-
 @app.route('/api/timeseries', methods=['GET'])
 def api_timeseries():
     res = (request.args.get('resolution') or '1s').strip()
@@ -2163,18 +2169,6 @@ def api_timeseries():
     since = int(time.time()) - window_i
     points = get_timeseries_store().query(resolution=res, since=since, limit=limit_i)
     return jsonify({"resolution": res, "since": since, "points": points})
-
-
-@app.route('/live', methods=['GET'])
-def live():
-    return _redirect_to('observability', **_legacy_live_redirect_params())
-
-
-@app.route('/live/export', methods=['GET'])
-def live_export():
-    params = _legacy_live_redirect_params()
-    params['limit'] = _query_int_arg('limit', default=1000, minimum=10, maximum=1000)
-    return _redirect_to('observability_export', **params)
 
 
 @app.route('/reload', methods=['POST'])
@@ -2268,14 +2262,37 @@ def upload_certificate_pfx():
         return _redirect_with_message('certs', ok=False, msg='Failed to read upload.')
 
     pfx_bytes = bytes(buf)
-    parsed = parse_pfx_bundle(pfx_bytes, password=password)
-    ok = bool(parsed.ok and parsed.bundle is not None)
-    detail = parsed.message
-    if ok and parsed.bundle is not None:
-        ok, detail = _publish_certificate_bundle_remote(
-            parsed.bundle,
-            original_filename=(pfx_file.filename or '').strip(),
+    if not _uses_remote_proxy_runtime():
+        installed = install_pfx_as_ca(
+            (os.environ.get('CERTS_DIR') or '/etc/squid/ssl/certs').strip() or '/etc/squid/ssl/certs',
+            pfx_bytes,
+            password=password,
         )
+        installed_bundle = getattr(installed, 'bundle', None)
+        ok = bool(getattr(installed, 'ok', False))
+        detail = str(getattr(installed, 'message', '') or '')
+        if ok and installed_bundle is not None:
+            ok, detail = _record_local_certificate_apply(
+                installed_bundle,
+                original_filename=(pfx_file.filename or '').strip(),
+                already_materialized=True,
+            )
+        elif ok:
+            reload_result = squid_controller.reload_squid()
+            if isinstance(reload_result, tuple) and len(reload_result) == 2:
+                stdout, stderr = reload_result
+                reload_detail = ((_decode_bytes(stdout) + '\n' + _decode_bytes(stderr)).strip())
+                ok = not bool(stderr)
+                detail = reload_detail or detail
+    else:
+        parsed = parse_pfx_bundle(pfx_bytes, password=password)
+        ok = bool(parsed.ok and parsed.bundle is not None)
+        detail = parsed.message
+        if ok and parsed.bundle is not None:
+            ok, detail = _publish_certificate_bundle_remote(
+                parsed.bundle,
+                original_filename=(pfx_file.filename or '').strip(),
+            )
 
     _record_audit_event('ca_upload_pfx', ok=ok, detail=detail)
 

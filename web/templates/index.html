@@ -167,13 +167,13 @@
                 </article>
             </div>
             <div class="actions">
-                <a class="btn primary" href="{{ url_for('observability', window=86400) }}">Open Observability</a>
-                <a class="btn" href="{{ url_for('observability', pane='destinations', window=86400) }}">Review destinations</a>
-                <a class="btn" href="{{ url_for('observability', pane='security', window=86400) }}">Security signals</a>
-                <a class="btn" href="{{ url_for('observability', pane='performance', window=86400) }}">Performance</a>
-                <a class="btn" href="{{ url_for('observability', pane='ssl', window=86400) }}">SSL incidents</a>
-                <a class="btn" href="{{ url_for('observability', pane='transport', window=86400) }}">Transport</a>
-                <a class="btn" href="{{ url_for('clamav', window=86400) }}">AV controls</a>
+                <a class="btn primary" href="{{ url_for('observability', window=observability_default_window) }}">Open Observability</a>
+                <a class="btn" href="{{ url_for('observability', pane='destinations', window=observability_default_window) }}">Review destinations</a>
+                <a class="btn" href="{{ url_for('observability', pane='security', window=observability_default_window) }}">Security signals</a>
+                <a class="btn" href="{{ url_for('observability', pane='performance', window=observability_default_window) }}">Performance</a>
+                <a class="btn" href="{{ url_for('observability', pane='ssl', window=observability_default_window) }}">SSL incidents</a>
+                <a class="btn" href="{{ url_for('observability', pane='transport', window=observability_default_window) }}">Transport</a>
+                <a class="btn" href="{{ url_for('clamav', window=observability_default_window) }}">AV controls</a>
             </div>
             <div class="surface-note small">
                 Observability is now the primary operator workflow for traffic, incidents, and latency review; the remaining policy pages focus on configuration and control actions.

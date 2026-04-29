@@ -88,7 +88,7 @@ class TestSplitModeControlPlane(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('Edge 1', response.get_data(as_text=True))
-        self.assertIn('Observability (1h)', response.get_data(as_text=True))
+        self.assertIn('Observability (24h)', response.get_data(as_text=True))
 
     def test_registry_refresh_does_not_reset_existing_proxy_status(self):
         from services.proxy_registry import get_proxy_registry  # type: ignore

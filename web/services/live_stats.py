@@ -9,12 +9,11 @@ import csv
 import io
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlsplit
 
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, now_ts as _now
+from services.runtime_helpers import cache_hit_sql as _cache_hit_sql, env_float as _env_float, env_int as _env_int, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason as _not_cached_reason, not_cached_reason_sql as _not_cached_reason_sql, now_ts as _now, present_value_sql as _present_value_sql
 
 
 logger = logging.getLogger(__name__)
@@ -62,36 +61,6 @@ def _is_hit(result_code: str) -> bool:
     return "HIT" in result_code
 
 
-def _extract_domain(url: str) -> Optional[str]:
-    try:
-        raw = (url or "").strip()
-        if not raw:
-            return None
-
-        parts = urlsplit(raw)
-        host = parts.hostname
-        if host:
-            return host.lower()
-
-        # Handle CONNECT-style URLs without scheme (e.g., "example.com:443").
-        # Also tolerate bare hostnames with no scheme or path.
-        cand = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-        if "@" in cand:
-            cand = cand.split("@", 1)[1]
-        if cand.startswith("[") and "]" in cand:
-            # IPv6 literal like [::1]:443
-            host_part = cand[1 : cand.find("]")]
-            return host_part.lower() if host_part else None
-        if ":" in cand:
-            host_part, port = cand.rsplit(":", 1)
-            if port.isdigit():
-                cand = host_part
-        cand = cand.strip().lower()
-        return cand or None
-    except Exception:
-        return None
-
-
 def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Optional[str], str]]:
     # Supported input is the current structured TSV logformat emitted by
     # squid.conf.template.
@@ -123,47 +92,10 @@ def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Opti
             size_bytes = int(row[6])
         except ValueError:
             size_bytes = 0
-        domain = _extract_domain(url)
+        domain = _extract_domain(url) or None
         return ts, client_ip, result_code, max(size_bytes, 0), domain, method
 
     return None
-
-
-def _derive_not_cached_reason(method: str, result_code: str) -> str:
-    # Best-effort reasons based on the current result/status column and method.
-    m = (method or "").upper()
-    rc = (result_code or "").upper()
-
-    status: Optional[int] = None
-    try:
-        if "/" in rc:
-            status = int(rc.rsplit("/", 1)[1])
-    except Exception:
-        status = None
-
-    if m and m not in ("GET", "HEAD", "CONNECT"):
-        return f"{m} method (not cacheable by default)"
-
-    if m == "CONNECT" or rc.startswith("TCP_TUNNEL") or rc.startswith("TCP_CONNECT"):
-        return "HTTPS tunnel (CONNECT) — not cacheable without SSL-bump"
-
-    if status is not None:
-        if status in (301, 302, 303, 307, 308):
-            return f"Redirect response ({status}) (often not cached without explicit freshness)"
-        if status >= 400:
-            return f"Error response status {status} (often not cached)"
-    if "DENIED" in rc or rc.startswith("TCP_DENIED"):
-        return "Denied by ACL"
-    if "BYPASS" in rc:
-        return "Bypassed (cache deny rule or client no-cache)"
-    if "ABORTED" in rc:
-        return "Aborted (client/upstream closed connection)"
-    if "SWAPFAIL" in rc:
-        return "Cache swap failure"
-    if "MISS" in rc:
-        return "Cache miss (object not in cache)"
-
-    return "Not served from cache"
 
 
 class LiveStatsStore:
@@ -201,7 +133,7 @@ class LiveStatsStore:
             return False
 
         hit = _is_hit(result_code)
-        reason = _derive_not_cached_reason(method, result_code) if not hit else ""
+        reason = _not_cached_reason(method, result_code) if not hit else ""
 
         self._upsert_agg(conn, "domains", "domain", domain, ts, size_bytes, hit)
         self._upsert_agg(conn, "clients", "ip", ip, ts, size_bytes, hit)
@@ -277,7 +209,7 @@ class LiveStatsStore:
             return False
 
         hit = _is_hit(result_code)
-        reason = _derive_not_cached_reason(method, result_code) if not hit else ""
+        reason = _not_cached_reason(method, result_code) if not hit else ""
         self._accumulate_aggregate(batch["domains"], domain, ts, size_bytes, hit)
         self._accumulate_aggregate(batch["clients"], ip, ts, size_bytes, hit)
         self._accumulate_aggregate(batch["client_domains"], (ip, domain), ts, size_bytes, hit)
@@ -763,14 +695,10 @@ class LiveStatsStore:
         return since is not None
 
     def _diagnostic_domain_present_sql(self, column: str = "domain") -> str:
-        return f"COALESCE(NULLIF(TRIM({column}), ''), '') <> ''"
+        return _present_value_sql(column)
 
     def _diagnostic_hit_sql(self, result_column: str = "result_code") -> str:
-        return (
-            f"(COALESCE({result_column}, '') <> '' "
-            f"AND {result_column} NOT LIKE 'TCP_DENIED%%' "
-            f"AND {result_column} LIKE '%%HIT%%')"
-        )
+        return _cache_hit_sql(result_column)
 
     def _diagnostic_not_cached_reason_sql(
         self,
@@ -779,30 +707,10 @@ class LiveStatsStore:
         result_column: str = "result_code",
         status_column: str = "http_status",
     ) -> str:
-        return (
-            "CASE "
-            f"WHEN COALESCE(NULLIF(TRIM({method_column}), ''), '') <> '' "
-            f"AND UPPER({method_column}) NOT IN ('GET', 'HEAD', 'CONNECT') "
-            f"THEN CONCAT(UPPER({method_column}), ' method (not cacheable by default)') "
-            f"WHEN UPPER({method_column}) = 'CONNECT' "
-            f"OR {result_column} LIKE 'TCP_TUNNEL%%' "
-            f"OR {result_column} LIKE 'TCP_CONNECT%%' "
-            "THEN 'HTTPS tunnel (CONNECT) — not cacheable without SSL-bump' "
-            f"WHEN {status_column} IN (301, 302, 303, 307, 308) "
-            f"THEN CONCAT('Redirect response (', {status_column}, ') (often not cached without explicit freshness)') "
-            f"WHEN {status_column} >= 400 "
-            f"THEN CONCAT('Error response status ', {status_column}, ' (often not cached)') "
-            f"WHEN {result_column} LIKE 'TCP_DENIED%%' OR {result_column} LIKE '%%DENIED%%' "
-            "THEN 'Denied by ACL' "
-            f"WHEN {result_column} LIKE '%%BYPASS%%' "
-            "THEN 'Bypassed (cache deny rule or client no-cache)' "
-            f"WHEN {result_column} LIKE '%%ABORTED%%' "
-            "THEN 'Aborted (client/upstream closed connection)' "
-            f"WHEN {result_column} LIKE '%%SWAPFAIL%%' "
-            "THEN 'Cache swap failure' "
-            f"WHEN {result_column} LIKE '%%MISS%%' "
-            "THEN 'Cache miss (object not in cache)' "
-            "ELSE 'Not served from cache' END"
+        return _not_cached_reason_sql(
+            method_column=method_column,
+            result_column=result_column,
+            status_column=status_column,
         )
 
     def get_totals(self, *, since: Optional[int] = None) -> Dict[str, int]:

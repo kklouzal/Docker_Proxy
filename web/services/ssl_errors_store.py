@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, now_ts as _now
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, normalize_hostish as _normalize_hostish, now_ts as _now
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def _extract_domain(msg: str) -> str:
     for pat in _DOMAIN_PATTERNS:
         m = pat.search(msg)
         if m:
-            return (m.group(1) or "").lower()
+            return _normalize_hostish(m.group(1))
     return ""
 
 

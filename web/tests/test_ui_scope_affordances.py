@@ -145,15 +145,3 @@ def test_proxies_page_marks_active_proxy_in_current_tab(remote_app_module):
     assert "Active in this tab" in body
 
 
-def test_remote_live_quick_actions_preserve_proxy_context(remote_app_module, monkeypatch):
-    _seed_registry("edge-1")
-
-
-    client = remote_app_module.app.test_client()
-    login(client)
-
-    response = client.get("/live?proxy_id=edge-1&mode=domains", follow_redirects=False)
-    assert response.status_code in (301, 302, 303, 307, 308)
-    qs = redirect_query_params(response)
-    assert qs.get("proxy_id") == ["edge-1"]
-    assert qs.get("pane") == ["destinations"]

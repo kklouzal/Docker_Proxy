@@ -146,20 +146,16 @@ class FakeWebFilterStore:
 class FakeSSLFilterStore:
     def __init__(self, *, local_apply_allowed: bool = True):
         self._apply_calls = 0
-        self._removed: list[str] = []
-        self.add_result: tuple[bool, str, str] | None = None
         self.local_apply_allowed = local_apply_allowed
 
     def init_db(self):
         return None
 
     def add_nobump(self, entry: str):
-        if self.add_result is not None:
-            return self.add_result
-        return True, "", entry.strip() or "10.0.0.0/8"
+        normalized = entry.strip() or "10.0.0.0/8"
+        return True, "", normalized
 
     def remove_nobump(self, cidr: str):
-        self._removed.append(cidr)
         return None
 
     def apply_squid_include(self):
@@ -235,29 +231,6 @@ class FakeExclusionsStore:
 
     def list_all(self):
         return self._ex
-
-
-class FakeLiveStore:
-    def get_totals(self, *, since: int):
-        return {"domain_requests": 0, "domain_hit_requests": 0, "client_requests": 0, "client_hit_requests": 0}
-
-    def list_global_not_cached_reasons(self, *, limit: int, since: int | None = None):
-        return 0, []
-
-    def list_clients(self, *, sort: str, order: str, limit: int, since: int, search: str):
-        return []
-
-    def list_client_domains(self, *, ip: str, sort: str, since: int | None = None):
-        return []
-
-    def list_client_not_cached(self, *, ip: str, limit: int, since: int | None = None):
-        return []
-
-    def list_domains(self, *, sort: str, order: str, limit: int, since: int, search: str):
-        return []
-
-    def list_domain_not_cached_reasons(self, *, domain: str, limit: int, since: int | None = None):
-        return []
 
 
 class FakeDiagnosticStore:
@@ -403,7 +376,8 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
     monkeypatch.setattr(app_module.squid_controller, "reload_squid", fake_reload)
     monkeypatch.setattr(app_module.squid_controller, "clear_disk_cache", fake_clear)
 
-    monkeypatch.setattr(app_module, "get_stats", lambda: COMMON_STATS)
+    if hasattr(app_module, "get_stats"):
+        monkeypatch.setattr(app_module, "get_stats", lambda: COMMON_STATS)
     monkeypatch.setattr(app_module, "get_timeseries_store", lambda: FakeTimeseriesStore())
     monkeypatch.setattr(app_module, "get_ssl_errors_store", lambda: FakeSSLErrorsStore())
 
@@ -419,7 +393,6 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
     monkeypatch.setattr(app_module, "get_webfilter_store", lambda: fake_webfilter_store)
     monkeypatch.setattr(app_module, "get_sslfilter_store", lambda: fake_sslfilter_store)
     monkeypatch.setattr(app_module, "get_pac_profiles_store", lambda: fake_pac_profiles)
-    monkeypatch.setattr(app_module, "get_store", lambda: FakeLiveStore())
     monkeypatch.setattr(app_module, "get_diagnostic_store", lambda: FakeDiagnosticStore())
     monkeypatch.setattr(app_module, "get_audit_store", lambda: FakeAuditStore())
     monkeypatch.setattr(app_module, "get_proxy_client", lambda: FakeProxyClient())
