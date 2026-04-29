@@ -345,3 +345,24 @@ def test_observability_export_returns_csv_for_transport_pane(monkeypatch):
     assert "ts;action;protocol;client_ip;client_port;destination;destination_port;message" in body
     assert "example.net" in body
     assert fake_queries.calls["transport"] == (42_800, "example", 25)
+
+
+def test_observability_export_returns_empty_overview_csv_when_query_fails(monkeypatch):
+    app_module = import_local_app_module()
+
+    class _ExplodingQueries(_FakeQueries):
+        def overview_bundle(self, *, since: int, search: str = "", limit: int = 6, resolve_hostnames: bool = False):
+            raise RuntimeError("boom")
+
+    _install_queries(app_module, _ExplodingQueries())
+    monkeypatch.setattr(app_module.time, "time", lambda: 60_000)
+
+    client = app_module.app.test_client()
+    login(client)
+
+    response = client.get("/observability/export?pane=overview")
+    assert response.status_code == 200
+    body = response.data.decode("utf-8", errors="replace")
+    assert "metric;value" in body
+    assert "request_records;0" in body
+    assert "adblock_icap_events;0" in body

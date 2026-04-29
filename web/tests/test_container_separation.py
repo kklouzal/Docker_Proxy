@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from .mysql_test_utils import REPO_ROOT
 
 

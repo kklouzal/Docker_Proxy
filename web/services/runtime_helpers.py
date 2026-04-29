@@ -14,6 +14,12 @@ def escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def decode_bytes(value: object | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return str(value or "").strip()
+
+
 def normalize_hostish(value: object | None) -> str:
     host = str(value or "").strip().lower().lstrip(".")
     if not host or host in {"-", "(nil)", "none", "null"}:

@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 
 import logging
 
-from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.squid_core import SquidController as _CoreSquidController
 

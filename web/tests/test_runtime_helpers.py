@@ -1,4 +1,10 @@
-from services.runtime_helpers import extract_domain, normalize_hostish, not_cached_reason
+from services.runtime_helpers import decode_bytes, extract_domain, normalize_hostish, not_cached_reason
+
+
+def test_decode_bytes_handles_bytes_strings_and_none() -> None:
+    assert decode_bytes(b"decoded\n") == "decoded"
+    assert decode_bytes("  already text  ") == "already text"
+    assert decode_bytes(None) == ""
 
 
 def test_normalize_hostish_handles_placeholders_and_ports() -> None:

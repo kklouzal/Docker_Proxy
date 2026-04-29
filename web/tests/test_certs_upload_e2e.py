@@ -2,6 +2,10 @@ import io
 from .flask_test_helpers import import_isolated_app_module, login, redirect_query_params
 
 
+CERT_PEM = "-----BEGIN CERTIFICATE-----\nMIIFLOCAL\n-----END CERTIFICATE-----\n"
+KEY_PEM = "-----BEGIN PRIVATE KEY-----\nMIIELOCAL\n-----END PRIVATE KEY-----\n"
+
+
 def test_certs_upload_rejects_missing_file(tmp_path):
     app_module = import_isolated_app_module(tmp_path)
     c = app_module.app.test_client()
@@ -94,3 +98,59 @@ def test_certs_upload_happy_path_calls_install_and_reload(tmp_path, monkeypatch)
 
     qs = redirect_query_params(r)
     assert qs.get("ok") == ["1"]
+
+
+def test_certs_generate_local_decodes_reload_tuple_output(tmp_path, monkeypatch):
+    from services.cert_manager import build_certificate_bundle  # type: ignore
+
+    app_module = import_isolated_app_module(tmp_path)
+    bundle = build_certificate_bundle(CERT_PEM, KEY_PEM, source_kind="self_signed")
+
+    monkeypatch.setattr(app_module, "generate_self_signed_ca_bundle", lambda: bundle)
+    monkeypatch.setattr(app_module, "materialize_certificate_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app_module.squid_controller, "reload_squid", lambda: (b"reload ok\n", b""))
+
+    c = app_module.app.test_client()
+    csrf = login(c)
+
+    r = c.post(
+        "/certs/generate",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert r.status_code in (301, 302, 303, 307, 308)
+    qs = redirect_query_params(r)
+    assert qs.get("ok") == ["1"]
+    assert qs.get("msg") == ["reload ok"]
+
+
+def test_certs_upload_happy_path_decodes_reload_tuple_output(tmp_path, monkeypatch):
+    app_module = import_isolated_app_module(tmp_path)
+
+    class FakeResult:
+        ok = True
+        message = "ok"
+        bundle = None
+
+    monkeypatch.setattr(app_module, "install_pfx_as_ca", lambda *_args, **_kwargs: FakeResult())
+    monkeypatch.setattr(app_module.squid_controller, "reload_squid", lambda: (b"reload ok\n", b""))
+
+    c = app_module.app.test_client()
+    csrf = login(c)
+
+    r = c.post(
+        "/certs/upload",
+        data={
+            "pfx": (io.BytesIO(b"pfx-bytes"), "ca.pfx"),
+            "pfx_password": "secret",
+            "csrf_token": csrf,
+        },
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+
+    assert r.status_code in (301, 302, 303, 307, 308)
+    qs = redirect_query_params(r)
+    assert qs.get("ok") == ["1"]
+    assert qs.get("msg") == ["reload ok"]

@@ -14,7 +14,6 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 from services.pac_renderer import (  # noqa: E402
-    PAC_HOST_PLACEHOLDER,
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
     PAC_STATE_SHA_FILENAME,

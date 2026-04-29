@@ -21,14 +21,16 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from services.db import connect
-from services.runtime_helpers import now_ts as _now
+from services.db import connect  # noqa: E402
+from services.runtime_helpers import now_ts as _now  # noqa: E402
 
 
 _HOST_RE = re.compile(
     r"^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
     re.IGNORECASE,
 )
+
+
 def _norm_domain(s: str) -> str:
     d = (s or "").strip().lower().rstrip(".")
     if d.startswith("."):

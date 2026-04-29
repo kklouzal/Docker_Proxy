@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, Dict, Sequence
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from services.runtime_helpers import normalize_hostish as _normalize_hostish

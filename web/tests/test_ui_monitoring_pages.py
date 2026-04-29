@@ -1,5 +1,4 @@
 from .flask_test_helpers import login, redirect_query_params
-from .ui_pages_test_support import app_module  # noqa: F401
 
 
 def test_index_post_actions_work(app_module):
@@ -8,9 +7,13 @@ def test_index_post_actions_work(app_module):
 
     r1 = c.post("/reload", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r1.status_code in (301, 302, 303, 307, 308)
+    assert redirect_query_params(r1).get("proxy_id") == ["default"]
+    assert (r1.headers.get("Location", "") or "").endswith("#status")
 
     r2 = c.post("/cache/clear", headers={"X-CSRF-Token": csrf}, data={}, follow_redirects=False)
     assert r2.status_code in (301, 302, 303, 307, 308)
+    assert redirect_query_params(r2).get("proxy_id") == ["default"]
+    assert (r2.headers.get("Location", "") or "").endswith("#status")
 
     calls = getattr(app_module, "_test_calls")
     assert calls["reload"] == 1

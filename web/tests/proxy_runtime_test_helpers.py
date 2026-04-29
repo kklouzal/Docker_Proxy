@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import os
 from pathlib import Path
 
 from .mysql_test_utils import apply_test_environment, configure_test_mysql_env, ensure_proxy_runtime_import_path

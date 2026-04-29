@@ -27,6 +27,7 @@ from services.proxy_health import check_adblock_icap_health as _check_icap_adblo
 from services.proxy_context import get_proxy_id
 from services.proxy_registry import get_proxy_registry
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
+from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.socks_store import get_socks_store
 from services.squid_core import SquidController
 from services.ssl_errors_store import get_ssl_errors_store
@@ -118,16 +119,9 @@ def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0
         "dante": dante,
     }
 
-
-def _decode_bytes(value: bytes) -> str:
-    return (value or b"").decode("utf-8", errors="replace").strip()
-
-
 def _decode_completed(proc: Any) -> str:
-    stdout = getattr(proc, "stdout", b"")
-    stderr = getattr(proc, "stderr", b"")
-    stdout_text = stdout if isinstance(stdout, str) else (stdout or b"").decode("utf-8", errors="replace")
-    stderr_text = stderr if isinstance(stderr, str) else (stderr or b"").decode("utf-8", errors="replace")
+    stdout_text = _decode_bytes(getattr(proc, "stdout", b""))
+    stderr_text = _decode_bytes(getattr(proc, "stderr", b""))
     if stdout_text and stderr_text:
         return (stdout_text + "\n" + stderr_text).strip()
     return (stdout_text or stderr_text).strip()

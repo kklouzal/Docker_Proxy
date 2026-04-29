@@ -30,9 +30,17 @@ from services.background_guard import acquire_background_lock
 from services.observability_queries import get_observability_queries as _default_get_observability_queries
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
-from services.runtime_helpers import extract_domain as _extract_domain
+from services.runtime_helpers import decode_bytes as _decode_bytes, extract_domain as _extract_domain
 from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
-from services.ui_support import append_query_to_local_return as _append_query_to_local_return, bulk_lines as _bulk_lines, csv_safe as _csv_safe, present_icap_events as _present_icap_events, present_observability_summary as _present_observability_summary, present_ssl_error_rows as _present_ssl_error_rows, present_top_tag_rows as _present_top_tag_rows, present_top_value_rows as _present_top_value_rows, present_transaction_rows as _present_transaction_rows, window_label as _window_label
+from services.ui_support import (
+    append_query_to_local_return as _append_query_to_local_return,
+    bulk_lines as _bulk_lines,
+    csv_safe as _csv_safe,
+    present_observability_summary as _present_observability_summary,
+    present_ssl_error_rows as _present_ssl_error_rows,
+    present_transaction_rows as _present_transaction_rows,
+    window_label as _window_label,
+)
 
 import re
 import secrets
@@ -45,6 +53,79 @@ from markupsafe import Markup
 app = Flask(__name__)
 _asset_version = str(int(time.time()))
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
+_OBSERVABILITY_PANES = (
+    'overview',
+    'destinations',
+    'clients',
+    'cache',
+    'ssl',
+    'security',
+    'performance',
+    'transport',
+)
+_OBSERVABILITY_SORT_DEFAULTS = {
+    'overview': 'requests',
+    'destinations': 'requests',
+    'clients': 'requests',
+    'cache': 'requests',
+    'ssl': 'recent',
+    'security': 'recent',
+    'performance': 'recent',
+    'transport': 'recent',
+}
+_OBSERVABILITY_SORT_OPTIONS = {
+    'overview': ('requests',),
+    'destinations': ('requests', 'recent', 'cache', 'clients'),
+    'clients': ('requests', 'recent', 'cache', 'destinations'),
+    'cache': ('requests', 'recent', 'domains', 'clients'),
+    'ssl': ('recent',),
+    'security': ('recent',),
+    'performance': ('recent',),
+    'transport': ('recent',),
+}
+_OBSERVABILITY_OVERVIEW_EXPORT_METRICS = (
+    'request_records',
+    'cache_hits',
+    'cache_misses',
+    'cache_hit_pct',
+    'clients',
+    'destinations',
+    'transactions',
+    'icap_events',
+    'av_icap_events',
+    'adblock_icap_events',
+)
+_OBSERVABILITY_EMPTY_EXPORT_HEADERS = {
+    'overview': ['metric', 'value'],
+    'destinations': [
+        'domain',
+        'requests',
+        'percent_of_total',
+        'clients',
+        'transactions',
+        'cache_hit_pct',
+        'av_icap_events',
+        'adblock_icap_events',
+        'last_seen',
+    ],
+    'clients': [
+        'client_ip',
+        'hostname',
+        'requests',
+        'percent_of_total',
+        'destinations',
+        'transactions',
+        'cache_hit_pct',
+        'av_icap_events',
+        'adblock_icap_events',
+        'last_seen',
+    ],
+    'cache': ['reason', 'requests', 'percent_of_misses', 'domains', 'clients', 'last_seen'],
+    'ssl': ['domain', 'category', 'category_label', 'reason', 'count', 'first_seen', 'last_seen'],
+    'security': ['source', 'timestamp', 'client', 'target', 'detail', 'status'],
+    'performance': ['type', 'timestamp', 'subject', 'metric', 'detail'],
+    'transport': ['ts', 'action', 'protocol', 'client_ip', 'client_port', 'destination', 'destination_port', 'message'],
+}
 
 
 def _default_check_icap_adblock() -> Dict[str, Any]:
@@ -299,10 +380,6 @@ def _redirect_config(tab: str, *, ok: bool = False, error: bool = False, subtab:
     return _redirect_to('squid_config', tab=tab, subtab=subtab, ok=_query_flag(ok), error=_query_flag(error))
 
 
-def _redirect_index_status():
-    return redirect(_endpoint_url('index') + '#status')
-
-
 def _record_audit_event(
     kind: str,
     *,
@@ -366,6 +443,20 @@ def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
     for row in rows:
         writer.writerow([_csv_safe(value) for value in row])
     return app.response_class(buf.getvalue(), mimetype='text/csv; charset=utf-8')
+
+
+def _observability_pane_from_request() -> str:
+    return _normalize_choice(request.args.get('pane') or 'overview', _OBSERVABILITY_PANES, 'overview')
+
+
+def _observability_sort_from_request(pane: str) -> str:
+    default = _OBSERVABILITY_SORT_DEFAULTS[pane]
+    return _normalize_choice(request.args.get('sort') or default, _OBSERVABILITY_SORT_OPTIONS[pane], default)
+
+
+def _observability_resolve_hostnames_from_request() -> bool:
+    resolve_values = request.args.getlist('resolve_hostnames')
+    return True if not resolve_values else any((value or '').strip() == '1' for value in resolve_values)
 
 
 def _empty_observability_summary() -> Dict[str, Any]:
@@ -469,34 +560,14 @@ def _empty_observability_payload(pane: str, *, summary: Dict[str, Any] | None = 
 
 
 def _empty_observability_export_response(pane: str):
+    headers = _OBSERVABILITY_EMPTY_EXPORT_HEADERS.get(
+        pane,
+        _OBSERVABILITY_EMPTY_EXPORT_HEADERS['destinations'],
+    )
     if pane == 'overview':
-        headers = ['metric', 'value']
-        rows = ([metric, 0] for metric in (
-            'request_records',
-            'cache_hits',
-            'cache_misses',
-            'cache_hit_pct',
-            'clients',
-            'destinations',
-            'transactions',
-            'icap_events',
-            'av_icap_events',
-            'adblock_icap_events',
-        ))
+        rows = ([metric, 0] for metric in _OBSERVABILITY_OVERVIEW_EXPORT_METRICS)
         return _csv_response(headers, rows)
-    if pane == 'clients':
-        return _csv_response(['client_ip', 'hostname', 'requests', 'percent_of_total', 'destinations', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen'], [])
-    if pane == 'cache':
-        return _csv_response(['reason', 'requests', 'percent_of_misses', 'domains', 'clients', 'last_seen'], [])
-    if pane == 'ssl':
-        return _csv_response(['domain', 'category', 'category_label', 'reason', 'count', 'first_seen', 'last_seen'], [])
-    if pane == 'security':
-        return _csv_response(['source', 'timestamp', 'client', 'target', 'detail', 'status'], [])
-    if pane == 'performance':
-        return _csv_response(['type', 'timestamp', 'subject', 'metric', 'detail'], [])
-    if pane == 'transport':
-        return _csv_response(['ts', 'action', 'protocol', 'client_ip', 'client_port', 'destination', 'destination_port', 'message'], [])
-    return _csv_response(['domain', 'requests', 'percent_of_total', 'clients', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen'], [])
+    return _csv_response(headers, [])
 
 
 def _redirect_after_policy_refresh(endpoint: str, store: Any, *, force: bool = True, **params):
@@ -1446,38 +1517,13 @@ def proxies():
 @app.route('/observability', methods=['GET'])
 def observability():
     queries = get_observability_queries()
-    pane = _normalize_choice(
-        request.args.get('pane') or 'overview',
-        ('overview', 'destinations', 'clients', 'cache', 'ssl', 'security', 'performance', 'transport'),
-        'overview',
-    )
-    sort_defaults = {
-        'overview': 'requests',
-        'destinations': 'requests',
-        'clients': 'requests',
-        'cache': 'requests',
-        'ssl': 'recent',
-        'security': 'recent',
-        'performance': 'recent',
-        'transport': 'recent',
-    }
-    sort_options = {
-        'overview': ('requests',),
-        'destinations': ('requests', 'recent', 'cache', 'clients'),
-        'clients': ('requests', 'recent', 'cache', 'destinations'),
-        'cache': ('requests', 'recent', 'domains', 'clients'),
-        'ssl': ('recent',),
-        'security': ('recent',),
-        'performance': ('recent',),
-        'transport': ('recent',),
-    }
-    sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
+    pane = _observability_pane_from_request()
+    sort = _observability_sort_from_request(pane)
     limit = _query_int_arg('limit', default=50, minimum=10, maximum=200)
     window_i = _query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
-    resolve_values = request.args.getlist('resolve_hostnames')
-    resolve_hostnames = True if not resolve_values else any((value or '').strip() == '1' for value in resolve_values)
+    resolve_hostnames = _observability_resolve_hostnames_from_request()
 
     try:
         summary = queries.summary(since=since_ts)
@@ -1569,38 +1615,13 @@ def observability():
 @app.route('/observability/export', methods=['GET'])
 def observability_export():
     queries = get_observability_queries()
-    pane = _normalize_choice(
-        request.args.get('pane') or 'overview',
-        ('overview', 'destinations', 'clients', 'cache', 'ssl', 'security', 'performance', 'transport'),
-        'overview',
-    )
-    sort_defaults = {
-        'overview': 'requests',
-        'destinations': 'requests',
-        'clients': 'requests',
-        'cache': 'requests',
-        'ssl': 'recent',
-        'security': 'recent',
-        'performance': 'recent',
-        'transport': 'recent',
-    }
-    sort_options = {
-        'overview': ('requests',),
-        'destinations': ('requests', 'recent', 'cache', 'clients'),
-        'clients': ('requests', 'recent', 'cache', 'destinations'),
-        'cache': ('requests', 'recent', 'domains', 'clients'),
-        'ssl': ('recent',),
-        'security': ('recent',),
-        'performance': ('recent',),
-        'transport': ('recent',),
-    }
-    sort = _normalize_choice(request.args.get('sort') or sort_defaults[pane], sort_options[pane], sort_defaults[pane])
+    pane = _observability_pane_from_request()
+    sort = _observability_sort_from_request(pane)
     limit = _query_int_arg('limit', default=200, minimum=10, maximum=1000)
     window_i = _query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=7 * 24 * 3600)
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
-    resolve_values = request.args.getlist('resolve_hostnames')
-    resolve_hostnames = True if not resolve_values else any((value or '').strip() == '1' for value in resolve_values)
+    resolve_hostnames = _observability_resolve_hostnames_from_request()
     try:
         if pane == 'overview':
             overview = queries.overview_bundle(
@@ -2328,7 +2349,7 @@ def api_timeseries():
 def reload_squid():
     ok, detail = _trigger_proxy_sync(force=True)
     _record_audit_event('proxy_sync', ok=ok, detail=detail)
-    return _redirect_index_status()
+    return redirect(_endpoint_url('index') + '#status')
 
 
 @app.route('/cache/clear', methods=['POST'])
@@ -2336,7 +2357,7 @@ def clear_caches():
     # Clear Squid disk cache (best-effort) and restart Squid.
     ok, detail = _trigger_proxy_cache_clear()
     _record_audit_event('cache_clear', ok=ok, detail=detail)
-    return _redirect_index_status()
+    return redirect(_endpoint_url('index') + '#status')
 
 @app.route('/certs', methods=['GET'])
 def certs():

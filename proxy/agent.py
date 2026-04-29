@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 
@@ -14,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 _started = False
 _start_lock = threading.Lock()
+
+
 def _loop(interval: float, func) -> None:
     loop_name = getattr(func, "__name__", "agent-loop")
     while True:

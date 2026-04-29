@@ -1,5 +1,4 @@
 from .flask_test_helpers import login, redirect_query_params
-from .ui_pages_test_support import app_module  # noqa: F401
 
 
 def test_webfilter_test_domain_json(app_module):

@@ -1,6 +1,3 @@
-import os
-import sys
-
 import pytest
 
 from .flask_test_helpers import ensure_web_import_path, get_csrf_token, import_local_flask_app

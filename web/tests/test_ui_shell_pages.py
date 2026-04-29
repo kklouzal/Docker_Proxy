@@ -1,7 +1,6 @@
 import pytest
 
 from .flask_test_helpers import login
-from .ui_pages_test_support import app_module  # noqa: F401
 
 
 @pytest.mark.parametrize(

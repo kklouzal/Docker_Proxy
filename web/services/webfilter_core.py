@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from services.db import connect, table_exists
 from services.materialized_files import write_managed_text_files

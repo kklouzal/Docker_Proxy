@@ -18,9 +18,11 @@ APP_ROOT = os.path.abspath(os.path.join(HERE, ".."))
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
-from services.db import connect
-from services.proxy_context import get_default_proxy_id, normalize_proxy_id
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now
+from services.db import connect  # noqa: E402
+from services.proxy_context import get_default_proxy_id, normalize_proxy_id  # noqa: E402
+from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now  # noqa: E402
+
+
 def _norm_domain(s: str) -> str:
     d = (s or "").strip().lower().rstrip(".")
     if d.startswith("."):

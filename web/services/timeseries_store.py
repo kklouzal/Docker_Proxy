@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 import time
 from dataclasses import dataclass
@@ -33,6 +32,8 @@ RESOLUTIONS: List[Resolution] = [
     Resolution("1mo", "ts_1mo", 60 * 60 * 24 * 30),
     Resolution("1y", "ts_1y", 60 * 60 * 24 * 365),
 ]
+
+
 def _get_metric(stats: Dict[str, Any], path: str) -> Optional[float]:
     # path like "cpu.util_percent"
     cur: Any = stats

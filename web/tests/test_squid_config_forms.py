@@ -5,7 +5,7 @@ from .flask_test_helpers import ensure_web_import_path
 
 ensure_web_import_path()
 
-from services.squid_config_forms import (  # type: ignore
+from services.squid_config_forms import (  # type: ignore  # noqa: E402
     build_template_options,
     build_template_options_from_form,
     normalize_safe_form_kind,

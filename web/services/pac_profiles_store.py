@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import threading
 from dataclasses import dataclass
@@ -27,6 +26,8 @@ class PacProfile:
     direct_domains: List[str]
     direct_dst_nets: List[str]
     created_ts: int
+
+
 def _normalize_domain(domain: str) -> Tuple[Optional[str], str]:
     d = (domain or "").strip().lower()
     if not d:

@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 from .mysql_test_utils import apply_test_environment, configure_test_mysql_env, ensure_web_import_path, make_temp_secret_path
 
 
