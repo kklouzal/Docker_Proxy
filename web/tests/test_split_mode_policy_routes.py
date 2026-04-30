@@ -284,6 +284,44 @@ class TestSplitModePolicyRoutes(unittest.TestCase):
         self.assertEqual(fake_store.domains, ['internal.example'])
         self.assertEqual(fake_client.sync_calls, [('edge-1', False)])
 
+    def test_exclusions_preset_import_nudges_selected_proxy_for_pac(self):
+        from services.exclusions_store import get_domain_exclusion_preset  # type: ignore
+        from services.proxy_registry import get_proxy_registry  # type: ignore
+
+        registry = get_proxy_registry()
+        registry.ensure_proxy('edge-1', display_name='Edge 1', management_url='http://edge-1:5000')
+
+        fake_client = FakeProxyClient()
+        fake_store = FakeExclusionsStore()
+        preset = get_domain_exclusion_preset('microsoft_update_store')
+        self.assertIsNotNone(preset)
+
+        original_client = self.app_module.get_proxy_client
+        original_store = self.app_module.get_exclusions_store
+        self.app_module.get_proxy_client = lambda: fake_client
+        self.app_module.get_exclusions_store = lambda: fake_store
+        try:
+            response = self.app.post(
+                '/exclusions',
+                data={
+                    'action': 'add_domain_preset',
+                    'proxy_id': 'edge-1',
+                    'preset_key': 'microsoft_update_store',
+                    'csrf_token': self.csrf_token,
+                },
+                follow_redirects=False,
+            )
+        finally:
+            self.app_module.get_proxy_client = original_client
+            self.app_module.get_exclusions_store = original_store
+
+        self.assertIn(response.status_code, (301, 302, 303, 307, 308))
+        self.assertIn('*.prod.do.dsp.mp.microsoft.com', fake_store.domains)
+        self.assertIn('*.windowsupdate.com', fake_store.domains)
+        self.assertIn('login.live.com', fake_store.domains)
+        self.assertEqual(len(fake_store.domains), len(preset.domains))
+        self.assertEqual(fake_client.sync_calls, [('edge-1', False)])
+
 
 if __name__ == '__main__':
     unittest.main()

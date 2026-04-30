@@ -106,6 +106,53 @@ class _FakeQueries:
             "top_domains": [{"domain": "example.com", "total": 4, "buckets": 1, "last_seen": 9999}],
             "top_categories": [{"label": "Trust / chain failure", "full_label": "Trust / chain failure", "count": 4}],
             "hints": [{"kind": "info", "title": "Fix trust first", "body": "Prefer trust fixes before exclusions."}],
+            "domain_candidates": [
+                {
+                    "domain": "client.wns.windows.com",
+                    "paired_invalid_requests": 12,
+                    "bump_aborts": 4,
+                    "ssl_events": 7,
+                    "clients": 1,
+                    "last_seen": 9999,
+                    "score": 115,
+                    "stage_label": "Stage 2 · domain splice candidate",
+                    "stage_tone": "danger",
+                    "confidence_label": "High confidence",
+                    "summary": "12 CONNECT→invalid-request pairs; 4 bumped aborts; 7 SSL bucket events",
+                }
+            ],
+            "client_candidates": [
+                {
+                    "client_ip": "192.0.2.15",
+                    "cidr": "192.0.2.15/32",
+                    "paired_invalid_requests": 18,
+                    "distinct_domains": 3,
+                    "sample_domains": ["client.wns.windows.com", "mtalk.google.com"],
+                    "last_seen": 9998,
+                    "stage_label": "Stage 3 · client /32 no-bump",
+                    "stage_tone": "danger",
+                    "confidence_label": "High confidence",
+                    "summary": "18 CONNECT→invalid-request pairs across 3 domains.",
+                }
+            ],
+            "dynamic_policy": {
+                "enabled": True,
+                "auto_domain_enabled": True,
+                "auto_client_enabled": True,
+                "review_window_seconds": 14400,
+                "reconcile_interval_seconds": 300,
+                "last_run_ts": 9998,
+                "last_apply_ts": 9997,
+                "last_result": "Dynamic client-experience protection added 1 temporary domain protection.",
+                "active_domain_count": 1,
+                "active_client_count": 1,
+                "domains": [
+                    {"domain": "client.wns.windows.com", "expires_ts": 12000, "last_seen": 9998, "evidence": "Observed traffic while protected: 22 recent requests.", "score": 62, "score_pct": 62, "state_label": "Holding", "state_tone": "warn"}
+                ],
+                "clients": [
+                    {"cidr": "192.0.2.15/32", "expires_ts": 11000, "last_seen": 9998, "evidence": "Renewed: 18 CONNECT→invalid-request pairs across 3 domains", "score": 87, "score_pct": 87, "state_label": "Renewed", "state_tone": "ok"}
+                ],
+            },
         }
 
     def security_overview(self, *, since: int, search: str = "", limit: int = 50):
@@ -366,3 +413,28 @@ def test_observability_export_returns_empty_overview_csv_when_query_fails(monkey
     assert "metric;value" in body
     assert "request_records;0" in body
     assert "adblock_icap_events;0" in body
+
+
+def test_observability_page_renders_ssl_dynamic_candidates(monkeypatch):
+    app_module = import_local_app_module()
+    fake_queries = _FakeQueries()
+    _install_queries(app_module, fake_queries)
+    monkeypatch.setattr(app_module.time, "time", lambda: 70_000)
+
+    client = app_module.app.test_client()
+    login(client)
+
+    response = client.get("/observability?pane=ssl&window=3600&q=wns")
+    assert response.status_code == 200
+    body = response.data.decode("utf-8", errors="replace")
+    assert "Dynamic protection policy" in body
+    assert "Dynamic domain candidates" in body
+    assert "Dynamic client escalation candidates" in body
+    assert "client.wns.windows.com" in body
+    assert "192.0.2.15/32" in body
+    assert "Add exclusion" in body
+    assert "Add /32 no-bump" in body
+    assert "Run protection pass now" in body
+    assert "Holding" in body
+    assert "Score" in body
+    assert fake_queries.calls["ssl"] == (66_400, "wns", 50)

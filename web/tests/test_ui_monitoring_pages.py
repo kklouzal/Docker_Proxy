@@ -116,6 +116,17 @@ def test_exclusions_bulk_add_redirects_with_feedback(app_module):
     assert qs.get("bulk_added") == ["2"]
 
 
+def test_exclusions_page_shows_microsoft_update_store_preset(app_module):
+    c = app_module.app.test_client()
+    login(c)
+
+    r = c.get("/exclusions")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Microsoft Windows Update + Store" in body
+    assert "Import preset" in body
+
+
 def test_observability_quick_add_exclusion_returns_to_observability(app_module):
     c = app_module.app.test_client()
     csrf = login(c)

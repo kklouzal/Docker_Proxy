@@ -41,6 +41,9 @@
 {% if request.args.get('bulk_added') or request.args.get('bulk_cidrs_added') %}
   <div class="banner success"><span class="badge ok">Imported</span><div class="banner-copy"><span class="small">Added {{ request.args.get('bulk_added') or 0 }} domains and {{ request.args.get('bulk_cidrs_added') or 0 }} client CIDRs from bulk entry.</span></div></div>
 {% endif %}
+{% if request.args.get('preset_added') %}
+  <div class="banner success"><span class="badge ok">Preset imported</span><div class="banner-copy"><span class="small">Applied <span class="mono">{{ request.args.get('preset_added') }}</span> with {{ request.args.get('preset_count') or 0 }} domains.</span></div></div>
+{% endif %}
 {% if request.args.get('private_saved') %}
   <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private-network bypass preference updated.</span></div></div>
 {% endif %}
@@ -67,6 +70,30 @@
           <button class="btn primary" type="submit">Add</button>
         </div>
       </form>
+
+      {% if domain_presets %}
+      <form class="form" method="post" action="{{ url_for('exclusions') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="add_domain_preset" />
+        <label for="preset_key">Quick-start preset</label>
+        <select id="preset_key" name="preset_key">
+          {% for preset in domain_presets %}
+            <option value="{{ preset.key }}">{{ preset.name }} ({{ preset.domains|length }} domains)</option>
+          {% endfor %}
+        </select>
+        <div class="small">
+          Adds a curated baseline to the existing domain exclusions list. This is a strong first move when Windows Update or Microsoft Store break behind SSL bump. For clients using <span class="mono">proxy.pac</span>, the same exclusions also render as <span class="mono">DIRECT</span> destinations.
+        </div>
+        <div class="surface-note small">
+          {% for preset in domain_presets %}
+            {% if loop.first %}{{ preset.description }}{% endif %}
+          {% endfor %}
+        </div>
+        <div class="actions">
+          <button class="btn" type="submit">Import preset</button>
+        </div>
+      </form>
+      {% endif %}
 
       <form class="form" method="post" action="{{ url_for('exclusions') }}">
         {{ csrf_field() }}

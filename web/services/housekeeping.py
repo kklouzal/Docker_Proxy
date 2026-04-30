@@ -9,9 +9,11 @@ from services.db import OPERATIONAL_ERRORS
 from services.adblock_store import get_adblock_store
 from services.audit_store import get_audit_store
 from services.diagnostic_store import get_diagnostic_store
+from services.exclusions_store import get_exclusions_store
 from services.live_stats import get_store
 from services.socks_store import get_socks_store
 from services.ssl_errors_store import get_ssl_errors_store
+from services.sslfilter_store import get_sslfilter_store
 from services.logutil import log_exception_throttled
 
 
@@ -58,6 +60,8 @@ def _run_once(*, retention_days: int) -> None:
     _run_with_db_lock_retry(lambda: get_socks_store().prune_old_entries(retention_days=retention_days))
     _run_with_db_lock_retry(lambda: get_adblock_store().prune_old_entries(retention_days=retention_days))
     _run_with_db_lock_retry(lambda: get_ssl_errors_store().prune_old_entries(retention_days=retention_days))
+    _run_with_db_lock_retry(lambda: get_exclusions_store().prune_expired_entries(retention_days=retention_days))
+    _run_with_db_lock_retry(lambda: get_sslfilter_store().prune_expired_entries(retention_days=retention_days))
     _run_with_db_lock_retry(lambda: get_audit_store().prune_old_entries(retention_days=retention_days))
 
 

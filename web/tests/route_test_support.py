@@ -147,6 +147,26 @@ class FakeSSLFilterStore:
     def __init__(self, *, local_apply_allowed: bool = True):
         self._apply_calls = 0
         self.local_apply_allowed = local_apply_allowed
+        self._dynamic_settings = SimpleNamespace(
+            enabled=True,
+            auto_domain_enabled=True,
+            auto_client_enabled=True,
+            review_window_seconds=14400,
+            reconcile_interval_seconds=300,
+            min_pair_events=6,
+            min_bump_aborts=8,
+            min_ssl_events=10,
+            domain_limit=12,
+            domain_ttl_seconds=21600,
+            client_pair_events=24,
+            client_distinct_domains=4,
+            client_limit=4,
+            client_ttl_seconds=7200,
+            last_run_ts=0,
+            last_apply_ts=0,
+            last_result="",
+        )
+        self._auto_rows: list[Any] = []
 
     def init_db(self):
         return None
@@ -156,6 +176,51 @@ class FakeSSLFilterStore:
         return True, "", normalized
 
     def remove_nobump(self, cidr: str):
+        return None
+
+    def list_auto_nobump(self, limit: int = 5000, *, now_ts: int | None = None):
+        return self._auto_rows[:limit]
+
+    def list_effective_nobump(self, limit: int = 5000, *, now_ts: int | None = None):
+        return self.list_nobump(limit=limit) + [(getattr(row, 'cidr', ''), getattr(row, 'added_ts', 0)) for row in self._auto_rows[:limit]]
+
+    def add_auto_nobump(self, entry: str, *, ttl_seconds: int, evidence: str = "", last_seen: int = 0, score: int = 0, added_ts: int | None = None):
+        normalized = entry.strip() or "10.0.0.0/8"
+        self._auto_rows.append(SimpleNamespace(cidr=normalized, added_ts=(added_ts or 1), expires_ts=ttl_seconds, last_seen=last_seen, score=score, evidence=evidence))
+        return True, "", normalized
+
+    def save_auto_nobump_state(self, entry: str, *, added_ts: int, expires_ts: int, evidence: str = "", last_seen: int = 0, score: int = 0):
+        normalized = entry.strip() or "10.0.0.0/8"
+        for index, row in enumerate(self._auto_rows):
+            if getattr(row, 'cidr', '') == normalized:
+                self._auto_rows[index] = SimpleNamespace(cidr=normalized, added_ts=added_ts, expires_ts=expires_ts, last_seen=last_seen, score=score, evidence=evidence)
+                break
+        else:
+            self._auto_rows.append(SimpleNamespace(cidr=normalized, added_ts=added_ts, expires_ts=expires_ts, last_seen=last_seen, score=score, evidence=evidence))
+        return True, "", normalized
+
+    def remove_auto_nobump(self, cidr: str):
+        self._auto_rows = [row for row in self._auto_rows if getattr(row, 'cidr', '') != cidr]
+        return None
+
+    def get_dynamic_mitigation_settings(self):
+        return self._dynamic_settings
+
+    def set_dynamic_mitigation_settings(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self._dynamic_settings, key, value)
+        return None
+
+    def update_dynamic_mitigation_status(self, *, last_run_ts: int | None = None, last_apply_ts: int | None = None, last_result: str | None = None):
+        if last_run_ts is not None:
+            self._dynamic_settings.last_run_ts = last_run_ts
+        if last_apply_ts is not None:
+            self._dynamic_settings.last_apply_ts = last_apply_ts
+        if last_result is not None:
+            self._dynamic_settings.last_result = last_result
+        return None
+
+    def prune_expired_entries(self, *, now_ts: int | None = None, retention_days: int = 30):
         return None
 
     def apply_squid_include(self):
@@ -195,11 +260,14 @@ class FakeExclusionsStore:
         self.added_domains: list[str] = []
         self.src_nets: list[str] = []
         self.dst_nets: list[str] = []
+        self.auto_domains: list[Any] = []
         self._ex = SimpleNamespace(
             domains=self.domains,
             src_nets=self.src_nets,
             dst_nets=self.dst_nets,
             exclude_private_nets=False,
+            manual_domains=self.domains,
+            auto_domains=self.auto_domains,
         )
 
     def add_domain(self, domain: str):
@@ -228,6 +296,39 @@ class FakeExclusionsStore:
 
     def set_exclude_private_nets(self, enabled: bool):
         self._ex.exclude_private_nets = bool(enabled)
+
+    def add_auto_domain(self, domain: str, *, ttl_seconds: int, evidence: str = "", last_seen: int = 0, score: int = 0, added_ts: int | None = None):
+        normalized = domain.strip().lower().lstrip('.')
+        self.auto_domains.append(SimpleNamespace(domain=normalized, added_ts=(added_ts or 1), expires_ts=ttl_seconds, last_seen=last_seen, score=score, evidence=evidence))
+        if normalized not in self.domains:
+            self.domains.append(normalized)
+        return True, "", normalized
+
+    def save_auto_domain_state(self, domain: str, *, added_ts: int, expires_ts: int, evidence: str = "", last_seen: int = 0, score: int = 0):
+        normalized = domain.strip().lower().lstrip('.')
+        for index, row in enumerate(self.auto_domains):
+            if getattr(row, 'domain', '') == normalized:
+                self.auto_domains[index] = SimpleNamespace(domain=normalized, added_ts=added_ts, expires_ts=expires_ts, last_seen=last_seen, score=score, evidence=evidence)
+                break
+        else:
+            self.auto_domains.append(SimpleNamespace(domain=normalized, added_ts=added_ts, expires_ts=expires_ts, last_seen=last_seen, score=score, evidence=evidence))
+        self._ex.auto_domains = self.auto_domains
+        if normalized not in self.domains:
+            self.domains.append(normalized)
+        return True, "", normalized
+
+    def remove_auto_domain(self, domain: str):
+        normalized = domain.strip().lower().lstrip('.')
+        self.auto_domains = [row for row in self.auto_domains if getattr(row, 'domain', '') != normalized]
+        self._ex.auto_domains = self.auto_domains
+        if normalized in self.domains:
+            self.domains.remove(normalized)
+
+    def list_auto_domains(self, limit: int = 5000, *, now_ts: int | None = None):
+        return self.auto_domains[:limit]
+
+    def prune_expired_entries(self, *, now_ts: int | None = None, retention_days: int = 30):
+        return None
 
     def list_all(self):
         return self._ex

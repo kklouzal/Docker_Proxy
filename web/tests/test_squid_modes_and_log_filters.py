@@ -340,3 +340,33 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
     assert "max_open_disk_fds 512" in rendered
     assert "cache_miss_revalidate off" in rendered
     assert "icap_preview_enable on" in rendered
+
+
+def test_generate_config_with_exclusions_uses_sni_acl_for_tls_splice(tmp_path):
+    _add_web_to_path()
+
+    from services.exclusions_store import Exclusions  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+
+    rendered = ctl.generate_config_from_template_with_exclusions(
+        {},
+        Exclusions(
+            domains=["*.windowsupdate.com", "login.live.com"],
+            dst_nets=[],
+            src_nets=[],
+            exclude_private_nets=False,
+        ),
+    )
+
+    assert "acl excluded_domains dstdomain *.windowsupdate.com login.live.com" in rendered
+    assert "acl excluded_domains_ssl ssl::server_name *.windowsupdate.com login.live.com" in rendered
+    assert "note exclusion_rule domain excluded_domains_ssl" in rendered
+    assert "ssl_bump splice excluded_domains_ssl" in rendered
+    assert "cache deny excluded_domains" in rendered

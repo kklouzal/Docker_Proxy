@@ -8,10 +8,12 @@ from services.adblock_store import get_adblock_store
 from services.client_identity_cache import get_client_identity_cache
 from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
+from services.exclusions_store import get_exclusions_store
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason_sql as _not_cached_reason_sql, present_value_sql as _present_value_sql
 from services.socks_store import get_socks_store
 from services.ssl_errors_store import get_ssl_errors_store
+from services.sslfilter_store import get_sslfilter_store
 from services.ui_support import (
     present_icap_events,
     present_observability_summary,
@@ -56,6 +58,132 @@ def _is_private_ip(value: str) -> bool:
 def _looks_like_docker_bridge(value: str) -> bool:
     ip = (value or "").strip()
     return ip.startswith("172.17.") or ip.startswith("172.18.") or ip.startswith("172.19.") or ip.startswith("172.20.")
+
+
+_SSL_ACTIONABLE_SSL_CATEGORIES = frozenset(
+    {
+        "TLS_CLIENT_ACCEPT",
+        "SSL_BUMP",
+        "TLS_HANDSHAKE",
+        "TLS_PROTOCOL",
+        "TLS_CIPHER",
+        "TLS_OTHER",
+    }
+)
+
+_DYNAMIC_SCORE_MAX = 100
+_DYNAMIC_DOMAIN_HOLD_FLOOR = 35
+_DYNAMIC_CLIENT_HOLD_FLOOR = 45
+_DYNAMIC_SOFT_COOLDOWN_STEP = 2
+_DYNAMIC_HARD_COOLDOWN_STEP = 14
+_DYNAMIC_REMOVE_SCORE = 10
+_DYNAMIC_TTL_MIN_SECONDS = 15 * 60
+
+
+def _clamp_dynamic_score(value: Any) -> int:
+    try:
+        score = int(value or 0)
+    except Exception:
+        score = 0
+    return max(0, min(_DYNAMIC_SCORE_MAX, score))
+
+
+def _dynamic_ttl_seconds(base_ttl_seconds: int, score: Any) -> int:
+    base_ttl = max(_DYNAMIC_TTL_MIN_SECONDS, int(base_ttl_seconds or _DYNAMIC_TTL_MIN_SECONDS))
+    scale = 0.35 + ((float(_clamp_dynamic_score(score)) / float(_DYNAMIC_SCORE_MAX)) * 0.65)
+    return max(_DYNAMIC_TTL_MIN_SECONDS, int(base_ttl * scale))
+
+
+def _dynamic_state(score: Any, evidence: str) -> tuple[str, str]:
+    text = str(evidence or "").strip().lower()
+    if text.startswith("renewed:"):
+        return "Renewed", "ok"
+    if text.startswith("observed traffic while protected:"):
+        return "Holding", "warn"
+    if text.startswith("cooling down:"):
+        return "Cooling", "ghost"
+    bounded = _clamp_dynamic_score(score)
+    if bounded >= 75:
+        return "Active", "ok"
+    if bounded >= 40:
+        return "Watching", "warn"
+    return "Cooling", "ghost"
+
+
+def _dynamic_summary_row(*, key: str, value: str, expires_ts: int, last_seen: int, score: int, evidence: str) -> Dict[str, Any]:
+    state_label, state_tone = _dynamic_state(score, evidence)
+    return {
+        key: value,
+        "expires_ts": int(expires_ts or 0),
+        "last_seen": int(last_seen or 0),
+        "score": int(score or 0),
+        "score_pct": _clamp_dynamic_score(score),
+        "evidence": str(evidence or ""),
+        "state_label": state_label,
+        "state_tone": state_tone,
+    }
+
+
+def _single_ip_from_cidr(value: str) -> str:
+    try:
+        network = ipaddress.ip_network((value or "").strip(), strict=False)
+    except Exception:
+        return ""
+    if network.prefixlen != network.max_prefixlen:
+        return ""
+    return str(network.network_address)
+
+
+def _domain_covered_by_exclusions(domain: str, patterns: List[str]) -> bool:
+    needle = (domain or "").strip().lower().lstrip(".")
+    if not needle:
+        return False
+    for raw in patterns:
+        pattern = str(raw or "").strip().lower()
+        if not pattern:
+            continue
+        if pattern == needle or pattern.lstrip(".") == needle:
+            return True
+        if pattern.startswith("*."):
+            suffix = pattern[2:]
+            if needle == suffix or needle.endswith("." + suffix):
+                return True
+        elif pattern.startswith("."):
+            suffix = pattern[1:]
+            if needle == suffix or needle.endswith("." + suffix):
+                return True
+    return False
+
+
+def _single_ip_cidr(value: str) -> str:
+    try:
+        ip = ipaddress.ip_address((value or "").strip())
+    except Exception:
+        return ""
+    return f"{ip}/{32 if ip.version == 4 else 128}"
+
+
+def _setting_bool(source: Any, name: str, default: bool = False) -> bool:
+    try:
+        value = getattr(source, name)
+    except Exception:
+        return bool(default)
+    return bool(value)
+
+
+def _setting_int(source: Any, name: str, default: int = 0) -> int:
+    try:
+        return int(getattr(source, name) or default)
+    except Exception:
+        return int(default)
+
+
+def _setting_str(source: Any, name: str, default: str = "") -> str:
+    try:
+        value = getattr(source, name)
+    except Exception:
+        return str(default)
+    return str(value or default)
 
 
 class ObservabilityQueries:
@@ -130,6 +258,787 @@ class ObservabilityQueries:
             f"OR {haystack} LIKE '%%virus%%' OR {haystack} LIKE '%%infect%%' OR {haystack} LIKE '%%trojan%%' "
             f"OR {haystack} LIKE '%%blocked%%' OR {haystack} LIKE '%%deny%%')"
         )
+
+    def _recent_activity_by_domain(self, *, since: int, domains: List[str]) -> Dict[str, Dict[str, int]]:
+        proxy_id = get_proxy_id()
+        requested = sorted({str(domain or "").strip().lower() for domain in domains if str(domain or "").strip()})
+        if not requested:
+            return {}
+        placeholders = ", ".join(["%s"] * len(requested))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS requests, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                WHERE proxy_id = %s
+                  AND ts >= %s
+                  AND domain IN ({placeholders})
+                GROUP BY domain
+                """,
+                tuple([proxy_id, int(since)] + requested),
+            ).fetchall()
+        return {
+            str(row[0] or "").strip().lower(): {
+                "requests": int(row[1] or 0),
+                "clients": int(row[2] or 0),
+                "last_seen": int(row[3] or 0),
+            }
+            for row in rows
+            if str(row[0] or "").strip()
+        }
+
+    def _recent_activity_by_client_ip(self, *, since: int, client_ips: List[str]) -> Dict[str, Dict[str, int]]:
+        proxy_id = get_proxy_id()
+        requested = sorted({str(ip or "").strip() for ip in client_ips if str(ip or "").strip()})
+        if not requested:
+            return {}
+        placeholders = ", ".join(["%s"] * len(requested))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT client_ip, COUNT(*) AS requests, COUNT(DISTINCT domain) AS domains, MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                WHERE proxy_id = %s
+                  AND ts >= %s
+                  AND client_ip IN ({placeholders})
+                GROUP BY client_ip
+                """,
+                tuple([proxy_id, int(since)] + requested),
+            ).fetchall()
+        return {
+            str(row[0] or "").strip(): {
+                "requests": int(row[1] or 0),
+                "domains": int(row[2] or 0),
+                "last_seen": int(row[3] or 0),
+            }
+            for row in rows
+            if str(row[0] or "").strip()
+        }
+
+    def _ssl_domain_candidates(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 10,
+        min_pair_events: int = 3,
+        min_bump_aborts: int = 5,
+        min_ssl_events: int = 5,
+        skip_existing_exclusions: bool = True,
+    ) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(3, min(20, int(limit)))
+        query_lim = max(30, min(200, lim * 6))
+        search_value = (search or "").strip().lower()
+        exclusion_patterns = list(getattr(get_exclusions_store().list_all(), "domains", []) or [])
+        merged: Dict[str, Dict[str, Any]] = {}
+
+        with self._connect() as conn:
+            pair_rows = conn.execute(
+                f"""
+                SELECT
+                    conn.domain,
+                    COUNT(DISTINCT conn.id) AS pair_events,
+                    COUNT(DISTINCT conn.client_ip) AS clients,
+                    MAX(CASE WHEN bad.ts > conn.ts THEN bad.ts ELSE conn.ts END) AS last_seen
+                FROM diagnostic_requests conn
+                JOIN diagnostic_requests bad
+                  ON bad.proxy_id = conn.proxy_id
+                 AND bad.client_ip = conn.client_ip
+                 AND bad.ts BETWEEN conn.ts - 1 AND conn.ts + 1
+                 AND bad.domain = 'error:invalid-request'
+                 AND bad.result_code = 'NONE_NONE/400'
+                WHERE conn.proxy_id = %s
+                  AND conn.ts >= %s
+                  AND bad.ts >= %s
+                  AND conn.method = 'CONNECT'
+                  AND conn.result_code = 'NONE_NONE/200'
+                  AND {self._present_sql('conn.domain')}
+                GROUP BY conn.domain
+                ORDER BY pair_events DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (proxy_id, int(since), int(since), int(query_lim)),
+            ).fetchall()
+            abort_rows = conn.execute(
+                f"""
+                SELECT
+                    domain,
+                    COUNT(*) AS bump_aborts,
+                    COUNT(DISTINCT client_ip) AS clients,
+                    MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                WHERE proxy_id = %s
+                  AND ts >= %s
+                  AND {self._present_sql('domain')}
+                  AND COALESCE(LOWER(bump_mode), '') = 'bump'
+                  AND UPPER(result_code) LIKE '%%ABORTED%%'
+                GROUP BY domain
+                ORDER BY bump_aborts DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (proxy_id, int(since), int(query_lim)),
+            ).fetchall()
+
+        for row in pair_rows:
+            domain = str(row[0] or "").strip().lower()
+            if not domain:
+                continue
+            entry = merged.setdefault(
+                domain,
+                {
+                    "domain": domain,
+                    "paired_invalid_requests": 0,
+                    "bump_aborts": 0,
+                    "ssl_events": 0,
+                    "clients": 0,
+                    "last_seen": 0,
+                },
+            )
+            entry["paired_invalid_requests"] = int(row[1] or 0)
+            entry["clients"] = max(int(entry.get("clients") or 0), int(row[2] or 0))
+            entry["last_seen"] = max(int(entry.get("last_seen") or 0), int(row[3] or 0))
+
+        for row in abort_rows:
+            domain = str(row[0] or "").strip().lower()
+            if not domain:
+                continue
+            entry = merged.setdefault(
+                domain,
+                {
+                    "domain": domain,
+                    "paired_invalid_requests": 0,
+                    "bump_aborts": 0,
+                    "ssl_events": 0,
+                    "clients": 0,
+                    "last_seen": 0,
+                },
+            )
+            entry["bump_aborts"] = int(row[1] or 0)
+            entry["clients"] = max(int(entry.get("clients") or 0), int(row[2] or 0))
+            entry["last_seen"] = max(int(entry.get("last_seen") or 0), int(row[3] or 0))
+
+        ssl_rows = get_ssl_errors_store().list_recent(
+            since=since,
+            search=search_value,
+            limit=max(100, min(500, lim * 20)),
+        )
+        for row in ssl_rows:
+            category = str(getattr(row, "category", "") or "").strip().upper()
+            if category not in _SSL_ACTIONABLE_SSL_CATEGORIES:
+                continue
+            domain = str(getattr(row, "domain", "") or "").strip().lower()
+            if not domain:
+                continue
+            entry = merged.setdefault(
+                domain,
+                {
+                    "domain": domain,
+                    "paired_invalid_requests": 0,
+                    "bump_aborts": 0,
+                    "ssl_events": 0,
+                    "clients": 0,
+                    "last_seen": 0,
+                },
+            )
+            entry["ssl_events"] += int(getattr(row, "count", 0) or 0)
+            entry["last_seen"] = max(int(entry.get("last_seen") or 0), int(getattr(row, "last_seen", 0) or 0))
+
+        candidates: List[Dict[str, Any]] = []
+        for domain, entry in merged.items():
+            if domain == "error:invalid-request":
+                continue
+            if search_value and search_value not in domain:
+                continue
+            if skip_existing_exclusions and _domain_covered_by_exclusions(domain, exclusion_patterns):
+                continue
+            pair_events = int(entry.get("paired_invalid_requests") or 0)
+            bump_aborts = int(entry.get("bump_aborts") or 0)
+            ssl_events = int(entry.get("ssl_events") or 0)
+            if pair_events < int(min_pair_events) and bump_aborts < int(min_bump_aborts) and ssl_events < int(min_ssl_events):
+                continue
+            score = _clamp_dynamic_score((pair_events * 8) + (bump_aborts * 3) + ssl_events)
+            high_confidence = pair_events >= 10 or (pair_events >= 5 and bump_aborts >= 5) or score >= 35
+            evidence_bits: List[str] = []
+            if pair_events:
+                evidence_bits.append(f"{pair_events} CONNECT→invalid-request pairs")
+            if bump_aborts:
+                evidence_bits.append(f"{bump_aborts} bumped aborts")
+            if ssl_events:
+                evidence_bits.append(f"{ssl_events} SSL bucket events")
+            candidates.append(
+                {
+                    "domain": domain,
+                    "paired_invalid_requests": pair_events,
+                    "bump_aborts": bump_aborts,
+                    "ssl_events": ssl_events,
+                    "clients": int(entry.get("clients") or 0),
+                    "last_seen": int(entry.get("last_seen") or 0),
+                    "score": score,
+                    "stage_label": "Stage 2 · domain splice candidate",
+                    "stage_tone": "danger" if high_confidence else "warn",
+                    "confidence_label": "High confidence" if high_confidence else "Moderate confidence",
+                    "summary": "; ".join(evidence_bits),
+                }
+            )
+
+        candidates.sort(key=lambda row: (int(row.get("score") or 0), int(row.get("last_seen") or 0)), reverse=True)
+        return candidates[:lim]
+
+    def _ssl_client_candidates(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 6,
+        min_pair_events: int = 12,
+        min_distinct_domains: int = 2,
+        skip_existing_nobump: bool = True,
+    ) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(2, min(12, int(limit)))
+        query_lim = max(20, min(100, lim * 6))
+        search_value = (search or "").strip().lower()
+        sslfilter_store = get_sslfilter_store()
+        effective_nobump_loader = getattr(sslfilter_store, "list_effective_nobump", None)
+        if callable(effective_nobump_loader):
+            effective_rows = effective_nobump_loader(limit=5000)
+        else:
+            effective_rows = sslfilter_store.list_nobump(limit=5000)
+        existing_nobump = {str(cidr or "").strip() for cidr, _ts in effective_rows}
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    conn.client_ip,
+                    COUNT(DISTINCT conn.id) AS pair_events,
+                    COUNT(DISTINCT conn.domain) AS distinct_domains,
+                    MAX(CASE WHEN bad.ts > conn.ts THEN bad.ts ELSE conn.ts END) AS last_seen,
+                    GROUP_CONCAT(DISTINCT conn.domain ORDER BY conn.domain SEPARATOR ',') AS sample_domains
+                FROM diagnostic_requests conn
+                JOIN diagnostic_requests bad
+                  ON bad.proxy_id = conn.proxy_id
+                 AND bad.client_ip = conn.client_ip
+                 AND bad.ts BETWEEN conn.ts - 1 AND conn.ts + 1
+                 AND bad.domain = 'error:invalid-request'
+                 AND bad.result_code = 'NONE_NONE/400'
+                WHERE conn.proxy_id = %s
+                  AND conn.ts >= %s
+                  AND bad.ts >= %s
+                  AND conn.method = 'CONNECT'
+                  AND conn.result_code = 'NONE_NONE/200'
+                  AND {self._present_sql('conn.domain')}
+                GROUP BY conn.client_ip
+                ORDER BY pair_events DESC, distinct_domains DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (proxy_id, int(since), int(since), int(query_lim)),
+            ).fetchall()
+
+        candidates: List[Dict[str, Any]] = []
+        for row in rows:
+            client_ip = str(row[0] or "").strip()
+            if not client_ip:
+                continue
+            cidr = _single_ip_cidr(client_ip)
+            if not cidr or (skip_existing_nobump and cidr in existing_nobump):
+                continue
+            pair_events = int(row[1] or 0)
+            distinct_domains = int(row[2] or 0)
+            if pair_events < int(min_pair_events) or distinct_domains < int(min_distinct_domains):
+                continue
+            sample_domains = [domain for domain in str(row[4] or "").split(",") if domain][:4]
+            if search_value and search_value not in client_ip.lower() and not any(search_value in domain.lower() for domain in sample_domains):
+                continue
+            high_confidence = pair_events >= 20 or distinct_domains >= 4
+            score = _clamp_dynamic_score((pair_events * 4) + (distinct_domains * 10))
+            candidates.append(
+                {
+                    "client_ip": client_ip,
+                    "cidr": cidr,
+                    "paired_invalid_requests": pair_events,
+                    "distinct_domains": distinct_domains,
+                    "sample_domains": sample_domains,
+                    "last_seen": int(row[3] or 0),
+                    "score": score,
+                    "stage_label": "Stage 3 · client /32 no-bump",
+                    "stage_tone": "danger" if high_confidence else "warn",
+                    "confidence_label": "High confidence" if high_confidence else "Moderate confidence",
+                    "summary": (
+                        f"{pair_events} CONNECT→invalid-request pairs across {distinct_domains} domains. "
+                        "If domain splice candidates do not stabilize this client, escalate to a /32 no-bump."
+                    ),
+                }
+            )
+
+        candidates.sort(
+            key=lambda row: (
+                int(row.get("paired_invalid_requests") or 0),
+                int(row.get("distinct_domains") or 0),
+                int(row.get("last_seen") or 0),
+            ),
+            reverse=True,
+        )
+        return candidates[:lim]
+
+    def _dynamic_ssl_policy_summary(self) -> Dict[str, Any]:
+        sslfilter_store = get_sslfilter_store()
+        exclusions_store = get_exclusions_store()
+        settings_loader = getattr(sslfilter_store, "get_dynamic_mitigation_settings", None)
+        settings = settings_loader() if callable(settings_loader) else None
+        auto_domain_loader = getattr(exclusions_store, "list_auto_domains", None)
+        auto_client_loader = getattr(sslfilter_store, "list_auto_nobump", None)
+        auto_domains = auto_domain_loader(limit=5000) if callable(auto_domain_loader) else []
+        auto_clients = auto_client_loader(limit=5000) if callable(auto_client_loader) else []
+        return {
+            "enabled": _setting_bool(settings, "enabled", False),
+            "auto_domain_enabled": _setting_bool(settings, "auto_domain_enabled", False),
+            "auto_client_enabled": _setting_bool(settings, "auto_client_enabled", False),
+            "review_window_seconds": _setting_int(settings, "review_window_seconds", 0),
+            "reconcile_interval_seconds": _setting_int(settings, "reconcile_interval_seconds", 0),
+            "last_run_ts": _setting_int(settings, "last_run_ts", 0),
+            "last_apply_ts": _setting_int(settings, "last_apply_ts", 0),
+            "last_result": _setting_str(settings, "last_result", ""),
+            "active_domain_count": len(auto_domains),
+            "active_client_count": len(auto_clients),
+            "domains": [
+                _dynamic_summary_row(
+                    key="domain",
+                    value=str(getattr(row, "domain", "") or ""),
+                    expires_ts=int(getattr(row, "expires_ts", 0) or 0),
+                    last_seen=int(getattr(row, "last_seen", 0) or 0),
+                    score=int(getattr(row, "score", 0) or 0),
+                    evidence=str(getattr(row, "evidence", "") or ""),
+                )
+                for row in auto_domains[:6]
+            ],
+            "clients": [
+                _dynamic_summary_row(
+                    key="cidr",
+                    value=str(getattr(row, "cidr", "") or ""),
+                    expires_ts=int(getattr(row, "expires_ts", 0) or 0),
+                    last_seen=int(getattr(row, "last_seen", 0) or 0),
+                    score=int(getattr(row, "score", 0) or 0),
+                    evidence=str(getattr(row, "evidence", "") or ""),
+                )
+                for row in auto_clients[:6]
+            ],
+        }
+
+    def reconcile_dynamic_ssl_mitigations(self, *, force: bool = False, now_ts: int | None = None) -> Dict[str, Any]:
+        now_i = int(now_ts or 0) or int(__import__("time").time())
+        sslfilter_store = get_sslfilter_store()
+        exclusions_store = get_exclusions_store()
+        settings_loader = getattr(sslfilter_store, "get_dynamic_mitigation_settings", None)
+        update_status = getattr(sslfilter_store, "update_dynamic_mitigation_status", None)
+        prune_clients = getattr(sslfilter_store, "prune_expired_entries", None)
+        prune_domains = getattr(exclusions_store, "prune_expired_entries", None)
+        list_auto_domains = getattr(exclusions_store, "list_auto_domains", None)
+        add_auto_domain = getattr(exclusions_store, "add_auto_domain", None)
+        save_auto_domain_state = getattr(exclusions_store, "save_auto_domain_state", None)
+        remove_auto_domain = getattr(exclusions_store, "remove_auto_domain", None)
+        list_auto_clients = getattr(sslfilter_store, "list_auto_nobump", None)
+        add_auto_client = getattr(sslfilter_store, "add_auto_nobump", None)
+        save_auto_client_state = getattr(sslfilter_store, "save_auto_nobump_state", None)
+        remove_auto_client = getattr(sslfilter_store, "remove_auto_nobump", None)
+
+        settings = settings_loader() if callable(settings_loader) else None
+        enabled = _setting_bool(settings, "enabled", False)
+        if not force and not enabled:
+            return {"ran": False, "changed": False, "message": "Dynamic client-experience protection is disabled."}
+
+        interval_seconds = _setting_int(settings, "reconcile_interval_seconds", 300)
+        last_run_ts = _setting_int(settings, "last_run_ts", 0)
+        if not force and last_run_ts > 0 and (now_i - last_run_ts) < interval_seconds:
+            return {"ran": False, "changed": False, "message": "Dynamic client-experience protection is cooling down between passes."}
+
+        if callable(prune_clients):
+            prune_clients(now_ts=now_i)
+        if callable(prune_domains):
+            prune_domains(now_ts=now_i)
+
+        domain_added: List[str] = []
+        domain_refreshed: List[str] = []
+        domain_cooled: List[str] = []
+        domain_removed: List[str] = []
+        client_added: List[str] = []
+        client_refreshed: List[str] = []
+        client_cooled: List[str] = []
+        client_removed: List[str] = []
+
+        review_window = _setting_int(settings, "review_window_seconds", 4 * 60 * 60)
+        since = max(0, now_i - review_window)
+
+        exclusions_state = exclusions_store.list_all()
+        manual_exclusions = list(getattr(exclusions_state, "manual_domains", []) or [])
+        active_auto_domains = {row.domain: row for row in (list_auto_domains(limit=5000, now_ts=now_i) if callable(list_auto_domains) else [])}
+        effective_exclusions = list(manual_exclusions)
+        for domain in active_auto_domains:
+            if domain and domain not in effective_exclusions:
+                effective_exclusions.append(domain)
+
+        domain_limit = _setting_int(settings, "domain_limit", 12)
+        domain_ttl_seconds = _setting_int(settings, "domain_ttl_seconds", 6 * 60 * 60)
+        domain_candidates = self._ssl_domain_candidates(
+            since=since,
+            search="",
+            limit=max(domain_limit * 4, 20),
+            min_pair_events=1,
+            min_bump_aborts=1,
+            min_ssl_events=1,
+            skip_existing_exclusions=False,
+        )
+        domain_candidates_by_domain = {str(row.get("domain") or "").strip().lower(): row for row in domain_candidates if str(row.get("domain") or "").strip()}
+        domain_activity = self._recent_activity_by_domain(since=since, domains=list(active_auto_domains.keys()))
+
+        for domain, current in list(active_auto_domains.items()):
+            fresh = domain_candidates_by_domain.get(domain)
+            activity = domain_activity.get(domain)
+            current_score = _clamp_dynamic_score(getattr(current, "score", 0))
+            if _setting_bool(settings, "auto_domain_enabled", True) and fresh:
+                next_score = max(current_score, _clamp_dynamic_score(fresh.get("score") or 0))
+                evidence = f"Renewed: {str(fresh.get('summary') or '').strip()}"[:2000]
+                last_seen = max(int(getattr(current, "last_seen", 0) or 0), int(fresh.get("last_seen") or 0), int((activity or {}).get("last_seen") or 0))
+                ttl = _dynamic_ttl_seconds(domain_ttl_seconds, next_score)
+                writer = save_auto_domain_state if callable(save_auto_domain_state) else add_auto_domain
+                if callable(writer):
+                    if writer is save_auto_domain_state:
+                        writer(
+                            domain,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                            expires_ts=now_i + ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                        )
+                    else:
+                        writer(
+                            domain,
+                            ttl_seconds=ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                        )
+                domain_refreshed.append(domain)
+                active_auto_domains[domain] = type(current)(
+                    domain=domain,
+                    added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                    expires_ts=now_i + ttl,
+                    last_seen=last_seen,
+                    score=next_score,
+                    evidence=evidence,
+                ) if hasattr(type(current), "__call__") else current
+                continue
+            if activity and int(activity.get("requests") or 0) > 0:
+                next_score = max(_DYNAMIC_DOMAIN_HOLD_FLOOR, current_score - _DYNAMIC_SOFT_COOLDOWN_STEP)
+                evidence = (
+                    f"Observed traffic while protected: {int(activity.get('requests') or 0)} recent requests from "
+                    f"{int(activity.get('clients') or 0)} client(s) with no fresh SSL failures. Holding splice and cooling slowly."
+                )[:2000]
+                ttl = _dynamic_ttl_seconds(domain_ttl_seconds, next_score)
+                last_seen = max(int(getattr(current, "last_seen", 0) or 0), int(activity.get("last_seen") or 0))
+                writer = save_auto_domain_state if callable(save_auto_domain_state) else add_auto_domain
+                if callable(writer):
+                    if writer is save_auto_domain_state:
+                        writer(
+                            domain,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                            expires_ts=now_i + ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                        )
+                    else:
+                        writer(
+                            domain,
+                            ttl_seconds=ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                        )
+                domain_cooled.append(domain)
+                continue
+            next_score = current_score - _DYNAMIC_HARD_COOLDOWN_STEP
+            if next_score < _DYNAMIC_REMOVE_SCORE and callable(remove_auto_domain):
+                remove_auto_domain(domain)
+                domain_removed.append(domain)
+                active_auto_domains.pop(domain, None)
+                if domain in effective_exclusions and domain not in manual_exclusions:
+                    effective_exclusions = [value for value in effective_exclusions if value != domain]
+                continue
+            ttl = _dynamic_ttl_seconds(domain_ttl_seconds, next_score)
+            evidence = "Cooling down: no fresh failures or recent traffic hit this protected domain, so this temporary splice will expire soon unless the pattern returns."[:2000]
+            writer = save_auto_domain_state if callable(save_auto_domain_state) else add_auto_domain
+            if callable(writer):
+                if writer is save_auto_domain_state:
+                    writer(
+                        domain,
+                        added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                        expires_ts=now_i + ttl,
+                        evidence=evidence,
+                        last_seen=int(getattr(current, "last_seen", 0) or 0),
+                        score=next_score,
+                    )
+                else:
+                    writer(
+                        domain,
+                        ttl_seconds=ttl,
+                        evidence=evidence,
+                        last_seen=int(getattr(current, "last_seen", 0) or 0),
+                        score=next_score,
+                        added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                    )
+            domain_cooled.append(domain)
+
+        if _setting_bool(settings, "auto_domain_enabled", True) and callable(add_auto_domain):
+            domain_candidates = self._ssl_domain_candidates(
+                since=since,
+                search="",
+                limit=max(domain_limit * 4, 20),
+                min_pair_events=1,
+                min_bump_aborts=1,
+                min_ssl_events=1,
+                skip_existing_exclusions=False,
+            )
+            for row in domain_candidates:
+                pair_events = int(row.get("paired_invalid_requests") or 0)
+                bump_aborts = int(row.get("bump_aborts") or 0)
+                ssl_events = int(row.get("ssl_events") or 0)
+                domain = str(row.get("domain") or "").strip().lower()
+                if not domain:
+                    continue
+                if domain in active_auto_domains:
+                    continue
+                if pair_events < _setting_int(settings, "min_pair_events", 6) and bump_aborts < _setting_int(settings, "min_bump_aborts", 8) and ssl_events < _setting_int(settings, "min_ssl_events", 10):
+                    continue
+                already_covered = _domain_covered_by_exclusions(domain, effective_exclusions)
+                if already_covered:
+                    continue
+                if not already_covered and domain not in active_auto_domains and len(active_auto_domains) >= domain_limit:
+                    continue
+                ok, _err, canonical = add_auto_domain(
+                    domain,
+                    ttl_seconds=_dynamic_ttl_seconds(domain_ttl_seconds, row.get("score") or 0),
+                    evidence=str(row.get("summary") or "")[:2000],
+                    last_seen=int(row.get("last_seen") or 0),
+                    score=_clamp_dynamic_score(row.get("score") or 0),
+                    added_ts=now_i,
+                )
+                if not ok or not canonical:
+                    continue
+                if canonical in active_auto_domains:
+                    domain_refreshed.append(canonical)
+                elif not already_covered:
+                    domain_added.append(canonical)
+                active_auto_domains[canonical] = active_auto_domains.get(canonical) or object()
+                if canonical not in effective_exclusions:
+                    effective_exclusions.append(canonical)
+
+        active_auto_clients = {row.cidr: row for row in (list_auto_clients(limit=5000, now_ts=now_i) if callable(list_auto_clients) else [])}
+        effective_nobump_loader = getattr(sslfilter_store, "list_effective_nobump", None)
+        if callable(effective_nobump_loader):
+            effective_nobumps = {cidr for cidr, _ts in effective_nobump_loader(limit=5000, now_ts=now_i)}
+        else:
+            effective_nobumps = {cidr for cidr, _ts in sslfilter_store.list_nobump(limit=5000)}
+
+        client_limit = _setting_int(settings, "client_limit", 4)
+        client_ttl_seconds = _setting_int(settings, "client_ttl_seconds", 2 * 60 * 60)
+        client_candidates = self._ssl_client_candidates(
+            since=since,
+            search="",
+            limit=max(client_limit * 4, 12),
+            min_pair_events=1,
+            min_distinct_domains=1,
+            skip_existing_nobump=False,
+        )
+        client_candidates_by_cidr = {str(row.get("cidr") or "").strip(): row for row in client_candidates if str(row.get("cidr") or "").strip()}
+        client_activity = self._recent_activity_by_client_ip(
+            since=since,
+            client_ips=[_single_ip_from_cidr(cidr) for cidr in active_auto_clients.keys()],
+        )
+
+        for cidr, current in list(active_auto_clients.items()):
+            fresh = client_candidates_by_cidr.get(cidr)
+            client_ip = _single_ip_from_cidr(cidr)
+            activity = client_activity.get(client_ip) if client_ip else None
+            current_score = _clamp_dynamic_score(getattr(current, "score", 0))
+            if _setting_bool(settings, "auto_client_enabled", True) and fresh:
+                next_score = max(current_score, _clamp_dynamic_score(fresh.get("score") or 0))
+                evidence = f"Renewed: {str(fresh.get('summary') or '').strip()}"[:2000]
+                last_seen = max(int(getattr(current, "last_seen", 0) or 0), int(fresh.get("last_seen") or 0), int((activity or {}).get("last_seen") or 0))
+                ttl = _dynamic_ttl_seconds(client_ttl_seconds, next_score)
+                writer = save_auto_client_state if callable(save_auto_client_state) else add_auto_client
+                if callable(writer):
+                    if writer is save_auto_client_state:
+                        writer(
+                            cidr,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                            expires_ts=now_i + ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                        )
+                    else:
+                        writer(
+                            cidr,
+                            ttl_seconds=ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                        )
+                client_refreshed.append(cidr)
+                continue
+            if activity and int(activity.get("requests") or 0) > 0:
+                next_score = max(_DYNAMIC_CLIENT_HOLD_FLOOR, current_score - _DYNAMIC_SOFT_COOLDOWN_STEP)
+                evidence = (
+                    f"Observed traffic while protected: {int(activity.get('requests') or 0)} recent requests across "
+                    f"{int(activity.get('domains') or 0)} domain(s) with no fresh SSL failures. Holding client no-bump and cooling slowly."
+                )[:2000]
+                ttl = _dynamic_ttl_seconds(client_ttl_seconds, next_score)
+                last_seen = max(int(getattr(current, "last_seen", 0) or 0), int(activity.get("last_seen") or 0))
+                writer = save_auto_client_state if callable(save_auto_client_state) else add_auto_client
+                if callable(writer):
+                    if writer is save_auto_client_state:
+                        writer(
+                            cidr,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                            expires_ts=now_i + ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                        )
+                    else:
+                        writer(
+                            cidr,
+                            ttl_seconds=ttl,
+                            evidence=evidence,
+                            last_seen=last_seen,
+                            score=next_score,
+                            added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                        )
+                client_cooled.append(cidr)
+                continue
+            next_score = current_score - _DYNAMIC_HARD_COOLDOWN_STEP
+            if next_score < _DYNAMIC_REMOVE_SCORE and callable(remove_auto_client):
+                remove_auto_client(cidr)
+                client_removed.append(cidr)
+                active_auto_clients.pop(cidr, None)
+                effective_nobumps.discard(cidr)
+                continue
+            ttl = _dynamic_ttl_seconds(client_ttl_seconds, next_score)
+            evidence = "Cooling down: no fresh failures or recent traffic hit this protected client, so this temporary /32 no-bump will expire soon unless the pattern returns."[:2000]
+            writer = save_auto_client_state if callable(save_auto_client_state) else add_auto_client
+            if callable(writer):
+                if writer is save_auto_client_state:
+                    writer(
+                        cidr,
+                        added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                        expires_ts=now_i + ttl,
+                        evidence=evidence,
+                        last_seen=int(getattr(current, "last_seen", 0) or 0),
+                        score=next_score,
+                    )
+                else:
+                    writer(
+                        cidr,
+                        ttl_seconds=ttl,
+                        evidence=evidence,
+                        last_seen=int(getattr(current, "last_seen", 0) or 0),
+                        score=next_score,
+                        added_ts=int(getattr(current, "added_ts", now_i) or now_i),
+                    )
+            client_cooled.append(cidr)
+
+        if _setting_bool(settings, "auto_client_enabled", True) and callable(add_auto_client):
+            client_candidates = self._ssl_client_candidates(
+                since=since,
+                search="",
+                limit=max(client_limit * 4, 12),
+                min_pair_events=1,
+                min_distinct_domains=1,
+                skip_existing_nobump=False,
+            )
+            for row in client_candidates:
+                cidr = str(row.get("cidr") or "").strip()
+                if not cidr:
+                    continue
+                if cidr in active_auto_clients:
+                    continue
+                pair_events = int(row.get("paired_invalid_requests") or 0)
+                distinct_domains = int(row.get("distinct_domains") or 0)
+                sample_domains = list(row.get("sample_domains") or [])
+                protected_matches = sum(1 for domain in sample_domains if _domain_covered_by_exclusions(str(domain), effective_exclusions))
+                if pair_events < _setting_int(settings, "client_pair_events", 24) or distinct_domains < _setting_int(settings, "client_distinct_domains", 4) or protected_matches < 1:
+                    continue
+                if cidr not in effective_nobumps and cidr not in active_auto_clients and len(active_auto_clients) >= client_limit:
+                    continue
+                evidence = f"{row.get('summary') or ''} Protected sample domains: {protected_matches}.".strip()
+                ok, _err, canonical = add_auto_client(
+                    cidr,
+                    ttl_seconds=_dynamic_ttl_seconds(client_ttl_seconds, row.get("score") or 0),
+                    evidence=evidence[:2000],
+                    last_seen=int(row.get("last_seen") or 0),
+                    score=_clamp_dynamic_score(row.get("score") or 0),
+                    added_ts=now_i,
+                )
+                if not ok or not canonical:
+                    continue
+                if canonical in active_auto_clients:
+                    client_refreshed.append(canonical)
+                elif canonical not in effective_nobumps:
+                    client_added.append(canonical)
+                active_auto_clients[canonical] = active_auto_clients.get(canonical) or object()
+                effective_nobumps.add(canonical)
+
+        changed = bool(
+            domain_added or domain_refreshed or domain_cooled or domain_removed
+            or client_added or client_refreshed or client_cooled or client_removed
+        )
+        message_bits: List[str] = []
+        if domain_added:
+            message_bits.append(f"added {len(domain_added)} temporary domain protection{'s' if len(domain_added) != 1 else ''}")
+        if domain_refreshed:
+            message_bits.append(f"renewed {len(domain_refreshed)} domain protection{'s' if len(domain_refreshed) != 1 else ''}")
+        if domain_cooled:
+            message_bits.append(f"cooled {len(domain_cooled)} domain protection{'s' if len(domain_cooled) != 1 else ''}")
+        if domain_removed:
+            message_bits.append(f"retired {len(domain_removed)} domain protection{'s' if len(domain_removed) != 1 else ''}")
+        if client_added:
+            message_bits.append(f"added {len(client_added)} temporary client no-bump{'s' if len(client_added) != 1 else ''}")
+        if client_refreshed:
+            message_bits.append(f"renewed {len(client_refreshed)} client protection{'s' if len(client_refreshed) != 1 else ''}")
+        if client_cooled:
+            message_bits.append(f"cooled {len(client_cooled)} client protection{'s' if len(client_cooled) != 1 else ''}")
+        if client_removed:
+            message_bits.append(f"retired {len(client_removed)} client protection{'s' if len(client_removed) != 1 else ''}")
+        message = (
+            ("Dynamic client-experience protection " + ", ".join(message_bits) + ".")
+            if message_bits
+            else "Dynamic client-experience protection reviewed current evidence; no new temporary mitigations were needed."
+        )
+        if callable(update_status):
+            update_status(
+                last_run_ts=now_i,
+                last_apply_ts=(now_i if changed else _setting_int(settings, "last_apply_ts", 0)),
+                last_result=message,
+            )
+        return {
+            "ran": True,
+            "changed": changed,
+            "message": message,
+            "domain_added": domain_added,
+            "domain_refreshed": domain_refreshed,
+            "domain_cooled": domain_cooled,
+            "domain_removed": domain_removed,
+            "client_added": client_added,
+            "client_refreshed": client_refreshed,
+            "client_cooled": client_cooled,
+            "client_removed": client_removed,
+        }
 
     def summary(self, *, since: int) -> Dict[str, Any]:
         proxy_id = get_proxy_id()
@@ -470,12 +1379,29 @@ class ObservabilityQueries:
         category_counts: Counter[str] = Counter()
         for row in presented["rows"]:
             category_counts[str(row.get("category_label") or row.get("category") or "Other")] += int(row.get("count") or 0)
+        domain_candidates = self._ssl_domain_candidates(since=since, search=search, limit=min(max(int(limit // 2), 6), 12))
+        client_candidates = self._ssl_client_candidates(since=since, search=search, limit=min(max(int(limit // 4), 3), 8))
+        hints = list(presented["hints"])
+        if domain_candidates or client_candidates:
+            hints.append(
+                {
+                    "kind": "warning",
+                    "title": "Dynamic mitigation candidates available",
+                    "body": (
+                        "Use staged mitigation: splice a noisy domain first when repeated CONNECT→invalid-request or bumped-abort evidence points at one destination, "
+                        "then escalate to a client /32 no-bump only when one client keeps failing across multiple domains."
+                    ),
+                }
+            )
         return {
             "summary": presented["summary"],
             "rows": presented["rows"],
             "top_domains": present_ssl_top_domains(store.top_domains(since=since, search=search, limit=10), limit=10),
             "top_categories": _badge_rows(category_counts, limit=6),
-            "hints": presented["hints"],
+            "hints": hints,
+            "domain_candidates": domain_candidates,
+            "client_candidates": client_candidates,
+            "dynamic_policy": self._dynamic_ssl_policy_summary(),
         }
 
     def security_overview(self, *, since: int, search: str = "", limit: int = 50) -> Dict[str, Any]:

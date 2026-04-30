@@ -10,7 +10,11 @@ from datetime import UTC, datetime, timedelta
 import time
 import os
 import shutil
-from services.exclusions_store import get_exclusions_store as _default_get_exclusions_store
+from services.exclusions_store import (
+    get_domain_exclusion_preset,
+    get_exclusions_store as _default_get_exclusions_store,
+    list_domain_exclusion_presets,
+)
 from services.audit_store import get_audit_store as _default_get_audit_store
 from services.timeseries_store import get_timeseries_store as _default_get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store as _default_get_ssl_errors_store
@@ -486,6 +490,22 @@ def _empty_observability_payload(pane: str, *, summary: Dict[str, Any] | None = 
         'top_categories': [],
         'hints': [],
         'top_domains': [],
+        'domain_candidates': [],
+        'client_candidates': [],
+        'dynamic_policy': {
+            'enabled': False,
+            'auto_domain_enabled': False,
+            'auto_client_enabled': False,
+            'review_window_seconds': 0,
+            'reconcile_interval_seconds': 0,
+            'last_run_ts': 0,
+            'last_apply_ts': 0,
+            'last_result': '',
+            'active_domain_count': 0,
+            'active_client_count': 0,
+            'domains': [],
+            'clients': [],
+        },
         'rows': [],
     }
     security_payload = {
@@ -575,6 +595,136 @@ def _redirect_after_policy_refresh(endpoint: str, store: Any, *, force: bool = T
     return _redirect_to(endpoint, **params)
 
 
+def _redirect_after_policy_refresh_to_return(return_to: str | None, fallback_endpoint: str, store: Any, *, force: bool = True, **params: Any):
+    _best_effort_refresh_managed_policy(store, force=force)
+    target = _append_query_to_local_return(return_to, **params)
+    if target:
+        return redirect(target)
+    return _redirect_to(fallback_endpoint, **params)
+
+
+def _dynamic_ssl_result_params(result: Dict[str, Any], *, saved: bool = False) -> Dict[str, Any]:
+    return {
+        'dynamic_saved': ('1' if saved else None),
+        'dynamic_run': '1',
+        'dynamic_message': str(result.get('message') or ''),
+        'dynamic_domains_added': len(list(result.get('domain_added') or [])),
+        'dynamic_domains_refreshed': len(list(result.get('domain_refreshed') or [])),
+        'dynamic_domains_cooled': len(list(result.get('domain_cooled') or [])),
+        'dynamic_domains_removed': len(list(result.get('domain_removed') or [])),
+        'dynamic_clients_added': len(list(result.get('client_added') or [])),
+        'dynamic_clients_refreshed': len(list(result.get('client_refreshed') or [])),
+        'dynamic_clients_cooled': len(list(result.get('client_cooled') or [])),
+        'dynamic_clients_removed': len(list(result.get('client_removed') or [])),
+    }
+
+
+def _dynamic_ssl_state(evidence: str, score: int) -> tuple[str, str]:
+    text = str(evidence or '').strip().lower()
+    if text.startswith('renewed:'):
+        return 'Renewed', 'ok'
+    if text.startswith('observed traffic while protected:'):
+        return 'Holding', 'warn'
+    if text.startswith('cooling down:'):
+        return 'Cooling', 'ghost'
+    bounded = max(0, min(100, int(score or 0)))
+    if bounded >= 75:
+        return 'Active', 'ok'
+    if bounded >= 40:
+        return 'Watching', 'warn'
+    return 'Cooling', 'ghost'
+
+
+def _present_dynamic_ssl_rows(rows: Sequence[Any], *, key_name: str) -> list[Dict[str, Any]]:
+    presented: list[Dict[str, Any]] = []
+    for row in rows or []:
+        value = str(getattr(row, key_name, '') or '')
+        score = int(getattr(row, 'score', 0) or 0)
+        evidence = str(getattr(row, 'evidence', '') or '')
+        state_label, state_tone = _dynamic_ssl_state(evidence, score)
+        presented.append(
+            {
+                key_name: value,
+                'added_ts': int(getattr(row, 'added_ts', 0) or 0),
+                'expires_ts': int(getattr(row, 'expires_ts', 0) or 0),
+                'last_seen': int(getattr(row, 'last_seen', 0) or 0),
+                'score': score,
+                'score_pct': max(0, min(100, score)),
+                'evidence': evidence,
+                'state_label': state_label,
+                'state_tone': state_tone,
+            }
+        )
+    return presented
+
+
+def _run_dynamic_ssl_mitigation_for_current_proxy(*, force: bool = False) -> Dict[str, Any]:
+    try:
+        result = get_observability_queries().reconcile_dynamic_ssl_mitigations(force=force)
+    except Exception as exc:
+        return {
+            'ran': False,
+            'changed': False,
+            'message': public_error_message(exc, default='Dynamic client-experience protection failed.'),
+            'domain_added': [],
+            'domain_refreshed': [],
+            'domain_cooled': [],
+            'domain_removed': [],
+            'client_added': [],
+            'client_refreshed': [],
+            'client_cooled': [],
+            'client_removed': [],
+        }
+    if result.get('changed'):
+        try:
+            ok, detail = _trigger_proxy_sync(force=True)
+            if not ok:
+                result['message'] = f"{result.get('message') or ''} Proxy sync warning: {detail}".strip()
+        except Exception as exc:
+            result['message'] = f"{result.get('message') or ''} Proxy sync warning: {public_error_message(exc)}".strip()
+    return result
+
+
+_dynamic_ssl_started = False
+_dynamic_ssl_lock = None
+
+
+def _start_dynamic_ssl_mitigation_loop() -> None:
+    global _dynamic_ssl_started, _dynamic_ssl_lock
+    if _dynamic_ssl_lock is None:
+        import threading as _threading
+        _dynamic_ssl_lock = _threading.Lock()
+    with _dynamic_ssl_lock:
+        if _dynamic_ssl_started:
+            return
+        _dynamic_ssl_started = True
+
+    def loop() -> None:
+        while True:
+            try:
+                registry = get_proxy_registry()
+                proxies = registry.list_proxies()
+                if not proxies:
+                    proxies = [registry.ensure_default_proxy()]
+                for proxy in proxies:
+                    token = set_proxy_id(proxy.proxy_id)
+                    try:
+                        _run_dynamic_ssl_mitigation_for_current_proxy(force=False)
+                    finally:
+                        reset_proxy_id(token)
+            except Exception:
+                log_exception_throttled(
+                    app.logger,
+                    'web.app.dynamic_ssl.loop',
+                    interval_seconds=60.0,
+                    message='Dynamic client-experience protection loop failed',
+                )
+            time.sleep(60.0)
+
+    import threading as _threading
+    _threading.Thread(target=loop, name='dynamic-ssl-mitigation', daemon=True).start()
+
+
 def _redirect_after_pac_refresh(endpoint: str, **params):
     _best_effort_refresh_pac_runtime()
     return _redirect_to(endpoint, **params)
@@ -620,6 +770,22 @@ def _add_exclusion_cidr(store: Any, value: str) -> tuple[bool, str, str]:
         return ok, err, cidr
     except Exception as exc:
         return False, public_error_message(exc), cidr
+
+
+def _apply_exclusion_domain_preset(store: Any, preset_key: str) -> tuple[Any, int, list[str]]:
+    preset = get_domain_exclusion_preset(preset_key)
+    if preset is None:
+        return None, 0, ['Unknown exclusion preset.']
+
+    added = 0
+    errors: list[str] = []
+    for domain in preset.domains:
+        ok, err, _canonical = _add_exclusion_domain(store, domain)
+        if ok:
+            added += 1
+        elif err:
+            errors.append(f"{domain}: {err}")
+    return preset, added, errors
 
 
 def _render_template_config_text(
@@ -909,6 +1075,11 @@ if not _disable_background:
     # Daily housekeeping: prune old benign DB entries (best-effort).
     try:
         start_housekeeping(retention_days=30, interval_seconds=24 * 60 * 60)
+    except Exception:
+        pass
+
+    try:
+        _start_dynamic_ssl_mitigation_loop()
     except Exception:
         pass
 
@@ -1249,9 +1420,14 @@ def _handle_webfilter_post(store: Any, tab: str):
 
 def _handle_sslfilter_post(store: Any):
     action = _form_action(lower=True)
+    return_to = request.form.get('return_to')
     if action == 'add':
         entry = (request.form.get('cidr') or '').strip()
         ok, err, _canonical = store.add_nobump(entry)
+        if return_to:
+            if not ok:
+                return _redirect_after_policy_refresh_to_return(return_to, 'sslfilter', store, force=True, sslfilter_error=(err or '1'))
+            return _redirect_after_policy_refresh_to_return(return_to, 'sslfilter', store, force=True, cidr_added=(_canonical or entry))
         if not ok:
             return _redirect_after_policy_refresh('sslfilter', store, force=True, err=(err or '1'))
         return _redirect_after_policy_refresh('sslfilter', store, force=True, ok='1')
@@ -1264,6 +1440,64 @@ def _handle_sslfilter_post(store: Any):
             pass
         return _redirect_after_policy_refresh('sslfilter', store, force=True)
 
+    if action == 'save_dynamic_settings':
+        try:
+            store.set_dynamic_mitigation_settings(
+                enabled=(request.form.get('dynamic_enabled') == 'on'),
+                auto_domain_enabled=(request.form.get('auto_domain_enabled') == 'on'),
+                auto_client_enabled=(request.form.get('auto_client_enabled') == 'on'),
+                review_window_seconds=_posted_int('review_window_seconds', 4 * 60 * 60),
+                reconcile_interval_seconds=_posted_int('reconcile_interval_seconds', 5 * 60),
+                min_pair_events=_posted_int('min_pair_events', 6),
+                min_bump_aborts=_posted_int('min_bump_aborts', 8),
+                min_ssl_events=_posted_int('min_ssl_events', 10),
+                domain_limit=_posted_int('domain_limit', 12),
+                domain_ttl_seconds=_posted_int('domain_ttl_seconds', 6 * 60 * 60),
+                client_pair_events=_posted_int('client_pair_events', 24),
+                client_distinct_domains=_posted_int('client_distinct_domains', 4),
+                client_limit=_posted_int('client_limit', 4),
+                client_ttl_seconds=_posted_int('client_ttl_seconds', 2 * 60 * 60),
+            )
+            result = _run_dynamic_ssl_mitigation_for_current_proxy(force=True)
+            params = _dynamic_ssl_result_params(result, saved=True)
+            if return_to:
+                return _redirect_after_policy_refresh_to_return(return_to, 'sslfilter', store, force=True, **params)
+            return _redirect_after_policy_refresh('sslfilter', store, force=True, **params)
+        except Exception as exc:
+            message = public_error_message(exc)
+            if return_to:
+                return _redirect_after_policy_refresh_to_return(return_to, 'sslfilter', store, force=True, sslfilter_error=message)
+            return _redirect_after_policy_refresh('sslfilter', store, force=True, err=message)
+
+    if action == 'run_dynamic_pass':
+        result = _run_dynamic_ssl_mitigation_for_current_proxy(force=True)
+        params = _dynamic_ssl_result_params(result)
+        if return_to:
+            return _redirect_after_policy_refresh_to_return(return_to, 'sslfilter', store, force=True, **params)
+        return _redirect_after_policy_refresh('sslfilter', store, force=True, **params)
+
+    if action == 'remove_auto_nobump':
+        cidr = (request.form.get('cidr') or '').strip()
+        try:
+            store.remove_auto_nobump(cidr)
+        except Exception:
+            pass
+        params = {'auto_cidr_removed': cidr or '1'}
+        if return_to:
+            return _redirect_after_policy_refresh_to_return(return_to, 'sslfilter', store, force=True, **params)
+        return _redirect_after_policy_refresh('sslfilter', store, force=True, **params)
+
+    if action == 'remove_auto_domain':
+        domain = (request.form.get('domain') or '').strip()
+        try:
+            get_exclusions_store().remove_auto_domain(domain)
+        except Exception:
+            pass
+        params = {'auto_domain_removed': domain or '1'}
+        if return_to:
+            return _redirect_after_policy_refresh_to_return(return_to, 'sslfilter', store, force=True, **params)
+        return _redirect_after_policy_refresh('sslfilter', store, force=True, **params)
+
     return _redirect_to('sslfilter')
 
 
@@ -1275,6 +1509,18 @@ def _handle_exclusions_post(store: Any):
         if ok:
             return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_added=domain, added_domain=domain)
         return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error=(err or 'Unable to add domain.'))
+    if action == 'add_domain_preset':
+        preset, added, errors = _apply_exclusion_domain_preset(store, request.form.get('preset_key') or '')
+        if preset is None:
+            return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error='Unknown exclusion preset.')
+        return _redirect_after_pac_refresh_to_return(
+            return_to,
+            'exclusions',
+            preset_added=preset.name,
+            preset_count=added,
+            preset_failed=len(errors),
+            exclude_error=(' | '.join(errors[:3]) if errors else None),
+        )
     if action == 'add_domain_bulk':
         lines = _bulk_lines(request.form.get('domains_bulk'))
         added = 0
@@ -1985,11 +2231,36 @@ def sslfilter():
         return _handle_sslfilter_post(store)
 
     rows = store.list_nobump()
+    auto_rows = _present_dynamic_ssl_rows(
+        getattr(store, 'list_auto_nobump', lambda limit=5000: [])(limit=200),
+        key_name='cidr',
+    )
+    dynamic_settings = getattr(store, 'get_dynamic_mitigation_settings', lambda: None)()
+    auto_domain_rows = _present_dynamic_ssl_rows(
+        getattr(get_exclusions_store(), 'list_auto_domains', lambda limit=5000: [])(limit=200),
+        key_name='domain',
+    )
     return render_template(
         'sslfilter.html',
         rows=rows,
+        auto_rows=auto_rows,
+        auto_domain_rows=auto_domain_rows,
+        dynamic_settings=dynamic_settings,
         ok=(request.args.get('ok') == '1'),
         err=(request.args.get('err') or ''),
+        dynamic_saved=(request.args.get('dynamic_saved') == '1'),
+        dynamic_run=(request.args.get('dynamic_run') == '1'),
+        dynamic_message=(request.args.get('dynamic_message') or ''),
+        dynamic_domains_added=_query_int_arg('dynamic_domains_added', default=0, minimum=0, maximum=999),
+        dynamic_domains_refreshed=_query_int_arg('dynamic_domains_refreshed', default=0, minimum=0, maximum=999),
+        dynamic_domains_cooled=_query_int_arg('dynamic_domains_cooled', default=0, minimum=0, maximum=999),
+        dynamic_domains_removed=_query_int_arg('dynamic_domains_removed', default=0, minimum=0, maximum=999),
+        dynamic_clients_added=_query_int_arg('dynamic_clients_added', default=0, minimum=0, maximum=999),
+        dynamic_clients_refreshed=_query_int_arg('dynamic_clients_refreshed', default=0, minimum=0, maximum=999),
+        dynamic_clients_cooled=_query_int_arg('dynamic_clients_cooled', default=0, minimum=0, maximum=999),
+        dynamic_clients_removed=_query_int_arg('dynamic_clients_removed', default=0, minimum=0, maximum=999),
+        auto_domain_removed=(request.args.get('auto_domain_removed') or ''),
+        auto_cidr_removed=(request.args.get('auto_cidr_removed') or ''),
     )
 
 
@@ -2275,7 +2546,7 @@ def exclusions():
         return _handle_exclusions_post(store)
 
     ex = store.list_all()
-    return render_template('exclusions.html', ex=ex)
+    return render_template('exclusions.html', ex=ex, domain_presets=list_domain_exclusion_presets())
 
 
 @app.route('/proxy.pac', methods=['GET'])

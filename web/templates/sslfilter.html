@@ -46,7 +46,226 @@
         <div class="stat-k">Best fit</div>
         <div class="stat-v">Unmanaged</div>
       </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Temporary domains</div>
+        <div class="stat-v">{{ auto_domain_rows|length if auto_domain_rows else 0 }}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Temporary clients</div>
+        <div class="stat-v">{{ auto_rows|length if auto_rows else 0 }}</div>
+      </div>
     </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Dynamic client-experience protection</h2>
+    <span class="badge {{ 'ok' if dynamic_settings and dynamic_settings.enabled else 'ghost' }}">{{ 'on' if dynamic_settings and dynamic_settings.enabled else 'off' }}</span>
+  </div>
+  <div class="card-body content-stack">
+    {% if dynamic_saved %}
+      <div class="banner success"><div class="banner-copy"><strong>Dynamic protection settings saved</strong><div class="small">The policy was updated and a protection pass ran immediately.</div></div></div>
+    {% endif %}
+    {% if dynamic_run %}
+      <div class="banner success"><div class="banner-copy"><strong>Protection pass completed</strong><div class="small">{{ dynamic_message or 'Dynamic client-experience protection reviewed the latest SSL evidence.' }}</div></div></div>
+    {% endif %}
+    {% if auto_domain_removed %}
+      <div class="banner success"><div class="banner-copy"><strong>Temporary domain protection removed</strong><div class="small mono">{{ auto_domain_removed }}</div></div></div>
+    {% endif %}
+    {% if auto_cidr_removed %}
+      <div class="banner success"><div class="banner-copy"><strong>Temporary client protection removed</strong><div class="small mono">{{ auto_cidr_removed }}</div></div></div>
+    {% endif %}
+
+    <div class="surface-note help">
+      This system prioritizes the client experience first: it can add <strong>temporary</strong> protections when repeated SSL-bump failures make browsing weird, then automatically let them expire once the trouble stops. Domains are loosened before entire clients, because scalpels beat chainsaws. Active traffic keeps protections warm and cooling happens gradually, so we do not yank the safety rail the moment browsing starts behaving.
+    </div>
+
+    <form method="post" class="form" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="save_dynamic_settings">
+
+      <label class="check-row">
+        <input class="check" type="checkbox" name="dynamic_enabled" {% if dynamic_settings and dynamic_settings.enabled %}checked{% endif %} />
+        <span>Enable automatic temporary protections for this proxy</span>
+      </label>
+      <label class="check-row">
+        <input class="check" type="checkbox" name="auto_domain_enabled" {% if dynamic_settings and dynamic_settings.auto_domain_enabled %}checked{% endif %} />
+        <span>Allow temporary domain protections (stage 2)</span>
+      </label>
+      <label class="check-row">
+        <input class="check" type="checkbox" name="auto_client_enabled" {% if dynamic_settings and dynamic_settings.auto_client_enabled %}checked{% endif %} />
+        <span>Allow temporary client /32 no-bump escalation (stage 3)</span>
+      </label>
+
+      <div class="row-2">
+        <div>
+          <label for="review_window_seconds">Review window (seconds)</label>
+          <input id="review_window_seconds" name="review_window_seconds" type="number" min="1800" max="86400" value="{{ dynamic_settings.review_window_seconds if dynamic_settings else 14400 }}" />
+        </div>
+        <div>
+          <label for="reconcile_interval_seconds">Reconcile cadence (seconds)</label>
+          <input id="reconcile_interval_seconds" name="reconcile_interval_seconds" type="number" min="60" max="3600" value="{{ dynamic_settings.reconcile_interval_seconds if dynamic_settings else 300 }}" />
+        </div>
+      </div>
+
+      <div class="row-2">
+        <div>
+          <label for="min_pair_events">Min CONNECT→invalid-request pairs</label>
+          <input id="min_pair_events" name="min_pair_events" type="number" min="3" max="100" value="{{ dynamic_settings.min_pair_events if dynamic_settings else 6 }}" />
+        </div>
+        <div>
+          <label for="min_bump_aborts">Min bumped aborts</label>
+          <input id="min_bump_aborts" name="min_bump_aborts" type="number" min="3" max="100" value="{{ dynamic_settings.min_bump_aborts if dynamic_settings else 8 }}" />
+        </div>
+      </div>
+
+      <div class="row-2">
+        <div>
+          <label for="min_ssl_events">Min SSL bucket events</label>
+          <input id="min_ssl_events" name="min_ssl_events" type="number" min="3" max="200" value="{{ dynamic_settings.min_ssl_events if dynamic_settings else 10 }}" />
+        </div>
+        <div>
+          <label for="domain_limit">Max active temporary domains</label>
+          <input id="domain_limit" name="domain_limit" type="number" min="1" max="100" value="{{ dynamic_settings.domain_limit if dynamic_settings else 12 }}" />
+        </div>
+      </div>
+
+      <div class="row-2">
+        <div>
+          <label for="domain_ttl_seconds">Temporary domain TTL (seconds)</label>
+          <input id="domain_ttl_seconds" name="domain_ttl_seconds" type="number" min="900" max="604800" value="{{ dynamic_settings.domain_ttl_seconds if dynamic_settings else 21600 }}" />
+        </div>
+        <div>
+          <label for="client_limit">Max active temporary clients</label>
+          <input id="client_limit" name="client_limit" type="number" min="1" max="50" value="{{ dynamic_settings.client_limit if dynamic_settings else 4 }}" />
+        </div>
+      </div>
+
+      <div class="row-2">
+        <div>
+          <label for="client_pair_events">Client escalation pair threshold</label>
+          <input id="client_pair_events" name="client_pair_events" type="number" min="6" max="500" value="{{ dynamic_settings.client_pair_events if dynamic_settings else 24 }}" />
+        </div>
+        <div>
+          <label for="client_distinct_domains">Client escalation distinct domains</label>
+          <input id="client_distinct_domains" name="client_distinct_domains" type="number" min="2" max="20" value="{{ dynamic_settings.client_distinct_domains if dynamic_settings else 4 }}" />
+        </div>
+      </div>
+
+      <div>
+        <label for="client_ttl_seconds">Temporary client TTL (seconds)</label>
+        <input id="client_ttl_seconds" name="client_ttl_seconds" type="number" min="900" max="604800" value="{{ dynamic_settings.client_ttl_seconds if dynamic_settings else 7200 }}" />
+      </div>
+
+      <div class="actions">
+        <button class="btn primary" type="submit">Save dynamic policy</button>
+      </div>
+      <div class="small">A background loop reviews SSL evidence roughly once a minute, but only reconciles when the configured cadence has elapsed. Saving this form runs an immediate pass.</div>
+    </form>
+
+    <div class="actions">
+      <form method="post" action="{{ url_for('sslfilter') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="run_dynamic_pass">
+        <button class="btn" type="submit">Run protection pass now</button>
+      </form>
+      <a class="btn ghost" href="{{ url_for('observability', pane='ssl') }}">Inspect SSL evidence</a>
+    </div>
+
+    {% if dynamic_settings and dynamic_settings.last_result %}
+      <div class="surface-note small">Last result: {{ dynamic_settings.last_result }}</div>
+    {% endif %}
+    <div class="hero-badges">
+      {% if dynamic_settings and dynamic_settings.last_run_ts %}<span class="badge">Last pass {{ fmt_ts(dynamic_settings.last_run_ts) }}</span>{% endif %}
+      {% if dynamic_settings and dynamic_settings.last_apply_ts %}<span class="badge">Last change {{ fmt_ts(dynamic_settings.last_apply_ts) }}</span>{% endif %}
+      {% if dynamic_domains_added or dynamic_domains_refreshed or dynamic_domains_cooled or dynamic_domains_removed or dynamic_clients_added or dynamic_clients_refreshed or dynamic_clients_cooled or dynamic_clients_removed %}
+        <span class="badge">Pass impact: +{{ dynamic_domains_added }} domains / +{{ dynamic_clients_added }} clients</span>
+        {% if dynamic_domains_refreshed or dynamic_clients_refreshed %}<span class="badge">renewed {{ dynamic_domains_refreshed + dynamic_clients_refreshed }}</span>{% endif %}
+        {% if dynamic_domains_cooled or dynamic_clients_cooled %}<span class="badge">cooled {{ dynamic_domains_cooled + dynamic_clients_cooled }}</span>{% endif %}
+        {% if dynamic_domains_removed or dynamic_clients_removed %}<span class="badge">retired {{ dynamic_domains_removed + dynamic_clients_removed }}</span>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Temporary domain protections</h2>
+    <span class="badge">auto stage 2</span>
+  </div>
+  <div class="card-body">
+    {% if auto_domain_rows and auto_domain_rows|length > 0 %}
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>Domain</th><th>State</th><th class="num">Score</th><th>Evidence</th><th>Expires</th><th>Last seen</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            {% for row in auto_domain_rows %}
+              <tr>
+                <td class="mono">{{ row.domain }}</td>
+                <td><span class="badge {{ row.state_tone }}">{{ row.state_label }}</span></td>
+                <td class="num">{{ row.score_pct }}</td>
+                <td class="small">{{ row.evidence }}</td>
+                <td class="small">{{ fmt_ts(row.expires_ts) }}</td>
+                <td class="small">{{ fmt_ts(row.last_seen) }}</td>
+                <td>
+                  <form method="post" action="{{ url_for('sslfilter') }}">
+                    {{ csrf_field() }}
+                    <input type="hidden" name="action" value="remove_auto_domain">
+                    <input type="hidden" name="domain" value="{{ row.domain }}">
+                    <button class="btn ghost" type="submit">Remove</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="help">No temporary domain protections are active.</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Temporary client protections</h2>
+    <span class="badge">auto stage 3</span>
+  </div>
+  <div class="card-body">
+    {% if auto_rows and auto_rows|length > 0 %}
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>CIDR</th><th>State</th><th class="num">Score</th><th>Evidence</th><th>Expires</th><th>Last seen</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            {% for row in auto_rows %}
+              <tr>
+                <td class="mono">{{ row.cidr }}</td>
+                <td><span class="badge {{ row.state_tone }}">{{ row.state_label }}</span></td>
+                <td class="num">{{ row.score_pct }}</td>
+                <td class="small">{{ row.evidence }}</td>
+                <td class="small">{{ fmt_ts(row.expires_ts) }}</td>
+                <td class="small">{{ fmt_ts(row.last_seen) }}</td>
+                <td>
+                  <form method="post" action="{{ url_for('sslfilter') }}">
+                    {{ csrf_field() }}
+                    <input type="hidden" name="action" value="remove_auto_nobump">
+                    <input type="hidden" name="cidr" value="{{ row.cidr }}">
+                    <button class="btn ghost" type="submit">Remove</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="help">No temporary client protections are active.</div>
+    {% endif %}
   </div>
 </section>
 

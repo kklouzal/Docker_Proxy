@@ -375,3 +375,372 @@ def test_observability_queries_surface_ssl_security_performance_and_transport(tm
     assert overview["summary"]["request_records"] == 2
     assert overview["ssl"]["summary"]["total_events"] == 5
     assert overview["security"]["summary"]["combined_blocks"] == 2
+
+
+def test_ssl_overview_surfaces_dynamic_domain_and_client_candidates(tmp_path, monkeypatch):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-ssl-candidates")
+
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+    import services.observability_queries as observability_queries  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    ssl_store = SslErrorsStore()
+    ssl_store.init_db()
+    queries = observability_queries.ObservabilityQueries()
+
+    for offset in range(6):
+        ts = 4000 + (offset * 10)
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts,
+                client_ip="192.0.2.90",
+                method="CONNECT",
+                url="client.wns.windows.com:443",
+                result_code="NONE_NONE/200",
+                bytes_sent=0,
+                master_xaction=f"tx-wns-{offset}",
+            ),
+        )
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts + 1,
+                client_ip="192.0.2.90",
+                method="-",
+                url="error:invalid-request",
+                result_code="NONE_NONE/400",
+                bytes_sent=0,
+                master_xaction=f"tx-wns-bad-{offset}",
+            ),
+        )
+    for offset in range(6):
+        ts = 4100 + (offset * 10)
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts,
+                client_ip="192.0.2.90",
+                method="CONNECT",
+                url="mtalk.google.com:5228",
+                result_code="NONE_NONE/200",
+                bytes_sent=0,
+                master_xaction=f"tx-mtalk-{offset}",
+            ),
+        )
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts + 1,
+                client_ip="192.0.2.90",
+                method="-",
+                url="error:invalid-request",
+                result_code="NONE_NONE/400",
+                bytes_sent=0,
+                master_xaction=f"tx-mtalk-bad-{offset}",
+            ),
+        )
+
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=4200,
+            client_ip="192.0.2.90",
+            method="GET",
+            url="https://client.wns.windows.com/abort",
+            result_code="NONE_NONE_ABORTED/200",
+            bytes_sent=0,
+            master_xaction="tx-wns-abort",
+        ),
+    )
+
+    with ssl_store._connect() as conn:
+        row_key = ssl_store._row_key("default", "client.wns.windows.com", "TLS_CLIENT_ACCEPT", "SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+        conn.execute(
+            """
+            INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                row_key,
+                "default",
+                "client.wns.windows.com",
+                "TLS_CLIENT_ACCEPT",
+                "SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
+                7,
+                3999,
+                4201,
+                "CONNECT client.wns.windows.com:443",
+            ),
+        )
+
+    class _EmptyExclusions:
+        def list_all(self):
+            return type("Exclusions", (), {"domains": []})()
+
+    class _EmptySslFilter:
+        def list_nobump(self, limit: int = 5000):
+            return []
+
+    monkeypatch.setattr(observability_queries, "get_ssl_errors_store", lambda: ssl_store)
+    monkeypatch.setattr(observability_queries, "get_exclusions_store", lambda: _EmptyExclusions())
+    monkeypatch.setattr(observability_queries, "get_sslfilter_store", lambda: _EmptySslFilter())
+
+    ssl_payload = queries.ssl_overview(since=3900, limit=20)
+    domains = {row["domain"] for row in ssl_payload["domain_candidates"]}
+    clients = {row["cidr"] for row in ssl_payload["client_candidates"]}
+
+    assert "client.wns.windows.com" in domains
+    assert "mtalk.google.com" in domains
+    assert "192.0.2.90/32" in clients
+    assert any("Dynamic mitigation candidates available" == hint["title"] for hint in ssl_payload["hints"])
+
+
+def test_reconcile_dynamic_ssl_mitigations_adds_temporary_domain_and_client_protections(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-ssl-reconcile")
+
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.exclusions_store import get_exclusions_store  # type: ignore
+    from services.sslfilter_store import get_sslfilter_store  # type: ignore
+    import services.observability_queries as observability_queries  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    ex_store = get_exclusions_store()
+    sslfilter_store = get_sslfilter_store()
+    queries = observability_queries.ObservabilityQueries()
+
+    for offset in range(12):
+        ts = 5000 + (offset * 5)
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts,
+                client_ip="192.0.2.90",
+                method="CONNECT",
+                url="client.wns.windows.com:443",
+                result_code="NONE_NONE/200",
+                bytes_sent=0,
+                master_xaction=f"tx-wns-{offset}",
+            ),
+        )
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts + 1,
+                client_ip="192.0.2.90",
+                method="-",
+                url="error:invalid-request",
+                result_code="NONE_NONE/400",
+                bytes_sent=0,
+                master_xaction=f"tx-wns-bad-{offset}",
+            ),
+        )
+    for offset in range(12):
+        ts = 5100 + (offset * 5)
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts,
+                client_ip="192.0.2.90",
+                method="CONNECT",
+                url="mtalk.google.com:5228",
+                result_code="NONE_NONE/200",
+                bytes_sent=0,
+                master_xaction=f"tx-mtalk-{offset}",
+            ),
+        )
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts + 1,
+                client_ip="192.0.2.90",
+                method="-",
+                url="error:invalid-request",
+                result_code="NONE_NONE/400",
+                bytes_sent=0,
+                master_xaction=f"tx-mtalk-bad-{offset}",
+            ),
+        )
+
+    sslfilter_store.set_dynamic_mitigation_settings(
+        enabled=True,
+        auto_domain_enabled=True,
+        auto_client_enabled=True,
+        review_window_seconds=3600,
+        reconcile_interval_seconds=60,
+        min_pair_events=6,
+        min_bump_aborts=8,
+        min_ssl_events=10,
+        domain_limit=10,
+        domain_ttl_seconds=3600,
+        client_pair_events=20,
+        client_distinct_domains=2,
+        client_limit=5,
+        client_ttl_seconds=1800,
+    )
+
+    result = queries.reconcile_dynamic_ssl_mitigations(force=True, now_ts=5300)
+
+    active_domains = {row.domain for row in ex_store.list_auto_domains(limit=20, now_ts=5300)}
+    active_clients = {row.cidr for row in sslfilter_store.list_auto_nobump(limit=20, now_ts=5300)}
+    materialized = sslfilter_store.render_materialized_state(now_ts=5300)
+
+    assert result["ran"] is True
+    assert result["changed"] is True
+    assert "client.wns.windows.com" in active_domains
+    assert "mtalk.google.com" in active_domains
+    assert "192.0.2.90/32" in active_clients
+    assert "192.0.2.90/32" in materialized.list_text
+    assert "ssl_bump splice sslfilter_nobump" in materialized.include_text
+
+
+def test_reconcile_dynamic_ssl_mitigations_keeps_active_protections_warm_without_fresh_failures(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-ssl-warm-hold")
+
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.exclusions_store import get_exclusions_store  # type: ignore
+    from services.sslfilter_store import get_sslfilter_store  # type: ignore
+    import services.observability_queries as observability_queries  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    ex_store = get_exclusions_store()
+    sslfilter_store = get_sslfilter_store()
+    queries = observability_queries.ObservabilityQueries()
+
+    ex_store.save_auto_domain_state(
+        "client.wns.windows.com",
+        added_ts=5000,
+        expires_ts=8600,
+        evidence="Renewed: initial failure burst",
+        last_seen=5000,
+        score=82,
+    )
+    sslfilter_store.save_auto_nobump_state(
+        "192.0.2.90/32",
+        added_ts=5000,
+        expires_ts=7600,
+        evidence="Renewed: client kept failing across protected domains",
+        last_seen=5000,
+        score=88,
+    )
+
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=5550,
+            client_ip="192.0.2.90",
+            method="GET",
+            url="https://client.wns.windows.com/channel",
+            result_code="TCP_MISS/200",
+            bytes_sent=25,
+            master_xaction="tx-warm-1",
+        ),
+    )
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=5560,
+            client_ip="192.0.2.90",
+            method="GET",
+            url="https://mtalk.google.com/channel",
+            result_code="TCP_MISS/200",
+            bytes_sent=25,
+            master_xaction="tx-warm-2",
+        ),
+    )
+
+    sslfilter_store.set_dynamic_mitigation_settings(
+        enabled=True,
+        auto_domain_enabled=True,
+        auto_client_enabled=True,
+        review_window_seconds=3600,
+        reconcile_interval_seconds=60,
+        min_pair_events=6,
+        min_bump_aborts=8,
+        min_ssl_events=10,
+        domain_limit=10,
+        domain_ttl_seconds=3600,
+        client_pair_events=20,
+        client_distinct_domains=2,
+        client_limit=5,
+        client_ttl_seconds=1800,
+    )
+
+    result = queries.reconcile_dynamic_ssl_mitigations(force=True, now_ts=5600)
+
+    held_domain = ex_store.list_auto_domains(limit=20, now_ts=5600)[0]
+    held_client = sslfilter_store.list_auto_nobump(limit=20, now_ts=5600)[0]
+
+    assert result["changed"] is True
+    assert result["domain_cooled"] == ["client.wns.windows.com"]
+    assert result["client_cooled"] == ["192.0.2.90/32"]
+    assert held_domain.evidence.startswith("Observed traffic while protected:")
+    assert held_client.evidence.startswith("Observed traffic while protected:")
+    assert held_domain.score >= 35
+    assert held_client.score >= 45
+    assert held_domain.expires_ts > 5600
+    assert held_client.expires_ts > 5600
+
+
+def test_reconcile_dynamic_ssl_mitigations_retires_dormant_protections(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-ssl-retire")
+
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.exclusions_store import get_exclusions_store  # type: ignore
+    from services.sslfilter_store import get_sslfilter_store  # type: ignore
+    import services.observability_queries as observability_queries  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    ex_store = get_exclusions_store()
+    sslfilter_store = get_sslfilter_store()
+    queries = observability_queries.ObservabilityQueries()
+
+    ex_store.save_auto_domain_state(
+        "client.wns.windows.com",
+        added_ts=5000,
+        expires_ts=9000,
+        evidence="Cooling down: initial placeholder",
+        last_seen=5000,
+        score=12,
+    )
+    sslfilter_store.save_auto_nobump_state(
+        "192.0.2.90/32",
+        added_ts=5000,
+        expires_ts=9000,
+        evidence="Cooling down: initial placeholder",
+        last_seen=5000,
+        score=12,
+    )
+
+    sslfilter_store.set_dynamic_mitigation_settings(
+        enabled=True,
+        auto_domain_enabled=True,
+        auto_client_enabled=True,
+        review_window_seconds=3600,
+        reconcile_interval_seconds=60,
+        min_pair_events=6,
+        min_bump_aborts=8,
+        min_ssl_events=10,
+        domain_limit=10,
+        domain_ttl_seconds=3600,
+        client_pair_events=20,
+        client_distinct_domains=2,
+        client_limit=5,
+        client_ttl_seconds=1800,
+    )
+
+    result = queries.reconcile_dynamic_ssl_mitigations(force=True, now_ts=5600)
+
+    assert result["domain_removed"] == ["client.wns.windows.com"]
+    assert result["client_removed"] == ["192.0.2.90/32"]
+    assert ex_store.list_auto_domains(limit=20, now_ts=5600) == []
+    assert sslfilter_store.list_auto_nobump(limit=20, now_ts=5600) == []

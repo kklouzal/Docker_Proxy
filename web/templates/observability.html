@@ -330,6 +330,22 @@
 </section>
 
 {% elif pane == 'ssl' %}
+{% set ssl_return_to = url_for('observability', pane='ssl', window=window, limit=limit, q=(search or None)) %}
+{% set exclude_added = request.args.get('exclude_added') %}
+{% set cidr_added = request.args.get('cidr_added') %}
+{% set exclude_error = request.args.get('exclude_error') %}
+{% set sslfilter_error = request.args.get('sslfilter_error') %}
+{% set dynamic_saved = request.args.get('dynamic_saved') == '1' %}
+{% set dynamic_run = request.args.get('dynamic_run') == '1' %}
+{% set dynamic_message = request.args.get('dynamic_message') or '' %}
+{% set dynamic_domains_added = request.args.get('dynamic_domains_added') or '0' %}
+{% set dynamic_domains_cooled = request.args.get('dynamic_domains_cooled') or '0' %}
+{% set dynamic_domains_removed = request.args.get('dynamic_domains_removed') or '0' %}
+{% set dynamic_clients_added = request.args.get('dynamic_clients_added') or '0' %}
+{% set dynamic_clients_cooled = request.args.get('dynamic_clients_cooled') or '0' %}
+{% set dynamic_clients_removed = request.args.get('dynamic_clients_removed') or '0' %}
+{% set dynamic = payload.dynamic_policy or {} %}
+
 <section class="card">
   <div class="card-header"><h2 class="card-title">SSL/TLS incident clusters</h2><span class="badge">{{ payload.summary.bucket_count }} buckets</span></div>
   <div class="card-body">
@@ -346,8 +362,168 @@
   </div>
 </section>
 
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Dynamic protection policy</h2><span class="badge {{ 'ok' if dynamic.enabled else 'ghost' }}">{{ 'automatic' if dynamic.enabled else 'manual only' }}</span></div>
+  <div class="card-body content-stack">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Auto domains</div><div class="stat-v">{{ dynamic.active_domain_count or 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Auto clients</div><div class="stat-v">{{ dynamic.active_client_count or 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Review window</div><div class="stat-v">{{ dynamic.review_window_seconds or 0 }}s</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Reconcile cadence</div><div class="stat-v">{{ dynamic.reconcile_interval_seconds or 0 }}s</div></div>
+    </div>
+    <div class="hero-badges">
+      <span class="badge {{ 'ok' if dynamic.auto_domain_enabled else 'ghost' }}">Domain protection {{ 'on' if dynamic.auto_domain_enabled else 'off' }}</span>
+      <span class="badge {{ 'ok' if dynamic.auto_client_enabled else 'ghost' }}">Client escalation {{ 'on' if dynamic.auto_client_enabled else 'off' }}</span>
+      {% if dynamic.last_run_ts %}<span class="badge">Last pass {{ fmt_ts(dynamic.last_run_ts) }}</span>{% endif %}
+      {% if dynamic.last_apply_ts %}<span class="badge">Last change {{ fmt_ts(dynamic.last_apply_ts) }}</span>{% endif %}
+    </div>
+    {% if dynamic.last_result %}<div class="surface-note small">{{ dynamic.last_result }}</div>{% endif %}
+    {% if dynamic.domains or dynamic.clients %}
+      <div class="grid">
+        <div class="split-left">
+          <div class="small"><strong>Active temporary domain protections</strong></div>
+          {% if dynamic.domains %}
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Domain</th><th>State</th><th class="num">Score</th><th>Expires</th></tr></thead>
+            <tbody>
+              {% for row in dynamic.domains %}
+                <tr>
+                  <td class="mono">{{ row.domain }}</td>
+                  <td><span class="badge {{ row.state_tone }}">{{ row.state_label }}</span></td>
+                  <td class="num">{{ row.score_pct }}</td>
+                  <td class="small">{{ fmt_ts(row.expires_ts) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table></div>
+          {% else %}<span class="small">No active temporary domain protections.</span>{% endif %}
+        </div>
+        <div class="split-right">
+          <div class="small"><strong>Active temporary client protections</strong></div>
+          {% if dynamic.clients %}
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>CIDR</th><th>State</th><th class="num">Score</th><th>Expires</th></tr></thead>
+            <tbody>
+              {% for row in dynamic.clients %}
+                <tr>
+                  <td class="mono">{{ row.cidr }}</td>
+                  <td><span class="badge {{ row.state_tone }}">{{ row.state_label }}</span></td>
+                  <td class="num">{{ row.score_pct }}</td>
+                  <td class="small">{{ fmt_ts(row.expires_ts) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table></div>
+          {% else %}<span class="small">No active temporary client protections.</span>{% endif %}
+        </div>
+      </div>
+    {% endif %}
+    <div class="actions">
+      <a class="btn" href="{{ url_for('sslfilter') }}">Tune policy</a>
+      <form method="post" action="{{ url_for('sslfilter') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="run_dynamic_pass" />
+        <input type="hidden" name="return_to" value="{{ ssl_return_to }}" />
+        <button class="btn" type="submit">Run protection pass now</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+{% if exclude_added or cidr_added or exclude_error or sslfilter_error or dynamic_saved or dynamic_run %}
+<section class="card">
+  <div class="card-body content-stack">
+    {% if dynamic_saved or dynamic_run %}
+      <div class="banner success"><div class="banner-copy"><strong>{{ 'Dynamic policy saved and protection pass completed' if dynamic_saved else 'Protection pass completed' }}</strong><div class="small">{{ dynamic_message or 'Dynamic client-experience protection reviewed the latest SSL evidence.' }} Added {{ dynamic_domains_added }} domain(s) / {{ dynamic_clients_added }} client(s), cooled {{ dynamic_domains_cooled }} / {{ dynamic_clients_cooled }}, retired {{ dynamic_domains_removed }} / {{ dynamic_clients_removed }}.</div></div></div>
+    {% endif %}
+    {% if exclude_added %}<div class="banner success"><div class="banner-copy"><strong>Domain exclusion added</strong><div class="small mono">{{ exclude_added }}</div></div></div>{% endif %}
+    {% if cidr_added %}<div class="banner success"><div class="banner-copy"><strong>Client no-bump added</strong><div class="small mono">{{ cidr_added }}</div></div></div>{% endif %}
+    {% if exclude_error %}<div class="banner danger"><div class="banner-copy"><strong>Could not add exclusion</strong><div class="small">{{ exclude_error }}</div></div></div>{% endif %}
+    {% if sslfilter_error %}<div class="banner danger"><div class="banner-copy"><strong>Could not add client no-bump</strong><div class="small">{{ sslfilter_error }}</div></div></div>{% endif %}
+  </div>
+</section>
+{% endif %}
+
 {% if payload.hints %}
 <section class="card"><div class="card-header"><h2 class="card-title">Operator guidance</h2><span class="badge">workflow</span></div><div class="card-body content-stack">{% for hint in payload.hints %}<div class="banner {{ hint.kind }}"><div class="banner-copy"><strong>{{ hint.title }}</strong><div class="small">{{ hint.body }}</div></div></div>{% endfor %}</div></section>
+{% endif %}
+
+{% if payload.domain_candidates %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Dynamic domain candidates</h2><span class="badge">{{ payload.domain_candidates|length }} rows</span></div>
+  <div class="card-body content-stack">
+    <div class="surface-note small">This is the first automated loosening step: when one destination keeps generating CONNECT→invalid-request pairings, bumped aborts, or bump-centric SSL buckets, splice that domain before escalating further.</div>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Domain</th><th>Stage</th><th>Evidence</th><th class="num">Clients</th><th class="num">Last seen</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.domain_candidates %}
+        <tr>
+          <td><div class="stack-sm"><span class="mono">{{ row.domain }}</span><span class="small">{{ row.summary }}</span></div></td>
+          <td><div class="stack-sm"><span class="badge {{ row.stage_tone }}">{{ row.stage_label }}</span><span class="small">{{ row.confidence_label }}</span></div></td>
+          <td>
+            <div class="stack-sm">
+              {% if row.paired_invalid_requests %}<span class="small">{{ row.paired_invalid_requests }} CONNECT→invalid-request pairs</span>{% endif %}
+              {% if row.bump_aborts %}<span class="small">{{ row.bump_aborts }} bumped aborts</span>{% endif %}
+              {% if row.ssl_events %}<span class="small">{{ row.ssl_events }} SSL bucket events</span>{% endif %}
+            </div>
+          </td>
+          <td class="num">{{ row.clients }}</td>
+          <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
+          <td class="num">
+            <div class="table-action-stack">
+              <a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window, limit=limit) }}">Deep dive</a>
+              <a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Destination</a>
+              <form action="{{ url_for('exclusions') }}" method="post">
+                {{ csrf_field() }}
+                <input type="hidden" name="action" value="add_domain" />
+                <input type="hidden" name="domain" value="{{ row.domain }}" />
+                <input type="hidden" name="return_to" value="{{ ssl_return_to }}" />
+                <button class="btn" type="submit">Add exclusion</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+</section>
+{% endif %}
+
+{% if payload.client_candidates %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Dynamic client escalation candidates</h2><span class="badge">{{ payload.client_candidates|length }} rows</span></div>
+  <div class="card-body content-stack">
+    <div class="surface-note small">This is the last loosening step: only escalate to a client /32 no-bump when one client keeps failing across multiple destinations even after domain-level mitigation. In other words, use the chainsaw only after the scalpel has had a fair shot.</div>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Client</th><th>Stage</th><th>Evidence</th><th>Sample domains</th><th class="num">Last seen</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.client_candidates %}
+        <tr>
+          <td><div class="stack-sm"><span class="mono">{{ row.client_ip }}</span><span class="small mono">{{ row.cidr }}</span></div></td>
+          <td><div class="stack-sm"><span class="badge {{ row.stage_tone }}">{{ row.stage_label }}</span><span class="small">{{ row.confidence_label }}</span></div></td>
+          <td><div class="stack-sm"><span class="small">{{ row.paired_invalid_requests }} CONNECT→invalid-request pairs</span><span class="small">{{ row.distinct_domains }} distinct domains</span><span class="small">{{ row.summary }}</span></div></td>
+          <td><div class="stack-sm">{% for domain in row.sample_domains %}<span class="small mono">{{ domain }}</span>{% endfor %}</div></td>
+          <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
+          <td class="num">
+            <div class="table-action-stack">
+              <a class="btn" href="{{ url_for('observability', pane='clients', q=row.client_ip, window=window) }}">Client</a>
+              <a class="btn" href="{{ url_for('observability', pane='ssl', q=row.client_ip, window=window, limit=limit) }}">SSL focus</a>
+              <form action="{{ url_for('sslfilter') }}" method="post">
+                {{ csrf_field() }}
+                <input type="hidden" name="action" value="add" />
+                <input type="hidden" name="cidr" value="{{ row.cidr }}" />
+                <input type="hidden" name="return_to" value="{{ ssl_return_to }}" />
+                <button class="btn" type="submit">Add /32 no-bump</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+</section>
 {% endif %}
 
 <section class="card">

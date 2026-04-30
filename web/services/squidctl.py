@@ -984,8 +984,9 @@ class SquidController(_CoreSquidController):
 
         if domains:
             acl_lines.append("acl excluded_domains dstdomain " + " ".join(domains))
-            note_lines.append("note exclusion_rule domain excluded_domains")
-            splice_lines.append("ssl_bump splice excluded_domains")
+            acl_lines.append("acl excluded_domains_ssl ssl::server_name " + " ".join(domains))
+            note_lines.append("note exclusion_rule domain excluded_domains_ssl")
+            splice_lines.append("ssl_bump splice excluded_domains_ssl")
             cache_deny_lines.append("cache deny excluded_domains")
         if private_dst_nets:
             acl_lines.append("acl excluded_private_dst dst " + " ".join(private_dst_nets))

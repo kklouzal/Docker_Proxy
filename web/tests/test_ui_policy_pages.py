@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from .flask_test_helpers import login, redirect_query_params
 
 
@@ -315,6 +317,160 @@ def test_sslfilter_remove_calls_store(app_module):
     assert removed["cidr"] == "10.0.0.0/8"
 
 
+def test_sslfilter_add_honors_return_to(app_module):
+    c = app_module.app.test_client()
+    csrf = login(c)
+
+    r = c.post(
+        "/sslfilter",
+        headers={"X-CSRF-Token": csrf},
+        data={
+            "action": "add",
+            "cidr": "10.0.0.0/8",
+            "return_to": "/observability?pane=ssl&window=3600&limit=50",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (301, 302, 303, 307, 308)
+    location = r.headers.get("Location", "") or ""
+    assert location.startswith("/observability?")
+    qs = redirect_query_params(r)
+    assert qs.get("pane") == ["ssl"]
+    assert qs.get("window") == ["3600"]
+    assert qs.get("cidr_added") == ["10.0.0.0/8"]
+
+
+def test_sslfilter_page_shows_dynamic_protection_state(app_module):
+    c = app_module.app.test_client()
+    login(c)
+
+    store = getattr(app_module, "_test_sslfilter_store")
+    ex_store = getattr(app_module, "_test_fake_ex_store")
+    store._auto_rows = [
+        SimpleNamespace(
+            cidr="192.0.2.15/32",
+            added_ts=1,
+            expires_ts=7200,
+            last_seen=7000,
+            score=46,
+            evidence="Observed traffic while protected: 14 recent requests.",
+        )
+    ]
+    ex_store.auto_domains = [
+        SimpleNamespace(
+            domain="client.wns.windows.com",
+            added_ts=1,
+            expires_ts=8200,
+            last_seen=7100,
+            score=74,
+            evidence="Renewed: 12 CONNECT→invalid-request pairs.",
+        )
+    ]
+    ex_store._ex.auto_domains = ex_store.auto_domains
+
+    r = c.get("/sslfilter")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="replace")
+    assert "Temporary domain protections" in body
+    assert "State" in body
+    assert "Score" in body
+    assert "Holding" in body
+    assert "Renewed" in body
+
+
+def test_sslfilter_save_dynamic_settings_runs_pass_and_redirects(app_module):
+    c = app_module.app.test_client()
+    csrf = login(c)
+
+    class _FakeQueries:
+        def reconcile_dynamic_ssl_mitigations(self, *, force: bool = False):
+            return {
+                "ran": True,
+                "changed": True,
+                "message": "Dynamic client-experience protection added 1 temporary domain protection.",
+                "domain_added": ["client.wns.windows.com"],
+                "domain_refreshed": [],
+                "domain_cooled": [],
+                "domain_removed": [],
+                "client_added": [],
+                "client_refreshed": [],
+                "client_cooled": [],
+                "client_removed": [],
+            }
+
+    app_module.configure_app_runtime_services_for_testing(get_observability_queries=lambda: _FakeQueries())
+
+    store = getattr(app_module, "_test_sslfilter_store")
+    r = c.post(
+        "/sslfilter",
+        headers={"X-CSRF-Token": csrf},
+        data={
+            "action": "save_dynamic_settings",
+            "dynamic_enabled": "on",
+            "auto_domain_enabled": "on",
+            "auto_client_enabled": "on",
+            "review_window_seconds": "3600",
+            "reconcile_interval_seconds": "120",
+            "min_pair_events": "6",
+            "min_bump_aborts": "8",
+            "min_ssl_events": "10",
+            "domain_limit": "10",
+            "domain_ttl_seconds": "7200",
+            "client_pair_events": "24",
+            "client_distinct_domains": "4",
+            "client_limit": "3",
+            "client_ttl_seconds": "1800",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (301, 302, 303, 307, 308)
+    qs = redirect_query_params(r)
+    assert qs.get("dynamic_saved") == ["1"]
+    assert qs.get("dynamic_run") == ["1"]
+    assert qs.get("dynamic_domains_added") == ["1"]
+    assert qs.get("dynamic_domains_cooled") == ["0"]
+    assert store.get_dynamic_mitigation_settings().review_window_seconds == 3600
+
+
+def test_sslfilter_run_dynamic_pass_honors_return_to(app_module):
+    c = app_module.app.test_client()
+    csrf = login(c)
+
+    class _FakeQueries:
+        def reconcile_dynamic_ssl_mitigations(self, *, force: bool = False):
+            return {
+                "ran": True,
+                "changed": False,
+                "message": "Dynamic client-experience protection reviewed current evidence; no new temporary mitigations were needed.",
+                "domain_added": [],
+                "domain_refreshed": [],
+                "domain_cooled": ["client.wns.windows.com"],
+                "domain_removed": [],
+                "client_added": [],
+                "client_refreshed": [],
+                "client_cooled": [],
+                "client_removed": [],
+            }
+
+    app_module.configure_app_runtime_services_for_testing(get_observability_queries=lambda: _FakeQueries())
+
+    r = c.post(
+        "/sslfilter",
+        headers={"X-CSRF-Token": csrf},
+        data={
+            "action": "run_dynamic_pass",
+            "return_to": "/observability?pane=ssl&window=3600&limit=50",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code in (301, 302, 303, 307, 308)
+    qs = redirect_query_params(r)
+    assert qs.get("pane") == ["ssl"]
+    assert qs.get("dynamic_run") == ["1"]
+    assert qs.get("dynamic_domains_added") == ["0"]
+    assert qs.get("dynamic_domains_cooled") == ["1"]
+
+
 def test_exclusions_post_actions_and_apply(app_module, monkeypatch):
     c = app_module.app.test_client()
     csrf = login(c)
@@ -353,3 +509,30 @@ def test_exclusions_post_actions_and_apply(app_module, monkeypatch):
     )
     assert r_apply.status_code in (301, 302, 303, 307, 308)
     assert redirect_query_params(r_apply).get("ok") == ["1"]
+
+
+def test_exclusions_preset_import_adds_curated_microsoft_domains(app_module):
+    from services.exclusions_store import get_domain_exclusion_preset
+
+    c = app_module.app.test_client()
+    csrf = login(c)
+
+    r = c.post(
+        "/exclusions",
+        headers={"X-CSRF-Token": csrf},
+        data={"action": "add_domain_preset", "preset_key": "microsoft_update_store"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (301, 302, 303, 307, 308)
+
+    preset = get_domain_exclusion_preset("microsoft_update_store")
+    assert preset is not None
+
+    store = getattr(app_module, "_test_fake_ex_store")
+    assert "*.prod.do.dsp.mp.microsoft.com" in store.added_domains
+    assert "*.windowsupdate.com" in store.added_domains
+    assert "storecatalogrevocation.storequality.microsoft.com" in store.added_domains
+
+    qs = redirect_query_params(r)
+    assert qs.get("preset_added") == [preset.name]
+    assert qs.get("preset_count") == [str(len(preset.domains))]
