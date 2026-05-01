@@ -33,10 +33,15 @@ assert has_listen_socket('/proc/net/tcp', port) or has_listen_socket('/proc/net/
 PY
 }
 
-# Check Squid liveness (internal check)
+# Check Squid liveness.
+# In this container Squid runs under supervisord in foreground mode, which can
+# leave `squid -k check` without a pidfile even while the service is healthy.
+# Treat supervisor RUNNING as authoritative in that case.
 if ! squid -k check >/dev/null 2>&1; then
-    echo "Squid check failed"
-    exit 1
+    if ! supervisorctl -c /etc/supervisord.conf status squid 2>/dev/null | grep -Eq '(^|[[:space:]])(RUNNING|STARTING)([[:space:]]|$)'; then
+        echo "Squid check failed"
+        exit 1
+    fi
 fi
 
 # Check Flask liveness (avoid curl to keep image smaller)

@@ -21,6 +21,8 @@ def _request_line(
     result_code: str,
     bytes_sent: int = 0,
     master_xaction: str = "",
+    bump_mode: str = "bump",
+    user_agent: str = "pytest/1.0",
 ) -> str:
     fields = [
         str(ts),
@@ -32,14 +34,14 @@ def _request_line(
         str(bytes_sent),
         master_xaction,
         "DIRECT",
-        "bump",
+        bump_mode,
         "",
         "TLSv1.3",
         "TLS_AES_256_GCM_SHA384",
         "TLSv1.3",
         "TLS_AES_128_GCM_SHA256",
         "",
-        "pytest/1.0",
+        user_agent,
         "-",
         "",
         "",
@@ -744,3 +746,109 @@ def test_reconcile_dynamic_ssl_mitigations_retires_dormant_protections(tmp_path)
     assert result["client_removed"] == ["192.0.2.90/32"]
     assert ex_store.list_auto_domains(limit=20, now_ts=5600) == []
     assert sslfilter_store.list_auto_nobump(limit=20, now_ts=5600) == []
+
+
+def test_reconcile_dynamic_ssl_mitigations_uses_connect_abort_and_outer_503_patterns(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-ssl-update-503")
+
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.exclusions_store import get_exclusions_store  # type: ignore
+    from services.sslfilter_store import get_sslfilter_store  # type: ignore
+    import services.observability_queries as observability_queries  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    ex_store = get_exclusions_store()
+    sslfilter_store = get_sslfilter_store()
+    queries = observability_queries.ObservabilityQueries()
+
+    for offset in range(4):
+        ts = 6000 + (offset * 5)
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts,
+                client_ip="192.0.2.91",
+                method="CONNECT",
+                url="tas02.sls.update.microsoft.com:443",
+                result_code="NONE_NONE_ABORTED/200",
+                bytes_sent=0,
+                master_xaction=f"tx-update-connect-{offset}",
+                bump_mode="bump",
+                user_agent="-",
+            ),
+        )
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts,
+                client_ip="192.0.2.91",
+                method="GET",
+                url="https://tas02.sls.update.microsoft.com/SLS/test?",
+                result_code="NONE_NONE/503",
+                bytes_sent=0,
+                master_xaction=f"tx-update-get-{offset}",
+                bump_mode="-",
+                user_agent="Windows-Update-Agent/1.0",
+            ),
+        )
+
+    sslfilter_store.set_dynamic_mitigation_settings(
+        enabled=True,
+        auto_domain_enabled=True,
+        auto_client_enabled=True,
+        review_window_seconds=3600,
+        reconcile_interval_seconds=60,
+        min_pair_events=6,
+        min_bump_aborts=8,
+        min_ssl_events=10,
+        domain_limit=10,
+        domain_ttl_seconds=3600,
+        client_pair_events=20,
+        client_distinct_domains=2,
+        client_limit=5,
+        client_ttl_seconds=1800,
+    )
+
+    result = queries.reconcile_dynamic_ssl_mitigations(force=True, now_ts=6200)
+    active_domains = {row.domain for row in ex_store.list_auto_domains(limit=20, now_ts=6200)}
+
+    assert result["ran"] is True
+    assert "tas02.sls.update.microsoft.com" in active_domains
+
+
+def test_ssl_overview_surfaces_sensitive_connect_only_domain_candidates(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-ssl-connect-only")
+
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    import services.observability_queries as observability_queries  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    queries = observability_queries.ObservabilityQueries()
+
+    for offset in range(8):
+        ts = 7000 + offset
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=ts,
+                client_ip="192.0.2.92",
+                method="CONNECT",
+                url="storeedgefd.dsx.mp.microsoft.com:443",
+                result_code="NONE_NONE/200",
+                bytes_sent=0,
+                master_xaction=f"tx-storeedgefd-{offset}",
+                bump_mode="bump",
+                user_agent="-",
+            ),
+        )
+
+    ssl_payload = queries.ssl_overview(since=6900, limit=20)
+    domains = {row["domain"]: row for row in ssl_payload["domain_candidates"]}
+
+    assert "storeedgefd.dsx.mp.microsoft.com" in domains
+    assert domains["storeedgefd.dsx.mp.microsoft.com"]["opaque_tls_connects"] >= 8
+    assert domains["storeedgefd.dsx.mp.microsoft.com"]["sensitive_domain"] is True

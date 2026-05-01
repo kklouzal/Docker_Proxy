@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from .mysql_test_utils import configure_test_mysql_env
 
@@ -370,3 +371,38 @@ def test_generate_config_with_exclusions_uses_sni_acl_for_tls_splice(tmp_path):
     assert "note exclusion_rule domain excluded_domains_ssl" in rendered
     assert "ssl_bump splice excluded_domains_ssl" in rendered
     assert "cache deny excluded_domains" in rendered
+
+
+def test_apply_config_text_restarts_under_supervisor_when_reconfigure_lacks_pidfile(tmp_path):
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    squid_conf.write_text("http_port 3128\n", encoding="utf-8")
+    persisted_conf = tmp_path / "persisted.conf"
+    os.environ["PERSISTED_SQUID_CONF_PATH"] = str(persisted_conf)
+
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(args, **kwargs):
+        commands.append(tuple(args))
+        if tuple(args[:3]) == ("squid", "-k", "parse"):
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        if tuple(args[:3]) == ("squid", "-k", "reconfigure"):
+            return SimpleNamespace(
+                returncode=1,
+                stdout=b"",
+                stderr=b"FATAL: failed to open /var/run/squid.pid: (2) No such file or directory\n",
+            )
+        if tuple(args[:4]) == ("supervisorctl", "-c", "/etc/supervisord.conf", "restart"):
+            return SimpleNamespace(returncode=0, stdout=b"squid: started\n", stderr=b"")
+        raise AssertionError(f"Unexpected command: {args}")
+
+    ctl = SquidController(squid_conf_path=str(squid_conf), cmd_run=fake_run)
+
+    ok, detail = ctl.apply_config_text("http_port 3128\ncache_mem 128 MB\n")
+
+    assert ok is True
+    assert "started" in detail
+    assert persisted_conf.read_text(encoding="utf-8") == ctl.normalize_config_text("http_port 3128\ncache_mem 128 MB\n")

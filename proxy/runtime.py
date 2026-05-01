@@ -169,13 +169,27 @@ class ProxyRuntime:
             self._health_cache_ts = 0.0
             self._health_cache_value = None
 
+    def _normalize_config_text(self, config_text: str) -> str:
+        normalizer = getattr(self.controller, "normalize_config_text", None)
+        text = config_text or ""
+        if callable(normalizer):
+            try:
+                normalized = normalizer(text)
+                return str(normalized or "")
+            except Exception:
+                pass
+        return text
+
+    def _config_text_sha(self, config_text: str) -> str:
+        normalized = self._normalize_config_text(config_text)
+        if not normalized:
+            return ""
+        return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()
+
     def _current_config_sha(self) -> str:
         if self.services.current_config_sha_reader is not None:
             return str(self.services.current_config_sha_reader() or "")
-        current = self.controller.get_current_config() or ""
-        if not current:
-            return ""
-        return hashlib.sha256(current.encode("utf-8", errors="replace")).hexdigest()
+        return self._config_text_sha(self.controller.get_current_config() or "")
 
     def _current_certificate_bundle_sha(self) -> str:
         if self.services.current_certificate_sha_reader is not None:
@@ -542,7 +556,7 @@ class ProxyRuntime:
         if current.strip():
             self.revisions.ensure_active_revision(
                 self.proxy_id,
-                current,
+                self._normalize_config_text(current),
                 created_by="system",
                 source_kind="bootstrap",
             )
@@ -656,6 +670,14 @@ class ProxyRuntime:
         active_certificate = self.certificate_bundles.get_active_bundle_metadata()
         active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
         current_sha = self._current_config_sha()
+        active_revision_sha = active_revision.config_sha256 if active_revision else ""
+        if active_revision is not None and active_revision_sha != current_sha:
+            try:
+                full_revision = self.revisions.get_active_revision(self.proxy_id)
+            except Exception:
+                full_revision = None
+            if full_revision is not None:
+                active_revision_sha = self._config_text_sha(full_revision.config_text)
         current_certificate_sha = self._current_certificate_bundle_sha()
         current_adblock_sha = self._current_adblock_artifact_sha()
         state_errors: list[str] = []
@@ -703,7 +725,7 @@ class ProxyRuntime:
             "stats": stats,
             "services": services,
             "active_revision_id": active_revision.revision_id if active_revision else None,
-            "active_revision_sha": active_revision.config_sha256 if active_revision else "",
+            "active_revision_sha": active_revision_sha,
             "current_config_sha": current_sha,
             "active_certificate_revision_id": active_certificate.revision_id if active_certificate else None,
             "active_certificate_sha": active_certificate.bundle_sha256 if active_certificate else "",
@@ -808,6 +830,10 @@ class ProxyRuntime:
                 self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
             return result
 
+        revision = None
+        normalized_revision_text = ""
+        normalized_revision_sha = ""
+
         if not force and revision_meta.config_sha256 == current_sha:
             reload_ok = True
             if policy_reload_required:
@@ -833,7 +859,38 @@ class ProxyRuntime:
                 "detail": detail,
             }
 
-        revision = self.revisions.get_active_revision(self.proxy_id)
+        if not force:
+            revision = self.revisions.get_active_revision(self.proxy_id)
+            if revision is not None:
+                normalized_revision_text = self._normalize_config_text(revision.config_text)
+                normalized_revision_sha = self._config_text_sha(revision.config_text)
+                if normalized_revision_sha and normalized_revision_sha == current_sha:
+                    reload_ok = True
+                    if policy_reload_required:
+                        reload_ok, reload_detail = self._reload_for_policy_update()
+                        if reload_detail:
+                            detail_parts.append(reload_detail)
+                    detail = "Proxy is already using the active config revision."
+                    if detail_parts:
+                        detail_parts.append(detail)
+                        detail = "\n".join(detail_parts).strip()
+                    if policy_reload_required and not reload_ok:
+                        self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+                    return {
+                        "ok": reload_ok,
+                        "proxy_id": self.proxy_id,
+                        "revision_id": revision.revision_id,
+                        "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                        "certificate_changed": cert_changed,
+                        "policy_changed": policy_changed,
+                        "adblock_changed": adblock_changed,
+                        "pac_changed": pac_changed,
+                        "config_changed": False,
+                        "detail": detail,
+                    }
+
+        if revision is None:
+            revision = self.revisions.get_active_revision(self.proxy_id)
         if revision is None:
             detail = "Active config revision metadata was present, but the full config text could not be loaded."
             self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
@@ -849,8 +906,10 @@ class ProxyRuntime:
                 "detail": detail,
             }
 
-        normalized_revision_text = self.controller.normalize_config_text(revision.config_text)
-        normalized_revision_sha = hashlib.sha256(normalized_revision_text.encode("utf-8", errors="replace")).hexdigest()
+        if not normalized_revision_text:
+            normalized_revision_text = self._normalize_config_text(revision.config_text)
+        if not normalized_revision_sha:
+            normalized_revision_sha = self._config_text_sha(revision.config_text)
 
         ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
         if config_detail.strip():

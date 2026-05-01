@@ -8,7 +8,7 @@ from services.adblock_store import get_adblock_store
 from services.client_identity_cache import get_client_identity_cache
 from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
-from services.exclusions_store import get_exclusions_store
+from services.exclusions_store import get_exclusions_store, list_domain_exclusion_presets
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason_sql as _not_cached_reason_sql, present_value_sql as _present_value_sql
 from services.socks_store import get_socks_store
@@ -153,6 +153,19 @@ def _domain_covered_by_exclusions(domain: str, patterns: List[str]) -> bool:
             if needle == suffix or needle.endswith("." + suffix):
                 return True
     return False
+
+
+def _sensitive_tls_domain_patterns() -> List[str]:
+    patterns: List[str] = []
+    seen: set[str] = set()
+    for preset in list_domain_exclusion_presets():
+        for raw in getattr(preset, "domains", ()) or ():
+            pattern = str(raw or "").strip().lower()
+            if not pattern or pattern in seen:
+                continue
+            seen.add(pattern)
+            patterns.append(pattern)
+    return patterns
 
 
 def _single_ip_cidr(value: str) -> str:
@@ -331,6 +344,7 @@ class ObservabilityQueries:
         query_lim = max(30, min(200, lim * 6))
         search_value = (search or "").strip().lower()
         exclusion_patterns = list(getattr(get_exclusions_store().list_all(), "domains", []) or [])
+        sensitive_patterns = _sensitive_tls_domain_patterns()
         merged: Dict[str, Dict[str, Any]] = {}
 
         with self._connect() as conn:
@@ -379,6 +393,26 @@ class ObservabilityQueries:
                 """,
                 (proxy_id, int(since), int(query_lim)),
             ).fetchall()
+            transport_rows = conn.execute(
+                f"""
+                SELECT
+                    domain,
+                    SUM(CASE WHEN method = 'CONNECT' AND COALESCE(LOWER(bump_mode), '') = 'bump' AND result_code = 'NONE_NONE/200' THEN 1 ELSE 0 END) AS bumped_connects,
+                    SUM(CASE WHEN method <> 'CONNECT' THEN 1 ELSE 0 END) AS non_connect_rows,
+                    SUM(CASE WHEN method <> 'CONNECT' AND http_status >= 500 THEN 1 ELSE 0 END) AS service_failures,
+                    COUNT(DISTINCT client_ip) AS clients,
+                    MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                WHERE proxy_id = %s
+                  AND ts >= %s
+                  AND {self._present_sql('domain')}
+                GROUP BY domain
+                HAVING bumped_connects > 0 OR service_failures > 0
+                ORDER BY service_failures DESC, bumped_connects DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (proxy_id, int(since), int(query_lim)),
+            ).fetchall()
 
         for row in pair_rows:
             domain = str(row[0] or "").strip().lower()
@@ -390,9 +424,12 @@ class ObservabilityQueries:
                     "domain": domain,
                     "paired_invalid_requests": 0,
                     "bump_aborts": 0,
+                    "service_failures": 0,
+                    "opaque_tls_connects": 0,
                     "ssl_events": 0,
                     "clients": 0,
                     "last_seen": 0,
+                    "sensitive_domain": False,
                 },
             )
             entry["paired_invalid_requests"] = int(row[1] or 0)
@@ -409,14 +446,43 @@ class ObservabilityQueries:
                     "domain": domain,
                     "paired_invalid_requests": 0,
                     "bump_aborts": 0,
+                    "service_failures": 0,
+                    "opaque_tls_connects": 0,
                     "ssl_events": 0,
                     "clients": 0,
                     "last_seen": 0,
+                    "sensitive_domain": False,
                 },
             )
             entry["bump_aborts"] = int(row[1] or 0)
             entry["clients"] = max(int(entry.get("clients") or 0), int(row[2] or 0))
             entry["last_seen"] = max(int(entry.get("last_seen") or 0), int(row[3] or 0))
+
+        for row in transport_rows:
+            domain = str(row[0] or "").strip().lower()
+            if not domain:
+                continue
+            entry = merged.setdefault(
+                domain,
+                {
+                    "domain": domain,
+                    "paired_invalid_requests": 0,
+                    "bump_aborts": 0,
+                    "service_failures": 0,
+                    "opaque_tls_connects": 0,
+                    "ssl_events": 0,
+                    "clients": 0,
+                    "last_seen": 0,
+                    "sensitive_domain": False,
+                },
+            )
+            bumped_connects = int(row[1] or 0)
+            non_connect_rows = int(row[2] or 0)
+            entry["service_failures"] = int(row[3] or 0)
+            entry["opaque_tls_connects"] = bumped_connects if bumped_connects > 0 and non_connect_rows == 0 else 0
+            entry["clients"] = max(int(entry.get("clients") or 0), int(row[4] or 0))
+            entry["last_seen"] = max(int(entry.get("last_seen") or 0), int(row[5] or 0))
+            entry["sensitive_domain"] = bool(entry.get("sensitive_domain")) or _domain_covered_by_exclusions(domain, sensitive_patterns)
 
         ssl_rows = get_ssl_errors_store().list_recent(
             since=since,
@@ -436,9 +502,12 @@ class ObservabilityQueries:
                     "domain": domain,
                     "paired_invalid_requests": 0,
                     "bump_aborts": 0,
+                    "service_failures": 0,
+                    "opaque_tls_connects": 0,
                     "ssl_events": 0,
                     "clients": 0,
                     "last_seen": 0,
+                    "sensitive_domain": False,
                 },
             )
             entry["ssl_events"] += int(getattr(row, "count", 0) or 0)
@@ -454,26 +523,59 @@ class ObservabilityQueries:
                 continue
             pair_events = int(entry.get("paired_invalid_requests") or 0)
             bump_aborts = int(entry.get("bump_aborts") or 0)
+            service_failures = int(entry.get("service_failures") or 0)
+            opaque_tls_connects = int(entry.get("opaque_tls_connects") or 0)
             ssl_events = int(entry.get("ssl_events") or 0)
-            if pair_events < int(min_pair_events) and bump_aborts < int(min_bump_aborts) and ssl_events < int(min_ssl_events):
+            sensitive_domain = bool(entry.get("sensitive_domain"))
+            combined_failures = bump_aborts + service_failures
+            opaque_sensitive_trigger = sensitive_domain and opaque_tls_connects >= max(4, int(min_pair_events))
+            if (
+                pair_events < int(min_pair_events)
+                and combined_failures < int(min_bump_aborts)
+                and ssl_events < int(min_ssl_events)
+                and not opaque_sensitive_trigger
+            ):
                 continue
-            score = _clamp_dynamic_score((pair_events * 8) + (bump_aborts * 3) + ssl_events)
-            high_confidence = pair_events >= 10 or (pair_events >= 5 and bump_aborts >= 5) or score >= 35
+            score = _clamp_dynamic_score(
+                (pair_events * 8)
+                + (bump_aborts * 3)
+                + (service_failures * 6)
+                + ssl_events
+                + ((opaque_tls_connects * 3) if sensitive_domain else 0)
+                + (10 if sensitive_domain and (service_failures or opaque_tls_connects) else 0)
+            )
+            high_confidence = (
+                pair_events >= 10
+                or combined_failures >= max(int(min_bump_aborts), 4)
+                or (pair_events >= 5 and bump_aborts >= 5)
+                or opaque_sensitive_trigger
+                or score >= 35
+            )
             evidence_bits: List[str] = []
             if pair_events:
                 evidence_bits.append(f"{pair_events} CONNECT→invalid-request pairs")
             if bump_aborts:
                 evidence_bits.append(f"{bump_aborts} bumped aborts")
+            if service_failures:
+                evidence_bits.append(f"{service_failures} outer 5xx requests")
+            if opaque_tls_connects:
+                evidence_bits.append(f"{opaque_tls_connects} bumped CONNECT-only sessions")
             if ssl_events:
                 evidence_bits.append(f"{ssl_events} SSL bucket events")
+            if sensitive_domain:
+                evidence_bits.append("matches a sensitive service family")
             candidates.append(
                 {
                     "domain": domain,
                     "paired_invalid_requests": pair_events,
                     "bump_aborts": bump_aborts,
+                    "service_failures": service_failures,
+                    "combined_failures": combined_failures,
+                    "opaque_tls_connects": opaque_tls_connects,
                     "ssl_events": ssl_events,
                     "clients": int(entry.get("clients") or 0),
                     "last_seen": int(entry.get("last_seen") or 0),
+                    "sensitive_domain": sensitive_domain,
                     "score": score,
                     "stage_label": "Stage 2 · domain splice candidate",
                     "stage_tone": "danger" if high_confidence else "warn",
@@ -506,9 +608,10 @@ class ObservabilityQueries:
         else:
             effective_rows = sslfilter_store.list_nobump(limit=5000)
         existing_nobump = {str(cidr or "").strip() for cidr, _ts in effective_rows}
+        merged: Dict[str, Dict[str, Any]] = {}
 
         with self._connect() as conn:
-            rows = conn.execute(
+            pair_rows = conn.execute(
                 f"""
                 SELECT
                     conn.client_ip,
@@ -535,38 +638,102 @@ class ObservabilityQueries:
                 """,
                 (proxy_id, int(since), int(since), int(query_lim)),
             ).fetchall()
+            failure_rows = conn.execute(
+                f"""
+                SELECT
+                    client_ip,
+                    COUNT(*) AS failure_events,
+                    COUNT(DISTINCT domain) AS distinct_domains,
+                    MAX(ts) AS last_seen,
+                    GROUP_CONCAT(DISTINCT domain ORDER BY domain SEPARATOR ',') AS sample_domains
+                FROM diagnostic_requests
+                WHERE proxy_id = %s
+                  AND ts >= %s
+                  AND {self._present_sql('domain')}
+                  AND (
+                    (method = 'CONNECT' AND COALESCE(LOWER(bump_mode), '') = 'bump' AND UPPER(result_code) LIKE '%%ABORTED%%')
+                    OR (method <> 'CONNECT' AND http_status >= 500)
+                  )
+                GROUP BY client_ip
+                ORDER BY failure_events DESC, distinct_domains DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (proxy_id, int(since), int(query_lim)),
+            ).fetchall()
 
-        candidates: List[Dict[str, Any]] = []
-        for row in rows:
+        for row in pair_rows:
             client_ip = str(row[0] or "").strip()
             if not client_ip:
                 continue
+            entry = merged.setdefault(
+                client_ip,
+                {
+                    "client_ip": client_ip,
+                    "paired_invalid_requests": 0,
+                    "failure_events": 0,
+                    "sample_domains": set(),
+                    "last_seen": 0,
+                },
+            )
+            entry["paired_invalid_requests"] = int(row[1] or 0)
+            entry["last_seen"] = max(int(entry.get("last_seen") or 0), int(row[3] or 0))
+            entry["sample_domains"].update([domain for domain in str(row[4] or "").split(",") if domain])
+
+        for row in failure_rows:
+            client_ip = str(row[0] or "").strip()
+            if not client_ip:
+                continue
+            entry = merged.setdefault(
+                client_ip,
+                {
+                    "client_ip": client_ip,
+                    "paired_invalid_requests": 0,
+                    "failure_events": 0,
+                    "sample_domains": set(),
+                    "last_seen": 0,
+                },
+            )
+            entry["failure_events"] = int(row[1] or 0)
+            entry["last_seen"] = max(int(entry.get("last_seen") or 0), int(row[3] or 0))
+            entry["sample_domains"].update([domain for domain in str(row[4] or "").split(",") if domain])
+
+        candidates: List[Dict[str, Any]] = []
+        for client_ip, entry in merged.items():
             cidr = _single_ip_cidr(client_ip)
             if not cidr or (skip_existing_nobump and cidr in existing_nobump):
                 continue
-            pair_events = int(row[1] or 0)
-            distinct_domains = int(row[2] or 0)
-            if pair_events < int(min_pair_events) or distinct_domains < int(min_distinct_domains):
+            pair_events = int(entry.get("paired_invalid_requests") or 0)
+            failure_events = int(entry.get("failure_events") or 0)
+            pain_events = pair_events + failure_events
+            sample_domains = sorted({str(domain or "").strip() for domain in (entry.get("sample_domains") or set()) if str(domain or "").strip()})[:4]
+            distinct_domains = len(sample_domains)
+            if pain_events < int(min_pair_events) or distinct_domains < int(min_distinct_domains):
                 continue
-            sample_domains = [domain for domain in str(row[4] or "").split(",") if domain][:4]
             if search_value and search_value not in client_ip.lower() and not any(search_value in domain.lower() for domain in sample_domains):
                 continue
-            high_confidence = pair_events >= 20 or distinct_domains >= 4
-            score = _clamp_dynamic_score((pair_events * 4) + (distinct_domains * 10))
+            high_confidence = pain_events >= max(int(min_pair_events) * 2, 20) or distinct_domains >= max(int(min_distinct_domains) + 2, 4)
+            score = _clamp_dynamic_score((pair_events * 4) + (failure_events * 5) + (distinct_domains * 10))
+            summary_bits: List[str] = []
+            if pair_events:
+                summary_bits.append(f"{pair_events} CONNECT→invalid-request pairs")
+            if failure_events:
+                summary_bits.append(f"{failure_events} bumped abort / 5xx failures")
             candidates.append(
                 {
                     "client_ip": client_ip,
                     "cidr": cidr,
                     "paired_invalid_requests": pair_events,
+                    "failure_events": failure_events,
+                    "pain_events": pain_events,
                     "distinct_domains": distinct_domains,
                     "sample_domains": sample_domains,
-                    "last_seen": int(row[3] or 0),
+                    "last_seen": int(entry.get("last_seen") or 0),
                     "score": score,
                     "stage_label": "Stage 3 · client /32 no-bump",
                     "stage_tone": "danger" if high_confidence else "warn",
                     "confidence_label": "High confidence" if high_confidence else "Moderate confidence",
                     "summary": (
-                        f"{pair_events} CONNECT→invalid-request pairs across {distinct_domains} domains. "
+                        f"{pain_events} client distress events across {distinct_domains} domains ({'; '.join(summary_bits)}). "
                         "If domain splice candidates do not stabilize this client, escalate to a /32 no-bump."
                     ),
                 }
@@ -574,7 +741,7 @@ class ObservabilityQueries:
 
         candidates.sort(
             key=lambda row: (
-                int(row.get("paired_invalid_requests") or 0),
+                int(row.get("pain_events") or 0),
                 int(row.get("distinct_domains") or 0),
                 int(row.get("last_seen") or 0),
             ),
@@ -805,14 +972,21 @@ class ObservabilityQueries:
             )
             for row in domain_candidates:
                 pair_events = int(row.get("paired_invalid_requests") or 0)
-                bump_aborts = int(row.get("bump_aborts") or 0)
+                combined_failures = int(row.get("combined_failures") or 0)
+                opaque_tls_connects = int(row.get("opaque_tls_connects") or 0)
                 ssl_events = int(row.get("ssl_events") or 0)
+                sensitive_domain = bool(row.get("sensitive_domain"))
                 domain = str(row.get("domain") or "").strip().lower()
                 if not domain:
                     continue
                 if domain in active_auto_domains:
                     continue
-                if pair_events < _setting_int(settings, "min_pair_events", 6) and bump_aborts < _setting_int(settings, "min_bump_aborts", 8) and ssl_events < _setting_int(settings, "min_ssl_events", 10):
+                if (
+                    pair_events < _setting_int(settings, "min_pair_events", 6)
+                    and combined_failures < _setting_int(settings, "min_bump_aborts", 8)
+                    and ssl_events < _setting_int(settings, "min_ssl_events", 10)
+                    and not (sensitive_domain and opaque_tls_connects >= max(4, _setting_int(settings, "min_pair_events", 6)))
+                ):
                     continue
                 already_covered = _domain_covered_by_exclusions(domain, effective_exclusions)
                 if already_covered:
@@ -968,11 +1142,11 @@ class ObservabilityQueries:
                     continue
                 if cidr in active_auto_clients:
                     continue
-                pair_events = int(row.get("paired_invalid_requests") or 0)
+                pain_events = int(row.get("pain_events") or 0)
                 distinct_domains = int(row.get("distinct_domains") or 0)
                 sample_domains = list(row.get("sample_domains") or [])
                 protected_matches = sum(1 for domain in sample_domains if _domain_covered_by_exclusions(str(domain), effective_exclusions))
-                if pair_events < _setting_int(settings, "client_pair_events", 24) or distinct_domains < _setting_int(settings, "client_distinct_domains", 4) or protected_matches < 1:
+                if pain_events < _setting_int(settings, "client_pair_events", 24) or distinct_domains < _setting_int(settings, "client_distinct_domains", 4) or protected_matches < 1:
                     continue
                 if cidr not in effective_nobumps and cidr not in active_auto_clients and len(active_auto_clients) >= client_limit:
                     continue
@@ -1388,7 +1562,7 @@ class ObservabilityQueries:
                     "kind": "warning",
                     "title": "Dynamic mitigation candidates available",
                     "body": (
-                        "Use staged mitigation: splice a noisy domain first when repeated CONNECT→invalid-request or bumped-abort evidence points at one destination, "
+                        "Use staged mitigation: splice a noisy domain first when repeated CONNECT→invalid-request, bumped-abort, outer 5xx, or opaque CONNECT-only evidence points at one destination, "
                         "then escalate to a client /32 no-bump only when one client keeps failing across multiple domains."
                     ),
                 }

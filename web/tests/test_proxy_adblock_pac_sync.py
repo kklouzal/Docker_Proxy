@@ -336,3 +336,71 @@ def test_proxy_collect_health_reuses_short_lived_cached_snapshot(tmp_path):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_proxy_sync_skips_reapply_when_normalized_revision_matches_current_config(tmp_path):
+    env_backup = {
+        key: os.environ.get(key)
+        for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "PAC_RENDER_DIR")
+    }
+    try:
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "PAC_RENDER_DIR": tmp_path / "pac",
+            },
+        )
+        from services.config_revisions import get_config_revisions  # type: ignore
+        from services.squidctl import SquidController  # type: ignore
+
+        revisions = get_config_revisions()
+        raw_revision = "http_port 3128\nacl has_auth req_header Authorization .\n"
+        revision = revisions.create_revision("edge-1", raw_revision, created_by="tester", source_kind="test")
+        current_config = SquidController().normalize_config_text(raw_revision)
+
+        class RecordingController:
+            def __init__(self, current: str):
+                self.current = current
+                self.apply_calls = 0
+
+            def get_status(self):
+                return b"proxy ok", b""
+
+            def get_current_config(self):
+                return self.current
+
+            def normalize_config_text(self, cfg_text: str):
+                return SquidController().normalize_config_text(cfg_text)
+
+            def reload_squid(self):
+                return b"policy reload ok", b""
+
+            def apply_config_text(self, cfg_text: str):
+                self.apply_calls += 1
+                self.current = cfg_text
+                return True, "applied"
+
+        controller = RecordingController(current_config)
+        runtime = runtime_module.ProxyRuntime(
+            services=runtime_module.build_runtime_services(
+                controller=controller,
+                policy_state_builder=lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]),
+                pac_state_builder=lambda _proxy_id: SimpleNamespace(state_sha256="pac-sha"),
+                current_certificate_sha_reader=lambda: "",
+                current_adblock_sha_reader=lambda: "",
+                current_pac_sha_reader=lambda: "pac-sha",
+            )
+        )
+
+        result = runtime.sync_from_db(force=False)
+
+        assert result["ok"] is True
+        assert result["revision_id"] == revision.revision_id
+        assert result["config_changed"] is False
+        assert controller.apply_calls == 0
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

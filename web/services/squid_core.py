@@ -22,6 +22,7 @@ class SquidController:
     _LIVEUI_LOGFORMAT = r"logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st"
     _DIAGNOSTIC_LOGFORMAT = r"logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note"
     _ICAP_OBSERVE_LOGFORMAT = r"logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note"
+    _SQUID_PIDFILE_NAMES = ("/var/run/squid.pid", "/run/squid.pid", "squid.pid")
 
     def __init__(self, squid_conf_path: str = "/etc/squid/squid.conf", *, cmd_run: CommandRunner = run):
         self.squid_conf_path = squid_conf_path
@@ -53,7 +54,7 @@ class SquidController:
     def _replace_or_append_directive(self, text: str, pattern: str, replacement: str) -> str:
         regex = re.compile(pattern, re.M)
         if regex.search(text):
-            return regex.sub(replacement, text, count=1)
+            return regex.sub(lambda _match: replacement, text, count=1)
         return text.rstrip() + "\n" + replacement + "\n"
 
     def normalize_config_text(self, config_text: str) -> str:
@@ -129,8 +130,9 @@ class SquidController:
     def validate_config_text(self, config_text: str) -> Tuple[bool, str]:
         normalized_config = self.normalize_config_text(config_text)
         tmp_path = ""
+        tmp_dir = "/tmp" if os.path.isdir("/tmp") else None
         try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, prefix="squid-conf-", dir="/tmp") as handle:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, prefix="squid-conf-", dir=tmp_dir) as handle:
                 tmp_path = handle.name
                 handle.write(normalized_config)
 
@@ -172,6 +174,29 @@ class SquidController:
         if out_text and err_text:
             return (out_text + "\n" + err_text).strip()
         return (out_text or err_text).strip()
+
+    def _is_pidfile_control_error(self, detail: str) -> bool:
+        text = (detail or "").strip().lower()
+        if not text:
+            return False
+        if "failed to open" not in text and "no such file or directory" not in text:
+            return False
+        return any(marker in text for marker in self._SQUID_PIDFILE_NAMES)
+
+    def _supervisor_status(self, program_name: str = "squid") -> tuple[bool, str]:
+        try:
+            proc = self._run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                capture_output=True,
+                timeout=12,
+            )
+        except Exception as exc:
+            return False, public_error_message(exc, default=f"supervisorctl status {program_name} failed.")
+
+        detail = self._decode_completed(proc).strip()
+        status_text = detail.upper()
+        ok = proc.returncode == 0 and (" RUNNING" in f" {status_text}" or " STARTING" in f" {status_text}")
+        return ok, detail or f"supervisorctl status {program_name} returned no output."
 
     def restart_squid(self) -> Tuple[bool, str]:
         try:
@@ -393,10 +418,31 @@ class SquidController:
 
             reconfigure = self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
             if reconfigure.returncode != 0:
+                reconfigure_detail = self._decode_completed(reconfigure) or "Squid reconfigure failed."
+                if self._is_pidfile_control_error(reconfigure_detail):
+                    ok_restart, restart_detail = self.restart_squid()
+                    if ok_restart:
+                        try:
+                            persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
+                            if persisted_dir:
+                                os.makedirs(persisted_dir, exist_ok=True)
+                            self._atomic_write_file(self.persisted_squid_conf_path, normalized_config)
+                        except Exception:
+                            log_exception_throttled(
+                                logger,
+                                "squid_core.persist_config.restart",
+                                interval_seconds=300.0,
+                                message="Failed to persist squid config after supervisor restart fallback",
+                            )
+                        return True, (restart_detail or "Squid restarted under supervisor.").strip()
+                    if os.path.exists(backup_path):
+                        os.replace(backup_path, self.squid_conf_path)
+                        self.restart_squid()
+                    return False, (restart_detail or reconfigure_detail).strip()
                 if os.path.exists(backup_path):
                     os.replace(backup_path, self.squid_conf_path)
                     self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-                return False, self._decode_completed(reconfigure) or "Squid reconfigure failed."
+                return False, reconfigure_detail
 
             try:
                 persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
@@ -436,6 +482,13 @@ class SquidController:
     def reload_squid(self):
         try:
             proc = self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
+            if proc.returncode != 0:
+                detail = self._decode_completed(proc)
+                if self._is_pidfile_control_error(detail):
+                    ok_restart, restart_detail = self.restart_squid()
+                    if ok_restart:
+                        return (restart_detail or "Squid restarted under supervisor.").encode("utf-8", errors="replace"), b""
+                    return b"", (restart_detail or detail or "Squid restart failed.").encode("utf-8", errors="replace")
             return proc.stdout or b"", proc.stderr or b""
         except FileNotFoundError:
             return b"", b"squid binary not found"
@@ -451,6 +504,11 @@ class SquidController:
                 if stdout:
                     return stdout, b""
                 return b"Squid check ok.", b""
+            detail = self._decode_completed(proc)
+            if self._is_pidfile_control_error(detail):
+                ok_supervisor, supervisor_detail = self._supervisor_status("squid")
+                if ok_supervisor:
+                    return (supervisor_detail or "Squid is running under supervisor.").encode("utf-8", errors="replace"), b""
             if proc.returncode != 0 and not stderr:
                 stderr = stdout or f"squid check failed rc={proc.returncode}".encode("utf-8")
             return stdout, stderr
