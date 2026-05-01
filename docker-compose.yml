@@ -10,5 +10,19 @@ services:
       dockerfile: docker/Dockerfile.admin
       pull: true
 
+  proxy:
+    extends:
+      file: docker-compose.common.yml
+      service: proxy
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
+      pull: true
+
 networks:
   control:
+
+volumes:
+  squid_cache:
+  squid_ssl_db:
+  proxy_data:

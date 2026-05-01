@@ -148,6 +148,14 @@ def _resolve_dynamic_cert_mem_cache_mb(tunables: TunableMap, max_workers: int) -
     return min(512, max(128, derived))
 
 
+def _resolve_memory_cache_shared_on(tunables: TunableMap, max_workers: int) -> bool:
+    value = tunables.get("memory_cache_shared")
+    if value is not None:
+        return bool(value)
+    workers = _current_workers(tunables, max_workers)
+    return workers > 1
+
+
 def _resolve_shared_transient_entries_limit(tunables: TunableMap, max_workers: int) -> int:
     value = tunables.get("shared_transient_entries_limit")
     if value is not None:
@@ -156,7 +164,20 @@ def _resolve_shared_transient_entries_limit(tunables: TunableMap, max_workers: i
         except Exception:
             pass
     workers = _current_workers(tunables, max_workers)
+    if workers <= 1:
+        return 8192
     return max(32768, workers * 8192)
+
+
+def _resolve_sslproxy_session_cache_size_mb(tunables: TunableMap, max_workers: int) -> int:
+    value = tunables.get("sslproxy_session_cache_size_mb")
+    if value is not None:
+        try:
+            return max(0, int(value))
+        except Exception:
+            pass
+    workers = _current_workers(tunables, max_workers)
+    return min(32, max(16, workers * 8))
 
 
 
@@ -288,7 +309,7 @@ OPTION_DEFAULT_SPECS: tuple[OptionDefaultSpec, ...] = (
     OptionDefaultSpec("maximum_object_size_in_memory_kb", _tunable_or_default("maximum_object_size_in_memory_kb", 2048)),
     OptionDefaultSpec("minimum_object_size_kb", _tunable_or_default_if_none("minimum_object_size_kb", 0)),
     OptionDefaultSpec("memory_cache_mode", _tunable_choice_or_default("memory_cache_mode", ("always", "disk", "network"), "always")),
-    OptionDefaultSpec("memory_cache_shared_on", _tunable_bool_or_default("memory_cache_shared", True)),
+    OptionDefaultSpec("memory_cache_shared_on", _resolve_memory_cache_shared_on),
     OptionDefaultSpec("shared_transient_entries_limit", _resolve_shared_transient_entries_limit),
     OptionDefaultSpec("cache_swap_low", _tunable_or_default("cache_swap_low", 90)),
     OptionDefaultSpec("cache_swap_high", _tunable_or_default("cache_swap_high", 95)),
@@ -344,7 +365,7 @@ OPTION_DEFAULT_SPECS: tuple[OptionDefaultSpec, ...] = (
     OptionDefaultSpec("sslcrtd_children_queue_size", _resolve_sslcrtd_children_queue_size),
     OptionDefaultSpec("dynamic_cert_mem_cache_size_mb", _resolve_dynamic_cert_mem_cache_mb),
     OptionDefaultSpec("sslproxy_session_ttl_seconds", _tunable_or_default_if_none("sslproxy_session_ttl_seconds", 600)),
-    OptionDefaultSpec("sslproxy_session_cache_size_mb", _tunable_or_default_if_none("sslproxy_session_cache_size_mb", 32)),
+    OptionDefaultSpec("sslproxy_session_cache_size_mb", _resolve_sslproxy_session_cache_size_mb),
     OptionDefaultSpec("icap_enable_on", _tunable_bool_or_default("icap_enable", True)),
     OptionDefaultSpec("icap_send_client_ip_on", _tunable_bool_or_default("icap_send_client_ip", True)),
     OptionDefaultSpec("icap_send_client_username_on", _tunable_bool_or_default("icap_send_client_username", False)),

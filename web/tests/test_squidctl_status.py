@@ -62,3 +62,26 @@ def test_reload_squid_restarts_under_supervisor_when_pidfile_is_missing():
 
     assert b"started" in stdout
     assert stderr == b""
+
+
+def test_get_status_falls_back_to_supervisor_when_pidfile_is_stale():
+    import services.squidctl as squidctl  # type: ignore
+
+    calls = {"count": 0}
+
+    def fake_run(args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout=b"",
+                stderr=b"FATAL: failed to send signal 0 to Squid instance with PID 986: (3) No such process\n",
+            )
+        return SimpleNamespace(returncode=0, stdout=b"squid RUNNING pid 123, uptime 0:01:00\n", stderr=b"")
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+
+    stdout, stderr = controller.get_status()
+
+    assert b"RUNNING" in stdout
+    assert stderr == b""

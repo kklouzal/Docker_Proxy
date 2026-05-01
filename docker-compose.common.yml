@@ -36,6 +36,7 @@ services:
 
   proxy:
     restart: unless-stopped
+    shm_size: ${PROXY_SHM_SIZE:-96m}
     sysctls:
       net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
       net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}

@@ -419,6 +419,33 @@ path.write_text(text_buffer[0] if text_buffer[0].endswith('\n') else text_buffer
 PY
 done
 
+# Normalize both the active and persisted Squid configs through the same logic
+# used by the control plane before supervisord launches Squid. This repairs
+# older persisted revisions that still carry the high shared-memory defaults
+# introduced by the performance-tuning pass, preventing immediate startup
+# failures on low-shm deployments while still normalizing older revisions onto
+# the compose-managed 96MB default.
+for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
+    if [ ! -f "$SQUID_CFG" ]; then
+        continue
+    fi
+    SQUID_CFG_PATH="$SQUID_CFG" python3 - <<'PY' || true
+from pathlib import Path
+import os
+import sys
+
+sys.path.insert(0, '/app')
+
+from services.squid_core import SquidController
+
+path = Path(os.environ['SQUID_CFG_PATH'])
+text = path.read_text(encoding='utf-8')
+normalized = SquidController(squid_conf_path=str(path)).normalize_config_text(text)
+if normalized != text:
+    path.write_text(normalized, encoding='utf-8')
+PY
+done
+
 # Stability + privacy: never cache requests that carry Authorization/Cookie.
 # This reduces Vary-related cache loops and prevents caching of authenticated content.
 if [ -f /etc/squid/squid.conf ] && ! grep -q "^acl has_auth req_header Authorization" /etc/squid/squid.conf 2>/dev/null; then
@@ -778,6 +805,14 @@ fi
 
 # Initialize CA + SSL DB for ssl-bump
 sh /scripts/init_ssl_db.sh
+
+# Clear stale shared-memory objects left behind by previous crash loops.
+# Both Squid and c-icap use /dev/shm-backed files for shared state. When the
+# processes die via SIGBUS/SIGKILL these segments can linger and cause follow-on
+# startup failures even after the root config issue is fixed.
+if [ -d /dev/shm ]; then
+    rm -f /dev/shm/c-icap-shared-* /dev/shm/squid-LEN*.shm 2>/dev/null || true
+fi
 
 # Initialize cache dirs (safe to re-run)
 mkdir -p /var/spool/squid /var/log/squid

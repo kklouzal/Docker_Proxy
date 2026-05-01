@@ -7,5 +7,16 @@ services:
       service: admin-ui
     image: ghcr.io/kklouzal/docker_proxy-admin-ui:main
 
+  proxy:
+    extends:
+      file: docker-compose.common.yml
+      service: proxy
+    image: ghcr.io/kklouzal/docker_proxy-proxy:main
+
 networks:
   control:
+
+volumes:
+  squid_cache:
+  squid_ssl_db:
+  proxy_data:

@@ -39,8 +39,8 @@ maximum_object_size_in_memory 2048 KB
 minimum_object_size 0 KB
 cache_mem 256 MB
 memory_cache_mode always
-memory_cache_shared on
-shared_transient_entries_limit 32768
+memory_cache_shared off
+shared_transient_entries_limit 8192
 
 # Favor hit-rate-oriented eviction over plain LRU for this forward-proxy workload.
 cache_replacement_policy heap GDSF
@@ -123,7 +123,7 @@ fqdncache_size 8192
 
 # TLS session reuse for the origin-facing side of bumped connections.
 sslproxy_session_ttl 600 seconds
-sslproxy_session_cache_size 32 MB
+sslproxy_session_cache_size 16 MB
 
 # Cache-first behavior for image-heavy browsing/download bursts.
 # Keep fetching cacheable objects even if the client gives up so retries do not

@@ -39,7 +39,8 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["cache_mem_mb"] == 256
     assert options["maximum_object_size_mb"] == 128
     assert options["memory_cache_mode"] == "always"
-    assert options["shared_transient_entries_limit"] == 32768
+    assert options["memory_cache_shared_on"] is False
+    assert options["shared_transient_entries_limit"] == 8192
     assert options["cache_miss_revalidate_on"] is True
     assert options["buffered_logs_on"] is True
     assert options["icap_preview_enable_on"] is True
@@ -49,7 +50,7 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["sslcrtd_children"] == 4
     assert options["dynamic_cert_mem_cache_size_mb"] == 128
     assert options["sslproxy_session_ttl_seconds"] == 600
-    assert options["sslproxy_session_cache_size_mb"] == 32
+    assert options["sslproxy_session_cache_size_mb"] == 16
     assert options["memory_pools_limit_mb"] == 64
     assert options["max_open_disk_fds"] == 0
 

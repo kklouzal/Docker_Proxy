@@ -57,6 +57,77 @@ class SquidController:
             return regex.sub(lambda _match: replacement, text, count=1)
         return text.rstrip() + "\n" + replacement + "\n"
 
+    def _runtime_shm_size_mb(self) -> Optional[int]:
+        raw = (os.environ.get("SQUID_RUNTIME_SHM_MB") or "").strip()
+        if raw:
+            match = re.match(r"^(\d+)", raw)
+            if match:
+                try:
+                    return max(1, int(match.group(1)))
+                except Exception:
+                    pass
+        try:
+            stats = os.statvfs("/dev/shm")
+            size_bytes = int(stats.f_frsize) * int(stats.f_blocks)
+            if size_bytes <= 0:
+                return None
+            return max(1, int(size_bytes // (1024 * 1024)))
+        except Exception:
+            return None
+
+    def _find_directive_int(self, text: str, key: str) -> Optional[int]:
+        match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*$", text, re.M | re.I)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def _find_directive_size_mb(self, text: str, key: str) -> Optional[int]:
+        match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
+        if not match:
+            return None
+        try:
+            value = int(match.group(1))
+        except Exception:
+            return None
+        unit = (match.group(2) or "mb").strip().lower()
+        if unit in ("", "m", "mb", "mib", "mbytes"):
+            return value
+        if unit in ("k", "kb", "kib", "kbytes"):
+            return max(0, value // 1024)
+        if unit in ("g", "gb", "gib", "gbytes"):
+            return value * 1024
+        return None
+
+    def _apply_low_shm_guards(self, text: str) -> str:
+        shm_size_mb = self._runtime_shm_size_mb()
+        if shm_size_mb is None or shm_size_mb > 96:
+            return text
+
+        workers = self._extract_workers(text) or 1
+        if shm_size_mb <= 64 or workers <= 1:
+            text = self._replace_or_append_directive(text, r"^\s*memory_cache_shared\s+.*$", "memory_cache_shared off")
+            current_transients = self._find_directive_int(text, "shared_transient_entries_limit")
+            if current_transients is None or current_transients > 8192:
+                text = self._replace_or_append_directive(
+                    text,
+                    r"^\s*shared_transient_entries_limit\s+.*$",
+                    "shared_transient_entries_limit 8192",
+                )
+
+        target_ssl_session_cache_mb = 8 if shm_size_mb <= 64 else 16
+        current_ssl_session_cache_mb = self._find_directive_size_mb(text, "sslproxy_session_cache_size")
+        if current_ssl_session_cache_mb is None or current_ssl_session_cache_mb > target_ssl_session_cache_mb:
+            text = self._replace_or_append_directive(
+                text,
+                r"^\s*sslproxy_session_cache_size\s+.*$",
+                f"sslproxy_session_cache_size {target_ssl_session_cache_mb} MB",
+            )
+
+        return text
+
     def normalize_config_text(self, config_text: str) -> str:
         text = (config_text or "").strip()
         if not text:
@@ -79,6 +150,8 @@ class SquidController:
         for acl_pattern, note_line in note_requirements:
             if re.search(acl_pattern, text, re.M) and note_line not in text:
                 text = text.rstrip() + "\n" + note_line + "\n"
+
+        text = self._apply_low_shm_guards(text)
 
         return text if text.endswith("\n") else text + "\n"
 
@@ -179,9 +252,16 @@ class SquidController:
         text = (detail or "").strip().lower()
         if not text:
             return False
-        if "failed to open" not in text and "no such file or directory" not in text:
-            return False
-        return any(marker in text for marker in self._SQUID_PIDFILE_NAMES)
+        missing_pidfile = (
+            "failed to open" in text
+            and "no such file or directory" in text
+            and any(marker in text for marker in self._SQUID_PIDFILE_NAMES)
+        )
+        stale_pid = (
+            "failed to send signal 0 to squid instance with pid" in text
+            and "no such process" in text
+        )
+        return missing_pidfile or stale_pid
 
     def _supervisor_status(self, program_name: str = "squid") -> tuple[bool, str]:
         try:

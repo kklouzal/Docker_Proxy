@@ -6,9 +6,20 @@ set -eu
 # - CA key/cert: /etc/squid/ssl/certs/ca.key + ca.crt
 # - sslcrtd DB:  /var/lib/ssl_db (bind-mount this for persistence)
 
-SSL_DB_DIR="/var/lib/ssl_db/store"
+SSL_DB_DIR="${SSL_DB_DIR:-/var/lib/ssl_db/store}"
 
 mkdir -p "$(dirname "$SSL_DB_DIR")"
+
+repair_ssl_db_permissions() {
+    chmod 700 "$SSL_DB_DIR" 2>/dev/null || true
+    if [ -d "$SSL_DB_DIR/certs" ]; then
+        chmod 750 "$SSL_DB_DIR/certs" 2>/dev/null || true
+    fi
+
+    if getent passwd squid >/dev/null 2>&1; then
+        chown -R squid:squid "$(dirname "$SSL_DB_DIR")" || true
+    fi
+}
 
 # Ensure a CA exists (used for on-the-fly cert generation)
 sh /scripts/generate_ca.sh
@@ -41,16 +52,15 @@ if [ "$SSLCRTD_BIN" != "/usr/lib/squid/ssl_crtd" ]; then
     fi
 fi
 
-# Initialize sslcrtd DB if empty
-if [ ! -f "$SSL_DB_DIR/index.txt" ] && [ ! -d "$SSL_DB_DIR/certs" ]; then
+# Initialize or repair the sslcrtd DB if it is missing any expected files.
+# A partially created or root-owned DB can make ssl_crtd report the directory
+# as "uninitialized" when Squid later reloads after policy updates.
+if [ ! -f "$SSL_DB_DIR/index.txt" ] || [ ! -f "$SSL_DB_DIR/size" ] || [ ! -d "$SSL_DB_DIR/certs" ]; then
+    rm -rf "$SSL_DB_DIR"
     echo "Initializing sslcrtd DB in $SSL_DB_DIR using $SSLCRTD_BIN"
     "$SSLCRTD_BIN" -c -s "$SSL_DB_DIR" -M 16MB
 else
     echo "sslcrtd DB already initialized in $SSL_DB_DIR"
 fi
 
-chmod 700 "$SSL_DB_DIR" || true
-
-if getent passwd squid >/dev/null 2>&1; then
-    chown -R squid:squid "$(dirname "$SSL_DB_DIR")" || true
-fi
+repair_ssl_db_permissions

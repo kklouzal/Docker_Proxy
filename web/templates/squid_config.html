@@ -211,12 +211,12 @@
                     </select>
 
                     <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="memory_cache_shared_on" {% if (tunables and tunables.memory_cache_shared is not none and tunables.memory_cache_shared) or (not tunables) or (tunables and tunables.memory_cache_shared is none) %}checked{% endif %} />
+                        <input form="safe-caching-form" class="check" type="checkbox" name="memory_cache_shared_on" {% if tunables and tunables.memory_cache_shared is not none and tunables.memory_cache_shared %}checked{% endif %} />
                         <span>Share memory cache across SMP workers</span>
                     </label>
 
                     <label for="shared_transient_entries_limit">shared_transient_entries_limit</label>
-                    <input form="safe-caching-form" id="shared_transient_entries_limit" name="shared_transient_entries_limit" type="number" min="0" step="1024" value="{{ (tunables.shared_transient_entries_limit if tunables and tunables.shared_transient_entries_limit is not none else 32768) }}" />
+                    <input form="safe-caching-form" id="shared_transient_entries_limit" name="shared_transient_entries_limit" type="number" min="0" step="1024" value="{{ (tunables.shared_transient_entries_limit if tunables and tunables.shared_transient_entries_limit is not none else 8192) }}" />
                     <div class="small">Controls the shared table used to coordinate in-flight/cacheable transactions between workers.</div>
 
                     <label for="cache_swap_low">cache_swap_low (%)</label>
@@ -774,7 +774,7 @@
                     <input form="safe-ssl-form" id="sslproxy_session_ttl_seconds" name="sslproxy_session_ttl_seconds" type="number" min="0" step="1" value="{{ (tunables.sslproxy_session_ttl_seconds if tunables and tunables.sslproxy_session_ttl_seconds is not none else 600) }}" />
 
                     <label for="sslproxy_session_cache_size_mb">sslproxy_session_cache_size (MB)</label>
-                    <input form="safe-ssl-form" id="sslproxy_session_cache_size_mb" name="sslproxy_session_cache_size_mb" type="number" min="0" step="1" value="{{ (tunables.sslproxy_session_cache_size_mb if tunables and tunables.sslproxy_session_cache_size_mb is not none else 32) }}" />
+                    <input form="safe-ssl-form" id="sslproxy_session_cache_size_mb" name="sslproxy_session_cache_size_mb" type="number" min="0" step="1" value="{{ (tunables.sslproxy_session_cache_size_mb if tunables and tunables.sslproxy_session_cache_size_mb is not none else 16) }}" />
                     <div class="small">Tune helper concurrency, generated-certificate cache size, and origin-facing TLS session reuse together for heavy bumped-HTTPS workloads.</div>
                 </div>
             </div>

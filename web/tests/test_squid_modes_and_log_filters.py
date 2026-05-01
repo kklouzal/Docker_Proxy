@@ -152,8 +152,8 @@ def test_repo_template_includes_cache_first_defaults():
     assert "cache_dir rock /var/spool/squid 10000 slot-size=32768" in text
     assert "cache_mem 256 MB" in text
     assert "memory_cache_mode always" in text
-    assert "memory_cache_shared on" in text
-    assert "shared_transient_entries_limit 32768" in text
+    assert "memory_cache_shared off" in text
+    assert "shared_transient_entries_limit 8192" in text
     assert "cache_replacement_policy heap GDSF" in text
     assert "memory_replacement_policy heap GDSF" in text
     assert "cache_miss_revalidate on" in text
@@ -166,6 +166,7 @@ def test_repo_template_includes_cache_first_defaults():
     assert "quick_abort_pct 100" in text
     assert "icap_preview_enable on" in text
     assert "sslproxy_session_ttl 600 seconds" in text
+    assert "sslproxy_session_cache_size 16 MB" in text
     assert "icap_service_failure_limit 10 in 30 seconds" in text
 
 
@@ -196,6 +197,52 @@ http_access allow all
     assert "note ssl_exception steam steam_sites" in text
     assert "note cache_bypass auth has_auth" in text
     assert "note cache_bypass cookie has_cookie" in text
+
+
+def test_squid_controller_normalize_config_text_clamps_single_worker_shm_defaults(monkeypatch):
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    monkeypatch.setenv("SQUID_RUNTIME_SHM_MB", "64")
+
+    ctl = SquidController()
+    text = ctl.normalize_config_text(
+        """
+workers 1
+memory_cache_shared on
+shared_transient_entries_limit 32768
+sslproxy_session_cache_size 32 MB
+http_access allow all
+""".strip()
+    )
+
+    assert "memory_cache_shared off" in text
+    assert "shared_transient_entries_limit 8192" in text
+    assert "sslproxy_session_cache_size 8 MB" in text
+
+
+def test_squid_controller_normalize_config_text_uses_96mb_tls_cache_cap(monkeypatch):
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    monkeypatch.setenv("SQUID_RUNTIME_SHM_MB", "96")
+
+    ctl = SquidController()
+    text = ctl.normalize_config_text(
+        """
+workers 1
+memory_cache_shared on
+shared_transient_entries_limit 32768
+sslproxy_session_cache_size 32 MB
+http_access allow all
+""".strip()
+    )
+
+    assert "memory_cache_shared off" in text
+    assert "shared_transient_entries_limit 8192" in text
+    assert "sslproxy_session_cache_size 16 MB" in text
 
 
 def test_squid_controller_parses_new_perf_tunables():
