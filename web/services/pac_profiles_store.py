@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import re
 import threading
 from dataclasses import dataclass
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_network
 from typing import List, Optional, Tuple
 
 from services.db import connect
@@ -11,18 +10,11 @@ from services.proxy_context import get_proxy_id
 from services.runtime_helpers import now_ts as _now
 
 
-# Hostname validation pattern: alphanumeric labels separated by dots
-_HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$")
-
-
 @dataclass(frozen=True)
 class PacProfile:
     id: int
     name: str
     client_cidr: str
-    socks_enabled: bool
-    socks_host: str
-    socks_port: int
     direct_domains: List[str]
     direct_dst_nets: List[str]
     created_ts: int
@@ -67,9 +59,6 @@ class PacProfilesStore:
                     proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
                     name VARCHAR(255) NOT NULL,
                     client_cidr VARCHAR(64) NOT NULL DEFAULT '',
-                    socks_enabled TINYINT(1) NOT NULL DEFAULT 0,
-                    socks_host VARCHAR(255) NOT NULL DEFAULT '',
-                    socks_port INT NOT NULL DEFAULT 1080,
                     created_ts BIGINT NOT NULL,
                     KEY idx_pac_profiles_created (created_ts, id),
                     KEY idx_pac_profiles_proxy (proxy_id, id)
@@ -101,7 +90,7 @@ class PacProfilesStore:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             profiles = conn.execute(
-                "SELECT id, name, client_cidr, socks_enabled, socks_host, socks_port, created_ts FROM pac_profiles WHERE proxy_id=%s ORDER BY id ASC",
+                "SELECT id, name, client_cidr, created_ts FROM pac_profiles WHERE proxy_id=%s ORDER BY id ASC",
                 (proxy_id,),
             ).fetchall()
             res: List[PacProfile] = []
@@ -124,9 +113,6 @@ class PacProfilesStore:
                         id=pid,
                         name=str(p["name"]),
                         client_cidr=str(p["client_cidr"] or ""),
-                        socks_enabled=bool(int(p["socks_enabled"] or 0)),
-                        socks_host=str(p["socks_host"] or ""),
-                        socks_port=int(p["socks_port"] or 1080),
                         direct_domains=domains,
                         direct_dst_nets=nets,
                         created_ts=int(p["created_ts"] or 0),
@@ -140,11 +126,9 @@ class PacProfilesStore:
         profile_id: Optional[int],
         name: str,
         client_cidr: str,
-        socks_enabled: bool,
-        socks_host: str,
-        socks_port: str,
         direct_domains_text: str,
         direct_dst_nets_text: str,
+        **_ignored: object,
     ) -> Tuple[bool, str, Optional[int]]:
         self.init_db()
 
@@ -155,28 +139,6 @@ class PacProfilesStore:
         cidr_norm, err = _normalize_v4_cidr(client_cidr)
         if cidr_norm is None:
             return False, err, None
-
-        socks_on = bool(socks_enabled)
-        shost = (socks_host or "").strip()
-        if shost:
-            # Validate hostname format - allow hostname or IP address
-            if " " in shost or "\n" in shost or "\r" in shost:
-                return False, "Invalid SOCKS host.", None
-            # Check if it's a valid IP address
-            try:
-                ip_address(shost)
-            except ValueError:
-                # Not an IP, check if it's a valid hostname
-                if len(shost) > 253:
-                    return False, "SOCKS host too long.", None
-                if not _HOSTNAME_RE.match(shost):
-                    return False, "Invalid SOCKS host format.", None
-        try:
-            sport = int((socks_port or "1080").strip() or "1080")
-        except Exception:
-            return False, "Invalid SOCKS port.", None
-        if sport < 1 or sport > 65535:
-            return False, "Invalid SOCKS port.", None
 
         domains: List[str] = []
         for ln in (direct_domains_text or "").splitlines():
@@ -202,15 +164,15 @@ class PacProfilesStore:
             proxy_id = get_proxy_id()
             if profile_id is None:
                 cur = conn.execute(
-                    "INSERT INTO pac_profiles(proxy_id, name, client_cidr, socks_enabled, socks_host, socks_port, created_ts) VALUES(%s,%s,%s,%s,%s,%s,%s)",
-                    (proxy_id, nm, cidr_norm or "", 1 if socks_on else 0, shost, int(sport), _now()),
+                    "INSERT INTO pac_profiles(proxy_id, name, client_cidr, created_ts) VALUES(%s,%s,%s,%s)",
+                    (proxy_id, nm, cidr_norm or "", _now()),
                 )
                 pid = int(cur.lastrowid)
             else:
                 pid = int(profile_id)
                 conn.execute(
-                    "UPDATE pac_profiles SET name=%s, client_cidr=%s, socks_enabled=%s, socks_host=%s, socks_port=%s WHERE id=%s AND proxy_id=%s",
-                    (nm, cidr_norm or "", 1 if socks_on else 0, shost, int(sport), pid, proxy_id),
+                    "UPDATE pac_profiles SET name=%s, client_cidr=%s WHERE id=%s AND proxy_id=%s",
+                    (nm, cidr_norm or "", pid, proxy_id),
                 )
 
                 # Clear old rules.

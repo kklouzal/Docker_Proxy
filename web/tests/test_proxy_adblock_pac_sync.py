@@ -86,7 +86,17 @@ def test_proxy_sync_adblock_artifact_materializes_and_records_apply(tmp_path):
 def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
     env_backup = {
         key: os.environ.get(key)
-        for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "ADBLOCK_COMPILED_DIR", "PAC_RENDER_DIR")
+        for key in (
+            "PROXY_INSTANCE_ID",
+            "DEFAULT_PROXY_ID",
+            "DISABLE_BACKGROUND",
+            "ADBLOCK_COMPILED_DIR",
+            "PAC_RENDER_DIR",
+            "PROXY_PUBLIC_HOST",
+            "PROXY_PUBLIC_HTTP_PROXY_PORT",
+            "PROXY_PUBLIC_SOCKS_PROXY_PORT",
+            "PROXY_PUBLIC_SOCKS_ENABLED",
+        )
     }
     try:
         runtime_module = import_proxy_runtime(
@@ -94,6 +104,10 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
             extra_env={
                 "ADBLOCK_COMPILED_DIR": tmp_path / "compiled",
                 "PAC_RENDER_DIR": tmp_path / "pac",
+                "PROXY_PUBLIC_HOST": "edge-1.example.test",
+                "PROXY_PUBLIC_HTTP_PROXY_PORT": "3128",
+                "PROXY_PUBLIC_SOCKS_PROXY_PORT": "1080",
+                "PROXY_PUBLIC_SOCKS_ENABLED": "1",
             },
         )
         from services.exclusions_store import get_exclusions_store  # type: ignore
@@ -105,9 +119,6 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
             profile_id=None,
             name="Office LAN",
             client_cidr="192.168.50.0/24",
-            socks_enabled=True,
-            socks_host="",
-            socks_port="1080",
             direct_domains_text="example.com\n",
             direct_dst_nets_text="10.0.0.0/8\n",
         )
@@ -126,13 +137,17 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
         pac_dir = tmp_path / "pac"
         manifest = json.loads((pac_dir / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["profiles"]
+        assert manifest["public_host"] == "edge-1.example.test"
+        assert manifest["public_pac_url"] == "http://edge-1.example.test/proxy.pac"
 
         profile_path = pac_dir / str(manifest["profiles"][0]["file"])
         profile_text = profile_path.read_text(encoding="utf-8")
         fallback_text = (pac_dir / "fallback.pac").read_text(encoding="utf-8")
 
-        assert "SOCKS5 __PAC_PROXY_HOST__:1080; PROXY __PAC_PROXY_HOST__:3128; DIRECT" in profile_text
-        assert "dnsDomainIs(host, 'example.com')" in profile_text
+        assert "SOCKS5 edge-1.example.test:1080; PROXY edge-1.example.test:3128; DIRECT" in profile_text
+        assert "host === \"example.com\" || dnsDomainIs(host, \".example.com\")" in profile_text
+        assert "host === normalizedProxyHost" in profile_text
+        assert profile_text.index("host === \"example.com\"") < profile_text.index("var ip = hostIp();")
         assert "internal.example" in fallback_text
         assert read_materialized_pac_state_sha(pac_dir) == result["state_sha256"]
     finally:
@@ -146,7 +161,7 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
 def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
     env_backup = {
         key: os.environ.get(key)
-        for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "ADBLOCK_COMPILED_DIR", "PAC_RENDER_DIR", "PAC_UPSTREAM")
+        for key in ("PROXY_INSTANCE_ID", "DEFAULT_PROXY_ID", "DISABLE_BACKGROUND", "ADBLOCK_COMPILED_DIR", "PAC_RENDER_DIR")
     }
     try:
         runtime_module = import_proxy_runtime(
@@ -163,9 +178,6 @@ def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
             profile_id=None,
             name="Office LAN",
             client_cidr="192.168.50.0/24",
-            socks_enabled=True,
-            socks_host="",
-            socks_port="1080",
             direct_domains_text="example.com\n",
             direct_dst_nets_text="",
         )
@@ -175,7 +187,6 @@ def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
         result = runtime.sync_pac_state(force=True)
         assert result["ok"] is True
 
-        os.environ["PAC_UPSTREAM"] = ""
         import tools.pac_http_server as pac_http_server  # type: ignore
 
         importlib.reload(pac_http_server)
@@ -184,6 +195,65 @@ def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
         text = body.decode("utf-8", errors="replace")
         assert "SOCKS5 proxy.example:1080; PROXY proxy.example:3128; DIRECT" in text
         assert "FindProxyForURL" in text
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_proxy_sync_pac_state_renders_local_suffixes_and_wildcards(tmp_path):
+    env_backup = {
+        key: os.environ.get(key)
+        for key in (
+            "PROXY_INSTANCE_ID",
+            "DEFAULT_PROXY_ID",
+            "DISABLE_BACKGROUND",
+            "PAC_RENDER_DIR",
+            "PROXY_PUBLIC_HOST",
+            "PROXY_PUBLIC_HTTP_PROXY_PORT",
+            "PROXY_PUBLIC_SOCKS_PROXY_PORT",
+            "PROXY_PUBLIC_SOCKS_ENABLED",
+        )
+    }
+    try:
+        runtime_module = import_proxy_runtime(
+            tmp_path,
+            extra_env={
+                "PAC_RENDER_DIR": tmp_path / "pac",
+                "PROXY_PUBLIC_HOST": "livingroom-proxy",
+                "PROXY_PUBLIC_HTTP_PROXY_PORT": "3128",
+                "PROXY_PUBLIC_SOCKS_PROXY_PORT": "1080",
+                "PROXY_PUBLIC_SOCKS_ENABLED": "1",
+            },
+        )
+        from services.pac_profiles_store import get_pac_profiles_store  # type: ignore
+
+        pac_store = get_pac_profiles_store()
+        ok, err, _ = pac_store.upsert_profile(
+            profile_id=None,
+            name="Wildcard",
+            client_cidr="",
+            direct_domains_text="*.internal.example\nexample.com\n",
+            direct_dst_nets_text="10.0.0.0/8\n",
+        )
+        assert ok, err
+
+        runtime = runtime_module.ProxyRuntime()
+        result = runtime.sync_pac_state(force=True)
+        assert result["ok"] is True
+
+        pac_dir = tmp_path / "pac"
+        manifest = json.loads((pac_dir / "manifest.json").read_text(encoding="utf-8"))
+        profile_path = pac_dir / str(manifest["profiles"][0]["file"])
+        profile_text = profile_path.read_text(encoding="utf-8")
+
+        assert 'var proxyHost = "livingroom-proxy";' in profile_text
+        assert 'dnsDomainIs(host, ".local")' in profile_text
+        assert 'host === "internal.example" || dnsDomainIs(host, ".internal.example")' in profile_text
+        assert '*.*.internal.example' not in profile_text
+        assert 'SOCKS5 livingroom-proxy:1080; PROXY livingroom-proxy:3128; DIRECT' in profile_text
     finally:
         for key, value in env_backup.items():
             if value is None:

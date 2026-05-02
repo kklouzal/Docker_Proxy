@@ -7,15 +7,15 @@ def _configure_app_services(app_module, **overrides):
     return app_module.configure_app_runtime_services_for_testing(**overrides)
 
 
-def test_proxy_pac_contract_public_and_mimetype():
+def test_admin_pac_endpoints_are_absent():
     app_module = import_local_app_module()
     c = app_module.app.test_client()
 
     r = c.get("/proxy.pac")
-    assert r.status_code == 200
-    assert "application/x-ns-proxy-autoconfig" in (r.headers.get("Content-Type", "") or "")
-    body = r.data.decode("utf-8", errors="replace")
-    assert "FindProxyForURL" in body
+    assert r.status_code == 404
+
+    r_wpad = c.get("/wpad.dat")
+    assert r_wpad.status_code == 404
 
 
 def test_api_squid_config_requires_login():

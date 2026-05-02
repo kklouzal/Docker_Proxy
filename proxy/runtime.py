@@ -25,7 +25,7 @@ from services.logutil import log_exception_throttled
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
 from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, check_dante_health as _shared_check_dante, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_context import get_proxy_id
-from services.proxy_registry import get_proxy_registry
+from services.proxy_registry import get_proxy_registry, resolve_local_proxy_public_fields
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
 from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.socks_store import get_socks_store
@@ -766,11 +766,18 @@ class ProxyRuntime:
 
     def heartbeat(self) -> Dict[str, Any]:
         health = self.collect_health()
+        public_fields = resolve_local_proxy_public_fields()
         self.registry.heartbeat(
             self.proxy_id,
             status=str(health.get("status") or "unknown"),
             hostname=(os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip(),
             management_url=(os.environ.get("PROXY_MANAGEMENT_URL") or "").strip(),
+            public_host=str(public_fields.get("public_host") or ""),
+            public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
+            public_pac_port=int(public_fields.get("public_pac_port") or 80),
+            public_http_proxy_port=int(public_fields.get("public_http_proxy_port") or 3128),
+            public_socks_proxy_port=int(public_fields.get("public_socks_proxy_port") or 1080),
+            public_socks_enabled=bool(public_fields.get("public_socks_enabled")),
             current_config_sha=str(health.get("current_config_sha") or ""),
             detail=str(health.get("proxy_status") or "")[:4000],
         )

@@ -2,10 +2,8 @@ import json
 import os
 import sys
 import threading
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
 
 
 HERE = os.path.abspath(os.path.dirname(__file__))
@@ -17,12 +15,12 @@ from services.pac_renderer import (  # noqa: E402
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
     PAC_STATE_SHA_FILENAME,
+    build_emergency_pac,
     select_manifest_file,
     substitute_request_host,
 )
 
 
-UPSTREAM = (os.environ.get("PAC_UPSTREAM") or "").strip()
 LISTEN_HOST = os.environ.get("PAC_HTTP_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("PAC_HTTP_PORT", "80"))
 PAC_DIR = (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
@@ -49,11 +47,7 @@ def _request_host(headers) -> str:
 
 
 def _default_pac(request_host: str) -> bytes:
-    content = (
-        "function FindProxyForURL(url, host) {\n"
-        "  return 'PROXY __PAC_PROXY_HOST__:3128; DIRECT';\n"
-        "}\n"
-    )
+    content = build_emergency_pac()
     return substitute_request_host(content, request_host).encode("utf-8")
 
 
@@ -142,50 +136,6 @@ class LocalPacCache:
 _LOCAL_CACHE = LocalPacCache(PAC_DIR)
 
 
-def _fetch_upstream(client_ip: str, request_host: str) -> bytes | None:
-    upstream = (UPSTREAM or "").strip()
-    if not upstream:
-        return None
-
-    parsed = urlparse(upstream)
-    if parsed.scheme not in ("http", "https"):
-        return None
-
-    headers = {"X-Requested-With": "pac-http"}
-    if client_ip:
-        headers["X-Forwarded-For"] = client_ip
-    if request_host:
-        headers["Host"] = request_host
-    req = urllib.request.Request(upstream, headers=headers, method="GET")
-
-    max_bytes = int(os.environ.get("PAC_MAX_BYTES", str(2 * 1024 * 1024)))
-    if max_bytes <= 0:
-        max_bytes = 2 * 1024 * 1024
-
-    try:
-        with urllib.request.urlopen(req, timeout=3) as response:
-            try:
-                content_length = response.headers.get("Content-Length")
-                if content_length is not None and int(content_length) > max_bytes:
-                    raise ValueError("PAC too large")
-            except Exception:
-                pass
-
-            total = 0
-            chunks: list[bytes] = []
-            while True:
-                chunk = response.read(64 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError("PAC too large")
-                chunks.append(chunk)
-            return b"".join(chunks)
-    except Exception:
-        return None
-
-
 class Handler(BaseHTTPRequestHandler):
     server_version = "pac-http/2.0"
 
@@ -208,8 +158,6 @@ class Handler(BaseHTTPRequestHandler):
 
         data = _LOCAL_CACHE.resolve(client_ip=client_ip, request_host=request_host)
         if data is None:
-            data = _fetch_upstream(client_ip, request_host)
-        if data is None:
             data = _default_pac(request_host)
 
         self.send_response(200)
@@ -226,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     httpd = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     sys.stdout.write(
-        f"[pac-http] listening on {LISTEN_HOST}:{LISTEN_PORT}, pac_dir={PAC_DIR}, upstream={(UPSTREAM or '<disabled>')}\n"
+        f"[pac-http] listening on {LISTEN_HOST}:{LISTEN_PORT}, pac_dir={PAC_DIR}\n"
     )
     httpd.serve_forever()
     return 0

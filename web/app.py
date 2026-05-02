@@ -20,7 +20,7 @@ from services.adblock_artifacts import get_adblock_artifacts
 from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
 from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilter_store
 from services.pac_profiles_store import get_pac_profiles_store as _default_get_pac_profiles_store
-from services.pac_renderer import build_public_pac_url, render_proxy_pac_for_request
+from services.pac_renderer import resolve_proxy_pac_target
 from services.proxy_client import ProxyClientError, get_proxy_client as _default_get_proxy_client
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
@@ -672,12 +672,21 @@ def _pac_profile_form_data(*, profile_id: int | None) -> Dict[str, Any]:
         'profile_id': profile_id,
         'name': request.form.get('name') or '',
         'client_cidr': request.form.get('client_cidr') or '',
-        'socks_enabled': (request.form.get('socks_enabled') == 'on'),
-        'socks_host': request.form.get('socks_host') or '',
-        'socks_port': request.form.get('socks_port') or '',
         'direct_domains_text': request.form.get('direct_domains') or '',
         'direct_dst_nets_text': request.form.get('direct_dst_nets') or '',
     }
+
+
+def _selected_proxy_pac_context() -> tuple[Any, str, str]:
+    target = resolve_proxy_pac_target(get_proxy_id())
+    pac_url = target.pac_url
+    warning = ''
+    if not pac_url:
+        warning = (
+            'This proxy does not advertise an authoritative public PAC hostname yet. '
+            'Set PROXY_PUBLIC_HOST or PROXY_PUBLIC_PAC_URL on the selected proxy container so the Admin UI can publish a direct PAC URL.'
+        )
+    return target, pac_url, warning
 
 
 def _safe_next_url(next_url: str) -> str:
@@ -774,10 +783,6 @@ def _inject_route_helpers():
 def _require_login_guard():
     # Allow liveness and static assets unauthenticated.
     if request.endpoint in (None, 'static', 'health'):
-        return None
-
-    # Allow PAC file retrieval by clients without requiring UI login.
-    if request.path in ('/proxy.pac', '/wpad.dat'):
         return None
 
     # Allow auth routes.
@@ -2275,44 +2280,8 @@ def exclusions():
         return _handle_exclusions_post(store)
 
     ex = store.list_all()
-    return render_template('exclusions.html', ex=ex)
-
-
-@app.route('/proxy.pac', methods=['GET'])
-def proxy_pac():
-    def _requester_ip() -> str:
-        # Best-effort: if a reverse-proxy is in front, it may set X-Forwarded-For.
-        xff = (request.headers.get('X-Forwarded-For') or '').strip()
-        if xff:
-            # First IP in the list is the original client.
-            cand = (xff.split(',')[0] or '').strip()
-            if cand:
-                return cand
-        xri = (request.headers.get('X-Real-IP') or '').strip()
-        if xri:
-            return xri
-        return (request.remote_addr or '').strip()
-
-    def _request_host() -> str:
-        return (request.host or '').strip() or '127.0.0.1'
-
-    pac = render_proxy_pac_for_request(
-        proxy_id=get_proxy_id(),
-        requester_ip=_requester_ip(),
-        request_host=_request_host(),
-    )
-    return app.response_class(pac, mimetype='application/x-ns-proxy-autoconfig')
-
-
-@app.route('/wpad.dat', methods=['GET'])
-def wpad_dat():
-    # WPAD convention: clients request http://wpad.<domain>/wpad.dat
-    resp = proxy_pac()
-    try:
-        resp.headers['Content-Disposition'] = 'inline; filename="wpad.dat"'
-    except Exception:
-        pass
-    return resp
+    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
+    return render_template('exclusions.html', ex=ex, pac_target=pac_target, pac_url=pac_url, pac_warning=pac_warning)
 
 
 @app.route('/pac', methods=['GET', 'POST'])
@@ -2328,11 +2297,8 @@ def pac_builder():
     except Exception:
         profiles = []
 
-    pac_url = build_public_pac_url(
-        request.host or '',
-        proxy_id=get_proxy_id(),
-    )
-    return render_template('pac.html', profiles=profiles, pac_url=pac_url)
+    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
+    return render_template('pac.html', profiles=profiles, pac_url=pac_url, pac_warning=pac_warning, pac_target=pac_target)
 
 @app.route('/api/timeseries', methods=['GET'])
 def api_timeseries():

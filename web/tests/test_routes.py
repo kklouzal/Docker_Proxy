@@ -272,47 +272,14 @@ class TestRoutes(unittest.TestCase):
         response = self.app.get('/sslfilter')
         self.assertEqual(response.status_code, 200)
 
-    def test_proxy_pac(self):
+    def test_admin_pac_endpoints_removed(self):
         response = self.app.get('/proxy.pac')
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 404)
 
-    def test_wpad_dat_public(self):
         flask_app = import_local_flask_app()
         c = flask_app.test_client()
         r = c.get('/wpad.dat')
-        self.assertEqual(r.status_code, 200)
-        self.assertIn('application/x-ns-proxy-autoconfig', r.headers.get('Content-Type', ''))
-
-    def test_proxy_pac_can_include_socks(self):
-        # Create a catch-all PAC profile that enables SOCKS.
-        from services.pac_profiles_store import PacProfilesStore  # type: ignore
-
-        store = PacProfilesStore()
-        ok, err, pid = store.upsert_profile(
-            profile_id=None,
-            name="test",
-            client_cidr="",
-            socks_enabled=True,
-            socks_host="",
-            socks_port="1080",
-            direct_domains_text="example.com\n",
-            direct_dst_nets_text="10.0.0.0/8\n",
-        )
-        self.assertTrue(ok, err)
-        self.assertIsNotNone(pid)
-
-        # Monkeypatch the global store getter inside app module.
-        import app as app_module  # type: ignore
-
-        old_get = app_module.get_pac_profiles_store
-        app_module.get_pac_profiles_store = lambda: store
-        try:
-            response = self.app.get('/proxy.pac')
-            self.assertEqual(response.status_code, 200)
-            body = response.data.decode('utf-8', errors='replace')
-            self.assertIn('SOCKS5', body)
-        finally:
-            app_module.get_pac_profiles_store = old_get
+        self.assertEqual(r.status_code, 404)
 
 
 class TestWebcatBuildUt1(unittest.TestCase):

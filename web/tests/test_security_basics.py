@@ -137,14 +137,15 @@ def test_protected_get_redirects_to_login_when_unauthenticated():
     assert (r.headers.get("Location", "") or "").startswith("/login")
 
 
-def test_pac_endpoints_are_public_without_login():
+def test_admin_pac_endpoints_are_not_exposed_without_login():
     app = import_local_flask_app()
     c = app.test_client()
 
     r = c.get("/proxy.pac")
-    assert r.status_code == 200
-    # PAC should not be treated as HTML and should not receive an HTML CSP.
-    assert "Content-Security-Policy" not in r.headers
+    assert r.status_code == 404
+
+    r_wpad = c.get("/wpad.dat")
+    assert r_wpad.status_code == 404
 
 
 def test_csrf_required_for_protected_post_even_when_logged_in(monkeypatch):
@@ -209,7 +210,7 @@ def test_all_get_routes_require_login_except_public():
     app = import_local_flask_app()
     c = app.test_client()
 
-    public_paths = {"/health", "/proxy.pac", "/wpad.dat", "/login"}
+    public_paths = {"/health", "/login"}
 
     get_rules = []
     for rule in app.url_map.iter_rules():

@@ -196,8 +196,7 @@ Destination-port policy note:
 
 Admin UI routes (port 5000):
 - `/` UI home
-- `/proxy.pac` dynamic PAC (public)
-- `/wpad.dat` same PAC content (public)
+- `/pac` PAC Builder UI (management only)
 - `/health` health endpoint (used by container healthcheck)
 
 WPAD/PAC listener behavior (port 80):
@@ -213,6 +212,7 @@ Important: `http://<host>:5000` is the admin UI. Port 80 is intentionally isolat
 Docker publishes ports on all interfaces (`0.0.0.0`) by default:
 - Admin UI: `http://<host-ip>:5000`
 - HTTP proxy: configure clients to `http://<host-ip>:3128`
+- PAC: `http://<proxy-host>/proxy.pac` (port 80, served by the selected proxy)
 - WPAD: `http://<host-ip>/wpad.dat` (port 80)
 
 On Windows, the most common “works on host but not on LAN” issue is the inbound firewall.
@@ -257,7 +257,7 @@ Notes:
 ## Authentication and security model
 
 - The admin UI is protected by a login session.
-- PAC endpoints (`/proxy.pac`, `/wpad.dat`) are intentionally public so WPAD works without authentication.
+- PAC/WPAD endpoints on port `80` (`/proxy.pac`, `/wpad.dat`) are intentionally public so clients can fetch PAC without UI authentication.
 
 Recommended hardening:
 - Don’t publish the UI port (`5000`) to untrusted networks.
@@ -313,9 +313,14 @@ Common environment variables:
 - `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default now scales with local container concurrency; expect roughly `4-8` in the proxy container unless you override it).
 - `PROXY_HEARTBEAT_INTERVAL_SECONDS`: proxy heartbeat cadence (default `90`).
 - `PROXY_SYNC_INTERVAL_SECONDS`: proxy sync cadence for pulling active state from MySQL (default `30`).
+- `PROXY_PUBLIC_HOST`: authoritative host/IP clients should use for this proxy's PAC URL and proxy chain.
+- `PROXY_PUBLIC_PAC_URL`: optional full PAC URL override; when set, the proxy extracts scheme/host/port from it for PAC publishing.
+- `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`: scheme/port used when building the direct PAC URL (defaults `http`, `80`).
+- `PROXY_PUBLIC_HTTP_PROXY_PORT`: client-facing HTTP proxy port advertised in generated PAC files (default `3128`).
+- `PROXY_PUBLIC_SOCKS_PROXY_PORT`: client-facing SOCKS proxy port advertised in generated PAC files (default `1080`).
+- `PROXY_PUBLIC_SOCKS_ENABLED=1|0`: whether generated PAC files should advertise SOCKS first, then HTTP proxy, then DIRECT.
 - `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SOCKS_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`: proxy-side log/telemetry poll cadence. Defaults now settle at `2.0` seconds to reduce idle wakeups while keeping the UI reasonably fresh.
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
-- `PAC_UPSTREAM`: optional upstream PAC fallback URL. Leave blank for the default proxy-local pre-rendered PAC serving path.
 
 Admin UI (Gunicorn) tuning:
 - `WEB_WORKERS`: explicit Gunicorn worker override. Default is `1` because the admin UI is rarely used.
@@ -335,8 +340,8 @@ Admin UI (Gunicorn) tuning:
   - Web Filtering (UT1 categories, domain-based)
   - ClamAV scanning (ICAP RESPMOD) with per-proxy health and on-demand verification actions
   - SSL Filtering (client CIDRs that must be spliced)
-- **PAC Builder** UI at `/pac` + PAC generation at `/proxy.pac`.
-- **WPAD** support via the dedicated port 80 listener (`/wpad.dat`).
+- **PAC Builder** UI at `/pac` for managing per-proxy PAC profiles.
+- **Proxy-hosted PAC/WPAD** via the dedicated port 80 listener (`/proxy.pac`, `/wpad.dat`) on each proxy runtime.
 
 ## SOCKS5 support (Dante)
 This container also runs a Dante SOCKS proxy on port `1080`.
@@ -499,7 +504,7 @@ ICAP performance note:
 Some modern apps work poorly with HTTPS interception (SSL-bump) and/or rely on non-HTTP traffic paths (especially WebRTC media over UDP). Common symptoms include sign-in loops, “can’t connect”, blank calls, or meetings failing to start.
 
 Recommended mitigations (lowest-risk first):
-- Prefer configuring **browser proxy** via a PAC file rather than forcing a global system proxy. This project serves a PAC at `/proxy.pac` and includes a PAC Builder UI at `/pac`.
+- Prefer configuring **browser proxy** via a PAC file rather than forcing a global system proxy. Each proxy runtime serves its PAC directly at `http://<proxy-host>/proxy.pac`, and the admin UI includes a PAC Builder page at `/pac`.
 - If a site/app breaks under SSL-bump (often due to **certificate pinning** or strict TLS behavior), add its domain(s) to the **Exclusions** page. Excluded domains are configured to **splice** (no bump) and **not cache**.
 - If you are using `netsh winhttp set proxy ...`, use a **bypass list** for pinned/real-time apps so they go DIRECT (example categories: Teams/Office endpoints, Slack, Webex, Google Meet). WinHTTP is used by many non-browser components that may not tolerate interception.
 - Be aware of protocol limits: Squid is an **HTTP proxy**. It can proxy HTTP/HTTPS (and WebSockets over HTTP), but it does not proxy arbitrary UDP. WebRTC media frequently uses UDP (STUN/TURN), so calls may still require direct UDP egress even when the browser uses an HTTP proxy for signaling.
@@ -546,18 +551,20 @@ Note: clients must trust this CA to avoid certificate warnings when bumping.
 ## WPAD / PAC
 
 This project supports:
-- Dynamic PAC generation at `/proxy.pac`
+- Proxy-hosted PAC generation at `/proxy.pac`
 - WPAD auto-discovery via `/wpad.dat`
 
 Security model:
 - Port 80 is served by a dedicated minimal HTTP server that only serves PAC endpoints.
-- The PAC server fetches generated PAC content from the internal Flask endpoint (`127.0.0.1:5000/proxy.pac`).
+- PAC content is pre-rendered locally by the proxy runtime and served directly from the proxy container; the admin UI no longer serves PAC files on port `5000`.
+- Generated PAC files prefer `SOCKS5 <proxy-host>:<socks-port>; PROXY <proxy-host>:<http-port>; DIRECT` when the proxy advertises SOCKS, and otherwise return `PROXY <proxy-host>:<http-port>; DIRECT`.
 
 ## Troubleshooting
 
 Basic checks:
 - UI is reachable: `http://<host>:5000/`
 - Health endpoint: `http://<host>:5000/health`
+- Direct PAC endpoint: `http://<proxy-host>/proxy.pac`
 - WPAD endpoint: `http://<host>/wpad.dat` (port 80)
 - Proxy is reachable: configure a client to use `http://<host>:3128`
 

@@ -10,17 +10,120 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 
 from services.exclusions_store import get_exclusions_store
 from services.pac_profiles_store import PacProfile, get_pac_profiles_store
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
+from services.proxy_registry import get_proxy_registry
 
 
 PAC_HOST_PLACEHOLDER = "__PAC_PROXY_HOST__"
 PAC_MANIFEST_FILENAME = "manifest.json"
 PAC_STATE_SHA_FILENAME = ".state-sha256"
 PAC_RENDER_DIR = "/var/lib/squid-flask-proxy/pac"
+LOCAL_DOMAIN_SUFFIXES = (".local", ".localdomain", ".home.arpa", ".localhost")
+
+
+def _normalize_pac_scheme(value: object | None) -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"http", "https"}:
+        return candidate
+    return "http"
+
+
+def _coerce_port(value: object | None, default: int) -> int:
+    try:
+        parsed = int(str(value or "").strip() or str(default))
+    except Exception:
+        parsed = int(default)
+    if parsed < 1 or parsed > 65535:
+        return int(default)
+    return parsed
+
+
+def _coerce_bool(value: object | None, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    candidate = str(value).strip().lower()
+    if not candidate:
+        return bool(default)
+    if candidate in {"1", "true", "yes", "on"}:
+        return True
+    if candidate in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _build_pac_url(*, scheme: str, host: str, port: int) -> str:
+    clean_host = format_proxy_host(host)
+    if not clean_host:
+        return ""
+    normalized_scheme = _normalize_pac_scheme(scheme)
+    default_port = 443 if normalized_scheme == "https" else 80
+    port_part = "" if int(port) == default_port else f":{int(port)}"
+    return f"{normalized_scheme}://{clean_host}{port_part}/proxy.pac"
+
+
+def _normalize_domain_rule(domain: str) -> str:
+    return (domain or "").strip().lower()
+
+
+def _domain_match_expression(domain: str) -> str:
+    normalized = _normalize_domain_rule(domain)
+    if normalized.startswith("*."):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip(".")
+    if not normalized:
+        return ""
+    suffix = f".{normalized}"
+    return f"(host === {json.dumps(normalized)} || dnsDomainIs(host, {json.dumps(suffix)}))"
+
+
+@dataclass(frozen=True)
+class ProxyPacTarget:
+    proxy_id: str
+    public_host: str
+    pac_scheme: str
+    pac_port: int
+    http_proxy_port: int
+    socks_proxy_port: int
+    socks_enabled: bool
+
+    @property
+    def uses_request_host_fallback(self) -> bool:
+        return not bool(self.public_host)
+
+    @property
+    def proxy_host_token(self) -> str:
+        return format_proxy_host(self.public_host) if self.public_host else PAC_HOST_PLACEHOLDER
+
+    @property
+    def pac_url(self) -> str:
+        if not self.public_host:
+            return ""
+        return _build_pac_url(scheme=self.pac_scheme, host=self.public_host, port=self.pac_port)
+
+    @property
+    def proxy_chain(self) -> str:
+        directives = []
+        if self.socks_enabled:
+            directives.append(f"SOCKS5 {self.proxy_host_token}:{self.socks_proxy_port}")
+        directives.append(f"PROXY {self.proxy_host_token}:{self.http_proxy_port}")
+        directives.append("DIRECT")
+        return "; ".join(directives)
+
+    @property
+    def transport_chain_display(self) -> str:
+        host = self.public_host or "<request-host>"
+        directives = []
+        if self.socks_enabled:
+            directives.append(f"SOCKS5 {host}:{self.socks_proxy_port}")
+        directives.append(f"PROXY {host}:{self.http_proxy_port}")
+        directives.append("DIRECT")
+        return "; ".join(directives)
 
 
 @dataclass(frozen=True)
@@ -62,13 +165,59 @@ def format_proxy_host(raw_host: str) -> str:
     return host or "127.0.0.1"
 
 
-def build_public_pac_url(raw_host: str, *, proxy_id: object | None = None) -> str:
-    host = format_proxy_host(raw_host)
-    url = f"http://{host}/proxy.pac"
-    normalized_proxy_id = normalize_proxy_id(proxy_id) if proxy_id is not None else ""
-    if normalized_proxy_id:
-        return f"{url}?{urlencode({'proxy_id': normalized_proxy_id})}"
-    return url
+def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
+    normalized_proxy_id = normalize_proxy_id(proxy_id)
+    try:
+        proxy = get_proxy_registry().get_proxy(normalized_proxy_id)
+    except Exception:
+        proxy = None
+
+    env_public_host = (os.environ.get("PROXY_PUBLIC_HOST") or "").strip()
+    public_host = str(getattr(proxy, "public_host", "") or "").strip() or env_public_host
+    pac_scheme = _normalize_pac_scheme(
+        getattr(proxy, "public_pac_scheme", None) if proxy is not None else os.environ.get("PROXY_PUBLIC_PAC_SCHEME")
+    )
+    default_pac_port = 443 if pac_scheme == "https" else 80
+    pac_port = _coerce_port(
+        getattr(proxy, "public_pac_port", None) if proxy is not None else os.environ.get("PROXY_PUBLIC_PAC_PORT"),
+        _coerce_port(os.environ.get("PROXY_PUBLIC_PAC_PORT"), default_pac_port),
+    )
+    http_proxy_port = _coerce_port(
+        getattr(proxy, "public_http_proxy_port", None)
+        if proxy is not None
+        else os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
+        _coerce_port(os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"), 3128),
+    )
+    socks_proxy_port = _coerce_port(
+        getattr(proxy, "public_socks_proxy_port", None)
+        if proxy is not None
+        else (os.environ.get("PROXY_PUBLIC_SOCKS_PROXY_PORT") or os.environ.get("DANTE_PORT")),
+        _coerce_port(os.environ.get("PROXY_PUBLIC_SOCKS_PROXY_PORT") or os.environ.get("DANTE_PORT"), 1080),
+    )
+    socks_enabled = _coerce_bool(
+        getattr(proxy, "public_socks_enabled", None)
+        if proxy is not None
+        else os.environ.get("PROXY_PUBLIC_SOCKS_ENABLED"),
+        _coerce_bool(os.environ.get("PROXY_PUBLIC_SOCKS_ENABLED"), _coerce_bool(os.environ.get("ENABLE_DANTE"), True)),
+    )
+    return ProxyPacTarget(
+        proxy_id=normalized_proxy_id,
+        public_host=public_host,
+        pac_scheme=pac_scheme,
+        pac_port=pac_port,
+        http_proxy_port=http_proxy_port,
+        socks_proxy_port=socks_proxy_port,
+        socks_enabled=socks_enabled,
+    )
+
+
+def build_public_pac_url(raw_host: str = "", *, proxy_id: object | None = None) -> str:
+    if proxy_id is not None:
+        return resolve_proxy_pac_target(proxy_id).pac_url
+    candidate = (raw_host or "").strip()
+    if not candidate:
+        return ""
+    return _build_pac_url(scheme="http", host=candidate, port=80)
 
 
 def _cidr_to_mask(cidr: str) -> str:
@@ -84,6 +233,7 @@ def _cidr_to_mask(cidr: str) -> str:
 def _render_pac(
     proxy_chain: str,
     *,
+    proxy_host: str,
     direct_domains: list[str],
     direct_dst_nets: list[str],
     include_private: bool,
@@ -91,17 +241,40 @@ def _render_pac(
     lines: list[str] = []
     lines.append("function FindProxyForURL(url, host) {")
     lines.append("  host = host.toLowerCase();")
+    lines.append(f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};")
+    lines.append("  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase();")
     lines.append("  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';")
     lines.append("  if (isPlainHostName(host)) return 'DIRECT';")
+    lines.append("  if (host === normalizedProxyHost) return 'DIRECT';")
+    for suffix in LOCAL_DOMAIN_SUFFIXES:
+        lines.append(f"  if (dnsDomainIs(host, {json.dumps(suffix)})) return 'DIRECT';")
     lines.append("")
-    lines.append("  var ip = dnsResolve(host);")
-    lines.append("  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';")
+    lines.append("  var cachedIp = '';")
+    lines.append("  function hostIp() {")
+    lines.append("    if (cachedIp) return cachedIp;")
+    lines.append("    if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host)) {")
+    lines.append("      cachedIp = host;")
+    lines.append("      return cachedIp;")
+    lines.append("    }")
+    lines.append("    cachedIp = dnsResolve(host) || '';")
+    lines.append("    return cachedIp;")
+    lines.append("  }")
 
+    seen_domains: set[str] = set()
     for domain in direct_domains:
-        d = (domain or "").strip().lower().lstrip(".")
-        if not d:
+        d = _normalize_domain_rule(domain)
+        if not d or d in seen_domains:
             continue
-        lines.append(f"  if (dnsDomainIs(host, '{d}') || shExpMatch(host, '*.{d}')) return 'DIRECT';")
+        seen_domains.add(d)
+        match_expression = _domain_match_expression(d)
+        if match_expression:
+            lines.append(f"  if {match_expression} return 'DIRECT';")
+
+    needs_ip_lookup = bool(direct_dst_nets or include_private)
+    if needs_ip_lookup:
+        lines.append("")
+        lines.append("  var ip = hostIp();")
+        lines.append("  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';")
 
     for cidr in direct_dst_nets:
         try:
@@ -125,31 +298,37 @@ def _render_pac(
     return "\n".join(lines) + "\n"
 
 
-def _render_profile_pac(profile: PacProfile) -> str:
-    proxy_host = PAC_HOST_PLACEHOLDER
-    http_proxy = f"PROXY {proxy_host}:3128"
-    proxy_chain = f"{http_proxy}; DIRECT"
-    if bool(getattr(profile, "socks_enabled", False)):
-        socks_host = (getattr(profile, "socks_host", "") or "").strip()
-        socks_target = format_proxy_host(socks_host) if socks_host else PAC_HOST_PLACEHOLDER
-        socks_port = int(getattr(profile, "socks_port", 1080) or 1080)
-        proxy_chain = f"SOCKS5 {socks_target}:{socks_port}; {http_proxy}; DIRECT"
+def _render_profile_pac(profile: PacProfile, target: ProxyPacTarget | None = None) -> str:
+    resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
-        proxy_chain,
+        resolved_target.proxy_chain,
+        proxy_host=resolved_target.proxy_host_token,
         direct_domains=list(getattr(profile, "direct_domains", []) or []),
         direct_dst_nets=list(getattr(profile, "direct_dst_nets", []) or []),
         include_private=False,
     )
 
 
-def _render_fallback_pac() -> str:
+def _render_fallback_pac(target: ProxyPacTarget | None = None) -> str:
     exclusions = get_exclusions_store().list_all()
-    proxy_chain = f"PROXY {PAC_HOST_PLACEHOLDER}:3128; DIRECT"
+    resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
-        proxy_chain,
+        resolved_target.proxy_chain,
+        proxy_host=resolved_target.proxy_host_token,
         direct_domains=[str(item) for item in (getattr(exclusions, "domains", []) or [])],
         direct_dst_nets=[],
         include_private=bool(getattr(exclusions, "exclude_private_nets", False)),
+    )
+
+
+def build_emergency_pac(target: ProxyPacTarget | None = None) -> str:
+    resolved_target = target or resolve_proxy_pac_target()
+    return _render_pac(
+        resolved_target.proxy_chain,
+        proxy_host=resolved_target.proxy_host_token,
+        direct_domains=[],
+        direct_dst_nets=[],
+        include_private=False,
     )
 
 
@@ -166,7 +345,6 @@ def _manifest_profiles(profiles: Iterable[PacProfile]) -> list[dict[str, object]
                 "name": str(profile.name or ""),
                 "client_cidr": str(profile.client_cidr or ""),
                 "file": f"profile-{int(profile.id)}.pac",
-                "socks_enabled": bool(profile.socks_enabled),
             }
         )
     return entries
@@ -186,17 +364,27 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
     normalized_proxy_id = normalize_proxy_id(proxy_id)
     token = set_proxy_id(normalized_proxy_id)
     try:
+        target = resolve_proxy_pac_target(normalized_proxy_id)
         profiles = get_pac_profiles_store().list_profiles()
         pac_files = {
-            f"profile-{int(profile.id)}.pac": _render_profile_pac(profile)
+            f"profile-{int(profile.id)}.pac": _render_profile_pac(profile, target)
             for profile in sorted(list(profiles), key=_profile_sort_key)
         }
         fallback_file = "fallback.pac"
-        pac_files[fallback_file] = _render_fallback_pac()
+        pac_files[fallback_file] = _render_fallback_pac(target)
 
         manifest = {
             "proxy_id": normalized_proxy_id,
             "host_placeholder": PAC_HOST_PLACEHOLDER,
+            "public_host": target.public_host,
+            "public_pac_url": target.pac_url,
+            "public_pac_scheme": target.pac_scheme,
+            "public_pac_port": target.pac_port,
+            "public_http_proxy_port": target.http_proxy_port,
+            "public_socks_proxy_port": target.socks_proxy_port,
+            "public_socks_enabled": target.socks_enabled,
+            "uses_request_host_fallback": target.uses_request_host_fallback,
+            "proxy_chain": target.transport_chain_display,
             "profiles": _manifest_profiles(profiles),
             "fallback_file": fallback_file,
             "state_sha256": "",
@@ -329,5 +517,5 @@ def render_proxy_pac_for_request(
     selected = select_manifest_file(manifest if isinstance(manifest, dict) else {}, requester_ip)
     pac = file_map.get(selected) or file_map.get(str(manifest.get("fallback_file") or "fallback.pac"), "")
     if not pac:
-        pac = _render_pac(f"PROXY {PAC_HOST_PLACEHOLDER}:3128; DIRECT", direct_domains=[], direct_dst_nets=[], include_private=False)
+        pac = build_emergency_pac(resolve_proxy_pac_target(proxy_id))
     return substitute_request_host(pac, request_host)

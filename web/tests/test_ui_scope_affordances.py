@@ -27,6 +27,12 @@ def _seed_registry(*proxy_ids: str):
             proxy_id,
             display_name=proxy_id.replace("-", " ").title(),
             management_url=f"http://{proxy_id}:5000",
+            public_host=proxy_id,
+            public_pac_scheme="http",
+            public_pac_port=80,
+            public_http_proxy_port=3128,
+            public_socks_proxy_port=1080,
+            public_socks_enabled=True,
         )
     return registry
 
@@ -130,7 +136,8 @@ def test_remote_pac_page_shows_proxy_pinned_url(remote_app_module):
     response = client.get("/pac?proxy_id=edge-1")
     assert response.status_code == 200
     body = response.data.decode("utf-8", errors="replace")
-    assert "http://localhost/proxy.pac?proxy_id=edge-1" in body
+    assert "http://edge-1/proxy.pac" in body
+    assert "http://edge-1/proxy.pac?proxy_id=edge-1" not in body
 
 
 def test_proxies_page_marks_active_proxy_in_current_tab(remote_app_module):

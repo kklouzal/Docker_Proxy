@@ -9,13 +9,13 @@
   <div class="page-hero-copy">
     <span class="page-eyebrow">Client routing</span>
     <h1 class="page-title">PAC Builder</h1>
-    <p class="page-subtitle">Define PAC profiles for {{ active_proxy.display_name }} and serve PAC content based on the requesting client IP.</p>
+    <p class="page-subtitle">Define PAC profiles for {{ active_proxy.display_name }} while clients fetch PAC content directly from that proxy&apos;s PAC listener.</p>
     <div class="hero-badges">
       <span class="badge">{{ profiles|length }} profile{{ '' if profiles|length == 1 else 's' }}</span>
     </div>
   </div>
     <div class="page-actions">
-      <a class="btn ghost" href="{{ url_for('proxy_pac') }}">Download PAC</a>
+      {% if pac_url %}<a class="btn ghost" href="{{ pac_url }}" target="_blank" rel="noopener">Open proxy PAC</a>{% endif %}
       <a class="btn ghost" href="{{ url_for('exclusions') }}">Open exclusions</a>
     </div>
   </div>
@@ -23,7 +23,7 @@
 
 <section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'PAC profiles on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
-<div>The published PAC URL below is pinned to this proxy so you can safely manage distinct proxies side-by-side.</div>
+<div>The published PAC URL below is the authoritative listener for this proxy, so clients fetch PAC content from the proxy they will actually use.</div>
 {% endcall %}
 </section>
 
@@ -32,11 +32,14 @@
 {% elif request.args.get('error') %}
   <div class="banner error"><span class="badge danger">Error</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Request failed.' }}</span></div></div>
 {% endif %}
+{% if pac_warning %}
+  <div class="banner warn"><span class="badge warn">Configuration needed</span><div class="banner-copy"><span class="small">{{ pac_warning }}</span></div></div>
+{% endif %}
 
 <section class="card">
   <div class="card-header">
     <h2 class="card-title">Routing overview</h2>
-    <span class="badge">served dynamically</span>
+    <span class="badge">proxy-hosted</span>
   </div>
   <div class="card-body">
     <div class="summary-grid">
@@ -45,15 +48,15 @@
         <div class="stat-v">{{ profiles|length }}</div>
       </div>
       <div class="stat compact-stat">
-        <div class="stat-k">SOCKS-enabled profiles</div>
-        <div class="stat-v">{{ profiles|selectattr('socks_enabled')|list|length }}</div>
+        <div class="stat-k">Transport order</div>
+        <div class="stat-v">{{ 'SOCKS → HTTP → DIRECT' if pac_target.socks_enabled else 'HTTP → DIRECT' }}</div>
       </div>
       <div class="stat compact-stat">
         <div class="stat-k">Fallback mode</div>
         <div class="stat-v">{{ 'Profile-based' if profiles|length else 'Exclusions PAC' }}</div>
       </div>
     </div>
-    <div class="surface-note small">Use PAC profiles when different offices or client ranges need different proxy chains; leave the catch-all profile blank for a safe default.</div>
+    <div class="surface-note small">PAC profiles now choose <em>who</em> gets which DIRECT rules. The selected proxy&apos;s own advertised listeners define the transport chain returned to clients.</div>
   </div>
 </section>
 
@@ -64,17 +67,24 @@
       <span class="badge">clients use this</span>
     </div>
     <div class="card-body">
-      <div class="small">Configure your clients to use:</div>
-      <div class="surface-note mono text-break">{{ pac_url }}</div>
-      <div class="surface-note small">The server chooses which PAC content to return based on the requester IP (for example <span class="mono">REMOTE_ADDR</span> or <span class="mono">X-Forwarded-For</span>).</div>
-      <div class="surface-note small">The <span class="mono">proxy_id</span> in this URL keeps clients pinned to {{ active_proxy.display_name }}.</div>
+      {% if pac_url %}
+        <div class="small">Configure your clients to fetch PAC from the selected proxy directly:</div>
+        <div class="surface-note mono text-break">{{ pac_url }}</div>
+      {% else %}
+        <div class="surface-note small">No authoritative PAC URL is available yet for {{ active_proxy.display_name }}.</div>
+      {% endif %}
+      <div class="surface-note small">The proxy chooses which PAC content to return based on the requester IP (for example <span class="mono">REMOTE_ADDR</span> or <span class="mono">X-Forwarded-For</span>).</div>
+      <div class="surface-note small">Advertised transport chain: <span class="mono">{{ pac_target.transport_chain_display }}</span></div>
+      {% if pac_target.uses_request_host_fallback %}
+        <div class="surface-note small">Until an explicit public PAC host is configured, the proxy can still substitute the request Host header when clients fetch <span class="mono">/proxy.pac</span> directly from that proxy.</div>
+      {% endif %}
     </div>
   </section>
 
   <section class="card">
     <div class="card-header">
       <h2 class="card-title">Create PAC profile</h2>
-      <span class="badge">CIDR → profile</span>
+      <span class="badge">CIDR → DIRECT rules</span>
     </div>
     <div class="card-body">
       <form class="form" method="post" action="{{ url_for('pac_builder') }}">
@@ -93,27 +103,7 @@
           </div>
         </div>
 
-        <div class="row-2">
-          <div>
-            <label class="check-row">
-              <input class="check" type="checkbox" name="socks_enabled" />
-              <span>Include SOCKS5 first (then fall back to HTTP proxy)</span>
-            </label>
-            <div class="small">Returned chain becomes <span class="mono">SOCKS5 ...; PROXY ...; DIRECT</span> when enabled.</div>
-          </div>
-          <div>
-            <div class="row-2">
-              <div>
-                <label for="socks_host">SOCKS host (optional)</label>
-                <input id="socks_host" name="socks_host" type="text" placeholder="(default: same host as PAC)" />
-              </div>
-              <div>
-                <label for="socks_port">SOCKS port</label>
-                <input id="socks_port" name="socks_port" type="text" value="1080" />
-              </div>
-            </div>
-          </div>
-        </div>
+        <div class="surface-note small">Transport returned by this proxy is fixed at <span class="mono">{{ pac_target.transport_chain_display }}</span>. PAC profiles on this page only add DIRECT rules and client matching.</div>
 
         <div class="row-2">
           <div>
@@ -140,7 +130,7 @@
     </div>
     <div class="card-body">
       {% if profiles|length == 0 %}
-        <div class="surface-note small">No PAC profiles yet. Create one above. Until you do, <span class="mono">/proxy.pac</span> falls back to the exclusions-based PAC.</div>
+        <div class="surface-note small">No PAC profiles yet. Create one above. Until you do, the selected proxy&apos;s <span class="mono">/proxy.pac</span> falls back to the exclusions-based PAC.</div>
       {% endif %}
 
       {% for p in profiles %}
@@ -170,26 +160,7 @@
                 </div>
               </div>
 
-              <div class="row-2">
-                <div>
-                  <label class="check-row">
-                    <input class="check" type="checkbox" name="socks_enabled" {% if p.socks_enabled %}checked{% endif %} />
-                    <span>Include SOCKS5 first</span>
-                  </label>
-                </div>
-                <div>
-                  <div class="row-2">
-                    <div>
-                      <label>SOCKS host (optional)</label>
-                      <input name="socks_host" type="text" value="{{ p.socks_host }}" placeholder="(default: same host as PAC)" />
-                    </div>
-                    <div>
-                      <label>SOCKS port</label>
-                      <input name="socks_port" type="text" value="{{ p.socks_port }}" />
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <div class="surface-note small">Clients matching this profile receive the selected proxy&apos;s transport chain <span class="mono">{{ pac_target.transport_chain_display }}</span>, plus the DIRECT rules below.</div>
 
               <div class="row-2">
                 <div>

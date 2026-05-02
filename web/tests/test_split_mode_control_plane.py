@@ -11,7 +11,18 @@ class TestSplitModeControlPlane(unittest.TestCase):
     def setUp(self):
         self._env_backup = {
             key: os.environ.get(key)
-            for key in ('DISABLE_BACKGROUND', 'PROXY_MANAGEMENT_TOKEN', 'DEFAULT_PROXY_ID')
+            for key in (
+                'DISABLE_BACKGROUND',
+                'PROXY_MANAGEMENT_TOKEN',
+                'DEFAULT_PROXY_ID',
+                'PROXY_INSTANCE_ID',
+                'PROXY_DISPLAY_NAME',
+                'PROXY_MANAGEMENT_URL',
+                'PROXY_PUBLIC_HOST',
+                'PROXY_PUBLIC_HTTP_PROXY_PORT',
+                'PROXY_PUBLIC_SOCKS_PROXY_PORT',
+                'PROXY_PUBLIC_SOCKS_ENABLED',
+            )
         }
         self.addCleanup(self._restore_env)
         self.app_module = import_remote_app_module(
@@ -99,10 +110,18 @@ class TestSplitModeControlPlane(unittest.TestCase):
         os.environ['PROXY_INSTANCE_ID'] = 'edge-1'
         os.environ['PROXY_DISPLAY_NAME'] = 'Edge 1'
         os.environ['PROXY_MANAGEMENT_URL'] = 'http://edge-1:5000'
+        os.environ['PROXY_PUBLIC_HOST'] = 'edge-1'
+        os.environ['PROXY_PUBLIC_HTTP_PROXY_PORT'] = '3128'
+        os.environ['PROXY_PUBLIC_SOCKS_PROXY_PORT'] = '1080'
+        os.environ['PROXY_PUBLIC_SOCKS_ENABLED'] = '1'
 
         refreshed = registry.register_local_proxy()
 
         self.assertEqual(refreshed.status, 'healthy')
+        self.assertEqual(refreshed.public_host, 'edge-1')
+        self.assertEqual(refreshed.public_http_proxy_port, 3128)
+        self.assertEqual(refreshed.public_socks_proxy_port, 1080)
+        self.assertTrue(refreshed.public_socks_enabled)
 
 
 if __name__ == '__main__':
