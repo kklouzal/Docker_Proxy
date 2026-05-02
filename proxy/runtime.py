@@ -311,24 +311,64 @@ class ProxyRuntime:
             details.append(f"Failed to clear ssl_db directory: {exc}")
             return False, "\n".join([part for part in details if part]).strip()
 
-        helper = self._find_sslcrtd_binary()
-        if not helper:
-            details.append("Could not find ssl_crtd/security_file_certgen helper.")
-            return False, "\n".join([part for part in details if part]).strip()
+        init_script = "/scripts/init_ssl_db.sh"
+        if os.path.exists(init_script):
+            try:
+                env = os.environ.copy()
+                env["SSL_DB_DIR"] = ssl_db_dir
+                initialized = subprocess.run(["sh", init_script], capture_output=True, timeout=90, env=env)
+            except Exception as exc:
+                details.append(f"Failed to run {init_script}: {exc}")
+                return False, "\n".join([part for part in details if part]).strip()
 
-        try:
-            initialized = subprocess.run([helper, "-c", "-s", ssl_db_dir, "-M", "16MB"], capture_output=True, timeout=90)
-        except Exception as exc:
-            details.append(f"Failed to initialize ssl_db: {exc}")
-            return False, "\n".join([part for part in details if part]).strip()
+            init_detail = _decode_completed(initialized)
+            if initialized.returncode != 0:
+                details.append(init_detail or f"{init_script} failed")
+                return False, "\n".join([part for part in details if part]).strip()
 
-        if initialized.returncode != 0:
-            details.append(_decode_completed(initialized) or "ssl_crtd initialization failed")
-            return False, "\n".join([part for part in details if part]).strip()
+            if init_detail:
+                details.append(init_detail)
+        else:
+            helper = self._find_sslcrtd_binary()
+            if not helper:
+                details.append("Could not find ssl_crtd/security_file_certgen helper.")
+                return False, "\n".join([part for part in details if part]).strip()
 
-        details.append(_decode_completed(initialized) or f"Reinitialized ssl_db at {ssl_db_dir}.")
+            try:
+                initialized = subprocess.run([helper, "-c", "-s", ssl_db_dir, "-M", "16MB"], capture_output=True, timeout=90)
+            except Exception as exc:
+                details.append(f"Failed to initialize ssl_db: {exc}")
+                return False, "\n".join([part for part in details if part]).strip()
+
+            if initialized.returncode != 0:
+                details.append(_decode_completed(initialized) or "ssl_crtd initialization failed")
+                return False, "\n".join([part for part in details if part]).strip()
+
+            details.append(_decode_completed(initialized) or f"Reinitialized ssl_db at {ssl_db_dir}.")
+            try:
+                repair = subprocess.run(
+                    [
+                        "sh",
+                        "-lc",
+                        'chmod 700 "$1" 2>/dev/null || true; [ -d "$1/certs" ] && chmod 750 "$1/certs" 2>/dev/null || true; if getent passwd squid >/dev/null 2>&1; then chown -R squid:squid "$(dirname \"$1\")"; fi',
+                        "sh",
+                        ssl_db_dir,
+                    ],
+                    capture_output=True,
+                    timeout=20,
+                )
+                if repair.returncode != 0:
+                    details.append(_decode_completed(repair) or "Failed to repair ssl_db ownership and permissions.")
+                    return False, "\n".join([part for part in details if part]).strip()
+            except Exception as exc:
+                details.append(f"Failed to repair ssl_db ownership and permissions: {exc}")
+                return False, "\n".join([part for part in details if part]).strip()
+
         try:
             os.chmod(ssl_db_dir, 0o700)
+            certs_dir = os.path.join(ssl_db_dir, "certs")
+            if os.path.isdir(certs_dir):
+                os.chmod(certs_dir, 0o750)
         except Exception:
             pass
 
