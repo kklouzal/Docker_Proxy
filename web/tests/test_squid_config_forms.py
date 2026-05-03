@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from .flask_test_helpers import ensure_web_import_path
+import sys
+from pathlib import Path
 
 
-ensure_web_import_path()
+def _ensure_web_import_path() -> None:
+    web_dir = Path(__file__).resolve().parents[1]
+    if str(web_dir) not in sys.path:
+        sys.path.insert(0, str(web_dir))
+
+
+_ensure_web_import_path()
 
 from services.squid_config_forms import (  # type: ignore  # noqa: E402
     build_template_options,

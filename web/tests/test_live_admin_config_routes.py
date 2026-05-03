@@ -47,6 +47,8 @@ def _restore_primary_config(client: LiveStackClient, config_text: str) -> None:
 def test_live_api_squid_config_returns_running_config(admin_client: LiveStackClient) -> None:
     response = admin_client.admin_request("/api/squid-config")
     assert response.status == 200
+    assert response.headers.get("Content-Type", "").startswith("text/plain")
+    assert "Content-Security-Policy" not in response.headers
     assert "http_port" in response.text
     assert "ssl_bump" in response.text
 
@@ -56,6 +58,33 @@ def test_live_squid_config_network_tab_mentions_non_standard_ports(admin_client:
     assert response.status == 200
     assert "Web destination ports" in response.text
     assert "Non-standard HTTP and HTTPS destination ports are allowed by default" in response.text
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_snippets"),
+    [
+        ("/squid/config?tab=config", ("data-config-page=\"true\"", "Copy editor contents", "Reset unsaved changes")),
+        ("/squid/config?tab=caching", ("Jump to group", "data-config-reset-for=\"safe-config-form\"", "data-depends-on=\"cache_dir_type\"")),
+        ("/squid/config?tab=timeouts", ("Timeouts", "request_timeout")),
+        ("/squid/config?tab=logging", ("Logging", "logfile_rotate")),
+        ("/squid/config?tab=dns", ("DNS", "dns_packet_max")),
+        ("/squid/config?tab=ssl", ("name=\"tls_outgoing_options_line\"", "name=\"sslproxy_cert_error_rules_text\"")),
+        ("/squid/config?tab=icap", ("ICAP", "icap_service_failure_limit")),
+        ("/squid/config?tab=privacy", ("Privacy", "forwarded_for")),
+        ("/squid/config?tab=limits", ("name=\"request_header_max_size_kb\"", "name=\"http_upgrade_request_protocols_rules_text\"")),
+        ("/squid/config?tab=performance", ("Performance", "memory_pools")),
+        ("/squid/config?tab=http", ("HTTP", "httpd_suppress_version_string")),
+    ],
+)
+def test_live_squid_config_tabs_render_real_form_controls(
+    admin_client: LiveStackClient,
+    path: str,
+    expected_snippets: tuple[str, ...],
+) -> None:
+    response = admin_client.admin_request(path)
+    assert response.status == 200
+    for snippet in expected_snippets:
+        assert snippet in response.text
 
 
 def test_live_squid_config_manual_validate_and_apply_current_config(admin_client: LiveStackClient) -> None:
@@ -107,6 +136,8 @@ def test_live_observability_and_ssl_exports_return_csv(admin_client: LiveStackCl
 def test_live_api_timeseries_returns_json(admin_client: LiveStackClient) -> None:
     response = admin_client.admin_request("/api/timeseries?resolution=1s&window=60&limit=25")
     assert response.status == 200
+    assert response.headers.get("Content-Type", "").startswith("application/json")
+    assert "Content-Security-Policy" not in response.headers
     payload = response.json()
     assert isinstance(payload, dict)
     assert payload.get("resolution") == "1s"

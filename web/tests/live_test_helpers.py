@@ -178,6 +178,11 @@ def _read_response(opener: Any, request: urllib.request.Request, *, timeout_seco
         )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 def _wait_for_response(
     requester: Callable[[], HttpResponse],
     *,
@@ -459,6 +464,10 @@ class LiveStackClient:
     def __init__(self) -> None:
         cookie_jar = http.cookiejar.CookieJar()
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+        self._no_redirect_opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cookie_jar),
+            _NoRedirectHandler(),
+        )
         self._proxy_opener = urllib.request.build_opener(
             urllib.request.ProxyHandler(
                 {
@@ -477,9 +486,11 @@ class LiveStackClient:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout_seconds: float | None = None,
+        follow_redirects: bool = True,
     ) -> HttpResponse:
         request = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-        response = _read_response(self._opener, request, timeout_seconds=timeout_seconds)
+        opener = self._opener if follow_redirects else self._no_redirect_opener
+        response = _read_response(opener, request, timeout_seconds=timeout_seconds)
         try:
             self._csrf_token = extract_csrf_token(response.text)
         except Exception:
@@ -588,6 +599,47 @@ class LiveStackClient:
             method="POST",
             data=encoded,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout_seconds=timeout_seconds,
+        )
+
+    def admin_post_multipart(
+        self,
+        path_or_url: str,
+        fields: dict[str, Any],
+        files: dict[str, tuple[str, bytes, str]],
+        *,
+        csrf_path: str = "/",
+        include_csrf: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> HttpResponse:
+        boundary = f"----live-tests-{time.time_ns()}"
+        chunks: list[bytes] = []
+        payload = dict(fields)
+        if include_csrf and "csrf_token" not in payload:
+            payload["csrf_token"] = self._csrf_token or self.refresh_csrf(csrf_path)
+
+        for key, value in payload.items():
+            chunks.append(f"--{boundary}\r\n".encode("ascii"))
+            chunks.append(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+            chunks.append(("" if value is None else str(value)).encode("utf-8"))
+            chunks.append(b"\r\n")
+
+        for key, (filename, content, content_type) in files.items():
+            chunks.append(f"--{boundary}\r\n".encode("ascii"))
+            chunks.append(
+                f'Content-Disposition: form-data; name="{key}"; filename="{filename}"\r\n'.encode("utf-8")
+            )
+            chunks.append(f"Content-Type: {content_type or 'application/octet-stream'}\r\n\r\n".encode("ascii"))
+            chunks.append(bytes(content or b""))
+            chunks.append(b"\r\n")
+
+        chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+        body = b"".join(chunks)
+        return self.admin_request(
+            path_or_url,
+            method="POST",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             timeout_seconds=timeout_seconds,
         )
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import socket
 import tempfile
+import time
 from pathlib import Path
 from subprocess import run
 from typing import Any, Callable, Optional, Tuple
@@ -173,11 +175,54 @@ class SquidController:
             return (out_text + "\n" + err_text).strip()
         return (out_text or err_text).strip()
 
+    def _http_listener_port(self, config_text: str | None = None) -> int:
+        text = config_text if config_text is not None else self.get_current_config()
+        for line in (text or "").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or not stripped.lower().startswith("http_port "):
+                continue
+            token = stripped.split()[1]
+            try:
+                if ":" in token:
+                    return int(token.rsplit(":", 1)[1])
+                return int(token)
+            except Exception:
+                continue
+        return 3128
+
+    def _wait_for_http_listener(self, *, timeout: float = 20.0) -> bool:
+        port = self._http_listener_port()
+        deadline = time.time() + max(0.5, timeout)
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    return True
+            except OSError:
+                time.sleep(0.5)
+        return False
+
     def restart_squid(self) -> Tuple[bool, str]:
         try:
             proc = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "restart", "squid"], capture_output=True, timeout=12)
             if proc.returncode == 0:
-                return True, self._decode_completed(proc) or "Squid restarted."
+                details = self._decode_completed(proc) or "Squid restarted."
+                if self._wait_for_http_listener(timeout=20.0):
+                    return True, details
+                recovery_parts = [details, "Squid restart returned before the HTTP listener was ready; forcing stop/start recovery."]
+                try:
+                    stop = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"], capture_output=True, timeout=20)
+                    recovery_parts.append(self._decode_completed(stop) or "supervisorctl stop squid")
+                except Exception as exc:
+                    recovery_parts.append(f"supervisorctl stop squid failed: {exc}")
+                try:
+                    start = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"], capture_output=True, timeout=20)
+                    recovery_parts.append(self._decode_completed(start) or "supervisorctl start squid")
+                except Exception as exc:
+                    recovery_parts.append(f"supervisorctl start squid failed: {exc}")
+                if self._wait_for_http_listener(timeout=30.0):
+                    recovery_parts.append("Squid HTTP listener recovered.")
+                    return True, "\n".join(part for part in recovery_parts if part).strip()
+                return False, "\n".join(part for part in recovery_parts + ["Squid process is running but the HTTP listener is not accepting connections."] if part).strip()
             details = self._decode_completed(proc) or "supervisorctl restart squid failed"
         except Exception as exc:
             details = str(exc)
@@ -398,6 +443,16 @@ class SquidController:
                     self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
                 return False, self._decode_completed(reconfigure) or "Squid reconfigure failed."
 
+            reconfigure_detail = self._decode_completed(reconfigure) or "Squid reconfigured."
+            if not self._wait_for_http_listener(timeout=20.0):
+                ok_restart, restart_details = self.restart_squid()
+                if not ok_restart:
+                    if os.path.exists(backup_path):
+                        os.replace(backup_path, self.squid_conf_path)
+                        self.restart_squid()
+                    return False, (restart_details or "Squid HTTP listener did not recover after reconfigure.")
+                reconfigure_detail = (reconfigure_detail + "\n" + restart_details).strip()
+
             try:
                 persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
                 if persisted_dir:
@@ -411,7 +466,7 @@ class SquidController:
                     message="Failed to persist squid config after reconfigure",
                 )
 
-            return True, self._decode_completed(reconfigure) or "Squid reconfigured."
+            return True, reconfigure_detail
         except Exception as exc:
             try:
                 if os.path.exists(backup_path):
@@ -436,7 +491,16 @@ class SquidController:
     def reload_squid(self):
         try:
             proc = self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-            return proc.stdout or b"", proc.stderr or b""
+            stdout = proc.stdout or b""
+            stderr = proc.stderr or b""
+            if proc.returncode == 0 and not self._wait_for_http_listener(timeout=20.0):
+                ok_restart, detail = self.restart_squid()
+                recovery = ("Squid HTTP listener was unavailable after reconfigure; " + detail).encode("utf-8", errors="replace")
+                if ok_restart:
+                    stdout = (stdout + b"\n" + recovery).strip()
+                else:
+                    stderr = (stderr + b"\n" + recovery).strip()
+            return stdout, stderr
         except FileNotFoundError:
             return b"", b"squid binary not found"
         except Exception as exc:

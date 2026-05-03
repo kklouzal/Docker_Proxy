@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 
 import pytest
 
@@ -37,6 +38,12 @@ def _adblock_store():
     store = get_adblock_store()
     store.init_db()
     return store
+
+
+def _adblock_artifacts_store():
+    from services.adblock_artifacts import get_adblock_artifacts  # type: ignore
+
+    return get_adblock_artifacts()
 
 
 def _webfilter_store():
@@ -406,6 +413,63 @@ def test_live_adblock_list_settings_refresh_and_flush_workflows(admin_client: Li
         )
         store.clear_refresh_requested()
         _with_proxy_id(LIVE_CONFIG.primary_proxy_id, lambda: store.mark_cache_flushed(size=0))
+
+
+def test_live_proxy_sync_materializes_adblock_artifact_revision(admin_client: LiveStackClient, tmp_path) -> None:
+    artifact_dir = tmp_path / "adblock-artifact"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "domains_allow.txt").write_text("allow-live-artifact.example\n", encoding="utf-8")
+    (artifact_dir / "domains_block.txt").write_text("ads-live-artifact.example\n", encoding="utf-8")
+    (artifact_dir / "regex_allow.txt").write_text("", encoding="utf-8")
+    (artifact_dir / "regex_block.txt").write_text("/tracker-live-artifact[.]example/\n", encoding="utf-8")
+    (artifact_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabled": False,
+                "cache_ttl": 120,
+                "cache_max": 1000,
+                "settings_version": 2,
+                "enabled_lists": ["live-fixture"],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "enabled_lists": ["live-fixture"],
+                "counts": {"domains_block": 1, "domains_allow": 1, "regex_block": 1, "regex_allow": 0},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    revision = _adblock_artifacts_store().create_revision_from_directory(
+        artifact_dir,
+        settings_version=2,
+        enabled_lists=["live-fixture"],
+        created_by="live-tests",
+        source_kind="live-fixture",
+    )
+    store = _adblock_store()
+    _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.request_cache_flush)
+
+    sync_response = admin_client.proxy_management_post_json("/api/manage/sync", {"force": False}, timeout_seconds=90.0)
+    assert sync_response.status == 200
+    sync_payload = sync_response.json()
+    assert sync_payload.get("ok") is True
+    assert sync_payload.get("adblock_changed") is True
+
+    latest_apply = _adblock_artifacts_store().latest_apply(LIVE_CONFIG.primary_proxy_id)
+    assert latest_apply is not None
+    assert latest_apply.revision_id == revision.revision_id
+    assert latest_apply.ok is True
+    assert latest_apply.artifact_sha256 == revision.artifact_sha256
+    assert _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.get_cache_flush_requested) == 0
 
 
 def test_live_webfilter_category_validation_and_save_workflows(admin_client: LiveStackClient) -> None:

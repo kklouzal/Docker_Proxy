@@ -11,10 +11,10 @@ pytestmark = pytest.mark.live
 def _generate_proxy_traffic(client: LiveStackClient) -> str:
     token = unique_token("live_observability")
 
-    first = wait_for_proxy_fixture_response(client, f"/traffic/{token}")
+    first = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=120.0)
     assert first.status == 200
 
-    second = wait_for_proxy_fixture_response(client, f"/traffic/{token}")
+    second = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=120.0)
     assert second.status == 200
 
     post_response = wait_for_proxy_fixture_response(
@@ -23,6 +23,7 @@ def _generate_proxy_traffic(client: LiveStackClient) -> str:
         method="POST",
         data=f"token={token}".encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout_seconds=120.0,
     )
     assert post_response.status == 200
 
@@ -88,3 +89,13 @@ def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(ad
     assert destination_export.status == 200
     assert "domain;requests;percent_of_total;clients;transactions;cache_hit_pct;av_icap_events;adblock_icap_events;last_seen" in destination_export.text
     assert "traffic-fixture" in destination_export.text
+
+
+def test_live_observability_security_pane_renders_real_sections(admin_client: LiveStackClient) -> None:
+    response = admin_client.admin_request("/observability?pane=security&window=3600&limit=25")
+    assert response.status == 200
+    body = response.text
+    assert "Security and enforcement overview" in body
+    assert "Potential AV findings" in body
+    assert "Ad-blocking blocks" in body
+    assert "Content-filtering blocks" in body

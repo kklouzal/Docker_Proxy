@@ -39,6 +39,11 @@ if ! squid -k check >/dev/null 2>&1; then
     exit 1
 fi
 
+if ! has_listen_socket "${SQUID_HTTP_PORT:-3128}" >/dev/null 2>&1; then
+    echo "Squid HTTP listener is not accepting connections"
+    exit 1
+fi
+
 # Check Flask liveness (avoid curl to keep image smaller)
 if ! python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read()" >/dev/null 2>&1; then
     echo "Flask health endpoint failed"
