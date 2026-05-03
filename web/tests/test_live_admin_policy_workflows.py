@@ -4,7 +4,16 @@ import re
 
 import pytest
 
-from .live_test_helpers import LiveStackClient, admin_client, query_params, unique_domain, unique_token, wait_for_proxy_management_payload
+from .live_test_helpers import (
+    LIVE_CONFIG,
+    LiveStackClient,
+    admin_client,
+    query_params,
+    unique_domain,
+    unique_token,
+    wait_for_proxy_fixture_response,
+    wait_for_proxy_management_payload,
+)
 
 
 pytestmark = pytest.mark.live
@@ -20,6 +29,47 @@ def _find_pac_profile_id(html: str, profile_name: str) -> int:
         if name == profile_name:
             return int(profile_id)
     raise AssertionError(f"Could not find PAC profile id for {profile_name!r}.")
+
+
+def _adblock_store():
+    from services.adblock_store import get_adblock_store  # type: ignore
+
+    store = get_adblock_store()
+    store.init_db()
+    return store
+
+
+def _webfilter_store():
+    from services.webfilter_store import get_webfilter_store  # type: ignore
+
+    store = get_webfilter_store()
+    store.init_db()
+    return store
+
+
+def _with_proxy_id(proxy_id: object, callback):
+    from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
+
+    token = set_proxy_id(proxy_id)
+    try:
+        return callback()
+    finally:
+        reset_proxy_id(token)
+
+
+def _webfilter_settings(proxy_id: object):
+    return _with_proxy_id(proxy_id, lambda: _webfilter_store().get_settings())
+
+
+def _restore_webfilter_settings(proxy_id: object, settings) -> None:
+    def _restore() -> None:
+        _webfilter_store().set_settings(
+            enabled=settings.enabled,
+            source_url=settings.source_url,
+            blocked_categories=list(settings.blocked_categories),
+        )
+
+    _with_proxy_id(proxy_id, _restore)
 
 
 def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client: LiveStackClient) -> None:
@@ -274,3 +324,137 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(admin_client: LiveStac
     )
     assert remove_whitelist_response.status == 200
     assert whitelist_domain not in admin_client.admin_request("/webfilter?tab=whitelist").text
+
+
+def test_live_adblock_list_settings_refresh_and_flush_workflows(admin_client: LiveStackClient) -> None:
+    store = _adblock_store()
+    original_statuses = {status.key: status.enabled for status in store.list_statuses()}
+    original_settings = store.get_settings()
+    statuses = store.list_statuses()
+    assert statuses, "expected live adblock store to seed default lists"
+    target_key = statuses[0].key
+
+    try:
+        save_lists_response = admin_client.admin_post_form(
+            "/adblock",
+            {
+                "action": "save_lists",
+                f"enabled_{target_key}": "on",
+            },
+            csrf_path="/adblock",
+        )
+        assert save_lists_response.status == 200
+        enabled_map = {status.key: status.enabled for status in store.list_statuses()}
+        assert enabled_map[target_key] is True
+        assert store.get_refresh_requested() > 0
+
+        save_settings_response = admin_client.admin_post_form(
+            "/adblock",
+            {
+                "action": "save_settings",
+                "adblock_enabled": "on",
+                "cache_ttl": "120",
+                "cache_max": "999",
+            },
+            csrf_path="/adblock",
+        )
+        assert save_settings_response.status == 200
+        settings = store.get_settings()
+        assert settings["enabled"] is True
+        assert settings["cache_ttl"] == 120
+        assert settings["cache_max"] == 999
+
+        refresh_response = admin_client.admin_post_form(
+            "/adblock",
+            {"action": "refresh"},
+            csrf_path="/adblock",
+            timeout_seconds=90.0,
+        )
+        assert refresh_response.status == 200
+        assert query_params(refresh_response.url).get("refresh_requested") == ["1"]
+
+        flush_response = admin_client.admin_post_form(
+            "/adblock",
+            {"action": "flush_cache"},
+            csrf_path="/adblock",
+            timeout_seconds=90.0,
+        )
+        assert flush_response.status == 200
+        assert query_params(flush_response.url).get("cache_flushed") == ["1"]
+        wait_for_proxy_management_payload()
+        wait_for_proxy_fixture_response(admin_client, "/health", timeout_seconds=120.0)
+
+        disable_all_response = admin_client.admin_post_form(
+            "/adblock",
+            {"action": "save_lists"},
+            csrf_path="/adblock",
+        )
+        assert disable_all_response.status == 200
+        refresh_no_lists_response = admin_client.admin_post_form(
+            "/adblock",
+            {"action": "refresh"},
+            csrf_path="/adblock",
+        )
+        assert refresh_no_lists_response.status == 200
+        assert query_params(refresh_no_lists_response.url).get("refresh_no_lists") == ["1"]
+    finally:
+        store.set_enabled(original_statuses)
+        store.set_settings(
+            enabled=bool(original_settings.get("enabled")),
+            cache_ttl=int(original_settings.get("cache_ttl") or 0),
+            cache_max=int(original_settings.get("cache_max") or 0),
+        )
+        store.clear_refresh_requested()
+        _with_proxy_id(LIVE_CONFIG.primary_proxy_id, lambda: store.mark_cache_flushed(size=0))
+
+
+def test_live_webfilter_category_validation_and_save_workflows(admin_client: LiveStackClient) -> None:
+    original_settings = _webfilter_settings(LIVE_CONFIG.primary_proxy_id)
+    source_url = f"https://example.invalid/{unique_token('webcat')}.tar.gz"
+
+    try:
+        missing_source_response = admin_client.admin_post_form(
+            "/webfilter?tab=categories",
+            {
+                "action": "save",
+                "tab": "categories",
+                "enabled": "on",
+                "source_url": "",
+                "categories": ["adult"],
+            },
+            csrf_path="/webfilter?tab=categories",
+        )
+        assert missing_source_response.status == 200
+        assert query_params(missing_source_response.url).get("err_source") == ["1"]
+
+        invalid_source_response = admin_client.admin_post_form(
+            "/webfilter?tab=categories",
+            {
+                "action": "save",
+                "tab": "categories",
+                "enabled": "on",
+                "source_url": "ftp://example.invalid/webcat.tar.gz",
+                "categories": ["adult"],
+            },
+            csrf_path="/webfilter?tab=categories",
+        )
+        assert invalid_source_response.status == 200
+        assert query_params(invalid_source_response.url).get("err_source") == ["1"]
+
+        save_response = admin_client.admin_post_form(
+            "/webfilter?tab=categories",
+            {
+                "action": "save",
+                "tab": "categories",
+                "enabled": "on",
+                "source_url": source_url,
+                "categories": ["adult", "games"],
+            },
+            csrf_path="/webfilter?tab=categories",
+            timeout_seconds=90.0,
+        )
+        assert save_response.status == 200
+        assert query_params(save_response.url).get("tab") == ["categories"]
+        assert query_params(save_response.url).get("err_source") is None
+    finally:
+        _restore_webfilter_settings(LIVE_CONFIG.primary_proxy_id, original_settings)

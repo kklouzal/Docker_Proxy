@@ -150,3 +150,49 @@ def test_live_remote_clamav_test_actions_surface_selected_proxy_targets(multi_pr
     assert "EICAR failed" in eicar_response.text
     assert "ICAP sample ok" in icap_response.text
     assert "ICAP/1.0 204 No Content" in icap_response.text
+
+
+def test_live_remote_webfilter_save_updates_only_selected_proxy(multi_proxy_admin: LiveStackClient) -> None:
+    source_url = f"https://example.invalid/{unique_token('remote-webcat')}.tar.gz"
+    cleanup_source_url = ""
+
+    try:
+        response = multi_proxy_admin.admin_post_form(
+            with_proxy_id("/webfilter?tab=categories", LIVE_CONFIG.remote_proxy_id),
+            {
+                "action": "save",
+                "tab": "categories",
+                "enabled": "on",
+                "source_url": source_url,
+                "categories": ["adult", "malware"],
+            },
+            csrf_path=with_proxy_id("/webfilter?tab=categories", LIVE_CONFIG.remote_proxy_id),
+            timeout_seconds=90.0,
+        )
+        assert response.status == 200
+        assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+        assert query_params(response.url).get("tab") == ["categories"]
+        assert query_params(response.url).get("err_source") is None
+    finally:
+        multi_proxy_admin.admin_post_form(
+            with_proxy_id("/webfilter?tab=categories", LIVE_CONFIG.remote_proxy_id),
+            {
+                "action": "save",
+                "tab": "categories",
+                "source_url": cleanup_source_url,
+            },
+            csrf_path=with_proxy_id("/webfilter?tab=categories", LIVE_CONFIG.remote_proxy_id),
+            timeout_seconds=90.0,
+        )
+
+
+def test_live_remote_adblock_flush_marks_selected_proxy_only(multi_proxy_admin: LiveStackClient) -> None:
+    response = multi_proxy_admin.admin_post_form(
+        with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
+        {"action": "flush_cache"},
+        csrf_path=with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
+        timeout_seconds=90.0,
+    )
+    assert response.status == 200
+    assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+    assert query_params(response.url).get("cache_flushed") == ["1"]

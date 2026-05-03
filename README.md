@@ -185,6 +185,7 @@ services:
 
   proxy:
     image: ghcr.io/kklouzal/docker_proxy-proxy:main
+    shm_size: ${PROXY_SHM_SIZE:-512m}
     sysctls:
       net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
       net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
@@ -349,6 +350,7 @@ Common environment variables:
 - `SQUID_WORKERS`: explicit Squid SMP bootstrap override. If blank, the Squid config's `workers` value is authoritative.
 - `MAX_WORKERS`: admin-UI clamp for the template-backed workers form (default `4`).
 - `SQUID_CACHE_MEM_MB`: explicit Squid memory-cache override. Leave blank to keep the persisted/template value; the entrypoint no longer overwrites UI-applied values unless you set an explicit env override.
+- `PROXY_SHM_SIZE`: Compose `/dev/shm` allocation for Squid shared memory (default `512m`). Keep this comfortably above `SQUID_CACHE_MEM_MB` when `memory_cache_shared on` is active; too small a value can make Squid terminate with SIGBUS under live traffic.
 - `SQUID_SSLCRTD_CHILDREN`: explicit ssl_crtd helper-process override. Leave blank to keep the persisted/template value; otherwise the startup default derives from Squid workers.
 - `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`: explicit TLS dynamic certificate cache override. Leave blank to keep the persisted/template value; otherwise the startup default derives from Squid workers (`128 × workers`, capped at `512`).
 - `SQUID_MAX_FILEDESCRIPTORS`: explicit Squid file-descriptor ceiling. Leave blank to keep the persisted/template value; otherwise the startup default derives from Squid workers (minimum `65536`).

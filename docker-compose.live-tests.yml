@@ -92,7 +92,7 @@ services:
     depends_on:
       mysql-test:
         condition: service_healthy
-    shm_size: ${PROXY_SHM_SIZE:-96m}
+    shm_size: ${PROXY_SHM_SIZE:-512m}
     sysctls:
       net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
       net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
@@ -187,17 +187,7 @@ services:
         --timeout-method=signal
         --durations=10
         -ra -vv
-        web/tests/test_live_stack_smoke.py
-        web/tests/test_live_admin_ui_shell_pages.py
-        web/tests/test_live_admin_config_routes.py
-        web/tests/test_live_admin_policy_workflows.py
-        web/tests/test_live_proxy_management_api.py
-        web/tests/test_live_observability_pages.py
-        web/tests/test_live_monitoring_routes.py
-        web/tests/test_live_multi_proxy_scope.py
-        web/tests/test_live_multi_proxy_control_plane.py
-        web/tests/test_live_multi_proxy_certificates.py
-        web/tests/test_live_multi_proxy_policy_workflows.py
+        web/tests/test_live_*.py
     volumes:
       - .:/workspace:ro
     networks:

@@ -435,20 +435,23 @@ def wait_for_proxy_fixture_response(
     data: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout_seconds: float | None = None,
+    request_timeout_seconds: float | None = None,
     needle: str | None = None,
 ) -> HttpResponse:
     resolved_url = resolve_url(LIVE_CONFIG.traffic_fixture_url, path_or_url)
+    total_timeout = timeout_seconds if timeout_seconds is not None else min(LIVE_CONFIG.wait_timeout_seconds, 45.0)
+    per_request_timeout = request_timeout_seconds if request_timeout_seconds is not None else LIVE_CONFIG.request_timeout_seconds
     return _wait_for_response(
         lambda: client.proxy_fixture_request(
             resolved_url,
             method=method,
             data=data,
             headers=headers,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=per_request_timeout,
         ),
         accept=lambda response: response.status == 200 and (needle is None or needle in response.text),
         description=f"proxy fixture request {resolved_url!r}",
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=total_timeout,
     )
 
 

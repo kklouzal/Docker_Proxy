@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from flask import Flask, g, render_template, request, redirect, url_for, jsonify, abort, session
 from services.squidctl import SquidController
 from services.cert_manager import generate_self_signed_ca_bundle, install_pfx_as_ca, materialize_certificate_bundle, parse_pfx_bundle
@@ -199,18 +199,7 @@ _default_app_runtime_services = AppRuntimeServices(
 
 
 def _app_runtime_services() -> AppRuntimeServices:
-    override = app.config.get('APP_RUNTIME_SERVICES')
-    return override if isinstance(override, AppRuntimeServices) else _default_app_runtime_services
-
-
-def configure_app_runtime_services_for_testing(**overrides: Any) -> AppRuntimeServices:
-    updated = replace(_app_runtime_services(), **overrides)
-    app.config['APP_RUNTIME_SERVICES'] = updated
-    return updated
-
-
-def reset_app_runtime_services_for_testing() -> None:
-    app.config.pop('APP_RUNTIME_SERVICES', None)
+    return _default_app_runtime_services
 
 
 class _ControllerProxy:

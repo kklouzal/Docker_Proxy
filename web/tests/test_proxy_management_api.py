@@ -5,12 +5,7 @@ import sys
 import tempfile
 import unittest
 
-import pytest
-
 from .mysql_test_utils import REPO_ROOT, configure_test_mysql_env
-
-
-pytestmark = pytest.mark.legacy_simulated
 
 
 def _import_proxy_app():

@@ -1,18 +1,10 @@
 from __future__ import annotations
 
-import pytest
-
 from .flask_test_helpers import import_local_app_module, login
 
 
-pytestmark = pytest.mark.legacy_simulated
-
-
-def _install_queries(app_module, fake_queries) -> None:
-    app_module.reset_app_runtime_services_for_testing()
-    app_module.configure_app_runtime_services_for_testing(
-        get_observability_queries=lambda: fake_queries,
-    )
+def _install_queries(monkeypatch, app_module, fake_queries) -> None:
+    monkeypatch.setattr(app_module, "get_observability_queries", lambda: fake_queries)
 
 
 class _FakeQueries:
@@ -214,7 +206,7 @@ class _FakeQueries:
 def test_observability_page_renders_overview_pane(monkeypatch):
     app_module = import_local_app_module()
     fake_queries = _FakeQueries()
-    _install_queries(app_module, fake_queries)
+    _install_queries(monkeypatch, app_module, fake_queries)
     monkeypatch.setattr(app_module.time, "time", lambda: 12_000)
 
     client = app_module.app.test_client()
@@ -231,7 +223,7 @@ def test_observability_page_renders_overview_pane(monkeypatch):
 def test_observability_page_defaults_to_24h_window(monkeypatch):
     app_module = import_local_app_module()
     fake_queries = _FakeQueries()
-    _install_queries(app_module, fake_queries)
+    _install_queries(monkeypatch, app_module, fake_queries)
     monkeypatch.setattr(app_module.time, "time", lambda: 100_000)
 
     client = app_module.app.test_client()
@@ -245,7 +237,7 @@ def test_observability_page_defaults_to_24h_window(monkeypatch):
 def test_observability_page_renders_destination_pane(monkeypatch):
     app_module = import_local_app_module()
     fake_queries = _FakeQueries()
-    _install_queries(app_module, fake_queries)
+    _install_queries(monkeypatch, app_module, fake_queries)
     monkeypatch.setattr(app_module.time, "time", lambda: 10_000)
 
     client = app_module.app.test_client()
@@ -264,7 +256,7 @@ def test_observability_page_renders_destination_pane(monkeypatch):
 def test_observability_page_renders_clients_with_hostnames(monkeypatch):
     app_module = import_local_app_module()
     fake_queries = _FakeQueries()
-    _install_queries(app_module, fake_queries)
+    _install_queries(monkeypatch, app_module, fake_queries)
     monkeypatch.setattr(app_module.time, "time", lambda: 20_000)
 
     client = app_module.app.test_client()
@@ -283,7 +275,7 @@ def test_observability_page_renders_clients_with_hostnames(monkeypatch):
 def test_observability_export_returns_csv_for_cache_pane(monkeypatch):
     app_module = import_local_app_module()
     fake_queries = _FakeQueries()
-    _install_queries(app_module, fake_queries)
+    _install_queries(monkeypatch, app_module, fake_queries)
     monkeypatch.setattr(app_module.time, "time", lambda: 30_000)
 
     client = app_module.app.test_client()
@@ -300,7 +292,7 @@ def test_observability_export_returns_csv_for_cache_pane(monkeypatch):
 def test_observability_page_renders_security_pane(monkeypatch):
     app_module = import_local_app_module()
     fake_queries = _FakeQueries()
-    _install_queries(app_module, fake_queries)
+    _install_queries(monkeypatch, app_module, fake_queries)
     monkeypatch.setattr(app_module.time, "time", lambda: 40_000)
 
     client = app_module.app.test_client()
@@ -324,7 +316,7 @@ def test_observability_export_returns_empty_overview_csv_when_query_fails(monkey
         def overview_bundle(self, *, since: int, search: str = "", limit: int = 6, resolve_hostnames: bool = False):
             raise RuntimeError("boom")
 
-    _install_queries(app_module, _ExplodingQueries())
+    _install_queries(monkeypatch, app_module, _ExplodingQueries())
     monkeypatch.setattr(app_module.time, "time", lambda: 60_000)
 
     client = app_module.app.test_client()

@@ -54,9 +54,9 @@ def _insert_request(diag_store, line: str) -> None:
         assert diag_store._ingest_request_line_with_conn(conn, line)
 
 
-def test_live_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_tables(tmp_path):
+def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_tables(tmp_path):
     _add_web_to_path()
-    configure_test_mysql_env(tmp_path / "live-stats-window")
+    configure_test_mysql_env(tmp_path / "stats-window")
 
     from services.diagnostic_store import DiagnosticStore  # type: ignore
     from services.live_stats import LiveStatsStore  # type: ignore
@@ -140,9 +140,9 @@ def test_live_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumula
     ]
 
 
-def test_live_stats_windowed_client_details_and_reasons_use_diagnostic_requests(tmp_path):
+def test_stats_windowed_client_details_and_reasons_use_diagnostic_requests(tmp_path):
     _add_web_to_path()
-    configure_test_mysql_env(tmp_path / "live-stats-reasons")
+    configure_test_mysql_env(tmp_path / "stats-reasons")
 
     from services.diagnostic_store import DiagnosticStore  # type: ignore
     from services.live_stats import LiveStatsStore  # type: ignore

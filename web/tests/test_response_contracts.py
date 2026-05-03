@@ -1,10 +1,4 @@
-from .flask_test_helpers import import_local_app_module, login
-from .route_test_support import FakeSquidController
-
-
-def _configure_app_services(app_module, **overrides):
-    app_module.reset_app_runtime_services_for_testing()
-    return app_module.configure_app_runtime_services_for_testing(**overrides)
+from .flask_test_helpers import import_isolated_app_module, import_local_app_module, login
 
 
 def test_admin_pac_endpoints_are_absent():
@@ -27,11 +21,15 @@ def test_api_squid_config_requires_login():
     assert (r.headers.get("Location", "") or "").startswith("/login")
 
 
-def test_api_squid_config_text_plain_when_logged_in():
-    app_module = import_local_app_module()
-    controller = FakeSquidController({"reload": 0, "clear": 0, "apply": 0})
-    controller.current_config = "test-config\n"
-    _configure_app_services(app_module, controller=controller)
+def test_api_squid_config_text_plain_when_logged_in(tmp_path):
+    app_module = import_isolated_app_module(tmp_path)
+    app_module.get_config_revisions().create_revision(
+        "default",
+        "test-config\n",
+        created_by="tester",
+        source_kind="test",
+        activate=True,
+    )
 
     c = app_module.app.test_client()
     login(c)
@@ -59,7 +57,7 @@ def test_api_timeseries_returns_json_when_logged_in(monkeypatch):
         def query(self, *, resolution: str, since: int, limit: int):
             return [{"ts": since, "k": "v"}]
 
-    _configure_app_services(app_module, get_timeseries_store=lambda: FakeTS())
+    monkeypatch.setattr(app_module, "get_timeseries_store", lambda: FakeTS())
 
     c = app_module.app.test_client()
     login(c)
@@ -140,7 +138,7 @@ def test_ssl_errors_export_csv_when_logged_in(monkeypatch):
                 ]
             }
 
-    _configure_app_services(app_module, get_observability_queries=lambda: FakeQueries())
+    monkeypatch.setattr(app_module, "get_observability_queries", lambda: FakeQueries())
 
     c = app_module.app.test_client()
     login(c)
