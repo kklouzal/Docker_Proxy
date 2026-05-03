@@ -14,7 +14,6 @@ from services.exclusions_store import get_exclusions_store as _default_get_exclu
 from services.audit_store import get_audit_store as _default_get_audit_store
 from services.timeseries_store import get_timeseries_store as _default_get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store as _default_get_ssl_errors_store
-from services.socks_store import get_socks_store as _default_get_socks_store
 from services.adblock_store import get_adblock_store as _default_get_adblock_store
 from services.adblock_artifacts import get_adblock_artifacts
 from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
@@ -68,7 +67,6 @@ _OBSERVABILITY_PANES = (
     'ssl',
     'security',
     'performance',
-    'transport',
 )
 _OBSERVABILITY_SORT_DEFAULTS = {
     'overview': 'requests',
@@ -78,7 +76,6 @@ _OBSERVABILITY_SORT_DEFAULTS = {
     'ssl': 'recent',
     'security': 'recent',
     'performance': 'recent',
-    'transport': 'recent',
 }
 _OBSERVABILITY_SORT_OPTIONS = {
     'overview': ('requests',),
@@ -88,7 +85,6 @@ _OBSERVABILITY_SORT_OPTIONS = {
     'ssl': ('recent',),
     'security': ('recent',),
     'performance': ('recent',),
-    'transport': ('recent',),
 }
 _OBSERVABILITY_OVERVIEW_EXPORT_METRICS = (
     'request_records',
@@ -131,7 +127,6 @@ _OBSERVABILITY_EMPTY_EXPORT_HEADERS = {
     'ssl': ['domain', 'category', 'category_label', 'reason', 'count', 'first_seen', 'last_seen'],
     'security': ['source', 'timestamp', 'client', 'target', 'detail', 'status'],
     'performance': ['type', 'timestamp', 'subject', 'metric', 'detail'],
-    'transport': ['ts', 'action', 'protocol', 'client_ip', 'client_port', 'destination', 'destination_port', 'message'],
 }
 
 
@@ -165,7 +160,6 @@ class AppRuntimeServices:
     get_audit_store: Any
     get_timeseries_store: Any
     get_ssl_errors_store: Any
-    get_socks_store: Any
     get_adblock_store: Any
     get_webfilter_store: Any
     get_sslfilter_store: Any
@@ -189,7 +183,6 @@ _default_app_runtime_services = AppRuntimeServices(
     get_audit_store=_default_get_audit_store,
     get_timeseries_store=_default_get_timeseries_store,
     get_ssl_errors_store=_default_get_ssl_errors_store,
-    get_socks_store=_default_get_socks_store,
     get_adblock_store=_default_get_adblock_store,
     get_webfilter_store=_default_get_webfilter_store,
     get_sslfilter_store=_default_get_sslfilter_store,
@@ -254,10 +247,6 @@ def get_timeseries_store():
 
 def get_ssl_errors_store():
     return _app_runtime_services().get_ssl_errors_store()
-
-
-def get_socks_store():
-    return _app_runtime_services().get_socks_store()
 
 
 def get_adblock_store():
@@ -527,20 +516,6 @@ def _empty_observability_payload(pane: str, *, summary: Dict[str, Any] | None = 
         'top_tls_server_versions': [],
         'top_policy_tags': [],
     }
-    transport_payload = {
-        'summary': {
-            'total': 0,
-            'connects': 0,
-            'blocked': 0,
-            'errors': 0,
-            'disconnects': 0,
-        },
-        'nat_warning': False,
-        'nat_warning_text': '',
-        'top_clients': [],
-        'top_destinations': [],
-        'recent': [],
-    }
 
     if pane == 'overview':
         return {
@@ -551,7 +526,6 @@ def _empty_observability_payload(pane: str, *, summary: Dict[str, Any] | None = 
             'ssl': ssl_payload,
             'security': security_payload,
             'performance': performance_payload,
-            'transport': transport_payload,
         }
     if pane in ('destinations', 'clients', 'cache'):
         return {'rows': []}
@@ -561,8 +535,6 @@ def _empty_observability_payload(pane: str, *, summary: Dict[str, Any] | None = 
         return security_payload
     if pane == 'performance':
         return performance_payload
-    if pane == 'transport':
-        return transport_payload
     return {'rows': []}
 
 
@@ -1422,7 +1394,6 @@ def index():
             'services': {
                 'icap': {'ok': False, 'detail': 'unavailable'},
                 'clamav': {'ok': False, 'detail': 'unavailable'},
-                'dante': {'ok': False, 'detail': 'unavailable'},
             },
         }
 
@@ -1437,7 +1408,6 @@ def index():
     services = health.get('services') or {}
     icap_health = services.get('icap') or {'ok': False, 'detail': 'n/a'}
     clamav_health = services.get('clamav') or {'ok': False, 'detail': 'n/a'}
-    dante_health = services.get('dante') or {'ok': False, 'detail': 'n/a'}
 
     last_config = None
     latest_apply = get_config_revisions().latest_apply(proxy_id)
@@ -1474,7 +1444,6 @@ def index():
         trends=trends,
         icap_health=icap_health,
         clamav_health=clamav_health,
-        dante_health=dante_health,
         last_config=last_config,
         observability=observability,
         observability_window_label=observability_window_label,
@@ -1590,8 +1559,6 @@ def observability():
             )
         elif pane == 'performance':
             pane_payload = queries.performance_overview(since=since_ts, limit=limit)
-        elif pane == 'transport':
-            pane_payload = queries.transport_overview(since=since_ts, search=search, limit=limit)
         else:
             pane_payload = {
                 'rows': queries.top_destinations(
@@ -1781,24 +1748,6 @@ def observability_export():
                 ])
             return _csv_response(headers, rows)
 
-        if pane == 'transport':
-            payload = queries.transport_overview(since=since_ts, search=search, limit=limit)
-            headers = ['ts', 'action', 'protocol', 'client_ip', 'client_port', 'destination', 'destination_port', 'message']
-            data_rows = (
-                [
-                    row.ts,
-                    row.action,
-                    row.protocol,
-                    row.src_ip,
-                    row.src_port,
-                    row.dst,
-                    row.dst_port,
-                    row.msg,
-                ]
-                for row in payload.get('recent', [])
-            )
-            return _csv_response(headers, data_rows)
-
         rows = queries.top_destinations(
             since=since_ts,
             search=search,
@@ -1862,17 +1811,6 @@ def ssl_errors_export():
         window=_query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=90 * 24 * 3600),
         limit=_query_int_arg('limit', default=1000, minimum=10, maximum=1000),
         q=((request.args.get('q') or '').strip().lower() or None),
-    )
-
-
-@app.route('/socks', methods=['GET'])
-def socks():
-    return _redirect_to(
-        'observability',
-        pane='transport',
-        window=_query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=60, maximum=7 * 24 * 3600),
-        limit=_query_int_arg('limit', default=50, minimum=10, maximum=200),
-        q=((request.args.get('q') or '').strip() or None),
     )
 
 

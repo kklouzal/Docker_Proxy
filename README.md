@@ -11,7 +11,7 @@ The SQLite migration window has closed: the project now supports **MySQL 8+ only
 The repository now supports a **two-container split**:
 
 - `admin-ui`: Flask/Gunicorn control plane for login, policy editing, proxy visibility, and desired-state management
-- `proxy`: Squid/Dante/c-icap runtime plus a tiny internal management API used only for:
+- `proxy`: Squid/c-icap runtime plus a tiny internal management API used only for:
   - health checks
   - immediate config sync from MySQL
   - cache clear actions
@@ -31,7 +31,7 @@ This project targets “real” proxy deployments where you want:
 The default source-build Compose file now brings up **both** services:
 
 - `admin-ui` on port `5000`
-- `proxy` on ports `80`, `3128`, and `1080`
+- `proxy` on ports `80` and `3128`
 
 Set the external database connection in the root `.env` file (gitignored) or via your shell/launch environment.
 
@@ -71,7 +71,6 @@ Admin UI:
 Proxy runtime:
 - HTTP proxy: `http://localhost:3128`
 - PAC/WPAD: `http://localhost/`
-- SOCKS5: `localhost:1080`
 
 Default login (first run only):
 - Username: `admin`
@@ -130,7 +129,6 @@ services:
     ports:
       - "0.0.0.0:80:80"           # WPAD / PAC via dedicated listener
       - "0.0.0.0:3128:3128"       # Squid HTTP proxy
-      - "0.0.0.0:${DANTE_PORT:-1080}:1080"  # SOCKS5 (Dante)
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
@@ -150,7 +148,6 @@ services:
       CLAMD_PORT: ${CLAMD_PORT:-3310}
       WEB_WORKERS: ${WEB_WORKERS:-}
       WEB_THREADS: ${WEB_THREADS:-}
-      DANTE_SERVERS: ${DANTE_SERVERS:-}
       ULIMIT_NOFILE: ${ULIMIT_NOFILE:-}
       WEBFILTER_HELPERS: ${WEBFILTER_HELPERS:-}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-}
@@ -187,7 +184,6 @@ Default published ports:
 - `3128/tcp`: Squid HTTP proxy
 - `5000/tcp`: Admin UI (Flask)
 - `80/tcp`: WPAD/PAC dedicated listener (NOT the admin UI)
-- `1080/tcp`: SOCKS5 proxy (Dante)
 
 Destination-port policy note:
 - Squid allows non-standard HTTP and HTTPS destination ports by default.
@@ -225,7 +221,6 @@ Run in elevated PowerShell to allow inbound TCP on the Private profile:
 New-NetFirewallRule -DisplayName "Squid Flask Proxy UI (5000)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5000 -Profile Private
 New-NetFirewallRule -DisplayName "Squid Proxy (3128)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3128 -Profile Private
 New-NetFirewallRule -DisplayName "Squid WPAD/PAC (80)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 80 -Profile Private
-New-NetFirewallRule -DisplayName "Squid SOCKS (1080)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1080 -Profile Private
 ```
 
 Also confirm:
@@ -296,18 +291,6 @@ Common environment variables:
 - `SQUID_MAX_FILEDESCRIPTORS`: explicit Squid file-descriptor ceiling. Leave blank to keep the persisted/template value; otherwise the startup default derives from Squid workers (minimum `65536`).
 - `CICAP_PORT`, `CICAP_AV_PORT`: ICAP ports for adblock (REQMOD) and AV (RESPMOD) instances.
 - `CLAMD_HOST`, `CLAMD_PORT`: remote ClamAV daemon used by the local AV c-icap instance.
-- `ENABLE_DANTE=1|0`: enable/disable SOCKS5.
-- `DANTE_PORT`: SOCKS5 listen port inside the container (default 1080).
-- `DANTE_ALLOW_FROM`: space-separated CIDRs allowed to connect to SOCKS5.
-- `DANTE_BLOCK_PRIVATE_DESTS=1|0`: block SOCKS requests to loopback + RFC1918 destinations.
-- `DANTE_SERVERS`: explicit Dante `sockd -N` override. Leave blank to derive from Squid workers (default `floor(workers / 2)`, minimum `1`).
-- `DANTE_LOG`: space-separated log keywords: `connect disconnect error data ioop tcpinfo` (default is `error` for lower hot-path logging overhead).
-- `DANTE_DEBUG`: debug verbosity level (`0` disables).
-- `DANTE_TIMEOUT_NEGOTIATE`, `DANTE_TIMEOUT_CONNECT`: negotiation/connect timeouts (seconds).
-- `DANTE_TIMEOUT_IO_TCP`, `DANTE_TIMEOUT_IO_UDP`: idle timeouts (seconds; `0` means forever).
-- `DANTE_UDP_CONNECTDST=yes|no`: connect UDP sockets to destination (default `yes`).
-- `DANTE_SESSION_MAX`: optional per-rule concurrent session cap (blank/0 disables).
-- `DANTE_SESSION_THROTTLE`: optional rate-limit (`connections/seconds`, e.g. `50/1`).
 - `ULIMIT_NOFILE`: optional file-descriptor limit for high concurrency.
 - `WEBFILTER_HELPERS`: explicit Squid external ACL helper count for web filtering. Leave blank to derive from Squid workers (default `2 × workers`).
 - `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default now scales with local container concurrency; expect roughly `4-8` in the proxy container unless you override it).
@@ -317,9 +300,7 @@ Common environment variables:
 - `PROXY_PUBLIC_PAC_URL`: optional full PAC URL override; when set, the proxy extracts scheme/host/port from it for PAC publishing.
 - `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`: scheme/port used when building the direct PAC URL (defaults `http`, `80`).
 - `PROXY_PUBLIC_HTTP_PROXY_PORT`: client-facing HTTP proxy port advertised in generated PAC files (default `3128`).
-- `PROXY_PUBLIC_SOCKS_PROXY_PORT`: client-facing SOCKS proxy port advertised in generated PAC files (default `1080`).
-- `PROXY_PUBLIC_SOCKS_ENABLED=1|0`: whether generated PAC files should advertise SOCKS first, then HTTP proxy, then DIRECT.
-- `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SOCKS_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`: proxy-side log/telemetry poll cadence. Defaults now settle at `2.0` seconds to reduce idle wakeups while keeping the UI reasonably fresh.
+- `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`: proxy-side log/telemetry poll cadence. Defaults now settle at `2.0` seconds to reduce idle wakeups while keeping the UI reasonably fresh.
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
 
 Admin UI (Gunicorn) tuning:
@@ -331,7 +312,7 @@ Admin UI (Gunicorn) tuning:
 
 ## Features (current)
 
-- **Operational visibility** pages for proxy health, live traffic, SSL/TLS error buckets, SOCKS activity, and proxy inventory.
+- **Operational visibility** pages for proxy health, live traffic, SSL/TLS error buckets, and proxy inventory.
 - **Policy controls** from the web UI:
   - Squid config editor (with safe defaults)
   - Exclusions (domain/CIDR policies for problematic destinations)
@@ -342,29 +323,6 @@ Admin UI (Gunicorn) tuning:
   - SSL Filtering (client CIDRs that must be spliced)
 - **PAC Builder** UI at `/pac` for managing per-proxy PAC profiles.
 - **Proxy-hosted PAC/WPAD** via the dedicated port 80 listener (`/proxy.pac`, `/wpad.dat`) on each proxy runtime.
-
-## SOCKS5 support (Dante)
-This container also runs a Dante SOCKS proxy on port `1080`.
-
-Default policy:
-- No authentication
-- Restricted to RFC1918 client ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
-- Allows both TCP and UDP (UDP relay support depends on the client)
-
-Configuration (optional):
-- Set `DANTE_ALLOW_FROM` (space-separated CIDRs) in `/config/app.env` to restrict allowed client networks.
-- `DANTE_BLOCK_PRIVATE_DESTS=1` blocks SOCKS requests to loopback + RFC1918 destinations (prevents using the proxy to reach internal networks).
-- Mount your own `/etc/sockd.conf` if you need a custom Dante policy.
-
-### Windows note (inetcpl.cpl)
-On Windows, the system proxy configured via **Internet Options (inetcpl.cpl)** is primarily an **HTTP/HTTPS proxy** feature. Many apps (and even some browsers) will not use a SOCKS proxy configured there, and some SOCKS settings only apply to dial-up/VPN profiles.
-
-To verify Dante is reachable from a client, test explicitly:
-`curl --socks5-hostname <host-ip>:1080 https://example.com -v`
-
-Also note: depending on Docker Desktop/NAT, Dante may log the source as a gateway/NAT IP rather than the true LAN client IP.
-
-If you need **true client IPs** inside the container logs, the most reliable option is to run this on a Linux Docker Engine host (or another deployment where the container receives connections without an extra NAT layer). On Docker Desktop (especially Windows), a VM/bridge is often in the path and can collapse all clients to a single gateway IP from the container's perspective.
 
 ## Host networking mode (optional)
 
@@ -392,7 +350,7 @@ This container uses an external MySQL database for runtime/admin state, includin
 - Authentication/user database
 - SSL Filtering (no-bump CIDRs)
 - Ad blocking state, counters, and recent events
-- Time-series rollups and SOCKS/SSL telemetry
+- Time-series rollups and SSL telemetry
 
 ## Ad Blocking (ICAP)
 This project supports ICAP-based request blocking using EasyList-style subscriptions.
@@ -558,7 +516,7 @@ This project supports:
 Security model:
 - Port 80 is served by a dedicated minimal HTTP server that only serves PAC endpoints.
 - PAC content is pre-rendered locally by the proxy runtime and served directly from the proxy container; the admin UI no longer serves PAC files on port `5000`.
-- Generated PAC files prefer `SOCKS5 <proxy-host>:<socks-port>; PROXY <proxy-host>:<http-port>; DIRECT` when the proxy advertises SOCKS, and otherwise return `PROXY <proxy-host>:<http-port>; DIRECT`.
+- Generated PAC files return `PROXY <proxy-host>:<http-port>; DIRECT`.
 
 ## Troubleshooting
 

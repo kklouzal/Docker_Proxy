@@ -193,22 +193,6 @@ class _FakeQueries:
             "adblock_icap_summary": {"events": 1},
         }
 
-    def transport_overview(self, *, since: int, search: str = "", limit: int = 20):
-        self.calls["transport"] = (since, search, limit)
-        recent_row = type(
-            "RecentSockEvent",
-            (),
-            {"ts": 9993, "action": "connect", "protocol": "tcp", "src_ip": "192.0.2.25", "src_port": 5555, "dst": "example.net", "dst_port": 443, "msg": "connect ok"},
-        )
-        return {
-            "summary": {"total": 7, "connects": 5, "blocked": 1, "errors": 0, "disconnects": 1},
-            "top_clients": [{"src_ip": "192.0.2.25", "events": 5, "connects": 4, "blocked": 1, "last_seen": 9993}],
-            "top_destinations": [{"dst": "example.net", "dst_port": 443, "events": 5, "blocked": 1, "last_seen": 9993}],
-            "recent": [recent_row],
-            "nat_warning": False,
-            "nat_warning_text": "",
-        }
-
     def overview_bundle(self, *, since: int, search: str = "", limit: int = 6, resolve_hostnames: bool = False):
         self.calls["overview"] = (since, search, limit, resolve_hostnames)
         return {
@@ -219,7 +203,6 @@ class _FakeQueries:
             "ssl": self.ssl_overview(since=since, search=search, limit=limit),
             "security": self.security_overview(since=since, search=search, limit=limit),
             "performance": self.performance_overview(since=since, limit=limit),
-            "transport": self.transport_overview(since=since, search=search, limit=limit),
         }
 
 
@@ -237,7 +220,6 @@ def test_observability_page_renders_overview_pane(monkeypatch):
     body = response.data.decode("utf-8", errors="replace")
     assert "Largest signals" in body
     assert "Security and enforcement overview" in body
-    assert "Transport health" in body
     assert fake_queries.calls["overview"] == (10_200, "example", 10, True)
 
 
@@ -328,23 +310,6 @@ def test_observability_page_renders_security_pane(monkeypatch):
     assert "Content-filtering blocks" in body
     assert "malware.example" in body
     assert fake_queries.calls["security"] == (36_400, "malware", 50)
-
-
-def test_observability_export_returns_csv_for_transport_pane(monkeypatch):
-    app_module = import_local_app_module()
-    fake_queries = _FakeQueries()
-    _install_queries(app_module, fake_queries)
-    monkeypatch.setattr(app_module.time, "time", lambda: 50_000)
-
-    client = app_module.app.test_client()
-    login(client)
-
-    response = client.get("/observability/export?pane=transport&window=7200&limit=25&q=example")
-    assert response.status_code == 200
-    body = response.data.decode("utf-8", errors="replace")
-    assert "ts;action;protocol;client_ip;client_port;destination;destination_port;message" in body
-    assert "example.net" in body
-    assert fake_queries.calls["transport"] == (42_800, "example", 25)
 
 
 def test_observability_export_returns_empty_overview_csv_when_query_fails(monkeypatch):

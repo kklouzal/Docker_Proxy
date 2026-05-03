@@ -31,8 +31,6 @@ def _seed_registry(*proxy_ids: str):
             public_pac_scheme="http",
             public_pac_port=80,
             public_http_proxy_port=3128,
-            public_socks_proxy_port=1080,
-            public_socks_enabled=True,
         )
     return registry
 

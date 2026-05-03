@@ -5,14 +5,9 @@ def test_monitoring_pages_link_back_to_observability_hub(app_module):
     c = app_module.app.test_client()
     login(c)
 
-    expected = {
-        "/ssl-errors": "ssl",
-        "/socks": "transport",
-    }
-    for path, pane in expected.items():
-        response = c.get(path, follow_redirects=False)
-        assert response.status_code in (301, 302, 303, 307, 308)
-        assert redirect_query_params(response).get("pane") == [pane]
+    response = c.get("/ssl-errors", follow_redirects=False)
+    assert response.status_code in (301, 302, 303, 307, 308)
+    assert redirect_query_params(response).get("pane") == ["ssl"]
 
 
 def test_policy_pages_link_back_to_observability_hub(app_module):

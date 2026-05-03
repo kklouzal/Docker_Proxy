@@ -250,13 +250,12 @@ def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(tm
     assert reasons[1]["requests"] == 1
 
 
-def test_observability_queries_surface_ssl_security_performance_and_transport(tmp_path, monkeypatch):
+def test_observability_queries_surface_ssl_security_and_performance(tmp_path, monkeypatch):
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-hub")
 
     from services.adblock_store import AdblockStore  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
-    from services.socks_store import SocksStore  # type: ignore
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
     from services.webfilter_store import WebFilterStore  # type: ignore
     import services.observability_queries as observability_queries  # type: ignore
@@ -269,8 +268,6 @@ def test_observability_queries_surface_ssl_security_performance_and_transport(tm
     adblock_store.init_db()
     webfilter_store = WebFilterStore()
     webfilter_store.init_db()
-    socks_store = SocksStore()
-    socks_store.init_db()
     queries = observability_queries.ObservabilityQueries()
 
     _insert_request(
@@ -336,17 +333,10 @@ def test_observability_queries_surface_ssl_security_performance_and_transport(tm
             ("default", 3020, "192.0.2.42", "https://adult.example/video", "adult"),
         )
 
-    with socks_store._connect() as conn:
-        conn.execute(
-            "INSERT INTO socks_events(proxy_id, ts, action, protocol, src_ip, src_port, dst, dst_port, msg) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("default", 3025, "connect", "tcp", "192.0.2.43", 5151, "example.net", 443, "connect ok"),
-        )
-
     monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: diag_store)
     monkeypatch.setattr(observability_queries, "get_ssl_errors_store", lambda: ssl_store)
     monkeypatch.setattr(observability_queries, "get_adblock_store", lambda: adblock_store)
     monkeypatch.setattr(observability_queries, "get_webfilter_store", lambda: webfilter_store)
-    monkeypatch.setattr(observability_queries, "get_socks_store", lambda: socks_store)
 
     ssl_payload = queries.ssl_overview(since=2800, limit=10)
     assert ssl_payload["summary"]["bucket_count"] == 1
@@ -365,11 +355,6 @@ def test_observability_queries_surface_ssl_security_performance_and_transport(tm
     assert performance_payload["slow_requests"][0]["target_display"] == "ads.example"
     assert performance_payload["slow_icap_events"][0]["target_display"] == "malware.example"
     assert performance_payload["top_user_agents"][0]["label"] == "pytest/1.0"
-
-    transport_payload = queries.transport_overview(since=2800, limit=10)
-    assert transport_payload["summary"]["total"] == 1
-    assert transport_payload["top_clients"][0]["src_ip"] == "192.0.2.43"
-    assert transport_payload["recent"][0].dst == "example.net"
 
     overview = queries.overview_bundle(since=2800, limit=5, resolve_hostnames=False)
     assert overview["summary"]["request_records"] == 2

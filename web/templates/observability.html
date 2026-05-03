@@ -20,7 +20,6 @@
     <div class="page-actions">
       <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window, q=search) }}">Security pane</a>
       <a class="btn ghost" href="{{ url_for('observability', pane='performance', window=window) }}">Performance pane</a>
-      <a class="btn ghost" href="{{ url_for('observability', pane='transport', window=window, q=search) }}">Transport pane</a>
       <a class="btn ghost" href="{{ url_for('clamav', window=window) }}">ClamAV controls</a>
       <a class="btn ghost" href="{{ url_for('webfilter', tab='categories') }}">Web filtering controls</a>
       <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Export CSV</a>
@@ -30,7 +29,7 @@
 
 <section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'Every number and quick action in this observability hub is scoped to ' ~ active_proxy.display_name ~ ' only.') %}
-<div>Use the pane tabs below to reorganize the same request facts by destination, client, cache, SSL incidents, security enforcement, performance, or SOCKS transport.</div>
+<div>Use the pane tabs below to reorganize the same request facts by destination, client, cache, SSL incidents, security enforcement, or performance.</div>
 {% endcall %}
 </section>
 
@@ -42,7 +41,6 @@
   <a class="btn {{ 'primary' if pane == 'ssl' else 'ghost' }}" href="{{ url_for('observability', pane='ssl', window=window, limit=limit, q=search) }}">SSL</a>
   <a class="btn {{ 'primary' if pane == 'security' else 'ghost' }}" href="{{ url_for('observability', pane='security', window=window, limit=limit, q=search) }}">Security</a>
   <a class="btn {{ 'primary' if pane == 'performance' else 'ghost' }}" href="{{ url_for('observability', pane='performance', window=window, limit=limit) }}">Performance</a>
-  <a class="btn {{ 'primary' if pane == 'transport' else 'ghost' }}" href="{{ url_for('observability', pane='transport', window=window, limit=limit, q=search) }}">Transport</a>
 </div>
 
 <section class="card">
@@ -95,7 +93,7 @@
       </div>
       {% endif %}
 
-      {% if pane in ['destinations', 'clients', 'cache', 'overview', 'ssl', 'security', 'transport'] %}
+      {% if pane in ['destinations', 'clients', 'cache', 'overview', 'ssl', 'security'] %}
       <div class="row-2">
         {% if pane in ['destinations', 'clients', 'cache'] %}
         <div>
@@ -142,7 +140,6 @@
       <div class="stat compact-stat"><div class="stat-k">SSL buckets</div><div class="stat-v">{{ payload.ssl.summary.bucket_count }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Potential AV findings</div><div class="stat-v">{{ payload.security.summary.potential_findings }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Content-control blocks</div><div class="stat-v">{{ payload.security.summary.combined_blocks }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">SOCKS events</div><div class="stat-v">{{ payload.transport.summary.total or 0 }}</div></div>
     </div>
     <div class="surface-note small">This snapshot is intentionally opinionated: it highlights the traffic, incidents, and enforcement signals administrators usually care about first before drilling into a specialist page.</div>
   </div>
@@ -243,19 +240,6 @@
       {% if not payload.performance.slow_requests %}<div class="surface-note small">No slow request samples in this window.</div>{% endif %}
     </div>
   </section>
-
-  <section class="card split-right">
-    <div class="card-header"><h2 class="card-title">Transport health</h2><span class="badge">SOCKS</span></div>
-    <div class="card-body content-stack">
-      <div class="summary-grid">
-        <div class="stat compact-stat"><div class="stat-k">Events</div><div class="stat-v">{{ payload.transport.summary.total or 0 }}</div></div>
-        <div class="stat compact-stat"><div class="stat-k">Blocked</div><div class="stat-v">{{ payload.transport.summary.blocked or 0 }}</div></div>
-        <div class="stat compact-stat"><div class="stat-k">Errors</div><div class="stat-v">{{ payload.transport.summary.errors or 0 }}</div></div>
-      </div>
-      {% if payload.transport.nat_warning %}<div class="banner warning"><div class="banner-copy"><strong>Client IPs may be masked</strong><div class="small">{{ payload.transport.nat_warning_text }}</div></div></div>{% endif %}
-      <div class="actions"><a class="btn" href="{{ url_for('observability', pane='transport', window=window, q=search) }}">Open transport pane</a></div>
-    </div>
-  </section>
 </div>
 
 {% elif pane == 'destinations' %}
@@ -303,7 +287,7 @@
           <td class="num">{{ row.av_icap_events }}</td>
           <td class="num">{{ row.adblock_icap_events }}</td>
           <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
-          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='clients', q=row.ip, window=window, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Focus</a><a class="btn" href="{{ url_for('observability', pane='security', q=row.ip, window=window) }}">Security</a><a class="btn" href="{{ url_for('observability', pane='transport', q=row.ip, window=window) }}">Transport</a></div></td>
+          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='clients', q=row.ip, window=window, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Focus</a><a class="btn" href="{{ url_for('observability', pane='security', q=row.ip, window=window) }}">Security</a></div></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -527,45 +511,5 @@
   </div>
 </section>
 
-{% elif pane == 'transport' %}
-<section class="card">
-  <div class="card-header"><h2 class="card-title">SOCKS transport summary</h2><span class="badge">window {{ window_label }}</span></div>
-  <div class="card-body">
-    <div class="summary-grid">
-      <div class="stat compact-stat"><div class="stat-k">Events</div><div class="stat-v">{{ payload.summary.total or 0 }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Connects</div><div class="stat-v">{{ payload.summary.connects or 0 }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Blocked</div><div class="stat-v">{{ payload.summary.blocked or 0 }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Errors</div><div class="stat-v">{{ payload.summary.errors or 0 }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Disconnects</div><div class="stat-v">{{ payload.summary.disconnects or 0 }}</div></div>
-    </div>
-    {% if payload.nat_warning %}<div class="banner warning"><div class="banner-copy"><strong>Client IPs may be masked</strong><div class="small">{{ payload.nat_warning_text }}</div></div></div>{% endif %}
-  </div>
-</section>
-
-<div class="grid">
-  <section class="card split-left">
-    <div class="card-header"><h2 class="card-title">Top clients</h2><span class="badge">{{ payload.top_clients|length }} rows</span></div>
-    <div class="card-body">
-      <div class="table-wrap"><table class="table"><thead><tr><th>Client</th><th class="num">Events</th><th class="num">Connects</th><th class="num">Blocked</th><th class="num">Last seen</th></tr></thead><tbody>{% for row in payload.top_clients %}<tr><td class="mono">{{ row.src_ip }}</td><td class="num">{{ row.events }}</td><td class="num">{{ row.connects }}</td><td class="num">{{ row.blocked }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>{% endfor %}</tbody></table></div>
-      {% if not payload.top_clients %}<div class="surface-note small">No SOCKS client activity in this window.</div>{% endif %}
-    </div>
-  </section>
-
-  <section class="card split-right">
-    <div class="card-header"><h2 class="card-title">Top destinations</h2><span class="badge">{{ payload.top_destinations|length }} rows</span></div>
-    <div class="card-body">
-      <div class="table-wrap"><table class="table"><thead><tr><th>Destination</th><th class="num">Port</th><th class="num">Events</th><th class="num">Blocked</th><th class="num">Last seen</th></tr></thead><tbody>{% for row in payload.top_destinations %}<tr><td class="mono">{{ row.dst }}</td><td class="num">{{ row.dst_port }}</td><td class="num">{{ row.events }}</td><td class="num">{{ row.blocked }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>{% endfor %}</tbody></table></div>
-      {% if not payload.top_destinations %}<div class="surface-note small">No SOCKS destination activity in this window.</div>{% endif %}
-    </div>
-  </section>
-</div>
-
-<section class="card">
-  <div class="card-header"><h2 class="card-title">Recent SOCKS events</h2><span class="badge">{{ payload.recent|length }} rows</span></div>
-  <div class="card-body">
-    <div class="table-wrap"><table class="table"><thead><tr><th class="num">Time</th><th>Action</th><th>Proto</th><th>Client</th><th>Destination</th><th>Message</th></tr></thead><tbody>{% for row in payload.recent %}<tr><td class="num"><span class="small">{{ fmt_ts(row.ts) }}</span></td><td class="mono">{{ row.action }}</td><td class="mono">{{ row.protocol }}</td><td class="mono">{{ row.src_ip if row.src_ip else '-' }}{% if row.src_port %}:{{ row.src_port }}{% endif %}</td><td class="mono">{{ row.dst if row.dst else '-' }}{% if row.dst_port %}:{{ row.dst_port }}{% endif %}</td><td class="small mono text-break">{{ row.msg }}</td></tr>{% endfor %}</tbody></table></div>
-    {% if not payload.recent %}<div class="surface-note small">No SOCKS events matched this window.</div>{% endif %}
-  </div>
-</section>
 {% endif %}
 {% endblock %}

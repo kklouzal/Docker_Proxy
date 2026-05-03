@@ -18,20 +18,6 @@ class FakeSSLErrorsStore:
         return []
 
 
-class FakeSocksStore:
-    def summary(self, *, since: int):
-        return {"total": 0, "clients": 0, "dests": 0}
-
-    def top_clients(self, *, since: int, limit: int, search: str = ""):
-        return []
-
-    def top_destinations(self, *, since: int, limit: int, search: str = ""):
-        return []
-
-    def recent(self, *, limit: int, since: int, search: str = ""):
-        return []
-
-
 @dataclass
 class FakeAdblockStatus:
     key: str
@@ -414,7 +400,6 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
                 "services": {
                     "icap": {"ok": True, "detail": "stub"},
                     "clamav": {"ok": True, "detail": "stub"},
-                    "dante": {"ok": True, "detail": "stub"},
                     "clamd": {"ok": True, "detail": "stub"},
                     "av_icap": {"ok": True, "detail": "stub"},
                 },
@@ -438,7 +423,6 @@ def install_common_ui_test_doubles(monkeypatch, app_module):
         get_timeseries_store=lambda: FakeTimeseriesStore(),
         get_ssl_errors_store=lambda: FakeSSLErrorsStore(),
         get_exclusions_store=lambda: fake_ex_store,
-        get_socks_store=lambda: FakeSocksStore(),
         get_adblock_store=lambda: fake_adblock_store,
         get_webfilter_store=lambda: fake_webfilter_store,
         get_sslfilter_store=lambda: fake_sslfilter_store,

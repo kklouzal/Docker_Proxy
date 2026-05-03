@@ -10,7 +10,6 @@ from services.adblock_store import get_adblock_store
 from services.audit_store import get_audit_store
 from services.diagnostic_store import get_diagnostic_store
 from services.live_stats import get_store
-from services.socks_store import get_socks_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.logutil import log_exception_throttled
 
@@ -55,7 +54,6 @@ def _run_once(*, retention_days: int) -> None:
     # Best-effort: each store handles its own DB locks and failures.
     _run_with_db_lock_retry(lambda: get_store().prune_old_entries(retention_days=retention_days))
     _run_with_db_lock_retry(lambda: get_diagnostic_store().prune_old_entries(retention_days=retention_days))
-    _run_with_db_lock_retry(lambda: get_socks_store().prune_old_entries(retention_days=retention_days))
     _run_with_db_lock_retry(lambda: get_adblock_store().prune_old_entries(retention_days=retention_days))
     _run_with_db_lock_retry(lambda: get_ssl_errors_store().prune_old_entries(retention_days=retention_days))
     _run_with_db_lock_retry(lambda: get_audit_store().prune_old_entries(retention_days=retention_days))

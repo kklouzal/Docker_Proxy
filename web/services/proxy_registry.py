@@ -67,21 +67,11 @@ def resolve_local_proxy_public_fields() -> dict[str, object]:
     default_pac_port = 443 if public_pac_scheme == "https" else 80
     public_pac_port = _coerce_port(os.environ.get("PROXY_PUBLIC_PAC_PORT"), url_port or default_pac_port)
     public_http_proxy_port = _coerce_port(os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"), 3128)
-    public_socks_proxy_port = _coerce_port(
-        os.environ.get("PROXY_PUBLIC_SOCKS_PROXY_PORT") or os.environ.get("DANTE_PORT"),
-        1080,
-    )
-    public_socks_enabled = _coerce_bool(
-        os.environ.get("PROXY_PUBLIC_SOCKS_ENABLED"),
-        _coerce_bool(os.environ.get("ENABLE_DANTE"), True),
-    )
     return {
         "public_host": public_host,
         "public_pac_scheme": public_pac_scheme,
         "public_pac_port": public_pac_port,
         "public_http_proxy_port": public_http_proxy_port,
-        "public_socks_proxy_port": public_socks_proxy_port,
-        "public_socks_enabled": public_socks_enabled,
     }
 
 
@@ -95,8 +85,6 @@ class ProxyInstance:
     public_pac_scheme: str
     public_pac_port: int
     public_http_proxy_port: int
-    public_socks_proxy_port: int
-    public_socks_enabled: bool
     status: str
     last_heartbeat: int
     last_apply_ts: int
@@ -135,8 +123,6 @@ class ProxyRegistry:
                     public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',
                     public_pac_port INT NOT NULL DEFAULT 80,
                     public_http_proxy_port INT NOT NULL DEFAULT 3128,
-                    public_socks_proxy_port INT NOT NULL DEFAULT 1080,
-                    public_socks_enabled TINYINT(1) NOT NULL DEFAULT 1,
                     status VARCHAR(32) NOT NULL DEFAULT 'unknown',
                     last_heartbeat BIGINT NOT NULL DEFAULT 0,
                     last_apply_ts BIGINT NOT NULL DEFAULT 0,
@@ -156,12 +142,15 @@ class ProxyRegistry:
                 "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
                 "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
                 "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
-                "public_socks_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_socks_proxy_port INT NOT NULL DEFAULT 1080 AFTER public_http_proxy_port",
-                "public_socks_enabled": "ALTER TABLE proxy_instances ADD COLUMN public_socks_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER public_socks_proxy_port",
             }
             for column_name, ddl in required_columns.items():
                 if column_name not in columns:
                     conn.execute(ddl)
+            # Explicit destructive cleanup for removed SOCKS support.
+            for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
+                if column_name in columns:
+                    conn.execute(f"ALTER TABLE proxy_instances DROP COLUMN {column_name}")
+            conn.execute("DROP TABLE IF EXISTS socks_events")
 
     def _row_to_instance(self, row: object | None) -> Optional[ProxyInstance]:
         if not row:
@@ -175,8 +164,6 @@ class ProxyRegistry:
             public_pac_scheme=_normalize_public_scheme(row["public_pac_scheme"]),
             public_pac_port=_coerce_port(row["public_pac_port"], 80),
             public_http_proxy_port=_coerce_port(row["public_http_proxy_port"], 3128),
-            public_socks_proxy_port=_coerce_port(row["public_socks_proxy_port"], 1080),
-            public_socks_enabled=_coerce_bool(row["public_socks_enabled"], True),
             status=str(row["status"] or "unknown"),
             last_heartbeat=int(row["last_heartbeat"] or 0),
             last_apply_ts=int(row["last_apply_ts"] or 0),
@@ -198,8 +185,6 @@ class ProxyRegistry:
         public_pac_scheme: str | None = None,
         public_pac_port: int | None = None,
         public_http_proxy_port: int | None = None,
-        public_socks_proxy_port: int | None = None,
-        public_socks_enabled: bool | None = None,
         status: str | None = None,
         detail: str | None = None,
     ) -> ProxyInstance:
@@ -217,12 +202,11 @@ class ProxyRegistry:
                     INSERT INTO proxy_instances(
                         proxy_id, display_name, hostname, management_url,
                         public_host, public_pac_scheme, public_pac_port,
-                        public_http_proxy_port, public_socks_proxy_port, public_socks_enabled,
-                        status,
+                        public_http_proxy_port, status,
                         last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha,
                         detail, created_ts, updated_ts
                     )
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         proxy_key,
@@ -233,8 +217,6 @@ class ProxyRegistry:
                         _normalize_public_scheme(public_pac_scheme),
                         _coerce_port(public_pac_port, 80),
                         _coerce_port(public_http_proxy_port, 3128),
-                        _coerce_port(public_socks_proxy_port, 1080),
-                        1 if _coerce_bool(public_socks_enabled, True) else 0,
                         (status or "unknown").strip() or "unknown",
                         0,
                         0,
@@ -265,14 +247,6 @@ class ProxyRegistry:
                     public_http_proxy_port if public_http_proxy_port is not None else row["public_http_proxy_port"],
                     3128,
                 )
-                next_public_socks_proxy_port = _coerce_port(
-                    public_socks_proxy_port if public_socks_proxy_port is not None else row["public_socks_proxy_port"],
-                    1080,
-                )
-                next_public_socks_enabled = _coerce_bool(
-                    public_socks_enabled if public_socks_enabled is not None else row["public_socks_enabled"],
-                    True,
-                )
                 next_status = (row["status"] if status is None else status)
                 next_status = (next_status or "unknown").strip() or "unknown"
                 next_detail = (detail if detail is not None else row["detail"] or "").strip()
@@ -281,8 +255,7 @@ class ProxyRegistry:
                     UPDATE proxy_instances
                     SET display_name=%s, hostname=%s, management_url=%s,
                         public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
-                        public_http_proxy_port=%s, public_socks_proxy_port=%s, public_socks_enabled=%s,
-                        status=%s, detail=%s, updated_ts=%s
+                        public_http_proxy_port=%s, status=%s, detail=%s, updated_ts=%s
                     WHERE proxy_id=%s
                     """,
                     (
@@ -293,8 +266,6 @@ class ProxyRegistry:
                         next_public_pac_scheme,
                         next_public_pac_port,
                         next_public_http_proxy_port,
-                        next_public_socks_proxy_port,
-                        1 if next_public_socks_enabled else 0,
                         next_status,
                         next_detail,
                         now,
@@ -354,8 +325,6 @@ class ProxyRegistry:
         public_pac_scheme: str | None = None,
         public_pac_port: int | None = None,
         public_http_proxy_port: int | None = None,
-        public_socks_proxy_port: int | None = None,
-        public_socks_enabled: bool | None = None,
         current_config_sha: str | None = None,
         detail: str | None = None,
     ) -> ProxyInstance:
@@ -368,8 +337,6 @@ class ProxyRegistry:
             public_pac_scheme=public_pac_scheme,
             public_pac_port=public_pac_port,
             public_http_proxy_port=public_http_proxy_port,
-            public_socks_proxy_port=public_socks_proxy_port,
-            public_socks_enabled=public_socks_enabled,
             status=status,
             detail=detail,
         )
@@ -380,8 +347,7 @@ class ProxyRegistry:
                 UPDATE proxy_instances
                 SET status=%s, hostname=%s, management_url=%s,
                     public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
-                    public_http_proxy_port=%s, public_socks_proxy_port=%s, public_socks_enabled=%s,
-                    last_heartbeat=%s,
+                    public_http_proxy_port=%s, last_heartbeat=%s,
                     current_config_sha=%s, detail=%s, updated_ts=%s
                 WHERE proxy_id=%s
                 """,
@@ -396,16 +362,6 @@ class ProxyRegistry:
                         public_http_proxy_port if public_http_proxy_port is not None else instance.public_http_proxy_port,
                         3128,
                     ),
-                    _coerce_port(
-                        public_socks_proxy_port if public_socks_proxy_port is not None else instance.public_socks_proxy_port,
-                        1080,
-                    ),
-                    1
-                    if _coerce_bool(
-                        public_socks_enabled if public_socks_enabled is not None else instance.public_socks_enabled,
-                        True,
-                    )
-                    else 0,
                     now,
                     (current_config_sha or instance.current_config_sha).strip(),
                     (detail if detail is not None else instance.detail).strip(),
@@ -460,8 +416,6 @@ class ProxyRegistry:
             public_pac_scheme=str(public_fields["public_pac_scheme"] or "http"),
             public_pac_port=int(public_fields["public_pac_port"] or 80),
             public_http_proxy_port=int(public_fields["public_http_proxy_port"] or 3128),
-            public_socks_proxy_port=int(public_fields["public_socks_proxy_port"] or 1080),
-            public_socks_enabled=bool(public_fields["public_socks_enabled"]),
             status="starting" if existing is None else None,
         )
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-import ipaddress
 from typing import Any, Dict, List
 
 from services.adblock_store import get_adblock_store
@@ -10,7 +9,6 @@ from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason_sql as _not_cached_reason_sql, present_value_sql as _present_value_sql
-from services.socks_store import get_socks_store
 from services.ssl_errors_store import get_ssl_errors_store
 from services.ui_support import (
     present_icap_events,
@@ -44,18 +42,6 @@ def _badge_rows(counter: Counter[str], *, limit: int = 8) -> List[Dict[str, Any]
             }
         )
     return rows
-
-
-def _is_private_ip(value: str) -> bool:
-    try:
-        return ipaddress.ip_address((value or "").strip()).is_private
-    except Exception:
-        return False
-
-
-def _looks_like_docker_bridge(value: str) -> bool:
-    ip = (value or "").strip()
-    return ip.startswith("172.17.") or ip.startswith("172.18.") or ip.startswith("172.19.") or ip.startswith("172.20.")
 
 
 class ObservabilityQueries:
@@ -723,32 +709,6 @@ class ObservabilityQueries:
             'adblock_icap_summary': diagnostic_store.icap_summary(since=since, service='adblock'),
         }
 
-    def transport_overview(self, *, since: int, search: str = '', limit: int = 20) -> Dict[str, Any]:
-        store = get_socks_store()
-        lim = max(5, min(50, int(limit)))
-        recent = store.recent(limit=min(max(lim * 2, 20), 100), since=since, search=search)
-        unique_ips = sorted({str(event.src_ip or '').strip() for event in recent if getattr(event, 'src_ip', '')})
-        nat_warning = False
-        nat_warning_text = ''
-        if len(unique_ips) == 1 and _is_private_ip(unique_ips[0]):
-            nat_warning = True
-            if _looks_like_docker_bridge(unique_ips[0]):
-                nat_warning_text = (
-                    f'All recent SOCKS events appear to come from {unique_ips[0]}. This often means Docker bridge/NAT is masking the real clients.'
-                )
-            else:
-                nat_warning_text = (
-                    f'All recent SOCKS events appear to come from {unique_ips[0]}. This may be upstream NAT masking the real clients.'
-                )
-        return {
-            'summary': store.summary(since=since),
-            'top_clients': store.top_clients(since=since, limit=lim, search=search),
-            'top_destinations': store.top_destinations(since=since, limit=lim, search=search),
-            'recent': recent[:lim],
-            'nat_warning': nat_warning,
-            'nat_warning_text': nat_warning_text,
-        }
-
     def overview_bundle(self, *, since: int, search: str = '', limit: int = 6, resolve_hostnames: bool = False) -> Dict[str, Any]:
         lim = max(3, min(10, int(limit)))
         return {
@@ -759,7 +719,6 @@ class ObservabilityQueries:
             'ssl': self.ssl_overview(since=since, search=search, limit=lim),
             'security': self.security_overview(since=since, search=search, limit=lim),
             'performance': self.performance_overview(since=since, limit=lim),
-            'transport': self.transport_overview(since=since, search=search, limit=lim),
         }
 
 

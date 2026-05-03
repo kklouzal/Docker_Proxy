@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 .tmp/
+.tmp_proxy_debug/
 *.db
 *.log
 *.env

@@ -19,16 +19,15 @@ from services.certificate_core import CertManager, materialize_certificate_bundl
 from services.config_revisions import get_config_revisions
 from services.diagnostic_store import get_diagnostic_store
 from services.errors import public_error_message
-from services.health_checks import build_clamav_health, check_local_listener as _check_local_listener
+from services.health_checks import build_clamav_health
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
-from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, check_dante_health as _shared_check_dante, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
+from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_context import get_proxy_id
 from services.proxy_registry import get_proxy_registry, resolve_local_proxy_public_fields
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
 from services.runtime_helpers import decode_bytes as _decode_bytes
-from services.socks_store import get_socks_store
 from services.squid_core import SquidController
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
@@ -51,7 +50,6 @@ class ProxyRuntimeServices:
     diagnostic_store: Any
     timeseries_store: Any
     ssl_errors_store: Any
-    socks_store: Any
     stats_provider: Any
     runtime_services_builder: Any
     policy_state_builder: Any
@@ -79,7 +77,6 @@ def build_runtime_services(**overrides: Any) -> ProxyRuntimeServices:
         diagnostic_store=get_diagnostic_store(),
         timeseries_store=get_timeseries_store(),
         ssl_errors_store=get_ssl_errors_store(),
-        socks_store=get_socks_store(),
         stats_provider=get_stats,
         runtime_services_builder=build_local_runtime_services,
         policy_state_builder=build_proxy_policy_state,
@@ -95,28 +92,15 @@ def _call_health_check(func, /, **kwargs):
         return func()
 
 
-def _check_dante(*, timeout: float = 0.75) -> Dict[str, Any]:
-    host = (os.environ.get("DANTE_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-    try:
-        port = int((os.environ.get("DANTE_PORT") or "1080").strip() or "1080")
-    except Exception:
-        port = 1080
-    if host in {"127.0.0.1", "localhost", "::1"}:
-        return _check_local_listener("dante", host, port)
-    return _shared_check_dante(timeout=timeout, error_formatter=str)
-
-
 def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0.8, tcp_timeout: float = 0.75) -> Dict[str, Dict[str, Any]]:
     icap = _call_health_check(_check_icap_adblock, timeout=icap_timeout, error_formatter=error_formatter)
     av_icap = _call_health_check(_check_icap_av, timeout=icap_timeout, error_formatter=error_formatter)
     clamd = _call_health_check(_check_clamd, timeout=icap_timeout, error_formatter=error_formatter)
-    dante = _check_dante(timeout=tcp_timeout)
     return {
         "icap": icap,
         "av_icap": av_icap,
         "clamd": clamd,
         "clamav": build_clamav_health(clamd, av_icap),
-        "dante": dante,
     }
 
 def _decode_completed(proc: Any) -> str:
@@ -141,7 +125,6 @@ class ProxyRuntime:
         self.diagnostic_store = self.services.diagnostic_store
         self.timeseries_store = self.services.timeseries_store
         self.ssl_errors_store = self.services.ssl_errors_store
-        self.socks_store = self.services.socks_store
         self.stats_provider = self.services.stats_provider
         self.runtime_services_builder = self.services.runtime_services_builder
         self.policy_state_builder = self.services.policy_state_builder
@@ -673,7 +656,6 @@ class ProxyRuntime:
         self.diagnostic_store.start_background()
         self.timeseries_store.start_background(self.stats_provider)
         self.ssl_errors_store.start_background()
-        self.socks_store.start_background()
         try:
             self.adblock_store.start_blocklog_background()
         except Exception:
@@ -776,8 +758,6 @@ class ProxyRuntime:
             public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
             public_pac_port=int(public_fields.get("public_pac_port") or 80),
             public_http_proxy_port=int(public_fields.get("public_http_proxy_port") or 3128),
-            public_socks_proxy_port=int(public_fields.get("public_socks_proxy_port") or 1080),
-            public_socks_enabled=bool(public_fields.get("public_socks_enabled")),
             current_config_sha=str(health.get("current_config_sha") or ""),
             detail=str(health.get("proxy_status") or "")[:4000],
         )

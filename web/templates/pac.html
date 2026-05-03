@@ -48,15 +48,15 @@
         <div class="stat-v">{{ profiles|length }}</div>
       </div>
       <div class="stat compact-stat">
-        <div class="stat-k">Transport order</div>
-        <div class="stat-v">{{ 'SOCKS → HTTP → DIRECT' if pac_target.socks_enabled else 'HTTP → DIRECT' }}</div>
+        <div class="stat-k">Proxy chain</div>
+        <div class="stat-v">HTTP → DIRECT</div>
       </div>
       <div class="stat compact-stat">
         <div class="stat-k">Fallback mode</div>
         <div class="stat-v">{{ 'Profile-based' if profiles|length else 'Exclusions PAC' }}</div>
       </div>
     </div>
-    <div class="surface-note small">PAC profiles now choose <em>who</em> gets which DIRECT rules. The selected proxy&apos;s own advertised listeners define the transport chain returned to clients.</div>
+    <div class="surface-note small">PAC profiles now choose <em>who</em> gets which DIRECT rules. The selected proxy&apos;s own advertised listeners define the proxy chain returned to clients.</div>
   </div>
 </section>
 
@@ -74,7 +74,7 @@
         <div class="surface-note small">No authoritative PAC URL is available yet for {{ active_proxy.display_name }}.</div>
       {% endif %}
       <div class="surface-note small">The proxy chooses which PAC content to return based on the requester IP (for example <span class="mono">REMOTE_ADDR</span> or <span class="mono">X-Forwarded-For</span>).</div>
-      <div class="surface-note small">Advertised transport chain: <span class="mono">{{ pac_target.transport_chain_display }}</span></div>
+      <div class="surface-note small">Advertised proxy chain: <span class="mono">{{ pac_target.proxy_chain_display }}</span></div>
       {% if pac_target.uses_request_host_fallback %}
         <div class="surface-note small">Until an explicit public PAC host is configured, the proxy can still substitute the request Host header when clients fetch <span class="mono">/proxy.pac</span> directly from that proxy.</div>
       {% endif %}
@@ -103,7 +103,7 @@
           </div>
         </div>
 
-        <div class="surface-note small">Transport returned by this proxy is fixed at <span class="mono">{{ pac_target.transport_chain_display }}</span>. PAC profiles on this page only add DIRECT rules and client matching.</div>
+        <div class="surface-note small">The proxy chain returned by this proxy is fixed at <span class="mono">{{ pac_target.proxy_chain_display }}</span>. PAC profiles on this page only add DIRECT rules and client matching.</div>
 
         <div class="row-2">
           <div>
@@ -160,7 +160,7 @@
                 </div>
               </div>
 
-              <div class="surface-note small">Clients matching this profile receive the selected proxy&apos;s transport chain <span class="mono">{{ pac_target.transport_chain_display }}</span>, plus the DIRECT rules below.</div>
+              <div class="surface-note small">Clients matching this profile receive the selected proxy chain <span class="mono">{{ pac_target.proxy_chain_display }}</span>, plus the DIRECT rules below.</div>
 
               <div class="row-2">
                 <div>

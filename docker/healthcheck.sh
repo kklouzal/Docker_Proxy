@@ -45,23 +45,9 @@ if ! python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1
     exit 1
 fi
 
-# Check Dante liveness (process exists)
-if ! ps 2>/dev/null | grep -q '[s]ockd'; then
-    echo "Dante (sockd) is not running"
-    exit 1
-fi
-
-# Check Dante liveness without creating synthetic traffic/log rows.
-# Parse /proc/net/tcp{,6} to confirm the port is listening rather than opening
-# a probe connection that Dante would record in sockd.log every 15 seconds.
-if ! has_listen_socket "${DANTE_PORT:-1080}" >/dev/null 2>&1; then
-    echo "Dante (sockd) is not listening on its configured port"
-    exit 1
-fi
-
 # Check c-icap liveness without generating synthetic OPTIONS traffic.
-# As with Dante, confirm both ICAP ports are listening instead of probing the
-# services over the protocol, which would otherwise pollute c-icap access logs
+# Confirm both ICAP ports are listening instead of probing the services over
+# the protocol, which would otherwise pollute c-icap access logs
 # every 15 seconds.
 if ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1 || ! has_listen_socket "${CICAP_AV_PORT:-14001}" >/dev/null 2>&1; then
     echo "One or more c-icap services are not listening on their configured ports"

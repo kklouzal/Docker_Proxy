@@ -60,7 +60,6 @@ class FakeProxyClient:
                 "av_icap": {"ok": True, "detail": "av ok", "host": "clamav.internal", "port": 14001, "target": "clamav.internal:14001", "service": "/avrespmod"},
                 "clamd": {"ok": True, "detail": "PONG (clamav.internal:3310)", "host": "clamav.internal", "port": 3310, "target": "clamav.internal:3310"},
                 "clamav": {"ok": True, "detail": "AV c-icap=av ok | clamd=PONG (clamav.internal:3310)", "components": {"av_icap": {"ok": True, "detail": "av ok", "host": "clamav.internal", "port": 14001, "target": "clamav.internal:14001", "service": "/avrespmod"}, "clamd": {"ok": True, "detail": "PONG (clamav.internal:3310)", "host": "clamav.internal", "port": 3310, "target": "clamav.internal:3310"}}},
-                "dante": {"ok": True, "detail": "ok"},
             },
         }
 

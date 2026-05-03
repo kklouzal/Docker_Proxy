@@ -51,18 +51,6 @@ def test_legacy_ssl_errors_route_redirects_to_observability_ssl(app_module):
     assert qs.get("q") == ["example.com"]
 
 
-def test_legacy_socks_route_redirects_to_transport_pane(app_module):
-    c = app_module.app.test_client()
-    login(c)
-
-    r = c.get("/socks?window=900&q=198.51.100.7", follow_redirects=False)
-    assert r.status_code in (301, 302, 303, 307, 308)
-    qs = redirect_query_params(r)
-    assert qs.get("pane") == ["transport"]
-    assert qs.get("window") == ["900"]
-    assert qs.get("q") == ["198.51.100.7"]
-
-
 def test_clamav_page_shows_observability_handoff(app_module):
     class FakeDiagnostic:
         def icap_summary(self, *, since: int | None = None, service: str = ""):
@@ -90,7 +78,6 @@ def test_index_page_shows_observability_shortcuts(app_module):
     body = r.data.decode("utf-8", errors="replace")
     assert "Observability" in body
     assert "SSL incidents" in body
-    assert "Transport" in body
     assert "AV controls" in body
 
 

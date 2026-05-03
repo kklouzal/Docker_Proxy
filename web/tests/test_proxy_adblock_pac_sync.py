@@ -94,8 +94,6 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
             "PAC_RENDER_DIR",
             "PROXY_PUBLIC_HOST",
             "PROXY_PUBLIC_HTTP_PROXY_PORT",
-            "PROXY_PUBLIC_SOCKS_PROXY_PORT",
-            "PROXY_PUBLIC_SOCKS_ENABLED",
         )
     }
     try:
@@ -106,8 +104,6 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
                 "PAC_RENDER_DIR": tmp_path / "pac",
                 "PROXY_PUBLIC_HOST": "edge-1.example.test",
                 "PROXY_PUBLIC_HTTP_PROXY_PORT": "3128",
-                "PROXY_PUBLIC_SOCKS_PROXY_PORT": "1080",
-                "PROXY_PUBLIC_SOCKS_ENABLED": "1",
             },
         )
         from services.exclusions_store import get_exclusions_store  # type: ignore
@@ -144,7 +140,7 @@ def test_proxy_sync_pac_state_materializes_pre_rendered_files(tmp_path):
         profile_text = profile_path.read_text(encoding="utf-8")
         fallback_text = (pac_dir / "fallback.pac").read_text(encoding="utf-8")
 
-        assert "SOCKS5 edge-1.example.test:1080; PROXY edge-1.example.test:3128; DIRECT" in profile_text
+        assert "PROXY edge-1.example.test:3128; DIRECT" in profile_text
         assert "host === \"example.com\" || dnsDomainIs(host, \".example.com\")" in profile_text
         assert "host === normalizedProxyHost" in profile_text
         assert profile_text.index("host === \"example.com\"") < profile_text.index("var ip = hostIp();")
@@ -193,7 +189,7 @@ def test_pac_http_server_prefers_local_pre_rendered_state(tmp_path):
         body = pac_http_server._LOCAL_CACHE.resolve(client_ip="192.168.50.10", request_host="proxy.example:80")
         assert body is not None
         text = body.decode("utf-8", errors="replace")
-        assert "SOCKS5 proxy.example:1080; PROXY proxy.example:3128; DIRECT" in text
+        assert "PROXY proxy.example:3128; DIRECT" in text
         assert "FindProxyForURL" in text
     finally:
         for key, value in env_backup.items():
@@ -213,8 +209,6 @@ def test_proxy_sync_pac_state_renders_local_suffixes_and_wildcards(tmp_path):
             "PAC_RENDER_DIR",
             "PROXY_PUBLIC_HOST",
             "PROXY_PUBLIC_HTTP_PROXY_PORT",
-            "PROXY_PUBLIC_SOCKS_PROXY_PORT",
-            "PROXY_PUBLIC_SOCKS_ENABLED",
         )
     }
     try:
@@ -224,8 +218,6 @@ def test_proxy_sync_pac_state_renders_local_suffixes_and_wildcards(tmp_path):
                 "PAC_RENDER_DIR": tmp_path / "pac",
                 "PROXY_PUBLIC_HOST": "livingroom-proxy",
                 "PROXY_PUBLIC_HTTP_PROXY_PORT": "3128",
-                "PROXY_PUBLIC_SOCKS_PROXY_PORT": "1080",
-                "PROXY_PUBLIC_SOCKS_ENABLED": "1",
             },
         )
         from services.pac_profiles_store import get_pac_profiles_store  # type: ignore
@@ -253,7 +245,7 @@ def test_proxy_sync_pac_state_renders_local_suffixes_and_wildcards(tmp_path):
         assert 'dnsDomainIs(host, ".local")' in profile_text
         assert 'host === "internal.example" || dnsDomainIs(host, ".internal.example")' in profile_text
         assert '*.*.internal.example' not in profile_text
-        assert 'SOCKS5 livingroom-proxy:1080; PROXY livingroom-proxy:3128; DIRECT' in profile_text
+        assert 'PROXY livingroom-proxy:3128; DIRECT' in profile_text
     finally:
         for key, value in env_backup.items():
             if value is None:
@@ -318,7 +310,6 @@ def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path)
                     "av_icap": {"ok": True, "detail": "listening"},
                     "clamd": {"ok": True, "detail": "PONG"},
                     "clamav": {"ok": True, "detail": "PONG"},
-                    "dante": {"ok": True, "detail": "listening"},
                 },
                 policy_state_builder=lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=[]),
                 pac_state_builder=lambda _proxy_id: (_ for _ in ()).throw(RuntimeError("pac state unavailable")),
@@ -330,7 +321,6 @@ def test_proxy_collect_health_degrades_when_pac_state_inspection_fails(tmp_path)
         assert health["ok"] is False
         assert health["status"] == "degraded"
         assert any(str(item).startswith("pac:") for item in health["state_errors"])
-        assert health["services"]["dante"]["ok"] is True
     finally:
         for key, value in env_backup.items():
             if value is None:
@@ -375,7 +365,6 @@ def test_proxy_collect_health_reuses_short_lived_cached_snapshot(tmp_path):
                 "av_icap": {"ok": True},
                 "clamd": {"ok": True},
                 "clamav": {"ok": True},
-                "dante": {"ok": True},
             }
 
         runtime = runtime_module.ProxyRuntime(

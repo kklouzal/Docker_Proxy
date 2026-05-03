@@ -51,7 +51,6 @@ COPY web/services/adblock_artifacts.py \
 	web/services/proxy_registry.py \
 	web/services/proxy_sync.py \
 	web/services/runtime_helpers.py \
-	web/services/socks_store.py \
 	web/services/squid_core.py \
 	web/services/squid_config_forms.py \
 	web/services/squidctl.py \

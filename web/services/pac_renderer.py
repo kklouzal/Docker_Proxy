@@ -89,8 +89,6 @@ class ProxyPacTarget:
     pac_scheme: str
     pac_port: int
     http_proxy_port: int
-    socks_proxy_port: int
-    socks_enabled: bool
 
     @property
     def uses_request_host_fallback(self) -> bool:
@@ -108,22 +106,12 @@ class ProxyPacTarget:
 
     @property
     def proxy_chain(self) -> str:
-        directives = []
-        if self.socks_enabled:
-            directives.append(f"SOCKS5 {self.proxy_host_token}:{self.socks_proxy_port}")
-        directives.append(f"PROXY {self.proxy_host_token}:{self.http_proxy_port}")
-        directives.append("DIRECT")
-        return "; ".join(directives)
+        return f"PROXY {self.proxy_host_token}:{self.http_proxy_port}; DIRECT"
 
     @property
-    def transport_chain_display(self) -> str:
+    def proxy_chain_display(self) -> str:
         host = self.public_host or "<request-host>"
-        directives = []
-        if self.socks_enabled:
-            directives.append(f"SOCKS5 {host}:{self.socks_proxy_port}")
-        directives.append(f"PROXY {host}:{self.http_proxy_port}")
-        directives.append("DIRECT")
-        return "; ".join(directives)
+        return f"PROXY {host}:{self.http_proxy_port}; DIRECT"
 
 
 @dataclass(frozen=True)
@@ -188,26 +176,12 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         else os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
         _coerce_port(os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"), 3128),
     )
-    socks_proxy_port = _coerce_port(
-        getattr(proxy, "public_socks_proxy_port", None)
-        if proxy is not None
-        else (os.environ.get("PROXY_PUBLIC_SOCKS_PROXY_PORT") or os.environ.get("DANTE_PORT")),
-        _coerce_port(os.environ.get("PROXY_PUBLIC_SOCKS_PROXY_PORT") or os.environ.get("DANTE_PORT"), 1080),
-    )
-    socks_enabled = _coerce_bool(
-        getattr(proxy, "public_socks_enabled", None)
-        if proxy is not None
-        else os.environ.get("PROXY_PUBLIC_SOCKS_ENABLED"),
-        _coerce_bool(os.environ.get("PROXY_PUBLIC_SOCKS_ENABLED"), _coerce_bool(os.environ.get("ENABLE_DANTE"), True)),
-    )
     return ProxyPacTarget(
         proxy_id=normalized_proxy_id,
         public_host=public_host,
         pac_scheme=pac_scheme,
         pac_port=pac_port,
         http_proxy_port=http_proxy_port,
-        socks_proxy_port=socks_proxy_port,
-        socks_enabled=socks_enabled,
     )
 
 
@@ -381,10 +355,8 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
             "public_pac_scheme": target.pac_scheme,
             "public_pac_port": target.pac_port,
             "public_http_proxy_port": target.http_proxy_port,
-            "public_socks_proxy_port": target.socks_proxy_port,
-            "public_socks_enabled": target.socks_enabled,
             "uses_request_host_fallback": target.uses_request_host_fallback,
-            "proxy_chain": target.transport_chain_display,
+            "proxy_chain": target.proxy_chain_display,
             "profiles": _manifest_profiles(profiles),
             "fallback_file": fallback_file,
             "state_sha256": "",

@@ -67,7 +67,7 @@ RUN set -eu; \
 FROM alpine:${ALPINE_VERSION}
 
 # Proxy container responsibilities only:
-# - Squid / Dante / c-icap runtime
+# - Squid / c-icap runtime
 # - Proxy management API and background sync agent
 # - PAC/WPAD serving and local policy materialization
 # - Certificate / config / adblock application from shared DB state
@@ -77,7 +77,7 @@ FROM alpine:${ALPINE_VERSION}
 # - HTML templates and static assets
 # - Admin-only service modules (auth, audit, housekeeping, form parsing)
 
-RUN apk add --no-cache squid dante-server python3 supervisor openssl ca-certificates libatomic \
+RUN apk add --no-cache squid python3 supervisor openssl ca-certificates libatomic \
         pcre2 \
         file
 
@@ -109,7 +109,6 @@ COPY web/services/adblock_artifacts.py \
     web/services/proxy_registry.py \
     web/services/proxy_sync.py \
     web/services/runtime_helpers.py \
-    web/services/socks_store.py \
     web/services/squid_core.py \
     web/services/ssl_errors_store.py \
     web/services/sslfilter_store.py \
@@ -142,6 +141,6 @@ RUN mkdir -p /etc/squid/ssl/certs /var/lib/ssl_db /var/spool/squid \
         cp -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED /usr/share/squid/errors/en/; \
     fi
 
-EXPOSE 5000 3128 80 1080
+EXPOSE 5000 3128 80
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -11,30 +11,6 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, web_dir)
 
 
-def test_socks_store_ignores_accept_noise_and_keeps_connect_events(tmp_path):
-    _add_web_to_path()
-    configure_test_mysql_env(tmp_path)
-
-    from services.socks_store import SocksStore  # type: ignore
-
-    store = SocksStore(log_path=str(tmp_path / "sockd.log"))
-    store.init_db()
-
-    store.ingest_line(
-        "Apr 18 04:11:14 (1776485474.616347) sockd[948]: info: pass(1): tcp/accept [: 127.0.0.1.36422 127.0.0.1.1080"
-    )
-    store.ingest_line(
-        "Apr 18 03:27:21 (1776482841.123456) sockd[104]: info: pass(1): tcp/connect [: 172.18.0.1.50000 140.82.114.26.443"
-    )
-
-    recent = store.recent(limit=10)
-
-    assert len(recent) == 1
-    assert recent[0].action == "connect"
-    assert recent[0].src_ip == "172.18.0.1"
-    assert recent[0].dst == "140.82.114.26"
-
-
 def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(tmp_path):
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-seed")

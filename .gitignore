@@ -9,6 +9,10 @@ __pycache__/
 # Ruff
 .ruff_cache/
 
+# Local temp/debug scratch space
+.tmp/
+.tmp_proxy_debug/
+
 # Virtual environments
 .venv/
 venv/

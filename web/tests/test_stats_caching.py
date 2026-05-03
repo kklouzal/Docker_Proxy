@@ -93,7 +93,7 @@ def test_cachemgr_sanitizes_proxy_env(monkeypatch):
     # Simulate a proxied container environment.
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:3128")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
-    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1080")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:3128")
     monkeypatch.setenv("NO_PROXY", "example.com")
 
     captured = {"env": None}

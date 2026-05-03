@@ -15,7 +15,6 @@
             <span class="badge {{ 'ok' if proxy_ok else 'warn' }}">Proxy {{ 'ready' if proxy_ok else 'check' }}</span>
             <span class="badge {{ 'ok' if icap_health and icap_health.ok else 'warn' }}">ICAP</span>
             <span class="badge {{ 'ok' if clamav_health and clamav_health.ok else 'warn' }}">ClamAV</span>
-            <span class="badge {{ 'ok' if dante_health and dante_health.ok else 'warn' }}">SOCKS</span>
         </div>
     </div>
     <div class="page-actions">
@@ -172,7 +171,6 @@
                 <a class="btn" href="{{ url_for('observability', pane='security', window=observability_default_window) }}">Security signals</a>
                 <a class="btn" href="{{ url_for('observability', pane='performance', window=observability_default_window) }}">Performance</a>
                 <a class="btn" href="{{ url_for('observability', pane='ssl', window=observability_default_window) }}">SSL incidents</a>
-                <a class="btn" href="{{ url_for('observability', pane='transport', window=observability_default_window) }}">Transport</a>
                 <a class="btn" href="{{ url_for('clamav', window=observability_default_window) }}">AV controls</a>
             </div>
             <div class="surface-note small">
@@ -241,17 +239,6 @@
                     {% endif %}
                     <span class="small">{{ clamav_health.detail if clamav_health else 'n/a' }}</span>
                 </div>
-
-                <div class="k">Dante (SOCKS)</div>
-                <div class="v">
-                    {% if dante_health and dante_health.ok %}
-                        <span class="badge ok">OK</span>
-                    {% else %}
-                        <span class="badge warn">Check</span>
-                    {% endif %}
-                    <span class="small">{{ dante_health.detail if dante_health else 'n/a' }}</span>
-                </div>
-
                 <div class="k">Web UI</div>
                 <div class="v"><span class="badge ok">OK</span> <span class="small">Health: /health</span></div>
             </div>

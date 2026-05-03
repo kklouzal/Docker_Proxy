@@ -130,7 +130,7 @@
         <div class="actions">
           <a class="btn" href="{{ pac_url }}" target="_blank" rel="noopener">Open proxy.pac</a>
         </div>
-        <div class="surface-note small">Configure clients to fetch PAC directly from this proxy at <span class="mono">{{ pac_url }}</span> so excluded destinations go DIRECT and everything else uses <span class="mono">{{ pac_target.transport_chain_display }}</span>.</div>
+        <div class="surface-note small">Configure clients to fetch PAC directly from this proxy at <span class="mono">{{ pac_url }}</span> so excluded destinations go DIRECT and everything else uses the proxy chain <span class="mono">{{ pac_target.proxy_chain_display }}</span>.</div>
       {% else %}
         <div class="surface-note small">{{ pac_warning }}</div>
       {% endif %}

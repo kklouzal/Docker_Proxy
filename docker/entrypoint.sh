@@ -49,15 +49,6 @@ recommend_nofile() {
     clamp_int "$nofile" 65536 131072
 }
 
-recommend_dante_servers() {
-    workers="$1"
-    servers=$((workers / 2))
-    if [ "$servers" -lt 1 ]; then
-        servers=1
-    fi
-    clamp_int "$servers" 1 4
-}
-
 recommend_webfilter_helpers() {
     workers="$1"
     helpers=$((workers * 2))
@@ -126,15 +117,6 @@ if [ -z "${DIAGNOSTIC_COMMIT_INTERVAL_SECONDS:-}" ]; then
 fi
 if [ -z "${DIAGNOSTIC_POLL_INTERVAL_SECONDS:-}" ]; then
     export DIAGNOSTIC_POLL_INTERVAL_SECONDS=2.0
-fi
-if [ -z "${SOCKS_COMMIT_BATCH:-}" ]; then
-    export SOCKS_COMMIT_BATCH=300
-fi
-if [ -z "${SOCKS_COMMIT_INTERVAL_SECONDS:-}" ]; then
-    export SOCKS_COMMIT_INTERVAL_SECONDS=3.0
-fi
-if [ -z "${SOCKS_POLL_INTERVAL_SECONDS:-}" ]; then
-    export SOCKS_POLL_INTERVAL_SECONDS=2.0
 fi
 if [ -z "${SSL_ERRORS_COMMIT_BATCH:-}" ]; then
     export SSL_ERRORS_COMMIT_BATCH=300
@@ -279,9 +261,6 @@ if [ -z "${WEB_THREADS:-}" ]; then
     # One extra thread keeps /health and the UI responsive even while a
     # blocking admin action (for example squid -k reconfigure) is in flight.
     export WEB_THREADS=2
-fi
-if [ -z "${DANTE_SERVERS:-}" ]; then
-    export DANTE_SERVERS="$(recommend_dante_servers "$WORKERS")"
 fi
 if [ -z "${WEBFILTER_HELPERS:-}" ]; then
     export WEBFILTER_HELPERS="$(recommend_webfilter_helpers "$WORKERS")"
@@ -793,212 +772,6 @@ fi
 # Since /var/log/squid is not persisted as a volume, it's safe to purge on startup.
 if [ "${SANITIZE_SQUID_ACCESS_LOGS_ON_START:-1}" = "1" ]; then
     rm -f /var/log/squid/access.log /var/log/squid/access.log.* /var/log/squid/access-observe.log /var/log/squid/access-observe.log.* /var/log/squid/icap.log /var/log/squid/icap.log.* 2>/dev/null || true
-fi
-
-# Generate Dante (sockd) config used by supervisord.
-# Default policy: no-auth SOCKS5, LAN-restricted, allow TCP + UDP.
-if [ "${ENABLE_DANTE:-1}" = "1" ]; then
-    # Ensure log file exists and is writable by the unprivileged user.
-    mkdir -p /var/log
-    touch /var/log/sockd.log || true
-    if getent passwd sockd >/dev/null 2>&1; then
-        chown sockd:sockd /var/log/sockd.log || true
-    fi
-
-    DANTE_INTERNAL="${DANTE_INTERNAL:-0.0.0.0}"
-    if [ "$IPV6_DISABLED" = "1" ] && [ "$DANTE_INTERNAL" = "::" ]; then
-        DANTE_INTERNAL="0.0.0.0"
-    fi
-    DANTE_PORT="${DANTE_PORT:-1080}"
-    DANTE_EXTERNAL="${DANTE_EXTERNAL:-eth0}"
-    DANTE_ALLOW_FROM="${DANTE_ALLOW_FROM:-10.0.0.0/8 172.16.0.0/12 192.168.0.0/16}"
-    DANTE_BLOCK_PRIVATE_DESTS="${DANTE_BLOCK_PRIVATE_DESTS:-1}"
-
-    # Performance/robustness knobs.
-    DANTE_DEBUG_RAW="${DANTE_DEBUG:-0}"
-    case "$DANTE_DEBUG_RAW" in
-        ''|*[!0-9]*) DANTE_DEBUG=0 ;;
-        *) DANTE_DEBUG="$DANTE_DEBUG_RAW" ;;
-    esac
-
-    DANTE_TIMEOUT_NEGOTIATE_RAW="${DANTE_TIMEOUT_NEGOTIATE:-30}"
-    case "$DANTE_TIMEOUT_NEGOTIATE_RAW" in
-        ''|*[!0-9]*) DANTE_TIMEOUT_NEGOTIATE=30 ;;
-        *) DANTE_TIMEOUT_NEGOTIATE="$DANTE_TIMEOUT_NEGOTIATE_RAW" ;;
-    esac
-
-    DANTE_TIMEOUT_CONNECT_RAW="${DANTE_TIMEOUT_CONNECT:-30}"
-    case "$DANTE_TIMEOUT_CONNECT_RAW" in
-        ''|*[!0-9]*) DANTE_TIMEOUT_CONNECT=30 ;;
-        *) DANTE_TIMEOUT_CONNECT="$DANTE_TIMEOUT_CONNECT_RAW" ;;
-    esac
-
-    # 0 means "forever" in Dante; keep that default to avoid breaking long-lived sessions.
-    DANTE_TIMEOUT_IO_TCP_RAW="${DANTE_TIMEOUT_IO_TCP:-0}"
-    case "$DANTE_TIMEOUT_IO_TCP_RAW" in
-        ''|*[!0-9]*) DANTE_TIMEOUT_IO_TCP=0 ;;
-        *) DANTE_TIMEOUT_IO_TCP="$DANTE_TIMEOUT_IO_TCP_RAW" ;;
-    esac
-
-    DANTE_TIMEOUT_IO_UDP_RAW="${DANTE_TIMEOUT_IO_UDP:-0}"
-    case "$DANTE_TIMEOUT_IO_UDP_RAW" in
-        ''|*[!0-9]*) DANTE_TIMEOUT_IO_UDP=0 ;;
-        *) DANTE_TIMEOUT_IO_UDP="$DANTE_TIMEOUT_IO_UDP_RAW" ;;
-    esac
-
-    DANTE_UDP_CONNECTDST="${DANTE_UDP_CONNECTDST:-yes}"
-    case "$(printf '%s' "$DANTE_UDP_CONNECTDST" | tr 'A-Z' 'a-z')" in
-        yes|no) : ;;
-        *) DANTE_UDP_CONNECTDST=yes ;;
-    esac
-
-    # Logging keywords (connect/disconnect/error/data/ioop/tcpinfo).
-    DANTE_LOG_RAW="${DANTE_LOG:-error}"
-    # Keep only known keywords so bad env values don't break sockd startup.
-    DANTE_LOG=""
-    for tok in ${DANTE_LOG_RAW}; do
-        case "$tok" in
-            connect|disconnect|error|data|ioop|tcpinfo)
-                DANTE_LOG="${DANTE_LOG} ${tok}"
-                ;;
-        esac
-    done
-    DANTE_LOG="$(printf '%s' "$DANTE_LOG" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-    if [ -z "$DANTE_LOG" ]; then
-        DANTE_LOG="error"
-    fi
-
-    # Optional session limiting (applies per matching rule).
-    DANTE_SESSION_MAX_RAW="${DANTE_SESSION_MAX:-}"
-    case "$DANTE_SESSION_MAX_RAW" in
-        ''|*[!0-9]*) DANTE_SESSION_MAX="" ;;
-        0) DANTE_SESSION_MAX="" ;;
-        *) DANTE_SESSION_MAX="$DANTE_SESSION_MAX_RAW" ;;
-    esac
-
-    # Optional session throttling: "<connections>/<seconds>" (e.g. "50/1").
-    DANTE_SESSION_THROTTLE_RAW="${DANTE_SESSION_THROTTLE:-}"
-    if printf '%s' "$DANTE_SESSION_THROTTLE_RAW" | grep -qE '^[0-9]+/[0-9]+$'; then
-        DANTE_SESSION_THROTTLE="$DANTE_SESSION_THROTTLE_RAW"
-    else
-        DANTE_SESSION_THROTTLE=""
-    fi
-
-    {
-        echo "logoutput: stderr /var/log/sockd.log"
-        echo "internal: ${DANTE_INTERNAL} port = ${DANTE_PORT}"
-        echo "external: ${DANTE_EXTERNAL}"
-        echo "debug: ${DANTE_DEBUG}"
-        echo "timeout.negotiate: ${DANTE_TIMEOUT_NEGOTIATE}"
-        echo "timeout.connect: ${DANTE_TIMEOUT_CONNECT}"
-        echo "timeout.io.tcp: ${DANTE_TIMEOUT_IO_TCP}"
-        echo "timeout.io.udp: ${DANTE_TIMEOUT_IO_UDP}"
-        echo "udp.connectdst: ${DANTE_UDP_CONNECTDST}"
-        echo "socksmethod: none"
-        echo "clientmethod: none"
-        echo "user.privileged: sockd"
-        echo "user.unprivileged: sockd"
-        echo
-
-        # Allow localhost for in-container diagnostics/healthchecks.
-        echo "client pass {"
-        echo "        from: 127.0.0.1/32 port 1-65535 to: 0.0.0.0/0"
-        echo "        log: ${DANTE_LOG}"
-        echo "}"
-        echo
-
-        # Client allow-list (who may connect to the SOCKS server).
-        for cidr in ${DANTE_ALLOW_FROM}; do
-            echo "client pass {"
-            echo "        from: ${cidr} port 1-65535 to: 0.0.0.0/0"
-            echo "        log: ${DANTE_LOG}"
-            echo "}"
-            echo
-        done
-        echo "client block {"
-        echo "        from: 0.0.0.0/0 to: 0.0.0.0/0"
-        echo "        log: connect error"
-        echo "}"
-        echo
-
-        # Prevent the SOCKS proxy from being used to pivot into local/private networks.
-        # This blocks requests to loopback + RFC1918 destination ranges.
-        if [ "${DANTE_BLOCK_PRIVATE_DESTS}" = "1" ]; then
-            echo "socks block {"
-            echo "        from: 0.0.0.0/0 to: 127.0.0.0/8"
-            echo "        log: connect error"
-            echo "}"
-            echo
-            echo "socks block {"
-            echo "        from: 0.0.0.0/0 to: 10.0.0.0/8"
-            echo "        log: connect error"
-            echo "}"
-            echo
-            echo "socks block {"
-            echo "        from: 0.0.0.0/0 to: 172.16.0.0/12"
-            echo "        log: connect error"
-            echo "}"
-            echo
-            echo "socks block {"
-            echo "        from: 0.0.0.0/0 to: 192.168.0.0/16"
-            echo "        log: connect error"
-            echo "}"
-            echo
-        fi
-        echo
-
-        # SOCKS request allow-list (what those clients may do).
-
-        # Allow localhost for in-container diagnostics/healthchecks.
-        echo "socks pass {"
-        echo "        from: 127.0.0.1/32 to: 0.0.0.0/0"
-        echo "        protocol: tcp udp"
-        echo "        log: ${DANTE_LOG}"
-        if [ -n "${DANTE_SESSION_MAX}" ]; then
-            echo "        session.max: ${DANTE_SESSION_MAX}"
-        fi
-        if [ -n "${DANTE_SESSION_THROTTLE}" ]; then
-            echo "        session.throttle: ${DANTE_SESSION_THROTTLE}"
-        fi
-        echo "}"
-        echo
-
-        echo "socks pass {"
-        echo "        from: 0.0.0.0/0 to: 127.0.0.1/32"
-        echo "        command: bindreply udpreply"
-        echo "        log: ${DANTE_LOG}"
-        echo "}"
-        echo
-
-        for cidr in ${DANTE_ALLOW_FROM}; do
-            echo "socks pass {"
-            echo "        from: ${cidr} to: 0.0.0.0/0"
-            echo "        protocol: tcp udp"
-            echo "        log: ${DANTE_LOG}"
-            if [ -n "${DANTE_SESSION_MAX}" ]; then
-                echo "        session.max: ${DANTE_SESSION_MAX}"
-            fi
-            if [ -n "${DANTE_SESSION_THROTTLE}" ]; then
-                echo "        session.throttle: ${DANTE_SESSION_THROTTLE}"
-            fi
-            echo "}"
-            echo
-            # Allow replies back to clients for BIND/UDP flows.
-            echo "socks pass {"
-            echo "        from: 0.0.0.0/0 to: ${cidr}"
-            echo "        command: bindreply udpreply"
-            echo "        log: ${DANTE_LOG}"
-            echo "}"
-            echo
-        done
-        echo "socks block {"
-        echo "        from: 0.0.0.0/0 to: 0.0.0.0/0"
-        echo "        log: connect error"
-        echo "}"
-    } > /etc/sockd.generated.conf
-else
-    # Still create a valid config file to avoid supervisord crash loops if enabled later.
-    echo "logoutput: stderr" > /etc/sockd.generated.conf
 fi
 
 # Optional: raise process file-descriptor limit for high-connection workloads.

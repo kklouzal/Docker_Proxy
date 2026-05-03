@@ -66,7 +66,6 @@ def build_unavailable_runtime_health(detail: str, *, proxy_status: str = "offlin
     icap = unavailable_service(detail)
     av_icap = unavailable_service(detail, service="/avrespmod")
     clamd = unavailable_service(detail)
-    dante = unavailable_service(detail)
     return {
         "ok": False,
         "status": proxy_status,
@@ -84,7 +83,6 @@ def build_unavailable_runtime_health(detail: str, *, proxy_status: str = "offlin
                     "clamd": clamd,
                 },
             },
-            "dante": dante,
         },
     }
 
@@ -179,28 +177,6 @@ def check_clamd_health(
         default_port=3310,
     )
     result = check_clamd(host=resolved_host, port=resolved_port, timeout=timeout, error_formatter=error_formatter)
-    return annotate_service_target(result, host=resolved_host, port=resolved_port)
-
-
-def check_dante_health(
-    *,
-    host: str | None = None,
-    port: int | None = None,
-    timeout: float = 0.75,
-    error_formatter: ErrorFormatter | None = None,
-) -> dict[str, Any]:
-    resolved_host, resolved_port = _resolve_host_port_override(
-        host=host,
-        port=port,
-        host_env="DANTE_HOST",
-        port_env="DANTE_PORT",
-        default_port=1080,
-    )
-    result = (
-        check_local_listener("dante", resolved_host, resolved_port)
-        if is_local_host(resolved_host)
-        else check_tcp(resolved_host, resolved_port, timeout=timeout, error_formatter=error_formatter)
-    )
     return annotate_service_target(result, host=resolved_host, port=resolved_port)
 
 
@@ -305,5 +281,4 @@ def build_local_runtime_services(
         "av_icap": clamav_view["av_icap_health"],
         "clamd": clamav_view["clamd_health"],
         "clamav": clamav_view["health"],
-        "dante": check_dante_health(timeout=tcp_timeout, error_formatter=error_formatter),
     }

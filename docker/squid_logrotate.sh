@@ -20,12 +20,12 @@ while :; do
     echo "[squid-logrotate] ${ts} squid -k rotate failed (will retry next interval)" >&2
   fi
 
-  # Rotate unbounded c-icap and Dante (sockd) logs.
+  # Rotate unbounded c-icap logs.
   # These services don't support signal-based rotation, so we copytruncate:
   # copy the current file to a .1 backup, then truncate the original in-place.
   # The log tailers in the web app detect the truncation (file size < position)
   # and automatically seek back to the start.
-  for logfile in /var/log/cicap-access.log /var/log/cicap-access-av.log /var/log/sockd.log; do
+  for logfile in /var/log/cicap-access.log /var/log/cicap-access-av.log; do
     if [ -f "$logfile" ]; then
       cp -- "$logfile" "${logfile}.1" 2>/dev/null || true
       : > "$logfile" 2>/dev/null || true

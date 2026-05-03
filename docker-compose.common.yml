@@ -47,7 +47,6 @@ services:
     ports:
       - "0.0.0.0:80:80"           # WPAD / PAC via dedicated port 80 listener
       - "0.0.0.0:3128:3128"       # HTTP proxy
-      - "0.0.0.0:${DANTE_PORT:-1080}:1080"  # SOCKS (Dante)
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
@@ -64,8 +63,6 @@ services:
       PROXY_PUBLIC_PAC_SCHEME: ${PROXY_PUBLIC_PAC_SCHEME:-http}
       PROXY_PUBLIC_PAC_PORT: ${PROXY_PUBLIC_PAC_PORT:-80}
       PROXY_PUBLIC_HTTP_PROXY_PORT: ${PROXY_PUBLIC_HTTP_PROXY_PORT:-3128}
-      PROXY_PUBLIC_SOCKS_PROXY_PORT: ${PROXY_PUBLIC_SOCKS_PROXY_PORT:-1080}
-      PROXY_PUBLIC_SOCKS_ENABLED: ${PROXY_PUBLIC_SOCKS_ENABLED:-1}
       DISABLE_IPV6: ${DISABLE_IPV6:-1}
       SQUID_WORKERS: ${SQUID_WORKERS:-}
       SQUID_CACHE_MEM_MB: ${SQUID_CACHE_MEM_MB:-}
@@ -76,7 +73,6 @@ services:
       CICAP_AV_PORT: ${CICAP_AV_PORT:-14001}
       CLAMD_HOST: ${CLAMD_HOST:-127.0.0.1}
       CLAMD_PORT: ${CLAMD_PORT:-3310}
-      DANTE_SERVERS: ${DANTE_SERVERS:-}
       ULIMIT_NOFILE: ${ULIMIT_NOFILE:-}
       WEBFILTER_HELPERS: ${WEBFILTER_HELPERS:-}
       PROXY_HEARTBEAT_INTERVAL_SECONDS: ${PROXY_HEARTBEAT_INTERVAL_SECONDS:-}
