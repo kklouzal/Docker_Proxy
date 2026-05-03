@@ -31,7 +31,14 @@ from services.observability_queries import get_observability_queries as _default
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import decode_bytes as _decode_bytes, extract_domain as _extract_domain
-from services.squid_config_forms import build_template_options, build_template_options_from_form, normalize_safe_form_kind, parse_cache_override_form
+from services.squid_config_forms import (
+    build_template_options,
+    build_template_options_from_form,
+    get_config_ui_field_map,
+    get_config_ui_sections,
+    normalize_safe_form_kind,
+    parse_cache_override_form,
+)
 from services.ui_support import (
     append_query_to_local_return as _append_query_to_local_return,
     bulk_lines as _bulk_lines,
@@ -2147,9 +2154,11 @@ def clamav_toggle():
 
 @app.route('/squid/config', methods=['GET', 'POST'])
 def squid_config():
+    config_sections = get_config_ui_sections()
+    safe_tabs = tuple(section.key for section in config_sections)
     tab = _normalize_choice(
         request.args.get('tab') or request.form.get('tab') or 'config',
-        ('config', 'caching', 'timeouts', 'logging', 'network', 'dns', 'ssl', 'icap', 'privacy', 'limits', 'performance', 'http'),
+        ('config',) + safe_tabs,
         'config',
     )
 
@@ -2171,6 +2180,7 @@ def squid_config():
             return _redirect_config(tab, error=True)
     current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
+    managed_options = build_template_options(tunables, max_workers=_max_workers())
     overrides = squid_controller.get_cache_override_options(current_config)
     caching_lines = squid_controller.get_caching_lines(current_config)
     timeout_lines = squid_controller.get_timeout_lines(current_config)
@@ -2183,6 +2193,21 @@ def squid_config():
     limits_lines = squid_controller.get_limits_lines(current_config)
     performance_lines = squid_controller.get_performance_lines(current_config)
     http_lines = squid_controller.get_http_lines(current_config)
+    line_map = {
+        'caching': caching_lines,
+        'timeouts': timeout_lines,
+        'logging': logging_lines,
+        'network': network_lines,
+        'dns': dns_lines,
+        'ssl': ssl_lines,
+        'icap': icap_lines,
+        'privacy': privacy_lines,
+        'limits': limits_lines,
+        'performance': performance_lines,
+        'http': http_lines,
+    }
+    section_map = {section.key: section for section in config_sections}
+    active_section = section_map.get(tab)
     exclusions = get_exclusions_store().list_all()
     exclusions_count = (
         len(getattr(exclusions, 'domains', []) or [])
@@ -2204,11 +2229,16 @@ def squid_config():
         tab=tab,
         config_text=config_text,
         tunables=tunables,
+        managed_options=managed_options,
         overrides=overrides,
         subtab=subtab,
         summary=summary,
         validation=validation,
         exclusions=exclusions,
+        config_sections=config_sections,
+        config_field_map=get_config_ui_field_map(),
+        active_section=active_section,
+        line_map=line_map,
         caching_lines=caching_lines,
         timeout_lines=timeout_lines,
         logging_lines=logging_lines,

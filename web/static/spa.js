@@ -8,6 +8,9 @@
   };
   const DESKTOP_NAV_MEDIA = '(min-width: 1101px)';
   let shellListenersBound = false;
+  let currentSpaUrl = window.location.href;
+  let unsavedConfigChanges = false;
+  const UNSAVED_CONFIG_MESSAGE = 'You have unsaved Squid configuration changes. Leave this page anyway?';
 
   const getCsrfToken = () => {
     const meta = document.querySelector('meta[name="csrf-token"]');
@@ -46,6 +49,254 @@
     header.classList.toggle('menu-open', Boolean(open));
     const toggle = header.querySelector('#nav-toggle');
     if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+
+  const setUnsavedConfigChanges = (active) => {
+    unsavedConfigChanges = Boolean(active);
+  };
+
+  const confirmDiscardUnsavedConfigChanges = () => {
+    if (!unsavedConfigChanges) return true;
+    return window.confirm(UNSAVED_CONFIG_MESSAGE);
+  };
+
+  const setTransientButtonLabel = (button, label) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    if (!button.dataset.originalLabel) {
+      button.dataset.originalLabel = button.textContent || '';
+    }
+    if (button.dataset.labelTimer) {
+      window.clearTimeout(Number(button.dataset.labelTimer));
+      delete button.dataset.labelTimer;
+    }
+    button.textContent = label;
+    button.dataset.labelTimer = String(window.setTimeout(() => {
+      button.textContent = button.dataset.originalLabel || '';
+      delete button.dataset.labelTimer;
+    }, 1600));
+  };
+
+  const copyTextToClipboard = async (text) => {
+    const payload = String(text || '');
+    if (!payload) return false;
+
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(payload);
+        return true;
+      }
+    } catch {
+      // Fall through to legacy clipboard handling.
+    }
+
+    const temp = document.createElement('textarea');
+    temp.value = payload;
+    temp.setAttribute('readonly', 'readonly');
+    temp.style.position = 'fixed';
+    temp.style.opacity = '0';
+    temp.style.pointerEvents = 'none';
+    document.body.appendChild(temp);
+    temp.focus();
+    temp.select();
+    try {
+      return document.execCommand('copy');
+    } catch {
+      return false;
+    } finally {
+      temp.remove();
+    }
+  };
+
+  const getTrackableFormControls = (form) => Array.from(form.elements).filter((element) => {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+    if (!element.name) return false;
+    if (element instanceof HTMLInputElement && ['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(element.type)) {
+      return false;
+    }
+    return true;
+  });
+
+  const serializeControlValue = (control) => {
+    if (control instanceof HTMLInputElement && (control.type === 'checkbox' || control.type === 'radio')) {
+      return control.checked ? 'checked' : 'unchecked';
+    }
+    return String(control.value || '');
+  };
+
+  const enhanceConfigPage = (container) => {
+    const configPage = container.querySelector('[data-config-page="true"]');
+    if (!configPage) {
+      setUnsavedConfigChanges(false);
+      return;
+    }
+
+    const getTargetsForForm = (attrName, formId) => Array.from(configPage.querySelectorAll(`[${attrName}]`))
+      .filter((element) => element.getAttribute(attrName) === formId);
+
+    configPage.querySelectorAll('[data-copy-target]').forEach((button) => {
+      if (!(button instanceof HTMLButtonElement) || button.dataset.spaBound === '1') return;
+      button.dataset.spaBound = '1';
+      button.addEventListener('click', async () => {
+        const selector = button.getAttribute('data-copy-target') || '';
+        if (!selector) return;
+        const source = configPage.querySelector(selector) || document.querySelector(selector);
+        if (!(source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement || source instanceof HTMLElement)) return;
+        const text = source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement
+          ? source.value
+          : (source.textContent || '');
+        const ok = await copyTextToClipboard(text);
+        setTransientButtonLabel(button, ok ? 'Copied' : 'Copy failed');
+      });
+    });
+
+    const forms = Array.from(configPage.querySelectorAll('form[data-config-form]')).filter((form) => form instanceof HTMLFormElement);
+    if (!forms.length) {
+      setUnsavedConfigChanges(false);
+      return;
+    }
+
+    const formDirtyCounts = new Map();
+
+    const syncPageDirtyState = () => {
+      const totalDirty = Array.from(formDirtyCounts.values()).reduce((sum, count) => sum + count, 0);
+      const isDirty = totalDirty > 0;
+      configPage.dataset.dirty = isDirty ? 'true' : 'false';
+      setUnsavedConfigChanges(isDirty);
+    };
+
+    forms.forEach((form) => {
+      if (!form.id) return;
+
+      const controls = getTrackableFormControls(form);
+      const initialValues = new Map(controls.map((control) => [control, serializeControlValue(control)]));
+      const dependencyFields = Array.from(configPage.querySelectorAll('.config-field[data-config-form-owner]'))
+        .filter((field) => field.getAttribute('data-config-form-owner') === form.id && field.hasAttribute('data-depends-on'));
+
+      const dirtyIndicators = getTargetsForForm('data-config-dirty-indicator-for', form.id);
+      const dirtyCounts = getTargetsForForm('data-config-dirty-count-for', form.id);
+      const metricTargets = getTargetsForForm('data-config-metrics-for', form.id);
+      const resetButtons = getTargetsForForm('data-config-reset-for', form.id).filter((button) => button instanceof HTMLButtonElement);
+
+      const getControlByName = (name) => Array.from(form.elements).find((element) => {
+        if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement)) {
+          return false;
+        }
+        return element.name === name;
+      });
+
+      const dependencyMatches = (control, expected) => {
+        const expectation = String(expected || '').trim().toLowerCase();
+        if (!expectation) return true;
+
+        if (control instanceof HTMLInputElement && (control.type === 'checkbox' || control.type === 'radio')) {
+          if (expectation === 'checked' || expectation === 'true' || expectation === 'on') return control.checked;
+          if (expectation === 'unchecked' || expectation === 'false' || expectation === 'off') return !control.checked;
+        }
+
+        const value = String(control.value || '').trim().toLowerCase();
+        if (expectation === 'blank') return value === '';
+        if (expectation === 'nonblank') return value !== '';
+        return value === expectation;
+      };
+
+      const applyDependencies = () => {
+        dependencyFields.forEach((field) => {
+          const dependsOn = (field.getAttribute('data-depends-on') || '').split(',').map((value) => value.trim()).filter(Boolean);
+          const showWhen = (field.getAttribute('data-show-when') || '').split(',').map((value) => value.trim());
+          const visible = dependsOn.every((name, index) => {
+            const control = getControlByName(name);
+            if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) {
+              return true;
+            }
+            return dependencyMatches(control, showWhen[index] || 'checked');
+          });
+
+          field.classList.toggle('is-hidden', !visible);
+          field.classList.toggle('is-disabled', !visible);
+          field.querySelectorAll('input, select, textarea').forEach((control) => {
+            if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) {
+              return;
+            }
+            control.disabled = !visible;
+          });
+        });
+      };
+
+      const updateMetrics = () => {
+        if (!metricTargets.length) return;
+        const textControl = controls.find((control) => control.name === 'config_text');
+        const text = textControl ? String(textControl.value || '') : '';
+        const lineCount = text ? text.split(/\r?\n/).length : 0;
+        const charCount = text.length;
+        metricTargets.forEach((target) => {
+          target.textContent = `${lineCount} line${lineCount === 1 ? '' : 's'} · ${charCount} char${charCount === 1 ? '' : 's'}`;
+        });
+      };
+
+      const recompute = () => {
+        applyDependencies();
+        updateMetrics();
+
+        let dirtyCount = 0;
+        controls.forEach((control) => {
+          const wrapper = control.closest('.config-field');
+          const isVisible = !control.disabled && (!wrapper || !wrapper.classList.contains('is-hidden'));
+          const isDirty = isVisible && serializeControlValue(control) !== initialValues.get(control);
+          if (wrapper) {
+            wrapper.classList.toggle('is-dirty', isDirty);
+          }
+          if (isDirty) dirtyCount += 1;
+        });
+
+        dirtyIndicators.forEach((indicator) => {
+          indicator.textContent = dirtyCount ? 'Unsaved changes' : 'No local changes';
+          indicator.classList.toggle('ok', dirtyCount === 0);
+          indicator.classList.toggle('warn', dirtyCount > 0);
+          indicator.classList.remove('danger');
+        });
+
+        dirtyCounts.forEach((target) => {
+          target.textContent = `${dirtyCount} pending change${dirtyCount === 1 ? '' : 's'}`;
+        });
+
+        resetButtons.forEach((button) => {
+          button.disabled = dirtyCount === 0;
+        });
+
+        formDirtyCounts.set(form.id, dirtyCount);
+        syncPageDirtyState();
+      };
+
+      controls.forEach((control) => {
+        if (control.dataset.spaBound === '1') return;
+        control.dataset.spaBound = '1';
+        control.addEventListener('input', recompute);
+        control.addEventListener('change', recompute);
+      });
+
+      resetButtons.forEach((button) => {
+        if (button.dataset.spaBound === '1') return;
+        button.dataset.spaBound = '1';
+        button.addEventListener('click', () => {
+          form.reset();
+          window.requestAnimationFrame(recompute);
+        });
+      });
+
+      if (form.dataset.spaBound !== '1') {
+        form.dataset.spaBound = '1';
+        form.addEventListener('submit', () => {
+          configPage.dataset.dirty = 'false';
+          setUnsavedConfigChanges(false);
+        });
+      }
+
+      recompute();
+    });
+
+    syncPageDirtyState();
   };
 
   const focusPageHeading = (container) => {
@@ -271,6 +522,8 @@
       heading.setAttribute('tabindex', '-1');
     }
 
+    enhanceConfigPage(container);
+
     // Squid Config: "Reload from running config" button.
     // This used to live as an inline <script> in the template, which won't execute after SPA swaps.
     const reloadBtn = container.querySelector('#reload-running-config');
@@ -285,6 +538,8 @@
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const text = await response.text();
           configTextarea.value = text || '';
+          configTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+          configTextarea.dispatchEvent(new Event('change', { bubbles: true }));
         } catch (error) {
           // Keep failures silent in UI; log for debugging.
           console.error('Failed to load running config', error);
@@ -466,6 +721,7 @@
       } else {
         window.history.replaceState({ url: finalUrl }, '', finalUrl);
       }
+      currentSpaUrl = finalUrl;
 
       updateNavActive(finalUrl);
       window.scrollTo(0, 0);
@@ -487,6 +743,7 @@
 
     const href = anchor.href;
     if (!isSameOrigin(href)) return;
+    if (!confirmDiscardUnsavedConfigChanges()) return;
 
     event.preventDefault();
     void fetchAndSwap(href, { push: true, method: 'GET' });
@@ -508,6 +765,10 @@
     // Let the browser handle non-GET/POST methods.
     if (method !== 'GET' && method !== 'POST') return;
 
+    if (form.dataset.allowDirtySubmit !== '1' && !confirmDiscardUnsavedConfigChanges()) {
+      return;
+    }
+
     event.preventDefault();
 
     if (method === 'GET') {
@@ -528,11 +789,19 @@
   };
 
   const onPopState = () => {
+    if (!confirmDiscardUnsavedConfigChanges()) {
+      window.history.pushState({ url: currentSpaUrl }, '', currentSpaUrl);
+      return;
+    }
     void fetchAndSwap(window.location.href, { push: false, method: 'GET' });
   };
 
   const init = () => {
     // Mark initial nav state based on the current URL (useful after client-side swaps).
+    currentSpaUrl = window.location.href;
+    if (!window.history.state || !window.history.state.url) {
+      window.history.replaceState({ url: currentSpaUrl }, '', currentSpaUrl);
+    }
     bindShell();
     updateNavActive(window.location.href);
 
@@ -541,6 +810,11 @@
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('submit', onDocumentSubmit, true);
     window.addEventListener('popstate', onPopState);
+    window.addEventListener('beforeunload', (event) => {
+      if (!unsavedConfigChanges) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
   };
 
   if (document.readyState === 'loading') {

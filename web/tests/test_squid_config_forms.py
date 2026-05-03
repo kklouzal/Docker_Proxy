@@ -8,6 +8,7 @@ ensure_web_import_path()
 from services.squid_config_forms import (  # type: ignore  # noqa: E402
     build_template_options,
     build_template_options_from_form,
+    get_config_ui_field_map,
     normalize_safe_form_kind,
     parse_cache_override_form,
 )
@@ -36,6 +37,7 @@ def test_build_template_options_defaults_match_perf_baseline():
     options = build_template_options({}, max_workers=4)
 
     assert options["cache_dir_type"] == "rock"
+    assert options["store_dir_select_algorithm"] == "least-load"
     assert options["cache_mem_mb"] == 256
     assert options["maximum_object_size_mb"] == 128
     assert options["memory_cache_mode"] == "always"
@@ -46,12 +48,32 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["icap_default_options_ttl_seconds"] == 300
     assert options["dns_packet_max"] is None
     assert options["dns_timeout_seconds"] == 15
+    assert options["positive_dns_ttl_seconds"] == 21600
     assert options["sslcrtd_children"] == 4
     assert options["dynamic_cert_mem_cache_size_mb"] == 128
+    assert options["tls_outgoing_options_line"] == "min-version=1.2 options=NO_SSLv3"
     assert options["sslproxy_session_ttl_seconds"] == 600
     assert options["sslproxy_session_cache_size_mb"] == 32
+    assert options["sslproxy_cert_sign_hash"] == "sha256"
+    assert options["via_on"] is True
+    assert options["strip_query_terms_on"] is True
+    assert options["request_header_max_size_kb"] == 64
+    assert options["reply_header_max_size_kb"] == 64
     assert options["memory_pools_limit_mb"] == 64
     assert options["max_open_disk_fds"] == 0
+    assert options["client_db_on"] is True
+
+
+def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic():
+    field_map = get_config_ui_field_map()
+
+    assert field_map["cache_dir_ufs_l1"].depends_on == ("cache_dir_type",)
+    assert field_map["cache_dir_ufs_l1"].show_when == ("ufs",)
+    assert field_map["cache_dir_rock_slot_size_kb"].show_when == ("rock",)
+    assert field_map["range_offset_limit_value"].depends_on == ("range_cache_on",)
+    assert field_map["pipeline_prefetch_count"].depends_on == ("pipeline_prefetch_on",)
+    assert field_map["allow_underscore_on"].depends_on == ("check_hostnames_on",)
+    assert field_map["memory_pools_limit_mb"].depends_on == ("memory_pools_on",)
 
 
 def test_build_template_options_from_form_updates_only_requested_fields():
@@ -158,6 +180,32 @@ def test_build_template_options_from_form_supports_new_cache_store_and_memory_po
     assert perf_options["memory_pools_limit_mb"] == "none"
     assert perf_options["shared_memory_locking_on"] is True
     assert perf_options["cpu_affinity_map"] == "process_numbers=1,2 cores=1,3"
+
+
+def test_build_template_options_from_form_supports_multiline_advanced_rules():
+    caching_options = build_template_options_from_form(
+        {},
+        {
+            "cache_policy_rules_text": "cache allow localnet\ncache deny all\n",
+            "refresh_patterns_text": "refresh_pattern example.com 60 80% 1440\n",
+        },
+        form_kind="caching",
+        max_workers=4,
+    )
+    ssl_options = build_template_options_from_form(
+        {},
+        {
+            "sslproxy_cert_error_rules_text": "sslproxy_cert_error allow all\n",
+            "sslproxy_cert_sign_rules_text": "sslproxy_cert_sign signTrusted all\n",
+        },
+        form_kind="ssl",
+        max_workers=4,
+    )
+
+    assert caching_options["cache_policy_rules_text"] == "cache allow localnet\ncache deny all"
+    assert caching_options["refresh_patterns_text"] == "refresh_pattern example.com 60 80% 1440"
+    assert ssl_options["sslproxy_cert_error_rules_text"] == "sslproxy_cert_error allow all"
+    assert ssl_options["sslproxy_cert_sign_rules_text"] == "sslproxy_cert_sign signTrusted all"
 
 
 def test_parse_cache_override_form_defaults_unchecked_to_false():

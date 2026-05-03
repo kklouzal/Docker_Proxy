@@ -148,7 +148,10 @@ def test_repo_template_includes_cache_first_defaults():
     repo_root = Path(__file__).resolve().parents[2]
     text = (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8")
 
+    assert "# BEGIN SQUID-UI MANAGED SETTINGS" in text
+    assert "# END SQUID-UI MANAGED SETTINGS" in text
     assert "cache_dir rock /var/spool/squid 10000 slot-size=32768" in text
+    assert "store_dir_select_algorithm least-load" in text
     assert "cache_mem 256 MB" in text
     assert "memory_cache_mode always" in text
     assert "memory_cache_shared on" in text
@@ -163,9 +166,14 @@ def test_repo_template_includes_cache_first_defaults():
     assert "quick_abort_min 0 KB" in text
     assert "quick_abort_max 0 KB" in text
     assert "quick_abort_pct 100" in text
+    assert "positive_dns_ttl 21600 seconds" in text
+    assert "tls_outgoing_options min-version=1.2 options=NO_SSLv3" in text
+    assert "request_header_max_size 64 KB" in text
+    assert "client_db on" in text
     assert "icap_preview_enable on" in text
     assert "sslproxy_session_ttl 600 seconds" in text
     assert "icap_service_failure_limit 10 in 30 seconds" in text
+    assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
 
 
 def test_squid_controller_normalize_config_text_adds_default_observability_lines():
@@ -314,6 +322,8 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
         }
     )
 
+    assert "# BEGIN SQUID-UI MANAGED SETTINGS" in rendered
+    assert "# END SQUID-UI MANAGED SETTINGS" in rendered
     assert "cache_dir ufs /var/spool/squid 10000 32 512" in rendered
     assert "memory_cache_mode disk" in rendered
     assert "memory_cache_shared off" in rendered
@@ -340,3 +350,5 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
     assert "max_open_disk_fds 512" in rendered
     assert "cache_miss_revalidate off" in rendered
     assert "icap_preview_enable on" in rendered
+    assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in rendered
+    assert "cache_log stdio:/var/log/squid/cache.log" in rendered

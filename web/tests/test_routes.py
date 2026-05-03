@@ -171,10 +171,18 @@ class TestRoutes(unittest.TestCase):
     def test_squid_config(self):
         response = self.app.get('/squid/config')
         self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn('data-config-page="true"', body)
+        self.assertIn('Copy editor contents', body)
+        self.assertIn('Reset unsaved changes', body)
 
     def test_squid_config_caching_tab(self):
         response = self.app.get('/squid/config?tab=caching')
         self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn('Jump to group', body)
+        self.assertIn('data-config-reset-for="safe-config-form"', body)
+        self.assertIn('data-depends-on="cache_dir_type"', body)
 
     def test_squid_config_caching_tab_keeps_range_cache_checked_for_bounded_limit(self):
         import app as app_module  # type: ignore
@@ -210,6 +218,9 @@ class TestRoutes(unittest.TestCase):
     def test_squid_config_ssl_tab(self):
         response = self.app.get('/squid/config?tab=ssl')
         self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn('name="tls_outgoing_options_line"', body)
+        self.assertIn('name="sslproxy_cert_error_rules_text"', body)
 
     def test_squid_config_icap_tab(self):
         response = self.app.get('/squid/config?tab=icap')
@@ -222,6 +233,9 @@ class TestRoutes(unittest.TestCase):
     def test_squid_config_limits_tab(self):
         response = self.app.get('/squid/config?tab=limits')
         self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn('name="request_header_max_size_kb"', body)
+        self.assertIn('name="http_upgrade_request_protocols_rules_text"', body)
 
     def test_squid_config_performance_tab(self):
         response = self.app.get('/squid/config?tab=performance')

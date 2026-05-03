@@ -6,22 +6,22 @@
 {% block content %}
 <section class="card section-shell">
     <div class="page-heading">
-    <div class="page-hero-copy">
-        <span class="page-eyebrow">Proxy tuning</span>
-        <h1 class="page-title">Squid Configuration</h1>
-        <p class="page-subtitle">Manage the live <span class="mono">squid.conf</span> revision and template-backed settings for {{ active_proxy.display_name }}.</p>
-        <div class="hero-badges">
-            {% if summary.workers %}<span class="badge">{{ summary.workers }} worker{{ '' if summary.workers == 1 else 's' }}</span>{% endif %}
-            {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
-            <span class="badge {{ 'warn' if summary.overrides_on else 'ok' }}">Overrides {{ 'on' if summary.overrides_on else 'off' }}</span>
-            <span class="badge">{{ summary.exclusions_count }} exclusions</span>
+        <div class="page-hero-copy">
+            <span class="page-eyebrow">Proxy tuning</span>
+            <h1 class="page-title">Squid Configuration</h1>
+            <p class="page-subtitle">Manage the live <span class="mono">squid.conf</span> revision and schema-backed Squid 7.x tuning for {{ active_proxy.display_name }}.</p>
+            <div class="hero-badges">
+                {% if summary.workers %}<span class="badge">{{ summary.workers }} worker{{ '' if summary.workers == 1 else 's' }}</span>{% endif %}
+                {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
+                <span class="badge {{ 'warn' if summary.overrides_on else 'ok' }}">Overrides {{ 'on' if summary.overrides_on else 'off' }}</span>
+                <span class="badge">{{ summary.exclusions_count }} exclusions</span>
+            </div>
         </div>
-    </div>
-    <div class="page-actions">
-        <a class="btn ghost" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download config</a>
-        <a class="btn ghost" href="{{ url_for('observability') }}">Open observability</a>
-        <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
-    </div>
+        <div class="page-actions">
+            <a class="btn ghost" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download config</a>
+            <a class="btn ghost" href="{{ url_for('observability') }}">Open observability</a>
+            <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
+        </div>
     </div>
 </section>
 
@@ -34,7 +34,7 @@
 <section class="card">
     <div class="card-header">
         <h2 class="card-title">Configuration snapshot</h2>
-        <span class="badge">selected tab {{ tab|title }}</span>
+        <span class="badge">selected tab {{ 'Config' if tab == 'config' else (active_section.label if active_section else tab|title) }}</span>
     </div>
     <div class="card-body">
         <div class="summary-grid">
@@ -55,23 +55,15 @@
                 <div class="stat-v">{{ summary.exclusions_count }}</div>
             </div>
         </div>
-        <div class="surface-note small">Use the raw <span class="mono">Config</span> tab for exact <span class="mono">squid.conf</span> edits, and the other tabs for safer template-backed changes that keep common settings organized.</div>
+        <div class="surface-note small">Use the raw <span class="mono">Config</span> tab for exact <span class="mono">squid.conf</span> edits, and the grouped tabs for safer schema-backed Squid 7.x tuning with sane defaults.</div>
     </div>
 </section>
 
-<div class="page-tabs config-tabs" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 10px; width: 100%; grid-column: 1 / -1; justify-self: stretch;">
+<div class="page-tabs config-tabs">
     <a class="btn {{ 'primary' if tab == 'config' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='config') }}">Config</a>
-    <a class="btn {{ 'primary' if tab == 'caching' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='caching') }}">Caching</a>
-    <a class="btn {{ 'primary' if tab == 'timeouts' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='timeouts') }}">Timeouts</a>
-    <a class="btn {{ 'primary' if tab == 'logging' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='logging') }}">Logging</a>
-    <a class="btn {{ 'primary' if tab == 'network' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='network') }}">Network</a>
-    <a class="btn {{ 'primary' if tab == 'dns' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='dns') }}">DNS</a>
-    <a class="btn {{ 'primary' if tab == 'ssl' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='ssl') }}">SSL</a>
-    <a class="btn {{ 'primary' if tab == 'icap' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='icap') }}">ICAP</a>
-    <a class="btn {{ 'primary' if tab == 'privacy' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='privacy') }}">Privacy</a>
-    <a class="btn {{ 'primary' if tab == 'limits' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='limits') }}">Limits</a>
-    <a class="btn {{ 'primary' if tab == 'performance' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='performance') }}">Performance</a>
-    <a class="btn {{ 'primary' if tab == 'http' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='http') }}">HTTP</a>
+    {% for section in config_sections %}
+        <a class="btn {{ 'primary' if tab == section.key else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab=section.key) }}">{{ section.label }}</a>
+    {% endfor %}
 </div>
 
 {% if request.args.get('ok') %}
@@ -93,1076 +85,283 @@
     </div>
 {% endif %}
 
-<div class="config-page" style="display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; width: 100%; grid-column: 1 / -1; justify-self: stretch;">
+<div class="config-page" id="config-page-top" data-config-page="true" data-config-tab="{{ tab }}" {% if active_section %}data-config-section="{{ active_section.key }}"{% endif %}>
     {% if tab == 'config' %}
-        <section class="card">
+        <section class="card config-editor-card" data-config-panel="raw">
             <div class="card-header">
-                <h2 class="card-title">squid.conf</h2>
-                <span class="badge">Validates on save</span>
+                <div>
+                    <h2 class="card-title">squid.conf</h2>
+                    <div class="small">Raw editor with server-side validation, reload safety checks, and local dirty-state tracking.</div>
+                </div>
+                <div class="config-toolbar">
+                    <span class="badge ok" data-config-dirty-indicator-for="raw-config-form">No local changes</span>
+                    <span class="badge" data-config-metrics-for="raw-config-form">0 lines · 0 chars</span>
+                </div>
             </div>
             <div class="card-body">
-                <form class="form" action="{{ url_for('squid_config', tab=tab) }}" method="post">
+                <form class="form config-form-shell" id="raw-config-form" action="{{ url_for('squid_config', tab=tab) }}" method="post" data-config-form="raw" data-allow-dirty-submit="1">
                     {{ csrf_field() }}
                     <input type="hidden" name="tab" value="{{ tab }}" />
                     <label for="config_text">Configuration file</label>
                     <textarea id="config_text" name="config_text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">{{ config_text }}</textarea>
-                    <div class="actions">
+                    <div class="actions config-editor-actions">
                         <button class="btn primary" type="submit" name="action" value="apply">Save & Reload</button>
                         <button class="btn ghost" type="submit" name="action" value="validate">Validate only</button>
                         <button class="btn ghost" type="button" id="reload-running-config" data-url="{{ url_for('api_squid_config') }}">Reload from running config</button>
+                        <button class="btn ghost" type="button" data-copy-target="#config_text">Copy editor contents</button>
+                        <button class="btn ghost" type="button" data-config-reset-for="raw-config-form">Reset unsaved changes</button>
                     </div>
                     <div class="small">The server validates the config before applying it; if validation fails, it keeps the previous config.</div>
                 </form>
             </div>
         </section>
-    {% elif tab == 'caching' %}
-        <section class="card">
+    {% elif active_section %}
+        {% set running_lines = line_map.get(active_section.key, []) %}
+        {% set running_line_count = running_lines|length if running_lines else 0 %}
+
+        <section class="card config-snapshot-card">
             <div class="card-header">
-                <h2 class="card-title">Caching settings</h2>
-                <span class="badge">Running config</span>
+                <div>
+                    <h2 class="card-title">{{ active_section.label }} snapshot</h2>
+                    <div class="small config-note">Relevant {{ active_section.label|lower }} directives detected in the current running <span class="mono">squid.conf</span>.</div>
+                </div>
+                <div class="config-toolbar">
+                    <span class="badge">{{ running_line_count }} directive{{ '' if running_line_count == 1 else 's' }}</span>
+                    {% if running_line_count %}
+                        <button class="btn ghost" type="button" data-copy-target="#running-snapshot-{{ active_section.key }}">Copy snapshot</button>
+                    {% endif %}
+                </div>
             </div>
             <div class="card-body">
-                <div class="small config-note">Key caching directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if caching_lines and caching_lines|length %}
-                    <pre class="small pre-wrap">{{ caching_lines | join('\n') }}</pre>
+                {% if running_lines and running_lines|length %}
+                    <pre class="small pre-wrap" id="running-snapshot-{{ active_section.key }}">{{ running_lines | join('\n') }}</pre>
                 {% else %}
-                    <div class="small">No caching directives detected.</div>
+                    <div class="small">No {{ active_section.label|lower }} directives detected.</div>
                 {% endif %}
             </div>
         </section>
 
-        <form id="safe-caching-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="caching" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Cache store and sizing</h2>
-                <span class="badge ok">Template</span>
+        {% if active_section.key == 'caching' %}
+            <div class="page-tabs config-subtabs">
+                <a class="btn {{ 'primary' if subtab == 'safe' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='caching', subtab='safe') }}">Managed tuning</a>
+                <a class="btn {{ 'primary' if subtab == 'overrides' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='caching', subtab='overrides') }}">Override semantics</a>
             </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="cache_dir_type">Disk cache store type</label>
-                    {% set cache_dir_type = (tunables.cache_dir_type if tunables and tunables.cache_dir_type else 'rock') %}
-                    <select form="safe-caching-form" id="cache_dir_type" name="cache_dir_type">
-                        <option value="rock" {% if cache_dir_type == 'rock' %}selected{% endif %}>rock (recommended for SMP)</option>
-                        <option value="ufs" {% if cache_dir_type == 'ufs' %}selected{% endif %}>ufs (legacy)</option>
-                    </select>
-                    <div class="small">Squid 7.x documents <span class="mono">rock</span> as the only SMP-aware disk store. Use <span class="mono">ufs</span> only when you specifically want the legacy directory-based layout.</div>
+        {% endif %}
 
-                    <label for="cache_dir_size_mb">Disk cache size (MB)</label>
-                    <input form="safe-caching-form" id="cache_dir_size_mb" name="cache_dir_size_mb" type="number" min="100" step="100" value="{{ (tunables.cache_dir_size_mb if tunables and tunables.cache_dir_size_mb is not none else 10000) }}" />
-
-                    <label for="cache_dir_ufs_l1">ufs L1 directories</label>
-                    <input form="safe-caching-form" id="cache_dir_ufs_l1" name="cache_dir_ufs_l1" type="number" min="1" step="1" value="{{ (tunables.cache_dir_ufs_l1 if tunables and tunables.cache_dir_ufs_l1 is not none else 16) }}" />
-
-                    <label for="cache_dir_ufs_l2">ufs L2 directories</label>
-                    <input form="safe-caching-form" id="cache_dir_ufs_l2" name="cache_dir_ufs_l2" type="number" min="1" step="1" value="{{ (tunables.cache_dir_ufs_l2 if tunables and tunables.cache_dir_ufs_l2 is not none else 256) }}" />
-
-                    <label for="cache_dir_rock_slot_size_kb">rock slot-size (KB)</label>
-                    <input form="safe-caching-form" id="cache_dir_rock_slot_size_kb" name="cache_dir_rock_slot_size_kb" type="number" min="4" step="4" value="{{ (tunables.cache_dir_rock_slot_size_kb if tunables and tunables.cache_dir_rock_slot_size_kb is not none else 32) }}" />
-
-                    <label for="cache_dir_rock_swap_timeout_ms">rock swap-timeout (ms)</label>
-                    <input form="safe-caching-form" id="cache_dir_rock_swap_timeout_ms" name="cache_dir_rock_swap_timeout_ms" type="number" min="0" step="1" value="{{ (tunables.cache_dir_rock_swap_timeout_ms if tunables and tunables.cache_dir_rock_swap_timeout_ms is not none else '') }}" />
-
-                    <label for="cache_dir_rock_max_swap_rate">rock max-swap-rate (swaps/sec)</label>
-                    <input form="safe-caching-form" id="cache_dir_rock_max_swap_rate" name="cache_dir_rock_max_swap_rate" type="number" min="0" step="1" value="{{ (tunables.cache_dir_rock_max_swap_rate if tunables and tunables.cache_dir_rock_max_swap_rate is not none else '') }}" />
-                    <div class="small">Leave the rock-specific rate/timeout controls blank unless you need to limit slow-disk back pressure explicitly.</div>
-
-                    <label for="cache_mem_mb">Memory cache (MB)</label>
-                    <input form="safe-caching-form" id="cache_mem_mb" name="cache_mem_mb" type="number" min="16" step="16" value="{{ (tunables.cache_mem_mb if tunables and tunables.cache_mem_mb is not none else 256) }}" />
+        {% if active_section.key == 'network' %}
+            <section class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Web destination ports</h2>
+                    <span class="badge ok">Default allow</span>
                 </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Object limits</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="maximum_object_size_mb">Max cached object size (MB)</label>
-                    <input form="safe-caching-form" id="maximum_object_size_mb" name="maximum_object_size_mb" type="number" min="1" step="1" value="{{ (tunables.maximum_object_size_mb if tunables and tunables.maximum_object_size_mb is not none else 128) }}" />
-
-                    <label for="maximum_object_size_in_memory_kb">Max in-memory object (KB)</label>
-                    <input form="safe-caching-form" id="maximum_object_size_in_memory_kb" name="maximum_object_size_in_memory_kb" type="number" min="0" step="64" value="{{ (tunables.maximum_object_size_in_memory_kb if tunables and tunables.maximum_object_size_in_memory_kb is not none else 2048) }}" />
-
-                    <label for="minimum_object_size_kb">Min object size (KB)</label>
-                    <input form="safe-caching-form" id="minimum_object_size_kb" name="minimum_object_size_kb" type="number" min="0" step="1" value="{{ (tunables.minimum_object_size_kb if tunables and tunables.minimum_object_size_kb is not none else 0) }}" />
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Caching and memory behavior</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="memory_cache_mode">memory_cache_mode</label>
-                    {% set memory_cache_mode = (tunables.memory_cache_mode if tunables and tunables.memory_cache_mode else 'always') %}
-                    <select form="safe-caching-form" id="memory_cache_mode" name="memory_cache_mode">
-                        <option value="always" {% if memory_cache_mode == 'always' %}selected{% endif %}>always (keep most recently fetched objects in memory)</option>
-                        <option value="disk" {% if memory_cache_mode == 'disk' %}selected{% endif %}>disk (memory-cache only disk-cache hits)</option>
-                        <option value="network" {% if memory_cache_mode == 'network' %}selected{% endif %}>network (memory-cache network-fetched objects only)</option>
-                    </select>
-
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="memory_cache_shared_on" {% if (tunables and tunables.memory_cache_shared is not none and tunables.memory_cache_shared) or (not tunables) or (tunables and tunables.memory_cache_shared is none) %}checked{% endif %} />
-                        <span>Share memory cache across SMP workers</span>
-                    </label>
-
-                    <label for="shared_transient_entries_limit">shared_transient_entries_limit</label>
-                    <input form="safe-caching-form" id="shared_transient_entries_limit" name="shared_transient_entries_limit" type="number" min="0" step="1024" value="{{ (tunables.shared_transient_entries_limit if tunables and tunables.shared_transient_entries_limit is not none else 32768) }}" />
-                    <div class="small">Controls the shared table used to coordinate in-flight/cacheable transactions between workers.</div>
-
-                    <label for="cache_swap_low">cache_swap_low (%)</label>
-                    <input form="safe-caching-form" id="cache_swap_low" name="cache_swap_low" type="number" min="0" max="100" step="1" value="{{ (tunables.cache_swap_low if tunables and tunables.cache_swap_low is not none else 90) }}" />
-
-                    <label for="cache_swap_high">cache_swap_high (%)</label>
-                    <input form="safe-caching-form" id="cache_swap_high" name="cache_swap_high" type="number" min="0" max="100" step="1" value="{{ (tunables.cache_swap_high if tunables and tunables.cache_swap_high is not none else 95) }}" />
-
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="collapsed_forwarding_on" {% if (tunables and tunables.collapsed_forwarding is not none and tunables.collapsed_forwarding) or (not tunables) or (tunables and tunables.collapsed_forwarding is none) %}checked{% endif %} />
-                        <span>Enable collapsed forwarding</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="range_cache_on" {% if (tunables and tunables.range_offset_limit is not none and tunables.range_offset_limit != 0) or (not tunables) or (tunables and tunables.range_offset_limit is none) %}checked{% endif %} />
-                        <span>Enable caching of Range requests</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="pipeline_prefetch_on" {% if (tunables and tunables.pipeline_prefetch is not none and tunables.pipeline_prefetch) or (not tunables) or (tunables and tunables.pipeline_prefetch is none) %}checked{% endif %} />
-                        <span>Enable pipeline_prefetch</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="cache_miss_revalidate_on" {% if (tunables and tunables.cache_miss_revalidate is not none and tunables.cache_miss_revalidate) or (not tunables) or (tunables and tunables.cache_miss_revalidate is none) %}checked{% endif %} />
-                        <span>Preserve client conditional requests on cache MISS</span>
-                    </label>
-                    <div class="small">Turn this off to warm a mostly empty cache faster by stripping client <span class="mono">If-Modified-Since</span>/<span class="mono">If-None-Match</span> headers on cacheable MISSes.</div>
-
-                    <label for="cache_replacement_policy">Disk cache replacement policy</label>
-                    <select form="safe-caching-form" id="cache_replacement_policy" name="cache_replacement_policy">
-                        {% set crp = (tunables.cache_replacement_policy if tunables and tunables.cache_replacement_policy else 'heap GDSF') %}
-                        <option value="heap GDSF" {% if crp == 'heap GDSF' %}selected{% endif %}>heap GDSF (higher hit-rate)</option>
-                        <option value="heap LFUDA" {% if crp == 'heap LFUDA' %}selected{% endif %}>heap LFUDA</option>
-                        <option value="lru" {% if crp == 'lru' %}selected{% endif %}>LRU</option>
-                    </select>
-
-                    <label for="memory_replacement_policy">Memory cache replacement policy</label>
-                    <select form="safe-caching-form" id="memory_replacement_policy" name="memory_replacement_policy">
-                        {% set mrp = (tunables.memory_replacement_policy if tunables and tunables.memory_replacement_policy else 'heap GDSF') %}
-                        <option value="heap GDSF" {% if mrp == 'heap GDSF' %}selected{% endif %}>heap GDSF (higher hit-rate)</option>
-                        <option value="heap LFUDA" {% if mrp == 'heap LFUDA' %}selected{% endif %}>heap LFUDA</option>
-                        <option value="lru" {% if mrp == 'lru' %}selected{% endif %}>LRU</option>
-                    </select>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Connection behavior</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="client_persistent_connections_on" {% if (tunables and tunables.client_persistent_connections is not none and tunables.client_persistent_connections) or (not tunables) or (tunables and tunables.client_persistent_connections is none) %}checked{% endif %} />
-                        <span>Client persistent connections</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="server_persistent_connections_on" {% if (tunables and tunables.server_persistent_connections is not none and tunables.server_persistent_connections) or (not tunables) or (tunables and tunables.server_persistent_connections is none) %}checked{% endif %} />
-                        <span>Server persistent connections</span>
-                    </label>
-
-                    <label for="read_ahead_gap_kb">read_ahead_gap (KB)</label>
-                    <input form="safe-caching-form" id="read_ahead_gap_kb" name="read_ahead_gap_kb" type="number" min="0" step="1" value="{{ (tunables.read_ahead_gap_kb if tunables and tunables.read_ahead_gap_kb is not none else '') }}" />
-                    <div class="small">Leave blank to keep the current/default value.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">TTL and DNS</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="negative_ttl_seconds">negative_ttl (seconds)</label>
-                    <input form="safe-caching-form" id="negative_ttl_seconds" name="negative_ttl_seconds" type="number" min="0" step="1" value="{{ (tunables.negative_ttl_seconds if tunables and tunables.negative_ttl_seconds is not none else '') }}" />
-
-                    <label for="positive_dns_ttl_seconds">positive_dns_ttl (seconds)</label>
-                    <input form="safe-caching-form" id="positive_dns_ttl_seconds" name="positive_dns_ttl_seconds" type="number" min="0" step="1" value="{{ (tunables.positive_dns_ttl_seconds if tunables and tunables.positive_dns_ttl_seconds is not none else '') }}" />
-
-                    <label for="negative_dns_ttl_seconds">negative_dns_ttl (seconds)</label>
-                    <input form="safe-caching-form" id="negative_dns_ttl_seconds" name="negative_dns_ttl_seconds" type="number" min="0" step="1" value="{{ (tunables.negative_dns_ttl_seconds if tunables and tunables.negative_dns_ttl_seconds is not none else '') }}" />
-
-                    <label for="minimum_expiry_time_seconds">minimum_expiry_time (seconds)</label>
-                    <input form="safe-caching-form" id="minimum_expiry_time_seconds" name="minimum_expiry_time_seconds" type="number" min="0" step="1" value="{{ (tunables.minimum_expiry_time_seconds if tunables and tunables.minimum_expiry_time_seconds is not none else 60) }}" />
-
-                    <label for="max_stale_seconds">max_stale (seconds)</label>
-                    <input form="safe-caching-form" id="max_stale_seconds" name="max_stale_seconds" type="number" min="0" step="60" value="{{ (tunables.max_stale_seconds if tunables and tunables.max_stale_seconds is not none else 604800) }}" />
-
-                    <label class="check-row">
-                        <input form="safe-caching-form" class="check" type="checkbox" name="refresh_all_ims_on" {% if tunables and tunables.refresh_all_ims is not none and tunables.refresh_all_ims %}checked{% endif %} />
-                        <span>Always revalidate client If-Modified-Since requests</span>
-                    </label>
-
-                    <div class="small">Leave blank to keep the current/default values.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Workers and abort behavior</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="workers">Squid workers (SMP)</label>
-                    <input form="safe-caching-form" id="workers" name="workers" type="number" min="1" max="4" step="1" value="{{ (tunables.workers if tunables and tunables.workers is not none else 1) }}" />
-                    <div class="small">More workers can improve throughput on SMP-capable builds, but they also increase RAM use. Start low and raise only after measuring.</div>
-                    <div class="small">Note: Changing workers requires a full Squid restart and cache metadata reinitialization (it cannot be applied with reconfigure). This UI will handle that automatically.</div>
-
-                    <label for="quick_abort_min_kb">quick_abort_min (KB)</label>
-                    <input form="safe-caching-form" id="quick_abort_min_kb" name="quick_abort_min_kb" type="number" min="-1" step="1" value="{{ (tunables.quick_abort_min_kb if tunables and tunables.quick_abort_min_kb is not none else 0) }}" />
-
-                    <label for="quick_abort_max_kb">quick_abort_max (KB)</label>
-                    <input form="safe-caching-form" id="quick_abort_max_kb" name="quick_abort_max_kb" type="number" min="0" step="1" value="{{ (tunables.quick_abort_max_kb if tunables and tunables.quick_abort_max_kb is not none else 0) }}" />
-
-                    <label for="quick_abort_pct">quick_abort_pct</label>
-                    <input form="safe-caching-form" id="quick_abort_pct" name="quick_abort_pct" type="number" min="0" max="100" step="1" value="{{ (tunables.quick_abort_pct if tunables and tunables.quick_abort_pct is not none else 100) }}" />
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply safe caching</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-caching-form">Save & Apply (template)</button>
-                </div>
-                <div class="small config-apply-note">Generates config from the template, validates it, applies it, and reloads Squid. No aggressive cache overrides are enabled.</div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Cache overrides</h2>
-                <span class="badge danger">Advanced</span>
-            </div>
-            <div class="card-body">
-                <form class="form" action="{{ url_for('apply_cache_overrides') }}" method="post">
-                    {{ csrf_field() }}
-                    <div class="small config-note">
-                        These settings intentionally override cache-control semantics to increase caching. Use with care.
+                <div class="card-body">
+                    <div class="surface-note small">
+                        Non-standard HTTP and HTTPS destination ports are allowed by default. This deployment intentionally does <strong>not</strong> enforce restrictive <span class="mono">Safe_ports</span> or <span class="mono">SSL_ports</span> ACLs unless you add them manually.
                     </div>
+                    <div class="surface-note small">
+                        If you ever need tighter port controls, use the raw <span class="mono">Config</span> tab to add explicit ACL restrictions for your environment.
+                    </div>
+                </div>
+            </section>
+        {% endif %}
 
-                    <label class="check-row">
-                        <input class="check" type="checkbox" name="override_client_no_cache" {% if overrides and overrides.client_no_cache %}checked{% endif %} />
-                        <span>Override client no-cache (Cache-Control/Pragma)</span>
-                    </label>
+        {% if active_section.key == 'caching' and subtab == 'overrides' %}
+            <section class="card config-overrides-card">
+                <div class="card-header">
+                    <div>
+                        <h2 class="card-title">Cache overrides</h2>
+                        <div class="small">High-risk cache semantics overrides for deliberately aggressive caching behavior.</div>
+                    </div>
+                    <div class="config-toolbar">
+                        <span class="badge danger">Advanced</span>
+                        <span class="badge ok" data-config-dirty-indicator-for="config-overrides-form">No local changes</span>
+                        <span class="badge" data-config-dirty-count-for="config-overrides-form">0 pending changes</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <form class="form config-form-shell" id="config-overrides-form" action="{{ url_for('apply_cache_overrides') }}" method="post" data-config-form="overrides" data-allow-dirty-submit="1">
+                        {{ csrf_field() }}
+                        <div class="small config-note">
+                            These settings intentionally override cache-control semantics to increase caching. Use with care.
+                        </div>
 
-                    <label class="check-row">
-                        <input class="check" type="checkbox" name="override_origin_private" {% if overrides and overrides.origin_private %}checked{% endif %} />
-                        <span>Override origin private (Cache-Control: private)</span>
-                    </label>
+                        <label class="check-row">
+                            <input class="check" type="checkbox" name="override_client_no_cache" {% if overrides and overrides.client_no_cache %}checked{% endif %} />
+                            <span>Override client no-cache (Cache-Control/Pragma)</span>
+                        </label>
 
-                    <label class="check-row">
-                        <input class="check" type="checkbox" name="override_origin_no_cache" {% if overrides and overrides.origin_no_cache %}checked{% endif %} />
-                        <span>Override origin no-cache (Cache-Control: no-cache)</span>
-                    </label>
+                        <label class="check-row">
+                            <input class="check" type="checkbox" name="override_origin_private" {% if overrides and overrides.origin_private %}checked{% endif %} />
+                            <span>Override origin private (Cache-Control: private)</span>
+                        </label>
 
-                    <label class="check-row">
-                        <input class="check" type="checkbox" name="override_client_no_store" {% if overrides and overrides.client_no_store %}checked{% endif %} />
-                        <span>Override client no-store (Cache-Control: no-store)</span>
-                    </label>
+                        <label class="check-row">
+                            <input class="check" type="checkbox" name="override_origin_no_cache" {% if overrides and overrides.origin_no_cache %}checked{% endif %} />
+                            <span>Override origin no-cache (Cache-Control: no-cache)</span>
+                        </label>
 
-                    <label class="check-row">
-                        <input class="check" type="checkbox" name="override_origin_no_store" {% if overrides and overrides.origin_no_store %}checked{% endif %} />
-                        <span>Override origin no-store (Cache-Control/Pragma: no-store)</span>
-                    </label>
+                        <label class="check-row">
+                            <input class="check" type="checkbox" name="override_client_no_store" {% if overrides and overrides.client_no_store %}checked{% endif %} />
+                            <span>Override client no-store (Cache-Control: no-store)</span>
+                        </label>
 
-                    <label class="check-row">
-                        <input class="check" type="checkbox" name="override_ignore_auth" {% if overrides and overrides.ignore_auth %}checked{% endif %} />
-                        <span>Override authorization-required objects (ignore-auth)</span>
-                    </label>
+                        <label class="check-row">
+                            <input class="check" type="checkbox" name="override_origin_no_store" {% if overrides and overrides.origin_no_store %}checked{% endif %} />
+                            <span>Override origin no-store (Cache-Control/Pragma: no-store)</span>
+                        </label>
 
+                        <label class="check-row">
+                            <input class="check" type="checkbox" name="override_ignore_auth" {% if overrides and overrides.ignore_auth %}checked{% endif %} />
+                            <span>Override authorization-required objects (ignore-auth)</span>
+                        </label>
+
+                        <div class="config-form-footer">
+                            <div class="actions">
+                                <button class="btn primary" type="submit">Save & Apply (template)</button>
+                                <button class="btn ghost" type="button" data-config-reset-for="config-overrides-form">Reset overrides</button>
+                            </div>
+                            <div class="small">Applies overrides via <span class="mono">refresh_pattern</span> options and reloads Squid.</div>
+                        </div>
+                    </form>
+                </div>
+            </section>
+        {% else %}
+            {% set section_ns = namespace(field_total=0) %}
+            {% for group in active_section.groups %}
+                {% set section_ns.field_total = section_ns.field_total + (group.field_keys|length) %}
+            {% endfor %}
+
+            <form id="safe-config-form" class="config-hidden-form" action="{{ url_for('apply_safe_caching') }}" method="post" data-config-form="managed" data-allow-dirty-submit="1">
+                {{ csrf_field() }}
+                <input type="hidden" name="form_kind" value="{{ active_section.key }}" />
+            </form>
+
+            <section class="card config-overview-card">
+                <div class="card-header">
+                    <div>
+                        <h2 class="card-title">{{ active_section.label }} tuning</h2>
+                        <div class="small">Schema-backed controls with live dependency handling, dirty-state tracking, and quick links into each directive group.</div>
+                    </div>
+                    <span class="badge ok">Template-backed</span>
+                </div>
+                <div class="card-body">
+                    <div class="summary-grid">
+                        <div class="stat compact-stat">
+                            <div class="stat-k">Groups</div>
+                            <div class="stat-v">{{ active_section.groups|length }}</div>
+                        </div>
+                        <div class="stat compact-stat">
+                            <div class="stat-k">Fields</div>
+                            <div class="stat-v">{{ section_ns.field_total }}</div>
+                        </div>
+                        <div class="stat compact-stat">
+                            <div class="stat-k">Snapshot lines</div>
+                            <div class="stat-v">{{ running_line_count }}</div>
+                        </div>
+                        <div class="stat compact-stat">
+                            <div class="stat-k">Mode</div>
+                            <div class="stat-v">Managed</div>
+                        </div>
+                    </div>
+                    <div class="surface-note small">{{ active_section.description }}</div>
+                    <div class="surface-note small">The values below come from the Squid 7.x directive inventory and are rendered back into a managed block inside <span class="mono">squid.conf</span>.</div>
+                    <div class="config-group-nav">
+                        <div class="small">Jump to group</div>
+                        <div class="page-tabs config-group-tabs">
+                            {% for group in active_section.groups %}
+                                <a class="btn ghost" href="#group-{{ active_section.key }}-{{ group.key }}">{{ group.title }}</a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card config-action-card sticky">
+                <div class="card-header">
+                    <div>
+                        <h2 class="card-title">Apply {{ active_section.label }}</h2>
+                        <div class="small">Changes are tracked locally until you save them back into the managed <span class="mono">squid.conf</span> block.</div>
+                    </div>
+                    <div class="config-toolbar">
+                        <span class="badge ok" data-config-dirty-indicator-for="safe-config-form">No local changes</span>
+                        <span class="badge" data-config-dirty-count-for="safe-config-form">0 pending changes</span>
+                    </div>
+                </div>
+                <div class="card-body">
                     <div class="actions">
-                        <button class="btn primary" type="submit">Save & Apply (template)</button>
+                        <button class="btn primary" type="submit" form="safe-config-form">Save & Apply (template)</button>
+                        <button class="btn ghost" type="button" data-config-reset-for="safe-config-form">Reset section</button>
+                        <a class="btn ghost" href="#config-page-top">Back to top</a>
                     </div>
-
-                    <div class="small">Applies overrides via <span class="mono">refresh_pattern</span> options and reloads Squid.</div>
-                </form>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'timeouts' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Timeout settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key timeout directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if timeout_lines and timeout_lines|length %}
-                    <pre class="small pre-wrap">{{ timeout_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No timeout directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-timeouts-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="timeouts" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Origin and request timeouts</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="connect_timeout_seconds">connect_timeout (seconds)</label>
-                    <input form="safe-timeouts-form" id="connect_timeout_seconds" name="connect_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.connect_timeout_seconds if tunables and tunables.connect_timeout_seconds is not none else 90) }}" />
-
-                    <label for="request_timeout_seconds">request_timeout (seconds)</label>
-                    <input form="safe-timeouts-form" id="request_timeout_seconds" name="request_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.request_timeout_seconds if tunables and tunables.request_timeout_seconds is not none else 1800) }}" />
-
-                    <label for="read_timeout_seconds">read_timeout (seconds)</label>
-                    <input form="safe-timeouts-form" id="read_timeout_seconds" name="read_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.read_timeout_seconds if tunables and tunables.read_timeout_seconds is not none else 1800) }}" />
-
-                    <label for="forward_timeout_seconds">forward_timeout (seconds)</label>
-                    <input form="safe-timeouts-form" id="forward_timeout_seconds" name="forward_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.forward_timeout_seconds if tunables and tunables.forward_timeout_seconds is not none else 1800) }}" />
-
-                    <label for="request_start_timeout_seconds">request_start_timeout (seconds)</label>
-                    <input form="safe-timeouts-form" id="request_start_timeout_seconds" name="request_start_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.request_start_timeout_seconds if tunables and tunables.request_start_timeout_seconds is not none else 60) }}" />
-
-                    <label for="write_timeout_seconds">write_timeout (seconds)</label>
-                    <input form="safe-timeouts-form" id="write_timeout_seconds" name="write_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.write_timeout_seconds if tunables and tunables.write_timeout_seconds is not none else 900) }}" />
+                    <div class="small config-apply-note">{{ active_section.apply_note }}</div>
                 </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Connection lifecycle</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="shutdown_lifetime_seconds">shutdown_lifetime (seconds)</label>
-                    <input form="safe-timeouts-form" id="shutdown_lifetime_seconds" name="shutdown_lifetime_seconds" type="number" min="0" step="1" value="{{ (tunables.shutdown_lifetime_seconds if tunables and tunables.shutdown_lifetime_seconds is not none else 30) }}" />
-                    <div class="small">Lower values speed shutdowns but may drop active connections.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply timeouts</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-timeouts-form">Save & Apply (template)</button>
-                </div>
-                <div class="small config-apply-note">Updates the template-driven config, validates it, applies it, and reloads Squid.</div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'logging' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Log settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key log directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if logging_lines and logging_lines|length %}
-                    <pre class="small pre-wrap">{{ logging_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No log directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-logging-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="logging" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Log rotation</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="logfile_rotate">logfile_rotate</label>
-                    <input form="safe-logging-form" id="logfile_rotate" name="logfile_rotate" type="number" min="0" step="1" value="{{ (tunables.logfile_rotate if tunables and tunables.logfile_rotate is not none else 10) }}" />
-                    <div class="small">Controls how many rotated log files Squid keeps (0 disables rotation).</div>
-
-                    <label class="check-row">
-                        <input form="safe-logging-form" class="check" type="checkbox" name="buffered_logs_on" {% if (tunables and tunables.buffered_logs is not none and tunables.buffered_logs) or (not tunables) or (tunables and tunables.buffered_logs is none) %}checked{% endif %} />
-                        <span>buffered_logs on</span>
-                    </label>
-                    <div class="small">Buffers log output before writing. This can reduce log I/O overhead, but increases the time before records appear on disk.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply logging</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-logging-form">Save & Apply (template)</button>
-                </div>
-                <div class="small config-apply-note">Updates the template-driven config, validates it, applies it, and reloads Squid.</div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'network' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Network settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key network directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if network_lines and network_lines|length %}
-                    <pre class="small pre-wrap">{{ network_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No network directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-network-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="network" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Persistent connection lifecycle</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="server_idle_pconn_timeout_seconds">server_idle_pconn_timeout (seconds)</label>
-                    <input form="safe-network-form" id="server_idle_pconn_timeout_seconds" name="server_idle_pconn_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.server_idle_pconn_timeout_seconds if tunables and tunables.server_idle_pconn_timeout_seconds is not none else 120) }}" />
-
-                    <label for="client_idle_pconn_timeout_seconds">client_idle_pconn_timeout (seconds)</label>
-                    <input form="safe-network-form" id="client_idle_pconn_timeout_seconds" name="client_idle_pconn_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.client_idle_pconn_timeout_seconds if tunables and tunables.client_idle_pconn_timeout_seconds is not none else 120) }}" />
-
-                    <label for="pconn_lifetime_seconds">pconn_lifetime (seconds)</label>
-                    <input form="safe-network-form" id="pconn_lifetime_seconds" name="pconn_lifetime_seconds" type="number" min="0" step="1" value="{{ (tunables.pconn_lifetime_seconds if tunables and tunables.pconn_lifetime_seconds is not none else 0) }}" />
-
-                    <label for="client_lifetime_seconds">client_lifetime (seconds)</label>
-                    <input form="safe-network-form" id="client_lifetime_seconds" name="client_lifetime_seconds" type="number" min="0" step="1" value="{{ (tunables.client_lifetime_seconds if tunables and tunables.client_lifetime_seconds is not none else 3600) }}" />
-
-                    <label class="check-row">
-                        <input form="safe-network-form" class="check" type="checkbox" name="persistent_connection_after_error_on" {% if (tunables and tunables.persistent_connection_after_error is not none and tunables.persistent_connection_after_error) or (not tunables) or (tunables and tunables.persistent_connection_after_error is none) %}checked{% endif %} />
-                        <span>persistent_connection_after_error on</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-network-form" class="check" type="checkbox" name="detect_broken_pconn_on" {% if tunables and tunables.detect_broken_pconn is not none and tunables.detect_broken_pconn %}checked{% endif %} />
-                        <span>detect_broken_pconn on</span>
-                    </label>
-
-                    <label for="connect_retries">connect_retries</label>
-                    <input form="safe-network-form" id="connect_retries" name="connect_retries" type="number" min="0" max="10" step="1" value="{{ (tunables.connect_retries if tunables and tunables.connect_retries is not none else 1) }}" />
-
-                    <label for="forward_max_tries">forward_max_tries</label>
-                    <input form="safe-network-form" id="forward_max_tries" name="forward_max_tries" type="number" min="1" step="1" value="{{ (tunables.forward_max_tries if tunables and tunables.forward_max_tries is not none else 10) }}" />
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Resource limits</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="max_filedescriptors">max_filedescriptors</label>
-                    <input form="safe-network-form" id="max_filedescriptors" name="max_filedescriptors" type="number" min="0" step="1" value="{{ (tunables.max_filedescriptors if tunables and tunables.max_filedescriptors is not none else 8192) }}" />
-                    <div class="small">Higher values can increase concurrency but require OS limits to allow it.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Web destination ports</h2>
-                <span class="badge ok">Default allow</span>
-            </div>
-            <div class="card-body">
-                <div class="surface-note small">
-                    Non-standard HTTP and HTTPS destination ports are allowed by default. This deployment intentionally does <strong>not</strong> enforce restrictive <span class="mono">Safe_ports</span> or <span class="mono">SSL_ports</span> ACLs unless you add them manually.
-                </div>
-                <div class="surface-note small">
-                    If you ever need tighter port controls, use the raw <span class="mono">Config</span> tab to add explicit ACL restrictions for your environment.
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply network</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-network-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'dns' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">DNS settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key DNS directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if dns_lines and dns_lines|length %}
-                    <pre class="small pre-wrap">{{ dns_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No DNS directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-dns-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="dns" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Resolver behavior</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="dns_timeout_seconds">dns_timeout (seconds)</label>
-                    <input form="safe-dns-form" id="dns_timeout_seconds" name="dns_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.dns_timeout_seconds if tunables and tunables.dns_timeout_seconds is not none else 15) }}" />
-
-                    <label for="dns_retransmit_interval_seconds">dns_retransmit_interval (seconds)</label>
-                    <input form="safe-dns-form" id="dns_retransmit_interval_seconds" name="dns_retransmit_interval_seconds" type="number" min="0" step="1" value="{{ (tunables.dns_retransmit_interval_seconds if tunables and tunables.dns_retransmit_interval_seconds is not none else 5) }}" />
-
-                    <label for="dns_packet_max">dns_packet_max</label>
-                    <input form="safe-dns-form" id="dns_packet_max" name="dns_packet_max" type="text" placeholder="1232 or none" value="{{ (tunables.dns_packet_max if tunables and tunables.dns_packet_max is not none else '') }}" />
-                    <div class="small">Advertises EDNS UDP reply size. Use <span class="mono">none</span> to disable EDNS large-packet support.</div>
-
-                    <label for="dns_nameservers">dns_nameservers</label>
-                    <input form="safe-dns-form" id="dns_nameservers" name="dns_nameservers" type="text" value="{{ (tunables.dns_nameservers if tunables and tunables.dns_nameservers else '') }}" />
-                    <div class="small">Space-separated IPs (example: <span class="mono">1.1.1.1 8.8.8.8</span>). Leave blank to keep current/default.</div>
-
-                    <label for="hosts_file">hosts_file</label>
-                    <input form="safe-dns-form" id="hosts_file" name="hosts_file" type="text" value="{{ (tunables.hosts_file if tunables and tunables.hosts_file else '') }}" />
-                    <div class="small">Leave blank to keep current/default.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">DNS caches</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="ipcache_size">ipcache_size</label>
-                    <input form="safe-dns-form" id="ipcache_size" name="ipcache_size" type="number" min="0" step="1" value="{{ (tunables.ipcache_size if tunables and tunables.ipcache_size is not none else 8192) }}" />
-
-                    <label for="ipcache_low">ipcache_low (%)</label>
-                    <input form="safe-dns-form" id="ipcache_low" name="ipcache_low" type="number" min="0" max="100" step="1" value="{{ (tunables.ipcache_low if tunables and tunables.ipcache_low is not none else 90) }}" />
-
-                    <label for="ipcache_high">ipcache_high (%)</label>
-                    <input form="safe-dns-form" id="ipcache_high" name="ipcache_high" type="number" min="0" max="100" step="1" value="{{ (tunables.ipcache_high if tunables and tunables.ipcache_high is not none else 95) }}" />
-
-                    <label for="fqdncache_size">fqdncache_size</label>
-                    <input form="safe-dns-form" id="fqdncache_size" name="fqdncache_size" type="number" min="0" step="1" value="{{ (tunables.fqdncache_size if tunables and tunables.fqdncache_size is not none else 8192) }}" />
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply DNS</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-dns-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'ssl' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">SSL bump helpers</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key SSL directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if ssl_lines and ssl_lines|length %}
-                    <pre class="small pre-wrap">{{ ssl_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No SSL directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-ssl-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="ssl" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">SSL helper tuning</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="sslcrtd_children">sslcrtd_children</label>
-                    <input form="safe-ssl-form" id="sslcrtd_children" name="sslcrtd_children" type="number" min="1" max="32" step="1" value="{{ (tunables.sslcrtd_children if tunables and tunables.sslcrtd_children is not none else 4) }}" />
-
-                    <label for="sslcrtd_children_startup">sslcrtd_children startup</label>
-                    <input form="safe-ssl-form" id="sslcrtd_children_startup" name="sslcrtd_children_startup" type="number" min="0" step="1" value="{{ (tunables.sslcrtd_children_startup if tunables and tunables.sslcrtd_children_startup is not none else 2) }}" />
-
-                    <label for="sslcrtd_children_idle">sslcrtd_children idle</label>
-                    <input form="safe-ssl-form" id="sslcrtd_children_idle" name="sslcrtd_children_idle" type="number" min="1" step="1" value="{{ (tunables.sslcrtd_children_idle if tunables and tunables.sslcrtd_children_idle is not none else 1) }}" />
-
-                    <label for="sslcrtd_children_queue_size">sslcrtd_children queue-size</label>
-                    <input form="safe-ssl-form" id="sslcrtd_children_queue_size" name="sslcrtd_children_queue_size" type="number" min="1" step="1" value="{{ (tunables.sslcrtd_children_queue_size if tunables and tunables.sslcrtd_children_queue_size is not none else 32) }}" />
-
-                    <label for="dynamic_cert_mem_cache_size_mb">dynamic_cert_mem_cache_size (MB)</label>
-                    <input form="safe-ssl-form" id="dynamic_cert_mem_cache_size_mb" name="dynamic_cert_mem_cache_size_mb" type="number" min="0" step="1" value="{{ (tunables.dynamic_cert_mem_cache_size_mb if tunables and tunables.dynamic_cert_mem_cache_size_mb is not none else 128) }}" />
-
-                    <label for="sslproxy_session_ttl_seconds">sslproxy_session_ttl (seconds)</label>
-                    <input form="safe-ssl-form" id="sslproxy_session_ttl_seconds" name="sslproxy_session_ttl_seconds" type="number" min="0" step="1" value="{{ (tunables.sslproxy_session_ttl_seconds if tunables and tunables.sslproxy_session_ttl_seconds is not none else 600) }}" />
-
-                    <label for="sslproxy_session_cache_size_mb">sslproxy_session_cache_size (MB)</label>
-                    <input form="safe-ssl-form" id="sslproxy_session_cache_size_mb" name="sslproxy_session_cache_size_mb" type="number" min="0" step="1" value="{{ (tunables.sslproxy_session_cache_size_mb if tunables and tunables.sslproxy_session_cache_size_mb is not none else 32) }}" />
-                    <div class="small">Tune helper concurrency, generated-certificate cache size, and origin-facing TLS session reuse together for heavy bumped-HTTPS workloads.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply SSL</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-ssl-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'icap' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">ICAP settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key ICAP directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if icap_lines and icap_lines|length %}
-                    <pre class="small pre-wrap">{{ icap_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No ICAP directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-icap-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="icap" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">ICAP toggles</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label class="check-row">
-                        <input form="safe-icap-form" class="check" type="checkbox" name="icap_enable_on" {% if (tunables and tunables.icap_enable is not none and tunables.icap_enable) or (not tunables) or (tunables and tunables.icap_enable is none) %}checked{% endif %} />
-                        <span>icap_enable on</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-icap-form" class="check" type="checkbox" name="icap_send_client_ip_on" {% if (tunables and tunables.icap_send_client_ip is not none and tunables.icap_send_client_ip) or (not tunables) or (tunables and tunables.icap_send_client_ip is none) %}checked{% endif %} />
-                        <span>icap_send_client_ip on</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-icap-form" class="check" type="checkbox" name="icap_send_client_username_on" {% if tunables and tunables.icap_send_client_username is not none and tunables.icap_send_client_username %}checked{% endif %} />
-                        <span>icap_send_client_username on</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-icap-form" class="check" type="checkbox" name="icap_persistent_connections_on" {% if (tunables and tunables.icap_persistent_connections is not none and tunables.icap_persistent_connections) or (not tunables) or (tunables and tunables.icap_persistent_connections is none) %}checked{% endif %} />
-                        <span>icap_persistent_connections on</span>
-                    </label>
-
-                    <label class="check-row">
-                        <input form="safe-icap-form" class="check" type="checkbox" name="icap_preview_enable_on" {% if tunables and tunables.icap_preview_enable is not none and tunables.icap_preview_enable %}checked{% endif %} />
-                        <span>icap_preview_enable on</span>
-                    </label>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">ICAP timeouts</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="icap_default_options_ttl_seconds">icap_default_options_ttl (seconds)</label>
-                    <input form="safe-icap-form" id="icap_default_options_ttl_seconds" name="icap_default_options_ttl_seconds" type="number" min="0" step="1" value="{{ (tunables.icap_default_options_ttl_seconds if tunables and tunables.icap_default_options_ttl_seconds is not none else 300) }}" />
-
-                    <label for="icap_connect_timeout_seconds">icap_connect_timeout (seconds)</label>
-                    <input form="safe-icap-form" id="icap_connect_timeout_seconds" name="icap_connect_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.icap_connect_timeout_seconds if tunables and tunables.icap_connect_timeout_seconds is not none else 15) }}" />
-
-                    <label for="icap_io_timeout_seconds">icap_io_timeout (seconds)</label>
-                    <input form="safe-icap-form" id="icap_io_timeout_seconds" name="icap_io_timeout_seconds" type="number" min="0" step="1" value="{{ (tunables.icap_io_timeout_seconds if tunables and tunables.icap_io_timeout_seconds is not none else 300) }}" />
-
-                    <label for="icap_preview_size_kb">icap_preview_size (KB)</label>
-                    <input form="safe-icap-form" id="icap_preview_size_kb" name="icap_preview_size_kb" type="number" min="0" step="1" value="{{ (tunables.icap_preview_size_kb if tunables and tunables.icap_preview_size_kb is not none else 1024) }}" />
-
-                    <label for="icap_service_failure_limit">icap_service_failure_limit</label>
-                    <input form="safe-icap-form" id="icap_service_failure_limit" name="icap_service_failure_limit" type="number" step="1" value="{{ (tunables.icap_service_failure_limit if tunables and tunables.icap_service_failure_limit is not none else 10) }}" />
-
-                    <label for="icap_service_failure_limit_window_seconds">icap_service_failure_limit window (seconds)</label>
-                    <input form="safe-icap-form" id="icap_service_failure_limit_window_seconds" name="icap_service_failure_limit_window_seconds" type="number" min="0" step="1" value="{{ (tunables.icap_service_failure_limit_window_seconds if tunables and tunables.icap_service_failure_limit_window_seconds is not none else 30) }}" />
-
-                    <label for="icap_service_revival_delay_seconds">icap_service_revival_delay (seconds)</label>
-                    <input form="safe-icap-form" id="icap_service_revival_delay_seconds" name="icap_service_revival_delay_seconds" type="number" min="30" step="1" value="{{ (tunables.icap_service_revival_delay_seconds if tunables and tunables.icap_service_revival_delay_seconds is not none else 60) }}" />
-                    <div class="small">These controls determine how aggressively Squid reuses ICAP connections, caches service OPTIONS, and suppresses flapping services.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply ICAP</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-icap-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'privacy' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Privacy settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key privacy-related directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if privacy_lines and privacy_lines|length %}
-                    <pre class="small pre-wrap">{{ privacy_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No privacy directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-privacy-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="privacy" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Headers and forwarding</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="forwarded_for_value">forwarded_for</label>
-                    {% set fwd = (tunables.forwarded_for_value if tunables and tunables.forwarded_for_value else '') %}
-                    <select form="safe-privacy-form" id="forwarded_for_value" name="forwarded_for_value">
-                        <option value="" {% if not fwd %}selected{% endif %}>Keep current</option>
-                        <option value="on" {% if fwd == 'on' %}selected{% endif %}>on</option>
-                        <option value="off" {% if fwd == 'off' %}selected{% endif %}>off</option>
-                        <option value="transparent" {% if fwd == 'transparent' %}selected{% endif %}>transparent</option>
-                        <option value="delete" {% if fwd == 'delete' %}selected{% endif %}>delete</option>
-                    </select>
-                    <div class="small">Controls whether Squid forwards client IP information upstream (privacy-impacting).</div>
-
-                    <label class="check-row">
-                        <input form="safe-privacy-form" class="check" type="checkbox" name="via_on" {% if tunables and tunables.via is not none and tunables.via %}checked{% endif %} />
-                        <span>via on</span>
-                    </label>
-
-                    <label for="follow_x_forwarded_for_value">follow_x_forwarded_for</label>
-                    {% set fxff = (tunables.follow_x_forwarded_for_value if tunables and tunables.follow_x_forwarded_for_value else '') %}
-                    <select form="safe-privacy-form" id="follow_x_forwarded_for_value" name="follow_x_forwarded_for_value">
-                        <option value="" {% if not fxff %}selected{% endif %}>Keep current</option>
-                        <option value="allow all" {% if fxff == 'allow all' %}selected{% endif %}>allow all</option>
-                        <option value="deny all" {% if fxff == 'deny all' %}selected{% endif %}>deny all</option>
-                    </select>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply privacy</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-privacy-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'limits' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Request/response limits</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key limit directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if limits_lines and limits_lines|length %}
-                    <pre class="small pre-wrap">{{ limits_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No limit directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-limits-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="limits" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Header sizes</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="request_header_max_size_kb">request_header_max_size (KB)</label>
-                    <input form="safe-limits-form" id="request_header_max_size_kb" name="request_header_max_size_kb" type="number" min="0" step="1" value="{{ (tunables.request_header_max_size_kb if tunables and tunables.request_header_max_size_kb is not none else '') }}" />
-
-                    <label for="reply_header_max_size_kb">reply_header_max_size (KB)</label>
-                    <input form="safe-limits-form" id="reply_header_max_size_kb" name="reply_header_max_size_kb" type="number" min="0" step="1" value="{{ (tunables.reply_header_max_size_kb if tunables and tunables.reply_header_max_size_kb is not none else '') }}" />
-                    <div class="small">Leave blank to keep the current/default values.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Body and buffering</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="request_body_max_size_mb">request_body_max_size (MB)</label>
-                    <input form="safe-limits-form" id="request_body_max_size_mb" name="request_body_max_size_mb" type="number" min="0" step="1" value="{{ (tunables.request_body_max_size_mb if tunables and tunables.request_body_max_size_mb is not none else '') }}" />
-
-                    <label for="client_request_buffer_max_size_kb">client_request_buffer_max_size (KB)</label>
-                    <input form="safe-limits-form" id="client_request_buffer_max_size_kb" name="client_request_buffer_max_size_kb" type="number" min="0" step="1" value="{{ (tunables.client_request_buffer_max_size_kb if tunables and tunables.client_request_buffer_max_size_kb is not none else '') }}" />
-                    <div class="small">Leave blank to keep the current/default values.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply limits</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-limits-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'performance' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Performance settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key performance directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if performance_lines and performance_lines|length %}
-                    <pre class="small pre-wrap">{{ performance_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No performance directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-performance-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="performance" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Memory pools</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label class="check-row">
-                        <input form="safe-performance-form" class="check" type="checkbox" name="memory_pools_on" {% if (tunables and tunables.memory_pools is not none and tunables.memory_pools) or (not tunables) or (tunables and tunables.memory_pools is none) %}checked{% endif %} />
-                        <span>memory_pools on</span>
-                    </label>
-
-                    <label for="memory_pools_limit_mb">memory_pools_limit (MB)</label>
-                    <input form="safe-performance-form" id="memory_pools_limit_mb" name="memory_pools_limit_mb" type="text" placeholder="64 or none" value="{{ (tunables.memory_pools_limit_mb if tunables and tunables.memory_pools_limit_mb is not none else 64) }}" />
-
-                    <label class="check-row">
-                        <input form="safe-performance-form" class="check" type="checkbox" name="shared_memory_locking_on" {% if tunables and tunables.shared_memory_locking is not none and tunables.shared_memory_locking %}checked{% endif %} />
-                        <span>shared_memory_locking on</span>
-                    </label>
-                    <div class="small">Lock shared memory into RAM on startup to avoid SIGBUS-style surprises on optimistic-memory kernels. Leave off if your container runtime does not allow it.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Store buckets</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="store_avg_object_size_kb">store_avg_object_size (KB)</label>
-                    <input form="safe-performance-form" id="store_avg_object_size_kb" name="store_avg_object_size_kb" type="number" min="0" step="1" value="{{ (tunables.store_avg_object_size_kb if tunables and tunables.store_avg_object_size_kb is not none else 32) }}" />
-
-                    <label for="max_open_disk_fds">max_open_disk_fds</label>
-                    <input form="safe-performance-form" id="max_open_disk_fds" name="max_open_disk_fds" type="number" min="0" step="1" value="{{ (tunables.max_open_disk_fds if tunables and tunables.max_open_disk_fds is not none else 0) }}" />
-                    <div class="small">Leave blank to keep the current/default value. Use <span class="mono">0</span> for no limit.</div>
-
-                    <label for="store_objects_per_bucket">store_objects_per_bucket</label>
-                    <input form="safe-performance-form" id="store_objects_per_bucket" name="store_objects_per_bucket" type="number" min="0" step="1" value="{{ (tunables.store_objects_per_bucket if tunables and tunables.store_objects_per_bucket is not none else 16) }}" />
-
-                    <label for="cpu_affinity_map">cpu_affinity_map</label>
-                    <input form="safe-performance-form" id="cpu_affinity_map" name="cpu_affinity_map" type="text" placeholder="process_numbers=1,2 cores=1,3" value="{{ (tunables.cpu_affinity_map if tunables and tunables.cpu_affinity_map else '') }}" />
-                    <div class="small">Optional 1:1 worker-to-core pinning for SMP deployments. Leave blank to let the operating system schedule Squid processes normally.</div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply performance</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-performance-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
-    {% endif %}
-
-    {% if tab == 'http' %}
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">HTTP identity settings</h2>
-                <span class="badge">Running config</span>
-            </div>
-            <div class="card-body">
-                <div class="small config-note">Key HTTP identity directives detected in the current running <span class="mono">squid.conf</span>.</div>
-                {% if http_lines and http_lines|length %}
-                    <pre class="small pre-wrap">{{ http_lines | join('\n') }}</pre>
-                {% else %}
-                    <div class="small">No HTTP identity directives detected.</div>
-                {% endif %}
-            </div>
-        </section>
-
-        <form id="safe-http-form" action="{{ url_for('apply_safe_caching') }}" method="post">
-            {{ csrf_field() }}
-            <input type="hidden" name="form_kind" value="http" />
-        </form>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Identity</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="form">
-                    <label for="visible_hostname">visible_hostname</label>
-                    <input form="safe-http-form" id="visible_hostname" name="visible_hostname" type="text" value="{{ (tunables.visible_hostname if tunables and tunables.visible_hostname else '') }}" />
-                    <div class="small">Leave blank to keep the current/default value.</div>
-
-                    <label class="check-row">
-                        <input form="safe-http-form" class="check" type="checkbox" name="httpd_suppress_version_string_on" {% if tunables and tunables.httpd_suppress_version_string is not none and tunables.httpd_suppress_version_string %}checked{% endif %} />
-                        <span>httpd_suppress_version_string on</span>
-                    </label>
-                </div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-header">
-                <h2 class="card-title">Apply HTTP</h2>
-                <span class="badge ok">Template</span>
-            </div>
-            <div class="card-body">
-                <div class="actions">
-                    <button class="btn primary" type="submit" form="safe-http-form">Save & Apply (template)</button>
-                </div>
-            </div>
-        </section>
+            </section>
+
+            {% for group in active_section.groups %}
+                <section class="card config-group-card" id="group-{{ active_section.key }}-{{ group.key }}" data-config-group="{{ group.key }}">
+                    <div class="card-header">
+                        <h2 class="card-title">{{ group.title }}</h2>
+                        <span class="badge ok">{{ group.field_keys|length }} setting{{ '' if group.field_keys|length == 1 else 's' }}</span>
+                    </div>
+                    <div class="card-body">
+                        {% if group.description %}
+                            <div class="surface-note small">{{ group.description }}</div>
+                        {% endif %}
+                        <div class="form config-field-grid">
+                            {% for field_key in group.field_keys %}
+                                {% set field = config_field_map[field_key] %}
+                                {% set value = managed_options.get(field.key) %}
+                                {% set textarea_class = 'compact-textarea' if field.rows <= 8 else '' %}
+                                <div
+                                    class="config-field {% if field.input_type == 'textarea' %}config-field-wide{% endif %}"
+                                    data-field-key="{{ field.key }}"
+                                    data-field-group="{{ group.key }}"
+                                    data-config-form-owner="safe-config-form"
+                                    {% if field.depends_on %}data-depends-on="{{ field.depends_on | join(',') }}"{% endif %}
+                                    {% if field.show_when %}data-show-when="{{ field.show_when | join(',') }}"{% endif %}
+                                >
+                                    {% if field.input_type == 'checkbox' %}
+                                        <label class="check-row config-check-row">
+                                            <input form="safe-config-form" class="check" type="checkbox" id="{{ field.key }}" name="{{ field.key }}" {% if value %}checked{% endif %} />
+                                            <span>{{ field.label }}</span>
+                                        </label>
+                                    {% elif field.input_type == 'select' %}
+                                        <label for="{{ field.key }}">{{ field.label }}</label>
+                                        <select form="safe-config-form" id="{{ field.key }}" name="{{ field.key }}">
+                                            {% for choice in field.choices %}
+                                                <option value="{{ choice.value }}" {% if choice.value == (value|string) %}selected{% endif %}>{{ choice.label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    {% elif field.input_type == 'textarea' %}
+                                        <label for="{{ field.key }}">{{ field.label }}</label>
+                                        <textarea class="{{ textarea_class }}" form="safe-config-form" id="{{ field.key }}" name="{{ field.key }}" rows="{{ field.rows }}" placeholder="{{ field.placeholder }}">{{ value if value is not none else '' }}</textarea>
+                                    {% else %}
+                                        <label for="{{ field.key }}">{{ field.label }}</label>
+                                        <input
+                                            form="safe-config-form"
+                                            id="{{ field.key }}"
+                                            name="{{ field.key }}"
+                                            type="{{ field.input_type }}"
+                                            value="{{ '' if value is none else value }}"
+                                            {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}
+                                            {% if field.minimum is not none %}min="{{ field.minimum }}"{% endif %}
+                                            {% if field.maximum is not none %}max="{{ field.maximum }}"{% endif %}
+                                            {% if field.step is not none %}step="{{ field.step }}"{% endif %}
+                                        />
+                                    {% endif %}
+                                    <div class="config-field-meta">
+                                        <div class="small mono config-field-directive">{{ field.directive }}</div>
+                                        {% if field.help_text %}
+                                            <div class="small">{{ field.help_text }}</div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </section>
+            {% endfor %}
+        {% endif %}
     {% endif %}
 </div>
 {% endblock %}

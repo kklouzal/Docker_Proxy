@@ -4,36 +4,31 @@ http_port 0.0.0.0:3128 ssl-bump \
 	generate-host-certificates=on \
 	dynamic_cert_mem_cache_size=128MB
 
-# SMP mode (multi-process). The entrypoint auto-tunes this upward at runtime when
-# explicit overrides are not provided.
-workers 1
-
 # Allow cache manager access from localhost (used by the web UI for stats)
 http_access allow manager localhost
 http_access deny manager
 
-# Squid helper for on-the-fly certificate generation (ssl-bump)
+# BEGIN SQUID-UI MANAGED SETTINGS
+
+# SMP mode
+# Worker, helper, and TLS interception settings managed by the Admin UI.
+workers 1
 sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 16MB
 sslcrtd_children 4 startup=2 idle=1 queue-size=32
-
-# Basic bump rules (MITM). Adjust for your policy.
 acl step1 at_step SslBump1
 ssl_bump peek step1
-# SSL filtering (no-bump CIDRs). Safe if empty.
 include /etc/squid/conf.d/10-sslfilter.conf
-
-# Steam downloads/auth endpoints are frequently intolerant of TLS interception.
-# If users report Steam showing "No Connection" unless bypassing the proxy for
-# *.steamserver.net, splicing these destinations usually resolves it.
 acl steam_sites ssl::server_name .steamserver.net
 note ssl_exception steam steam_sites
 ssl_bump splice steam_sites
+# BEGIN SQUID-UI BLOCK: CUSTOM_SSL_RULES
+# END SQUID-UI BLOCK: CUSTOM_SSL_RULES
 ssl_bump bump all
 
 # Cache settings
-# Rock is the only SMP-aware cache_dir type in Squid 7.x and is a better default
-# for this proxy profile than legacy ufs when operators scale workers beyond 1.
+# Disk layout, memory sizing, and cache heuristics.
 cache_dir rock /var/spool/squid 10000 slot-size=32768
+store_dir_select_algorithm least-load
 maximum_object_size 128 MB
 maximum_object_size_in_memory 2048 KB
 minimum_object_size 0 KB
@@ -41,100 +36,26 @@ cache_mem 256 MB
 memory_cache_mode always
 memory_cache_shared on
 shared_transient_entries_limit 32768
-
-# Favor hit-rate-oriented eviction over plain LRU for this forward-proxy workload.
 cache_replacement_policy heap GDSF
 memory_replacement_policy heap GDSF
-
-# Connection behavior
-# Image-heavy pages create many parallel requests; keeping connections persistent
-# reduces handshake churn.
-client_persistent_connections on
-server_persistent_connections on
-buffered_logs on
-memory_pools on
-memory_pools_limit 64 MB
-shared_memory_locking off
-max_open_disk_fds 0
-store_avg_object_size 32 KB
-store_objects_per_bucket 16
-max_filedescriptors 65535
-
-# Keep persistent upstream connections warm long enough for image/gallery bursts
-# and enable conservative request pipelining where clients/origins support it.
-client_idle_pconn_timeout 120 seconds
-server_idle_pconn_timeout 120 seconds
-pconn_lifetime 0 seconds
-persistent_connection_after_error on
-detect_broken_pconn off
-connect_retries 1
-forward_max_tries 10
-client_lifetime 3600 seconds
-pipeline_prefetch 1
-
-# Stability: safer behavior with clients that half-close TCP connections.
-half_closed_clients off
-
-# Timeouts
-# For throttled/slow origins (common on image boards), allow longer waits before
-# Squid gives up. These are upper bounds and can increase concurrency/resource
-# usage under upstream trouble.
-connect_timeout 90 seconds
-request_timeout 30 minutes
-read_timeout 30 minutes
-forward_timeout 30 minutes
-request_start_timeout 60 seconds
-write_timeout 15 minutes
-
-# Range/resumable download support.
-# A bounded limit lets Squid cache range responses for files up to this size
-# while still forwarding data to the browser immediately.  The previous value
-# of -1 (unlimited) caused Squid to fetch and buffer the *entire* object from
-# the origin before serving the first byte to the client, which made browser
-# download managers report 0 KB/s for extended periods.
-range_offset_limit 128 MB
-
-# Limit how far ahead Squid reads from the origin server relative to what it
-# has delivered to the client.  Keeps download progress responsive.
-read_ahead_gap 256 KB
-
-# Conservative cache watermarks to reduce churn.
 cache_swap_low 90
 cache_swap_high 95
-minimum_expiry_time 60 seconds
-max_stale 7 days
-refresh_all_ims off
-
-# Collapse concurrent requests for the same object.
 collapsed_forwarding on
-
-# Preserve client conditional requests on cache MISS by default. Operators can
-# disable this from the UI when warming a mostly empty cache faster matters more
-# than forwarding the original client revalidation semantics.
+# BEGIN SQUID-UI BLOCK: COLLAPSED_FORWARDING_ACCESS
+# END SQUID-UI BLOCK: COLLAPSED_FORWARDING_ACCESS
+range_offset_limit 128 MB
 cache_miss_revalidate on
-
-# Resolver and DNS cache tuning.
-dns_timeout 15 seconds
-dns_retransmit_interval 5 seconds
-ipcache_size 8192
-ipcache_low 90
-ipcache_high 95
-fqdncache_size 8192
-
-# TLS session reuse for the origin-facing side of bumped connections.
-sslproxy_session_ttl 600 seconds
-sslproxy_session_cache_size 32 MB
-
-# Cache-first behavior for image-heavy browsing/download bursts.
-# Keep fetching cacheable objects even if the client gives up so retries do not
-# restart from a cold origin fetch.
+pipeline_prefetch 1
+read_ahead_gap 256 KB
 quick_abort_min 0 KB
 quick_abort_max 0 KB
 quick_abort_pct 100
-
+negative_ttl 0 seconds
+minimum_expiry_time 60 seconds
+max_stale 604800 seconds
+refresh_all_ims off
+# BEGIN SQUID-UI BLOCK: CACHE_POLICY
 # Never cache authenticated or cookie-bearing traffic.
-# This prevents credential leaks and also avoids Squid cache/Vary edge cases
-# that can lead to instability under certain workloads.
 acl has_auth req_header Authorization .
 acl has_cookie req_header Cookie .
 note cache_bypass auth has_auth
@@ -143,97 +64,159 @@ cache deny has_auth
 cache deny has_cookie
 
 # Prevent caching responses with complex Vary headers.
-# Squid 7.x has a known assertion failure (client_side.cc:2829 !inBuf.isEmpty)
-# triggered by Vary object loops when a cached response's Vary criteria no
-# longer match a subsequent request.  Rather than curating a domain deny-list,
-# block storage of any response whose Vary header contains values beyond the
-# universally safe "Accept-Encoding" (e.g. Origin, Cookie, *, User-Agent).
-# store_miss is evaluated at response time so it catches every origin.
 acl has_vary rep_header Vary .
 acl vary_encoding_only rep_header Vary ^Accept-Encoding$
 store_miss deny has_vary !vary_encoding_only
-
+# END SQUID-UI BLOCK: CACHE_POLICY
+# BEGIN SQUID-UI BLOCK: REFRESH_PATTERNS
 # Safe heuristic caching when explicit expiry headers are absent.
-# These patterns DO NOT use override flags (e.g., override-expire/ignore-no-cache), so
-# objects marked private/no-store/no-cache by origin servers remain non-cacheable.
-
-# --- Google Fonts (High-Hit Rule) ---
-# (Place before generic font rule to catch first. Speeds up most web browsing)
-refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 1440   80%  10080 store-stale
-
-# --- Binaries & Installers (1 month min, 3 month max) ---
-# (This is the fallback for winget/chocolatey packages from non-major vendors)
-refresh_pattern -i \.(iso|img|dmg|bin|exe|msi|msu)(\?|$)        43800  100% 129600 store-stale
-refresh_pattern -i \.(rar|jar|gz|tgz|tar|bz2|zip|7z)(\?|$)     43800  100% 129600 store-stale
-
-# --- Media (1 month min, 3 month max) ---
-refresh_pattern -i \.(mp4|mkv|flv|mov|avi|mpeg|webm)(\?|$)     43800  100% 129600 store-stale
-refresh_pattern -i \.(mp3|wav|ogg|flac|aac)(\?|$)              43800  100% 129600 store-stale
-
-# --- Static Web Assets (Images, Fonts, Docs) ---
-refresh_pattern -i \.(png|jpe?g|gif|webp|bmp|ico|svg|tiff)(\?|$)  43800  100% 129600 store-stale
-refresh_pattern -i \.(woff2?|ttf|otf|eot)(\?|$)                   43800   85%  129600 store-stale
-refresh_pattern -i \.(pdf|docx?|xlsx?|pptx?)(\?|$)                10080   90%  43200  store-stale
-
-# --- Scripts & Styles (Shorter cache) ---
-refresh_pattern -i \.(css)(\?|$)                                  10080   80%  43800  store-stale
-refresh_pattern -i \.(js)(\?|$)                                   1440    80%  10080  store-stale
-refresh_pattern -i \.(xhtml|html|htm)\?.*                           0      0%  0      store-stale
-refresh_pattern -i \.(xml)(\?|$)                                  360     80%  1440   store-stale
-refresh_pattern -i \.(xhtml|html|htm)$                             360     80%  1440   store-stale
-
-# Protect dynamic endpoints: do not cache CGI or generic query-string URLs.
-# Keep this below the specific allow-list above so common cache-busted assets can still cache.
+# Add more specific allow-lists above broader fallback rules.
+refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 1440 80% 10080 store-stale
+refresh_pattern -i \.(iso|img|dmg|bin|exe|msi|msu)(\?|$) 43800 100% 129600 store-stale
+refresh_pattern -i \.(rar|jar|gz|tgz|tar|bz2|zip|7z)(\?|$) 43800 100% 129600 store-stale
+refresh_pattern -i \.(mp4|mkv|flv|mov|avi|mpeg|webm)(\?|$) 43800 100% 129600 store-stale
+refresh_pattern -i \.(mp3|wav|ogg|flac|aac)(\?|$) 43800 100% 129600 store-stale
+refresh_pattern -i \.(png|jpe?g|gif|webp|bmp|ico|svg|tiff)(\?|$) 43800 100% 129600 store-stale
+refresh_pattern -i \.(woff2?|ttf|otf|eot)(\?|$) 43800 85% 129600 store-stale
+refresh_pattern -i \.(pdf|docx?|xlsx?|pptx?)(\?|$) 10080 90% 43200 store-stale
+refresh_pattern -i \.(css)(\?|$) 10080 80% 43800 store-stale
+refresh_pattern -i \.(js)(\?|$) 1440 80% 10080 store-stale
+refresh_pattern -i \.(xhtml|html|htm)\?.* 0 0% 0 store-stale
+refresh_pattern -i \.(xml)(\?|$) 360 80% 1440 store-stale
+refresh_pattern -i \.(xhtml|html|htm)$ 360 80% 1440 store-stale
 refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
-
-# Fallback heuristic.
 refresh_pattern . 0 20% 4320
+# END SQUID-UI BLOCK: REFRESH_PATTERNS
 
-# Log settings
-# Legacy lean logformat retained for compatibility with older persisted configs.
-logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st
+# Connection behavior
+# Keep-alive reuse, retry behavior, and socket tuning.
+client_persistent_connections on
+server_persistent_connections on
+client_idle_pconn_timeout 120 seconds
+server_idle_pconn_timeout 120 seconds
+pconn_lifetime 0 seconds
+persistent_connection_after_error on
+detect_broken_pconn off
+half_closed_clients off
+# BEGIN SQUID-UI BLOCK: SERVER_PCONN_FOR_NONRETRIABLE
+# END SQUID-UI BLOCK: SERVER_PCONN_FOR_NONRETRIABLE
+connect_retries 1
+forward_max_tries 10
+retry_on_error off
+client_lifetime 3600 seconds
+client_dst_passthru on
+host_verify_strict off
+on_unsupported_protocol respond all
+happy_eyeballs_connect_timeout 250 ms
 
-# Rich structured request log kept by default for both the Live page aggregates
-# and operator troubleshooting. This captures correlation IDs, bump mode, SNI,
-# selected headers, and policy notes without enabling global Squid debug logging.
-logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note
+# Timeouts
+# Request, forwarding, and shutdown timers.
+connect_timeout 90 seconds
+peer_connect_timeout 30 seconds
+request_timeout 1800 seconds
+read_timeout 1800 seconds
+forward_timeout 1800 seconds
+request_start_timeout 60 seconds
+write_timeout 900 seconds
+shutdown_lifetime 30 seconds
 
-# Squid-side ICAP transaction summaries for later MySQL correlation.
-logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note
+# Resolver and DNS cache tuning
+# Resolver source selection, hostname validation, and DNS cache sizing.
+dns_timeout 15 seconds
+dns_retransmit_interval 5 seconds
+hosts_file /etc/hosts
+dns_defnames off
+dns_multicast_local off
+ignore_unknown_nameservers on
+check_hostnames off
+allow_underscore on
+positive_dns_ttl 21600 seconds
+negative_dns_ttl 60 seconds
+ipcache_size 8192
+ipcache_low 90
+ipcache_high 95
+fqdncache_size 8192
 
-# Keep up to N rotated log files (access-observe.log.0 .. access-observe.log.N, same for cache.log).
-# Rotation itself is triggered by a daily supervisor job (squid -k rotate).
+# Origin-facing TLS
+# Session reuse, signing policy, and certificate-chain behavior.
+tls_outgoing_options min-version=1.2 options=NO_SSLv3
+sslproxy_session_ttl 600 seconds
+sslproxy_session_cache_size 32 MB
+sslproxy_cert_sign_hash sha256
+ssl_unclean_shutdown off
+# BEGIN SQUID-UI BLOCK: SSLPROXY_CERT_ERROR
+# END SQUID-UI BLOCK: SSLPROXY_CERT_ERROR
+# BEGIN SQUID-UI BLOCK: SSLPROXY_CERT_SIGN
+# END SQUID-UI BLOCK: SSLPROXY_CERT_SIGN
+# BEGIN SQUID-UI BLOCK: SSLPROXY_CERT_ADAPT
+# END SQUID-UI BLOCK: SSLPROXY_CERT_ADAPT
+
+# Logging
+# Rotation, MIME/header logging, and optional low-level diagnostics.
 logfile_rotate 10
+buffered_logs on
+log_mime_hdrs off
+# BEGIN SQUID-UI BLOCK: STATS_COLLECTION
+# END SQUID-UI BLOCK: STATS_COLLECTION
 
-# Filter noisy internal cache manager polling (e.g. /squid-internal-mgr/info, /squid-internal-mgr/5min)
-# from localhost. These are generated by the local admin/UI and are not end-user proxy traffic.
-acl src_localhost src 127.0.0.1/32 ::1
-acl squid_internal_mgr urlpath_regex -i ^/squid-internal-mgr/
-access_log none src_localhost squid_internal_mgr
-
-access_log stdio:/var/log/squid/access-observe.log diagnostic
-cache_log stdio:/var/log/squid/cache.log
-icap_log stdio:/var/log/squid/icap.log icapobserve
-cache_store_log none
-
-# ICAP ad blocking (managed by web UI)
-# The ICAP service runs inside the same container on localhost.
+# ICAP adaptation
+# The container still generates service endpoints dynamically; these directives control Squid-side ICAP behavior.
 icap_enable on
 icap_send_client_ip on
 icap_send_client_username off
 icap_persistent_connections on
-# Let ICAP services make early allow/block decisions without always waiting for
-# full bodies. Squid uses preview only when the service requests it via OPTIONS.
 icap_preview_enable on
 icap_preview_size 1024 KB
 icap_default_options_ttl 300
 icap_service_failure_limit 10 in 30 seconds
 icap_service_revival_delay 60 seconds
-# Allow slower ICAP/ClamAV responses before Squid aborts; reduces truncated bodies on large pages.
 icap_connect_timeout 15 seconds
 icap_io_timeout 300 seconds
-# Generated at container start from $SQUID_WORKERS.
 include /etc/squid/conf.d/20-icap.conf
+
+# Privacy and header handling
+# Forwarding metadata, client anonymity, and parser tolerance.
+via on
+strip_query_terms on
+request_header_max_size 64 KB
+reply_header_max_size 64 KB
+request_body_max_size 0 MB
+client_request_buffer_max_size 512 KB
+relaxed_header_parser on
+uri_whitespace strip
+# BEGIN SQUID-UI BLOCK: HTTP_UPGRADE_REQUEST_PROTOCOLS
+# END SQUID-UI BLOCK: HTTP_UPGRADE_REQUEST_PROTOCOLS
+
+# Performance and cache index behavior
+# Memory pools, descriptor limits, and cache-hit integrity checks.
+memory_pools on
+memory_pools_limit 64 MB
+shared_memory_locking off
+max_open_disk_fds 0
+store_avg_object_size 32 KB
+store_objects_per_bucket 16
+client_db on
+offline_mode off
+paranoid_hit_validation 0
+max_filedescriptors 65535
+
+# HTTP identity
+# How Squid identifies itself and handles a few compatibility edge cases.
+httpd_suppress_version_string off
+vary_ignore_expire off
+# END SQUID-UI MANAGED SETTINGS
+
+# Static observability log plumbing retained outside the managed block.
+logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st
+logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note
+logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note
+acl src_localhost src 127.0.0.1/32 ::1
+acl squid_internal_mgr urlpath_regex -i ^/squid-internal-mgr/
+access_log none src_localhost squid_internal_mgr
+access_log stdio:/var/log/squid/access-observe.log diagnostic
+cache_log stdio:/var/log/squid/cache.log
+icap_log stdio:/var/log/squid/icap.log icapobserve
+cache_store_log none
 
 # ICAP policy:
 # - Only inspect HTTP requests with URLs (GET/HEAD).

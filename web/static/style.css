@@ -628,6 +628,120 @@ a.brand:hover{
   justify-self: stretch;
 }
 
+.config-page[data-dirty="true"] .config-editor-card,
+.config-page[data-dirty="true"] .config-action-card,
+.config-page[data-dirty="true"] .config-overrides-card{
+  border-color: rgba(255,179,71,.24);
+  box-shadow:
+    0 18px 48px rgba(255,179,71,.08),
+    var(--shadow);
+}
+
+.config-subtabs{
+  display:grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.config-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.config-hidden-form{
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.config-form-shell,
+.config-form-footer,
+.config-group-nav{
+  display:grid;
+  gap: 12px;
+}
+
+.config-group-tabs{
+  margin: 0;
+}
+
+.config-group-tabs .btn{
+  min-width: 140px;
+}
+
+.config-editor-actions{
+  align-items:center;
+}
+
+.config-group-card{
+  scroll-margin-top: 108px;
+}
+
+.config-field-grid{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.config-field{
+  display:grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  transition:
+    border-color .18s ease,
+    background .18s ease,
+    opacity .18s ease,
+    transform .18s ease;
+}
+
+.config-field:hover{
+  border-color: rgba(255,255,255,.14);
+  background: rgba(255,255,255,.05);
+}
+
+.config-field.is-dirty{
+  border-color: rgba(122,162,255,.30);
+  background: rgba(122,162,255,.09);
+}
+
+.config-field.is-disabled{
+  opacity: .72;
+}
+
+.config-field.is-hidden{
+  display:none;
+}
+
+.config-field-wide{
+  grid-column: 1 / -1;
+}
+
+.config-field-meta{
+  display:grid;
+  gap: 4px;
+}
+
+.config-field-directive{
+  color: var(--muted);
+}
+
+.config-check-row{
+  min-height: 48px;
+}
+
+.config-snapshot-card pre{
+  max-height: 320px;
+}
+
 .form-row{
   display:flex;
   flex-direction:column;
@@ -1088,6 +1202,12 @@ input.check{
   filter: brightness(1.03);
 }
 
+.btn:disabled{
+  opacity: .58;
+  cursor: not-allowed;
+  filter: saturate(.8);
+}
+
 .btn.ghost{
   background: transparent;
 }
@@ -1409,6 +1529,10 @@ pre{
   }
 
   .form-grid-3{
+    grid-template-columns: 1fr;
+  }
+
+  .config-field-grid{
     grid-template-columns: 1fr;
   }
 }

@@ -8,6 +8,7 @@ import logging
 
 from services.logutil import log_exception_throttled
 from services.squid_core import SquidController as _CoreSquidController
+from services.squid_config_forms import DEFAULT_CACHE_POLICY_RULES, DEFAULT_REFRESH_PATTERNS
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ class SquidController(_CoreSquidController):
     # -------------------------------------------------------------------------
     # Input validation helpers for config injection prevention
     # -------------------------------------------------------------------------
+    _MANAGED_SETTINGS_START = "# BEGIN SQUID-UI MANAGED SETTINGS"
+    _MANAGED_SETTINGS_END = "# END SQUID-UI MANAGED SETTINGS"
     _HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$")
     _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
     _IPV6_SIMPLE_RE = re.compile(r"^[a-fA-F0-9:]+$")
@@ -56,11 +59,21 @@ class SquidController(_CoreSquidController):
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
             return ""
+        if clean.lower() == "none":
+            return "none"
         forbidden = set('|;&$`"\'\\<>(){}[]!#~')
         if any(char in clean for char in forbidden):
             raise ValueError(f"{field_name} contains forbidden characters")
         if not clean.startswith("/"):
             raise ValueError(f"{field_name} must be an absolute path")
+        return clean
+
+    def _validate_append_domain(self, value: str, field_name: str = "append_domain") -> str:
+        clean = self._sanitize_single_line(value, field_name)
+        if not clean:
+            return ""
+        if not clean.startswith("."):
+            raise ValueError(f"{field_name} must begin with a dot")
         return clean
 
     def _validate_dns_nameservers(self, value: str, field_name: str = "dns_nameservers") -> str:
@@ -93,6 +106,518 @@ class SquidController(_CoreSquidController):
         if not self._CPU_AFFINITY_RE.match(clean):
             raise ValueError(f"{field_name} contains invalid characters")
         return clean
+
+    def _validate_single_line_value(self, value: str, field_name: str) -> str:
+        return self._sanitize_single_line(value, field_name)
+
+    def _extract_managed_subblock(self, text: str, block_name: str) -> Optional[str]:
+        pattern = re.compile(
+            rf"^\s*# BEGIN SQUID-UI BLOCK: {re.escape(block_name)}\s*$\n?(.*?)^\s*# END SQUID-UI BLOCK: {re.escape(block_name)}\s*$",
+            re.M | re.S,
+        )
+        match = pattern.search(text or "")
+        if not match:
+            return None
+        return (match.group(1) or "").strip("\n")
+
+    def _render_managed_subblock(self, block_name: str, content: str) -> str:
+        body = (content or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        parts = [f"# BEGIN SQUID-UI BLOCK: {block_name}"]
+        if body:
+            parts.append(body)
+        parts.append(f"# END SQUID-UI BLOCK: {block_name}")
+        return "\n".join(parts)
+
+    def _replace_managed_settings_block(self, text: str, rendered_block: str) -> str:
+        pattern = re.compile(
+            rf"^\s*{re.escape(self._MANAGED_SETTINGS_START)}\s*$.*?^\s*{re.escape(self._MANAGED_SETTINGS_END)}\s*$\n?",
+            re.M | re.S,
+        )
+        rendered = rendered_block.rstrip() + "\n"
+        if pattern.search(text):
+            return pattern.sub(rendered, text, count=1)
+        marker = "# Log settings"
+        if marker in text:
+            return text.replace(marker, rendered + "\n" + marker, 1)
+        return text.rstrip() + "\n\n" + rendered
+
+    def _normalize_multiline_text(self, value: Any) -> str:
+        return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+
+    def _render_managed_settings(self, options: Dict[str, Any]) -> str:
+        def int_value(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+            raw = options.get(name)
+            try:
+                value = int(str(raw).strip()) if raw is not None and str(raw).strip() != "" else int(default)
+            except Exception:
+                value = int(default)
+            if minimum is not None:
+                value = max(minimum, value)
+            if maximum is not None:
+                value = min(maximum, value)
+            return value
+
+        def optional_int_value(name: str) -> Optional[int]:
+            raw = options.get(name)
+            if raw is None:
+                return None
+            text = str(raw).strip()
+            if text == "":
+                return None
+            try:
+                return int(text)
+            except Exception:
+                return None
+
+        def bool_value(name: str, default: bool) -> bool:
+            raw = options.get(name)
+            return bool(raw) if raw is not None else default
+
+        def append_section(lines: list[str], title: str, description: str = "") -> None:
+            if lines and lines[-1] != "":
+                lines.append("")
+            lines.append(f"# {title}")
+            if description:
+                lines.append(f"# {description}")
+
+        def append_block(lines: list[str], block_name: str, content: str) -> None:
+            rendered = self._render_managed_subblock(block_name, self._normalize_multiline_text(content))
+            lines.extend(rendered.splitlines())
+
+        cache_dir_type = self._validate_choice(str(options.get("cache_dir_type") or "rock"), ("rock", "ufs"), "cache_dir_type")
+        cache_dir_size_mb = int_value("cache_dir_size_mb", 10000, minimum=100)
+        cache_dir_ufs_l1 = int_value("cache_dir_ufs_l1", 16, minimum=1)
+        cache_dir_ufs_l2 = int_value("cache_dir_ufs_l2", 256, minimum=1)
+        cache_dir_rock_slot_size_kb = int_value("cache_dir_rock_slot_size_kb", 32, minimum=4)
+        cache_dir_rock_swap_timeout_ms = optional_int_value("cache_dir_rock_swap_timeout_ms")
+        cache_dir_rock_max_swap_rate = optional_int_value("cache_dir_rock_max_swap_rate")
+        store_dir_select_algorithm = self._validate_choice(
+            str(options.get("store_dir_select_algorithm") or "least-load"),
+            ("least-load", "round-robin"),
+            "store_dir_select_algorithm",
+        )
+
+        cache_mem_mb = int_value("cache_mem_mb", 256, minimum=16)
+        maximum_object_size_mb = int_value("maximum_object_size_mb", 128, minimum=1)
+        maximum_object_size_in_memory_kb = int_value("maximum_object_size_in_memory_kb", 2048, minimum=0)
+        minimum_object_size_kb = int_value("minimum_object_size_kb", 0, minimum=0)
+        memory_cache_mode = self._validate_choice(
+            str(options.get("memory_cache_mode") or "always"),
+            ("always", "disk", "network"),
+            "memory_cache_mode",
+        )
+        memory_cache_shared_on = bool_value("memory_cache_shared_on", True)
+
+        replacement_policies = ("heap GDSF", "heap LFUDA", "heap LRU", "lru")
+        cache_replacement_policy = self._sanitize_single_line(
+            str(options.get("cache_replacement_policy") or "heap GDSF"),
+            "cache_replacement_policy",
+        )
+        if cache_replacement_policy not in replacement_policies:
+            cache_replacement_policy = "heap GDSF"
+        memory_replacement_policy = self._sanitize_single_line(
+            str(options.get("memory_replacement_policy") or "heap GDSF"),
+            "memory_replacement_policy",
+        )
+        if memory_replacement_policy not in replacement_policies:
+            memory_replacement_policy = "heap GDSF"
+
+        shared_transient_entries_limit = int_value("shared_transient_entries_limit", 32768, minimum=0)
+        cache_swap_low = int_value("cache_swap_low", 90, minimum=0, maximum=100)
+        cache_swap_high = int_value("cache_swap_high", 95, minimum=0, maximum=100)
+        collapsed_forwarding_on = bool_value("collapsed_forwarding_on", True)
+        collapsed_forwarding_access_rules_text = self._normalize_multiline_text(options.get("collapsed_forwarding_access_rules_text") or "")
+        range_cache_on = bool_value("range_cache_on", True)
+        range_offset_limit_value = self._sanitize_single_line(
+            str(options.get("range_offset_limit_value") or "128 MB"),
+            "range_offset_limit_value",
+        )
+        if not range_cache_on:
+            range_offset_limit_value = "0"
+        else:
+            normalized_range = range_offset_limit_value.strip().lower()
+            if normalized_range in ("", "0", "0 b", "0 byte", "0 bytes", "0 kb", "0 mb", "off", "false"):
+                range_offset_limit_value = "128 MB"
+            elif normalized_range == "-1":
+                range_offset_limit_value = "none"
+        cache_miss_revalidate_on = bool_value("cache_miss_revalidate_on", True)
+        pipeline_prefetch_on = bool_value("pipeline_prefetch_on", True)
+        pipeline_prefetch_count = int_value("pipeline_prefetch_count", 1, minimum=0)
+        if not pipeline_prefetch_on:
+            pipeline_prefetch_count = 0
+        elif pipeline_prefetch_count <= 0:
+            pipeline_prefetch_count = 1
+        read_ahead_gap_kb = int_value("read_ahead_gap_kb", 256, minimum=0)
+        quick_abort_min_kb = int_value("quick_abort_min_kb", 0)
+        quick_abort_max_kb = int_value("quick_abort_max_kb", 0, minimum=0)
+        quick_abort_pct = int_value("quick_abort_pct", 100, minimum=0, maximum=100)
+        negative_ttl_seconds = int_value("negative_ttl_seconds", 0, minimum=0)
+        minimum_expiry_time_seconds = int_value("minimum_expiry_time_seconds", 60, minimum=0)
+        max_stale_seconds = int_value("max_stale_seconds", 7 * 24 * 3600, minimum=0)
+        refresh_all_ims_on = bool_value("refresh_all_ims_on", False)
+        cache_policy_rules_text = self._normalize_multiline_text(options.get("cache_policy_rules_text") or DEFAULT_CACHE_POLICY_RULES)
+        refresh_patterns_text = self._normalize_multiline_text(options.get("refresh_patterns_text") or DEFAULT_REFRESH_PATTERNS)
+
+        client_persistent_connections_on = bool_value("client_persistent_connections_on", True)
+        server_persistent_connections_on = bool_value("server_persistent_connections_on", True)
+        buffered_logs_on = bool_value("buffered_logs_on", True)
+        log_mime_hdrs_on = bool_value("log_mime_hdrs_on", False)
+        logfile_rotate = int_value("logfile_rotate", 10, minimum=0)
+        stats_collection_rules_text = self._normalize_multiline_text(options.get("stats_collection_rules_text") or "")
+        tls_key_log_path = self._validate_single_line_value(str(options.get("tls_key_log_path") or ""), "tls_key_log")
+
+        memory_pools_on = bool_value("memory_pools_on", True)
+        memory_pools_limit_raw = options.get("memory_pools_limit_mb")
+        if memory_pools_limit_raw is None or str(memory_pools_limit_raw).strip() == "":
+            memory_pools_limit_value = "64 MB"
+        elif str(memory_pools_limit_raw).strip().lower() == "none":
+            memory_pools_limit_value = "none"
+        else:
+            memory_pools_limit_value = f"{int_value('memory_pools_limit_mb', 64, minimum=0)} MB"
+        shared_memory_locking_on = bool_value("shared_memory_locking_on", False)
+        max_open_disk_fds = int_value("max_open_disk_fds", 0, minimum=0)
+        store_avg_object_size_kb = int_value("store_avg_object_size_kb", 32, minimum=0)
+        store_objects_per_bucket = int_value("store_objects_per_bucket", 16, minimum=0)
+        client_db_on = bool_value("client_db_on", True)
+        offline_mode_on = bool_value("offline_mode_on", False)
+        paranoid_hit_validation_value = self._validate_single_line_value(
+            str(options.get("paranoid_hit_validation_value") or "0"),
+            "paranoid_hit_validation",
+        ) or "0"
+        cpu_affinity_map = self._validate_cpu_affinity_map(str(options.get("cpu_affinity_map") or ""))
+        max_filedescriptors = int_value("max_filedescriptors", 65535, minimum=0)
+
+        client_idle_pconn_timeout_seconds = int_value("client_idle_pconn_timeout_seconds", 120, minimum=0)
+        server_idle_pconn_timeout_seconds = int_value("server_idle_pconn_timeout_seconds", 120, minimum=0)
+        pconn_lifetime_seconds = int_value("pconn_lifetime_seconds", 0, minimum=0)
+        persistent_connection_after_error_on = bool_value("persistent_connection_after_error_on", True)
+        detect_broken_pconn_on = bool_value("detect_broken_pconn_on", False)
+        half_closed_clients_on = bool_value("half_closed_clients_on", False)
+        connect_retries = int_value("connect_retries", 1, minimum=0, maximum=10)
+        forward_max_tries = int_value("forward_max_tries", 10, minimum=1)
+        retry_on_error_on = bool_value("retry_on_error_on", False)
+        client_lifetime_seconds = int_value("client_lifetime_seconds", 3600, minimum=0)
+        client_ip_max_connections = optional_int_value("client_ip_max_connections")
+        tcp_recv_bufsize_kb = optional_int_value("tcp_recv_bufsize_kb")
+        accept_filter_value = self._validate_single_line_value(str(options.get("accept_filter_value") or ""), "accept_filter")
+        server_pconn_for_nonretriable_rules_text = self._normalize_multiline_text(options.get("server_pconn_for_nonretriable_rules_text") or "")
+        client_dst_passthru_on = bool_value("client_dst_passthru_on", True)
+        host_verify_strict_on = bool_value("host_verify_strict_on", False)
+        on_unsupported_protocol_action = self._validate_choice(
+            str(options.get("on_unsupported_protocol_action") or "respond"),
+            ("respond", "tunnel"),
+            "on_unsupported_protocol_action",
+        )
+        happy_eyeballs_connect_timeout_ms = int_value("happy_eyeballs_connect_timeout_ms", 250, minimum=0)
+        happy_eyeballs_connect_gap_ms = optional_int_value("happy_eyeballs_connect_gap_ms")
+        happy_eyeballs_connect_limit = optional_int_value("happy_eyeballs_connect_limit")
+
+        connect_timeout_seconds = int_value("connect_timeout_seconds", 90, minimum=0)
+        peer_connect_timeout_seconds = int_value("peer_connect_timeout_seconds", 30, minimum=0)
+        request_start_timeout_seconds = int_value("request_start_timeout_seconds", 60, minimum=0)
+        request_timeout_seconds = int_value("request_timeout_seconds", 1800, minimum=0)
+        read_timeout_seconds = int_value("read_timeout_seconds", 1800, minimum=0)
+        forward_timeout_seconds = int_value("forward_timeout_seconds", 1800, minimum=0)
+        write_timeout_seconds = int_value("write_timeout_seconds", 900, minimum=0)
+        shutdown_lifetime_seconds = int_value("shutdown_lifetime_seconds", 30, minimum=0)
+
+        dns_timeout_seconds = int_value("dns_timeout_seconds", 15, minimum=0)
+        dns_retransmit_interval_seconds = int_value("dns_retransmit_interval_seconds", 5, minimum=0)
+        dns_packet_max_raw = self._validate_single_line_value(str(options.get("dns_packet_max") or ""), "dns_packet_max")
+        dns_nameservers = self._validate_dns_nameservers(str(options.get("dns_nameservers") or ""))
+        hosts_file = self._validate_hosts_file_path(str(options.get("hosts_file") or "/etc/hosts")) or "/etc/hosts"
+        append_domain = self._validate_append_domain(str(options.get("append_domain") or "")) if str(options.get("append_domain") or "").strip() else ""
+        dns_defnames_on = bool_value("dns_defnames_on", False)
+        dns_multicast_local_on = bool_value("dns_multicast_local_on", False)
+        ignore_unknown_nameservers_on = bool_value("ignore_unknown_nameservers_on", True)
+        check_hostnames_on = bool_value("check_hostnames_on", False)
+        allow_underscore_on = bool_value("allow_underscore_on", True)
+        positive_dns_ttl_seconds = int_value("positive_dns_ttl_seconds", 6 * 3600, minimum=1)
+        negative_dns_ttl_seconds = int_value("negative_dns_ttl_seconds", 60, minimum=1)
+        ipcache_size = int_value("ipcache_size", 8192, minimum=0)
+        ipcache_low = int_value("ipcache_low", 90, minimum=0, maximum=100)
+        ipcache_high = int_value("ipcache_high", 95, minimum=0, maximum=100)
+        fqdncache_size = int_value("fqdncache_size", 8192, minimum=0)
+
+        sslcrtd_program_cache_size_mb = int_value("sslcrtd_program_cache_size_mb", 16, minimum=1)
+        sslcrtd_children = int_value("sslcrtd_children", 4, minimum=1, maximum=32)
+        sslcrtd_children_startup = int_value("sslcrtd_children_startup", min(sslcrtd_children, 2), minimum=0)
+        sslcrtd_children_idle = int_value("sslcrtd_children_idle", 1, minimum=1)
+        sslcrtd_children_queue_size = int_value("sslcrtd_children_queue_size", max(32, sslcrtd_children * 8), minimum=1)
+        dynamic_cert_mem_cache_size_mb = int_value("dynamic_cert_mem_cache_size_mb", 128, minimum=0)
+        tls_outgoing_options_line = self._validate_single_line_value(
+            str(options.get("tls_outgoing_options_line") or "min-version=1.2 options=NO_SSLv3"),
+            "tls_outgoing_options",
+        ) or "min-version=1.2 options=NO_SSLv3"
+        sslproxy_session_ttl_seconds = int_value("sslproxy_session_ttl_seconds", 600, minimum=0)
+        sslproxy_session_cache_size_mb = int_value("sslproxy_session_cache_size_mb", 32, minimum=0)
+        sslproxy_foreign_intermediate_certs = self._validate_single_line_value(
+            str(options.get("sslproxy_foreign_intermediate_certs") or ""),
+            "sslproxy_foreign_intermediate_certs",
+        )
+        sslproxy_cert_sign_hash = self._validate_choice(
+            str(options.get("sslproxy_cert_sign_hash") or "sha256"),
+            ("sha256", "sha512", "sha1", "md5"),
+            "sslproxy_cert_sign_hash",
+        )
+        ssl_unclean_shutdown_on = bool_value("ssl_unclean_shutdown_on", False)
+        additional_ssl_rules_text = self._normalize_multiline_text(options.get("additional_ssl_rules_text") or "")
+        sslproxy_cert_error_rules_text = self._normalize_multiline_text(options.get("sslproxy_cert_error_rules_text") or "")
+        sslproxy_cert_sign_rules_text = self._normalize_multiline_text(options.get("sslproxy_cert_sign_rules_text") or "")
+        sslproxy_cert_adapt_rules_text = self._normalize_multiline_text(options.get("sslproxy_cert_adapt_rules_text") or "")
+
+        icap_enable_on = bool_value("icap_enable_on", True)
+        icap_send_client_ip_on = bool_value("icap_send_client_ip_on", True)
+        icap_send_client_username_on = bool_value("icap_send_client_username_on", False)
+        icap_persistent_connections_on = bool_value("icap_persistent_connections_on", True)
+        icap_preview_enable_on = bool_value("icap_preview_enable_on", True)
+        icap_preview_size_kb = int_value("icap_preview_size_kb", 1024, minimum=0)
+        icap_default_options_ttl_seconds = int_value("icap_default_options_ttl_seconds", 300, minimum=0)
+        icap_connect_timeout_seconds = int_value("icap_connect_timeout_seconds", 15, minimum=0)
+        icap_io_timeout_seconds = int_value("icap_io_timeout_seconds", 300, minimum=0)
+        icap_service_failure_limit = int_value("icap_service_failure_limit", 10)
+        icap_service_failure_limit_window_seconds = int_value("icap_service_failure_limit_window_seconds", 30, minimum=0)
+        icap_service_revival_delay_seconds = int_value("icap_service_revival_delay_seconds", 60, minimum=0)
+
+        forwarded_for_value_raw = str(options.get("forwarded_for_value") or "").strip()
+        if forwarded_for_value_raw and forwarded_for_value_raw not in ("on", "off", "transparent", "delete", "truncate"):
+            forwarded_for_value_raw = ""
+        via_on = bool_value("via_on", True)
+        follow_x_forwarded_for_value = self._validate_single_line_value(
+            str(options.get("follow_x_forwarded_for_value") or ""),
+            "follow_x_forwarded_for",
+        )
+        client_netmask_value = self._validate_single_line_value(str(options.get("client_netmask_value") or ""), "client_netmask")
+        strip_query_terms_on = bool_value("strip_query_terms_on", True)
+
+        request_header_max_size_kb = int_value("request_header_max_size_kb", 64, minimum=1)
+        reply_header_max_size_kb = int_value("reply_header_max_size_kb", 64, minimum=1)
+        request_body_max_size_mb = int_value("request_body_max_size_mb", 0, minimum=0)
+        client_request_buffer_max_size_kb = int_value("client_request_buffer_max_size_kb", 512, minimum=0)
+        relaxed_header_parser_mode = self._validate_choice(
+            str(options.get("relaxed_header_parser_mode") or "on"),
+            ("on", "warn", "off"),
+            "relaxed_header_parser",
+        )
+        uri_whitespace_mode = self._validate_choice(
+            str(options.get("uri_whitespace_mode") or "strip"),
+            ("strip", "deny", "allow", "encode", "chop"),
+            "uri_whitespace",
+        )
+        http_upgrade_request_protocols_rules_text = self._normalize_multiline_text(options.get("http_upgrade_request_protocols_rules_text") or "")
+
+        visible_hostname = self._validate_hostname(str(options.get("visible_hostname") or ""), "visible_hostname")
+        httpd_suppress_version_string_on = bool_value("httpd_suppress_version_string_on", False)
+        vary_ignore_expire_on = bool_value("vary_ignore_expire_on", False)
+
+        workers = int_value("workers", 1, minimum=1)
+        try:
+            max_workers = int((os.environ.get("MAX_WORKERS") or "4").strip())
+        except Exception:
+            max_workers = 4
+        max_workers = min(4, max(1, max_workers))
+        workers = min(max_workers, workers)
+
+        if cache_dir_type == "rock":
+            cache_dir_parts = [
+                f"cache_dir rock /var/spool/squid {cache_dir_size_mb}",
+                f"slot-size={cache_dir_rock_slot_size_kb * 1024}",
+            ]
+            if cache_dir_rock_swap_timeout_ms is not None:
+                cache_dir_parts.append(f"swap-timeout={cache_dir_rock_swap_timeout_ms}")
+            if cache_dir_rock_max_swap_rate is not None:
+                cache_dir_parts.append(f"max-swap-rate={cache_dir_rock_max_swap_rate}")
+            cache_dir_line = " ".join(cache_dir_parts)
+        else:
+            cache_dir_line = f"cache_dir ufs /var/spool/squid {cache_dir_size_mb} {cache_dir_ufs_l1} {cache_dir_ufs_l2}"
+
+        lines: list[str] = [self._MANAGED_SETTINGS_START]
+
+        append_section(lines, "SMP mode", "Worker, helper, and TLS interception settings managed by the Admin UI.")
+        lines.append(f"workers {workers}")
+        lines.append(f"sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M {sslcrtd_program_cache_size_mb}MB")
+        lines.append(
+            f"sslcrtd_children {sslcrtd_children}"
+            f" startup={sslcrtd_children_startup}"
+            f" idle={sslcrtd_children_idle}"
+            f" queue-size={sslcrtd_children_queue_size}"
+        )
+        lines.append("acl step1 at_step SslBump1")
+        lines.append("ssl_bump peek step1")
+        lines.append("include /etc/squid/conf.d/10-sslfilter.conf")
+        lines.append("acl steam_sites ssl::server_name .steamserver.net")
+        lines.append("note ssl_exception steam steam_sites")
+        lines.append("ssl_bump splice steam_sites")
+        append_block(lines, "CUSTOM_SSL_RULES", additional_ssl_rules_text)
+        lines.append("ssl_bump bump all")
+
+        append_section(lines, "Cache settings", "Disk layout, memory sizing, and cache heuristics.")
+        lines.append(cache_dir_line)
+        lines.append(f"store_dir_select_algorithm {store_dir_select_algorithm}")
+        lines.append(f"maximum_object_size {maximum_object_size_mb} MB")
+        lines.append(f"maximum_object_size_in_memory {maximum_object_size_in_memory_kb} KB")
+        lines.append(f"minimum_object_size {minimum_object_size_kb} KB")
+        lines.append(f"cache_mem {cache_mem_mb} MB")
+        lines.append(f"memory_cache_mode {memory_cache_mode}")
+        lines.append(f"memory_cache_shared {'on' if memory_cache_shared_on else 'off'}")
+        lines.append(f"shared_transient_entries_limit {shared_transient_entries_limit}")
+        lines.append(f"cache_replacement_policy {cache_replacement_policy}")
+        lines.append(f"memory_replacement_policy {memory_replacement_policy}")
+        lines.append(f"cache_swap_low {cache_swap_low}")
+        lines.append(f"cache_swap_high {cache_swap_high}")
+        lines.append(f"collapsed_forwarding {'on' if collapsed_forwarding_on else 'off'}")
+        append_block(lines, "COLLAPSED_FORWARDING_ACCESS", collapsed_forwarding_access_rules_text)
+        lines.append(f"range_offset_limit {range_offset_limit_value}")
+        lines.append(f"cache_miss_revalidate {'on' if cache_miss_revalidate_on else 'off'}")
+        lines.append(f"pipeline_prefetch {pipeline_prefetch_count}")
+        lines.append(f"read_ahead_gap {read_ahead_gap_kb} KB")
+        lines.append(f"quick_abort_min {quick_abort_min_kb} KB")
+        lines.append(f"quick_abort_max {quick_abort_max_kb} KB")
+        lines.append(f"quick_abort_pct {quick_abort_pct}")
+        lines.append(f"negative_ttl {negative_ttl_seconds} seconds")
+        lines.append(f"minimum_expiry_time {minimum_expiry_time_seconds} seconds")
+        lines.append(f"max_stale {max_stale_seconds} seconds")
+        lines.append(f"refresh_all_ims {'on' if refresh_all_ims_on else 'off'}")
+        append_block(lines, "CACHE_POLICY", cache_policy_rules_text)
+        append_block(lines, "REFRESH_PATTERNS", refresh_patterns_text)
+
+        append_section(lines, "Connection behavior", "Keep-alive reuse, retry behavior, and socket tuning.")
+        lines.append(f"client_persistent_connections {'on' if client_persistent_connections_on else 'off'}")
+        lines.append(f"server_persistent_connections {'on' if server_persistent_connections_on else 'off'}")
+        lines.append(f"client_idle_pconn_timeout {client_idle_pconn_timeout_seconds} seconds")
+        lines.append(f"server_idle_pconn_timeout {server_idle_pconn_timeout_seconds} seconds")
+        lines.append(f"pconn_lifetime {pconn_lifetime_seconds} seconds")
+        lines.append(f"persistent_connection_after_error {'on' if persistent_connection_after_error_on else 'off'}")
+        lines.append(f"detect_broken_pconn {'on' if detect_broken_pconn_on else 'off'}")
+        lines.append(f"half_closed_clients {'on' if half_closed_clients_on else 'off'}")
+        append_block(lines, "SERVER_PCONN_FOR_NONRETRIABLE", server_pconn_for_nonretriable_rules_text)
+        lines.append(f"connect_retries {connect_retries}")
+        lines.append(f"forward_max_tries {forward_max_tries}")
+        lines.append(f"retry_on_error {'on' if retry_on_error_on else 'off'}")
+        lines.append(f"client_lifetime {client_lifetime_seconds} seconds")
+        if client_ip_max_connections is not None:
+            lines.append(f"client_ip_max_connections {max(0, client_ip_max_connections)}")
+        if tcp_recv_bufsize_kb is not None:
+            lines.append(f"tcp_recv_bufsize {max(0, tcp_recv_bufsize_kb)} KB")
+        if accept_filter_value:
+            lines.append(f"accept_filter {accept_filter_value}")
+        lines.append(f"client_dst_passthru {'on' if client_dst_passthru_on else 'off'}")
+        lines.append(f"host_verify_strict {'on' if host_verify_strict_on else 'off'}")
+        lines.append(f"on_unsupported_protocol {on_unsupported_protocol_action} all")
+        lines.append(f"happy_eyeballs_connect_timeout {happy_eyeballs_connect_timeout_ms} ms")
+        if happy_eyeballs_connect_gap_ms is not None:
+            lines.append(f"happy_eyeballs_connect_gap {max(0, happy_eyeballs_connect_gap_ms)} ms")
+        if happy_eyeballs_connect_limit is not None:
+            lines.append(f"happy_eyeballs_connect_limit {max(0, happy_eyeballs_connect_limit)}")
+
+        append_section(lines, "Timeouts", "Request, forwarding, and shutdown timers.")
+        lines.append(f"connect_timeout {connect_timeout_seconds} seconds")
+        lines.append(f"peer_connect_timeout {peer_connect_timeout_seconds} seconds")
+        lines.append(f"request_timeout {request_timeout_seconds} seconds")
+        lines.append(f"read_timeout {read_timeout_seconds} seconds")
+        lines.append(f"forward_timeout {forward_timeout_seconds} seconds")
+        lines.append(f"request_start_timeout {request_start_timeout_seconds} seconds")
+        lines.append(f"write_timeout {write_timeout_seconds} seconds")
+        lines.append(f"shutdown_lifetime {shutdown_lifetime_seconds} seconds")
+
+        append_section(lines, "Resolver and DNS cache tuning", "Resolver source selection, hostname validation, and DNS cache sizing.")
+        lines.append(f"dns_timeout {dns_timeout_seconds} seconds")
+        lines.append(f"dns_retransmit_interval {dns_retransmit_interval_seconds} seconds")
+        if dns_packet_max_raw:
+            if dns_packet_max_raw.lower() == "none":
+                lines.append("dns_packet_max none")
+            elif dns_packet_max_raw.isdigit():
+                lines.append(f"dns_packet_max {int(dns_packet_max_raw)}")
+        if dns_nameservers:
+            lines.append(f"dns_nameservers {dns_nameservers}")
+        lines.append(f"hosts_file {hosts_file}")
+        if append_domain:
+            lines.append(f"append_domain {append_domain}")
+        lines.append(f"dns_defnames {'on' if dns_defnames_on else 'off'}")
+        lines.append(f"dns_multicast_local {'on' if dns_multicast_local_on else 'off'}")
+        lines.append(f"ignore_unknown_nameservers {'on' if ignore_unknown_nameservers_on else 'off'}")
+        lines.append(f"check_hostnames {'on' if check_hostnames_on else 'off'}")
+        lines.append(f"allow_underscore {'on' if allow_underscore_on else 'off'}")
+        lines.append(f"positive_dns_ttl {positive_dns_ttl_seconds} seconds")
+        lines.append(f"negative_dns_ttl {negative_dns_ttl_seconds} seconds")
+        lines.append(f"ipcache_size {ipcache_size}")
+        lines.append(f"ipcache_low {ipcache_low}")
+        lines.append(f"ipcache_high {ipcache_high}")
+        lines.append(f"fqdncache_size {fqdncache_size}")
+
+        append_section(lines, "Origin-facing TLS", "Session reuse, signing policy, and certificate-chain behavior.")
+        lines.append(f"tls_outgoing_options {tls_outgoing_options_line}")
+        lines.append(f"sslproxy_session_ttl {sslproxy_session_ttl_seconds} seconds")
+        lines.append(f"sslproxy_session_cache_size {sslproxy_session_cache_size_mb} MB")
+        if sslproxy_foreign_intermediate_certs:
+            lines.append(f"sslproxy_foreign_intermediate_certs {sslproxy_foreign_intermediate_certs}")
+        lines.append(f"sslproxy_cert_sign_hash {sslproxy_cert_sign_hash}")
+        lines.append(f"ssl_unclean_shutdown {'on' if ssl_unclean_shutdown_on else 'off'}")
+        append_block(lines, "SSLPROXY_CERT_ERROR", sslproxy_cert_error_rules_text)
+        append_block(lines, "SSLPROXY_CERT_SIGN", sslproxy_cert_sign_rules_text)
+        append_block(lines, "SSLPROXY_CERT_ADAPT", sslproxy_cert_adapt_rules_text)
+
+        append_section(lines, "Logging", "Rotation, MIME/header logging, and optional low-level diagnostics.")
+        lines.append(f"logfile_rotate {logfile_rotate}")
+        lines.append(f"buffered_logs {'on' if buffered_logs_on else 'off'}")
+        lines.append(f"log_mime_hdrs {'on' if log_mime_hdrs_on else 'off'}")
+        append_block(lines, "STATS_COLLECTION", stats_collection_rules_text)
+        if tls_key_log_path:
+            lines.append(f"tls_key_log {tls_key_log_path}")
+
+        append_section(lines, "ICAP adaptation", "The container still generates service endpoints dynamically; these directives control Squid-side ICAP behavior.")
+        lines.append(f"icap_enable {'on' if icap_enable_on else 'off'}")
+        lines.append(f"icap_send_client_ip {'on' if icap_send_client_ip_on else 'off'}")
+        lines.append(f"icap_send_client_username {'on' if icap_send_client_username_on else 'off'}")
+        lines.append(f"icap_persistent_connections {'on' if icap_persistent_connections_on else 'off'}")
+        lines.append(f"icap_preview_enable {'on' if icap_preview_enable_on else 'off'}")
+        lines.append(f"icap_preview_size {icap_preview_size_kb} KB")
+        lines.append(f"icap_default_options_ttl {icap_default_options_ttl_seconds}")
+        lines.append(f"icap_service_failure_limit {icap_service_failure_limit} in {icap_service_failure_limit_window_seconds} seconds")
+        lines.append(f"icap_service_revival_delay {icap_service_revival_delay_seconds} seconds")
+        lines.append(f"icap_connect_timeout {icap_connect_timeout_seconds} seconds")
+        lines.append(f"icap_io_timeout {icap_io_timeout_seconds} seconds")
+        lines.append("include /etc/squid/conf.d/20-icap.conf")
+
+        append_section(lines, "Privacy and header handling", "Forwarding metadata, client anonymity, and parser tolerance.")
+        if forwarded_for_value_raw:
+            lines.append(f"forwarded_for {forwarded_for_value_raw}")
+        lines.append(f"via {'on' if via_on else 'off'}")
+        if follow_x_forwarded_for_value:
+            lines.append(f"follow_x_forwarded_for {follow_x_forwarded_for_value}")
+        if client_netmask_value:
+            lines.append(f"client_netmask {client_netmask_value}")
+        lines.append(f"strip_query_terms {'on' if strip_query_terms_on else 'off'}")
+        lines.append(f"request_header_max_size {request_header_max_size_kb} KB")
+        lines.append(f"reply_header_max_size {reply_header_max_size_kb} KB")
+        lines.append(f"request_body_max_size {request_body_max_size_mb} MB")
+        lines.append(f"client_request_buffer_max_size {client_request_buffer_max_size_kb} KB")
+        lines.append(f"relaxed_header_parser {relaxed_header_parser_mode}")
+        lines.append(f"uri_whitespace {uri_whitespace_mode}")
+        append_block(lines, "HTTP_UPGRADE_REQUEST_PROTOCOLS", http_upgrade_request_protocols_rules_text)
+
+        append_section(lines, "Performance and cache index behavior", "Memory pools, descriptor limits, and cache-hit integrity checks.")
+        lines.append(f"memory_pools {'on' if memory_pools_on else 'off'}")
+        lines.append(f"memory_pools_limit {memory_pools_limit_value}")
+        lines.append(f"shared_memory_locking {'on' if shared_memory_locking_on else 'off'}")
+        lines.append(f"max_open_disk_fds {max_open_disk_fds}")
+        lines.append(f"store_avg_object_size {store_avg_object_size_kb} KB")
+        lines.append(f"store_objects_per_bucket {store_objects_per_bucket}")
+        lines.append(f"client_db {'on' if client_db_on else 'off'}")
+        lines.append(f"offline_mode {'on' if offline_mode_on else 'off'}")
+        lines.append(f"paranoid_hit_validation {paranoid_hit_validation_value}")
+        if cpu_affinity_map:
+            lines.append(f"cpu_affinity_map {cpu_affinity_map}")
+        lines.append(f"max_filedescriptors {max_filedescriptors}")
+
+        append_section(lines, "HTTP identity", "How Squid identifies itself and handles a few compatibility edge cases.")
+        if visible_hostname:
+            lines.append(f"visible_hostname {visible_hostname}")
+        lines.append(f"httpd_suppress_version_string {'on' if httpd_suppress_version_string_on else 'off'}")
+        lines.append(f"vary_ignore_expire {'on' if vary_ignore_expire_on else 'off'}")
+
+        lines.append(self._MANAGED_SETTINGS_END)
+        return "\n".join(lines)
 
     def _read_file(self, path: str) -> str:
         with open(path, "r", encoding="utf-8") as handle:
@@ -141,6 +666,13 @@ class SquidController(_CoreSquidController):
                 return None
             return match.group(1).lower() == "on"
 
+        def find_choice_token(key: str, allowed: tuple[str, ...]) -> Optional[str]:
+            match = re.search(rf"^\s*{re.escape(key)}\s+(\S+)\s*$", text, re.M | re.I)
+            if not match:
+                return None
+            token = (match.group(1) or "").strip()
+            return token if token in allowed else None
+
         def find_time_seconds(key: str) -> Optional[int]:
             match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([a-zA-Z]+)?\s*$", text, re.M)
             if not match:
@@ -160,6 +692,25 @@ class SquidController(_CoreSquidController):
                 return value * 3600
             if unit in ("d", "day", "days"):
                 return value * 86400
+            return value
+
+        def find_time_milliseconds(key: str) -> Optional[int]:
+            match = re.search(rf"^\s*{re.escape(key)}\s+(\d+)\s*([a-zA-Z]+)?\s*$", text, re.M | re.I)
+            if not match:
+                return None
+            try:
+                value = int(match.group(1))
+            except Exception:
+                return None
+            unit = (match.group(2) or "").strip().lower()
+            if not unit:
+                return value
+            if unit in ("ms", "msec", "msecs", "millisecond", "milliseconds"):
+                return value
+            if unit in ("s", "sec", "secs", "second", "seconds"):
+                return value * 1000
+            if unit in ("m", "min", "mins", "minute", "minutes"):
+                return value * 60 * 1000
             return value
 
         def find_str(key: str) -> Optional[str]:
@@ -237,6 +788,10 @@ class SquidController(_CoreSquidController):
                 return None
             return int(size_bytes // (1024 * 1024))
 
+        def find_range_offset_limit_value() -> Optional[str]:
+            match = re.search(r"^\s*range_offset_limit\s+(.+?)\s*$", text, re.M | re.I)
+            return (match.group(1) or "").strip() if match else None
+
         def find_pipeline_prefetch_bool() -> Optional[bool]:
             match = re.search(r"^\s*pipeline_prefetch\s+(\S+)\s*$", text, re.M | re.I)
             if not match:
@@ -248,6 +803,20 @@ class SquidController(_CoreSquidController):
                 return False
             try:
                 return int(value) >= 1
+            except Exception:
+                return None
+
+        def find_pipeline_prefetch_count() -> Optional[int]:
+            match = re.search(r"^\s*pipeline_prefetch\s+(\S+)\s*$", text, re.M | re.I)
+            if not match:
+                return None
+            value = (match.group(1) or "").strip().lower()
+            if value in ("on", "true", "yes"):
+                return 1
+            if value in ("off", "false", "no"):
+                return 0
+            try:
+                return max(0, int(value))
             except Exception:
                 return None
 
@@ -296,6 +865,15 @@ class SquidController(_CoreSquidController):
                                 pass
                 return result
             return {}
+
+        def find_sslcrtd_program_cache_size_mb() -> Optional[int]:
+            match = re.search(r"^\s*sslcrtd_program\s+.*?\s-M\s*(\d+)\s*([A-Za-z]+)?\s*$", text, re.M | re.I)
+            if not match:
+                return None
+            size_bytes = _size_to_bytes(match.group(1), match.group(2) or "")
+            if size_bytes is None:
+                return None
+            return int(size_bytes // (1024 * 1024))
 
         def find_sslcrtd_children_settings() -> dict[str, Any]:
             value = find_str("sslcrtd_children")
@@ -362,9 +940,31 @@ class SquidController(_CoreSquidController):
                 result["icap_service_failure_limit_window_seconds"] = window_value * multiplier
             return result
 
+        def find_block_or_lines(block_name: str, *, prefixes: tuple[str, ...] = ()) -> Optional[str]:
+            block = self._extract_managed_subblock(text, block_name)
+            if block is not None:
+                return block
+            if not prefixes:
+                return None
+            lines: list[str] = []
+            for line in (text or "").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                lower = stripped.lower()
+                if any(lower.startswith(prefix) for prefix in prefixes):
+                    lines.append(stripped)
+            if not lines:
+                return None
+            return "\n".join(lines)
+
         cache_dir_settings = find_cache_dir_settings()
         sslcrtd_settings = find_sslcrtd_children_settings()
         icap_failure_settings = find_icap_service_failure_limit()
+        on_unsupported_protocol_value = find_str("on_unsupported_protocol")
+        on_unsupported_protocol_action = None
+        if on_unsupported_protocol_value:
+            on_unsupported_protocol_action = (on_unsupported_protocol_value.split() or [None])[0]
 
         return {
             "cache_dir_type": cache_dir_settings.get("cache_dir_type"),
@@ -374,6 +974,7 @@ class SquidController(_CoreSquidController):
             "cache_dir_rock_slot_size_kb": cache_dir_settings.get("cache_dir_rock_slot_size_kb"),
             "cache_dir_rock_swap_timeout_ms": cache_dir_settings.get("cache_dir_rock_swap_timeout_ms"),
             "cache_dir_rock_max_swap_rate": cache_dir_settings.get("cache_dir_rock_max_swap_rate"),
+            "store_dir_select_algorithm": find_choice_token("store_dir_select_algorithm", ("least-load", "round-robin")),
             "cache_mem_mb": find_int(r"^\s*cache_mem\s+(\d+)\s*MB\s*$"),
             "maximum_object_size_mb": find_int(r"^\s*maximum_object_size\s+(\d+)\s*MB\s*$"),
             "maximum_object_size_in_memory_kb": find_int(r"^\s*maximum_object_size_in_memory\s+(\d+)\s*KB\s*$"),
@@ -385,6 +986,8 @@ class SquidController(_CoreSquidController):
             "cache_swap_high": find_int(r"^\s*cache_swap_high\s+(\d+)\s*$"),
             "collapsed_forwarding": find_on_off("collapsed_forwarding"),
             "range_offset_limit": find_range_offset_limit_mb(),
+            "range_offset_limit_value": find_range_offset_limit_value(),
+            "collapsed_forwarding_access_rules_text": find_block_or_lines("COLLAPSED_FORWARDING_ACCESS", prefixes=("collapsed_forwarding_access ",)),
             "client_persistent_connections": find_on_off("client_persistent_connections"),
             "server_persistent_connections": find_on_off("server_persistent_connections"),
             "negative_ttl_seconds": find_time_seconds("negative_ttl"),
@@ -399,10 +1002,12 @@ class SquidController(_CoreSquidController):
             "memory_replacement_policy": find_str("memory_replacement_policy"),
             "cache_miss_revalidate": find_on_off("cache_miss_revalidate"),
             "pipeline_prefetch": find_pipeline_prefetch_bool(),
+            "pipeline_prefetch_count": find_pipeline_prefetch_count(),
             "quick_abort_min_kb": find_kb("quick_abort_min"),
             "quick_abort_max_kb": find_kb("quick_abort_max"),
             "quick_abort_pct": find_pct("quick_abort_pct"),
             "connect_timeout_seconds": find_time_seconds("connect_timeout"),
+            "peer_connect_timeout_seconds": find_time_seconds("peer_connect_timeout"),
             "request_timeout_seconds": find_time_seconds("request_timeout"),
             "read_timeout_seconds": find_time_seconds("read_timeout"),
             "forward_timeout_seconds": find_time_seconds("forward_timeout"),
@@ -411,32 +1016,62 @@ class SquidController(_CoreSquidController):
             "shutdown_lifetime_seconds": find_time_seconds("shutdown_lifetime"),
             "logfile_rotate": find_int(r"^\s*logfile_rotate\s+(\d+)\s*$"),
             "buffered_logs": find_on_off("buffered_logs"),
+            "log_mime_hdrs": find_on_off("log_mime_hdrs"),
             "server_idle_pconn_timeout_seconds": find_time_seconds("server_idle_pconn_timeout") or find_time_seconds("pconn_timeout"),
             "client_idle_pconn_timeout_seconds": find_time_seconds("client_idle_pconn_timeout"),
             "pconn_timeout_seconds": find_time_seconds("server_idle_pconn_timeout") or find_time_seconds("pconn_timeout"),
             "pconn_lifetime_seconds": find_time_seconds("pconn_lifetime"),
             "persistent_connection_after_error": find_on_off("persistent_connection_after_error"),
             "detect_broken_pconn": find_on_off("detect_broken_pconn"),
+            "half_closed_clients": find_on_off("half_closed_clients"),
             "connect_retries": find_int(r"^\s*connect_retries\s+(\d+)\s*$"),
             "forward_max_tries": find_int(r"^\s*forward_max_tries\s+(\d+)\s*$"),
+            "retry_on_error": find_on_off("retry_on_error"),
             "client_lifetime_seconds": find_time_seconds("client_lifetime"),
+            "client_ip_max_connections": find_int(r"^\s*client_ip_max_connections\s+(\d+)\s*$"),
+            "accept_filter_value": find_str("accept_filter"),
+            "client_dst_passthru": find_on_off("client_dst_passthru"),
+            "host_verify_strict": find_on_off("host_verify_strict"),
+            "on_unsupported_protocol_action": on_unsupported_protocol_action,
+            "happy_eyeballs_connect_timeout_ms": find_time_milliseconds("happy_eyeballs_connect_timeout"),
+            "happy_eyeballs_connect_gap_ms": find_time_milliseconds("happy_eyeballs_connect_gap"),
+            "happy_eyeballs_connect_limit": find_int(r"^\s*happy_eyeballs_connect_limit\s+(\d+)\s*$"),
+            "server_pconn_for_nonretriable_rules_text": find_block_or_lines(
+                "SERVER_PCONN_FOR_NONRETRIABLE",
+                prefixes=("server_pconn_for_nonretriable ",),
+            ),
             "max_filedescriptors": find_int(r"^\s*max_filedescriptors\s+(\d+)\s*$"),
             "dns_timeout_seconds": find_time_seconds("dns_timeout"),
             "dns_retransmit_interval_seconds": find_time_seconds("dns_retransmit_interval"),
             "dns_packet_max": find_int_or_none("dns_packet_max"),
             "dns_nameservers": find_str("dns_nameservers"),
             "hosts_file": find_str("hosts_file"),
+            "append_domain": find_str("append_domain"),
+            "dns_defnames": find_on_off("dns_defnames"),
+            "dns_multicast_local": find_on_off("dns_multicast_local"),
+            "ignore_unknown_nameservers": find_on_off("ignore_unknown_nameservers"),
+            "check_hostnames": find_on_off("check_hostnames"),
+            "allow_underscore": find_on_off("allow_underscore"),
             "ipcache_size": find_int(r"^\s*ipcache_size\s+(\d+)\s*$"),
             "ipcache_low": find_int(r"^\s*ipcache_low\s+(\d+)\s*$"),
             "ipcache_high": find_int(r"^\s*ipcache_high\s+(\d+)\s*$"),
             "fqdncache_size": find_int(r"^\s*fqdncache_size\s+(\d+)\s*$"),
+            "sslcrtd_program_cache_size_mb": find_sslcrtd_program_cache_size_mb(),
             "sslcrtd_children": sslcrtd_settings.get("sslcrtd_children"),
             "sslcrtd_children_startup": sslcrtd_settings.get("sslcrtd_children_startup"),
             "sslcrtd_children_idle": sslcrtd_settings.get("sslcrtd_children_idle"),
             "sslcrtd_children_queue_size": sslcrtd_settings.get("sslcrtd_children_queue_size"),
             "dynamic_cert_mem_cache_size_mb": find_dynamic_cert_mem_cache_size_mb(),
+            "tls_outgoing_options_line": find_str("tls_outgoing_options"),
             "sslproxy_session_ttl_seconds": find_time_seconds("sslproxy_session_ttl"),
             "sslproxy_session_cache_size_mb": find_size_mb("sslproxy_session_cache_size"),
+            "sslproxy_foreign_intermediate_certs": find_str("sslproxy_foreign_intermediate_certs"),
+            "sslproxy_cert_sign_hash": find_str("sslproxy_cert_sign_hash"),
+            "ssl_unclean_shutdown": find_on_off("ssl_unclean_shutdown"),
+            "additional_ssl_rules_text": find_block_or_lines("CUSTOM_SSL_RULES"),
+            "sslproxy_cert_error_rules_text": find_block_or_lines("SSLPROXY_CERT_ERROR", prefixes=("sslproxy_cert_error ",)),
+            "sslproxy_cert_sign_rules_text": find_block_or_lines("SSLPROXY_CERT_SIGN", prefixes=("sslproxy_cert_sign ",)),
+            "sslproxy_cert_adapt_rules_text": find_block_or_lines("SSLPROXY_CERT_ADAPT", prefixes=("sslproxy_cert_adapt ",)),
             "icap_enable": find_on_off("icap_enable"),
             "icap_send_client_ip": find_on_off("icap_send_client_ip"),
             "icap_send_client_username": find_on_off("icap_send_client_username"),
@@ -456,6 +1091,13 @@ class SquidController(_CoreSquidController):
             "reply_header_max_size_kb": find_size_kb("reply_header_max_size"),
             "request_body_max_size_mb": find_size_mb("request_body_max_size"),
             "client_request_buffer_max_size_kb": find_size_kb("client_request_buffer_max_size"),
+            "relaxed_header_parser_mode": find_choice_token("relaxed_header_parser", ("on", "warn", "off")),
+            "uri_whitespace_mode": find_choice_token("uri_whitespace", ("strip", "deny", "allow", "encode", "chop")),
+            "http_upgrade_request_protocols_rules_text": find_block_or_lines(
+                "HTTP_UPGRADE_REQUEST_PROTOCOLS",
+                prefixes=("http_upgrade_request_protocols ",),
+            ),
+            "vary_ignore_expire": find_on_off("vary_ignore_expire"),
             "memory_pools": find_on_off("memory_pools"),
             "memory_pools_limit_mb": find_size_mb_or_none("memory_pools_limit"),
             "shared_memory_locking": find_on_off("shared_memory_locking"),
@@ -463,9 +1105,18 @@ class SquidController(_CoreSquidController):
             "tcp_recv_bufsize_kb": find_size_kb("tcp_recv_bufsize"),
             "store_avg_object_size_kb": find_size_kb("store_avg_object_size"),
             "store_objects_per_bucket": find_int(r"^\s*store_objects_per_bucket\s+(\d+)\s*$"),
+            "client_db": find_on_off("client_db"),
+            "offline_mode": find_on_off("offline_mode"),
+            "paranoid_hit_validation_value": find_str("paranoid_hit_validation"),
             "cpu_affinity_map": find_str("cpu_affinity_map"),
             "visible_hostname": find_str("visible_hostname"),
             "httpd_suppress_version_string": find_on_off("httpd_suppress_version_string"),
+            "client_netmask_value": find_str("client_netmask"),
+            "strip_query_terms": find_on_off("strip_query_terms"),
+            "stats_collection_rules_text": find_block_or_lines("STATS_COLLECTION", prefixes=("stats_collection ",)),
+            "tls_key_log_path": find_str("tls_key_log"),
+            "cache_policy_rules_text": find_block_or_lines("CACHE_POLICY"),
+            "refresh_patterns_text": find_block_or_lines("REFRESH_PATTERNS", prefixes=("refresh_pattern ",)),
         }
 
     def _get_lines(self, config_text: Optional[str], keys: tuple[str, ...], *, include_icap_include: bool = False) -> list[str]:
@@ -487,16 +1138,29 @@ class SquidController(_CoreSquidController):
         return self._get_lines(
             config_text,
             (
+                "client_persistent_connections",
+                "server_persistent_connections",
                 "client_idle_pconn_timeout",
                 "server_idle_pconn_timeout",
                 "pconn_timeout",
                 "pconn_lifetime",
                 "persistent_connection_after_error",
                 "detect_broken_pconn",
+                "half_closed_clients",
+                "server_pconn_for_nonretriable",
                 "connect_retries",
                 "forward_max_tries",
+                "retry_on_error",
                 "client_lifetime",
-                "max_filedescriptors",
+                "client_ip_max_connections",
+                "tcp_recv_bufsize",
+                "accept_filter",
+                "client_dst_passthru",
+                "host_verify_strict",
+                "on_unsupported_protocol",
+                "happy_eyeballs_connect_timeout",
+                "happy_eyeballs_connect_gap",
+                "happy_eyeballs_connect_limit",
             ),
         )
 
@@ -509,6 +1173,12 @@ class SquidController(_CoreSquidController):
                 "dns_packet_max",
                 "dns_nameservers",
                 "hosts_file",
+                "append_domain",
+                "dns_defnames",
+                "dns_multicast_local",
+                "ignore_unknown_nameservers",
+                "check_hostnames",
+                "allow_underscore",
                 "positive_dns_ttl",
                 "negative_dns_ttl",
                 "ipcache_size",
@@ -519,7 +1189,23 @@ class SquidController(_CoreSquidController):
         )
 
     def get_ssl_lines(self, config_text: Optional[str] = None) -> list[str]:
-        lines = self._get_lines(config_text, ("sslcrtd_program", "sslcrtd_children", "sslproxy_session_ttl", "sslproxy_session_cache_size", "ssl_bump"))
+        lines = self._get_lines(
+            config_text,
+            (
+                "sslcrtd_program",
+                "sslcrtd_children",
+                "sslproxy_session_ttl",
+                "sslproxy_session_cache_size",
+                "tls_outgoing_options",
+                "sslproxy_foreign_intermediate_certs",
+                "sslproxy_cert_sign_hash",
+                "ssl_unclean_shutdown",
+                "sslproxy_cert_error",
+                "sslproxy_cert_sign",
+                "sslproxy_cert_adapt",
+                "ssl_bump",
+            ),
+        )
         tunables = self.get_tunable_options(config_text)
         dynamic_cert_cache_mb = tunables.get("dynamic_cert_mem_cache_size_mb")
         if dynamic_cert_cache_mb is not None:
@@ -530,33 +1216,75 @@ class SquidController(_CoreSquidController):
         return self._get_lines(config_text, ("icap_", "adaptation_"), include_icap_include=True)
 
     def get_privacy_lines(self, config_text: Optional[str] = None) -> list[str]:
-        return self._get_lines(config_text, ("forwarded_for", "via", "follow_x_forwarded_for"))
+        return self._get_lines(config_text, ("forwarded_for", "via", "follow_x_forwarded_for", "client_netmask", "strip_query_terms"))
 
     def get_limits_lines(self, config_text: Optional[str] = None) -> list[str]:
-        return self._get_lines(config_text, ("request_header_max_size", "reply_header_max_size", "request_body_max_size", "client_request_buffer_max_size"))
+        return self._get_lines(
+            config_text,
+            (
+                "request_header_max_size",
+                "reply_header_max_size",
+                "request_body_max_size",
+                "client_request_buffer_max_size",
+                "relaxed_header_parser",
+                "uri_whitespace",
+                "http_upgrade_request_protocols",
+            ),
+        )
 
     def get_performance_lines(self, config_text: Optional[str] = None) -> list[str]:
         return self._get_lines(
             config_text,
             (
+                "workers",
                 "memory_pools",
                 "memory_pools_limit",
                 "shared_memory_locking",
                 "max_open_disk_fds",
                 "store_avg_object_size",
                 "store_objects_per_bucket",
+                "client_db",
+                "offline_mode",
+                "paranoid_hit_validation",
                 "cpu_affinity_map",
+                "max_filedescriptors",
             ),
         )
 
     def get_http_lines(self, config_text: Optional[str] = None) -> list[str]:
-        return self._get_lines(config_text, ("visible_hostname", "httpd_suppress_version_string"))
+        return self._get_lines(config_text, ("visible_hostname", "httpd_suppress_version_string", "vary_ignore_expire"))
 
     def get_logging_lines(self, config_text: Optional[str] = None) -> list[str]:
-        return self._get_lines(config_text, ("logformat", "access_log", "cache_log", "cache_store_log", "logfile_rotate", "buffered_logs"))
+        return self._get_lines(
+            config_text,
+            (
+                "logformat",
+                "access_log",
+                "cache_log",
+                "cache_store_log",
+                "icap_log",
+                "logfile_rotate",
+                "buffered_logs",
+                "log_mime_hdrs",
+                "stats_collection",
+                "tls_key_log",
+            ),
+        )
 
     def get_timeout_lines(self, config_text: Optional[str] = None) -> list[str]:
-        return self._get_lines(config_text, ("connect_timeout", "request_timeout", "read_timeout", "forward_timeout", "request_start_timeout", "write_timeout", "shutdown_lifetime"))
+        return self._get_lines(
+            config_text,
+            (
+                "connect_timeout",
+                "peer_connect_timeout",
+                "request_timeout",
+                "read_timeout",
+                "forward_timeout",
+                "request_start_timeout",
+                "write_timeout",
+                "shutdown_lifetime",
+            ),
+        )
 
     def get_cache_override_options(self, config_text: Optional[str] = None) -> Dict[str, bool]:
         text = config_text if config_text is not None else self.get_current_config()
@@ -579,6 +1307,7 @@ class SquidController(_CoreSquidController):
             config_text,
             (
                 "cache_dir",
+                "store_dir_select_algorithm",
                 "cache_mem",
                 "minimum_object_size",
                 "maximum_object_size",
@@ -593,20 +1322,20 @@ class SquidController(_CoreSquidController):
                 "cache_miss_revalidate",
                 "pipeline_prefetch",
                 "collapsed_forwarding",
+                "collapsed_forwarding_access",
                 "range_offset_limit",
                 "quick_abort_min",
                 "quick_abort_max",
                 "quick_abort_pct",
-                "client_persistent_connections",
-                "server_persistent_connections",
                 "read_ahead_gap",
+                "cache ",
+                "send_hit",
+                "store_miss",
                 "refresh_pattern",
                 "negative_ttl",
                 "minimum_expiry_time",
                 "max_stale",
                 "refresh_all_ims",
-                "positive_dns_ttl",
-                "negative_dns_ttl",
             ),
         )
 
@@ -682,294 +1411,14 @@ class SquidController(_CoreSquidController):
 
         template_text = self._read_file(self.squid_conf_template_path)
 
-        cache_dir_type = self._validate_choice(str(options.get("cache_dir_type") or "rock"), ("rock", "ufs"), "cache_dir_type")
-        cache_dir_size_mb = int(options.get("cache_dir_size_mb") or 10000)
-        cache_dir_ufs_l1 = max(1, int(options.get("cache_dir_ufs_l1") or 16))
-        cache_dir_ufs_l2 = max(1, int(options.get("cache_dir_ufs_l2") or 256))
-        cache_dir_rock_slot_size_kb = max(4, int(options.get("cache_dir_rock_slot_size_kb") or 32))
-        cache_dir_rock_swap_timeout_ms = options.get("cache_dir_rock_swap_timeout_ms")
-        cache_dir_rock_max_swap_rate = options.get("cache_dir_rock_max_swap_rate")
-        cache_mem_mb = int(options.get("cache_mem_mb") or 256)
-        maximum_object_size_mb = int(options.get("maximum_object_size_mb") or 128)
-        maximum_object_size_in_memory_kb = int(options.get("maximum_object_size_in_memory_kb") or 2048)
-        minimum_object_size_kb = int(options.get("minimum_object_size_kb") if options.get("minimum_object_size_kb") is not None else 0)
-        memory_cache_mode = self._validate_choice(str(options.get("memory_cache_mode") or "always"), ("always", "disk", "network"), "memory_cache_mode")
-        memory_cache_shared_on = bool(options.get("memory_cache_shared_on", True))
-        shared_transient_entries_limit = int(options.get("shared_transient_entries_limit") or 32768)
-        cache_swap_low = int(options.get("cache_swap_low") or 90)
-        cache_swap_high = int(options.get("cache_swap_high") or 95)
-        collapsed_forwarding_on = bool(options.get("collapsed_forwarding_on", True))
-        range_cache_on = bool(options.get("range_cache_on", True))
-        cache_replacement_policy = (options.get("cache_replacement_policy") or "heap GDSF").strip()
-        memory_replacement_policy = (options.get("memory_replacement_policy") or "heap GDSF").strip()
-        pipeline_prefetch_on = bool(options.get("pipeline_prefetch_on", True))
-        client_persistent_connections_on = bool(options.get("client_persistent_connections_on", True))
-        server_persistent_connections_on = bool(options.get("server_persistent_connections_on", True))
-        negative_ttl_seconds = options.get("negative_ttl_seconds")
-        positive_dns_ttl_seconds = options.get("positive_dns_ttl_seconds")
-        negative_dns_ttl_seconds = options.get("negative_dns_ttl_seconds")
-        minimum_expiry_time_seconds = options.get("minimum_expiry_time_seconds")
-        max_stale_seconds = options.get("max_stale_seconds")
-        refresh_all_ims_on = bool(options.get("refresh_all_ims_on", False))
-        read_ahead_gap_kb = options.get("read_ahead_gap_kb")
-        connect_timeout_seconds = options.get("connect_timeout_seconds")
-        request_timeout_seconds = options.get("request_timeout_seconds")
-        read_timeout_seconds = options.get("read_timeout_seconds")
-        forward_timeout_seconds = options.get("forward_timeout_seconds")
-        request_start_timeout_seconds = options.get("request_start_timeout_seconds")
-        write_timeout_seconds = options.get("write_timeout_seconds")
-        shutdown_lifetime_seconds = options.get("shutdown_lifetime_seconds")
-        logfile_rotate = options.get("logfile_rotate")
-        buffered_logs_on = bool(options.get("buffered_logs_on", True))
-        server_idle_pconn_timeout_seconds = options.get("server_idle_pconn_timeout_seconds")
-        client_idle_pconn_timeout_seconds = options.get("client_idle_pconn_timeout_seconds")
-        pconn_lifetime_seconds = options.get("pconn_lifetime_seconds")
-        persistent_connection_after_error_on = bool(options.get("persistent_connection_after_error_on", True))
-        detect_broken_pconn_on = bool(options.get("detect_broken_pconn_on", False))
-        connect_retries = options.get("connect_retries")
-        forward_max_tries = options.get("forward_max_tries")
-        client_lifetime_seconds = options.get("client_lifetime_seconds")
-        max_filedescriptors = options.get("max_filedescriptors")
-        dns_timeout_seconds = options.get("dns_timeout_seconds")
-        dns_retransmit_interval_seconds = options.get("dns_retransmit_interval_seconds")
-        dns_nameservers = self._validate_dns_nameservers(options.get("dns_nameservers") or "")
-        hosts_file = self._validate_hosts_file_path(options.get("hosts_file") or "")
-        ipcache_size = options.get("ipcache_size")
-        ipcache_low = options.get("ipcache_low")
-        ipcache_high = options.get("ipcache_high")
-        fqdncache_size = options.get("fqdncache_size")
-        sslcrtd_children = min(32, max(1, int(options.get("sslcrtd_children") or 4)))
-        sslcrtd_children_startup = options.get("sslcrtd_children_startup", min(sslcrtd_children, 2))
-        sslcrtd_children_idle = options.get("sslcrtd_children_idle", 1)
-        sslcrtd_children_queue_size = options.get("sslcrtd_children_queue_size", max(32, sslcrtd_children * 8))
-        dynamic_cert_mem_cache_size_mb = max(0, int(options.get("dynamic_cert_mem_cache_size_mb") or 128))
-        sslproxy_session_ttl_seconds = options.get("sslproxy_session_ttl_seconds")
-        sslproxy_session_cache_size_mb = options.get("sslproxy_session_cache_size_mb")
-        icap_enable_on = bool(options.get("icap_enable_on", True))
-        icap_send_client_ip_on = bool(options.get("icap_send_client_ip_on", True))
-        icap_send_client_username_on = bool(options.get("icap_send_client_username_on", False))
-        icap_persistent_connections_on = bool(options.get("icap_persistent_connections_on", True))
-        icap_preview_enable_on = bool(options.get("icap_preview_enable_on", True))
-        icap_preview_size_kb = options.get("icap_preview_size_kb")
-        icap_default_options_ttl_seconds = options.get("icap_default_options_ttl_seconds")
-        icap_connect_timeout_seconds = options.get("icap_connect_timeout_seconds")
-        icap_io_timeout_seconds = options.get("icap_io_timeout_seconds")
-        icap_service_failure_limit = options.get("icap_service_failure_limit")
-        icap_service_failure_limit_window_seconds = options.get("icap_service_failure_limit_window_seconds")
-        icap_service_revival_delay_seconds = options.get("icap_service_revival_delay_seconds")
-        forwarded_for_value = (options.get("forwarded_for_value") or "").strip()
-        follow_x_forwarded_for_value = (options.get("follow_x_forwarded_for_value") or "").strip()
-        via_on = options.get("via_on")
-        request_header_max_size_kb = options.get("request_header_max_size_kb")
-        reply_header_max_size_kb = options.get("reply_header_max_size_kb")
-        request_body_max_size_mb = options.get("request_body_max_size_mb")
-        client_request_buffer_max_size_kb = options.get("client_request_buffer_max_size_kb")
-        memory_pools_on = options.get("memory_pools_on")
-        memory_pools_limit_mb = options.get("memory_pools_limit_mb")
-        shared_memory_locking_on = bool(options.get("shared_memory_locking_on", False))
-        store_avg_object_size_kb = options.get("store_avg_object_size_kb")
-        store_objects_per_bucket = options.get("store_objects_per_bucket")
-        max_open_disk_fds = options.get("max_open_disk_fds")
-        tcp_recv_bufsize_kb = options.get("tcp_recv_bufsize_kb")
-        cpu_affinity_map = self._validate_cpu_affinity_map(options.get("cpu_affinity_map") or "")
-        visible_hostname = self._validate_hostname(options.get("visible_hostname") or "", "visible_hostname")
-        httpd_suppress_version_string_on = options.get("httpd_suppress_version_string_on")
-        workers = int(options.get("workers") or 1)
-        if workers < 1:
-            workers = 1
         try:
-            max_workers = int((os.environ.get("MAX_WORKERS") or "4").strip())
+            dynamic_cert_mem_cache_size_mb = max(0, int(str(options.get("dynamic_cert_mem_cache_size_mb") or "128").strip()))
         except Exception:
-            max_workers = 4
-        max_workers = min(4, max(1, max_workers))
-        if workers > max_workers:
-            workers = max_workers
-        cache_miss_revalidate_on = bool(options.get("cache_miss_revalidate_on", True))
-        dns_packet_max = options.get("dns_packet_max")
-        quick_abort_min_kb = int(options.get("quick_abort_min_kb") if options.get("quick_abort_min_kb") is not None else 0)
-        quick_abort_max_kb = int(options.get("quick_abort_max_kb") if options.get("quick_abort_max_kb") is not None else 0)
-        quick_abort_pct = int(options.get("quick_abort_pct") if options.get("quick_abort_pct") is not None else 100)
+            dynamic_cert_mem_cache_size_mb = 128
 
-        out = template_text
-
-        cache_dir_line = ""
-        if cache_dir_type == "rock":
-            cache_dir_parts = [
-                f"cache_dir rock /var/spool/squid {cache_dir_size_mb}",
-                f"slot-size={cache_dir_rock_slot_size_kb * 1024}",
-            ]
-            if cache_dir_rock_swap_timeout_ms is not None:
-                cache_dir_parts.append(f"swap-timeout={int(cache_dir_rock_swap_timeout_ms)}")
-            if cache_dir_rock_max_swap_rate is not None:
-                cache_dir_parts.append(f"max-swap-rate={int(cache_dir_rock_max_swap_rate)}")
-            cache_dir_line = " ".join(cache_dir_parts)
-        else:
-            cache_dir_line = f"cache_dir ufs /var/spool/squid {cache_dir_size_mb} {cache_dir_ufs_l1} {cache_dir_ufs_l2}"
-
-        out = self._replace_cache_dir_line(out, cache_dir_line)
-        out = self._replace_or_append_line(out, "cache_mem", f"cache_mem {cache_mem_mb} MB")
-        out = self._replace_or_append_line(out, "maximum_object_size", f"maximum_object_size {maximum_object_size_mb} MB")
-        out = self._replace_or_append_line(out, "maximum_object_size_in_memory", f"maximum_object_size_in_memory {maximum_object_size_in_memory_kb} KB")
-        out = self._replace_or_append_line(out, "minimum_object_size", f"minimum_object_size {minimum_object_size_kb} KB")
-        out = self._replace_or_append_line(out, "memory_cache_mode", f"memory_cache_mode {memory_cache_mode}")
-        out = self._replace_or_append_line(out, "memory_cache_shared", f"memory_cache_shared {'on' if memory_cache_shared_on else 'off'}")
-        out = self._replace_or_append_line(out, "shared_transient_entries_limit", f"shared_transient_entries_limit {shared_transient_entries_limit}")
-        out = self._replace_or_append_line(out, "cache_swap_low", f"cache_swap_low {cache_swap_low}")
-        out = self._replace_or_append_line(out, "cache_swap_high", f"cache_swap_high {cache_swap_high}")
-        out = self._replace_or_append_line(out, "collapsed_forwarding", f"collapsed_forwarding {'on' if collapsed_forwarding_on else 'off'}")
-        out = self._replace_or_append_line(out, "range_offset_limit", f"range_offset_limit {'128 MB' if range_cache_on else '0'}")
-        out = self._replace_or_append_line(out, "cache_replacement_policy", f"cache_replacement_policy {cache_replacement_policy}")
-        out = self._replace_or_append_line(out, "memory_replacement_policy", f"memory_replacement_policy {memory_replacement_policy}")
-        out = self._replace_or_append_line(out, "cache_miss_revalidate", f"cache_miss_revalidate {'on' if cache_miss_revalidate_on else 'off'}")
-        out = self._replace_or_append_line(out, "pipeline_prefetch", f"pipeline_prefetch {1 if pipeline_prefetch_on else 0}")
-        out = self._replace_or_append_line(out, "client_persistent_connections", f"client_persistent_connections {'on' if client_persistent_connections_on else 'off'}")
-        out = self._replace_or_append_line(out, "server_persistent_connections", f"server_persistent_connections {'on' if server_persistent_connections_on else 'off'}")
-
-        if negative_ttl_seconds is not None:
-            out = self._replace_or_append_line(out, "negative_ttl", f"negative_ttl {int(negative_ttl_seconds)} seconds")
-        if positive_dns_ttl_seconds is not None:
-            out = self._replace_or_append_line(out, "positive_dns_ttl", f"positive_dns_ttl {int(positive_dns_ttl_seconds)} seconds")
-        if negative_dns_ttl_seconds is not None:
-            out = self._replace_or_append_line(out, "negative_dns_ttl", f"negative_dns_ttl {int(negative_dns_ttl_seconds)} seconds")
-        if minimum_expiry_time_seconds is not None:
-            out = self._replace_or_append_line(out, "minimum_expiry_time", f"minimum_expiry_time {int(minimum_expiry_time_seconds)} seconds")
-        if max_stale_seconds is not None:
-            out = self._replace_or_append_line(out, "max_stale", f"max_stale {int(max_stale_seconds)} seconds")
-        out = self._replace_or_append_line(out, "refresh_all_ims", f"refresh_all_ims {'on' if refresh_all_ims_on else 'off'}")
-        if read_ahead_gap_kb is not None:
-            out = self._replace_or_append_line(out, "read_ahead_gap", f"read_ahead_gap {int(read_ahead_gap_kb)} KB")
-        if connect_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "connect_timeout", f"connect_timeout {int(connect_timeout_seconds)} seconds")
-        if request_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "request_timeout", f"request_timeout {int(request_timeout_seconds)} seconds")
-        if read_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "read_timeout", f"read_timeout {int(read_timeout_seconds)} seconds")
-        if forward_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "forward_timeout", f"forward_timeout {int(forward_timeout_seconds)} seconds")
-        if request_start_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "request_start_timeout", f"request_start_timeout {int(request_start_timeout_seconds)} seconds")
-        if write_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "write_timeout", f"write_timeout {int(write_timeout_seconds)} seconds")
-        if shutdown_lifetime_seconds is not None:
-            out = self._replace_or_append_line(out, "shutdown_lifetime", f"shutdown_lifetime {int(shutdown_lifetime_seconds)} seconds")
-        out = self._replace_or_append_line(out, "half_closed_clients", "half_closed_clients off")
-        if logfile_rotate is not None:
-            out = self._replace_or_append_line(out, "logfile_rotate", f"logfile_rotate {int(logfile_rotate)}")
-        out = re.sub(r"^\s*pconn_timeout\b.*$\n?", "", out, flags=re.M)
-        out = self._replace_or_append_line(out, "buffered_logs", f"buffered_logs {'on' if buffered_logs_on else 'off'}")
-        if server_idle_pconn_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "server_idle_pconn_timeout", f"server_idle_pconn_timeout {int(server_idle_pconn_timeout_seconds)} seconds")
-        if client_idle_pconn_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "client_idle_pconn_timeout", f"client_idle_pconn_timeout {int(client_idle_pconn_timeout_seconds)} seconds")
-        if pconn_lifetime_seconds is not None:
-            out = self._replace_or_append_line(out, "pconn_lifetime", f"pconn_lifetime {int(pconn_lifetime_seconds)} seconds")
-        out = self._replace_or_append_line(out, "persistent_connection_after_error", f"persistent_connection_after_error {'on' if persistent_connection_after_error_on else 'off'}")
-        out = self._replace_or_append_line(out, "detect_broken_pconn", f"detect_broken_pconn {'on' if detect_broken_pconn_on else 'off'}")
-        if connect_retries is not None:
-            out = self._replace_or_append_line(out, "connect_retries", f"connect_retries {int(connect_retries)}")
-        if forward_max_tries is not None:
-            out = self._replace_or_append_line(out, "forward_max_tries", f"forward_max_tries {int(forward_max_tries)}")
-        if client_lifetime_seconds is not None:
-            out = self._replace_or_append_line(out, "client_lifetime", f"client_lifetime {int(client_lifetime_seconds)} seconds")
-        if max_filedescriptors is not None:
-            out = self._replace_or_append_line(out, "max_filedescriptors", f"max_filedescriptors {int(max_filedescriptors)}")
-        if dns_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "dns_timeout", f"dns_timeout {int(dns_timeout_seconds)} seconds")
-        if dns_retransmit_interval_seconds is not None:
-            out = self._replace_or_append_line(out, "dns_retransmit_interval", f"dns_retransmit_interval {int(dns_retransmit_interval_seconds)} seconds")
-        if dns_packet_max is not None:
-            dns_packet_max_value = str(dns_packet_max).strip().lower()
-            if dns_packet_max_value == "none":
-                out = self._replace_or_append_line(out, "dns_packet_max", "dns_packet_max none")
-            else:
-                out = self._replace_or_append_line(out, "dns_packet_max", f"dns_packet_max {int(dns_packet_max)}")
-        if dns_nameservers:
-            out = self._replace_or_append_line(out, "dns_nameservers", f"dns_nameservers {dns_nameservers}")
-        if hosts_file:
-            out = self._replace_or_append_line(out, "hosts_file", f"hosts_file {hosts_file}")
-        if ipcache_size is not None:
-            out = self._replace_or_append_line(out, "ipcache_size", f"ipcache_size {int(ipcache_size)}")
-        if ipcache_low is not None:
-            out = self._replace_or_append_line(out, "ipcache_low", f"ipcache_low {int(ipcache_low)}")
-        if ipcache_high is not None:
-            out = self._replace_or_append_line(out, "ipcache_high", f"ipcache_high {int(ipcache_high)}")
-        if fqdncache_size is not None:
-            out = self._replace_or_append_line(out, "fqdncache_size", f"fqdncache_size {int(fqdncache_size)}")
-        sslcrtd_line = f"sslcrtd_children {int(sslcrtd_children)}"
-        if sslcrtd_children_startup is not None:
-            sslcrtd_line += f" startup={int(sslcrtd_children_startup)}"
-        if sslcrtd_children_idle is not None:
-            sslcrtd_line += f" idle={int(sslcrtd_children_idle)}"
-        if sslcrtd_children_queue_size is not None:
-            sslcrtd_line += f" queue-size={int(sslcrtd_children_queue_size)}"
-        out = self._replace_or_append_line(out, "sslcrtd_children", sslcrtd_line)
-        out = self._replace_http_port_option(out, "dynamic_cert_mem_cache_size", f"{dynamic_cert_mem_cache_size_mb}MB")
-        if sslproxy_session_ttl_seconds is not None:
-            out = self._replace_or_append_line(out, "sslproxy_session_ttl", f"sslproxy_session_ttl {int(sslproxy_session_ttl_seconds)} seconds")
-        if sslproxy_session_cache_size_mb is not None:
-            out = self._replace_or_append_line(out, "sslproxy_session_cache_size", f"sslproxy_session_cache_size {int(sslproxy_session_cache_size_mb)} MB")
-        out = self._replace_or_append_line(out, "icap_enable", f"icap_enable {'on' if icap_enable_on else 'off'}")
-        out = self._replace_or_append_line(out, "icap_send_client_ip", f"icap_send_client_ip {'on' if icap_send_client_ip_on else 'off'}")
-        out = self._replace_or_append_line(out, "icap_send_client_username", f"icap_send_client_username {'on' if icap_send_client_username_on else 'off'}")
-        out = self._replace_or_append_line(out, "icap_persistent_connections", f"icap_persistent_connections {'on' if icap_persistent_connections_on else 'off'}")
-        out = self._replace_or_append_line(out, "icap_preview_enable", f"icap_preview_enable {'on' if icap_preview_enable_on else 'off'}")
-        if icap_preview_size_kb is not None:
-            out = self._replace_or_append_line(out, "icap_preview_size", f"icap_preview_size {int(icap_preview_size_kb)} KB")
-        if icap_default_options_ttl_seconds is not None:
-            out = self._replace_or_append_line(out, "icap_default_options_ttl", f"icap_default_options_ttl {int(icap_default_options_ttl_seconds)}")
-        if icap_connect_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "icap_connect_timeout", f"icap_connect_timeout {int(icap_connect_timeout_seconds)} seconds")
-        if icap_io_timeout_seconds is not None:
-            out = self._replace_or_append_line(out, "icap_io_timeout", f"icap_io_timeout {int(icap_io_timeout_seconds)} seconds")
-        if icap_service_failure_limit is not None:
-            icap_failure_line = f"icap_service_failure_limit {int(icap_service_failure_limit)}"
-            if icap_service_failure_limit_window_seconds is not None:
-                icap_failure_line += f" in {int(icap_service_failure_limit_window_seconds)} seconds"
-            out = self._replace_or_append_line(out, "icap_service_failure_limit", icap_failure_line)
-        if icap_service_revival_delay_seconds is not None:
-            out = self._replace_or_append_line(out, "icap_service_revival_delay", f"icap_service_revival_delay {int(icap_service_revival_delay_seconds)} seconds")
-        if forwarded_for_value:
-            out = self._replace_or_append_line(out, "forwarded_for", f"forwarded_for {forwarded_for_value}")
-        if via_on is not None:
-            out = self._replace_or_append_line(out, "via", f"via {'on' if bool(via_on) else 'off'}")
-        if follow_x_forwarded_for_value:
-            out = self._replace_or_append_line(out, "follow_x_forwarded_for", f"follow_x_forwarded_for {follow_x_forwarded_for_value}")
-        if request_header_max_size_kb is not None:
-            out = self._replace_or_append_line(out, "request_header_max_size", f"request_header_max_size {int(request_header_max_size_kb)} KB")
-        if reply_header_max_size_kb is not None:
-            out = self._replace_or_append_line(out, "reply_header_max_size", f"reply_header_max_size {int(reply_header_max_size_kb)} KB")
-        if request_body_max_size_mb is not None:
-            out = self._replace_or_append_line(out, "request_body_max_size", f"request_body_max_size {int(request_body_max_size_mb)} MB")
-        if client_request_buffer_max_size_kb is not None:
-            out = self._replace_or_append_line(out, "client_request_buffer_max_size", f"client_request_buffer_max_size {int(client_request_buffer_max_size_kb)} KB")
-        if memory_pools_on is not None:
-            out = self._replace_or_append_line(out, "memory_pools", f"memory_pools {'on' if bool(memory_pools_on) else 'off'}")
-        if memory_pools_limit_mb is not None:
-            memory_pools_limit_value = str(memory_pools_limit_mb).strip().lower()
-            if memory_pools_limit_value == "none":
-                out = self._replace_or_append_line(out, "memory_pools_limit", "memory_pools_limit none")
-            else:
-                out = self._replace_or_append_line(out, "memory_pools_limit", f"memory_pools_limit {int(memory_pools_limit_mb)} MB")
-        out = self._replace_or_append_line(out, "shared_memory_locking", f"shared_memory_locking {'on' if shared_memory_locking_on else 'off'}")
-        if max_open_disk_fds is not None:
-            out = self._replace_or_append_line(out, "max_open_disk_fds", f"max_open_disk_fds {int(max_open_disk_fds)}")
-        if tcp_recv_bufsize_kb is not None:
-            out = self._replace_or_append_line(out, "tcp_recv_bufsize", f"tcp_recv_bufsize {int(tcp_recv_bufsize_kb)} KB")
-        if store_avg_object_size_kb is not None:
-            out = self._replace_or_append_line(out, "store_avg_object_size", f"store_avg_object_size {int(store_avg_object_size_kb)} KB")
-        if store_objects_per_bucket is not None:
-            out = self._replace_or_append_line(out, "store_objects_per_bucket", f"store_objects_per_bucket {int(store_objects_per_bucket)}")
-        if cpu_affinity_map:
-            out = self._replace_or_append_line(out, "cpu_affinity_map", f"cpu_affinity_map {cpu_affinity_map}")
-        if visible_hostname:
-            out = self._replace_or_append_line(out, "visible_hostname", f"visible_hostname {visible_hostname}")
-        if httpd_suppress_version_string_on is not None:
-            out = self._replace_or_append_line(out, "httpd_suppress_version_string", f"httpd_suppress_version_string {'on' if bool(httpd_suppress_version_string_on) else 'off'}")
-        out = self._replace_or_append_line(out, "workers", f"workers {workers}")
-        out = self._replace_or_append_line(out, "quick_abort_min", f"quick_abort_min {quick_abort_min_kb} KB")
-        out = self._replace_or_append_line(out, "quick_abort_max", f"quick_abort_max {quick_abort_max_kb} KB")
-        out = self._replace_or_append_line(out, "quick_abort_pct", f"quick_abort_pct {quick_abort_pct}")
-        return out
+        rendered = self._replace_http_port_option(template_text, "dynamic_cert_mem_cache_size", f"{dynamic_cert_mem_cache_size_mb}MB")
+        managed_block = self._render_managed_settings(options)
+        return self._replace_managed_settings_block(rendered, managed_block)
 
     def generate_config_from_template_with_exclusions(self, options: Dict[str, Any], exclusions: Any) -> str:
         base = self.generate_config_from_template(options)
@@ -1004,12 +1453,10 @@ class SquidController(_CoreSquidController):
         base = base.replace("ssl_bump bump all", insert_ssl + "ssl_bump bump all", 1)
 
         deny_block = "\n".join(["", "# Exclusions (managed by web UI)"] + cache_deny_lines) + "\n"
-        if "# Cache settings" in base:
-            marker = "# Log settings"
+        for marker in ("# Logging", "# Log settings", self._MANAGED_SETTINGS_END):
             if marker in base:
                 base = base.replace(marker, deny_block + "\n" + marker, 1)
-            else:
-                base = base.rstrip() + deny_block
+                break
         else:
             base = base.rstrip() + deny_block
         return base
