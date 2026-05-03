@@ -181,10 +181,6 @@ apply_squid_perf_tuning() {
         replace_or_append_config_line "$file_path" "max_filedescriptors" "$SQUID_MAX_FILEDESCRIPTORS"
     fi
 
-    if ! config_has_directive "$file_path" "buffered_logs"; then
-        replace_or_append_config_line "$file_path" "buffered_logs" "on"
-    fi
-
     if [ -n "${EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ] || ! grep -qi "dynamic_cert_mem_cache_size=" "$file_path" 2>/dev/null; then
         sed -i -E "s#(dynamic_cert_mem_cache_size=)[0-9]+MB#\1${SQUID_DYNAMIC_CERT_MEM_CACHE_MB}MB#I" "$file_path" || true
     fi
@@ -463,15 +459,15 @@ if [ -f /etc/squid/squid.conf ] && ! grep -q "^\s*logfile_rotate\b" /etc/squid/s
     echo "logfile_rotate 10" >> /etc/squid/squid.conf
 fi
 
-# Restore cache-first / image-heavy browsing defaults if older persisted configs
-# predate these directives. This keeps startup behavior aligned with the web UI's
-# baseline defaults without overwriting any user-tuned values.
+# Restore current UI defaults if older persisted configs predate these directives.
+# This keeps startup behavior aligned with the managed template without overwriting
+# any user-tuned values that already exist.
 if [ -f /etc/squid/squid.conf ]; then
     if ! grep -qiE "^\s*pipeline_prefetch\s+" /etc/squid/squid.conf 2>/dev/null; then
         cat >> /etc/squid/squid.conf <<'EOF'
 
 # Default request pipelining behavior (numeric form for Squid 6+).
-pipeline_prefetch 1
+pipeline_prefetch 0
 EOF
     fi
 
@@ -479,8 +475,8 @@ EOF
         && ! grep -qiE "^\s*pconn_timeout\s+" /etc/squid/squid.conf 2>/dev/null; then
         cat >> /etc/squid/squid.conf <<'EOF'
 
-# Keep persistent upstream connections warm for bursty image/gallery browsing.
-server_idle_pconn_timeout 120 seconds
+# Keep idle upstream keepalive connections bounded to the current managed baseline.
+server_idle_pconn_timeout 60 seconds
 EOF
     fi
 
@@ -495,18 +491,18 @@ EOF
     if ! grep -qiE "^\s*client_lifetime\s+" /etc/squid/squid.conf 2>/dev/null; then
         cat >> /etc/squid/squid.conf <<'EOF'
 
-# Allow long-lived client connections without forcing frequent reconnects.
-client_lifetime 3600 seconds
+# Use Squid's documented long-lived client connection baseline unless explicitly tuned.
+client_lifetime 86400 seconds
 EOF
     fi
 
     if ! grep -qiE "^\s*quick_abort_min\s+" /etc/squid/squid.conf 2>/dev/null; then
         cat >> /etc/squid/squid.conf <<'EOF'
 
-# Cache-first defaults: keep fetching cacheable objects even if the client aborts.
-quick_abort_min 0 KB
-quick_abort_max 0 KB
-quick_abort_pct 100
+# Squid's documented quick_abort baseline.
+quick_abort_min 16 KB
+quick_abort_max 16 KB
+quick_abort_pct 95
 EOF
     fi
 fi

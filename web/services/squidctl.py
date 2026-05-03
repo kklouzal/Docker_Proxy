@@ -222,7 +222,7 @@ class SquidController(_CoreSquidController):
         if memory_replacement_policy not in replacement_policies:
             memory_replacement_policy = "heap GDSF"
 
-        shared_transient_entries_limit = int_value("shared_transient_entries_limit", 32768, minimum=0)
+        shared_transient_entries_limit = int_value("shared_transient_entries_limit", 16384, minimum=0)
         cache_swap_low = int_value("cache_swap_low", 90, minimum=0, maximum=100)
         cache_swap_high = int_value("cache_swap_high", 95, minimum=0, maximum=100)
         collapsed_forwarding_on = bool_value("collapsed_forwarding_on", True)
@@ -241,16 +241,17 @@ class SquidController(_CoreSquidController):
             elif normalized_range == "-1":
                 range_offset_limit_value = "none"
         cache_miss_revalidate_on = bool_value("cache_miss_revalidate_on", True)
-        pipeline_prefetch_on = bool_value("pipeline_prefetch_on", True)
-        pipeline_prefetch_count = int_value("pipeline_prefetch_count", 1, minimum=0)
+        reload_into_ims_on = bool_value("reload_into_ims_on", False)
+        pipeline_prefetch_on = bool_value("pipeline_prefetch_on", False)
+        pipeline_prefetch_count = int_value("pipeline_prefetch_count", 0, minimum=0)
         if not pipeline_prefetch_on:
             pipeline_prefetch_count = 0
         elif pipeline_prefetch_count <= 0:
             pipeline_prefetch_count = 1
-        read_ahead_gap_kb = int_value("read_ahead_gap_kb", 256, minimum=0)
-        quick_abort_min_kb = int_value("quick_abort_min_kb", 0)
-        quick_abort_max_kb = int_value("quick_abort_max_kb", 0, minimum=0)
-        quick_abort_pct = int_value("quick_abort_pct", 100, minimum=0, maximum=100)
+        read_ahead_gap_kb = int_value("read_ahead_gap_kb", 16, minimum=0)
+        quick_abort_min_kb = int_value("quick_abort_min_kb", 16)
+        quick_abort_max_kb = int_value("quick_abort_max_kb", 16, minimum=0)
+        quick_abort_pct = int_value("quick_abort_pct", 95, minimum=0, maximum=100)
         negative_ttl_seconds = int_value("negative_ttl_seconds", 0, minimum=0)
         minimum_expiry_time_seconds = int_value("minimum_expiry_time_seconds", 60, minimum=0)
         max_stale_seconds = int_value("max_stale_seconds", 7 * 24 * 3600, minimum=0)
@@ -260,7 +261,7 @@ class SquidController(_CoreSquidController):
 
         client_persistent_connections_on = bool_value("client_persistent_connections_on", True)
         server_persistent_connections_on = bool_value("server_persistent_connections_on", True)
-        buffered_logs_on = bool_value("buffered_logs_on", True)
+        buffered_logs_on = bool_value("buffered_logs_on", False)
         log_mime_hdrs_on = bool_value("log_mime_hdrs_on", False)
         logfile_rotate = int_value("logfile_rotate", 10, minimum=0)
         stats_collection_rules_text = self._normalize_multiline_text(options.get("stats_collection_rules_text") or "")
@@ -276,8 +277,11 @@ class SquidController(_CoreSquidController):
             memory_pools_limit_value = f"{int_value('memory_pools_limit_mb', 64, minimum=0)} MB"
         shared_memory_locking_on = bool_value("shared_memory_locking_on", False)
         max_open_disk_fds = int_value("max_open_disk_fds", 0, minimum=0)
-        store_avg_object_size_kb = int_value("store_avg_object_size_kb", 32, minimum=0)
-        store_objects_per_bucket = int_value("store_objects_per_bucket", 16, minimum=0)
+        hopeless_kid_revival_delay_seconds = int_value("hopeless_kid_revival_delay_seconds", 3600, minimum=1)
+        high_response_time_warning_ms = optional_int_value("high_response_time_warning_ms")
+        high_page_fault_warning = optional_int_value("high_page_fault_warning")
+        store_avg_object_size_kb = int_value("store_avg_object_size_kb", 13, minimum=0)
+        store_objects_per_bucket = int_value("store_objects_per_bucket", 20, minimum=0)
         client_db_on = bool_value("client_db_on", True)
         offline_mode_on = bool_value("offline_mode_on", False)
         paranoid_hit_validation_value = self._validate_single_line_value(
@@ -288,15 +292,15 @@ class SquidController(_CoreSquidController):
         max_filedescriptors = int_value("max_filedescriptors", 65535, minimum=0)
 
         client_idle_pconn_timeout_seconds = int_value("client_idle_pconn_timeout_seconds", 120, minimum=0)
-        server_idle_pconn_timeout_seconds = int_value("server_idle_pconn_timeout_seconds", 120, minimum=0)
+        server_idle_pconn_timeout_seconds = int_value("server_idle_pconn_timeout_seconds", 60, minimum=0)
         pconn_lifetime_seconds = int_value("pconn_lifetime_seconds", 0, minimum=0)
         persistent_connection_after_error_on = bool_value("persistent_connection_after_error_on", True)
         detect_broken_pconn_on = bool_value("detect_broken_pconn_on", False)
         half_closed_clients_on = bool_value("half_closed_clients_on", False)
-        connect_retries = int_value("connect_retries", 1, minimum=0, maximum=10)
-        forward_max_tries = int_value("forward_max_tries", 10, minimum=1)
+        connect_retries = int_value("connect_retries", 0, minimum=0, maximum=10)
+        forward_max_tries = int_value("forward_max_tries", 25, minimum=1)
         retry_on_error_on = bool_value("retry_on_error_on", False)
-        client_lifetime_seconds = int_value("client_lifetime_seconds", 3600, minimum=0)
+        client_lifetime_seconds = int_value("client_lifetime_seconds", 24 * 3600, minimum=0)
         client_ip_max_connections = optional_int_value("client_ip_max_connections")
         tcp_recv_bufsize_kb = optional_int_value("tcp_recv_bufsize_kb")
         accept_filter_value = self._validate_single_line_value(str(options.get("accept_filter_value") or ""), "accept_filter")
@@ -312,16 +316,16 @@ class SquidController(_CoreSquidController):
         happy_eyeballs_connect_gap_ms = optional_int_value("happy_eyeballs_connect_gap_ms")
         happy_eyeballs_connect_limit = optional_int_value("happy_eyeballs_connect_limit")
 
-        connect_timeout_seconds = int_value("connect_timeout_seconds", 90, minimum=0)
+        connect_timeout_seconds = int_value("connect_timeout_seconds", 60, minimum=0)
         peer_connect_timeout_seconds = int_value("peer_connect_timeout_seconds", 30, minimum=0)
-        request_start_timeout_seconds = int_value("request_start_timeout_seconds", 60, minimum=0)
-        request_timeout_seconds = int_value("request_timeout_seconds", 1800, minimum=0)
-        read_timeout_seconds = int_value("read_timeout_seconds", 1800, minimum=0)
-        forward_timeout_seconds = int_value("forward_timeout_seconds", 1800, minimum=0)
+        request_start_timeout_seconds = int_value("request_start_timeout_seconds", 300, minimum=0)
+        request_timeout_seconds = int_value("request_timeout_seconds", 300, minimum=0)
+        read_timeout_seconds = int_value("read_timeout_seconds", 900, minimum=0)
+        forward_timeout_seconds = int_value("forward_timeout_seconds", 240, minimum=0)
         write_timeout_seconds = int_value("write_timeout_seconds", 900, minimum=0)
         shutdown_lifetime_seconds = int_value("shutdown_lifetime_seconds", 30, minimum=0)
 
-        dns_timeout_seconds = int_value("dns_timeout_seconds", 15, minimum=0)
+        dns_timeout_seconds = int_value("dns_timeout_seconds", 30, minimum=0)
         dns_retransmit_interval_seconds = int_value("dns_retransmit_interval_seconds", 5, minimum=0)
         dns_packet_max_raw = self._validate_single_line_value(str(options.get("dns_packet_max") or ""), "dns_packet_max")
         dns_nameservers = self._validate_dns_nameservers(str(options.get("dns_nameservers") or ""))
@@ -367,8 +371,14 @@ class SquidController(_CoreSquidController):
         sslproxy_cert_adapt_rules_text = self._normalize_multiline_text(options.get("sslproxy_cert_adapt_rules_text") or "")
 
         icap_enable_on = bool_value("icap_enable_on", True)
+        icap_206_enable_on = bool_value("icap_206_enable_on", True)
         icap_send_client_ip_on = bool_value("icap_send_client_ip_on", True)
         icap_send_client_username_on = bool_value("icap_send_client_username_on", False)
+        icap_client_username_header = self._validate_single_line_value(
+            str(options.get("icap_client_username_header") or "X-Client-Username"),
+            "icap_client_username_header",
+        ) or "X-Client-Username"
+        icap_client_username_encode_on = bool_value("icap_client_username_encode_on", False)
         icap_persistent_connections_on = bool_value("icap_persistent_connections_on", True)
         icap_preview_enable_on = bool_value("icap_preview_enable_on", True)
         icap_preview_size_kb = int_value("icap_preview_size_kb", 1024, minimum=0)
@@ -378,6 +388,12 @@ class SquidController(_CoreSquidController):
         icap_service_failure_limit = int_value("icap_service_failure_limit", 10)
         icap_service_failure_limit_window_seconds = int_value("icap_service_failure_limit_window_seconds", 30, minimum=0)
         icap_service_revival_delay_seconds = int_value("icap_service_revival_delay_seconds", 60, minimum=0)
+        adaptation_service_iteration_limit = int_value("adaptation_service_iteration_limit", 16, minimum=1)
+        force_request_body_continuation_rules_text = self._normalize_multiline_text(
+            options.get("force_request_body_continuation_rules_text") or ""
+        )
+        icap_retry_rules_text = self._normalize_multiline_text(options.get("icap_retry_rules_text") or "")
+        icap_retry_limit = int_value("icap_retry_limit", 0, minimum=0)
 
         forwarded_for_value_raw = str(options.get("forwarded_for_value") or "").strip()
         if forwarded_for_value_raw and forwarded_for_value_raw not in ("on", "off", "transparent", "delete", "truncate"):
@@ -435,6 +451,7 @@ class SquidController(_CoreSquidController):
 
         append_section(lines, "SMP mode", "Worker, helper, and TLS interception settings managed by the Admin UI.")
         lines.append(f"workers {workers}")
+        lines.append(f"hopeless_kid_revival_delay {hopeless_kid_revival_delay_seconds} seconds")
         lines.append(f"sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M {sslcrtd_program_cache_size_mb}MB")
         lines.append(
             f"sslcrtd_children {sslcrtd_children}"
@@ -469,6 +486,7 @@ class SquidController(_CoreSquidController):
         append_block(lines, "COLLAPSED_FORWARDING_ACCESS", collapsed_forwarding_access_rules_text)
         lines.append(f"range_offset_limit {range_offset_limit_value}")
         lines.append(f"cache_miss_revalidate {'on' if cache_miss_revalidate_on else 'off'}")
+        lines.append(f"reload_into_ims {'on' if reload_into_ims_on else 'off'}")
         lines.append(f"pipeline_prefetch {pipeline_prefetch_count}")
         lines.append(f"read_ahead_gap {read_ahead_gap_kb} KB")
         lines.append(f"quick_abort_min {quick_abort_min_kb} KB")
@@ -567,8 +585,11 @@ class SquidController(_CoreSquidController):
 
         append_section(lines, "ICAP adaptation", "The container still generates service endpoints dynamically; these directives control Squid-side ICAP behavior.")
         lines.append(f"icap_enable {'on' if icap_enable_on else 'off'}")
-        lines.append(f"icap_send_client_ip {'on' if icap_send_client_ip_on else 'off'}")
-        lines.append(f"icap_send_client_username {'on' if icap_send_client_username_on else 'off'}")
+        lines.append(f"icap_206_enable {'on' if icap_206_enable_on else 'off'}")
+        lines.append(f"adaptation_send_client_ip {'on' if icap_send_client_ip_on else 'off'}")
+        lines.append(f"adaptation_send_username {'on' if icap_send_client_username_on else 'off'}")
+        lines.append(f"icap_client_username_header {icap_client_username_header}")
+        lines.append(f"icap_client_username_encode {'on' if icap_client_username_encode_on else 'off'}")
         lines.append(f"icap_persistent_connections {'on' if icap_persistent_connections_on else 'off'}")
         lines.append(f"icap_preview_enable {'on' if icap_preview_enable_on else 'off'}")
         lines.append(f"icap_preview_size {icap_preview_size_kb} KB")
@@ -577,6 +598,10 @@ class SquidController(_CoreSquidController):
         lines.append(f"icap_service_revival_delay {icap_service_revival_delay_seconds} seconds")
         lines.append(f"icap_connect_timeout {icap_connect_timeout_seconds} seconds")
         lines.append(f"icap_io_timeout {icap_io_timeout_seconds} seconds")
+        lines.append(f"adaptation_service_iteration_limit {adaptation_service_iteration_limit}")
+        append_block(lines, "FORCE_REQUEST_BODY_CONTINUATION", force_request_body_continuation_rules_text)
+        append_block(lines, "ICAP_RETRY", icap_retry_rules_text)
+        lines.append(f"icap_retry_limit {icap_retry_limit}")
         lines.append("include /etc/squid/conf.d/20-icap.conf")
 
         append_section(lines, "Privacy and header handling", "Forwarding metadata, client anonymity, and parser tolerance.")
@@ -600,6 +625,10 @@ class SquidController(_CoreSquidController):
         lines.append(f"memory_pools {'on' if memory_pools_on else 'off'}")
         lines.append(f"memory_pools_limit {memory_pools_limit_value}")
         lines.append(f"shared_memory_locking {'on' if shared_memory_locking_on else 'off'}")
+        if high_response_time_warning_ms is not None:
+            lines.append(f"high_response_time_warning {high_response_time_warning_ms}")
+        if high_page_fault_warning is not None:
+            lines.append(f"high_page_fault_warning {high_page_fault_warning}")
         lines.append(f"max_open_disk_fds {max_open_disk_fds}")
         lines.append(f"store_avg_object_size {store_avg_object_size_kb} KB")
         lines.append(f"store_objects_per_bucket {store_objects_per_bucket}")
@@ -996,8 +1025,10 @@ class SquidController(_CoreSquidController):
             "minimum_expiry_time_seconds": find_time_seconds("minimum_expiry_time"),
             "max_stale_seconds": find_time_seconds("max_stale"),
             "refresh_all_ims": find_on_off("refresh_all_ims"),
+            "reload_into_ims": find_on_off("reload_into_ims"),
             "read_ahead_gap_kb": find_kb("read_ahead_gap"),
             "workers": find_int(r"^\s*workers\s+(\d+)\s*$"),
+            "hopeless_kid_revival_delay_seconds": find_time_seconds("hopeless_kid_revival_delay"),
             "cache_replacement_policy": find_str("cache_replacement_policy"),
             "memory_replacement_policy": find_str("memory_replacement_policy"),
             "cache_miss_revalidate": find_on_off("cache_miss_revalidate"),
@@ -1073,8 +1104,17 @@ class SquidController(_CoreSquidController):
             "sslproxy_cert_sign_rules_text": find_block_or_lines("SSLPROXY_CERT_SIGN", prefixes=("sslproxy_cert_sign ",)),
             "sslproxy_cert_adapt_rules_text": find_block_or_lines("SSLPROXY_CERT_ADAPT", prefixes=("sslproxy_cert_adapt ",)),
             "icap_enable": find_on_off("icap_enable"),
-            "icap_send_client_ip": find_on_off("icap_send_client_ip"),
-            "icap_send_client_username": find_on_off("icap_send_client_username"),
+            "icap_206_enable": find_on_off("icap_206_enable"),
+            "icap_send_client_ip": next(
+                (value for value in (find_on_off("adaptation_send_client_ip"), find_on_off("icap_send_client_ip")) if value is not None),
+                None,
+            ),
+            "icap_send_client_username": next(
+                (value for value in (find_on_off("adaptation_send_username"), find_on_off("icap_send_client_username")) if value is not None),
+                None,
+            ),
+            "icap_client_username_header": find_str("icap_client_username_header"),
+            "icap_client_username_encode": find_on_off("icap_client_username_encode"),
             "icap_persistent_connections": find_on_off("icap_persistent_connections"),
             "icap_preview_enable": find_on_off("icap_preview_enable"),
             "icap_preview_size_kb": find_size_kb("icap_preview_size"),
@@ -1084,6 +1124,13 @@ class SquidController(_CoreSquidController):
             "icap_service_failure_limit": icap_failure_settings.get("icap_service_failure_limit"),
             "icap_service_failure_limit_window_seconds": icap_failure_settings.get("icap_service_failure_limit_window_seconds"),
             "icap_service_revival_delay_seconds": find_time_seconds("icap_service_revival_delay"),
+            "adaptation_service_iteration_limit": find_int(r"^\s*adaptation_service_iteration_limit\s+(\d+)\s*$"),
+            "force_request_body_continuation_rules_text": find_block_or_lines(
+                "FORCE_REQUEST_BODY_CONTINUATION",
+                prefixes=("force_request_body_continuation ",),
+            ),
+            "icap_retry_rules_text": find_block_or_lines("ICAP_RETRY", prefixes=("icap_retry ",)),
+            "icap_retry_limit": find_int(r"^\s*icap_retry_limit\s+(\d+)\s*$"),
             "forwarded_for_value": find_str("forwarded_for"),
             "via": find_on_off("via"),
             "follow_x_forwarded_for_value": find_str("follow_x_forwarded_for"),
@@ -1101,6 +1148,8 @@ class SquidController(_CoreSquidController):
             "memory_pools": find_on_off("memory_pools"),
             "memory_pools_limit_mb": find_size_mb_or_none("memory_pools_limit"),
             "shared_memory_locking": find_on_off("shared_memory_locking"),
+            "high_response_time_warning_ms": find_int(r"^\s*high_response_time_warning\s+(\d+)\s*$"),
+            "high_page_fault_warning": find_int(r"^\s*high_page_fault_warning\s+(\d+)\s*$"),
             "max_open_disk_fds": find_int(r"^\s*max_open_disk_fds\s+(\d+)\s*$"),
             "tcp_recv_bufsize_kb": find_size_kb("tcp_recv_bufsize"),
             "store_avg_object_size_kb": find_size_kb("store_avg_object_size"),
@@ -1213,7 +1262,7 @@ class SquidController(_CoreSquidController):
         return lines
 
     def get_icap_lines(self, config_text: Optional[str] = None) -> list[str]:
-        return self._get_lines(config_text, ("icap_", "adaptation_"), include_icap_include=True)
+        return self._get_lines(config_text, ("icap_", "adaptation_", "force_request_body_continuation"), include_icap_include=True)
 
     def get_privacy_lines(self, config_text: Optional[str] = None) -> list[str]:
         return self._get_lines(config_text, ("forwarded_for", "via", "follow_x_forwarded_for", "client_netmask", "strip_query_terms"))
@@ -1237,9 +1286,12 @@ class SquidController(_CoreSquidController):
             config_text,
             (
                 "workers",
+                "hopeless_kid_revival_delay",
                 "memory_pools",
                 "memory_pools_limit",
                 "shared_memory_locking",
+                "high_response_time_warning",
+                "high_page_fault_warning",
                 "max_open_disk_fds",
                 "store_avg_object_size",
                 "store_objects_per_bucket",
@@ -1328,6 +1380,7 @@ class SquidController(_CoreSquidController):
                 "quick_abort_max",
                 "quick_abort_pct",
                 "read_ahead_gap",
+                "reload_into_ims",
                 "cache ",
                 "send_hit",
                 "store_miss",

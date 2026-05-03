@@ -150,29 +150,42 @@ def test_repo_template_includes_cache_first_defaults():
 
     assert "# BEGIN SQUID-UI MANAGED SETTINGS" in text
     assert "# END SQUID-UI MANAGED SETTINGS" in text
+    assert "hopeless_kid_revival_delay 3600 seconds" in text
     assert "cache_dir rock /var/spool/squid 10000 slot-size=32768" in text
     assert "store_dir_select_algorithm least-load" in text
     assert "cache_mem 256 MB" in text
     assert "memory_cache_mode always" in text
     assert "memory_cache_shared on" in text
-    assert "shared_transient_entries_limit 32768" in text
+    assert "shared_transient_entries_limit 16384" in text
     assert "cache_replacement_policy heap GDSF" in text
     assert "memory_replacement_policy heap GDSF" in text
     assert "cache_miss_revalidate on" in text
+    assert "reload_into_ims off" in text
     assert "client_idle_pconn_timeout 120 seconds" in text
-    assert "server_idle_pconn_timeout 120 seconds" in text
-    assert "client_lifetime 3600 seconds" in text
-    assert "pipeline_prefetch 1" in text
-    assert "quick_abort_min 0 KB" in text
-    assert "quick_abort_max 0 KB" in text
-    assert "quick_abort_pct 100" in text
+    assert "server_idle_pconn_timeout 60 seconds" in text
+    assert "client_lifetime 86400 seconds" in text
+    assert "pipeline_prefetch 0" in text
+    assert "quick_abort_min 16 KB" in text
+    assert "quick_abort_max 16 KB" in text
+    assert "quick_abort_pct 95" in text
+    assert "dns_packet_max 1232" in text
     assert "positive_dns_ttl 21600 seconds" in text
     assert "tls_outgoing_options min-version=1.2 options=NO_SSLv3" in text
     assert "request_header_max_size 64 KB" in text
     assert "client_db on" in text
+    assert "buffered_logs off" in text
+    assert "icap_206_enable on" in text
+    assert "adaptation_send_client_ip on" in text
+    assert "adaptation_send_username off" in text
+    assert "icap_client_username_header X-Client-Username" in text
+    assert "icap_client_username_encode off" in text
     assert "icap_preview_enable on" in text
     assert "sslproxy_session_ttl 600 seconds" in text
     assert "icap_service_failure_limit 10 in 30 seconds" in text
+    assert "adaptation_service_iteration_limit 16" in text
+    assert "icap_retry_limit 0" in text
+    assert "store_avg_object_size 13 KB" in text
+    assert "store_objects_per_bucket 20" in text
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
 
 
@@ -218,6 +231,8 @@ memory_cache_mode disk
 memory_cache_shared off
 shared_transient_entries_limit 65536
 cache_miss_revalidate off
+reload_into_ims on
+hopeless_kid_revival_delay 7200 seconds
 server_idle_pconn_timeout 150 seconds
 client_idle_pconn_timeout 75 seconds
 connect_retries 2
@@ -230,10 +245,21 @@ http_port 0.0.0.0:3128 ssl-bump dynamic_cert_mem_cache_size=256MB
 dns_packet_max 1232
 sslproxy_session_ttl 900
 sslproxy_session_cache_size 16 MB
+high_response_time_warning 2500
+high_page_fault_warning 100
+icap_206_enable off
+adaptation_send_client_ip off
+adaptation_send_username on
+icap_client_username_header X-Auth-User
+icap_client_username_encode on
 icap_persistent_connections off
 icap_default_options_ttl 120
 icap_service_failure_limit 5 in 45 seconds
 icap_service_revival_delay 90 seconds
+adaptation_service_iteration_limit 8
+force_request_body_continuation allow all
+icap_retry allow all
+icap_retry_limit 2
 shared_memory_locking on
 cpu_affinity_map process_numbers=1,2 cores=1,3
 max_open_disk_fds 512
@@ -248,6 +274,8 @@ max_open_disk_fds 512
     assert options["memory_cache_shared"] is False
     assert options["shared_transient_entries_limit"] == 65536
     assert options["cache_miss_revalidate"] is False
+    assert options["reload_into_ims"] is True
+    assert options["hopeless_kid_revival_delay_seconds"] == 7200
     assert options["server_idle_pconn_timeout_seconds"] == 150
     assert options["client_idle_pconn_timeout_seconds"] == 75
     assert options["connect_retries"] == 2
@@ -263,11 +291,22 @@ max_open_disk_fds 512
     assert options["dns_packet_max"] == 1232
     assert options["sslproxy_session_ttl_seconds"] == 900
     assert options["sslproxy_session_cache_size_mb"] == 16
+    assert options["high_response_time_warning_ms"] == 2500
+    assert options["high_page_fault_warning"] == 100
+    assert options["icap_206_enable"] is False
+    assert options["icap_send_client_ip"] is False
+    assert options["icap_send_client_username"] is True
+    assert options["icap_client_username_header"] == "X-Auth-User"
+    assert options["icap_client_username_encode"] is True
     assert options["icap_persistent_connections"] is False
     assert options["icap_default_options_ttl_seconds"] == 120
     assert options["icap_service_failure_limit"] == 5
     assert options["icap_service_failure_limit_window_seconds"] == 45
     assert options["icap_service_revival_delay_seconds"] == 90
+    assert options["adaptation_service_iteration_limit"] == 8
+    assert options["force_request_body_continuation_rules_text"] == "force_request_body_continuation allow all"
+    assert options["icap_retry_rules_text"] == "icap_retry allow all"
+    assert options["icap_retry_limit"] == 2
     assert options["shared_memory_locking"] is True
     assert options["cpu_affinity_map"] == "process_numbers=1,2 cores=1,3"
     assert options["max_open_disk_fds"] == 512
@@ -293,6 +332,8 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
             "memory_cache_mode": "disk",
             "memory_cache_shared_on": False,
             "shared_transient_entries_limit": 65536,
+            "reload_into_ims_on": True,
+            "hopeless_kid_revival_delay_seconds": 7200,
             "server_idle_pconn_timeout_seconds": 150,
             "client_idle_pconn_timeout_seconds": 75,
             "connect_retries": 2,
@@ -308,11 +349,22 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
             "dns_packet_max": "none",
             "sslproxy_session_ttl_seconds": 900,
             "sslproxy_session_cache_size_mb": 16,
+            "high_response_time_warning_ms": 2500,
+            "high_page_fault_warning": 100,
+            "icap_206_enable_on": False,
+            "icap_send_client_ip_on": False,
+            "icap_send_client_username_on": True,
+            "icap_client_username_header": "X-Auth-User",
+            "icap_client_username_encode_on": True,
             "icap_persistent_connections_on": False,
             "icap_default_options_ttl_seconds": 120,
             "icap_service_failure_limit": 5,
             "icap_service_failure_limit_window_seconds": 45,
             "icap_service_revival_delay_seconds": 90,
+            "adaptation_service_iteration_limit": 8,
+            "force_request_body_continuation_rules_text": "force_request_body_continuation allow all",
+            "icap_retry_rules_text": "icap_retry allow all",
+            "icap_retry_limit": 2,
             "memory_pools_limit_mb": "none",
             "shared_memory_locking_on": True,
             "cpu_affinity_map": "process_numbers=1,2 cores=1,3",
@@ -328,6 +380,8 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
     assert "memory_cache_mode disk" in rendered
     assert "memory_cache_shared off" in rendered
     assert "shared_transient_entries_limit 65536" in rendered
+    assert "reload_into_ims on" in rendered
+    assert "hopeless_kid_revival_delay 7200 seconds" in rendered
     assert "server_idle_pconn_timeout 150 seconds" in rendered
     assert "client_idle_pconn_timeout 75 seconds" in rendered
     assert "connect_retries 2" in rendered
@@ -340,10 +394,21 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
     assert "dns_packet_max none" in rendered
     assert "sslproxy_session_ttl 900 seconds" in rendered
     assert "sslproxy_session_cache_size 16 MB" in rendered
+    assert "high_response_time_warning 2500" in rendered
+    assert "high_page_fault_warning 100" in rendered
+    assert "icap_206_enable off" in rendered
+    assert "adaptation_send_client_ip off" in rendered
+    assert "adaptation_send_username on" in rendered
+    assert "icap_client_username_header X-Auth-User" in rendered
+    assert "icap_client_username_encode on" in rendered
     assert "icap_persistent_connections off" in rendered
     assert "icap_default_options_ttl 120" in rendered
     assert "icap_service_failure_limit 5 in 45 seconds" in rendered
     assert "icap_service_revival_delay 90 seconds" in rendered
+    assert "adaptation_service_iteration_limit 8" in rendered
+    assert "force_request_body_continuation allow all" in rendered
+    assert "icap_retry allow all" in rendered
+    assert "icap_retry_limit 2" in rendered
     assert "memory_pools_limit none" in rendered
     assert "shared_memory_locking on" in rendered
     assert "cpu_affinity_map process_numbers=1,2 cores=1,3" in rendered

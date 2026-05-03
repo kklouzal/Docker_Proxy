@@ -41,13 +41,23 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["cache_mem_mb"] == 256
     assert options["maximum_object_size_mb"] == 128
     assert options["memory_cache_mode"] == "always"
-    assert options["shared_transient_entries_limit"] == 32768
+    assert options["shared_transient_entries_limit"] == 16384
     assert options["cache_miss_revalidate_on"] is True
-    assert options["buffered_logs_on"] is True
+    assert options["reload_into_ims_on"] is False
+    assert options["pipeline_prefetch_on"] is False
+    assert options["read_ahead_gap_kb"] == 16
+    assert options["quick_abort_min_kb"] == 16
+    assert options["quick_abort_max_kb"] == 16
+    assert options["quick_abort_pct"] == 95
+    assert options["buffered_logs_on"] is False
     assert options["icap_preview_enable_on"] is True
+    assert options["icap_206_enable_on"] is True
     assert options["icap_default_options_ttl_seconds"] == 300
-    assert options["dns_packet_max"] is None
-    assert options["dns_timeout_seconds"] == 15
+    assert options["icap_client_username_header"] == "X-Client-Username"
+    assert options["icap_client_username_encode_on"] is False
+    assert options["adaptation_service_iteration_limit"] == 16
+    assert options["dns_packet_max"] == 1232
+    assert options["dns_timeout_seconds"] == 30
     assert options["positive_dns_ttl_seconds"] == 21600
     assert options["sslcrtd_children"] == 4
     assert options["dynamic_cert_mem_cache_size_mb"] == 128
@@ -60,7 +70,10 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["request_header_max_size_kb"] == 64
     assert options["reply_header_max_size_kb"] == 64
     assert options["memory_pools_limit_mb"] == 64
+    assert options["hopeless_kid_revival_delay_seconds"] == 3600
     assert options["max_open_disk_fds"] == 0
+    assert options["store_avg_object_size_kb"] == 13
+    assert options["store_objects_per_bucket"] == 20
     assert options["client_db_on"] is True
 
 
@@ -74,6 +87,15 @@ def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic()
     assert field_map["pipeline_prefetch_count"].depends_on == ("pipeline_prefetch_on",)
     assert field_map["allow_underscore_on"].depends_on == ("check_hostnames_on",)
     assert field_map["memory_pools_limit_mb"].depends_on == ("memory_pools_on",)
+    assert field_map["icap_206_enable_on"].depends_on == ("icap_enable_on",)
+    assert field_map["icap_send_client_ip_on"].depends_on == ("icap_enable_on",)
+    assert field_map["icap_send_client_username_on"].depends_on == ("icap_enable_on",)
+    assert field_map["icap_persistent_connections_on"].depends_on == ("icap_enable_on",)
+    assert field_map["icap_preview_enable_on"].depends_on == ("icap_enable_on",)
+    assert field_map["icap_client_username_header"].depends_on == ("icap_enable_on", "icap_send_client_username_on")
+    assert field_map["icap_client_username_encode_on"].depends_on == ("icap_enable_on", "icap_send_client_username_on")
+    assert field_map["force_request_body_continuation_rules_text"].placeholder == "force_request_body_continuation allow all"
+    assert field_map["icap_retry_rules_text"].placeholder == "icap_retry allow all"
 
 
 def test_build_template_options_from_form_updates_only_requested_fields():
@@ -146,6 +168,46 @@ def test_build_template_options_from_form_updates_tls_and_disk_fd_tuning_fields(
     assert ssl_options["sslproxy_session_ttl_seconds"] == 900
     assert ssl_options["sslproxy_session_cache_size_mb"] == 16
     assert perf_options["max_open_disk_fds"] == 512
+
+
+def test_build_template_options_from_form_supports_new_icap_and_guardrail_controls():
+    icap_options = build_template_options_from_form(
+        {},
+        {
+            "icap_206_enable_on": "on",
+            "icap_send_client_username_on": "on",
+            "icap_client_username_header": "X-Auth-User",
+            "icap_client_username_encode_on": "on",
+            "adaptation_service_iteration_limit": "8",
+            "force_request_body_continuation_rules_text": "force_request_body_continuation allow all\n",
+            "icap_retry_rules_text": "icap_retry allow all\n",
+            "icap_retry_limit": "2",
+        },
+        form_kind="icap",
+        max_workers=4,
+    )
+    perf_options = build_template_options_from_form(
+        {},
+        {
+            "hopeless_kid_revival_delay_seconds": "7200",
+            "high_response_time_warning_ms": "2500",
+            "high_page_fault_warning": "100",
+        },
+        form_kind="performance",
+        max_workers=4,
+    )
+
+    assert icap_options["icap_206_enable_on"] is True
+    assert icap_options["icap_send_client_username_on"] is True
+    assert icap_options["icap_client_username_header"] == "X-Auth-User"
+    assert icap_options["icap_client_username_encode_on"] is True
+    assert icap_options["adaptation_service_iteration_limit"] == 8
+    assert icap_options["force_request_body_continuation_rules_text"] == "force_request_body_continuation allow all"
+    assert icap_options["icap_retry_rules_text"] == "icap_retry allow all"
+    assert icap_options["icap_retry_limit"] == 2
+    assert perf_options["hopeless_kid_revival_delay_seconds"] == 7200
+    assert perf_options["high_response_time_warning_ms"] == 2500
+    assert perf_options["high_page_fault_warning"] == 100
 
 
 def test_build_template_options_from_form_supports_new_cache_store_and_memory_pool_controls():

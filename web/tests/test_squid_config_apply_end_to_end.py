@@ -140,6 +140,36 @@ def test_apply_safe_ssl_and_performance_fields_flow_into_template_options(tmp_pa
     assert controller.last_generated_options["cpu_affinity_map"] == "process_numbers=1,2 cores=1,3"
     assert controller.last_generated_options["max_open_disk_fds"] == 512
 
+    controller.last_generated_options = None
+    r3 = c.post(
+        "/squid/config/apply-safe",
+        data={
+            "form_kind": "icap",
+            "icap_enable_on": "on",
+            "icap_206_enable_on": "on",
+            "icap_send_client_username_on": "on",
+            "icap_client_username_header": "X-Auth-User",
+            "icap_client_username_encode_on": "on",
+            "adaptation_service_iteration_limit": "8",
+            "force_request_body_continuation_rules_text": "force_request_body_continuation allow all\n",
+            "icap_retry_rules_text": "icap_retry allow all\n",
+            "icap_retry_limit": "2",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+    assert r3.status_code in (301, 302, 303, 307, 308)
+    assert controller.last_generated_options is not None
+    assert controller.last_generated_options["icap_enable_on"] is True
+    assert controller.last_generated_options["icap_206_enable_on"] is True
+    assert controller.last_generated_options["icap_send_client_username_on"] is True
+    assert controller.last_generated_options["icap_client_username_header"] == "X-Auth-User"
+    assert controller.last_generated_options["icap_client_username_encode_on"] is True
+    assert controller.last_generated_options["adaptation_service_iteration_limit"] == 8
+    assert controller.last_generated_options["force_request_body_continuation_rules_text"] == "force_request_body_continuation allow all"
+    assert controller.last_generated_options["icap_retry_rules_text"] == "icap_retry allow all"
+    assert controller.last_generated_options["icap_retry_limit"] == 2
+
 
 def test_apply_safe_error_redirects(tmp_path):
     app_module = import_isolated_app_module(tmp_path)

@@ -13,6 +13,7 @@ http_access deny manager
 # SMP mode
 # Worker, helper, and TLS interception settings managed by the Admin UI.
 workers 1
+hopeless_kid_revival_delay 3600 seconds
 sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 16MB
 sslcrtd_children 4 startup=2 idle=1 queue-size=32
 acl step1 at_step SslBump1
@@ -35,7 +36,7 @@ minimum_object_size 0 KB
 cache_mem 256 MB
 memory_cache_mode always
 memory_cache_shared on
-shared_transient_entries_limit 32768
+shared_transient_entries_limit 16384
 cache_replacement_policy heap GDSF
 memory_replacement_policy heap GDSF
 cache_swap_low 90
@@ -45,11 +46,12 @@ collapsed_forwarding on
 # END SQUID-UI BLOCK: COLLAPSED_FORWARDING_ACCESS
 range_offset_limit 128 MB
 cache_miss_revalidate on
-pipeline_prefetch 1
-read_ahead_gap 256 KB
-quick_abort_min 0 KB
-quick_abort_max 0 KB
-quick_abort_pct 100
+reload_into_ims off
+pipeline_prefetch 0
+read_ahead_gap 16 KB
+quick_abort_min 16 KB
+quick_abort_max 16 KB
+quick_abort_pct 95
 negative_ttl 0 seconds
 minimum_expiry_time 60 seconds
 max_stale 604800 seconds
@@ -93,17 +95,17 @@ refresh_pattern . 0 20% 4320
 client_persistent_connections on
 server_persistent_connections on
 client_idle_pconn_timeout 120 seconds
-server_idle_pconn_timeout 120 seconds
+server_idle_pconn_timeout 60 seconds
 pconn_lifetime 0 seconds
 persistent_connection_after_error on
 detect_broken_pconn off
 half_closed_clients off
 # BEGIN SQUID-UI BLOCK: SERVER_PCONN_FOR_NONRETRIABLE
 # END SQUID-UI BLOCK: SERVER_PCONN_FOR_NONRETRIABLE
-connect_retries 1
-forward_max_tries 10
+connect_retries 0
+forward_max_tries 25
 retry_on_error off
-client_lifetime 3600 seconds
+client_lifetime 86400 seconds
 client_dst_passthru on
 host_verify_strict off
 on_unsupported_protocol respond all
@@ -111,19 +113,20 @@ happy_eyeballs_connect_timeout 250 ms
 
 # Timeouts
 # Request, forwarding, and shutdown timers.
-connect_timeout 90 seconds
+connect_timeout 60 seconds
 peer_connect_timeout 30 seconds
-request_timeout 1800 seconds
-read_timeout 1800 seconds
-forward_timeout 1800 seconds
-request_start_timeout 60 seconds
+request_timeout 300 seconds
+read_timeout 900 seconds
+forward_timeout 240 seconds
+request_start_timeout 300 seconds
 write_timeout 900 seconds
 shutdown_lifetime 30 seconds
 
 # Resolver and DNS cache tuning
 # Resolver source selection, hostname validation, and DNS cache sizing.
-dns_timeout 15 seconds
+dns_timeout 30 seconds
 dns_retransmit_interval 5 seconds
+dns_packet_max 1232
 hosts_file /etc/hosts
 dns_defnames off
 dns_multicast_local off
@@ -154,7 +157,7 @@ ssl_unclean_shutdown off
 # Logging
 # Rotation, MIME/header logging, and optional low-level diagnostics.
 logfile_rotate 10
-buffered_logs on
+buffered_logs off
 log_mime_hdrs off
 # BEGIN SQUID-UI BLOCK: STATS_COLLECTION
 # END SQUID-UI BLOCK: STATS_COLLECTION
@@ -162,8 +165,11 @@ log_mime_hdrs off
 # ICAP adaptation
 # The container still generates service endpoints dynamically; these directives control Squid-side ICAP behavior.
 icap_enable on
-icap_send_client_ip on
-icap_send_client_username off
+icap_206_enable on
+adaptation_send_client_ip on
+adaptation_send_username off
+icap_client_username_header X-Client-Username
+icap_client_username_encode off
 icap_persistent_connections on
 icap_preview_enable on
 icap_preview_size 1024 KB
@@ -172,6 +178,12 @@ icap_service_failure_limit 10 in 30 seconds
 icap_service_revival_delay 60 seconds
 icap_connect_timeout 15 seconds
 icap_io_timeout 300 seconds
+adaptation_service_iteration_limit 16
+# BEGIN SQUID-UI BLOCK: FORCE_REQUEST_BODY_CONTINUATION
+# END SQUID-UI BLOCK: FORCE_REQUEST_BODY_CONTINUATION
+# BEGIN SQUID-UI BLOCK: ICAP_RETRY
+# END SQUID-UI BLOCK: ICAP_RETRY
+icap_retry_limit 0
 include /etc/squid/conf.d/20-icap.conf
 
 # Privacy and header handling
@@ -193,8 +205,8 @@ memory_pools on
 memory_pools_limit 64 MB
 shared_memory_locking off
 max_open_disk_fds 0
-store_avg_object_size 32 KB
-store_objects_per_bucket 16
+store_avg_object_size 13 KB
+store_objects_per_bucket 20
 client_db on
 offline_mode off
 paranoid_hit_validation 0
