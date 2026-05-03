@@ -65,6 +65,69 @@ build instead, override the build arg when building:
 docker compose build --build-arg ALPINE_VERSION=3.23.4
 ```
 
+## Live stack tests
+
+The repository now includes a compose-based live test harness that keeps the
+runtime containers production-like and executes pytest from a separate
+`live-tests` container against the real stack.
+
+What it does:
+- starts an ephemeral `mysql-test` service
+- starts a tiny `traffic-fixture` upstream service used to generate real proxied requests
+- runs the normal `admin-ui` plus two real `proxy` containers against that database so split-mode and remote-scope flows exercise actual container-to-container targeting
+- enables `ENABLE_TEST_MODE=1` for the runtime containers so background
+  heartbeat/sync loops converge faster when you did not explicitly set custom
+  cadence values
+- pins the live harness to a local loopback ClamAV target and uses a core-stack
+  proxy health check so the initial smoke suite stays self-contained even when
+  you do not have an external `clamd` backend available
+- gives the second proxy distinct ClamAV/c-icap endpoint settings so the admin
+  UI can prove it is rendering and targeting the selected remote proxy instead
+  of a local stand-in
+- runs the live pytest suites from a dedicated test-runner container over the
+  real Docker network
+
+Run the live smoke suite:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.live-tests.yml up --build --abort-on-container-exit --exit-code-from live-tests live-tests
+```
+
+Tear the live stack down afterward:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.live-tests.yml down -v
+```
+
+The initial smoke suite validates the real admin login flow, health endpoints,
+proxy management API, forced sync path, and PAC serving. This is intentionally
+implemented as a separate runner container rather than embedding pytest into the
+production containers themselves. AV/ClamAV verification remains a follow-up
+expansion once the live harness provisions a dedicated scan backend.
+
+The live harness now also covers broader real workflows that previously relied
+on in-process fakes, including:
+- authenticated admin shell/page rendering
+- live Squid config download + validate/apply flows
+- PAC profile create/update/delete with rendered PAC verification
+- exclusions apply/remove flows with PAC refresh verification
+- user-management add/change/delete flows
+- live proxy management API auth, sync, cache-clear, and current AV failure reporting
+- real proxied request generation through the live HTTP proxy with observability,
+  cache-reason, performance, and monitoring-page assertions driven by the
+  resulting in-container telemetry
+
+Live-run guardrails:
+- the dedicated `live-tests` runner now executes pytest in verbose mode so you
+  can see ongoing progress instead of a long silent wait
+- each live test is capped by `pytest-timeout` (default `180` seconds, override
+  with `LIVE_TEST_PYTEST_TIMEOUT_SECONDS`) so a blocked request cannot hang the
+  suite indefinitely
+- split-mode proxy inventory, proxy-scoped navigation, remote PAC pinning,
+  and selected-proxy page notices backed by two real proxy containers
+- selected-proxy control-plane actions such as remote config reads, scoped reload,
+  remote ClamAV health rendering, and shared certificate apply propagation
+
 Admin UI:
 - http://localhost:5000
 
@@ -294,6 +357,7 @@ Common environment variables:
 - `ULIMIT_NOFILE`: optional file-descriptor limit for high concurrency.
 - `WEBFILTER_HELPERS`: explicit Squid external ACL helper count for web filtering. Leave blank to derive from Squid workers (default `2 × workers`).
 - `DB_POOL_SIZE`: per-process idle MySQL connection cache size (default now scales with local container concurrency; expect roughly `4-8` in the proxy container unless you override it).
+- `ENABLE_TEST_MODE=1|0`: optional test-friendly mode for dedicated live-stack test deployments. When enabled, the proxy shortens default heartbeat/sync intervals if you did not already set explicit cadence variables. It does not run tests automatically inside the runtime containers.
 - `PROXY_HEARTBEAT_INTERVAL_SECONDS`: proxy heartbeat cadence (default `90`).
 - `PROXY_SYNC_INTERVAL_SECONDS`: proxy sync cadence for pulling active state from MySQL (default `30`).
 - `PROXY_PUBLIC_HOST`: authoritative host/IP clients should use for this proxy's PAC URL and proxy chain.

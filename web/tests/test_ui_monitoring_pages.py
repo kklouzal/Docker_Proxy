@@ -1,4 +1,9 @@
+import pytest
+
 from .flask_test_helpers import login, redirect_query_params
+
+
+pytestmark = pytest.mark.legacy_simulated
 
 
 def test_index_post_actions_work(app_module):

@@ -11,6 +11,13 @@ case "$(printf '%s' "${DISABLE_IPV6:-0}" | tr 'A-Z' 'a-z')" in
         ;;
 esac
 
+TEST_MODE_ENABLED=0
+case "$(printf '%s' "${ENABLE_TEST_MODE:-0}" | tr 'A-Z' 'a-z')" in
+    1|true|yes|on)
+        TEST_MODE_ENABLED=1
+        ;;
+esac
+
 LOCALHOST_SRC_ACL="127.0.0.1/32 ::1"
 if [ "$IPV6_DISABLED" = "1" ]; then
     LOCALHOST_SRC_ACL="127.0.0.1/32"
@@ -129,6 +136,14 @@ if [ -z "${SSL_ERRORS_POLL_INTERVAL_SECONDS:-}" ]; then
 fi
 if [ -z "${STATS_CACHE_DIR_SIZE_TTL_SECONDS:-}" ]; then
     export STATS_CACHE_DIR_SIZE_TTL_SECONDS=300
+fi
+if [ "$TEST_MODE_ENABLED" = "1" ]; then
+    if [ -z "${PROXY_HEARTBEAT_INTERVAL_SECONDS:-}" ]; then
+        export PROXY_HEARTBEAT_INTERVAL_SECONDS=5
+    fi
+    if [ -z "${PROXY_SYNC_INTERVAL_SECONDS:-}" ]; then
+        export PROXY_SYNC_INTERVAL_SECONDS=5
+    fi
 fi
 
 replace_or_append_config_line() {

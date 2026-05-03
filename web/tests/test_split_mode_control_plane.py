@@ -3,8 +3,13 @@ from __future__ import annotations
 import os
 import unittest
 
+import pytest
+
 from .flask_test_helpers import login
 from .split_mode_test_helpers import FakeProxyClient, import_remote_app_module
+
+
+pytestmark = pytest.mark.legacy_simulated
 
 
 class TestSplitModeControlPlane(unittest.TestCase):

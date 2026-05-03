@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from .flask_test_helpers import import_local_app_module, login
+
+
+pytestmark = pytest.mark.legacy_simulated
 
 
 def _install_queries(app_module, fake_queries) -> None:

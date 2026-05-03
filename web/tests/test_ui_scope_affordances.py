@@ -9,6 +9,9 @@ from .route_test_support import install_common_ui_test_doubles
 from .split_mode_test_helpers import FakeProxyClient, import_remote_app_module
 
 
+pytestmark = pytest.mark.legacy_simulated
+
+
 @pytest.fixture()
 def remote_app_module(monkeypatch):
     app_module = import_remote_app_module(

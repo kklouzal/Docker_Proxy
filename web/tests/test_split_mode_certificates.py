@@ -4,8 +4,13 @@ import io
 import os
 import unittest
 
+import pytest
+
 from .flask_test_helpers import login, redirect_query_params
 from .split_mode_test_helpers import FakeProxyClient, import_remote_app_module
+
+
+pytestmark = pytest.mark.legacy_simulated
 
 
 CERT_PEM = "-----BEGIN CERTIFICATE-----\nMIIFREMOTE\n-----END CERTIFICATE-----\n"

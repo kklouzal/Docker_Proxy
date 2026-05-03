@@ -1,0 +1,209 @@
+services:
+  mysql-test:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${LIVE_TEST_MYSQL_ROOT_PASSWORD:-squid-live-tests}
+      MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p"$$MYSQL_ROOT_PASSWORD" --silent
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - control
+
+  traffic-fixture:
+    image: python:3.12-slim
+    working_dir: /workspace
+    command:
+      - python
+      - /workspace/web/tests/live_fixture_server.py
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - .:/workspace:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      - control
+
+  admin-ui:
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      proxy:
+        condition: service_healthy
+      proxy-edge-2:
+        condition: service_healthy
+    environment:
+      ENABLE_TEST_MODE: "1"
+      DEFAULT_PROXY_ID: ${LIVE_TEST_PROXY_ID:-live}
+      PROXY_MANAGEMENT_TOKEN: ${LIVE_TEST_PROXY_MANAGEMENT_TOKEN:-live-tests-token}
+      MYSQL_HOST: mysql-test
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${LIVE_TEST_MYSQL_ROOT_PASSWORD:-squid-live-tests}
+      MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}
+      MYSQL_CREATE_DATABASE: "1"
+
+  proxy:
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+    environment:
+      ENABLE_TEST_MODE: "1"
+      DEFAULT_PROXY_ID: ${LIVE_TEST_PROXY_ID:-live}
+      PROXY_INSTANCE_ID: ${LIVE_TEST_PROXY_ID:-live}
+      PROXY_DISPLAY_NAME: ${LIVE_TEST_PROXY_DISPLAY_NAME:-Live Test Proxy}
+      PROXY_MANAGEMENT_TOKEN: ${LIVE_TEST_PROXY_MANAGEMENT_TOKEN:-live-tests-token}
+      PROXY_PUBLIC_HOST: ${LIVE_TEST_PROXY_PUBLIC_HOST:-proxy}
+      PROXY_PUBLIC_PAC_URL: ${LIVE_TEST_PROXY_PUBLIC_PAC_URL:-http://proxy/proxy.pac}
+      CLAMD_HOST: 127.0.0.1
+      CLAMD_PORT: "3310"
+      MYSQL_HOST: mysql-test
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${LIVE_TEST_MYSQL_ROOT_PASSWORD:-squid-live-tests}
+      MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}
+      MYSQL_CREATE_DATABASE: "1"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - squid -k check >/dev/null 2>&1 && python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  proxy-edge-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+    shm_size: ${PROXY_SHM_SIZE:-96m}
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
+      net.ipv6.conf.lo.disable_ipv6: ${DISABLE_IPV6:-1}
+    volumes:
+      - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - ./squid/ssl/certs:/etc/squid/ssl/certs
+      - squid_ssl_db_edge_2:/var/lib/ssl_db
+      - squid_cache_edge_2:/var/spool/squid
+      - proxy_data_edge_2:/var/lib/squid-flask-proxy
+    environment:
+      ENABLE_TEST_MODE: "1"
+      DEFAULT_PROXY_ID: ${LIVE_TEST_REMOTE_PROXY_ID:-edge-2}
+      PROXY_INSTANCE_ID: ${LIVE_TEST_REMOTE_PROXY_ID:-edge-2}
+      PROXY_DISPLAY_NAME: ${LIVE_TEST_REMOTE_PROXY_DISPLAY_NAME:-Edge 2}
+      PROXY_MANAGEMENT_TOKEN: ${LIVE_TEST_PROXY_MANAGEMENT_TOKEN:-live-tests-token}
+      PROXY_MANAGEMENT_URL: ${LIVE_TEST_REMOTE_PROXY_MANAGEMENT_URL:-http://proxy-edge-2:5000}
+      PROXY_PUBLIC_HOST: ${LIVE_TEST_REMOTE_PROXY_PUBLIC_HOST:-proxy-edge-2}
+      PROXY_PUBLIC_PAC_URL: ${LIVE_TEST_REMOTE_PAC_URL:-http://proxy-edge-2/proxy.pac}
+      PROXY_PUBLIC_PAC_SCHEME: "http"
+      PROXY_PUBLIC_PAC_PORT: "80"
+      PROXY_PUBLIC_HTTP_PROXY_PORT: "3128"
+      DISABLE_IPV6: ${DISABLE_IPV6:-1}
+      CICAP_PORT: ${LIVE_TEST_REMOTE_CICAP_PORT:-14000}
+      CICAP_AV_PORT: ${LIVE_TEST_REMOTE_CICAP_AV_PORT:-24001}
+      CLAMD_HOST: ${LIVE_TEST_REMOTE_CLAMD_HOST:-clamav.edge-2.internal}
+      CLAMD_PORT: ${LIVE_TEST_REMOTE_CLAMD_PORT:-3311}
+      MYSQL_HOST: mysql-test
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${LIVE_TEST_MYSQL_ROOT_PASSWORD:-squid-live-tests}
+      MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}
+      MYSQL_CREATE_DATABASE: "1"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - squid -k check >/dev/null 2>&1 && python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - control
+
+  live-tests:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test-runner
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      admin-ui:
+        condition: service_healthy
+      proxy:
+        condition: service_healthy
+      proxy-edge-2:
+        condition: service_healthy
+      traffic-fixture:
+        condition: service_healthy
+    environment:
+      LIVE_TEST_ENABLE: "1"
+      LIVE_TEST_PRIMARY_PROXY_ID: ${LIVE_TEST_PROXY_ID:-live}
+      LIVE_TEST_REMOTE_PROXY_ID: ${LIVE_TEST_REMOTE_PROXY_ID:-edge-2}
+      LIVE_TEST_ADMIN_URL: http://admin-ui:5000
+      LIVE_TEST_PROXY_MANAGEMENT_URL: http://proxy:5000
+      LIVE_TEST_REMOTE_PROXY_MANAGEMENT_URL: ${LIVE_TEST_REMOTE_PROXY_MANAGEMENT_URL:-http://proxy-edge-2:5000}
+      LIVE_TEST_HTTP_PROXY_URL: http://proxy:3128
+      LIVE_TEST_TRAFFIC_FIXTURE_URL: http://traffic-fixture:8080
+      LIVE_TEST_PAC_URL: http://proxy/proxy.pac
+      LIVE_TEST_REMOTE_PAC_URL: ${LIVE_TEST_REMOTE_PAC_URL:-http://proxy-edge-2/proxy.pac}
+      LIVE_TEST_PROXY_TOKEN: ${LIVE_TEST_PROXY_MANAGEMENT_TOKEN:-live-tests-token}
+      LIVE_TEST_USERNAME: ${LIVE_TEST_USERNAME:-admin}
+      LIVE_TEST_PASSWORD: ${LIVE_TEST_PASSWORD:-admin}
+      LIVE_TEST_WAIT_TIMEOUT_SECONDS: ${LIVE_TEST_WAIT_TIMEOUT_SECONDS:-180}
+      LIVE_TEST_PYTEST_TIMEOUT_SECONDS: ${LIVE_TEST_PYTEST_TIMEOUT_SECONDS:-180}
+      MYSQL_HOST: mysql-test
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${LIVE_TEST_MYSQL_ROOT_PASSWORD:-squid-live-tests}
+      MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}
+      MYSQL_CREATE_DATABASE: "1"
+      PYTHONPATH: /workspace:/workspace/web
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+    working_dir: /workspace
+    command:
+      - sh
+      - -lc
+      - >-
+        python -m pytest -m live -p no:cacheprovider
+        --timeout=${LIVE_TEST_PYTEST_TIMEOUT_SECONDS:-180}
+        --timeout-method=signal
+        --durations=10
+        -ra -vv
+        web/tests/test_live_stack_smoke.py
+        web/tests/test_live_admin_ui_shell_pages.py
+        web/tests/test_live_admin_config_routes.py
+        web/tests/test_live_admin_policy_workflows.py
+        web/tests/test_live_proxy_management_api.py
+        web/tests/test_live_observability_pages.py
+        web/tests/test_live_monitoring_routes.py
+        web/tests/test_live_multi_proxy_scope.py
+        web/tests/test_live_multi_proxy_control_plane.py
+        web/tests/test_live_multi_proxy_certificates.py
+        web/tests/test_live_multi_proxy_policy_workflows.py
+    volumes:
+      - .:/workspace:ro
+    networks:
+      - control
+
+volumes:
+  squid_cache_edge_2:
+  squid_ssl_db_edge_2:
+  proxy_data_edge_2:

@@ -3,6 +3,9 @@ import pytest
 from .flask_test_helpers import login
 
 
+pytestmark = pytest.mark.legacy_simulated
+
+
 @pytest.mark.parametrize(
     "path, expected",
     [
