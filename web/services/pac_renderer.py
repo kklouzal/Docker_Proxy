@@ -131,6 +131,8 @@ def _request_host_only(raw_host: str) -> str:
     candidate = (raw_host or "").strip()
     if not candidate:
         return "127.0.0.1"
+    if candidate.count(":") > 1 and not candidate.startswith("["):
+        return candidate
     try:
         parsed = urlsplit(f"//{candidate}")
         if parsed.hostname:
@@ -237,9 +239,11 @@ def _render_pac(
     seen_domains: set[str] = set()
     for domain in direct_domains:
         d = _normalize_domain_rule(domain)
-        if not d or d in seen_domains:
+        canonical = d[2:] if d.startswith("*.") else d
+        canonical = canonical.lstrip(".")
+        if not canonical or canonical in seen_domains:
             continue
-        seen_domains.add(d)
+        seen_domains.add(canonical)
         match_expression = _domain_match_expression(d)
         if match_expression:
             lines.append(f"  if {match_expression} return 'DIRECT';")

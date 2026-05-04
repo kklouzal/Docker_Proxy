@@ -112,3 +112,113 @@ def test_install_pfx_happy_path_writes_files(tmp_path):
     assert (tmp_path / "ca.crt").exists()
     assert (tmp_path / "ca.key").exists()
     assert (tmp_path / "uploaded_ca.pfx").exists()
+
+
+def test_parse_pfx_reports_missing_certificate(tmp_path):
+    m = _import_cert_manager_module()
+
+    class FakeCP:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run_checked(args, *, timeout: int = 30):
+        if "pkcs12" in args and "-out" in args:
+            out_path = args[args.index("-out") + 1]
+            if "-nokeys" in args:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("")
+            else:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n")
+        return FakeCP("PUBKEY")
+
+    r = m.parse_pfx_bundle(b"abc", password="", run_checked=fake_run_checked)
+    assert r.ok is False
+    assert "does not contain a certificate" in r.message
+
+
+def test_parse_pfx_reports_missing_private_key(tmp_path):
+    m = _import_cert_manager_module()
+
+    class FakeCP:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run_checked(args, *, timeout: int = 30):
+        if "pkcs12" in args and "-out" in args:
+            out_path = args[args.index("-out") + 1]
+            if "-nokeys" in args:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("-----BEGIN CERTIFICATE-----\nMIIF...\n-----END CERTIFICATE-----\n")
+            else:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("")
+        return FakeCP("PUBKEY")
+
+    r = m.parse_pfx_bundle(b"abc", password="", run_checked=fake_run_checked)
+    assert r.ok is False
+    assert "does not contain a private key" in r.message
+
+
+def test_parse_pfx_reports_encrypted_private_key(tmp_path):
+    m = _import_cert_manager_module()
+
+    class FakeCP:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run_checked(args, *, timeout: int = 30):
+        if "pkcs12" in args and "-out" in args:
+            out_path = args[args.index("-out") + 1]
+            if "-nokeys" in args:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("-----BEGIN CERTIFICATE-----\nMIIF...\n-----END CERTIFICATE-----\n")
+            else:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIE...\n-----END ENCRYPTED PRIVATE KEY-----\n")
+        return FakeCP("PUBKEY")
+
+    r = m.parse_pfx_bundle(b"abc", password="", run_checked=fake_run_checked)
+    assert r.ok is False
+    assert "encrypted" in r.message
+
+
+def test_parse_pfx_preserves_chain_and_original_bytes(tmp_path):
+    m = _import_cert_manager_module()
+
+    class FakeCP:
+        def __init__(self, stdout: str = ""):
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run_checked(args, *, timeout: int = 30):
+        if "pkcs12" in args and "-out" in args:
+            out_path = args[args.index("-out") + 1]
+            if "-clcerts" in args:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----\n")
+            elif "-cacerts" in args:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(
+                        "-----BEGIN CERTIFICATE-----\nCHAIN1\n-----END CERTIFICATE-----\n"
+                        "-----BEGIN CERTIFICATE-----\nCHAIN2\n-----END CERTIFICATE-----\n"
+                    )
+            else:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----\n")
+            return FakeCP("")
+        if args[:2] == ["openssl", "x509"]:
+            return FakeCP("PUBKEY_SAME")
+        if args[:2] == ["openssl", "pkey"]:
+            return FakeCP("PUBKEY_SAME")
+        return FakeCP("")
+
+    r = m.parse_pfx_bundle(b"pfx-bytes", password="secret", run_checked=fake_run_checked)
+    assert r.ok is True
+    assert r.bundle is not None
+    assert "CHAIN1" in r.bundle.chain_pem
+    assert "CHAIN2" in r.bundle.chain_pem
+    assert r.bundle.original_pfx_bytes == b"pfx-bytes"

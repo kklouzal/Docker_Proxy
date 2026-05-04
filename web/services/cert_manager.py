@@ -166,6 +166,8 @@ def parse_pfx_bundle(pfx_bytes: bytes, password: str = "", *, run_checked=None) 
                 or _first_pem_block(key_text, "RSA PRIVATE KEY")
                 or _first_pem_block(key_text, "EC PRIVATE KEY")
             )
+            if not private_key and "BEGIN ENCRYPTED PRIVATE KEY" in key_text:
+                raise PfxInstallError("Private key is encrypted; Squid needs an unencrypted key.")
             if not private_key:
                 raise PfxInstallError("PFX does not contain a private key.")
             if "ENCRYPTED PRIVATE KEY" in private_key:

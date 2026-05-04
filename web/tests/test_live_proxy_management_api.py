@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from .live_test_helpers import LiveStackClient, live_stack_ready, wait_for_proxy_management_payload
+from .live_test_helpers import LIVE_CONFIG, LiveStackClient, live_stack_ready, wait_for_proxy_management_payload
 
 
 pytestmark = pytest.mark.live
@@ -13,6 +13,37 @@ def test_live_proxy_management_health_requires_auth(live_stack_ready: dict[str, 
     client = LiveStackClient()
     response = client.proxy_management_request("/api/manage/health", auth=False)
     assert response.status == 403
+
+
+def test_live_proxy_management_auth_accepts_bearer_and_x_proxy_token_and_rejects_bad_token(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
+    _ = live_stack_ready
+    if not LIVE_CONFIG.proxy_token:
+        pytest.skip("Live proxy-management token is not configured; auth variants are not meaningful.")
+
+    client = LiveStackClient()
+    bearer = client.proxy_management_request(
+        "/api/manage/health",
+        auth=False,
+        headers={"Authorization": f"Bearer {LIVE_CONFIG.proxy_token}"},
+    )
+    x_proxy_token = client.proxy_management_request(
+        "/api/manage/health",
+        auth=False,
+        headers={"X-Proxy-Token": LIVE_CONFIG.proxy_token},
+    )
+    bad = client.proxy_management_request(
+        "/api/manage/health",
+        auth=False,
+        headers={"Authorization": "Bearer definitely-wrong"},
+    )
+
+    assert bearer.status == 200
+    assert bearer.json().get("proxy_id") == LIVE_CONFIG.primary_proxy_id
+    assert x_proxy_token.status == 200
+    assert x_proxy_token.json().get("proxy_id") == LIVE_CONFIG.primary_proxy_id
+    assert bad.status == 403
 
 
 def test_live_proxy_management_health_returns_payload(live_stack_ready: dict[str, dict[str, object]]) -> None:

@@ -57,7 +57,11 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
     scheme = _normalize_public_scheme(parsed.scheme)
     host = str(parsed.hostname or "").strip()
     default_port = 443 if scheme == "https" else 80
-    return host, scheme, int(parsed.port or default_port)
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    return host, scheme, int(parsed_port or default_port)
 
 
 def resolve_local_proxy_public_fields() -> dict[str, object]:
