@@ -99,3 +99,61 @@ def test_restart_adblock_service_uses_injected_restarter() -> None:
     runtime.services = SimpleNamespace(adblock_service_restarter=lambda: (True, "custom restarter"))
 
     assert runtime._restart_adblock_service() == (True, "custom restarter")
+
+
+def test_sync_certificate_bundle_skips_current_bundle_even_when_forced() -> None:
+    runtime = _runtime_shell()
+
+    class Bundles:
+        def get_active_bundle_metadata(self):
+            return SimpleNamespace(revision_id=7, bundle_sha256="same-sha")
+
+        def latest_apply(self, proxy_id):
+            return SimpleNamespace(proxy_id=proxy_id, revision_id=7)
+
+        def get_active_bundle(self):
+            raise AssertionError("current certificate bundle should not be loaded")
+
+        def record_apply_result(self, *_args, **_kwargs):
+            raise AssertionError("current certificate bundle should not be recorded as re-applied")
+
+    runtime.services = SimpleNamespace(current_certificate_sha_reader=lambda: "same-sha")
+    runtime.certificate_bundles = Bundles()
+
+    result = runtime.sync_certificate_bundle(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["revision_id"] == 7
+    assert result["detail"] == "Proxy is already using the active certificate bundle."
+
+
+def test_sync_certificate_bundle_records_noop_apply_for_current_bundle_without_apply_record() -> None:
+    runtime = _runtime_shell()
+    recorded: list[tuple[object, int, bool, str]] = []
+
+    class Bundles:
+        def get_active_bundle_metadata(self):
+            return SimpleNamespace(revision_id=8, bundle_sha256="same-sha")
+
+        def latest_apply(self, _proxy_id):
+            return None
+
+        def record_apply_result(self, proxy_id, revision_id, *, ok, detail, applied_by, bundle_sha256):
+            recorded.append((proxy_id, revision_id, ok, bundle_sha256))
+            assert detail == "Proxy is already using the active certificate bundle."
+            assert applied_by == "proxy"
+            return SimpleNamespace(application_id=123)
+
+        def get_active_bundle(self):
+            raise AssertionError("current certificate bundle should not be loaded")
+
+    runtime.services = SimpleNamespace(current_certificate_sha_reader=lambda: "same-sha")
+    runtime.certificate_bundles = Bundles()
+
+    result = runtime.sync_certificate_bundle(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["application_id"] == 123
+    assert recorded == [("default", 8, True, "same-sha")]

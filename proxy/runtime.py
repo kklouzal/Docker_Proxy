@@ -618,8 +618,25 @@ class ProxyRuntime:
             }
 
         current_sha = self._current_certificate_bundle_sha()
-        if not force and revision_meta.bundle_sha256 == current_sha:
-            return {
+        if revision_meta.bundle_sha256 == current_sha:
+            applied = None
+            try:
+                latest_apply = self.certificate_bundles.latest_apply(self.proxy_id)
+            except Exception:
+                latest_apply = None
+            if int(getattr(latest_apply, "revision_id", 0) or 0) != int(revision_meta.revision_id or 0):
+                try:
+                    applied = self.certificate_bundles.record_apply_result(
+                        self.proxy_id,
+                        revision_meta.revision_id,
+                        ok=True,
+                        detail="Proxy is already using the active certificate bundle.",
+                        applied_by="proxy",
+                        bundle_sha256=revision_meta.bundle_sha256,
+                    )
+                except Exception:
+                    applied = None
+            result = {
                 "ok": True,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
@@ -627,6 +644,9 @@ class ProxyRuntime:
                 "detail": "Proxy is already using the active certificate bundle.",
                 "bundle_sha256": revision_meta.bundle_sha256,
             }
+            if applied is not None:
+                result["application_id"] = applied.application_id
+            return result
 
         revision = self.certificate_bundles.get_active_bundle()
         if revision is None:
