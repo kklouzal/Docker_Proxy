@@ -201,39 +201,61 @@ class SquidController:
                 time.sleep(0.5)
         return False
 
+    def _wait_for_http_listener_absent(self, *, timeout: float = 20.0) -> bool:
+        port = self._http_listener_port()
+        deadline = time.time() + max(0.5, timeout)
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    time.sleep(0.5)
+            except OSError:
+                return True
+        return False
+
     def restart_squid(self) -> Tuple[bool, str]:
+        detail_parts: list[str] = []
         try:
-            proc = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "restart", "squid"], capture_output=True, timeout=12)
-            if proc.returncode == 0:
-                details = self._decode_completed(proc) or "Squid restarted."
-                if self._wait_for_http_listener(timeout=20.0):
-                    return True, details
-                recovery_parts = [details, "Squid restart returned before the HTTP listener was ready; forcing stop/start recovery."]
-                try:
-                    stop = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"], capture_output=True, timeout=20)
-                    recovery_parts.append(self._decode_completed(stop) or "supervisorctl stop squid")
-                except Exception as exc:
-                    recovery_parts.append(f"supervisorctl stop squid failed: {exc}")
-                try:
-                    start = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"], capture_output=True, timeout=20)
-                    recovery_parts.append(self._decode_completed(start) or "supervisorctl start squid")
-                except Exception as exc:
-                    recovery_parts.append(f"supervisorctl start squid failed: {exc}")
-                if self._wait_for_http_listener(timeout=30.0):
-                    recovery_parts.append("Squid HTTP listener recovered.")
-                    return True, "\n".join(part for part in recovery_parts if part).strip()
-                return False, "\n".join(part for part in recovery_parts + ["Squid process is running but the HTTP listener is not accepting connections."] if part).strip()
-            details = self._decode_completed(proc) or "supervisorctl restart squid failed"
+            stop = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"], capture_output=True, timeout=25)
+            detail_parts.append(self._decode_completed(stop) or "supervisorctl stop squid")
         except Exception as exc:
-            details = str(exc)
+            detail_parts.append(f"supervisorctl stop squid failed: {exc}")
+
+        if not self._wait_for_http_listener_absent(timeout=30.0):
+            detail_parts.append("Squid HTTP listener stayed bound after supervisor stop; requesting Squid shutdown fallback.")
+            try:
+                shutdown = self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=12)
+                detail_parts.append(self._decode_completed(shutdown) or "squid shutdown requested")
+            except Exception as exc:
+                detail_parts.append(f"squid shutdown fallback failed: {exc}")
+            if not self._wait_for_http_listener_absent(timeout=30.0):
+                return False, "\n".join(
+                    part for part in detail_parts + ["Squid HTTP listener did not release before restart."] if part
+                ).strip()
 
         try:
-            shutdown = self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=8)
-            if shutdown.returncode == 0:
-                return True, (details + "\n" if details else "") + (self._decode_completed(shutdown) or "Squid shutdown requested (supervisor will restart).")
-            return False, (details + "\n" if details else "") + (self._decode_completed(shutdown) or "Squid shutdown request failed.")
+            start = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"], capture_output=True, timeout=25)
+            detail_parts.append(self._decode_completed(start) or "supervisorctl start squid")
+            if start.returncode != 0 and "already started" not in (self._decode_completed(start) or "").lower():
+                return False, "\n".join(detail_parts).strip()
+            if self._wait_for_http_listener(timeout=45.0):
+                detail_parts.append("Squid HTTP listener is accepting connections.")
+                return True, "\n".join(part for part in detail_parts if part).strip()
+            return False, "\n".join(
+                part for part in detail_parts + ["Squid process started but the HTTP listener is not accepting connections."] if part
+            ).strip()
+        except FileNotFoundError:
+            pass
         except Exception as exc:
-            return False, (details + "\n" if details else "") + str(exc)
+            detail_parts.append(f"supervisorctl start squid failed: {exc}")
+
+        try:
+            proc = self._run(["squid", "-f", self.squid_conf_path], capture_output=True, timeout=20)
+            detail_parts.append(self._decode_completed(proc) or "squid start requested")
+            if proc.returncode == 0 and self._wait_for_http_listener(timeout=45.0):
+                return True, "\n".join(part for part in detail_parts if part).strip()
+            return False, "\n".join(detail_parts + ["Squid direct start failed or listener stayed unavailable."]).strip()
+        except Exception as exc:
+            return False, "\n".join(detail_parts + [str(exc)]).strip()
 
     def _get_first_cache_dir_path(self, config_text: Optional[str] = None) -> str:
         text = config_text if config_text is not None else self.get_current_config()
@@ -259,10 +281,15 @@ class SquidController:
         try:
             stop = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"], capture_output=True, timeout=20)
             detail_parts.append(self._decode_completed(stop) or "supervisorctl stop squid")
+            if not self._wait_for_http_listener_absent(timeout=30.0):
+                detail_parts.append("Squid HTTP listener stayed bound after stop; requesting shutdown fallback.")
+                self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
+                self._wait_for_http_listener_absent(timeout=30.0)
         except Exception as exc:
             detail_parts.append(f"stop failed: {exc}")
             try:
                 self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
+                self._wait_for_http_listener_absent(timeout=30.0)
             except Exception:
                 log_exception_throttled(
                     logger,

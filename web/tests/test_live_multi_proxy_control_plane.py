@@ -86,8 +86,8 @@ def test_live_api_squid_config_reads_selected_remote_proxy_revision(multi_proxy_
 
 def test_live_reload_route_targets_selected_remote_proxy(multi_proxy_admin: LiveStackClient) -> None:
     revisions = _config_store()
+    original_local = active_config_text(LIVE_CONFIG.primary_proxy_id)
     original_remote = active_config_text(LIVE_CONFIG.remote_proxy_id)
-    local_before = latest_config_apply(LIVE_CONFIG.primary_proxy_id)
     remote_before = latest_config_apply(LIVE_CONFIG.remote_proxy_id)
     marker = unique_token("live_remote_reload")
     new_revision = revisions.create_revision(
@@ -115,7 +115,7 @@ def test_live_reload_route_targets_selected_remote_proxy(multi_proxy_admin: Live
         )
         assert applied is not None
         assert marker in active_config_text(LIVE_CONFIG.remote_proxy_id)
-        assert _apply_ts(latest_config_apply(LIVE_CONFIG.primary_proxy_id)) == _apply_ts(local_before)
+        assert active_config_text(LIVE_CONFIG.primary_proxy_id) == original_local
     finally:
         restore_revision = revisions.create_revision(
             LIVE_CONFIG.remote_proxy_id,

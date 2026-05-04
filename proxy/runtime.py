@@ -221,16 +221,52 @@ class ProxyRuntime:
         return read_materialized_pac_state_sha(self.pac_render_dir)
 
     def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30) -> tuple[bool, str]:
+        details: list[str] = []
         try:
-            proc = subprocess.run(
-                ["supervisorctl", "-c", "/etc/supervisord.conf", "restart", program_name],
+            stop = subprocess.run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", program_name],
                 capture_output=True,
                 timeout=timeout_seconds,
             )
         except Exception as exc:
-            return False, public_error_message(exc, default=f"Failed to restart {program_name}.")
-        detail = _decode_completed(proc).strip() or f"{program_name} restarted."
-        return proc.returncode == 0, detail
+            details.append(public_error_message(exc, default=f"Failed to stop {program_name}."))
+        else:
+            stop_detail = _decode_completed(stop).strip() or f"{program_name} stop requested."
+            details.append(stop_detail)
+
+        for attempt in range(1, 6):
+            if attempt > 1:
+                time.sleep(1.0)
+            try:
+                start = subprocess.run(
+                    ["supervisorctl", "-c", "/etc/supervisord.conf", "start", program_name],
+                    capture_output=True,
+                    timeout=timeout_seconds,
+                )
+            except Exception as exc:
+                details.append(public_error_message(exc, default=f"Failed to start {program_name}."))
+                continue
+
+            start_detail = _decode_completed(start).strip() or f"{program_name} start requested."
+            details.append(start_detail)
+            if start.returncode == 0 or "already started" in start_detail.lower():
+                return True, "\n".join(part for part in details if part).strip() or f"{program_name} restarted."
+
+            try:
+                status = subprocess.run(
+                    ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                    capture_output=True,
+                    timeout=timeout_seconds,
+                )
+                status_detail = _decode_completed(status).strip()
+                if status_detail:
+                    details.append(status_detail)
+                if status.returncode == 0 and "RUNNING" in status_detail:
+                    return True, "\n".join(part for part in details if part).strip() or f"{program_name} restarted."
+            except Exception:
+                pass
+
+        return False, "\n".join(part for part in details if part).strip() or f"Failed to restart {program_name}."
 
     def _restart_adblock_service(self) -> tuple[bool, str]:
         if self.services.adblock_service_restarter is not None:
