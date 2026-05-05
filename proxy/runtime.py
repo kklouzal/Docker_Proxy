@@ -220,7 +220,36 @@ class ProxyRuntime:
             return str(self.services.current_pac_sha_reader() or "")
         return read_materialized_pac_state_sha(self.pac_render_dir)
 
-    def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30) -> tuple[bool, str]:
+    def _supervisor_program_status(self, program_name: str, *, timeout_seconds: int = 10) -> tuple[bool, str]:
+        try:
+            status = subprocess.run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            return False, public_error_message(exc, default=f"Failed to inspect {program_name} supervisor status.")
+        detail = _decode_completed(status).strip() or f"{program_name} status unavailable."
+        return status.returncode == 0 and "RUNNING" in detail, detail
+
+    def _supervisor_programs_health(self) -> dict[str, Any]:
+        programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent", "pac_http")
+        statuses: dict[str, dict[str, Any]] = {}
+        ok = True
+        detail_parts: list[str] = []
+        for program in programs:
+            program_ok, detail = self._supervisor_program_status(program, timeout_seconds=5)
+            statuses[program] = {"ok": program_ok, "detail": detail}
+            if not program_ok:
+                ok = False
+                detail_parts.append(detail)
+        return {
+            "ok": ok,
+            "detail": "; ".join(detail_parts) if detail_parts else "supervisor programs running",
+            "programs": statuses,
+        }
+
+    def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30, stop_on_failure: bool = False) -> tuple[bool, str]:
         details: list[str] = []
         try:
             stop = subprocess.run(
@@ -249,29 +278,50 @@ class ProxyRuntime:
 
             start_detail = _decode_completed(start).strip() or f"{program_name} start requested."
             details.append(start_detail)
-            if start.returncode == 0 or "already started" in start_detail.lower():
+
+            # A quick start can still crash immediately afterward. Require a
+            # post-start supervisor status check to avoid accepting restart loops.
+            time.sleep(1.0)
+            status_ok, status_detail = self._supervisor_program_status(program_name, timeout_seconds=timeout_seconds)
+            if status_detail:
+                details.append(status_detail)
+            if status_ok:
                 return True, "\n".join(part for part in details if part).strip() or f"{program_name} restarted."
 
+        if stop_on_failure:
             try:
-                status = subprocess.run(
-                    ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                stop = subprocess.run(
+                    ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", program_name],
                     capture_output=True,
                     timeout=timeout_seconds,
                 )
-                status_detail = _decode_completed(status).strip()
-                if status_detail:
-                    details.append(status_detail)
-                if status.returncode == 0 and "RUNNING" in status_detail:
-                    return True, "\n".join(part for part in details if part).strip() or f"{program_name} restarted."
+                stop_detail = _decode_completed(stop).strip()
+                if stop_detail:
+                    details.append(stop_detail)
             except Exception:
                 pass
-
         return False, "\n".join(part for part in details if part).strip() or f"Failed to restart {program_name}."
 
     def _restart_adblock_service(self) -> tuple[bool, str]:
         if self.services.adblock_service_restarter is not None:
             return self.services.adblock_service_restarter()
-        return self._restart_supervisor_program("cicap_adblock")
+        return self._restart_supervisor_program("cicap_adblock", stop_on_failure=True)
+
+    def _snapshot_adblock_compiled_dir(self) -> str:
+        snapshot_root = tempfile.mkdtemp(prefix="adblock-compiled-snapshot-")
+        snapshot_dir = os.path.join(snapshot_root, "compiled")
+        if os.path.isdir(self.adblock_compiled_dir):
+            shutil.copytree(self.adblock_compiled_dir, snapshot_dir, dirs_exist_ok=True)
+        else:
+            os.makedirs(snapshot_dir, exist_ok=True)
+        return snapshot_root
+
+    def _restore_adblock_compiled_snapshot(self, snapshot_root: str) -> None:
+        snapshot_dir = os.path.join(snapshot_root, "compiled")
+        if os.path.isdir(self.adblock_compiled_dir):
+            shutil.rmtree(self.adblock_compiled_dir, ignore_errors=True)
+        os.makedirs(os.path.dirname(self.adblock_compiled_dir) or ".", exist_ok=True)
+        shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
     def _reload_for_policy_update(self) -> tuple[bool, str]:
         result = self.controller.reload_squid()
@@ -335,6 +385,33 @@ class ProxyRuntime:
 
         detail_reason = f"Self-heal triggered by {reason}: {status_detail or 'Squid health check failed.'}"
         return self.rollback_last_known_good_config(reason=detail_reason)
+
+    def self_heal_runtime_services_if_needed(self, *, reason: str = "health check") -> Dict[str, Any]:
+        status_ok, status_detail = self._supervisor_program_status("cicap_adblock", timeout_seconds=5)
+        icap_health = _check_icap_adblock(timeout=0.8, error_formatter=str)
+        if status_ok and bool(icap_health.get("ok")):
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "detail": status_detail or "cicap_adblock is healthy.",
+            }
+
+        ok_restart, restart_detail = self._restart_adblock_service()
+        return {
+            "ok": bool(ok_restart),
+            "proxy_id": self.proxy_id,
+            "changed": True,
+            "detail": "\n".join(
+                part
+                for part in (
+                    f"Self-heal triggered by {reason}: {status_detail}",
+                    str(icap_health.get("detail") or ""),
+                    restart_detail,
+                )
+                if str(part or "").strip()
+            ),
+        }
 
     def _find_sslcrtd_binary(self) -> str:
         candidates = [
@@ -564,6 +641,7 @@ class ProxyRuntime:
             }
 
         if artifact_changed:
+            snapshot_root = self._snapshot_adblock_compiled_dir()
             try:
                 materialize_archive_to_directory(
                     self.adblock_compiled_dir,
@@ -572,6 +650,10 @@ class ProxyRuntime:
                 )
             except Exception as exc:
                 detail = public_error_message(exc, default="Failed to materialize adblock artifact.")
+                try:
+                    shutil.rmtree(snapshot_root, ignore_errors=True)
+                except Exception:
+                    pass
                 applied = self.adblock_artifacts.record_apply_result(
                     self.proxy_id,
                     revision.revision_id,
@@ -591,8 +673,54 @@ class ProxyRuntime:
                     "artifact_sha256": revision.artifact_sha256,
                     "detail": detail,
                 }
+        else:
+            snapshot_root = ""
 
         ok_restart, restart_detail = self._restart_adblock_service()
+        if not ok_restart and artifact_changed and snapshot_root:
+            rollback_detail_parts = [restart_detail.strip() or "cicap_adblock failed after adblock artifact materialization."]
+            try:
+                self._restore_adblock_compiled_snapshot(snapshot_root)
+                rollback_detail_parts.append("Restored previous adblock compiled artifact.")
+                rollback_ok, rollback_restart_detail = self._restart_adblock_service()
+                if rollback_restart_detail.strip():
+                    rollback_detail_parts.append(rollback_restart_detail.strip())
+                if not rollback_ok:
+                    rollback_detail_parts.append("Previous adblock artifact was restored, but cicap_adblock still did not stay running.")
+            except Exception as exc:
+                rollback_detail_parts.append(public_error_message(exc, default="Failed to restore previous adblock artifact."))
+            finally:
+                try:
+                    shutil.rmtree(snapshot_root, ignore_errors=True)
+                except Exception:
+                    pass
+            detail = "\n".join(part for part in rollback_detail_parts if part).strip()
+            applied = self.adblock_artifacts.record_apply_result(
+                self.proxy_id,
+                revision.revision_id,
+                ok=False,
+                detail=detail,
+                applied_by="proxy",
+                artifact_sha256=revision.artifact_sha256,
+            )
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "artifact_changed": False,
+                "artifact_rolled_back": True,
+                "cache_flushed": False,
+                "revision_id": revision.revision_id,
+                "application_id": applied.application_id,
+                "artifact_sha256": revision.artifact_sha256,
+                "detail": detail,
+            }
+
+        if artifact_changed and snapshot_root:
+            try:
+                shutil.rmtree(snapshot_root, ignore_errors=True)
+            except Exception:
+                pass
         if ok_restart and flush_requested:
             try:
                 store.mark_cache_flushed(size=0)
@@ -784,6 +912,7 @@ class ProxyRuntime:
         proxy_ok = not bool(stderr)
         stats = self.stats_provider()
         services = self.runtime_services_builder(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
+        services["supervisor"] = self._supervisor_programs_health()
         active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
         active_certificate = self.certificate_bundles.get_active_bundle_metadata()
         active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
@@ -865,6 +994,15 @@ class ProxyRuntime:
                 "proxy_runtime.heartbeat.self_heal",
                 interval_seconds=30.0,
                 message="Proxy config self-heal check failed",
+            )
+        try:
+            self.self_heal_runtime_services_if_needed(reason="heartbeat")
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "proxy_runtime.heartbeat.service_self_heal",
+                interval_seconds=30.0,
+                message="Proxy runtime service self-heal check failed",
             )
         health = self.collect_health()
         public_fields = resolve_local_proxy_public_fields()

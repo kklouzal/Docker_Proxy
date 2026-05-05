@@ -91,10 +91,17 @@ class SquidController:
         normalized = self.normalize_config_text(candidate)
         valid, validation_detail = self.validate_config_text(normalized)
         if not valid:
-            detail_parts.append(f"Last-known-good config from {source} failed validation.")
-            if validation_detail:
-                detail_parts.append(validation_detail)
-            return False, "\n".join(part for part in detail_parts if part).strip()
+            if "timed out" in (validation_detail or "").lower():
+                detail_parts.append(
+                    f"Validation of last-known-good config from {source} timed out; proceeding with restore because this file was previously applied successfully."
+                )
+                if validation_detail:
+                    detail_parts.append(validation_detail)
+            else:
+                detail_parts.append(f"Last-known-good config from {source} failed validation.")
+                if validation_detail:
+                    detail_parts.append(validation_detail)
+                return False, "\n".join(part for part in detail_parts if part).strip()
 
         try:
             self._atomic_write_file(self.squid_conf_path, normalized)
@@ -209,6 +216,10 @@ class SquidController:
             proc = self._run(["squid", "-k", "parse", "-f", tmp_path], capture_output=True, text=True, timeout=15)
             combined = (proc.stdout or "") + ("\n" if proc.stdout and proc.stderr else "") + (proc.stderr or "")
             return proc.returncode == 0, combined.strip()
+        except TimeoutExpired as exc:
+            detail = f"Squid config validation timed out after {exc.timeout} seconds."
+            logger.warning(detail)
+            return False, detail
         except Exception as exc:
             logger.exception("Squid config validation failed")
             return False, public_error_message(exc)

@@ -33,7 +33,17 @@ assert has_listen_socket('/proc/net/tcp', port) or has_listen_socket('/proc/net/
 PY
 }
 
+supervisor_program_running() {
+    program="$1"
+    supervisorctl -c /etc/supervisord.conf status "$program" 2>/dev/null | grep -q "RUNNING"
+}
+
 # Check Squid liveness (internal check)
+if ! supervisor_program_running squid; then
+    echo "supervisor reports squid is not RUNNING"
+    exit 1
+fi
+
 if ! squid -k check >/dev/null 2>&1; then
     echo "Squid check failed"
     exit 1
@@ -45,6 +55,11 @@ if ! has_listen_socket "${SQUID_HTTP_PORT:-3128}" >/dev/null 2>&1; then
 fi
 
 # Check Flask liveness (avoid curl to keep image smaller)
+if ! supervisor_program_running proxy_api; then
+    echo "supervisor reports proxy_api is not RUNNING"
+    exit 1
+fi
+
 if ! python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read()" >/dev/null 2>&1; then
     echo "Flask health endpoint failed"
     exit 1
@@ -54,6 +69,11 @@ fi
 # Confirm both ICAP ports are listening instead of probing the services over
 # the protocol, which would otherwise pollute c-icap access logs
 # every 15 seconds.
+if ! supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av; then
+    echo "one or more c-icap supervisor programs are not RUNNING"
+    exit 1
+fi
+
 if ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1 || ! has_listen_socket "${CICAP_AV_PORT:-14001}" >/dev/null 2>&1; then
     echo "One or more c-icap services are not listening on their configured ports"
     exit 1

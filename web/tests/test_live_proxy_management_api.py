@@ -56,6 +56,20 @@ def test_live_proxy_management_health_returns_payload(live_stack_ready: dict[str
     assert isinstance(payload.get("stats"), dict)
 
 
+def test_live_proxy_management_health_reports_supervisor_programs(live_stack_ready: dict[str, dict[str, object]]) -> None:
+    _ = live_stack_ready
+    payload = wait_for_proxy_management_payload()
+    services = payload.get("services") or {}
+    supervisor = services.get("supervisor") or {}
+    programs = supervisor.get("programs") or {}
+
+    assert isinstance(supervisor.get("ok"), bool)
+    for program in ("squid", "cicap_adblock", "proxy_api", "proxy_agent", "pac_http"):
+        assert program in programs
+        assert programs[program].get("ok") is True
+        assert "RUNNING" in str(programs[program].get("detail") or "")
+
+
 def test_live_proxy_management_sync_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:
     _ = live_stack_ready
     client = LiveStackClient()

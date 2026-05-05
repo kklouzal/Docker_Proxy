@@ -34,6 +34,7 @@ def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) 
     results = [
         _cp(0, stdout="cicap_adblock: stopped"),
         _cp(1, stderr="cicap_adblock: ERROR (already started)"),
+        _cp(0, stdout="cicap_adblock RUNNING pid 123, uptime 0:00:01"),
     ]
 
     def fake_run(args, **_kwargs):
@@ -48,6 +49,7 @@ def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) 
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "cicap_adblock"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "cicap_adblock"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "cicap_adblock"],
     ]
     assert "already started" in detail
 
@@ -100,6 +102,33 @@ def test_restart_adblock_service_uses_injected_restarter() -> None:
     runtime.services = SimpleNamespace(adblock_service_restarter=lambda: (True, "custom restarter"))
 
     assert runtime._restart_adblock_service() == (True, "custom restarter")
+
+
+def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if "status" in args:
+            return _cp(3, stdout="cicap_adblock BACKOFF exited too quickly")
+        if "start" in args:
+            return _cp(0, stdout="cicap_adblock: started")
+        return _cp(0, stdout="cicap_adblock: stopped")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(adblock_service_restarter=None)
+
+    ok, detail = runtime._restart_adblock_service()
+
+    assert ok is False
+    assert "BACKOFF" in detail
+    assert calls[-1] == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "cicap_adblock"]
 
 
 def test_sync_certificate_bundle_skips_current_bundle_even_when_forced() -> None:
@@ -213,6 +242,23 @@ def test_runtime_self_heal_rolls_back_when_squid_status_fails() -> None:
     assert marked == [(True, "rolled back", "good-sha")]
 
 
+def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    runtime._supervisor_program_status = lambda program, timeout_seconds=5: (False, "cicap_adblock BACKOFF")
+    runtime._restart_adblock_service = lambda: (True, "cicap_adblock restarted")
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", lambda **_kwargs: {"ok": False, "detail": "not listening"})
+
+    result = runtime.self_heal_runtime_services_if_needed(reason="test")
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert "BACKOFF" in result["detail"]
+    assert "not listening" in result["detail"]
+
+
 def test_sync_from_db_quarantines_previously_failed_active_revision_without_retry() -> None:
     runtime = _runtime_shell()
     marked: list[tuple[bool, str, str]] = []
@@ -281,3 +327,82 @@ def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeo
     restored = squid_conf.read_text(encoding="utf-8")
     assert "# good" in restored
     assert "bad-but-parseable" not in restored
+
+
+def test_squid_controller_validation_timeout_returns_actionable_detail(tmp_path) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    def fake_run(args, **_kwargs):
+        raise subprocess.TimeoutExpired(args, timeout=15)
+
+    controller = SquidController(str(tmp_path / "squid.conf"), cmd_run=fake_run)
+
+    ok, detail = controller.validate_config_text("workers 1\n")
+
+    assert ok is False
+    assert detail == "Squid config validation timed out after 15 seconds."
+
+
+def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fails(tmp_path, monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / ".artifact-sha256").write_text("old-sha", encoding="utf-8")
+    (compiled / "domains_block.txt").write_text("old.example\n", encoding="utf-8")
+    recorded: list[dict[str, object]] = []
+    restarts = iter([(False, "cicap_adblock BACKOFF"), (True, "cicap_adblock RUNNING")])
+
+    class Artifacts:
+        compiled_dir = str(compiled)
+
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="new-sha")
+
+        def get_active_artifact(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="new-sha", archive_blob=b"new")
+
+        def record_apply_result(self, proxy_id, revision_id, *, ok, detail, applied_by, artifact_sha256):
+            recorded.append(
+                {
+                    "proxy_id": proxy_id,
+                    "revision_id": revision_id,
+                    "ok": ok,
+                    "detail": detail,
+                    "artifact_sha256": artifact_sha256,
+                }
+            )
+            return SimpleNamespace(application_id=77)
+
+    class Store:
+        def init_db(self):
+            pass
+
+        def get_cache_flush_requested(self):
+            return False
+
+    def fake_materialize(directory, *, archive_blob, artifact_sha256):
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
+        (root / "domains_block.txt").write_text("bad.example\n", encoding="utf-8")
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "old-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime.adblock_compiled_dir = str(compiled)
+    runtime._restart_adblock_service = lambda: next(restarts)
+
+    monkeypatch.setattr(runtime_module, "materialize_archive_to_directory", fake_materialize)
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is False
+    assert result["artifact_rolled_back"] is True
+    assert "Restored previous adblock compiled artifact" in result["detail"]
+    assert (compiled / ".artifact-sha256").read_text(encoding="utf-8") == "old-sha"
+    assert (compiled / "domains_block.txt").read_text(encoding="utf-8") == "old.example\n"
+    assert recorded[-1]["ok"] is False
