@@ -7,7 +7,7 @@ import socket
 import tempfile
 import time
 from pathlib import Path
-from subprocess import run
+from subprocess import TimeoutExpired, run
 from typing import Any, Callable, Optional, Tuple
 
 import logging
@@ -51,6 +51,76 @@ class SquidController:
                     os.unlink(tmp_path)
                 except Exception:
                     pass
+
+    def _persist_good_config(self, config_text: str) -> None:
+        persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
+        if persisted_dir:
+            os.makedirs(persisted_dir, exist_ok=True)
+        self._atomic_write_file(self.persisted_squid_conf_path, self.normalize_config_text(config_text))
+
+    def restore_last_known_good_config(self, *, reason: str = "", fallback_config: str = "") -> Tuple[bool, str]:
+        """Restore the last successfully-applied Squid config and restart Squid.
+
+        The persisted config is intentionally written only after successful applies,
+        so it is the proxy container's local last-known-good copy. The optional
+        fallback is the in-memory pre-change config captured during an apply.
+        """
+
+        detail_parts: list[str] = []
+        if reason:
+            detail_parts.append(str(reason).strip())
+
+        source = ""
+        candidate = ""
+        try:
+            if os.path.exists(self.persisted_squid_conf_path):
+                with open(self.persisted_squid_conf_path, "r", encoding="utf-8") as handle:
+                    candidate = handle.read()
+                source = self.persisted_squid_conf_path
+        except Exception as exc:
+            detail_parts.append(f"Failed to read last-known-good config: {exc}")
+
+        if not candidate.strip() and (fallback_config or "").strip():
+            candidate = fallback_config
+            source = "pre-change in-memory backup"
+
+        if not candidate.strip():
+            detail_parts.append("No last-known-good Squid config is available to restore.")
+            return False, "\n".join(part for part in detail_parts if part).strip()
+
+        normalized = self.normalize_config_text(candidate)
+        valid, validation_detail = self.validate_config_text(normalized)
+        if not valid:
+            detail_parts.append(f"Last-known-good config from {source} failed validation.")
+            if validation_detail:
+                detail_parts.append(validation_detail)
+            return False, "\n".join(part for part in detail_parts if part).strip()
+
+        try:
+            self._atomic_write_file(self.squid_conf_path, normalized)
+        except Exception as exc:
+            detail_parts.append(f"Failed to write restored Squid config: {exc}")
+            return False, "\n".join(part for part in detail_parts if part).strip()
+
+        ok_restart, restart_detail = self.restart_squid()
+        if restart_detail:
+            detail_parts.append(restart_detail)
+        if not ok_restart:
+            detail_parts.append("Rollback config was written, but Squid did not restart cleanly.")
+            return False, "\n".join(part for part in detail_parts if part).strip()
+
+        try:
+            self._persist_good_config(normalized)
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "squid_core.persist_config.rollback",
+                interval_seconds=300.0,
+                message="Failed to persist restored last-known-good Squid config",
+            )
+
+        detail_parts.append(f"Rolled back to last-known-good Squid config from {source}.")
+        return True, "\n".join(part for part in detail_parts if part).strip()
 
     def _replace_or_append_directive(self, text: str, pattern: str, replacement: str) -> str:
         regex = re.compile(pattern, re.M)
@@ -391,8 +461,11 @@ class SquidController:
                             message="Failed to revert /etc/supervisor.d/icap.conf",
                         )
                     self._supervisor_reread_update()
-                    self.restart_squid()
-                    return False, scale_details or "Failed to scale ICAP processes."
+                    _rollback_ok, rollback_detail = self.restore_last_known_good_config(
+                        reason=scale_details or "Failed to scale ICAP processes.",
+                        fallback_config=current,
+                    )
+                    return False, rollback_detail or (scale_details or "Failed to scale ICAP processes.")
 
                 ok_restart, restart_details = self.clear_disk_cache()
                 if not ok_restart:
@@ -419,14 +492,14 @@ class SquidController:
                                 message="Failed to revert /etc/supervisor.d/icap.conf after restart failure",
                             )
                         self._supervisor_reread_update()
-                        self.restart_squid()
-                        return False, restart_details or "Squid restart failed after cache reinitialization."
+                        _rollback_ok, rollback_detail = self.restore_last_known_good_config(
+                            reason=restart_details or "Squid restart failed after cache reinitialization.",
+                            fallback_config=current,
+                        )
+                        return False, rollback_detail or (restart_details or "Squid restart failed after cache reinitialization.")
 
                 try:
-                    persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
-                    if persisted_dir:
-                        os.makedirs(persisted_dir, exist_ok=True)
-                    self._atomic_write_file(self.persisted_squid_conf_path, normalized_config)
+                    self._persist_good_config(normalized_config)
                 except Exception:
                     log_exception_throttled(
                         logger,
@@ -445,14 +518,14 @@ class SquidController:
                 if not ok_restart:
                     if os.path.exists(backup_path):
                         os.replace(backup_path, self.squid_conf_path)
-                        self.restart_squid()
-                    return False, restart_details or "Squid restart failed after cache reinitialization."
+                    _rollback_ok, rollback_detail = self.restore_last_known_good_config(
+                        reason=restart_details or "Squid restart failed after cache reinitialization.",
+                        fallback_config=current,
+                    )
+                    return False, rollback_detail or (restart_details or "Squid restart failed after cache reinitialization.")
 
                 try:
-                    persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
-                    if persisted_dir:
-                        os.makedirs(persisted_dir, exist_ok=True)
-                    self._atomic_write_file(self.persisted_squid_conf_path, normalized_config)
+                    self._persist_good_config(normalized_config)
                 except Exception:
                     log_exception_throttled(
                         logger,
@@ -467,8 +540,12 @@ class SquidController:
             if reconfigure.returncode != 0:
                 if os.path.exists(backup_path):
                     os.replace(backup_path, self.squid_conf_path)
-                    self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-                return False, self._decode_completed(reconfigure) or "Squid reconfigure failed."
+                failure_detail = self._decode_completed(reconfigure) or "Squid reconfigure failed."
+                _rollback_ok, rollback_detail = self.restore_last_known_good_config(
+                    reason=failure_detail,
+                    fallback_config=current,
+                )
+                return False, rollback_detail or failure_detail
 
             reconfigure_detail = self._decode_completed(reconfigure) or "Squid reconfigured."
             if not self._wait_for_http_listener(timeout=20.0):
@@ -476,15 +553,15 @@ class SquidController:
                 if not ok_restart:
                     if os.path.exists(backup_path):
                         os.replace(backup_path, self.squid_conf_path)
-                        self.restart_squid()
-                    return False, (restart_details or "Squid HTTP listener did not recover after reconfigure.")
+                    _rollback_ok, rollback_detail = self.restore_last_known_good_config(
+                        reason=restart_details or "Squid HTTP listener did not recover after reconfigure.",
+                        fallback_config=current,
+                    )
+                    return False, rollback_detail or (restart_details or "Squid HTTP listener did not recover after reconfigure.")
                 reconfigure_detail = (reconfigure_detail + "\n" + restart_details).strip()
 
             try:
-                persisted_dir = os.path.dirname(self.persisted_squid_conf_path)
-                if persisted_dir:
-                    os.makedirs(persisted_dir, exist_ok=True)
-                self._atomic_write_file(self.persisted_squid_conf_path, normalized_config)
+                self._persist_good_config(normalized_config)
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -495,19 +572,16 @@ class SquidController:
 
             return True, reconfigure_detail
         except Exception as exc:
-            try:
-                if os.path.exists(backup_path):
-                    os.replace(backup_path, self.squid_conf_path)
-                    self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "squid_core.revert_failed",
-                    interval_seconds=300.0,
-                    message="Squid config revert failed after reconfigure error",
-                )
             logger.exception("Squid reconfigure failed")
-            return False, public_error_message(exc)
+            if isinstance(exc, TimeoutExpired):
+                failure_detail = f"Squid reconfigure timed out after {exc.timeout} seconds."
+            else:
+                failure_detail = public_error_message(exc)
+            _rollback_ok, rollback_detail = self.restore_last_known_good_config(
+                reason=failure_detail,
+                fallback_config=locals().get("current", ""),
+            )
+            return False, rollback_detail or failure_detail
         finally:
             try:
                 if os.path.exists(new_path):

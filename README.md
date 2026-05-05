@@ -13,11 +13,14 @@ The repository now supports a **two-container split**:
 - `admin-ui`: Flask/Gunicorn control plane for login, policy editing, proxy visibility, and desired-state management
 - `proxy`: Squid/c-icap runtime plus a tiny internal management API used only for:
   - health checks
+  - proxy-owned Squid config validation and last-known-good rollback
   - immediate config sync from MySQL
   - cache clear actions
   - on-demand ClamAV verification actions from the admin UI (EICAR and sample ICAP probes)
 
 MySQL remains the source of truth for desired state, audit, stats, and proxy registration. The direct HTTP path is intentionally tiny and internal-only.
+
+The `admin-ui` service does **not** hard-depend on a local `proxy` service in Compose. You can run the admin UI standalone when your proxies are remote or managed separately. Config validation/apply actions require a selected proxy with a registered management URL; the selected proxy validates candidate Squid configs with its own Squid binary/includes, accepts only validated revisions, and rolls itself back to the locally persisted last-known-good config if an apply/reconfigure/restart fails.
 
 This project targets “real” proxy deployments where you want:
 - A manageable Squid configuration (template baseline + UI-driven includes)
@@ -51,6 +54,14 @@ MYSQL_CREATE_DATABASE=1
 ```powershell
 docker compose up -d --build
 ```
+
+To run only the admin UI control plane, start just that service:
+
+```powershell
+docker compose up -d --build admin-ui
+```
+
+Standalone admin UI mode still requires the configured MySQL backend. Proxy-specific actions become available after one or more proxy containers register themselves with a management URL.
 
 Maintenance note:
 - `docker-compose.common.yml` is the shared source of truth for service definitions, environment defaults, ports, volumes, and healthchecks.
@@ -173,9 +184,6 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-}
       MYSQL_CREATE_DATABASE: ${MYSQL_CREATE_DATABASE:-1}
-    depends_on:
-      proxy:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "/healthcheck.admin.sh"]
       interval: 15s

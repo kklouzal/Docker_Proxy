@@ -80,6 +80,44 @@ def test_proxy_client_sets_bearer_auth_and_json_body(monkeypatch) -> None:
     assert captured["timeout"] == 9.5
 
 
+def test_proxy_client_can_request_config_validation_and_rollback(monkeypatch) -> None:
+    _add_web_to_path()
+    import services.proxy_client as proxy_client  # type: ignore
+
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000"))
+
+    def fake_urlopen(request, timeout):
+        captured.append(
+            {
+                "url": request.full_url,
+                "method": request.get_method(),
+                "body": json.loads((request.data or b"{}").decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        return _Response({"ok": True, "detail": "accepted"})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    client = proxy_client.ProxyClient()
+    assert client.validate_config("live", "workers 1\n", timeout_seconds=7.0)["ok"] is True
+    assert client.rollback_config("live", reason="bad apply", timeout_seconds=8.0)["ok"] is True
+
+    assert captured[0] == {
+        "url": "http://proxy-mgmt:5000/api/manage/config/validate",
+        "method": "POST",
+        "body": {"config_text": "workers 1\n"},
+        "timeout": 7.0,
+    }
+    assert captured[1] == {
+        "url": "http://proxy-mgmt:5000/api/manage/config/rollback",
+        "method": "POST",
+        "body": {"reason": "bad apply"},
+        "timeout": 8.0,
+    }
+
+
 def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
     _add_web_to_path()
     import services.proxy_client as proxy_client  # type: ignore

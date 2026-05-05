@@ -97,3 +97,11 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
         "COPY web/requirements-dev.txt",
     ):
         assert excluded_copy not in text
+
+
+def test_admin_ui_compose_service_can_run_without_proxy_dependency() -> None:
+    text = _read("docker-compose.common.yml")
+    admin_block = text.split("  proxy:", 1)[0]
+
+    assert "  admin-ui:" in admin_block
+    assert "depends_on:" not in admin_block

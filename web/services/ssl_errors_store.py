@@ -395,7 +395,7 @@ class SslErrorsStore:
             where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("domain LIKE %s ESCAPE '\\'")
+            where.append("domain LIKE %s ESCAPE '\\\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         lim = max(10, min(500, int(limit)))
@@ -424,7 +424,7 @@ class SslErrorsStore:
             where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("domain LIKE %s ESCAPE '\\'")
+            where.append("domain LIKE %s ESCAPE '\\\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         lim = max(5, min(100, int(limit)))

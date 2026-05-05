@@ -827,7 +827,7 @@ class LiveStatsStore:
             where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("domain LIKE %s ESCAPE '\\'")
+            where.append("domain LIKE %s ESCAPE '\\\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -932,7 +932,7 @@ class LiveStatsStore:
             where.append("last_seen >= %s")
             params.append(int(since))
         if search:
-            where.append("ip LIKE %s ESCAPE '\\'")
+            where.append("ip LIKE %s ESCAPE '\\\\'")
             params.append(f"%{_escape_like(search)}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 

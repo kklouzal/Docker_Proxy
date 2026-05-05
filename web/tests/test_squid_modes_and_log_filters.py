@@ -100,6 +100,24 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
     assert "connection: conn23" in rows[0]["sample"]
 
 
+def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "ssl-errors-search")
+
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+
+    store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    store.init_db()
+    store.ingest_line("2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1 CONNECT tls.example:443")
+
+    recent = store.list_recent(search="tls.example", limit=10)
+    top = store.top_domains(search="tls.example", limit=10)
+
+    assert len(recent) == 1
+    assert recent[0].domain == "tls.example"
+    assert top[0]["domain"] == "tls.example"
+
+
 def test_render_icap_include_uses_single_endpoint_services_without_identity_rewrite(monkeypatch):
     _add_web_to_path()
 

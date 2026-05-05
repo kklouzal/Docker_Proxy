@@ -78,6 +78,22 @@ def manage_sync() -> Any:
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
+@app.route("/api/manage/config/validate", methods=["POST"])
+@_require_management_auth
+def manage_config_validate() -> Any:
+    payload = request.get_json(silent=True) or {}
+    result = runtime.validate_config_text(str(payload.get("config_text") or ""))
+    return jsonify(result), 200
+
+
+@app.route("/api/manage/config/rollback", methods=["POST"])
+@_require_management_auth
+def manage_config_rollback() -> Any:
+    payload = request.get_json(silent=True) or {}
+    result = runtime.rollback_last_known_good_config(reason=str(payload.get("reason") or "Rollback requested by management API."))
+    return jsonify(result), (200 if result.get("ok") else 409)
+
+
 @app.route("/api/manage/cache/clear", methods=["POST"])
 @_require_management_auth
 def manage_cache_clear() -> Any:

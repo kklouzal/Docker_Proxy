@@ -971,13 +971,28 @@ def _current_managed_config() -> str:
 
 
 def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
-    """Validate locally when Squid is available in the admin image, otherwise defer to the proxy."""
-    ok, detail = squid_controller.validate_config_text(config_text)
-    if ok:
-        return ok, detail
-    if shutil.which('squid') is None:
-        return True, 'Validation is deferred to the selected proxy during sync.'
-    return ok, detail
+    """Validate with the selected proxy runtime when available.
+
+    The admin UI image is intentionally standalone-capable and does not require
+    a local Squid process. Real validation belongs on the selected proxy because
+    that container owns the Squid binary, generated includes, ssl_db paths, and
+    cache runtime layout.
+    """
+    proxy_id = get_proxy_id()
+    if _active_proxy_management_url():
+        try:
+            result = get_proxy_client().validate_config(proxy_id, config_text)
+            return bool(result.get('ok', False)), str(result.get('detail') or '')
+        except ProxyClientError as exc:
+            return False, f'Proxy validation failed: {exc}'
+
+    if shutil.which('squid') is not None:
+        return squid_controller.validate_config_text(config_text)
+
+    return False, (
+        f"Proxy '{proxy_id}' is not registered with a management URL, and this admin UI container "
+        "does not include a local Squid runtime for validation. Start/select a proxy container before applying config changes."
+    )
 
 
 def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> tuple[bool, str]:
@@ -985,6 +1000,10 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
     proxy_id = get_proxy_id()
     created_by = str(session.get('user') or '')
     revisions = get_config_revisions()
+    valid, validation_detail = _validate_config_for_current_mode(config_text)
+    if not valid:
+        detail = (validation_detail or 'Squid config validation failed.').strip()
+        return False, f'Config validation failed; revision was not activated.\n{detail}'.strip()
     revision = revisions.create_revision(
         proxy_id,
         config_text,
@@ -993,6 +1012,11 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
         activate=True,
     )
     if not _uses_remote_proxy_runtime():
+        if shutil.which('squid') is None:
+            return False, (
+                f"Revision {revision.revision_id} saved, but no proxy management URL is registered for proxy '{proxy_id}' "
+                "and the admin UI container cannot apply Squid configs locally."
+            )
         ok, detail = squid_controller.apply_config_text(config_text)
         revisions.record_apply_result(
             proxy_id,

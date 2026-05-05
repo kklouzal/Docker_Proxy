@@ -97,6 +97,24 @@ class ProxyClient:
             timeout_seconds=timeout_seconds,
         ).data
 
+    def validate_config(self, proxy_id: object | None, config_text: str, *, timeout_seconds: float = 20.0) -> dict[str, Any]:
+        return self._request(
+            proxy_id,
+            method="POST",
+            path="/api/manage/config/validate",
+            payload={"config_text": config_text or ""},
+            timeout_seconds=timeout_seconds,
+        ).data
+
+    def rollback_config(self, proxy_id: object | None, *, reason: str = "", timeout_seconds: float = 60.0) -> dict[str, Any]:
+        return self._request(
+            proxy_id,
+            method="POST",
+            path="/api/manage/config/rollback",
+            payload={"reason": reason or "Rollback requested by admin UI."},
+            timeout_seconds=timeout_seconds,
+        ).data
+
     def clear_proxy_cache(self, proxy_id: object | None, *, timeout_seconds: float = 60.0) -> dict[str, Any]:
         return self._request(
             proxy_id,

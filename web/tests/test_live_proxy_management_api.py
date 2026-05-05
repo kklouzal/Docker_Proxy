@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, live_stack_ready, wait_for_proxy_management_payload
+from .live_test_helpers import LIVE_CONFIG, LiveStackClient, active_config_text, live_stack_ready, wait_for_proxy_management_payload
 
 
 pytestmark = pytest.mark.live
@@ -64,6 +64,27 @@ def test_live_proxy_management_sync_endpoint(live_stack_ready: dict[str, dict[st
     payload = response.json()
     assert isinstance(payload, dict)
     assert payload.get("ok") is True
+
+
+def test_live_proxy_management_config_validation_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:
+    _ = live_stack_ready
+    client = LiveStackClient()
+
+    valid_response = client.proxy_management_post_json(
+        "/api/manage/config/validate",
+        {"config_text": active_config_text(LIVE_CONFIG.primary_proxy_id)},
+        timeout_seconds=45.0,
+    )
+    invalid_response = client.proxy_management_post_json(
+        "/api/manage/config/validate",
+        {"config_text": "not_a_real_squid_directive definitely-invalid\n"},
+        timeout_seconds=45.0,
+    )
+
+    assert valid_response.status == 200
+    assert valid_response.json().get("ok") is True
+    assert invalid_response.status == 200
+    assert invalid_response.json().get("ok") is False
 
 
 def test_live_proxy_management_cache_clear_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:

@@ -1035,10 +1035,10 @@ class DiagnosticStore:
             params.append(normalized_domain)
         raw_url = (url or "").strip()
         if raw_url:
-            like_parts.append("url LIKE %s ESCAPE '\\'")
+            like_parts.append("url LIKE %s ESCAPE '\\\\'")
             params.append(f"%{_escape_like(raw_url)}%")
         elif normalized_domain:
-            like_parts.append("url LIKE %s ESCAPE '\\'")
+            like_parts.append("url LIKE %s ESCAPE '\\\\'")
             params.append(f"%{_escape_like(normalized_domain)}%")
         if like_parts:
             where.append("(" + " OR ".join(like_parts) + ")")

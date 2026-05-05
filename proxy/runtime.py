@@ -282,6 +282,60 @@ class ProxyRuntime:
         detail = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
         return (not bool(stderr)), detail or "Squid reloaded."
 
+    def validate_config_text(self, config_text: str) -> Dict[str, Any]:
+        normalized = self.controller.normalize_config_text(config_text or "")
+        ok, detail = self.controller.validate_config_text(normalized)
+        return {
+            "ok": bool(ok),
+            "proxy_id": self.proxy_id,
+            "detail": str(detail or ("Squid config validation succeeded." if ok else "Squid config validation failed.")),
+            "config_sha256": hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest() if normalized else "",
+        }
+
+    def rollback_last_known_good_config(self, *, reason: str = "") -> Dict[str, Any]:
+        self._invalidate_health_cache()
+        ok, detail = self.controller.restore_last_known_good_config(reason=reason or "Rollback requested.")
+        current_sha = self._current_config_sha()
+        try:
+            self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=current_sha)
+        except Exception:
+            pass
+        return {
+            "ok": bool(ok),
+            "proxy_id": self.proxy_id,
+            "changed": bool(ok),
+            "rolled_back": bool(ok),
+            "current_config_sha": current_sha,
+            "detail": detail,
+        }
+
+    def self_heal_config_if_needed(self, *, reason: str = "health check") -> Dict[str, Any]:
+        try:
+            stdout, stderr = self.controller.get_status()
+            status_detail = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
+            proxy_ok = not bool(stderr)
+        except Exception as exc:
+            status_detail = str(exc)
+            proxy_ok = False
+
+        listener_ok = True
+        try:
+            listener_ok = bool(self.controller._wait_for_http_listener(timeout=1.0))
+        except Exception:
+            listener_ok = proxy_ok
+
+        if proxy_ok and listener_ok:
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "rolled_back": False,
+                "detail": status_detail or "Squid is healthy.",
+            }
+
+        detail_reason = f"Self-heal triggered by {reason}: {status_detail or 'Squid health check failed.'}"
+        return self.rollback_last_known_good_config(reason=detail_reason)
+
     def _find_sslcrtd_binary(self) -> str:
         candidates = [
             shutil.which("ssl_crtd"),
@@ -803,6 +857,15 @@ class ProxyRuntime:
         return result
 
     def heartbeat(self) -> Dict[str, Any]:
+        try:
+            self.self_heal_config_if_needed(reason="heartbeat")
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "proxy_runtime.heartbeat.self_heal",
+                interval_seconds=30.0,
+                message="Proxy config self-heal check failed",
+            )
         health = self.collect_health()
         public_fields = resolve_local_proxy_public_fields()
         self.registry.heartbeat(
@@ -890,6 +953,36 @@ class ProxyRuntime:
             if policy_reload_required and not reload_ok:
                 self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
             return result
+
+        latest_apply = None
+        try:
+            latest_apply = self.revisions.latest_apply(self.proxy_id)
+        except Exception:
+            latest_apply = None
+        if (
+            not force
+            and latest_apply is not None
+            and int(getattr(latest_apply, "revision_id", 0) or 0) == int(revision_meta.revision_id or 0)
+            and not bool(getattr(latest_apply, "ok", False))
+        ):
+            detail = (
+                f"Active config revision {revision_meta.revision_id} previously failed on this proxy; "
+                "keeping the last-known-good running config until a new revision is activated or forced sync is requested."
+            )
+            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "revision_id": revision_meta.revision_id,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "certificate_changed": cert_changed,
+                "policy_changed": policy_changed,
+                "adblock_changed": adblock_changed,
+                "pac_changed": pac_changed,
+                "config_changed": False,
+                "rollback_active": True,
+                "detail": detail,
+            }
 
         if not force and revision_meta.config_sha256 == current_sha:
             reload_ok = True

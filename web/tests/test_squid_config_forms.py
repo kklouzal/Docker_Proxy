@@ -84,6 +84,22 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["client_db_on"] is True
 
 
+def test_generated_template_defaults_to_rock_cache_store() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template")
+
+    config = controller.generate_config_from_template(build_template_options({}, max_workers=4))
+
+    assert "cache_dir rock /var/spool/squid 10000 slot-size=32768" in config
+    assert "cache_dir ufs" not in config
+    assert "store_dir_select_algorithm least-load" in config
+    assert "cache_replacement_policy heap GDSF" in config
+    assert "maximum_object_size 128 MB" in config
+    assert "store_avg_object_size 13 KB" in config
+
+
 def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic():
     field_map = get_config_ui_field_map()
 

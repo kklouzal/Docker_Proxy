@@ -19,9 +19,6 @@ x-shared-app-env: &shared-app-env
 services:
   admin-ui:
     restart: unless-stopped
-    depends_on:
-      proxy:
-        condition: service_healthy
     ports:
       - "0.0.0.0:5000:5000"       # Flask UI
     volumes:
