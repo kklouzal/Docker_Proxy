@@ -64,3 +64,34 @@ def test_webfilter_apply_squid_include_writes_materialized_files(tmp_path, monke
 
     assert Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
     assert Path(store.whitelist_path).read_text(encoding="utf-8") == state.whitelist_text
+
+
+def test_write_managed_text_files_restores_previous_files_when_late_replace_fails(tmp_path, monkeypatch):
+    _add_repo_paths()
+    import services.materialized_files as materialized_files  # type: ignore
+
+    first = tmp_path / "first.conf"
+    second = tmp_path / "second.conf"
+    first.write_text("old first\n", encoding="utf-8")
+    second.write_text("old second\n", encoding="utf-8")
+    real_replace = materialized_files.os.replace
+    replace_calls: list[tuple[str, str]] = []
+
+    def flaky_replace(src, dst):
+        replace_calls.append((str(src), str(dst)))
+        if str(dst) == str(second):
+            raise OSError("disk full")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(materialized_files.os, "replace", flaky_replace)
+
+    try:
+        materialized_files.write_managed_text_files((str(first), "new first\n"), (str(second), "new second\n"))
+    except OSError as exc:
+        assert "disk full" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected second replace failure")
+
+    assert replace_calls and replace_calls[-1][1] == str(second)
+    assert first.read_text(encoding="utf-8") == "old first\n"
+    assert second.read_text(encoding="utf-8") == "old second\n"

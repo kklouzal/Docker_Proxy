@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import time
 
 import pytest
 
@@ -193,6 +194,7 @@ def test_live_exclusions_add_remove_and_apply_reflect_in_proxy_pac(admin_client:
         "/exclusions",
         {"action": "apply"},
         csrf_path="/exclusions",
+        timeout_seconds=90.0,
     )
     assert apply_response.status == 200
     assert query_params(apply_response.url).get("ok") == ["1"]
@@ -464,7 +466,13 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(admin_client: Li
     assert sync_payload.get("ok") is True
     assert sync_payload.get("adblock_changed") is True
 
-    latest_apply = _adblock_artifacts_store().latest_apply(LIVE_CONFIG.primary_proxy_id)
+    deadline = time.time() + 60.0
+    latest_apply = None
+    while time.time() < deadline:
+        latest_apply = _adblock_artifacts_store().latest_apply(LIVE_CONFIG.primary_proxy_id)
+        if latest_apply is not None and latest_apply.revision_id == revision.revision_id:
+            break
+        time.sleep(1.0)
     assert latest_apply is not None
     assert latest_apply.revision_id == revision.revision_id
     assert latest_apply.ok is True

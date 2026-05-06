@@ -55,6 +55,14 @@ class LiveFixtureHandler(BaseHTTPRequestHandler):
             return
         self._send_json(self._payload())
 
+    def do_HEAD(self) -> None:
+        payload = self._payload()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "public, max-age=60")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length) if length else b""

@@ -146,8 +146,8 @@ def test_live_proxies_page_renders_registered_remote_proxy(multi_proxy_admin: Li
 
 
 def test_live_clamav_page_uses_selected_remote_proxy_health(multi_proxy_admin: LiveStackClient) -> None:
-    remote_response = multi_proxy_admin.admin_request(with_proxy_id("/clamav", LIVE_CONFIG.remote_proxy_id))
-    local_response = multi_proxy_admin.admin_request(with_proxy_id("/clamav", LIVE_CONFIG.primary_proxy_id))
+    remote_response = multi_proxy_admin.admin_request(with_proxy_id("/clamav", LIVE_CONFIG.remote_proxy_id), timeout_seconds=30.0)
+    local_response = multi_proxy_admin.admin_request(with_proxy_id("/clamav", LIVE_CONFIG.primary_proxy_id), timeout_seconds=30.0)
     assert remote_response.status == 200
     assert local_response.status == 200
     assert "clamav.edge-2.internal:3311" in remote_response.text

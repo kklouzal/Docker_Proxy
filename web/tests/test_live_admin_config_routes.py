@@ -121,6 +121,25 @@ def test_live_squid_config_manual_validate_and_apply_current_config(admin_client
     assert payload.get("status") in {"healthy", "degraded"}
 
 
+def test_live_squid_config_rejects_invalid_manual_apply_without_changing_active_config(admin_client: LiveStackClient) -> None:
+    original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
+    response = admin_client.admin_post_form(
+        "/squid/config?tab=config",
+        {
+            "tab": "config",
+            "action": "apply",
+            "config_text": "not_a_real_squid_directive definitely-invalid\n",
+        },
+        csrf_path="/squid/config?tab=config",
+        timeout_seconds=90.0,
+    )
+
+    assert response.status == 200
+    assert query_params(response.url).get("error") == ["1"]
+    assert active_config_text(LIVE_CONFIG.primary_proxy_id) == original_config
+    wait_for_proxy_management_payload()
+
+
 def test_live_observability_and_ssl_exports_return_csv(admin_client: LiveStackClient) -> None:
     observability_export = admin_client.admin_request("/observability/export?pane=destinations&window=3600&limit=25")
     assert observability_export.status == 200

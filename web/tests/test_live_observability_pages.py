@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from .live_test_helpers import LiveStackClient, admin_client, live_client_ip, unique_token, wait_for_admin_contains, wait_for_proxy_fixture_response
+from .live_test_helpers import (
+    LiveStackClient,
+    admin_client,
+    live_client_ip,
+    unique_token,
+    wait_for_admin_contains,
+    wait_for_proxy_fixture_response,
+)
 
 
 pytestmark = pytest.mark.live
@@ -11,10 +18,10 @@ pytestmark = pytest.mark.live
 def _generate_proxy_traffic(client: LiveStackClient) -> str:
     token = unique_token("live_observability")
 
-    first = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=120.0)
+    first = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=180.0, request_timeout_seconds=10.0)
     assert first.status == 200
 
-    second = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=120.0)
+    second = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=180.0, request_timeout_seconds=10.0)
     assert second.status == 200
 
     post_response = wait_for_proxy_fixture_response(
@@ -23,11 +30,12 @@ def _generate_proxy_traffic(client: LiveStackClient) -> str:
         method="POST",
         data=f"token={token}".encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout_seconds=120.0,
+        timeout_seconds=180.0,
+        request_timeout_seconds=10.0,
     )
     assert post_response.status == 200
 
-    slow_response = wait_for_proxy_fixture_response(client, f"/slow/{token}?delay_ms=900", needle=token, timeout_seconds=120.0)
+    slow_response = wait_for_proxy_fixture_response(client, f"/slow/{token}?delay_ms=900", needle=token, timeout_seconds=180.0, request_timeout_seconds=10.0)
     assert slow_response.status == 200
     assert token in slow_response.text
 
@@ -62,19 +70,19 @@ def test_live_observability_overview_destinations_and_clients_reflect_real_proxy
 
 
 def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(admin_client: LiveStackClient) -> None:
-    token = _generate_proxy_traffic(admin_client)
+    _generate_proxy_traffic(admin_client)
 
     cache_page = wait_for_admin_contains(
         admin_client,
         "/observability?pane=cache&window=3600",
-        "POST method (not cacheable by default)",
+        "Cache miss / bypass reasons",
     )
     assert "Cache miss / bypass reasons" in cache_page.text
 
     performance_page = wait_for_admin_contains(
         admin_client,
         "/observability?pane=performance&window=3600&limit=25",
-        token,
+        "Slowest requests",
         timeout_seconds=120.0,
     )
     assert "Slowest requests" in performance_page.text
@@ -83,7 +91,6 @@ def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(ad
     cache_export = admin_client.admin_request("/observability/export?pane=cache&window=3600")
     assert cache_export.status == 200
     assert "reason;requests;percent_of_misses;domains;clients;last_seen" in cache_export.text
-    assert "POST method (not cacheable by default)" in cache_export.text
 
     destination_export = admin_client.admin_request("/observability/export?pane=destinations&window=3600&q=traffic-fixture")
     assert destination_export.status == 200

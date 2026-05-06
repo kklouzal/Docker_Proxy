@@ -249,6 +249,68 @@ class ProxyRuntime:
             "programs": statuses,
         }
 
+    def test_control_supervisor_program(self, program_name: str, *, action: str, timeout_seconds: int = 30) -> Dict[str, Any]:
+        """Test-mode-only supervisor control for live recovery tests.
+
+        The management route that calls this method is gated by ENABLE_TEST_MODE
+        and token auth. Keep a second allowlist here so the helper never becomes
+        an arbitrary supervisorctl wrapper if a route is miswired.
+        """
+        self._invalidate_health_cache()
+        allowed_programs = {"squid", "cicap_adblock", "cicap_av", "pac_http"}
+        program = (program_name or "").strip()
+        requested_action = (action or "").strip().lower()
+        if program not in allowed_programs:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "program": program,
+                "action": requested_action,
+                "detail": "Program is not allowlisted for test supervisor control.",
+            }
+        if requested_action == "status":
+            ok, detail = self._supervisor_program_status(program, timeout_seconds=timeout_seconds)
+            return {"ok": ok, "proxy_id": self.proxy_id, "program": program, "action": requested_action, "detail": detail}
+        if requested_action == "restart":
+            ok, detail = self._restart_supervisor_program(program, timeout_seconds=timeout_seconds, stop_on_failure=False)
+            return {"ok": ok, "proxy_id": self.proxy_id, "program": program, "action": requested_action, "detail": detail}
+        if requested_action not in {"stop", "start"}:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "program": program,
+                "action": requested_action,
+                "detail": "Unsupported test supervisor action.",
+            }
+        try:
+            proc = subprocess.run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", requested_action, program],
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "program": program,
+                "action": requested_action,
+                "detail": public_error_message(exc, default=f"Failed to {requested_action} {program}."),
+            }
+        detail = _decode_completed(proc).strip() or f"{program} {requested_action} requested."
+        ok = proc.returncode == 0
+        if requested_action == "start" and ok:
+            status_ok, status_detail = self._supervisor_program_status(program, timeout_seconds=timeout_seconds)
+            ok = status_ok
+            if status_detail:
+                detail = f"{detail}\n{status_detail}"
+        return {
+            "ok": ok,
+            "proxy_id": self.proxy_id,
+            "program": program,
+            "action": requested_action,
+            "detail": detail,
+        }
+
     def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30, stop_on_failure: bool = False) -> tuple[bool, str]:
         details: list[str] = []
         try:

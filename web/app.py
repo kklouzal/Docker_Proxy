@@ -1966,7 +1966,7 @@ def _check_icap_av() -> Dict[str, Any]:
 
 def _clamav_remote_health(proxy_id: str) -> Dict[str, Any]:
     try:
-        return get_proxy_client().get_health(proxy_id)
+        return get_proxy_client().get_health(proxy_id, timeout_seconds=10.0)
     except ProxyClientError as exc:
         proxy = get_proxy_registry().get_proxy(proxy_id)
         return build_unavailable_runtime_health(str(exc), proxy_status=proxy.status if proxy else 'offline')
@@ -2383,37 +2383,42 @@ def upload_certificate_pfx():
         return _redirect_with_message('certs', ok=False, msg='Failed to read upload.')
 
     pfx_bytes = bytes(buf)
-    if not _uses_remote_proxy_runtime():
-        installed = install_pfx_as_ca(
-            (os.environ.get('CERTS_DIR') or '/etc/squid/ssl/certs').strip() or '/etc/squid/ssl/certs',
-            pfx_bytes,
-            password=password,
-        )
-        installed_bundle = getattr(installed, 'bundle', None)
-        ok = bool(getattr(installed, 'ok', False))
-        detail = str(getattr(installed, 'message', '') or '')
-        if ok and installed_bundle is not None:
-            ok, detail = _record_local_certificate_apply(
-                installed_bundle,
-                original_filename=(pfx_file.filename or '').strip(),
-                already_materialized=True,
+    try:
+        if not _uses_remote_proxy_runtime():
+            installed = install_pfx_as_ca(
+                (os.environ.get('CERTS_DIR') or '/etc/squid/ssl/certs').strip() or '/etc/squid/ssl/certs',
+                pfx_bytes,
+                password=password,
             )
-        elif ok:
-            reload_result = squid_controller.reload_squid()
-            if isinstance(reload_result, tuple) and len(reload_result) == 2:
-                stdout, stderr = reload_result
-                reload_detail = ((_decode_bytes(stdout) + '\n' + _decode_bytes(stderr)).strip())
-                ok = not bool(stderr)
-                detail = reload_detail or detail
-    else:
-        parsed = parse_pfx_bundle(pfx_bytes, password=password)
-        ok = bool(parsed.ok and parsed.bundle is not None)
-        detail = parsed.message
-        if ok and parsed.bundle is not None:
-            ok, detail = _publish_certificate_bundle_remote(
-                parsed.bundle,
-                original_filename=(pfx_file.filename or '').strip(),
-            )
+            installed_bundle = getattr(installed, 'bundle', None)
+            ok = bool(getattr(installed, 'ok', False))
+            detail = str(getattr(installed, 'message', '') or '')
+            if ok and installed_bundle is not None:
+                ok, detail = _record_local_certificate_apply(
+                    installed_bundle,
+                    original_filename=(pfx_file.filename or '').strip(),
+                    already_materialized=True,
+                )
+            elif ok:
+                reload_result = squid_controller.reload_squid()
+                if isinstance(reload_result, tuple) and len(reload_result) == 2:
+                    stdout, stderr = reload_result
+                    reload_detail = ((_decode_bytes(stdout) + '\n' + _decode_bytes(stderr)).strip())
+                    ok = not bool(stderr)
+                    detail = reload_detail or detail
+        else:
+            parsed = parse_pfx_bundle(pfx_bytes, password=password)
+            ok = bool(parsed.ok and parsed.bundle is not None)
+            detail = parsed.message
+            if ok and parsed.bundle is not None:
+                ok, detail = _publish_certificate_bundle_remote(
+                    parsed.bundle,
+                    original_filename=(pfx_file.filename or '').strip(),
+                )
+    except Exception as exc:
+        app.logger.exception('PFX upload failed')
+        ok = False
+        detail = public_error_message(exc, default='Failed to process uploaded PFX bundle.')
 
     _record_audit_event('ca_upload_pfx', ok=ok, detail=detail)
 

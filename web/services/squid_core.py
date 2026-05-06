@@ -312,6 +312,28 @@ class SquidController:
         except Exception as exc:
             return f"Failed to remove stale Squid PID file: {exc}"
 
+    def _wait_for_squid_pidfile_stale_or_absent(self, *, timeout: float = 10.0) -> bool:
+        pid_path = "/var/run/squid.pid"
+        deadline = time.time() + max(0.5, timeout)
+        while time.time() < deadline:
+            try:
+                if not os.path.exists(pid_path):
+                    return True
+                raw = Path(pid_path).read_text(encoding="utf-8", errors="replace").strip()
+                pid = int(raw or "0")
+                if pid <= 0 or not os.path.exists(f"/proc/{pid}"):
+                    return True
+                try:
+                    comm = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip().lower()
+                    if "squid" not in comm:
+                        return True
+                except Exception:
+                    return False
+            except Exception:
+                return False
+            time.sleep(0.5)
+        return False
+
     def restart_squid(self) -> Tuple[bool, str]:
         detail_parts: list[str] = []
         try:
@@ -338,8 +360,30 @@ class SquidController:
 
         try:
             start = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"], capture_output=True, timeout=25)
-            detail_parts.append(self._decode_completed(start) or "supervisorctl start squid")
-            if start.returncode != 0 and "already started" not in (self._decode_completed(start) or "").lower():
+            start_detail = self._decode_completed(start) or "supervisorctl start squid"
+            detail_parts.append(start_detail)
+            start_detail_lower = start_detail.lower()
+            if start.returncode != 0 and "already started" not in start_detail_lower:
+                if "already running" in start_detail_lower:
+                    if self._wait_for_http_listener(timeout=15.0):
+                        detail_parts.append("Squid was already running and its HTTP listener is accepting connections.")
+                        return True, "\n".join(part for part in detail_parts if part).strip()
+                    try:
+                        shutdown = self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=12)
+                        detail_parts.append(self._decode_completed(shutdown) or "squid shutdown requested after already-running start failure")
+                        self._wait_for_http_listener_absent(timeout=20.0)
+                        self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
+                        retry_stale = self._remove_stale_squid_pidfile()
+                        if retry_stale:
+                            detail_parts.append(retry_stale)
+                        retry = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"], capture_output=True, timeout=25)
+                        retry_detail = self._decode_completed(retry) or "supervisorctl start squid retry"
+                        detail_parts.append(retry_detail)
+                        if retry.returncode == 0 and self._wait_for_http_listener(timeout=45.0):
+                            detail_parts.append("Squid HTTP listener is accepting connections.")
+                            return True, "\n".join(part for part in detail_parts if part).strip()
+                    except Exception as exc:
+                        detail_parts.append(f"retry after already-running start failure failed: {exc}")
                 return False, "\n".join(detail_parts).strip()
             if self._wait_for_http_listener(timeout=45.0):
                 detail_parts.append("Squid HTTP listener is accepting connections.")
@@ -428,6 +472,10 @@ class SquidController:
                 detail_parts.append(self._decode_completed(prepare) or "squid -z failed")
             else:
                 detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
+            if self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0):
+                stale_pid_detail = self._remove_stale_squid_pidfile()
+                if stale_pid_detail:
+                    detail_parts.append(stale_pid_detail)
         except Exception as exc:
             detail_parts.append(f"squid -z error: {exc}")
 

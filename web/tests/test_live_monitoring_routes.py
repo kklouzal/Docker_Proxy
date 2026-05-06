@@ -38,7 +38,7 @@ def test_live_monitoring_redirects_and_admin_actions_follow_real_routes(admin_cl
     assert ssl_qs.get("window") == ["3600"]
     assert ssl_qs.get("q") == ["example.com"]
 
-    reload_response = admin_client.admin_post_form("/reload", {}, csrf_path="/")
+    reload_response = admin_client.admin_post_form("/reload", {}, csrf_path="/", timeout_seconds=90.0)
     assert reload_response.status == 200
     assert "Status" in reload_response.text
 

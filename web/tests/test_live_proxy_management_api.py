@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from .live_test_helpers import LIVE_CONFIG, LiveStackClient, active_config_text, live_stack_ready, wait_for_proxy_management_payload
@@ -58,13 +60,24 @@ def test_live_proxy_management_health_returns_payload(live_stack_ready: dict[str
 
 def test_live_proxy_management_health_reports_supervisor_programs(live_stack_ready: dict[str, dict[str, object]]) -> None:
     _ = live_stack_ready
+    expected_programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent", "pac_http")
+    deadline = time.time() + 120.0
     payload = wait_for_proxy_management_payload()
+    while time.time() < deadline:
+        services = payload.get("services") or {}
+        supervisor = services.get("supervisor") or {}
+        programs = supervisor.get("programs") or {}
+        if all(program in programs and programs[program].get("ok") is True for program in expected_programs):
+            break
+        time.sleep(1.0)
+        payload = wait_for_proxy_management_payload()
+
     services = payload.get("services") or {}
     supervisor = services.get("supervisor") or {}
     programs = supervisor.get("programs") or {}
 
     assert isinstance(supervisor.get("ok"), bool)
-    for program in ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent", "pac_http"):
+    for program in expected_programs:
         assert program in programs
         assert programs[program].get("ok") is True
         assert "RUNNING" in str(programs[program].get("detail") or "")
@@ -99,6 +112,26 @@ def test_live_proxy_management_config_validation_endpoint(live_stack_ready: dict
     assert valid_response.json().get("ok") is True
     assert invalid_response.status == 200
     assert invalid_response.json().get("ok") is False
+
+
+def test_live_proxy_management_rollback_endpoint_returns_structured_result_and_preserves_health(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
+    _ = live_stack_ready
+    client = LiveStackClient()
+    response = client.proxy_management_post_json(
+        "/api/manage/config/rollback",
+        {"reason": "live test rollback contract"},
+        timeout_seconds=90.0,
+    )
+    payload = response.json()
+
+    assert response.status in {200, 409}
+    assert isinstance(payload, dict)
+    assert payload.get("proxy_id") == LIVE_CONFIG.primary_proxy_id
+    assert isinstance(payload.get("ok"), bool)
+    assert "detail" in payload
+    wait_for_proxy_management_payload()
 
 
 def test_live_proxy_management_cache_clear_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:

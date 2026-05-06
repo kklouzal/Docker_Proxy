@@ -67,3 +67,71 @@ def test_config_revision_create_retries_transient_deadlock(monkeypatch) -> None:
 
     assert revision.revision_id == 42
     assert sum(1 for call in calls if "INSERT INTO proxy_config_revisions" in call) == 2
+
+
+def test_config_revision_lock_retry_exhaustion_preserves_exception(monkeypatch) -> None:
+    _add_web_to_path()
+    from services.config_revisions import ConfigRevisionStore  # type: ignore
+
+    store = ConfigRevisionStore()
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def always_deadlock():
+        attempts["count"] += 1
+        raise pymysql.OperationalError(1213, "Deadlock found when trying to get lock; try restarting transaction")
+
+    monkeypatch.setattr("services.config_revisions.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    try:
+        store._with_db_lock_retry(always_deadlock, attempts=3)
+    except pymysql.OperationalError as exc:
+        assert "Deadlock found" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected retry exhaustion to raise the original OperationalError")
+
+    assert attempts["count"] == 3
+    assert sleeps == [0.1, 0.2]
+
+
+def test_config_revision_retry_does_not_retry_non_lock_operational_errors(monkeypatch) -> None:
+    _add_web_to_path()
+    from services.config_revisions import ConfigRevisionStore  # type: ignore
+
+    store = ConfigRevisionStore()
+    attempts = {"count": 0}
+
+    def connection_error():
+        attempts["count"] += 1
+        raise pymysql.OperationalError(2003, "Can't connect to MySQL server")
+
+    monkeypatch.setattr("services.config_revisions.time.sleep", lambda _seconds: (_ for _ in ()).throw(AssertionError("sleep should not run")))
+
+    try:
+        store._with_db_lock_retry(connection_error, attempts=4)
+    except pymysql.OperationalError as exc:
+        assert "Can't connect" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected non-lock OperationalError to be raised immediately")
+
+    assert attempts["count"] == 1
+
+
+def test_config_revision_lock_retry_backoff_is_capped(monkeypatch) -> None:
+    _add_web_to_path()
+    from services.config_revisions import ConfigRevisionStore  # type: ignore
+
+    store = ConfigRevisionStore()
+    sleeps: list[float] = []
+    attempts = {"count": 0}
+
+    def fail_many_then_succeed():
+        attempts["count"] += 1
+        if attempts["count"] < 8:
+            raise pymysql.OperationalError(1205, "Lock wait timeout exceeded; try restarting transaction")
+        return "ok"
+
+    monkeypatch.setattr("services.config_revisions.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    assert store._with_db_lock_retry(fail_many_then_succeed, attempts=8) == "ok"
+    assert sleeps == [0.1, 0.2, 0.4, 0.8, 1.0, 1.0, 1.0]

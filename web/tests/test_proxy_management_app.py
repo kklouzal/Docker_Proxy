@@ -54,6 +54,11 @@ class _Runtime:
     def test_clamav_icap(self):
         return {"ok": False, "detail": "icap unavailable"}
 
+    def test_control_supervisor_program(self, program_name: str, *, action: str):
+        if program_name != "cicap_adblock":
+            return {"ok": False, "proxy_id": self.proxy_id, "program": program_name, "action": action, "detail": "not allowlisted"}
+        return {"ok": True, "proxy_id": self.proxy_id, "program": program_name, "action": action, "detail": "done"}
+
 
 class _BrokenHealthRuntime(_Runtime):
     def collect_health(self):
@@ -76,6 +81,7 @@ def test_proxy_management_api_requires_token_for_all_management_endpoints(monkey
         ("POST", "/api/manage/cache/clear", {}),
         ("POST", "/api/manage/clamav/test-eicar", {}),
         ("POST", "/api/manage/clamav/test-icap", {}),
+        ("POST", "/api/manage/test/supervisor/cicap_adblock/restart", {}),
     ]
     for method, path, payload in endpoints:
         response = client.open(path, method=method, json=payload)
@@ -140,3 +146,25 @@ def test_proxy_management_health_degrades_without_leaking_traceback(monkeypatch)
     assert payload["status"] == "degraded"
     assert payload["proxy_id"] == "edge-a"
     assert "traceback" not in str(payload).lower()
+
+
+def test_proxy_management_test_supervisor_route_requires_test_mode_and_uses_allowlist(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    monkeypatch.delenv("ENABLE_TEST_MODE", raising=False)
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    disabled = client.post("/api/manage/test/supervisor/cicap_adblock/restart", headers=headers)
+    assert disabled.status_code == 404
+
+    monkeypatch.setenv("ENABLE_TEST_MODE", "1")
+    allowed = client.post("/api/manage/test/supervisor/cicap_adblock/restart", headers=headers)
+    rejected = client.post("/api/manage/test/supervisor/proxy_api/stop", headers=headers)
+
+    assert allowed.status_code == 200
+    assert allowed.get_json()["ok"] is True
+    assert allowed.get_json()["action"] == "restart"
+    assert rejected.status_code == 409
+    assert rejected.get_json()["ok"] is False

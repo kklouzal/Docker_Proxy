@@ -14,7 +14,14 @@ from services.errors import public_error_message
 
 F = TypeVar("F", bound=Callable[..., Any])
 app = Flask(__name__)
-runtime = get_runtime()
+runtime: Any | None = None
+
+
+def _runtime() -> Any:
+    global runtime
+    if runtime is None:
+        runtime = get_runtime()
+    return runtime
 
 
 
@@ -44,6 +51,10 @@ def _require_management_auth(func: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
+def _test_mode_enabled() -> bool:
+    return (os.environ.get("ENABLE_TEST_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @app.route("/health", methods=["GET"])
 def health() -> Any:
     return jsonify({"ok": True, "service": "proxy-management"}), 200
@@ -53,14 +64,15 @@ def health() -> Any:
 @_require_management_auth
 def manage_health() -> Any:
     try:
-        return jsonify(runtime.collect_health()), 200
+        current_runtime = _runtime()
+        return jsonify(current_runtime.collect_health()), 200
     except Exception as exc:
         detail = public_error_message(exc, default="Proxy health collection failed.")
         return jsonify(
             {
                 "ok": False,
                 "status": "degraded",
-                "proxy_id": runtime.proxy_id,
+                "proxy_id": getattr(runtime, "proxy_id", ""),
                 "proxy_status": detail,
                 "stats": {},
                 "services": {},
@@ -74,7 +86,7 @@ def manage_health() -> Any:
 @_require_management_auth
 def manage_sync() -> Any:
     payload = request.get_json(silent=True) or {}
-    result = runtime.sync_from_db(force=bool(payload.get("force")))
+    result = _runtime().sync_from_db(force=bool(payload.get("force")))
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
@@ -82,7 +94,7 @@ def manage_sync() -> Any:
 @_require_management_auth
 def manage_config_validate() -> Any:
     payload = request.get_json(silent=True) or {}
-    result = runtime.validate_config_text(str(payload.get("config_text") or ""))
+    result = _runtime().validate_config_text(str(payload.get("config_text") or ""))
     return jsonify(result), 200
 
 
@@ -90,29 +102,38 @@ def manage_config_validate() -> Any:
 @_require_management_auth
 def manage_config_rollback() -> Any:
     payload = request.get_json(silent=True) or {}
-    result = runtime.rollback_last_known_good_config(reason=str(payload.get("reason") or "Rollback requested by management API."))
+    result = _runtime().rollback_last_known_good_config(reason=str(payload.get("reason") or "Rollback requested by management API."))
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
 @app.route("/api/manage/cache/clear", methods=["POST"])
 @_require_management_auth
 def manage_cache_clear() -> Any:
-    result = runtime.clear_cache()
+    result = _runtime().clear_cache()
     return jsonify(result), (200 if result.get("ok") else 500)
 
 
 @app.route("/api/manage/clamav/test-eicar", methods=["POST"])
 @_require_management_auth
 def manage_clamav_test_eicar() -> Any:
-    result = runtime.test_clamav_eicar()
+    result = _runtime().test_clamav_eicar()
     return jsonify(result), (200 if result.get("ok") else 503)
 
 
 @app.route("/api/manage/clamav/test-icap", methods=["POST"])
 @_require_management_auth
 def manage_clamav_test_icap() -> Any:
-    result = runtime.test_clamav_icap()
+    result = _runtime().test_clamav_icap()
     return jsonify(result), (200 if result.get("ok") else 503)
+
+
+@app.route("/api/manage/test/supervisor/<program_name>/<action>", methods=["POST"])
+@_require_management_auth
+def manage_test_supervisor(program_name: str, action: str) -> Any:
+    if not _test_mode_enabled():
+        abort(404)
+    result = _runtime().test_control_supervisor_program(program_name, action=action)
+    return jsonify(result), (200 if result.get("ok") else 409)
 
 
 if (os.environ.get("DISABLE_PROXY_AGENT") or "").strip() != "1":
