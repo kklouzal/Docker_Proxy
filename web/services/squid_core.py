@@ -293,6 +293,25 @@ class SquidController:
                 return True
         return False
 
+    def _remove_stale_squid_pidfile(self) -> str:
+        pid_path = "/var/run/squid.pid"
+        try:
+            if not os.path.exists(pid_path):
+                return ""
+            raw = Path(pid_path).read_text(encoding="utf-8", errors="replace").strip()
+            pid = int(raw or "0")
+            if pid > 0 and os.path.exists(f"/proc/{pid}"):
+                try:
+                    comm = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip().lower()
+                    if "squid" in comm:
+                        return ""
+                except Exception:
+                    return ""
+            os.unlink(pid_path)
+            return f"Removed stale Squid PID file {pid_path}."
+        except Exception as exc:
+            return f"Failed to remove stale Squid PID file: {exc}"
+
     def restart_squid(self) -> Tuple[bool, str]:
         detail_parts: list[str] = []
         try:
@@ -312,6 +331,10 @@ class SquidController:
                 return False, "\n".join(
                     part for part in detail_parts + ["Squid HTTP listener did not release before restart."] if part
                 ).strip()
+
+        stale_pid_detail = self._remove_stale_squid_pidfile()
+        if stale_pid_detail:
+            detail_parts.append(stale_pid_detail)
 
         try:
             start = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"], capture_output=True, timeout=25)

@@ -53,3 +53,17 @@ def test_auth_store_username_and_password_validation(tmp_path) -> None:
     store.add_user("user_1", "1234")
     assert store.verify_user("user_1", "1234") is True
     assert store.verify_user("user_1", "nope") is False
+
+    with pytest.raises(ValueError, match="already exists"):
+        store.add_user("user_1", "abcd")
+
+    with pytest.raises(ValueError, match="not found"):
+        store.set_password("missing", "abcd")
+
+    with pytest.raises(ValueError, match="not found"):
+        store.delete_user("missing")
+
+    store.set_password("user_1", "abcd")
+    assert store.verify_user("user_1", "abcd") is True
+    store.delete_user("user_1")
+    assert store.verify_user("user_1", "abcd") is False

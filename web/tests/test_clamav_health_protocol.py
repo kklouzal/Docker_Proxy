@@ -118,4 +118,5 @@ def test_eicar_reports_socket_failure_without_filesystem_side_effects(tmp_path, 
     monkeypatch.chdir(tmp_path)
     result = test_eicar(host="127.0.0.1", port=port, timeout=0.2)
     assert result.get("ok") is False
+    assert f"127.0.0.1:{port}" in str(result.get("detail") or "")
     assert set(os.listdir(tmp_path)) == before

@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from services.db import connect
+from services.db import OPERATIONAL_ERRORS, connect
 from services.proxy_context import normalize_proxy_id
 
 
@@ -47,6 +47,26 @@ class ConfigRevisionMetadata:
 class ConfigRevisionStore:
     def _connect(self):
         return connect()
+
+    def _is_transient_db_lock(self, exc: BaseException) -> bool:
+        if not isinstance(exc, OPERATIONAL_ERRORS):
+            return False
+        text = str(exc).lower()
+        return "deadlock found" in text or "lock wait timeout" in text or "try restarting transaction" in text
+
+    def _with_db_lock_retry(self, fn, *, attempts: int = 4):
+        last_exc: BaseException | None = None
+        for i in range(max(1, int(attempts))):
+            try:
+                return fn()
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_transient_db_lock(exc) or i >= max(1, int(attempts)) - 1:
+                    raise
+                time.sleep(min(1.0, 0.1 * (2 ** i)))
+        if last_exc is not None:
+            raise last_exc
+        return fn()
 
     def init_db(self) -> None:
         with self._connect() as conn:
@@ -165,6 +185,25 @@ class ConfigRevisionStore:
         source_kind: str = "manual",
         activate: bool = True,
     ) -> ConfigRevision:
+        return self._with_db_lock_retry(
+            lambda: self._create_revision_once(
+                proxy_id,
+                config_text,
+                created_by=created_by,
+                source_kind=source_kind,
+                activate=activate,
+            )
+        )
+
+    def _create_revision_once(
+        self,
+        proxy_id: object | None,
+        config_text: str,
+        *,
+        created_by: str = "",
+        source_kind: str = "manual",
+        activate: bool = True,
+    ) -> ConfigRevision:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         text = config_text or ""
@@ -214,16 +253,27 @@ class ConfigRevisionStore:
         created_by: str = "system",
         source_kind: str = "bootstrap",
     ) -> ConfigRevision:
+        return self._with_db_lock_retry(
+            lambda: self._ensure_active_revision_once(
+                proxy_id,
+                config_text,
+                created_by=created_by,
+                source_kind=source_kind,
+            )
+        )
+
+    def _ensure_active_revision_once(
+        self,
+        proxy_id: object | None,
+        config_text: str,
+        *,
+        created_by: str = "system",
+        source_kind: str = "bootstrap",
+    ) -> ConfigRevision:
         current = self.get_active_revision(proxy_id)
         if current is not None:
             return current
-        return self.create_revision(
-            proxy_id,
-            config_text,
-            created_by=created_by,
-            source_kind=source_kind,
-            activate=True,
-        )
+        return self._create_revision_once(proxy_id, config_text, created_by=created_by, source_kind=source_kind, activate=True)
 
     def record_apply_result(
         self,

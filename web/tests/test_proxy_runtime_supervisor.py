@@ -344,6 +344,33 @@ def test_squid_controller_validation_timeout_returns_actionable_detail(tmp_path)
     assert detail == "Squid config validation timed out after 15 seconds."
 
 
+def test_squid_controller_removes_stale_pidfile_before_restart(monkeypatch, tmp_path) -> None:
+    _add_repo_paths()
+    import services.squid_core as squid_core  # type: ignore
+    from services.squid_core import SquidController  # type: ignore
+
+    calls: list[list[str]] = []
+    unlinked: list[str] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return _cp(0, stdout="ok")
+
+    controller = SquidController(str(tmp_path / "squid.conf"), cmd_run=fake_run)
+    monkeypatch.setattr(controller, "_wait_for_http_listener_absent", lambda *, timeout: True)
+    monkeypatch.setattr(controller, "_wait_for_http_listener", lambda *, timeout: True)
+    monkeypatch.setattr(squid_core.os.path, "exists", lambda path: path == "/var/run/squid.pid")
+    monkeypatch.setattr(squid_core.Path, "read_text", lambda self, **_kwargs: "12345")
+    monkeypatch.setattr(squid_core.os, "unlink", lambda path: unlinked.append(path))
+
+    ok, detail = controller.restart_squid()
+
+    assert ok is True
+    assert unlinked == ["/var/run/squid.pid"]
+    assert "Removed stale Squid PID file" in detail
+    assert calls[-1][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "start"]
+
+
 def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fails(tmp_path, monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

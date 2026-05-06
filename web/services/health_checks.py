@@ -204,13 +204,10 @@ def test_clamd_eicar(
         ok = ("Eicar" in detail) or ("FOUND" in detail)
         return {"ok": ok, "detail": detail or f"no data from {resolved_host}:{resolved_port}"}
     except Exception as exc:
+        error_detail = _format_error(exc, error_formatter=error_formatter)
         return {
             "ok": False,
-            "detail": _format_error(
-                exc,
-                error_formatter=error_formatter,
-                default=f"Failed to contact clamd at {resolved_host}:{resolved_port}.",
-            ),
+            "detail": f"{resolved_host}:{resolved_port}: {error_detail}",
         }
 
 

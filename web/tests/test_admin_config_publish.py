@@ -4,6 +4,7 @@ import importlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 
 def _add_web_path() -> None:
@@ -154,3 +155,53 @@ def test_validate_config_uses_selected_proxy_management_api(monkeypatch, tmp_pat
     assert ok is True
     assert detail == "valid on proxy"
     assert captured == {"proxy_id": "edge-a", "config_text": "workers 1\n"}
+
+
+class _AdminStore:
+    def __init__(self, users):
+        self.users = list(users)
+        self.deleted: list[str] = []
+
+    def list_users(self):
+        return list(self.users)
+
+    def add_user(self, username, password):
+        raise AssertionError("add_user should not be called")
+
+    def set_password(self, username, new_password):
+        raise AssertionError("set_password should not be called")
+
+    def delete_user(self, username):
+        self.deleted.append(username)
+
+
+def _message_from_redirect(location: str) -> str:
+    return (parse_qs(urlsplit(location).query).get("msg") or [""])[0]
+
+
+def test_administration_handler_rejects_current_user_and_last_user_deletion(monkeypatch, tmp_path) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "delete_user", "username": "Admin"}):
+        response = admin_app._handle_administration_post(_AdminStore(["Admin", "other"]), "admin")
+        assert _message_from_redirect(response.location) == "Cannot remove the currently signed-in user."
+
+    one_user_store = _AdminStore(["admin"])
+    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "delete_user", "username": "other"}):
+        response = admin_app._handle_administration_post(one_user_store, "admin")
+        assert _message_from_redirect(response.location) == "Cannot remove the last user."
+        assert one_user_store.deleted == []
+
+
+def test_administration_handler_allows_other_user_deletion_and_rejects_unknown_action(monkeypatch, tmp_path) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+    store = _AdminStore(["admin", "operator"])
+
+    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "delete_user", "username": "operator"}):
+        response = admin_app._handle_administration_post(store, "admin")
+        assert _message_from_redirect(response.location) == "User removed."
+        assert store.deleted == ["operator"]
+
+    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "definitely_unknown"}):
+        response = admin_app._handle_administration_post(store, "admin")
+        assert _message_from_redirect(response.location) == "Unknown action."
