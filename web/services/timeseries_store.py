@@ -59,6 +59,24 @@ class TimeSeriesStore:
     def _connect(self):
         return connect()
 
+    def _mark_db_uninitialized(self) -> None:
+        with self._db_init_lock:
+            self._db_initialized = False
+
+    def _is_missing_table_error(self, exc: BaseException) -> bool:
+        text = str(exc).lower()
+        return "doesn't exist" in text or "does not exist" in text or "1146" in text
+
+    def _with_missing_table_retry(self, fn):
+        try:
+            return fn()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc):
+                raise
+            self._mark_db_uninitialized()
+            self.init_db()
+            return fn()
+
     def init_db(self) -> None:
         if self._db_initialized:
             return
@@ -95,21 +113,24 @@ class TimeSeriesStore:
         hit_rate = _get_metric(stats, "squid.hit_rate.request_hit_ratio")
         proxy_id = get_proxy_id()
 
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE
-                    count = VALUES(count),
-                    cpu = VALUES(cpu),
-                    mem = VALUES(mem),
-                    disk_used = VALUES(disk_used),
-                    cache_dir_size = VALUES(cache_dir_size),
-                    hit_rate = VALUES(hit_rate)
-                """,
-                (proxy_id, ts_i, 1, cpu, mem, disk_used, cache_dir_size, hit_rate),
-            )
+        def write_snapshot() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                        count = VALUES(count),
+                        cpu = VALUES(cpu),
+                        mem = VALUES(mem),
+                        disk_used = VALUES(disk_used),
+                        cache_dir_size = VALUES(cache_dir_size),
+                        hit_rate = VALUES(hit_rate)
+                    """,
+                    (proxy_id, ts_i, 1, cpu, mem, disk_used, cache_dir_size, hit_rate),
+                )
+
+        self._with_missing_table_retry(write_snapshot)
 
     def _rollup(self, src_table: str, dst_table: str, dst_seconds: int, cutoff_end_ts: int, proxy_id: str) -> None:
         # Roll complete destination buckets with bucket_start < aligned_end.
@@ -117,34 +138,37 @@ class TimeSeriesStore:
         if aligned_end <= 0:
             return
 
-        with self._connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                SELECT
-                    proxy_id,
-                    (ts / %s) * %s AS bucket_start,
-                    SUM(count) AS cnt,
-                    CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END,
-                    CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END,
-                    CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END,
-                    CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END,
-                    CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END
-                FROM {src_table}
-                WHERE proxy_id = %s AND ts < %s
-                GROUP BY proxy_id, bucket_start
-                ON DUPLICATE KEY UPDATE
-                    count = VALUES(count),
-                    cpu = VALUES(cpu),
-                    mem = VALUES(mem),
-                    disk_used = VALUES(disk_used),
-                    cache_dir_size = VALUES(cache_dir_size),
-                    hit_rate = VALUES(hit_rate)
-                """,
-                (dst_seconds, dst_seconds, proxy_id, aligned_end),
-            )
+        def rollup_bucket() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    f"""
+                    INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+                    SELECT
+                        proxy_id,
+                        (ts / %s) * %s AS bucket_start,
+                        SUM(count) AS cnt,
+                        CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END,
+                        CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END,
+                        CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END,
+                        CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END,
+                        CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END
+                    FROM {src_table}
+                    WHERE proxy_id = %s AND ts < %s
+                    GROUP BY proxy_id, bucket_start
+                    ON DUPLICATE KEY UPDATE
+                        count = VALUES(count),
+                        cpu = VALUES(cpu),
+                        mem = VALUES(mem),
+                        disk_used = VALUES(disk_used),
+                        cache_dir_size = VALUES(cache_dir_size),
+                        hit_rate = VALUES(hit_rate)
+                    """,
+                    (dst_seconds, dst_seconds, proxy_id, aligned_end),
+                )
 
-            conn.execute(f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_end))
+                conn.execute(f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_end))
+
+        self._with_missing_table_retry(rollup_bucket)
 
     def rollup_and_prune(self, ts: Optional[int] = None) -> None:
         self.init_db()
@@ -177,8 +201,13 @@ class TimeSeriesStore:
         cutoff_y = now - keep_1y
         aligned_y = (cutoff_y // (60 * 60 * 24 * 365)) * (60 * 60 * 24 * 365)
         if aligned_y > 0:
-            with self._connect() as conn:
-                conn.execute("DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_y))
+            self._with_missing_table_retry(
+                lambda: self._delete_old_year_points(proxy_id=proxy_id, aligned_y=aligned_y)
+            )
+
+    def _delete_old_year_points(self, *, proxy_id: str, aligned_y: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_y))
 
     def summary(self) -> Dict[str, Any]:
         # Returns weighted averages for recent windows.
@@ -193,26 +222,30 @@ class TimeSeriesStore:
         proxy_id = get_proxy_id()
 
         out: Dict[str, Any] = {}
-        with self._connect() as conn:
-            for label, table, since in windows:
-                row = conn.execute(
-                    f"""
-                    SELECT
-                        SUM(count) AS cnt,
-                        CASE WHEN SUM(count) > 0 THEN SUM(cpu * count)/SUM(count) ELSE NULL END AS cpu,
-                        CASE WHEN SUM(count) > 0 THEN SUM(mem * count)/SUM(count) ELSE NULL END AS mem,
-                        CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count)/SUM(count) ELSE NULL END AS hit
-                    FROM {table}
-                    WHERE proxy_id = %s AND ts >= %s
-                    """,
-                    (proxy_id, int(since)),
-                ).fetchone()
-                out[label] = {
-                    "count": int(row[0] or 0),
-                    "cpu_avg": row[1],
-                    "mem_avg": row[2],
-                    "hit_rate_avg": row[3],
-                }
+        def read_summary() -> None:
+            with self._connect() as conn:
+                for label, table, since in windows:
+                    row = conn.execute(
+                        f"""
+                        SELECT
+                            SUM(count) AS cnt,
+                            CASE WHEN SUM(count) > 0 THEN SUM(cpu * count)/SUM(count) ELSE NULL END AS cpu,
+                            CASE WHEN SUM(count) > 0 THEN SUM(mem * count)/SUM(count) ELSE NULL END AS mem,
+                            CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count)/SUM(count) ELSE NULL END AS hit
+                        FROM {table}
+                        WHERE proxy_id = %s AND ts >= %s
+                        """,
+                        (proxy_id, int(since)),
+                    ).fetchone()
+                    out[label] = {
+                        "count": int(row[0] or 0),
+                        "cpu_avg": row[1],
+                        "mem_avg": row[2],
+                        "hit_rate_avg": row[3],
+                    }
+
+        self.init_db()
+        self._with_missing_table_retry(read_summary)
         return out
 
     def query(self, resolution: str, since: int, limit: int = 500) -> List[Dict[str, Any]]:
@@ -222,11 +255,16 @@ class TimeSeriesStore:
 
         lim = max(10, min(2000, int(limit)))
         proxy_id = get_proxy_id()
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT ts, count, cpu, mem, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s ORDER BY ts ASC LIMIT %s",
-                (proxy_id, int(since), lim),
-            ).fetchall()
+        self.init_db()
+
+        def read_rows():
+            with self._connect() as conn:
+                return conn.execute(
+                    f"SELECT ts, count, cpu, mem, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s ORDER BY ts ASC LIMIT %s",
+                    (proxy_id, int(since), lim),
+                ).fetchall()
+
+        rows = self._with_missing_table_retry(read_rows)
 
         return [
             {

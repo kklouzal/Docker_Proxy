@@ -728,7 +728,7 @@ fi
 
 cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'
 [program:cicap_adblock]
-command=/usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf
+command=/bin/sh -c 'rm -f /var/run/c-icap/c-icap-adblock.pid; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf'
 autostart=true
 autorestart=true
 priority=10
@@ -741,7 +741,7 @@ EOF
 cat > /etc/supervisor.d/cicap_av.conf <<'EOF'
 [program:cicap_av]
 # Wait for the remote clamd backend so clamd_mod can register the engine before virus_scan starts.
-command=/bin/sh -c 'HOST="${CLAMD_HOST:-127.0.0.1}"; PORT="${CLAMD_PORT:-3310}"; i=0; while [ $i -lt 120 ]; do python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "$HOST" "$PORT" >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf'
+command=/bin/sh -c 'rm -f /var/run/c-icap/c-icap-av.pid; HOST="${CLAMD_HOST:-127.0.0.1}"; PORT="${CLAMD_PORT:-3310}"; i=0; while [ $i -lt 120 ]; do python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "$HOST" "$PORT" >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf'
 autostart=true
 autorestart=true
 priority=11

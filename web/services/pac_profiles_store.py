@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 from typing import List, Optional, Tuple
 
 from services.db import connect
@@ -170,6 +170,9 @@ class PacProfilesStore:
                 pid = int(cur.lastrowid)
             else:
                 pid = int(profile_id)
+                existing = conn.execute("SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1", (pid, proxy_id)).fetchone()
+                if existing is None:
+                    return False, "Profile not found.", None
                 conn.execute(
                     "UPDATE pac_profiles SET name=%s, client_cidr=%s WHERE id=%s AND proxy_id=%s",
                     (nm, cidr_norm or "", pid, proxy_id),

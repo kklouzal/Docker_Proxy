@@ -557,6 +557,7 @@ class AdblockStore:
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune old benign blocklog data to keep the DB bounded."""
+        self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - days * 24 * 3600
         cutoff_day = int(cutoff // 86400)

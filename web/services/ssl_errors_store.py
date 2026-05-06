@@ -315,6 +315,7 @@ class SslErrorsStore:
             self._db_initialized = True
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
+        self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
         with self._connect() as conn:

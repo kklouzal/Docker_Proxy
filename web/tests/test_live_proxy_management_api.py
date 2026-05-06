@@ -64,7 +64,7 @@ def test_live_proxy_management_health_reports_supervisor_programs(live_stack_rea
     programs = supervisor.get("programs") or {}
 
     assert isinstance(supervisor.get("ok"), bool)
-    for program in ("squid", "cicap_adblock", "proxy_api", "proxy_agent", "pac_http"):
+    for program in ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent", "pac_http"):
         assert program in programs
         assert programs[program].get("ok") is True
         assert "RUNNING" in str(programs[program].get("detail") or "")

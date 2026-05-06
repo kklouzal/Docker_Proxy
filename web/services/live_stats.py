@@ -425,6 +425,7 @@ class LiveStatsStore:
         This store keeps only aggregates keyed by (domain/client/etc). Without pruning,
         the table set can grow indefinitely as new domains/clients appear over time.
         """
+        self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
         with self._connect() as conn:
