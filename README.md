@@ -371,6 +371,8 @@ Common environment variables:
 - `ENABLE_TEST_MODE=1|0`: optional test-friendly mode for dedicated live-stack test deployments. When enabled, the proxy shortens default heartbeat/sync intervals if you did not already set explicit cadence variables. It does not run tests automatically inside the runtime containers.
 - `PROXY_HEARTBEAT_INTERVAL_SECONDS`: proxy heartbeat cadence (default `90`).
 - `PROXY_SYNC_INTERVAL_SECONDS`: proxy sync cadence for pulling active state from MySQL (default `30`).
+- `PROXY_MANAGEMENT_URL`: optional full internal management URL registered by a proxy for Admin UI calls. If unset, the proxy registers `http://<PROXY_MANAGEMENT_HOST or PROXY_PUBLIC_HOST or dns-safe PROXY_INSTANCE_ID>:5000`, so multiple proxy containers can each advertise their own Docker DNS name instead of all using `proxy:5000`.
+- `PROXY_MANAGEMENT_HOST`, `PROXY_MANAGEMENT_SCHEME`, `PROXY_MANAGEMENT_PORT`: optional pieces used to build the registered management URL when `PROXY_MANAGEMENT_URL` is not set.
 - `PROXY_PUBLIC_HOST`: authoritative host/IP clients should use for this proxy's PAC URL and proxy chain.
 - `PROXY_PUBLIC_PAC_URL`: optional full PAC URL override; when set, the proxy extracts scheme/host/port from it for PAC publishing.
 - `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`: scheme/port used when building the direct PAC URL (defaults `http`, `80`).

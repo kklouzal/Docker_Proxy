@@ -131,6 +131,29 @@ def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -
     assert calls[-1] == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "cicap_adblock"]
 
 
+def test_heartbeat_uses_derived_management_url_when_override_unset(monkeypatch) -> None:
+    runtime = _runtime_shell()
+    monkeypatch.setenv("PROXY_INSTANCE_ID", "Proxy-IT")
+    monkeypatch.delenv("PROXY_MANAGEMENT_URL", raising=False)
+    monkeypatch.delenv("PROXY_MANAGEMENT_HOST", raising=False)
+    monkeypatch.delenv("PROXY_PUBLIC_HOST", raising=False)
+    captured: dict[str, object] = {}
+
+    class Registry:
+        def heartbeat(self, proxy_id, **kwargs):
+            captured["proxy_id"] = proxy_id
+            captured.update(kwargs)
+
+    runtime.registry = Registry()
+    runtime.self_heal_config_if_needed = lambda *, reason: None
+    runtime.self_heal_runtime_services_if_needed = lambda *, reason: None
+    runtime.collect_health = lambda: {"status": "healthy", "current_config_sha": "abc", "proxy_status": "Squid check ok."}
+
+    assert runtime.heartbeat()["status"] == "healthy"
+    assert captured["proxy_id"] == "Proxy-IT"
+    assert captured["management_url"] == "http://proxy-it:5000"
+
+
 def test_sync_certificate_bundle_skips_current_bundle_even_when_forced() -> None:
     runtime = _runtime_shell()
 

@@ -26,7 +26,7 @@ from services.logutil import log_exception_throttled, should_log
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
 from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_context import get_proxy_id
-from services.proxy_registry import get_proxy_registry, resolve_local_proxy_public_fields
+from services.proxy_registry import get_proxy_registry, resolve_local_proxy_management_url, resolve_local_proxy_public_fields
 from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
 from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.squid_core import SquidController
@@ -1128,7 +1128,7 @@ class ProxyRuntime:
             self.proxy_id,
             status=str(health.get("status") or "unknown"),
             hostname=(os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip(),
-            management_url=(os.environ.get("PROXY_MANAGEMENT_URL") or "").strip(),
+            management_url=resolve_local_proxy_management_url(self.proxy_id, public_fields.get("public_host")),
             public_host=str(public_fields.get("public_host") or ""),
             public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
             public_pac_port=int(public_fields.get("public_pac_port") or 80),

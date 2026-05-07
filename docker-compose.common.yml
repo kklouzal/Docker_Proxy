@@ -56,7 +56,10 @@ services:
       <<: *shared-app-env
       PROXY_INSTANCE_ID: ${PROXY_INSTANCE_ID:-default}
       PROXY_DISPLAY_NAME: ${PROXY_DISPLAY_NAME:-Default Proxy}
-      PROXY_MANAGEMENT_URL: ${PROXY_MANAGEMENT_URL:-http://proxy:5000}
+      PROXY_MANAGEMENT_URL: ${PROXY_MANAGEMENT_URL:-}
+      PROXY_MANAGEMENT_HOST: ${PROXY_MANAGEMENT_HOST:-}
+      PROXY_MANAGEMENT_SCHEME: ${PROXY_MANAGEMENT_SCHEME:-}
+      PROXY_MANAGEMENT_PORT: ${PROXY_MANAGEMENT_PORT:-}
       PROXY_PUBLIC_HOST: ${PROXY_PUBLIC_HOST:-}
       PROXY_PUBLIC_PAC_URL: ${PROXY_PUBLIC_PAC_URL:-}
       PROXY_PUBLIC_PAC_SCHEME: ${PROXY_PUBLIC_PAC_SCHEME:-http}
@@ -86,4 +89,7 @@ services:
       retries: 5
       start_period: 90s
     networks:
-      - control
+      control:
+        aliases:
+          - proxy
+          - ${PROXY_INSTANCE_ID:-proxy}

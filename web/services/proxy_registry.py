@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import threading
 import time
@@ -44,6 +45,14 @@ def _coerce_bool(value: object | None, default: bool) -> bool:
     return bool(default)
 
 
+def _dns_safe_proxy_host(value: object | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw or raw == "default":
+        return "proxy"
+    candidate = re.sub(r"[^a-z0-9-]+", "-", raw).strip("-")
+    return candidate or "proxy"
+
+
 def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
     candidate = str(raw_url or "").strip()
     if not candidate:
@@ -77,6 +86,18 @@ def resolve_local_proxy_public_fields() -> dict[str, object]:
         "public_pac_port": public_pac_port,
         "public_http_proxy_port": public_http_proxy_port,
     }
+
+
+def resolve_local_proxy_management_url(proxy_id: object | None, public_host: object | None = None) -> str:
+    explicit_url = (os.environ.get("PROXY_MANAGEMENT_URL") or "").strip()
+    if explicit_url:
+        return explicit_url.rstrip("/")
+
+    scheme = _normalize_public_scheme(os.environ.get("PROXY_MANAGEMENT_SCHEME") or "http")
+    port = _coerce_port(os.environ.get("PROXY_MANAGEMENT_PORT"), 5000)
+    explicit_host = (os.environ.get("PROXY_MANAGEMENT_HOST") or "").strip()
+    host = explicit_host or str(public_host or "").strip() or _dns_safe_proxy_host(proxy_id)
+    return f"{scheme}://{host}:{port}"
 
 
 @dataclass(frozen=True)
@@ -408,8 +429,8 @@ class ProxyRegistry:
         )
         display_name = (os.environ.get("PROXY_DISPLAY_NAME") or proxy_id).strip() or proxy_id
         hostname = (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip()
-        management_url = (os.environ.get("PROXY_MANAGEMENT_URL") or "").strip()
         public_fields = resolve_local_proxy_public_fields()
+        management_url = resolve_local_proxy_management_url(proxy_id, public_fields.get("public_host"))
         existing = self.get_proxy(proxy_id)
         return self.ensure_proxy(
             proxy_id,
