@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import time
 from functools import wraps
 from typing import Any, Callable, TypeVar
@@ -11,11 +12,13 @@ from werkzeug.exceptions import HTTPException
 from proxy.agent import start_agent
 from proxy.runtime import get_runtime
 from services.errors import public_error_message
+from services.http_optimizations import install_http_optimizations
 from services.pac_http import PAC_CONTENT_TYPE, client_ip_from_headers, pac_content_disposition, request_host_from_headers, resolve_pac_bytes
 
 
 F = TypeVar("F", bound=Callable[..., Any])
 app = Flask(__name__)
+install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
 _PUBLIC_LISTENER_PATHS = frozenset({"/", "/health", "/proxy.pac", "/wpad.dat"})
 
@@ -147,7 +150,9 @@ def public_pac() -> Any:
     )
     response = Response(data, content_type=PAC_CONTENT_TYPE)
     response.headers["Content-Disposition"] = pac_content_disposition(path)
-    return response
+    response.headers["Cache-Control"] = "public, max-age=30"
+    response.set_etag(hashlib.sha256(data).hexdigest())
+    return response.make_conditional(request)
 
 
 @app.route("/api/manage/health", methods=["GET"])

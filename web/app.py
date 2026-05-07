@@ -28,6 +28,7 @@ from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.observability_queries import get_observability_queries as _default_get_observability_queries
 from services.errors import public_error_message
+from services.http_optimizations import install_http_optimizations
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import decode_bytes as _decode_bytes, extract_domain as _extract_domain
 from services.squid_config_forms import (
@@ -57,6 +58,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 from markupsafe import Markup
 
 app = Flask(__name__)
+install_http_optimizations(app)
 _asset_version = str(int(time.time()))
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
 _OBSERVABILITY_PANES = (
@@ -764,21 +766,35 @@ def _require_login_guard():
     return _redirect_to('login', next=request.full_path)
 
 
-def _resolve_selected_proxy_id() -> str:
+def _request_needs_proxy_context() -> bool:
+    if request.endpoint in (None, 'static', 'health', 'login', 'logout'):
+        return False
+    return _is_logged_in()
+
+
+def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
     requested_proxy = request.form.get('proxy_id') or request.args.get('proxy_id')
     if requested_proxy is not None:
         session['active_proxy_id'] = normalize_proxy_id(requested_proxy)
 
     preferred = session.get('active_proxy_id') or get_default_proxy_id()
     registry = get_proxy_registry()
-    active = registry.resolve_proxy_id(preferred)
-    session['active_proxy_id'] = active
-    return active
+    proxies = registry.list_proxies()
+    if not proxies:
+        proxies = [registry.ensure_default_proxy()]
+    active_proxy = next((proxy for proxy in proxies if proxy.proxy_id == normalize_proxy_id(preferred)), proxies[0])
+    session['active_proxy_id'] = active_proxy.proxy_id
+    return active_proxy.proxy_id, active_proxy, proxies
 
 
 @app.before_request
 def _bind_proxy_context():
-    token = set_proxy_id(_resolve_selected_proxy_id())
+    if not _request_needs_proxy_context():
+        return None
+    active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
+    g._active_proxy = active_proxy
+    g._proxy_inventory = proxies
+    token = set_proxy_id(active_proxy_id)
     g._proxy_context_token = token
     return None
 
@@ -792,12 +808,17 @@ def _reset_proxy_context(_exc):
 
 @app.context_processor
 def _inject_proxy_context():
+    if not _is_logged_in():
+        return {
+            'active_proxy_id': None,
+            'active_proxy': None,
+            'proxy_inventory': [],
+        }
     active_proxy_id = get_proxy_id()
-    registry = get_proxy_registry()
-    proxies = registry.list_proxies()
-    if not proxies:
-        proxies = [registry.ensure_default_proxy()]
-    active_proxy = registry.get_proxy(active_proxy_id) or proxies[0]
+    active_proxy = getattr(g, '_active_proxy', None)
+    proxies = getattr(g, '_proxy_inventory', None)
+    if active_proxy is None or proxies is None:
+        active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
     return {
         'active_proxy_id': active_proxy.proxy_id,
         'active_proxy': active_proxy,
@@ -1479,18 +1500,32 @@ def proxies():
 
     registry = get_proxy_registry()
     proxies = registry.list_proxies()
-    live_health = {}
-    observability_by_proxy: Dict[str, Dict[str, Any]] = {}
-    client = get_proxy_client()
-    for proxy in proxies:
+    live_health = {
+        proxy.proxy_id: {
+            'ok': str(proxy.status or '').lower() == 'healthy',
+            'status': proxy.status,
+            'proxy_status': proxy.detail,
+            'detail': proxy.detail,
+            'listener_details': [],
+            'services': {},
+        }
+        for proxy in proxies
+    }
+    active_proxy_id = get_proxy_id()
+    if active_proxy_id in live_health:
         try:
-            live_health[proxy.proxy_id] = client.get_health(proxy.proxy_id, timeout_seconds=3.0)
+            live_health[active_proxy_id] = get_proxy_client().get_health(active_proxy_id, timeout_seconds=3.0)
         except ProxyClientError as exc:
-            live_health[proxy.proxy_id] = {
+            active_proxy = next((proxy for proxy in proxies if proxy.proxy_id == active_proxy_id), None)
+            live_health[active_proxy_id] = {
                 'ok': False,
-                'status': proxy.status,
+                'status': active_proxy.status if active_proxy else 'unknown',
                 'detail': str(exc),
+                'listener_details': [],
+                'services': {},
             }
+    observability_by_proxy: Dict[str, Dict[str, Any]] = {}
+    for proxy in proxies:
         token = set_proxy_id(proxy.proxy_id)
         try:
             diagnostic_summary = get_diagnostic_store().activity_summary(since=int(time.time()) - OBSERVABILITY_DEFAULT_WINDOW)

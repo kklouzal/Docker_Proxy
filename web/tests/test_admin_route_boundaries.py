@@ -96,7 +96,7 @@ def test_index_uses_cold_cache_safe_proxy_health_timeout(monkeypatch, tmp_path) 
     assert proxy_client.health_calls[-1] == ("default", 5.0)
 
 
-def test_fleet_uses_reasonable_per_proxy_health_timeout(monkeypatch, tmp_path) -> None:
+def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> None:
     proxy_client = RecordingProxyClient()
     registry = FakeRegistry(["default", "edge-2"])
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client, registry=registry)
@@ -106,7 +106,7 @@ def test_fleet_uses_reasonable_per_proxy_health_timeout(monkeypatch, tmp_path) -
     response = client.get("/proxies")
 
     assert response.status_code == 200
-    assert proxy_client.health_calls == [("default", 3.0), ("edge-2", 3.0)]
+    assert proxy_client.health_calls == [("default", 3.0)]
 
 
 def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
