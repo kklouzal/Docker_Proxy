@@ -46,6 +46,8 @@ def test_live_proxy_management_auth_accepts_bearer_and_x_proxy_token_and_rejects
     assert x_proxy_token.status == 200
     assert x_proxy_token.json().get("proxy_id") == LIVE_CONFIG.primary_proxy_id
     assert bad.status == 403
+    assert bad.json().get("ok") is False
+    assert "PROXY_MANAGEMENT_TOKEN" in str(bad.json().get("detail") or "")
 
 
 def test_live_proxy_management_health_returns_payload(live_stack_ready: dict[str, dict[str, object]]) -> None:

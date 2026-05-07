@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import threading
 import urllib.error
 import urllib.parse
@@ -34,6 +35,20 @@ class ProxyClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
+
+    def _safe_error_detail(self, raw: str, *, status_code: int | None = None) -> str:
+        text = (raw or "").strip()
+        if "<html" in text.lower() or "<!doctype" in text.lower():
+            if status_code == 403:
+                return "Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and the selected proxy runtime."
+            if status_code == 404:
+                return "Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener."
+            return f"Proxy management request failed with HTTP {status_code or 'error'} and returned an HTML error page. Check the registered management URL and proxy runtime logs."
+        if text:
+            return text[:1000]
+        if status_code is not None:
+            return f"Proxy management request failed with HTTP {status_code}."
+        return "Proxy management request failed."
 
     def _proxy_base_url(self, proxy_id: object | None) -> str:
         proxy_key = normalize_proxy_id(proxy_id)
@@ -73,14 +88,24 @@ class ProxyClient:
             try:
                 data = json.loads(raw) if raw else {}
             except Exception:
-                data = {"ok": False, "detail": raw or str(exc)}
-            raise ProxyClientError(data.get("detail") or f"Proxy request failed with HTTP {exc.code}.") from exc
+                data = {"ok": False, "detail": self._safe_error_detail(raw, status_code=int(exc.code))}
+            detail = data.get("detail") or self._safe_error_detail(raw, status_code=int(exc.code))
+            raise ProxyClientError(f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})") from exc
         except urllib.error.URLError as exc:
-            raise ProxyClientError(str(exc.reason) or str(exc)) from exc
+            reason = str(exc.reason) or str(exc)
+            raise ProxyClientError(f"Proxy management request failed: {reason} (proxy={normalize_proxy_id(proxy_id)}, url={url})") from exc
+        except socket.timeout as exc:
+            raise ProxyClientError(
+                f"Proxy management request timed out after {timeout:.1f}s (proxy={normalize_proxy_id(proxy_id)}, url={url}). Check that the proxy runtime is reachable from the Admin UI container."
+            ) from exc
+        except TimeoutError as exc:
+            raise ProxyClientError(
+                f"Proxy management request timed out after {timeout:.1f}s (proxy={normalize_proxy_id(proxy_id)}, url={url}). Check that the proxy runtime is reachable from the Admin UI container."
+            ) from exc
         except Exception as exc:
-            raise ProxyClientError(str(exc)) from exc
+            raise ProxyClientError(f"Proxy management request failed: {exc} (proxy={normalize_proxy_id(proxy_id)}, url={url})") from exc
 
-    def get_health(self, proxy_id: object | None, *, timeout_seconds: float = 2.0) -> dict[str, Any]:
+    def get_health(self, proxy_id: object | None, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
         return self._request(
             proxy_id,
             method="GET",

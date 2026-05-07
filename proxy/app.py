@@ -6,6 +6,7 @@ from functools import wraps
 from typing import Any, Callable, TypeVar
 
 from flask import Flask, Response, abort, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 from proxy.agent import start_agent
 from proxy.runtime import get_runtime
@@ -89,6 +90,32 @@ def _is_public_listener_request() -> bool:
 def _restrict_public_listener() -> None:
     if _is_public_listener_request() and request.path not in _PUBLIC_LISTENER_PATHS:
         abort(404)
+
+
+@app.errorhandler(403)
+def _management_forbidden(exc: HTTPException):
+    if request.path.startswith("/api/manage/"):
+        return jsonify(
+            {
+                "ok": False,
+                "status": "forbidden",
+                "detail": "Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.",
+            }
+        ), 403
+    return exc
+
+
+@app.errorhandler(404)
+def _management_not_found(exc: HTTPException):
+    if request.path.startswith("/api/manage/"):
+        return jsonify(
+            {
+                "ok": False,
+                "status": "not_found",
+                "detail": "Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.",
+            }
+        ), 404
+    return exc
 
 
 @app.route("/health", methods=["GET"])

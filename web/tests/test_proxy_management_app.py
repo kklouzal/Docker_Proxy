@@ -98,6 +98,9 @@ def test_proxy_management_api_requires_token_for_all_management_endpoints(monkey
     for method, path, payload in endpoints:
         response = client.open(path, method=method, json=payload, base_url="http://localhost:5000")
         assert response.status_code == 403, path
+        assert response.is_json, path
+        assert response.get_json()["ok"] is False
+        assert "PROXY_MANAGEMENT_TOKEN" in response.get_json()["detail"]
 
 
 def test_proxy_management_api_accepts_bearer_and_x_proxy_token(monkeypatch) -> None:
@@ -211,7 +214,12 @@ def test_proxy_public_listener_rejects_management_and_management_listener_reject
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
 
-    assert _public_get(client, "/api/manage/health", headers={"Authorization": "Bearer secret"}).status_code == 404
-    assert _public_get(client, "/api/manage/sync", headers={"Authorization": "Bearer secret"}).status_code == 404
+    health = _public_get(client, "/api/manage/health", headers={"Authorization": "Bearer secret"})
+    sync = _public_get(client, "/api/manage/sync", headers={"Authorization": "Bearer secret"})
+    assert health.status_code == 404
+    assert health.is_json
+    assert "management listener" in health.get_json()["detail"]
+    assert sync.status_code == 404
+    assert sync.is_json
     assert _management_get(client, "/proxy.pac").status_code == 404
     assert _management_get(client, "/wpad.dat").status_code == 404

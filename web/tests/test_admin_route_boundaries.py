@@ -5,6 +5,34 @@ import pytest
 from .admin_route_test_utils import FakeRegistry, csrf_token, load_admin_app, login_client
 
 
+class RecordingProxyClient:
+    def __init__(self) -> None:
+        self.health_calls: list[tuple[str, float | None]] = []
+
+    def get_health(self, proxy_id: object, *_, timeout_seconds: float | None = None, **__) -> dict[str, object]:
+        self.health_calls.append((str(proxy_id), timeout_seconds))
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": str(proxy_id),
+            "proxy_status": "Squid check ok.",
+            "stats": {},
+            "services": {
+                "icap": {"ok": True, "detail": "ok"},
+                "clamav": {"ok": True, "detail": "ok"},
+            },
+        }
+
+    def validate_config(self, proxy_id: object, config_text: str) -> dict[str, object]:
+        return {"ok": True, "detail": "valid", "proxy_id": str(proxy_id)}
+
+    def sync_proxy(self, proxy_id: object, *, force: bool = False) -> dict[str, object]:
+        return {"ok": True, "detail": "sync requested"}
+
+    def clear_proxy_cache(self, proxy_id: object) -> dict[str, object]:
+        return {"ok": True, "detail": "cache cleared"}
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -54,6 +82,31 @@ def test_html_security_headers_are_present(monkeypatch, tmp_path) -> None:
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
     assert "default-src" in response.headers.get("Content-Security-Policy", "")
+
+
+def test_index_uses_cold_cache_safe_proxy_health_timeout(monkeypatch, tmp_path) -> None:
+    proxy_client = RecordingProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert proxy_client.health_calls[-1] == ("default", 5.0)
+
+
+def test_fleet_uses_reasonable_per_proxy_health_timeout(monkeypatch, tmp_path) -> None:
+    proxy_client = RecordingProxyClient()
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies")
+
+    assert response.status_code == 200
+    assert proxy_client.health_calls == [("default", 3.0), ("edge-2", 3.0)]
 
 
 def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:

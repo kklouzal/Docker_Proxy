@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 import sys
 import urllib.error
 from pathlib import Path
@@ -118,6 +119,27 @@ def test_proxy_client_can_request_config_validation_and_rollback(monkeypatch) ->
     }
 
 
+def test_proxy_client_get_health_default_timeout_handles_cold_health_collection(monkeypatch) -> None:
+    _add_web_to_path()
+    import services.proxy_client as proxy_client  # type: ignore
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000"))
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _Response({"ok": True, "status": "healthy"})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    payload = proxy_client.ProxyClient().get_health("live")
+
+    assert payload["ok"] is True
+    assert captured["url"] == "http://proxy-mgmt:5000/api/manage/health"
+    assert captured["timeout"] == 5.0
+
+
 def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
     _add_web_to_path()
     import services.proxy_client as proxy_client  # type: ignore
@@ -138,6 +160,53 @@ def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
 
     with pytest.raises(proxy_client.ProxyClientError, match="sync failed clearly"):
         proxy_client.ProxyClient().sync_proxy("live")
+
+
+def test_proxy_client_sanitizes_html_management_auth_error(monkeypatch) -> None:
+    _add_web_to_path()
+    import services.proxy_client as proxy_client  # type: ignore
+
+    monkeypatch.setattr(proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000"))
+
+    def fake_urlopen(_request, timeout):
+        raise urllib.error.HTTPError(
+            "http://proxy-mgmt:5000/api/manage/health",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(b"<!doctype html><title>403 Forbidden</title><h1>Forbidden</h1>"),
+        )
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "Proxy management authentication failed" in message
+    assert "PROXY_MANAGEMENT_TOKEN" in message
+    assert "<!doctype" not in message.lower()
+    assert "proxy=live" in message
+
+
+def test_proxy_client_timeout_error_is_actionable(monkeypatch) -> None:
+    _add_web_to_path()
+    import services.proxy_client as proxy_client  # type: ignore
+
+    monkeypatch.setattr(proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000"))
+    monkeypatch.setattr(
+        proxy_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(socket.timeout("timed out")),
+    )
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient(timeout_seconds=1.5).get_health("live", timeout_seconds=1.5)
+
+    message = str(exc_info.value)
+    assert "timed out after 1.5s" in message
+    assert "proxy=live" in message
+    assert "reachable from the Admin UI container" in message
 
 
 def test_proxy_client_url_error_surfaces_reason(monkeypatch) -> None:

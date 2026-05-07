@@ -1396,7 +1396,7 @@ def index():
     observability, observability_window_label = _build_observability_snapshot(OBSERVABILITY_DEFAULT_WINDOW)
     proxy_id = get_proxy_id()
     try:
-        health = get_proxy_client().get_health(proxy_id)
+        health = get_proxy_client().get_health(proxy_id, timeout_seconds=5.0)
     except ProxyClientError as exc:
         proxy = get_proxy_registry().get_proxy(proxy_id)
         health = {
@@ -1484,7 +1484,7 @@ def proxies():
     client = get_proxy_client()
     for proxy in proxies:
         try:
-            live_health[proxy.proxy_id] = client.get_health(proxy.proxy_id, timeout_seconds=1.5)
+            live_health[proxy.proxy_id] = client.get_health(proxy.proxy_id, timeout_seconds=3.0)
         except ProxyClientError as exc:
             live_health[proxy.proxy_id] = {
                 'ok': False,
