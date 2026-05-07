@@ -334,6 +334,25 @@ class SquidController:
             time.sleep(0.5)
         return False
 
+    def _supervisor_program_running(self, program_name: str) -> bool:
+        try:
+            proc = self._run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                capture_output=True,
+                timeout=8,
+            )
+            detail = self._decode_completed(proc)
+            return proc.returncode == 0 and "RUNNING" in detail.upper()
+        except Exception:
+            return False
+
+    def _accept_running_squid_restart(self, detail_parts: list[str], *, timeout: float = 20.0) -> tuple[bool, str] | None:
+        """Accept supervisor auto-restart races only after Squid is serving again."""
+        if self._supervisor_program_running("squid") and self._wait_for_http_listener(timeout=timeout):
+            detail_parts.append("Squid was already restarted by supervisor and its HTTP listener is accepting connections.")
+            return True, "\n".join(part for part in detail_parts if part).strip()
+        return None
+
     def restart_squid(self) -> Tuple[bool, str]:
         detail_parts: list[str] = []
         try:
@@ -358,12 +377,35 @@ class SquidController:
         if stale_pid_detail:
             detail_parts.append(stale_pid_detail)
 
+        accepted = self._accept_running_squid_restart(detail_parts, timeout=10.0)
+        if accepted is not None:
+            return accepted
+
+        if not self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0):
+            accepted = self._accept_running_squid_restart(detail_parts, timeout=10.0)
+            if accepted is not None:
+                return accepted
+            detail_parts.append("Squid PID file still points to a live process after stop; requesting Squid shutdown fallback.")
+            try:
+                shutdown = self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=12)
+                detail_parts.append(self._decode_completed(shutdown) or "squid shutdown requested after live PID file remained")
+            except Exception as exc:
+                detail_parts.append(f"squid shutdown fallback after live PID file failed: {exc}")
+            self._wait_for_http_listener_absent(timeout=20.0)
+            self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
+            retry_stale = self._remove_stale_squid_pidfile()
+            if retry_stale:
+                detail_parts.append(retry_stale)
+
         try:
             start = self._run(["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"], capture_output=True, timeout=25)
             start_detail = self._decode_completed(start) or "supervisorctl start squid"
             detail_parts.append(start_detail)
             start_detail_lower = start_detail.lower()
             if start.returncode != 0 and "already started" not in start_detail_lower:
+                accepted = self._accept_running_squid_restart(detail_parts, timeout=20.0)
+                if accepted is not None:
+                    return accepted
                 if "already running" in start_detail_lower:
                     if self._wait_for_http_listener(timeout=15.0):
                         detail_parts.append("Squid was already running and its HTTP listener is accepting connections.")

@@ -61,7 +61,17 @@ if ! supervisor_program_running proxy_api; then
 fi
 
 if ! python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read()" >/dev/null 2>&1; then
-    echo "Flask health endpoint failed"
+    echo "Flask management health endpoint failed"
+    exit 1
+fi
+
+if ! has_listen_socket "${PAC_HTTP_PORT:-80}" >/dev/null 2>&1; then
+    echo "Flask public PAC/WPAD listener is not accepting connections"
+    exit 1
+fi
+
+if ! python3 -c "import os, urllib.request; port=(os.environ.get('PAC_HTTP_PORT') or '80').strip() or '80'; urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=2).read()" >/dev/null 2>&1; then
+    echo "Flask public proxy health endpoint failed"
     exit 1
 fi
 

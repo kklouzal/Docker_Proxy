@@ -199,7 +199,7 @@ services:
       net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
       net.ipv6.conf.lo.disable_ipv6: ${DISABLE_IPV6:-1}
     ports:
-      - "0.0.0.0:80:80"           # WPAD / PAC via dedicated listener
+      - "0.0.0.0:80:80"           # Proxy public health + WPAD/PAC listener
       - "0.0.0.0:3128:3128"       # Squid HTTP proxy
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
@@ -255,7 +255,7 @@ Notes:
 Default published ports:
 - `3128/tcp`: Squid HTTP proxy
 - `5000/tcp`: Admin UI (Flask)
-- `80/tcp`: WPAD/PAC dedicated listener (NOT the admin UI)
+- `80/tcp`: Proxy public health + WPAD/PAC listener (NOT the admin UI)
 
 Destination-port policy note:
 - Squid allows non-standard HTTP and HTTPS destination ports by default.
@@ -267,13 +267,14 @@ Admin UI routes (port 5000):
 - `/pac` PAC Builder UI (management only)
 - `/health` health endpoint (used by container healthcheck)
 
-WPAD/PAC listener behavior (port 80):
+Proxy public listener behavior (port 80):
+- `GET /health` → proxy-container public health
 - `GET /` → serves `wpad.dat`
 - `GET /wpad.dat` → serves PAC (`application/x-ns-proxy-autoconfig`)
 - `GET /proxy.pac` → serves PAC
 - Any other path → `404`
 
-Important: `http://<host>:5000` is the admin UI. Port 80 is intentionally isolated to PAC/WPAD only.
+Important: `http://<host>:5000` is the admin UI. Port 80 is intentionally isolated to public proxy health and PAC/WPAD only; proxy management APIs remain on the proxy container's internal `5000` listener for the admin UI to call over the Compose network.
 
 ## Access from other computers (LAN)
 
@@ -324,7 +325,7 @@ Notes:
 ## Authentication and security model
 
 - The admin UI is protected by a login session.
-- PAC/WPAD endpoints on port `80` (`/proxy.pac`, `/wpad.dat`) are intentionally public so clients can fetch PAC without UI authentication.
+- PAC/WPAD endpoints on port `80` (`/proxy.pac`, `/wpad.dat`) and the public proxy health endpoint (`/health`) are intentionally public so clients and monitors can fetch non-sensitive proxy runtime status without UI authentication.
 
 Recommended hardening:
 - Don’t publish the UI port (`5000`) to untrusted networks.
@@ -375,7 +376,7 @@ Common environment variables:
 - `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`: scheme/port used when building the direct PAC URL (defaults `http`, `80`).
 - `PROXY_PUBLIC_HTTP_PROXY_PORT`: client-facing HTTP proxy port advertised in generated PAC files (default `3128`).
 - `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`: proxy-side log/telemetry poll cadence. Defaults now settle at `2.0` seconds to reduce idle wakeups while keeping the UI reasonably fresh.
-- `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: WPAD/PAC listener bind settings (defaults: `80`, `0.0.0.0`).
+- `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: public proxy health + WPAD/PAC bind settings for the proxy container's Flask/Gunicorn process (defaults: `80`, `0.0.0.0`).
 
 Admin UI (Gunicorn) tuning:
 - `WEB_WORKERS`: explicit Gunicorn worker override. Default is `1` because the admin UI is rarely used.
@@ -396,7 +397,7 @@ Admin UI (Gunicorn) tuning:
   - ClamAV scanning (ICAP RESPMOD) with per-proxy health and on-demand verification actions
   - SSL Filtering (client CIDRs that must be spliced)
 - **PAC Builder** UI at `/pac` for managing per-proxy PAC profiles.
-- **Proxy-hosted PAC/WPAD** via the dedicated port 80 listener (`/proxy.pac`, `/wpad.dat`) on each proxy runtime.
+- **Proxy-hosted PAC/WPAD** via the proxy container's public Flask/Gunicorn listener on port 80 (`/health`, `/proxy.pac`, `/wpad.dat`) on each proxy runtime.
 
 ## Host networking mode (optional)
 
@@ -588,15 +589,16 @@ This project supports:
 - WPAD auto-discovery via `/wpad.dat`
 
 Security model:
-- Port 80 is served by a dedicated minimal HTTP server that only serves PAC endpoints.
-- PAC content is pre-rendered locally by the proxy runtime and served directly from the proxy container; the admin UI no longer serves PAC files on port `5000`.
+- Port 80 is served by the proxy container's Flask/Gunicorn runtime and is route-gated to only public proxy health and PAC/WPAD endpoints.
+- PAC content is pre-rendered locally by the proxy runtime and served directly from the proxy container; the admin UI does not serve PAC files on port `5000`.
 - Generated PAC files return `PROXY <proxy-host>:<http-port>; DIRECT`.
 
 ## Troubleshooting
 
 Basic checks:
 - UI is reachable: `http://<host>:5000/`
-- Health endpoint: `http://<host>:5000/health`
+- Admin UI health endpoint: `http://<host>:5000/health`
+- Proxy public health endpoint: `http://<host>/health`
 - Direct PAC endpoint: `http://<proxy-host>/proxy.pac`
 - WPAD endpoint: `http://<host>/wpad.dat` (port 80)
 - Proxy is reachable: configure a client to use `http://<host>:3128`
@@ -614,12 +616,12 @@ Remote ClamAV note:
 ## Project structure (high level)
 
 - `docker/`: container build + supervisord + startup scripts
-  - Includes a dedicated supervisord program for the PAC/WPAD listener
+  - Runs Squid, c-icap, the proxy sync agent, and proxy Flask/Gunicorn listeners
 - `squid/`: Squid template config + MIME + error pages
   - UI-driven policy includes live under `/etc/squid/conf.d/*.conf`
-- `web/`: Flask admin UI + services + tools
+- `web/`: Flask admin UI + shared services + tools
   - `services/`: MySQL-backed stores and Squid integration
-  - `tools/`: helper scripts (PAC server, category helper, builders, apply scripts)
+  - `tools/`: helper scripts (category helper, builders, apply scripts)
 
 ## Scaling: Squid workers
 

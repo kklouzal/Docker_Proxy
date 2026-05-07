@@ -48,35 +48,26 @@ def _wait_for_supervisor_program(program: str, *, ok: bool) -> dict[str, Any]:
     )
 
 
-def test_live_disruptive_pac_http_stop_reports_degraded_then_recovers(admin_client: LiveStackClient) -> None:
-    try:
-        stopped = _supervisor_control(admin_client, "pac_http", "stop")
-        assert stopped.get("ok") is True
+def test_live_public_proxy_listener_rejects_management_routes(admin_client: LiveStackClient) -> None:
+    health = admin_client.pac_request("/health")
+    management = admin_client.pac_request("/api/manage/health")
+    sync = admin_client.pac_request("/api/manage/sync")
 
-        degraded = _wait_for_supervisor_program("pac_http", ok=False)
-        assert degraded.get("status") == "degraded"
-        assert degraded.get("ok") is False
-    finally:
-        started = _supervisor_control(admin_client, "pac_http", "start")
-        assert started.get("ok") is True
-
-    recovered = _wait_for_supervisor_program("pac_http", ok=True)
-    assert recovered.get("status") in {"healthy", "degraded"}
-    pac = admin_client.pac_request(timeout_seconds=30.0)
-    assert pac.status == 200
-    assert "FindProxyForURL" in pac.text
-    wait_for_proxy_fixture_response(admin_client, "/health", timeout_seconds=120.0)
+    assert health.status == 200
+    assert health.json().get("service") == "proxy"
+    assert management.status == 404
+    assert sync.status == 404
 
 
-def test_live_disruptive_pac_http_restart_keeps_pac_serving(admin_client: LiveStackClient) -> None:
+def test_live_disruptive_squid_restart_keeps_pac_serving(admin_client: LiveStackClient) -> None:
     before = admin_client.pac_request()
     assert before.status == 200
     assert "FindProxyForURL" in before.text
 
-    restarted = _supervisor_control(admin_client, "pac_http", "restart")
+    restarted = _supervisor_control(admin_client, "squid", "restart")
     assert restarted.get("ok") is True
 
-    _wait_for_supervisor_program("pac_http", ok=True)
+    _wait_for_supervisor_program("squid", ok=True)
     after = admin_client.pac_request(timeout_seconds=30.0)
     assert after.status == 200
     assert "FindProxyForURL" in after.text

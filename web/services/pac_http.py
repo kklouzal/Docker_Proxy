@@ -1,17 +1,12 @@
+from __future__ import annotations
+
 import json
 import os
-import sys
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
-
-HERE = os.path.abspath(os.path.dirname(__file__))
-APP_ROOT = os.path.abspath(os.path.join(HERE, ".."))
-if APP_ROOT not in sys.path:
-    sys.path.insert(0, APP_ROOT)
-
-from services.pac_renderer import (  # noqa: E402
+from services.pac_renderer import (
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
     PAC_STATE_SHA_FILENAME,
@@ -21,32 +16,30 @@ from services.pac_renderer import (  # noqa: E402
 )
 
 
-LISTEN_HOST = os.environ.get("PAC_HTTP_HOST", "0.0.0.0")
-LISTEN_PORT = int(os.environ.get("PAC_HTTP_PORT", "80"))
-PAC_DIR = (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 
 
-def _client_ip(headers, client_address) -> str:
-    xff = (headers.get("X-Forwarded-For") or "").strip()
+def pac_render_dir() -> str:
+    return (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
+
+
+def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
+    xff = str((headers.get("X-Forwarded-For") if headers is not None else "") or "").strip()
     if xff:
         candidate = (xff.split(",")[0] or "").strip()
         if candidate:
             return candidate
-    xri = (headers.get("X-Real-IP") or "").strip()
+    xri = str((headers.get("X-Real-IP") if headers is not None else "") or "").strip()
     if xri:
         return xri
-    try:
-        return (client_address[0] or "").strip()
-    except Exception:
-        return ""
+    return str(remote_addr or "").strip()
 
 
-def _request_host(headers) -> str:
-    return (headers.get("Host") or "").strip() or "127.0.0.1"
+def request_host_from_headers(headers: Any) -> str:
+    return str((headers.get("Host") if headers is not None else "") or "").strip() or "127.0.0.1"
 
 
-def _default_pac(request_host: str) -> bytes:
+def default_pac_bytes(request_host: str) -> bytes:
     content = build_emergency_pac()
     return substitute_request_host(content, request_host).encode("utf-8")
 
@@ -133,52 +126,28 @@ class LocalPacCache:
             return substitute_request_host(content, request_host).encode("utf-8")
 
 
-_LOCAL_CACHE = LocalPacCache(PAC_DIR)
+_CACHE_LOCK = threading.Lock()
+_CACHES: dict[str, LocalPacCache] = {}
 
 
-class Handler(BaseHTTPRequestHandler):
-    server_version = "pac-http/2.0"
-
-    def log_message(self, fmt, *args):
-        sys.stdout.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), fmt % args))
-
-    def do_GET(self):
-        path = (self.path or "").split("?", 1)[0]
-        if path in ("", "/"):
-            path = "/wpad.dat"
-        if path not in ("/wpad.dat", "/proxy.pac"):
-            self.send_response(404)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"Not found")
-            return
-
-        client_ip = _client_ip(self.headers, self.client_address)
-        request_host = _request_host(self.headers)
-
-        data = _LOCAL_CACHE.resolve(client_ip=client_ip, request_host=request_host)
-        if data is None:
-            data = _default_pac(request_host)
-
-        self.send_response(200)
-        self.send_header("Content-Type", PAC_CONTENT_TYPE)
-        if path == "/wpad.dat":
-            self.send_header("Content-Disposition", 'inline; filename="wpad.dat"')
-        else:
-            self.send_header("Content-Disposition", 'inline; filename="proxy.pac"')
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+def get_pac_cache(pac_dir: str | None = None) -> LocalPacCache:
+    resolved_dir = str(pac_dir or pac_render_dir())
+    with _CACHE_LOCK:
+        cache = _CACHES.get(resolved_dir)
+        if cache is None:
+            cache = LocalPacCache(resolved_dir)
+            _CACHES[resolved_dir] = cache
+        return cache
 
 
-def main() -> int:
-    httpd = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
-    sys.stdout.write(
-        f"[pac-http] listening on {LISTEN_HOST}:{LISTEN_PORT}, pac_dir={PAC_DIR}\n"
-    )
-    httpd.serve_forever()
-    return 0
+def resolve_pac_bytes(*, client_ip: str, request_host: str, pac_dir: str | None = None) -> bytes:
+    data = get_pac_cache(pac_dir).resolve(client_ip=client_ip, request_host=request_host)
+    if data is not None:
+        return data
+    return default_pac_bytes(request_host)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def pac_content_disposition(path: str) -> str:
+    if path == "/wpad.dat":
+        return 'inline; filename="wpad.dat"'
+    return 'inline; filename="proxy.pac"'

@@ -63,9 +63,15 @@ def test_live_admin_ui_pac_endpoints_are_removed(admin_client: LiveStackClient) 
 def test_live_proxy_serves_pac_and_wpad(live_stack_ready: dict[str, dict[str, object]]) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
+    health_response = client.pac_request("/health")
+    root_response = client.pac_request("/")
     pac_response = client.pac_request()
     wpad_response = client.wpad_request()
+    assert health_response.status == 200
+    assert health_response.json().get("service") == "proxy"
+    assert root_response.status == 200
     assert pac_response.status == 200
     assert wpad_response.status == 200
     assert "FindProxyForURL" in pac_response.text
     assert pac_response.text == wpad_response.text
+    assert root_response.text == wpad_response.text

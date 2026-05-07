@@ -5,16 +5,18 @@ import time
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
-from flask import Flask, abort, jsonify, request
+from flask import Flask, Response, abort, jsonify, request
 
 from proxy.agent import start_agent
 from proxy.runtime import get_runtime
 from services.errors import public_error_message
+from services.pac_http import PAC_CONTENT_TYPE, client_ip_from_headers, pac_content_disposition, request_host_from_headers, resolve_pac_bytes
 
 
 F = TypeVar("F", bound=Callable[..., Any])
 app = Flask(__name__)
 runtime: Any | None = None
+_PUBLIC_LISTENER_PATHS = frozenset({"/", "/health", "/proxy.pac", "/wpad.dat"})
 
 
 def _runtime() -> Any:
@@ -55,9 +57,70 @@ def _test_mode_enabled() -> bool:
     return (os.environ.get("ENABLE_TEST_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _public_pac_port() -> str:
+    raw = (os.environ.get("PAC_HTTP_PORT") or "80").strip() or "80"
+    try:
+        port = int(raw)
+    except Exception:
+        port = 80
+    if port < 1 or port > 65535:
+        port = 80
+    return str(port)
+
+
+def _request_ports() -> set[str]:
+    ports: set[str] = set()
+    server_port = str(request.environ.get("SERVER_PORT") or "").strip()
+    if server_port:
+        ports.add(server_port)
+    host = str(request.host or "").strip()
+    if ":" in host:
+        candidate = host.rsplit(":", 1)[1].strip()
+        if candidate.isdigit():
+            ports.add(candidate)
+    return ports
+
+
+def _is_public_listener_request() -> bool:
+    return _public_pac_port() in _request_ports()
+
+
+@app.before_request
+def _restrict_public_listener() -> None:
+    if _is_public_listener_request() and request.path not in _PUBLIC_LISTENER_PATHS:
+        abort(404)
+
+
 @app.route("/health", methods=["GET"])
 def health() -> Any:
+    if _is_public_listener_request():
+        return jsonify(
+            {
+                "ok": True,
+                "service": "proxy",
+                "components": {
+                    "proxy_api": "ok",
+                    "pac": "ok",
+                },
+            }
+        ), 200
     return jsonify({"ok": True, "service": "proxy-management"}), 200
+
+
+@app.route("/", methods=["GET"])
+@app.route("/proxy.pac", methods=["GET"])
+@app.route("/wpad.dat", methods=["GET"])
+def public_pac() -> Any:
+    if not _is_public_listener_request():
+        abort(404)
+    path = request.path if request.path in {"/proxy.pac", "/wpad.dat"} else "/wpad.dat"
+    data = resolve_pac_bytes(
+        client_ip=client_ip_from_headers(request.headers, request.remote_addr),
+        request_host=request_host_from_headers(request.headers),
+    )
+    response = Response(data, content_type=PAC_CONTENT_TYPE)
+    response.headers["Content-Disposition"] = pac_content_disposition(path)
+    return response
 
 
 @app.route("/api/manage/health", methods=["GET"])

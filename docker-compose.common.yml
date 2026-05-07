@@ -43,7 +43,7 @@ services:
       net.ipv6.conf.default.disable_ipv6: ${DISABLE_IPV6:-1}
       net.ipv6.conf.lo.disable_ipv6: ${DISABLE_IPV6:-1}
     ports:
-      - "0.0.0.0:80:80"           # WPAD / PAC via dedicated port 80 listener
+      - "0.0.0.0:80:80"           # Proxy public health + WPAD/PAC listener
       - "0.0.0.0:3128:3128"       # HTTP proxy
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro

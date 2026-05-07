@@ -60,7 +60,7 @@ def test_live_proxy_management_health_returns_payload(live_stack_ready: dict[str
 
 def test_live_proxy_management_health_reports_supervisor_programs(live_stack_ready: dict[str, dict[str, object]]) -> None:
     _ = live_stack_ready
-    expected_programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent", "pac_http")
+    expected_programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
     deadline = time.time() + 120.0
     payload = wait_for_proxy_management_payload()
     while time.time() < deadline:

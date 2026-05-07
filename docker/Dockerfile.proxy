@@ -101,6 +101,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/live_stats.py \
     web/services/materialized_files.py \
     web/services/logutil.py \
+    web/services/pac_http.py \
     web/services/pac_profiles_store.py \
     web/services/pac_renderer.py \
     web/services/policy_materializer.py \
@@ -117,7 +118,6 @@ COPY web/services/adblock_artifacts.py \
     web/services/webfilter_core.py \
     /app/services/
 COPY web/tools/adblock_compile.py \
-    web/tools/pac_http_server.py \
     web/tools/sslfilter_apply.py \
     web/tools/webcat_acl.py \
     web/tools/webfilter_apply.py \
@@ -127,7 +127,6 @@ COPY --chmod=755 scripts/generate_ca.sh scripts/init_ssl_db.sh /scripts/
 COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 COPY docker/supervisord.proxy.conf /etc/supervisord.conf
-COPY docker/pac_http.conf /etc/supervisor.d/pac_http.conf
 COPY --chmod=755 docker/healthcheck.sh /healthcheck.sh
 COPY --chmod=755 docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
 

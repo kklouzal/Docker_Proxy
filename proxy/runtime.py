@@ -233,7 +233,7 @@ class ProxyRuntime:
         return status.returncode == 0 and "RUNNING" in detail, detail
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
-        programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent", "pac_http")
+        programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
         statuses: dict[str, dict[str, Any]] = {}
         ok = True
         detail_parts: list[str] = []
@@ -257,7 +257,7 @@ class ProxyRuntime:
         an arbitrary supervisorctl wrapper if a route is miswired.
         """
         self._invalidate_health_cache()
-        allowed_programs = {"squid", "cicap_adblock", "cicap_av", "pac_http"}
+        allowed_programs = {"squid", "cicap_adblock", "cicap_av"}
         program = (program_name or "").strip()
         requested_action = (action or "").strip().lower()
         if program not in allowed_programs:

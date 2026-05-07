@@ -142,6 +142,16 @@ def resolve_url(base_url: str, path_or_url: str | None = None) -> str:
     return urllib.parse.urljoin(base_url.rstrip("/") + "/", path_or_url.lstrip("/"))
 
 
+def resolve_origin_url(base_url: str, path_or_url: str | None = None) -> str:
+    if not path_or_url:
+        return base_url
+    if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+        return path_or_url
+    parsed = urllib.parse.urlsplit(base_url)
+    origin = urllib.parse.urlunsplit((parsed.scheme or "http", parsed.netloc, "/", "", ""))
+    return urllib.parse.urljoin(origin, path_or_url.lstrip("/"))
+
+
 def live_client_ip(target_url: str | None = None) -> str:
     parsed = urllib.parse.urlsplit(target_url or LIVE_CONFIG.http_proxy_url)
     host = parsed.hostname or "proxy"
@@ -300,7 +310,8 @@ def ensure_live_stack_ready() -> dict[str, dict[str, Any]]:
     proxy_client = LiveStackClient()
     _READY_CACHE = {
         "admin": wait_for_json_url(resolve_url(LIVE_CONFIG.admin_url, "/health"), description="admin health"),
-        "proxy": wait_for_json_url(resolve_url(LIVE_CONFIG.proxy_management_url, "/health"), description="proxy public health"),
+        "proxy_management": wait_for_json_url(resolve_url(LIVE_CONFIG.proxy_management_url, "/health"), description="proxy management health"),
+        "proxy_public": wait_for_json_url(resolve_origin_url(LIVE_CONFIG.pac_url, "/health"), description="proxy public health"),
         "remote_proxy": wait_for_remote_proxy_management_payload(),
         "traffic_fixture": wait_for_json_url(resolve_url(LIVE_CONFIG.traffic_fixture_url, "/health"), description="traffic fixture health"),
         "http_proxy": wait_for_proxy_fixture_response(proxy_client, "/health").json(),
@@ -504,10 +515,10 @@ class LiveStackClient:
         return self.request(resolve_url(base_url, path_or_url), **kwargs)
 
     def proxy_public_request(self, path_or_url: str, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_url(LIVE_CONFIG.proxy_management_url, path_or_url), **kwargs)
+        return self.request(resolve_origin_url(LIVE_CONFIG.pac_url, path_or_url), **kwargs)
 
     def remote_proxy_public_request(self, path_or_url: str, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_url(LIVE_CONFIG.remote_proxy_management_url, path_or_url), **kwargs)
+        return self.request(resolve_origin_url(LIVE_CONFIG.remote_pac_url, path_or_url), **kwargs)
 
     def proxy_management_request(self, path_or_url: str, *, auth: bool = True, headers: dict[str, str] | None = None, **kwargs: Any) -> HttpResponse:
         merged_headers: dict[str, str] = {}
@@ -518,13 +529,13 @@ class LiveStackClient:
         return self.request(resolve_url(LIVE_CONFIG.proxy_management_url, path_or_url), headers=merged_headers, **kwargs)
 
     def pac_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_url(LIVE_CONFIG.pac_url, path_or_url), **kwargs)
+        return self.request(resolve_origin_url(LIVE_CONFIG.pac_url, path_or_url), **kwargs)
 
     def remote_pac_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_url(LIVE_CONFIG.remote_pac_url, path_or_url), **kwargs)
+        return self.request(resolve_origin_url(LIVE_CONFIG.remote_pac_url, path_or_url), **kwargs)
 
     def wpad_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_url(LIVE_CONFIG.wpad_url, path_or_url), **kwargs)
+        return self.request(resolve_origin_url(LIVE_CONFIG.wpad_url, path_or_url), **kwargs)
 
     def traffic_fixture_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
         return self.request(resolve_url(LIVE_CONFIG.traffic_fixture_url, path_or_url), **kwargs)
