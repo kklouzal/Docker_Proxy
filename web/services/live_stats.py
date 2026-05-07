@@ -533,11 +533,11 @@ class LiveStatsStore:
         with self._start_lock:
             if self._started:
                 return
-            self._started = True
             self.init_db()
 
             t = threading.Thread(target=self._tail_loop, name="live-stats-tailer", daemon=True)
             t.start()
+            self._started = True
 
     def _tail_loop(self) -> None:
         # Seed so the page is useful immediately.
@@ -562,109 +562,101 @@ class LiveStatsStore:
                 if last_inode is None:
                     last_inode = inode
 
-                with self._connect() as conn:
+                pending = 0
+                batch = self._new_batch()
+                last_commit = time.time()
+
+                def flush_pending() -> None:
+                    nonlocal pending, last_commit
+                    if not pending:
+                        last_commit = time.time()
+                        return
+                    with self._connect() as conn:
+                        self._flush_batch_with_conn(conn, batch)
+                    self._clear_batch(batch)
                     pending = 0
-                    batch = self._new_batch()
                     last_commit = time.time()
-                    with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        # Start at end so we don't reprocess the whole file.
-                        f.seek(0, os.SEEK_END)
-                        while True:
-                            line = f.readline()
-                            if line:
-                                try:
-                                    if self._accumulate_line(batch, line):
-                                        pending += 1
-                                except Exception:
-                                    try:
-                                        conn.rollback()
-                                    except Exception:
-                                        log_exception_throttled(
-                                            logger,
-                                            "live_stats.rollback.ingest",
-                                            interval_seconds=300.0,
-                                            message="Live stats tailer rollback failed after ingest error",
-                                        )
-                                now = time.time()
-                                if pending >= commit_batch or (now - last_commit) >= commit_interval:
-                                    try:
-                                        if pending:
-                                            self._flush_batch_with_conn(conn, batch)
-                                        conn.commit()
-                                        self._clear_batch(batch)
-                                        pending = 0
-                                    except Exception:
-                                        try:
-                                            conn.rollback()
-                                        except Exception:
-                                            log_exception_throttled(
-                                                logger,
-                                                "live_stats.rollback.commit",
-                                                interval_seconds=300.0,
-                                                message="Live stats tailer rollback failed after commit error",
-                                            )
-                                    last_commit = now
-                                continue
 
-                            # EOF/idle: commit any pending rows so UI reflects the latest
-                            # data even if the log is quiet.
-                            now = time.time()
-                            if pending and (now - last_commit) >= commit_interval:
-                                try:
-                                    self._flush_batch_with_conn(conn, batch)
-                                    conn.commit()
-                                    self._clear_batch(batch)
-                                    pending = 0
-                                except Exception:
-                                    try:
-                                        conn.rollback()
-                                    except Exception:
-                                        log_exception_throttled(
-                                            logger,
-                                            "live_stats.rollback.idle_commit",
-                                            interval_seconds=300.0,
-                                            message="Live stats tailer rollback failed after idle commit error",
-                                        )
-                                last_commit = now
-
-                            # Handle copytruncate: inode unchanged but file shrinks.
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    # Start at end so we don't reprocess the whole file.
+                    f.seek(0, os.SEEK_END)
+                    while True:
+                        line = f.readline()
+                        if line:
                             try:
-                                if os.path.getsize(path) < f.tell():
-                                    f.seek(0, os.SEEK_SET)
-                                    continue
+                                if self._accumulate_line(batch, line):
+                                    pending += 1
                             except Exception:
                                 log_exception_throttled(
                                     logger,
-                                    "live_stats.copytruncate",
+                                    "live_stats.ingest",
                                     interval_seconds=300.0,
-                                    message="Live stats tailer copytruncate check failed",
+                                    message="Live stats tailer failed to parse a log line",
                                 )
-
-                            # Handle log rotation by checking inode.
-                            try:
-                                st2 = os.stat(path)
-                                inode2 = getattr(st2, "st_ino", None)
-                            except OSError:
-                                inode2 = None
-
-                            if inode2 is not None and last_inode is not None and inode2 != last_inode:
-                                last_inode = inode2
+                            now = time.time()
+                            if pending >= commit_batch or (now - last_commit) >= commit_interval:
                                 try:
-                                    if pending:
-                                        self._flush_batch_with_conn(conn, batch)
-                                    conn.commit()
-                                    self._clear_batch(batch)
-                                    pending = 0
+                                    flush_pending()
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
-                                        "live_stats.commit.rotate",
+                                        "live_stats.commit",
                                         interval_seconds=300.0,
-                                        message="Live stats tailer final commit failed during rotation",
+                                        message="Live stats tailer batch commit failed",
                                     )
-                                break
+                                    last_commit = now
+                            continue
 
-                            time.sleep(poll_interval)
+                        # EOF/idle: commit any pending rows so UI reflects the latest
+                        # data even if the log is quiet.  Do not keep a DB transaction
+                        # open while sleeping for more log data.
+                        now = time.time()
+                        if pending and (now - last_commit) >= commit_interval:
+                            try:
+                                flush_pending()
+                            except Exception:
+                                log_exception_throttled(
+                                    logger,
+                                    "live_stats.idle_commit",
+                                    interval_seconds=300.0,
+                                    message="Live stats tailer idle commit failed",
+                                )
+                                last_commit = now
+
+                        # Handle copytruncate: inode unchanged but file shrinks.
+                        try:
+                            if os.path.getsize(path) < f.tell():
+                                f.seek(0, os.SEEK_SET)
+                                continue
+                        except Exception:
+                            log_exception_throttled(
+                                logger,
+                                "live_stats.copytruncate",
+                                interval_seconds=300.0,
+                                message="Live stats tailer copytruncate check failed",
+                            )
+
+                        # Handle log rotation by checking inode.
+                        try:
+                            st2 = os.stat(path)
+                            inode2 = getattr(st2, "st_ino", None)
+                        except OSError:
+                            inode2 = None
+
+                        if inode2 is not None and last_inode is not None and inode2 != last_inode:
+                            last_inode = inode2
+                            try:
+                                flush_pending()
+                            except Exception:
+                                log_exception_throttled(
+                                    logger,
+                                    "live_stats.commit.rotate",
+                                    interval_seconds=300.0,
+                                    message="Live stats tailer final commit failed during rotation",
+                                )
+                            break
+
+                        time.sleep(poll_interval)
             except Exception:
                 log_exception_throttled(
                     logger,

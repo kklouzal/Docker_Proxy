@@ -239,32 +239,31 @@ class AdblockStore:
         with self._blocklog_lock:
             if self._blocklog_started:
                 return
-            self._blocklog_started = True
+            self.init_db()
 
-        self.init_db()
-
-        # Seed only if empty to avoid duplicating historical lines.
-        try:
-            with self._connect() as conn:
-                n = int(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM adblock_events WHERE proxy_id=%s",
-                        (get_proxy_id(),),
-                    ).fetchone()[0]
-                    or 0
+            # Seed only if empty to avoid duplicating historical lines.
+            try:
+                with self._connect() as conn:
+                    n = int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM adblock_events WHERE proxy_id=%s",
+                            (get_proxy_id(),),
+                        ).fetchone()[0]
+                        or 0
+                    )
+                    if n == 0:
+                        self._seed_from_recent_log(conn)
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "adblock_store.blocklog.seed",
+                    interval_seconds=300.0,
+                    message="Adblock blocklog seed failed",
                 )
-                if n == 0:
-                    self._seed_from_recent_log(conn)
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "adblock_store.blocklog.seed",
-                interval_seconds=300.0,
-                message="Adblock blocklog seed failed",
-            )
 
-        t = threading.Thread(target=self._blocklog_tail_loop, name="adblock-cicap-tailer", daemon=True)
-        t.start()
+            t = threading.Thread(target=self._blocklog_tail_loop, name="adblock-cicap-tailer", daemon=True)
+            t.start()
+            self._blocklog_started = True
 
     def _seed_from_recent_log(self, conn, max_lines: int = 5000) -> None:
         lines = self._read_last_lines(self.cicap_access_log_path, max_lines=max_lines)
@@ -296,36 +295,26 @@ class AdblockStore:
             return []
 
     def _blocklog_tail_loop(self) -> None:
-        conn = None
         while True:
             try:
-                if conn is None:
-                    conn = self._connect()
-                self._ingest_new_cicap_lines(conn)
+                path = self.cicap_access_log_path
+                if path and os.path.exists(path):
+                    with self._connect() as conn:
+                        self._ingest_new_cicap_lines(conn)
             except DATABASE_ERRORS:
-                try:
-                    if conn is not None:
-                        conn.rollback()
-                        conn.close()
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "adblock_store.blocklog.conn_reset",
-                        interval_seconds=300.0,
-                        message="Adblock blocklog tailer failed to reset DB connection",
-                    )
-                conn = None
+                log_exception_throttled(
+                    logger,
+                    "adblock_store.blocklog.db_unavailable",
+                    interval_seconds=300.0,
+                    message="Adblock blocklog tailer database operation failed",
+                )
             except Exception:
-                try:
-                    if conn is not None:
-                        conn.rollback()
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "adblock_store.blocklog.rollback",
-                        interval_seconds=300.0,
-                        message="Adblock blocklog tailer rollback failed",
-                    )
+                log_exception_throttled(
+                    logger,
+                    "adblock_store.blocklog.loop",
+                    interval_seconds=300.0,
+                    message="Adblock blocklog tailer loop failed",
+                )
             time.sleep(1.0)
 
     def _ingest_new_cicap_lines(self, conn) -> None:
@@ -978,5 +967,4 @@ def get_adblock_store() -> AdblockStore:
                 cicap_access_log_path=os.environ.get("CICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
                 blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
             )
-            _store.init_db()
         return _store

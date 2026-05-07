@@ -156,6 +156,63 @@ _pool_lock = threading.Lock()
 _pooled_connections: dict[tuple[str, int, str, str, str, str, int], list[tuple[float, Any]]] = {}
 
 
+def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return value
+
+
+def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
+    """Apply defensive per-session settings to every checked-out connection.
+
+    These guardrails keep application sessions from waiting indefinitely behind
+    a stale transaction/metadata lock and make pooled connections deterministic
+    after reconnects.
+    """
+    statements: list[tuple[str, tuple[Any, ...]]] = []
+    lock_wait_timeout = _env_int("MYSQL_LOCK_WAIT_TIMEOUT", 10, minimum=1, maximum=300)
+    innodb_lock_wait_timeout = _env_int("MYSQL_INNODB_LOCK_WAIT_TIMEOUT", lock_wait_timeout, minimum=1, maximum=300)
+    wait_timeout = _env_int("MYSQL_SESSION_WAIT_TIMEOUT", 300, minimum=30, maximum=86400)
+    isolation = (os.environ.get("MYSQL_TRANSACTION_ISOLATION") or "READ COMMITTED").strip().upper()
+    if isolation not in {"READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"}:
+        isolation = "READ COMMITTED"
+    statements.extend(
+        [
+            ("SET SESSION innodb_lock_wait_timeout=%s", (innodb_lock_wait_timeout,)),
+            ("SET SESSION lock_wait_timeout=%s", (lock_wait_timeout,)),
+            ("SET SESSION wait_timeout=%s", (wait_timeout,)),
+            (f"SET SESSION TRANSACTION ISOLATION LEVEL {isolation}", ()),
+        ]
+    )
+    cur = native.cursor()
+    for sql, params in statements:
+        try:
+            cur.execute(sql, params)
+        except Exception:
+            # Some MySQL/MariaDB variants may not support every setting.  The
+            # connection is still usable; unsupported guardrails should not
+            # prevent startup.
+            pass
+    try:
+        native.rollback()
+    except Exception:
+        pass
+
+
+def _rollback_native_connection(native: Any) -> bool:
+    try:
+        native.rollback()
+        return True
+    except Exception:
+        return False
+
+
 def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int, int, int]:
     return (
         cfg.host,
@@ -244,15 +301,21 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
             _pooled_connections[key] = bucket
             try:
                 native.ping(reconnect=True)
+                _configure_native_connection(native, cfg)
                 return native
             except Exception:
                 _close_native_connection(native)
         if not bucket:
             _pooled_connections.pop(key, None)
-    return _open_native_connection(cfg)
+    native = _open_native_connection(cfg)
+    _configure_native_connection(native, cfg)
+    return native
 
 
 def _return_connection(cfg: DatabaseConfig, native: Any) -> None:
+    if not _rollback_native_connection(native):
+        _close_native_connection(native)
+        return
     maxsize = _pool_maxsize()
     if maxsize <= 0:
         _close_native_connection(native)

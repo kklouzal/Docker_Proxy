@@ -423,5 +423,4 @@ def get_proxy_webfilter_store() -> ProxyWebFilterStore:
     with _store_lock:
         if _store is None:
             _store = ProxyWebFilterStore()
-            _store.init_db()
         return _store

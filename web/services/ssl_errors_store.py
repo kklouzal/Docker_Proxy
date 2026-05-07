@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.db import DATABASE_ERRORS, connect
-from services.logutil import log_exception_throttled
+from services.logutil import log_exception_throttled, should_log
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, normalize_hostish as _normalize_hostish, now_ts as _now
 
@@ -306,20 +306,62 @@ class SslErrorsStore:
                     )
                     """
                 )
-
-                self._cleanup_known_false_positives(conn)
-
-                # Retention: keep aggregates that have been seen recently.
-                cutoff = _now() - (30 * 24 * 60 * 60)
-                conn.execute("DELETE FROM ssl_errors WHERE last_seen < %s", (cutoff,))
             self._db_initialized = True
+            self._run_startup_cleanup()
+
+    def _cleanup_chunk_size(self) -> int:
+        try:
+            return max(1, min(5000, int((os.environ.get("SSL_ERRORS_CLEANUP_CHUNK_SIZE") or "500").strip() or "500")))
+        except Exception:
+            return 500
+
+    def _cleanup_max_rows(self) -> int:
+        try:
+            return max(0, min(1_000_000, int((os.environ.get("SSL_ERRORS_CLEANUP_MAX_ROWS") or "50000").strip() or "50000")))
+        except Exception:
+            return 50_000
+
+    def _delete_in_chunks(self, where_sql: str, params: tuple[Any, ...], *, log_key: str) -> int:
+        chunk_size = self._cleanup_chunk_size()
+        max_rows = self._cleanup_max_rows()
+        if max_rows <= 0:
+            return 0
+        total = 0
+        while total < max_rows:
+            limit = min(chunk_size, max_rows - total)
+            with self._connect() as conn:
+                result = conn.execute(f"DELETE FROM ssl_errors WHERE {where_sql} LIMIT %s", tuple(params) + (limit,))
+                deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
+            total += deleted
+            if deleted < limit:
+                break
+        if total >= max_rows and should_log(log_key + ".truncated", interval_seconds=300.0):
+            logger.warning("SSL errors cleanup reached max_rows=%s; remaining rows will be cleaned up later.", max_rows)
+        return total
+
+    def _run_startup_cleanup(self) -> None:
+        # Cleanup is opportunistic.  It should never be a prerequisite for
+        # serving health/PAC or ingesting future rows, and it must not hold a
+        # table lock for a large DELETE.  Use short, bounded DELETE chunks and
+        # let session lock_wait_timeout abort quickly if another actor is stuck.
+        try:
+            self._cleanup_known_false_positives()
+        except DATABASE_ERRORS:
+            if should_log("ssl_errors_store.cleanup.false_positives", interval_seconds=300.0):
+                logger.warning("SSL errors false-positive cleanup skipped because the database is busy/unavailable.")
+
+        try:
+            cutoff = _now() - (30 * 24 * 60 * 60)
+            self._delete_in_chunks("last_seen < %s", (int(cutoff),), log_key="ssl_errors_store.cleanup.retention")
+        except DATABASE_ERRORS:
+            if should_log("ssl_errors_store.cleanup.retention", interval_seconds=300.0):
+                logger.warning("SSL errors retention cleanup skipped because the database is busy/unavailable.")
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
-        with self._connect() as conn:
-            conn.execute("DELETE FROM ssl_errors WHERE last_seen < %s", (int(cutoff),))
+        self._delete_in_chunks("last_seen < %s", (int(cutoff),), log_key="ssl_errors_store.prune")
 
     def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
         proxy_id = get_proxy_id()
@@ -345,15 +387,12 @@ class SslErrorsStore:
         ).fetchone()
         return int((row[0] if row else 0) or 0)
 
-    def _cleanup_known_false_positives(self, conn) -> None:
+    def _cleanup_known_false_positives(self) -> None:
         proxy_id = get_proxy_id()
-        conn.execute(
-            """
-            DELETE FROM ssl_errors
-            WHERE proxy_id = %s
-                            AND (reason LIKE %s OR sample LIKE %s)
-            """,
+        self._delete_in_chunks(
+            "proxy_id = %s AND (reason LIKE %s OR sample LIKE %s)",
             (proxy_id, "%Processing Configuration File:%", "%Processing Configuration File:%"),
+            log_key="ssl_errors_store.cleanup.false_positives",
         )
 
     def ingest_line(self, line: str) -> None:
@@ -488,107 +527,92 @@ class SslErrorsStore:
                 if last_inode is None:
                     last_inode = inode
 
-                with self._connect() as conn:
-                    pending = 0
-                    last_commit = time.time()
-                    with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        f.seek(0, os.SEEK_END)
-                        while True:
-                            line = f.readline()
-                            if line:
-                                try:
-                                    if self._ingest_line_with_conn(conn, line):
-                                        pending += 1
-                                except Exception:
-                                    try:
-                                        conn.rollback()
-                                    except Exception:
-                                        log_exception_throttled(
-                                            logger,
-                                            "ssl_errors_store.rollback.ingest",
-                                            interval_seconds=300.0,
-                                            message="SSL errors tailer rollback failed after ingest error",
-                                        )
-                                now = time.time()
-                                if pending >= commit_batch or (now - last_commit) >= commit_interval:
-                                    try:
-                                        conn.commit()
-                                    except Exception:
-                                        try:
-                                            conn.rollback()
-                                        except Exception:
-                                            log_exception_throttled(
-                                                logger,
-                                                "ssl_errors_store.rollback.commit",
-                                                interval_seconds=300.0,
-                                                message="SSL errors tailer rollback failed after commit error",
-                                            )
-                                    pending = 0
-                                    last_commit = now
-                                continue
+                pending = 0
+                last_commit = time.time()
 
-                            # EOF/idle: commit pending rows so results don't lag.
-                            now = time.time()
-                            if self._flush_pending_error(conn):
-                                pending += 1
-                            if pending and (now - last_commit) >= commit_interval:
-                                try:
-                                    conn.commit()
-                                except Exception:
-                                    try:
-                                        conn.rollback()
-                                    except Exception:
-                                        log_exception_throttled(
-                                            logger,
-                                            "ssl_errors_store.rollback.idle_commit",
-                                            interval_seconds=300.0,
-                                            message="SSL errors tailer rollback failed after idle commit error",
-                                        )
-                                pending = 0
-                                last_commit = now
+                def ingest_line(line: str) -> bool:
+                    with self._connect() as conn:
+                        return self._ingest_line_with_conn(conn, line)
 
-                            # Handle copytruncate: inode unchanged but file shrinks.
+                def flush_pending() -> bool:
+                    with self._connect() as conn:
+                        return self._flush_pending_error(conn)
+
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(0, os.SEEK_END)
+                    while True:
+                        line = f.readline()
+                        if line:
                             try:
-                                if os.path.getsize(path) < f.tell():
-                                    f.seek(0, os.SEEK_SET)
-                                    continue
+                                if ingest_line(line):
+                                    pending += 1
                             except Exception:
                                 log_exception_throttled(
                                     logger,
-                                    "ssl_errors_store.copytruncate",
+                                    "ssl_errors_store.ingest",
                                     interval_seconds=300.0,
-                                    message="SSL errors tailer copytruncate check failed",
+                                    message="SSL errors tailer failed to ingest a log line",
                                 )
+                            now = time.time()
+                            if pending >= commit_batch or (now - last_commit) >= commit_interval:
+                                pending = 0
+                                last_commit = now
+                            continue
 
-                            # Detect rotation/recreate.
+                        # EOF/idle: flush an in-memory pending TLS header without
+                        # keeping a DB transaction open while waiting for more log
+                        # lines.
+                        now = time.time()
+                        if (now - last_commit) >= commit_interval:
                             try:
-                                st2 = os.stat(path)
-                                inode2 = getattr(st2, "st_ino", None)
-                            except OSError:
-                                inode2 = None
+                                if flush_pending():
+                                    pending = 0
+                            except Exception:
+                                log_exception_throttled(
+                                    logger,
+                                    "ssl_errors_store.idle_commit",
+                                    interval_seconds=300.0,
+                                    message="SSL errors tailer idle flush failed",
+                                )
+                            last_commit = now
 
-                            if inode2 is not None and last_inode is not None and inode2 != last_inode:
-                                last_inode = inode2
-                                self._flush_pending_error(conn)
-                                try:
-                                    conn.commit()
-                                except Exception:
-                                    log_exception_throttled(
-                                        logger,
-                                        "ssl_errors_store.commit.rotate",
-                                        interval_seconds=300.0,
-                                        message="SSL errors tailer final commit failed during rotation",
-                                    )
-                                break
+                        # Handle copytruncate: inode unchanged but file shrinks.
+                        try:
+                            if os.path.getsize(path) < f.tell():
+                                f.seek(0, os.SEEK_SET)
+                                continue
+                        except Exception:
+                            log_exception_throttled(
+                                logger,
+                                "ssl_errors_store.copytruncate",
+                                interval_seconds=300.0,
+                                message="SSL errors tailer copytruncate check failed",
+                            )
 
-                            time.sleep(poll_interval)
+                        # Detect rotation/recreate.
+                        try:
+                            st2 = os.stat(path)
+                            inode2 = getattr(st2, "st_ino", None)
+                        except OSError:
+                            inode2 = None
+
+                        if inode2 is not None and last_inode is not None and inode2 != last_inode:
+                            last_inode = inode2
+                            try:
+                                flush_pending()
+                            except Exception:
+                                log_exception_throttled(
+                                    logger,
+                                    "ssl_errors_store.commit.rotate",
+                                    interval_seconds=300.0,
+                                    message="SSL errors tailer final flush failed during rotation",
+                                )
+                            break
+
+                        time.sleep(poll_interval)
             except Exception:
-                log_exception_throttled(
-                    logger,
-                    "ssl_errors_store.loop",
-                    interval_seconds=300.0,
-                    message="SSL errors tailer loop failed",
-                )
+                if should_log("ssl_errors_store.loop", interval_seconds=300.0):
+                    logger.warning("SSL errors tailer is waiting for database availability; retrying.")
                 time.sleep(max(1.0, poll_interval))
 
     def list_errors(self, limit: int = 200) -> List[Dict[str, Any]]:
@@ -628,13 +652,4 @@ def get_ssl_errors_store() -> SslErrorsStore:
     with _store_lock:
         if _store is None:
             _store = SslErrorsStore()
-            try:
-                _store.init_db()
-            except DATABASE_ERRORS:
-                log_exception_throttled(
-                    logger,
-                    "ssl_errors_store.init_db",
-                    interval_seconds=300.0,
-                    message="SSL errors store database initialization failed; proxy runtime will retry lazily.",
-                )
         return _store

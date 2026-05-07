@@ -260,5 +260,4 @@ def get_pac_profiles_store() -> PacProfilesStore:
     with _store_lock:
         if _store is None:
             _store = PacProfilesStore()
-            _store.init_db()
         return _store

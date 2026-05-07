@@ -365,7 +365,6 @@ def get_webfilter_store() -> WebFilterStore:
     with _store_lock:
         if _store is None:
             _store = WebFilterStore()
-            _store.init_db()
         return _store
 
 

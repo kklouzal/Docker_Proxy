@@ -692,5 +692,4 @@ def get_adblock_artifacts() -> AdblockArtifactStore:
     with _store_lock:
         if _store is None:
             _store = AdblockArtifactStore()
-            _store.init_db()
         return _store

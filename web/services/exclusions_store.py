@@ -196,5 +196,4 @@ def get_exclusions_store() -> ExclusionsStore:
     with _store_lock:
         if _store is None:
             _store = ExclusionsStore()
-            _store.init_db()
         return _store

@@ -320,5 +320,4 @@ def get_certificate_bundles() -> CertificateBundleStore:
     with _store_lock:
         if _store is None:
             _store = CertificateBundleStore()
-            _store.init_db()
         return _store

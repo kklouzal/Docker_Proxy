@@ -330,5 +330,4 @@ def get_config_revisions() -> ConfigRevisionStore:
     with _store_lock:
         if _store is None:
             _store = ConfigRevisionStore()
-            _store.init_db()
         return _store

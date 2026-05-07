@@ -320,7 +320,6 @@ class DiagnosticStore:
         with self._start_lock:
             if self._started:
                 return
-            self._started = True
             self.init_db()
             self.seed_from_recent_logs()
 
@@ -337,6 +336,7 @@ class DiagnosticStore:
                 daemon=True,
             )
             icap_thread.start()
+            self._started = True
 
     def _read_last_lines(self, path: str, *, max_lines: int) -> List[str]:
         if not path or not os.path.exists(path):
@@ -385,105 +385,96 @@ class DiagnosticStore:
                 if last_inode is None:
                     last_inode = inode
 
-                with self._connect() as conn:
+                pending = 0
+                pending_rows: List[tuple[Any, ...]] = []
+                last_commit = time.time()
+
+                def flush_pending() -> None:
+                    nonlocal pending, last_commit
+                    if not pending_rows:
+                        pending = 0
+                        last_commit = time.time()
+                        return
+                    with self._connect() as conn:
+                        flush_rows_fn(conn, pending_rows)
+                    pending_rows.clear()
                     pending = 0
-                    pending_rows: List[tuple[Any, ...]] = []
                     last_commit = time.time()
-                    with open(path, "r", encoding="utf-8", errors="replace") as handle:
-                        handle.seek(0, os.SEEK_END)
-                        while True:
-                            line = handle.readline()
-                            if line:
-                                try:
-                                    row = build_row_fn(line)
-                                    if row is not None:
-                                        pending_rows.append(row)
-                                        pending += 1
-                                except Exception:
-                                    try:
-                                        conn.rollback()
-                                    except Exception:
-                                        log_exception_throttled(
-                                            logger,
-                                            f"diagnostic_store.rollback.{loop_name}",
-                                            interval_seconds=300.0,
-                                            message=f"Diagnostic tailer rollback failed while ingesting {loop_name}",
-                                        )
-                                now = time.time()
-                                if pending >= commit_batch or (now - last_commit) >= commit_interval:
-                                    try:
-                                        if pending_rows:
-                                            flush_rows_fn(conn, pending_rows)
-                                        conn.commit()
-                                        pending_rows.clear()
-                                        pending = 0
-                                    except Exception:
-                                        try:
-                                            conn.rollback()
-                                        except Exception:
-                                            log_exception_throttled(
-                                                logger,
-                                                f"diagnostic_store.commit.{loop_name}",
-                                                interval_seconds=300.0,
-                                                message=f"Diagnostic tailer rollback failed after commit in {loop_name}",
-                                            )
-                                    last_commit = now
-                                continue
 
-                            now = time.time()
-                            if pending and (now - last_commit) >= commit_interval:
-                                try:
-                                    if pending_rows:
-                                        flush_rows_fn(conn, pending_rows)
-                                    conn.commit()
-                                    pending_rows.clear()
-                                    pending = 0
-                                except Exception:
-                                    try:
-                                        conn.rollback()
-                                    except Exception:
-                                        log_exception_throttled(
-                                            logger,
-                                            f"diagnostic_store.idle_commit.{loop_name}",
-                                            interval_seconds=300.0,
-                                            message=f"Diagnostic tailer rollback failed after idle commit in {loop_name}",
-                                        )
-                                last_commit = now
-
+                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    while True:
+                        line = handle.readline()
+                        if line:
                             try:
-                                if os.path.getsize(path) < handle.tell():
-                                    handle.seek(0, os.SEEK_SET)
-                                    continue
+                                row = build_row_fn(line)
+                                if row is not None:
+                                    pending_rows.append(row)
+                                    pending += 1
                             except Exception:
                                 log_exception_throttled(
                                     logger,
-                                    f"diagnostic_store.copytruncate.{loop_name}",
+                                    f"diagnostic_store.ingest.{loop_name}",
                                     interval_seconds=300.0,
-                                    message=f"Diagnostic tailer copytruncate check failed for {loop_name}",
+                                    message=f"Diagnostic tailer failed to parse a log line in {loop_name}",
                                 )
-
-                            try:
-                                inode_now = getattr(os.stat(path), "st_ino", None)
-                            except OSError:
-                                inode_now = None
-                            if inode_now is not None and last_inode is not None and inode_now != last_inode:
-                                last_inode = inode_now
+                            now = time.time()
+                            if pending >= commit_batch or (now - last_commit) >= commit_interval:
                                 try:
-                                    if pending_rows:
-                                        flush_rows_fn(conn, pending_rows)
-                                    conn.commit()
-                                    pending_rows.clear()
-                                    pending = 0
+                                    flush_pending()
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
-                                        f"diagnostic_store.rotate.{loop_name}",
+                                        f"diagnostic_store.commit.{loop_name}",
                                         interval_seconds=300.0,
-                                        message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
+                                        message=f"Diagnostic tailer batch commit failed in {loop_name}",
                                     )
-                                break
+                                    last_commit = now
+                            continue
 
-                            time.sleep(poll_interval)
+                        now = time.time()
+                        if pending and (now - last_commit) >= commit_interval:
+                            try:
+                                flush_pending()
+                            except Exception:
+                                log_exception_throttled(
+                                    logger,
+                                    f"diagnostic_store.idle_commit.{loop_name}",
+                                    interval_seconds=300.0,
+                                    message=f"Diagnostic tailer idle commit failed in {loop_name}",
+                                )
+                                last_commit = now
+
+                        try:
+                            if os.path.getsize(path) < handle.tell():
+                                handle.seek(0, os.SEEK_SET)
+                                continue
+                        except Exception:
+                            log_exception_throttled(
+                                logger,
+                                f"diagnostic_store.copytruncate.{loop_name}",
+                                interval_seconds=300.0,
+                                message=f"Diagnostic tailer copytruncate check failed for {loop_name}",
+                            )
+
+                        try:
+                            inode_now = getattr(os.stat(path), "st_ino", None)
+                        except OSError:
+                            inode_now = None
+                        if inode_now is not None and last_inode is not None and inode_now != last_inode:
+                            last_inode = inode_now
+                            try:
+                                flush_pending()
+                            except Exception:
+                                log_exception_throttled(
+                                    logger,
+                                    f"diagnostic_store.rotate.{loop_name}",
+                                    interval_seconds=300.0,
+                                    message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
+                                )
+                            break
+
+                        time.sleep(poll_interval)
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -1363,5 +1354,4 @@ def get_diagnostic_store() -> DiagnosticStore:
                 seed_max_lines=_env_int("DIAGNOSTIC_SEED_MAX_LINES", 5000, minimum=500, maximum=20000),
                 retention_days=_env_int("DIAGNOSTIC_RETENTION_DAYS", 7, minimum=1, maximum=90),
             )
-            _store.init_db()
         return _store

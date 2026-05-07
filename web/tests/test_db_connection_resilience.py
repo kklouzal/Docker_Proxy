@@ -36,15 +36,104 @@ def test_context_manager_preserves_original_error_when_rollback_connection_is_lo
     assert closed == [True]
 
 
+def test_returning_connection_to_pool_rolls_back_any_open_transaction(monkeypatch) -> None:
+    _add_repo_paths()
+    import services.db as db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class NativeConnection:
+        def rollback(self):
+            calls.append("rollback")
+
+        def close(self):
+            calls.append("close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+    native = NativeConnection()
+
+    db._return_connection(cfg, native)
+
+    assert calls == ["rollback"]
+    assert any(bucket and bucket[-1][1] is native for bucket in db._pooled_connections.values())
+    db.reset_mysql_ready_for_tests()
+
+
+def test_failed_pool_rollback_discards_connection(monkeypatch) -> None:
+    _add_repo_paths()
+    import services.db as db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class NativeConnection:
+        def rollback(self):
+            calls.append("rollback")
+            raise RuntimeError("connection is broken")
+
+        def close(self):
+            calls.append("close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+
+    db._return_connection(cfg, NativeConnection())
+
+    assert calls == ["rollback", "close"]
+    assert not db._pooled_connections
+
+
+def test_new_native_connections_receive_session_guardrails(monkeypatch) -> None:
+    _add_repo_paths()
+    import services.db as db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    statements: list[tuple[str, tuple[object, ...]]] = []
+    calls: list[str] = []
+
+    class Cursor:
+        def execute(self, sql, params=()):
+            statements.append((str(sql), tuple(params or ())))
+
+    class NativeConnection:
+        def cursor(self):
+            return Cursor()
+
+        def rollback(self):
+            calls.append("rollback")
+
+        def close(self):
+            calls.append("close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+    monkeypatch.setenv("MYSQL_LOCK_WAIT_TIMEOUT", "7")
+    monkeypatch.setenv("MYSQL_INNODB_LOCK_WAIT_TIMEOUT", "6")
+    monkeypatch.setenv("MYSQL_SESSION_WAIT_TIMEOUT", "123")
+    monkeypatch.setenv("MYSQL_TRANSACTION_ISOLATION", "READ COMMITTED")
+    monkeypatch.setattr(db, "_open_native_connection", lambda _cfg: NativeConnection())
+
+    native = db._checkout_connection(cfg)
+
+    assert isinstance(native, NativeConnection)
+    assert ("SET SESSION innodb_lock_wait_timeout=%s", (6,)) in statements
+    assert ("SET SESSION lock_wait_timeout=%s", (7,)) in statements
+    assert ("SET SESSION wait_timeout=%s", (123,)) in statements
+    assert any(sql == "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED" for sql, _params in statements)
+    assert calls == ["rollback"]
+
+
 def test_ssl_errors_store_getter_tolerates_transient_database_init_failure(monkeypatch) -> None:
     _add_repo_paths()
-    import pymysql  # type: ignore
     import services.ssl_errors_store as ssl_errors_store  # type: ignore
 
     ssl_errors_store._store = None
+    init_calls = {"count": 0}
 
     def fail_init(self):
-        raise pymysql.err.OperationalError(2013, "Lost connection to MySQL server during query (timed out)")
+        init_calls["count"] += 1
+        raise AssertionError("store factory must not perform database I/O")
 
     monkeypatch.setattr(ssl_errors_store.SslErrorsStore, "init_db", fail_init)
 
@@ -54,6 +143,7 @@ def test_ssl_errors_store_getter_tolerates_transient_database_init_failure(monke
         assert isinstance(store, ssl_errors_store.SslErrorsStore)
         assert store._db_initialized is False
         assert ssl_errors_store.get_ssl_errors_store() is store
+        assert init_calls["count"] == 0
     finally:
         ssl_errors_store._store = None
 
@@ -117,3 +207,75 @@ def test_ssl_errors_tail_loop_retries_after_database_init_timeout(monkeypatch, t
         store._tail_loop()
 
     assert calls["init_db"] >= 2
+
+
+def test_ssl_errors_cleanup_uses_bounded_delete_chunks(monkeypatch, tmp_path) -> None:
+    _add_repo_paths()
+    import services.ssl_errors_store as ssl_errors_store  # type: ignore
+
+    executed: list[tuple[str, tuple[object, ...]]] = []
+    rowcounts = [2, 2, 1]
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    monkeypatch.setenv("SSL_ERRORS_CLEANUP_CHUNK_SIZE", "2")
+    monkeypatch.setenv("SSL_ERRORS_CLEANUP_MAX_ROWS", "10")
+
+    class Result:
+        def __init__(self, rowcount: int):
+            self.rowcount = rowcount
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=()):
+            executed.append((str(sql), tuple(params or ())))
+            return Result(rowcounts.pop(0))
+
+    monkeypatch.setattr(store, "_connect", lambda: Conn())
+
+    deleted = store._delete_in_chunks("last_seen < %s", (123,), log_key="test.cleanup")
+
+    assert deleted == 5
+    assert len(executed) == 3
+    assert all(" LIMIT %s" in sql for sql, _params in executed)
+    assert [params[-1] for _sql, params in executed] == [2, 2, 2]
+
+
+def test_ssl_errors_init_db_survives_cleanup_lock_timeout(monkeypatch, tmp_path) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    import services.ssl_errors_store as ssl_errors_store  # type: ignore
+
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    created_tables: list[str] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=()):
+            created_tables.append(str(sql))
+
+    monkeypatch.setattr(store, "_connect", lambda: Conn())
+    monkeypatch.setattr(
+        store,
+        "_cleanup_known_false_positives",
+        lambda: (_ for _ in ()).throw(pymysql.err.OperationalError(1205, "Lock wait timeout exceeded")),
+    )
+    monkeypatch.setattr(
+        store,
+        "_delete_in_chunks",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(pymysql.err.OperationalError(1205, "Lock wait timeout exceeded")),
+    )
+    monkeypatch.setattr(ssl_errors_store, "should_log", lambda *_args, **_kwargs: False)
+
+    store.init_db()
+
+    assert store._db_initialized is True
+    assert any("CREATE TABLE IF NOT EXISTS ssl_errors" in sql for sql in created_tables)

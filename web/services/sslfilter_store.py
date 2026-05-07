@@ -135,5 +135,4 @@ def get_sslfilter_store() -> SslFilterStore:
     with _store_lock:
         if _store is None:
             _store = SslFilterStore()
-            _store.init_db()
         return _store

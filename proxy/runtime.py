@@ -17,11 +17,12 @@ from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import CertManager, materialize_certificate_bundle
 from services.config_revisions import get_config_revisions
+from services.db import DATABASE_ERRORS
 from services.diagnostic_store import get_diagnostic_store
 from services.errors import public_error_message
 from services.health_checks import build_clamav_health
 from services.live_stats import get_store
-from services.logutil import log_exception_throttled
+from services.logutil import log_exception_throttled, should_log
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
 from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_context import get_proxy_id
@@ -90,6 +91,14 @@ def _call_health_check(func, /, **kwargs):
         return func(**kwargs)
     except TypeError:
         return func()
+
+
+def _log_recoverable_db_or_unexpected(key: str, *, recoverable_message: str, unexpected_message: str, exc: BaseException, interval_seconds: float = 30.0) -> None:
+    if isinstance(exc, DATABASE_ERRORS):
+        if should_log(key, interval_seconds=interval_seconds):
+            logger.warning("%s: %s", recoverable_message, public_error_message(exc, default="Database is unavailable."))
+        return
+    log_exception_throttled(logger, key, interval_seconds=interval_seconds, message=unexpected_message)
 
 
 def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0.8, tcp_timeout: float = 0.75) -> Dict[str, Dict[str, Any]]:
@@ -952,14 +961,32 @@ class ProxyRuntime:
     def start_background_tasks(self) -> None:
         if (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1":
             return
-        self.live_stats_store.start_background()
-        self.diagnostic_store.start_background()
-        self.timeseries_store.start_background(self.stats_provider)
-        self.ssl_errors_store.start_background()
+        for key, message, starter in (
+            ("proxy_runtime.background.live_stats", "Failed to start proxy live stats background task", self.live_stats_store.start_background),
+            ("proxy_runtime.background.diagnostic", "Failed to start proxy diagnostic background task", self.diagnostic_store.start_background),
+            ("proxy_runtime.background.timeseries", "Failed to start proxy timeseries background task", lambda: self.timeseries_store.start_background(self.stats_provider)),
+            ("proxy_runtime.background.ssl_errors", "Failed to start proxy SSL errors background task", self.ssl_errors_store.start_background),
+        ):
+            try:
+                starter()
+            except Exception as exc:
+                _log_recoverable_db_or_unexpected(
+                    key,
+                    recoverable_message=message,
+                    unexpected_message=message,
+                    exc=exc,
+                    interval_seconds=30.0,
+                )
         try:
             self.adblock_store.start_blocklog_background()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_recoverable_db_or_unexpected(
+                "proxy_runtime.background.adblock_blocklog",
+                recoverable_message="Failed to start proxy adblock blocklog background task",
+                unexpected_message="Failed to start proxy adblock blocklog background task",
+                exc=exc,
+                interval_seconds=30.0,
+            )
 
     def collect_health(self, *, force: bool = False) -> Dict[str, Any]:
         if not force and self.health_cache_ttl_seconds > 0:

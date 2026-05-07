@@ -281,7 +281,6 @@ class TimeSeriesStore:
         with self._start_lock:
             if self._started:
                 return
-            self._started = True
             self.init_db()
 
             def loop() -> None:
@@ -304,6 +303,7 @@ class TimeSeriesStore:
 
             t = threading.Thread(target=loop, name="timeseries-sampler", daemon=True)
             t.start()
+            self._started = True
 
 
 _store: Optional[TimeSeriesStore] = None

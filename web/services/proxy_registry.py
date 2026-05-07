@@ -435,5 +435,4 @@ def get_proxy_registry() -> ProxyRegistry:
     with _store_lock:
         if _store is None:
             _store = ProxyRegistry()
-            _store.init_db()
         return _store
