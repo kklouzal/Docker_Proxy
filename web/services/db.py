@@ -130,7 +130,16 @@ class CompatConnection:
             if exc_type is None:
                 self.commit()
             else:
-                self.rollback()
+                try:
+                    self.rollback()
+                except Exception:
+                    # If the transaction body already failed because the
+                    # server closed/timed out the connection, PyMySQL can also
+                    # fail while issuing ROLLBACK.  Discard the connection but
+                    # preserve the original exception so callers see the real
+                    # operation that failed instead of a secondary rollback
+                    # error.
+                    self._discard_on_close = True
         finally:
             self.close()
         return False

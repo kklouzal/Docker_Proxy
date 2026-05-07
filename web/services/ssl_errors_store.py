@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.db import connect
+from services.db import DATABASE_ERRORS, connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, normalize_hostish as _normalize_hostish, now_ts as _now
@@ -357,6 +357,7 @@ class SslErrorsStore:
         )
 
     def ingest_line(self, line: str) -> None:
+        self.init_db()
         with self._connect() as conn:
             self._ingest_line_with_conn(conn, line)
 
@@ -377,6 +378,7 @@ class SslErrorsStore:
             return []
 
     def seed_from_recent_log(self) -> None:
+        self.init_db()
         lines = self._read_last_lines(self.seed_max_lines)
         if not lines:
             return
@@ -390,6 +392,7 @@ class SslErrorsStore:
             self._flush_pending_error(conn)
 
     def list_recent(self, *, since: Optional[int] = None, search: str = "", limit: int = 200) -> List[SslErrorRow]:
+        self.init_db()
         where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
@@ -419,6 +422,7 @@ class SslErrorsStore:
         ]
 
     def top_domains(self, *, since: Optional[int] = None, search: str = "", limit: int = 20) -> List[Dict[str, Any]]:
+        self.init_db()
         where = ["proxy_id = %s"]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
@@ -456,22 +460,25 @@ class SslErrorsStore:
             if self._started:
                 return
             self._started = True
-            self.init_db()
             t = threading.Thread(target=self._tail_loop, name="ssl-errors-tailer", daemon=True)
             t.start()
 
     def _tail_loop(self) -> None:
-        self.seed_from_recent_log()
-
         commit_batch = _env_int("SSL_ERRORS_COMMIT_BATCH", 200, minimum=25, maximum=5000)
         commit_interval = _env_float("SSL_ERRORS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
         poll_interval = _env_float("SSL_ERRORS_POLL_INTERVAL_SECONDS", 0.75, minimum=0.1, maximum=5.0)
 
         path = self.cache_log_path
         last_inode: Optional[int] = None
+        seeded_recent_log = False
 
         while True:
             try:
+                self.init_db()
+                if not seeded_recent_log:
+                    self.seed_from_recent_log()
+                    seeded_recent_log = True
+
                 if not os.path.exists(path):
                     time.sleep(max(1.0, poll_interval))
                     continue
@@ -585,6 +592,7 @@ class SslErrorsStore:
                 time.sleep(max(1.0, poll_interval))
 
     def list_errors(self, limit: int = 200) -> List[Dict[str, Any]]:
+        self.init_db()
         lim = max(10, min(1000, int(limit)))
         proxy_id = get_proxy_id()
         with self._connect() as conn:
@@ -620,5 +628,13 @@ def get_ssl_errors_store() -> SslErrorsStore:
     with _store_lock:
         if _store is None:
             _store = SslErrorsStore()
-            _store.init_db()
+            try:
+                _store.init_db()
+            except DATABASE_ERRORS:
+                log_exception_throttled(
+                    logger,
+                    "ssl_errors_store.init_db",
+                    interval_seconds=300.0,
+                    message="SSL errors store database initialization failed; proxy runtime will retry lazily.",
+                )
         return _store
