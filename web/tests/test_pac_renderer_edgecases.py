@@ -48,6 +48,22 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
     assert "return 'PROXY proxy.example:3128; DIRECT';" in rendered
 
 
+def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
+    _add_web_to_path()
+    import services.pac_renderer as pac_renderer  # type: ignore
+
+    target = pac_renderer.ProxyPacTarget(
+        proxy_id="default",
+        public_host="proxy.example",
+        pac_scheme="http",
+        pac_port=80,
+        http_proxy_port=3128,
+    )
+
+    assert target.proxy_chain == "PROXY proxy.example:3128; DIRECT"
+    assert "3129" not in target.proxy_chain
+
+
 def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
     _add_web_to_path()
     import services.pac_renderer as pac_renderer  # type: ignore

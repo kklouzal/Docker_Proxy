@@ -112,6 +112,19 @@ def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0
         "clamav": build_clamav_health(clamd, av_icap),
     }
 
+
+def _listener_mode_summary(listeners: object) -> str:
+    try:
+        parts = []
+        for item in listeners or []:
+            port = int(getattr(item, "get", lambda _key, _default=None: _default)("port", 0) or 0)
+            mode = str(getattr(item, "get", lambda _key, _default=None: _default)("mode", "explicit") or "explicit")
+            if port:
+                parts.append(f"{mode}:{port}")
+        return ", ".join(parts)
+    except Exception:
+        return ""
+
 def _decode_completed(proc: Any) -> str:
     stdout_text = _decode_bytes(getattr(proc, "stdout", b""))
     stderr_text = _decode_bytes(getattr(proc, "stderr", b""))
@@ -1002,6 +1015,20 @@ class ProxyRuntime:
         stats = self.stats_provider()
         services = self.runtime_services_builder(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
         services["supervisor"] = self._supervisor_programs_health()
+        try:
+            listener_details = tuple(self.controller._http_listener_details())
+            listener_ports = tuple(int(item.get("port") or 0) for item in listener_details if int(item.get("port") or 0))
+            listener_ok = bool(self.controller._wait_for_http_listener(timeout=1.0))
+        except Exception:
+            listener_details = ()
+            listener_ports = ()
+            listener_ok = proxy_ok
+        services["squid_listeners"] = {
+            "ok": bool(listener_ok),
+            "detail": _listener_mode_summary(listener_details) or "No Squid http_port listeners detected.",
+            "listeners": [dict(item) for item in listener_details],
+            "ports": list(listener_ports),
+        }
         active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
         active_certificate = self.certificate_bundles.get_active_bundle_metadata()
         active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
@@ -1050,6 +1077,8 @@ class ProxyRuntime:
             "status": "healthy" if ok else "degraded",
             "proxy_id": self.proxy_id,
             "proxy_status": proxy_status,
+            "listener_ports": list(listener_ports),
+            "listener_details": [dict(item) for item in listener_details],
             "stats": stats,
             "services": services,
             "active_revision_id": active_revision.revision_id if active_revision else None,

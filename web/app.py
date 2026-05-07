@@ -2167,6 +2167,9 @@ def squid_config():
     )
     summary = {
         'workers': tunables.get('workers') if tunables else None,
+        'explicit_proxy_port': tunables.get('explicit_proxy_port') if tunables else None,
+        'intercept_enabled': bool(tunables.get('intercept_enabled')) if tunables else False,
+        'intercept_port': tunables.get('intercept_port') if tunables else None,
         'cache_dir_size_mb': tunables.get('cache_dir_size_mb') if tunables else None,
         'cache_mem_mb': tunables.get('cache_mem_mb') if tunables else None,
         'overrides': overrides or {},

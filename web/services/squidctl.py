@@ -670,6 +670,133 @@ class SquidController(_CoreSquidController):
             return pattern.sub(lambda match: f"{match.group(1)}{option_value}", text, count=1)
         return text
 
+    def _coerce_port(self, value: Any, default: int) -> int:
+        try:
+            parsed = int(str(value or "").strip() or str(default))
+        except Exception:
+            parsed = int(default)
+        return min(65535, max(1, parsed))
+
+    def _default_intercept_port(self, explicit_port: int) -> int:
+        return explicit_port + 1 if explicit_port < 65535 else 3129
+
+    def _logical_config_lines(self, text: str) -> list[tuple[list[str], str]]:
+        logical: list[tuple[list[str], str]] = []
+        pending: list[str] = []
+        for raw_line in (text or "").splitlines():
+            pending.append(raw_line)
+            if raw_line.rstrip().endswith("\\"):
+                continue
+            joined = " ".join(line.rstrip().rstrip("\\").strip() for line in pending).strip()
+            logical.append((pending, joined))
+            pending = []
+        if pending:
+            joined = " ".join(line.rstrip().rstrip("\\").strip() for line in pending).strip()
+            logical.append((pending, joined))
+        return logical
+
+    def _extract_http_port_number(self, address_token: str) -> Optional[int]:
+        token = (address_token or "").strip()
+        if not token:
+            return None
+        if token.isdigit():
+            return self._coerce_port(token, 3128)
+        if token.startswith("[") and "]:" in token:
+            candidate = token.rsplit(":", 1)[1]
+        elif ":" in token:
+            candidate = token.rsplit(":", 1)[1]
+        else:
+            return None
+        if not candidate.isdigit():
+            return None
+        return self._coerce_port(candidate, 3128)
+
+    def _http_port_listener_settings(self, text: str) -> dict[str, Any]:
+        explicit_port: Optional[int] = None
+        intercept_port: Optional[int] = None
+        for _physical_lines, logical in self._logical_config_lines(text):
+            stripped = logical.strip()
+            if not stripped or stripped.startswith("#") or not stripped.lower().startswith("http_port "):
+                continue
+            parts = stripped.split()
+            if len(parts) < 2:
+                continue
+            port = self._extract_http_port_number(parts[1])
+            if port is None:
+                continue
+            modes = {part.strip().lower() for part in parts[2:]}
+            if "intercept" in modes:
+                if intercept_port is None:
+                    intercept_port = port
+            elif "tproxy" not in modes:
+                if explicit_port is None:
+                    explicit_port = port
+
+        explicit = explicit_port if explicit_port is not None else 3128
+        return {
+            "explicit_proxy_port": explicit,
+            "intercept_enabled": intercept_port is not None,
+            "intercept_port": intercept_port if intercept_port is not None else self._default_intercept_port(explicit),
+        }
+
+    def _render_explicit_http_port(self, port: int, dynamic_cert_mem_cache_size_mb: int) -> list[str]:
+        return [
+            f"http_port 0.0.0.0:{self._coerce_port(port, 3128)} ssl-bump \\",
+            "\tcert=/etc/squid/ssl/certs/ca.crt \\",
+            "\tkey=/etc/squid/ssl/certs/ca.key \\",
+            "\tgenerate-host-certificates=on \\",
+            f"\tdynamic_cert_mem_cache_size={max(0, int(dynamic_cert_mem_cache_size_mb))}MB",
+        ]
+
+    def _render_intercept_http_port_block(self, port: int) -> list[str]:
+        return [
+            "# BEGIN SQUID-UI INTERCEPT LISTENER",
+            "# HTTP NAT intercept listener. Requires external REDIRECT/DNAT rules; do not expose directly.",
+            f"http_port 0.0.0.0:{self._coerce_port(port, 3129)} intercept",
+            "# END SQUID-UI INTERCEPT LISTENER",
+        ]
+
+    def _render_http_port_listeners(self, text: str, options: Dict[str, Any], dynamic_cert_mem_cache_size_mb: int) -> str:
+        explicit_port = self._coerce_port(options.get("explicit_proxy_port"), 3128)
+        intercept_enabled = bool(options.get("intercept_enabled_on"))
+        intercept_port = self._coerce_port(options.get("intercept_port"), self._default_intercept_port(explicit_port))
+        if intercept_port == explicit_port:
+            intercept_port = self._default_intercept_port(explicit_port)
+            if intercept_port == explicit_port:
+                intercept_port = 3129 if explicit_port != 3129 else 3130
+
+        rendered_lines: list[str] = []
+        replaced_explicit = False
+        skipping_managed_intercept = False
+        logical_lines = self._logical_config_lines(text)
+        for physical_lines, logical in logical_lines:
+            stripped = logical.strip()
+            if any("# BEGIN SQUID-UI INTERCEPT LISTENER" in line for line in physical_lines):
+                skipping_managed_intercept = True
+            if skipping_managed_intercept:
+                if any("# END SQUID-UI INTERCEPT LISTENER" in line for line in physical_lines):
+                    skipping_managed_intercept = False
+                continue
+
+            if stripped and not stripped.startswith("#") and stripped.lower().startswith("http_port "):
+                parts = stripped.split()
+                modes = {part.strip().lower() for part in parts[2:]}
+                if "intercept" not in modes and "tproxy" not in modes and not replaced_explicit:
+                    rendered_lines.extend(self._render_explicit_http_port(explicit_port, dynamic_cert_mem_cache_size_mb))
+                    if intercept_enabled:
+                        rendered_lines.extend(self._render_intercept_http_port_block(intercept_port))
+                    replaced_explicit = True
+                    continue
+
+            rendered_lines.extend(physical_lines)
+
+        if not replaced_explicit:
+            prefix = self._render_explicit_http_port(explicit_port, dynamic_cert_mem_cache_size_mb)
+            if intercept_enabled:
+                prefix.extend(self._render_intercept_http_port_block(intercept_port))
+            rendered_lines = prefix + [""] + rendered_lines
+        return "\n".join(rendered_lines) + ("\n" if text.endswith("\n") else "")
+
     def get_tunable_options(self, config_text: Optional[str] = None) -> Dict[str, Any]:
         text = config_text if config_text is not None else (self.get_current_config() or "")
 
@@ -988,6 +1115,7 @@ class SquidController(_CoreSquidController):
             return "\n".join(lines)
 
         cache_dir_settings = find_cache_dir_settings()
+        http_listener_settings = self._http_port_listener_settings(text)
         sslcrtd_settings = find_sslcrtd_children_settings()
         icap_failure_settings = find_icap_service_failure_limit()
         on_unsupported_protocol_value = find_str("on_unsupported_protocol")
@@ -1071,6 +1199,10 @@ class SquidController(_CoreSquidController):
                 "SERVER_PCONN_FOR_NONRETRIABLE",
                 prefixes=("server_pconn_for_nonretriable ",),
             ),
+            "explicit_proxy_port": http_listener_settings.get("explicit_proxy_port"),
+            "intercept_enabled": http_listener_settings.get("intercept_enabled"),
+            "intercept_enabled_on": http_listener_settings.get("intercept_enabled"),
+            "intercept_port": http_listener_settings.get("intercept_port"),
             "max_filedescriptors": find_int(r"^\s*max_filedescriptors\s+(\d+)\s*$"),
             "dns_timeout_seconds": find_time_seconds("dns_timeout"),
             "dns_retransmit_interval_seconds": find_time_seconds("dns_retransmit_interval"),
@@ -1210,6 +1342,7 @@ class SquidController(_CoreSquidController):
                 "happy_eyeballs_connect_timeout",
                 "happy_eyeballs_connect_gap",
                 "happy_eyeballs_connect_limit",
+                "http_port",
             ),
         )
 
@@ -1469,7 +1602,7 @@ class SquidController(_CoreSquidController):
         except Exception:
             dynamic_cert_mem_cache_size_mb = 128
 
-        rendered = self._replace_http_port_option(template_text, "dynamic_cert_mem_cache_size", f"{dynamic_cert_mem_cache_size_mb}MB")
+        rendered = self._render_http_port_listeners(template_text, options, dynamic_cert_mem_cache_size_mb)
         managed_block = self._render_managed_settings(options)
         return self._replace_managed_settings_block(rendered, managed_block)
 

@@ -375,6 +375,10 @@ Common environment variables:
 - `PROXY_PUBLIC_PAC_URL`: optional full PAC URL override; when set, the proxy extracts scheme/host/port from it for PAC publishing.
 - `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`: scheme/port used when building the direct PAC URL (defaults `http`, `80`).
 - `PROXY_PUBLIC_HTTP_PROXY_PORT`: client-facing HTTP proxy port advertised in generated PAC files (default `3128`).
+- `SQUID_HTTP_PORT`: explicit forward-proxy listener port inside Squid (default `3128`). Keep this aligned with `PROXY_PUBLIC_HTTP_PROXY_PORT` unless Docker port mapping intentionally differs.
+- `SQUID_INTERCEPT_ENABLED=1|0`: enable a separate plain-HTTP NAT intercept listener (default `0`). This only makes Squid listen; router/host firewall rules must redirect TCP/80 traffic to it.
+- `SQUID_INTERCEPT_PORT`: Squid's HTTP NAT intercept listener port (default `3129`, normally `SQUID_HTTP_PORT + 1`).
+- `PROXY_PUBLIC_INTERCEPT_PORT`: host-published port mapped to `SQUID_INTERCEPT_PORT` by Compose (default `3129`). Do not advertise this in PAC files.
 - `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`: proxy-side log/telemetry poll cadence. Defaults now settle at `2.0` seconds to reduce idle wakeups while keeping the UI reasonably fresh.
 - `PAC_HTTP_PORT`, `PAC_HTTP_HOST`: public proxy health + WPAD/PAC bind settings for the proxy container's Flask/Gunicorn process (defaults: `80`, `0.0.0.0`).
 
@@ -415,6 +419,37 @@ services:
   proxy:
     network_mode: host
 ```
+
+## HTTP NAT intercept mode (optional)
+
+Squid 7 supports an `http_port ... intercept` listener for transparent-style **plain HTTP** deployments where a router or host firewall redirects client TCP/80 traffic to Squid. This project can run that listener alongside the normal explicit proxy listener:
+
+- Explicit proxy: `SQUID_HTTP_PORT` (default `3128`), advertised by PAC/WPAD as `PROXY <host>:3128`.
+- HTTP NAT intercept: `SQUID_INTERCEPT_PORT` (default `3129`), **not** advertised by PAC/WPAD.
+
+Enable it with `SQUID_INTERCEPT_ENABLED=1`, then add external REDIRECT or DNAT rules on the router/host that actually sees the client traffic. The container intentionally does not install firewall rules by default because transparent interception is topology-specific and can create traffic loops if applied blindly.
+
+If you change listener ports in the Admin UI, make sure the Compose `ports:` mapping or host-networking configuration exposes the same container port before recreating the proxy container. The health check reads Squid's active `http_port` lines, but Docker itself cannot publish a newly selected port until the container is recreated with matching port mappings.
+
+Operational rules of thumb:
+- Redirect only plain HTTP traffic (`tcp/80`) to the intercept port.
+- Exempt the proxy host/container source traffic before redirect rules, otherwise Squid's outbound origin connections can loop back into Squid.
+- Block direct external access to the intercept port; it is an internal receiving port for NAT-delivered traffic.
+- Keep using PAC/browser proxy settings for clients that should explicitly select the proxy.
+- `intercept` mode disables proxy authentication on that listener, so authentication controls apply to explicit proxy traffic only.
+
+Example Linux REDIRECT sketch, adapted from Squid's documented examples (replace addresses/interfaces for your topology):
+
+```sh
+SQUIDIP=192.168.0.2
+SQUIDPORT=3129
+
+iptables -t nat -A PREROUTING -s "$SQUIDIP" -p tcp --dport 80 -j ACCEPT
+iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port "$SQUIDPORT"
+iptables -t mangle -A PREROUTING -p tcp --dport "$SQUIDPORT" -j DROP
+```
+
+Transparent HTTPS interception and Linux TPROXY are separate advanced designs. HTTPS interception requires a dedicated `https_port ... intercept ssl-bump` capture path for TCP/443; TPROXY requires Squid/netfilter capability support, policy routing, fwmarks, and additional Docker/host privileges. They are intentionally not enabled by the HTTP NAT intercept toggle.
 
 ## Data persistence
 This container uses an external MySQL database for runtime/admin state, including:

@@ -313,6 +313,32 @@ def _resolve_dynamic_cert_mem_cache_mb(tunables: TunableMap, max_workers: int) -
     return min(512, max(128, derived))
 
 
+def _clamp_port(value: Any, default: int) -> int:
+    try:
+        parsed = int(str(value or "").strip() or str(default))
+    except Exception:
+        parsed = int(default)
+    return min(65535, max(1, parsed))
+
+
+def _default_intercept_port(explicit_port: int) -> int:
+    return explicit_port + 1 if explicit_port < 65535 else 3129
+
+
+def _resolve_explicit_proxy_port(tunables: TunableMap, _max_workers: int) -> int:
+    return _clamp_port(tunables.get("explicit_proxy_port"), 3128)
+
+
+def _resolve_intercept_enabled(tunables: TunableMap, _max_workers: int) -> bool:
+    return bool(tunables.get("intercept_enabled"))
+
+
+def _resolve_intercept_port(tunables: TunableMap, max_workers: int) -> int:
+    explicit_port = _resolve_explicit_proxy_port(tunables, max_workers)
+    default_port = _default_intercept_port(explicit_port)
+    return _clamp_port(tunables.get("intercept_port"), default_port)
+
+
 def _resolve_shared_transient_entries_limit(tunables: TunableMap, max_workers: int) -> int:
     value = tunables.get("shared_transient_entries_limit")
     if value is not None:
@@ -1205,6 +1231,47 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         help_text="Dangerous troubleshooting feature for Wireshark-style TLS decryption; keep disabled unless actively debugging.",
     ),
     _field(
+        "explicit_proxy_port",
+        "network",
+        "listeners",
+        "Explicit proxy listener port",
+        "http_port",
+        "number",
+        _resolve_explicit_proxy_port,
+        _posted_int_reader("explicit_proxy_port"),
+        minimum=1,
+        maximum=65535,
+        step=1,
+        help_text="Forward-proxy listener advertised by PAC/WPAD and browser proxy settings. Default is 3128.",
+    ),
+    _field(
+        "intercept_enabled_on",
+        "network",
+        "listeners",
+        "Enable HTTP NAT intercept listener",
+        "http_port intercept",
+        "checkbox",
+        _resolve_intercept_enabled,
+        _checkbox_reader("intercept_enabled_on"),
+        help_text="Adds a separate Squid listener for router/firewall redirected plain HTTP traffic. It is not advertised by PAC and requires external REDIRECT/DNAT rules.",
+    ),
+    _field(
+        "intercept_port",
+        "network",
+        "listeners",
+        "HTTP intercept listener port",
+        "http_port intercept",
+        "number",
+        _resolve_intercept_port,
+        _posted_int_reader("intercept_port"),
+        minimum=1,
+        maximum=65535,
+        step=1,
+        help_text="Dedicated NAT intercept port, normally explicit proxy port + 1. Do not expose this port directly to untrusted clients.",
+        depends_on=("intercept_enabled_on",),
+        show_when=("checked",),
+    ),
+    _field(
         "client_persistent_connections_on",
         "network",
         "persistent",
@@ -1356,7 +1423,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "checkbox",
         _tunable_bool_or_default("client_dst_passthru", True),
         _checkbox_reader("client_dst_passthru_on"),
-        help_text="Recommended for intercepted traffic to preserve the original destination IP.",
+        help_text="Recommended for intercepted traffic to preserve the original destination IP and port.",
     ),
     _field(
         "host_verify_strict_on",
@@ -1367,7 +1434,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "checkbox",
         _tunable_bool_or_default("host_verify_strict", False),
         _checkbox_reader("host_verify_strict_on"),
-        help_text="Strict Host header verification; safer but may expose misbehaving clients and servers.",
+        help_text="Strict Host header verification for all traffic. Squid still performs Host/destination checks for intercepted traffic even when this is off.",
     ),
     _field(
         "on_unsupported_protocol_action",
@@ -2624,6 +2691,16 @@ CONFIG_UI_SECTIONS: tuple[UiSectionSpec, ...] = (
         apply_note="Use conservative changes here; several directives alter failure semantics and client compatibility.",
         groups=(
             UiGroupSpec(
+                key="listeners",
+                title="Proxy listeners",
+                description="Ports where Squid accepts explicit proxy traffic and optional NAT-redirected HTTP traffic.",
+                field_keys=(
+                    "explicit_proxy_port",
+                    "intercept_enabled_on",
+                    "intercept_port",
+                ),
+            ),
+            UiGroupSpec(
                 key="persistent",
                 title="Persistent connections",
                 description="Keep-alive behavior for clients and servers.",
@@ -2930,6 +3007,16 @@ def normalize_safe_form_kind(form_kind: object | None) -> str:
 
 
 def _normalize_template_options(options: OptionMap) -> OptionMap:
+    explicit_port = _clamp_port(options.get("explicit_proxy_port"), 3128)
+    intercept_port = _clamp_port(options.get("intercept_port"), _default_intercept_port(explicit_port))
+    if intercept_port == explicit_port:
+        intercept_port = _default_intercept_port(explicit_port)
+        if intercept_port == explicit_port:
+            intercept_port = 3129 if explicit_port != 3129 else 3130
+    options["explicit_proxy_port"] = explicit_port
+    options["intercept_port"] = intercept_port
+    options["intercept_enabled_on"] = bool(options.get("intercept_enabled_on", False))
+
     range_value = _normalize_range_offset_limit_value(options.get("range_offset_limit_value"))
     if not bool(options.get("range_cache_on", True)):
         range_value = "0"

@@ -12,6 +12,8 @@
             <p class="page-subtitle">Manage the live <span class="mono">squid.conf</span> revision and schema-backed Squid 7.x tuning for {{ active_proxy.display_name }}.</p>
             <div class="hero-badges">
                 {% if summary.workers %}<span class="badge">{{ summary.workers }} worker{{ '' if summary.workers == 1 else 's' }}</span>{% endif %}
+                {% if summary.explicit_proxy_port %}<span class="badge ok">Explicit {{ summary.explicit_proxy_port }}</span>{% endif %}
+                <span class="badge {{ 'warn' if summary.intercept_enabled else '' }}">Intercept {{ summary.intercept_port if summary.intercept_enabled else 'off' }}</span>
                 {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
                 <span class="badge {{ 'warn' if summary.overrides_on else 'ok' }}">Overrides {{ 'on' if summary.overrides_on else 'off' }}</span>
                 <span class="badge">{{ summary.exclusions_count }} exclusions</span>
@@ -41,6 +43,14 @@
             <div class="stat compact-stat">
                 <div class="stat-k">Workers</div>
                 <div class="stat-v">{{ summary.workers if summary.workers is not none else 'n/a' }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Explicit proxy</div>
+                <div class="stat-v">{{ summary.explicit_proxy_port if summary.explicit_proxy_port is not none else 'n/a' }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">HTTP intercept</div>
+                <div class="stat-v">{{ summary.intercept_port if summary.intercept_enabled else 'off' }}</div>
             </div>
             <div class="stat compact-stat">
                 <div class="stat-k">Disk cache</div>
@@ -149,6 +159,24 @@
         {% endif %}
 
         {% if active_section.key == 'network' %}
+            <section class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Proxy listeners</h2>
+                    <span class="badge warn">Routing required</span>
+                </div>
+                <div class="card-body">
+                    <div class="surface-note small">
+                        The explicit proxy listener is the normal forward-proxy endpoint used by browser settings and PAC/WPAD. The optional <span class="mono">intercept</span> listener is for router/firewall redirected plain HTTP traffic only; clients do not configure or receive it in PAC files.
+                    </div>
+                    <div class="surface-note small">
+                        Squid's NAT <span class="mono">intercept</span> mode disables proxy authentication on that listener and must be protected from direct external access. Add REDIRECT/DNAT rules on the router or host, exempt the proxy's own source traffic first to avoid loops, and redirect TCP/80 to the intercept port.
+                    </div>
+                    <div class="surface-note small">
+                        Transparent HTTPS and TPROXY are separate advanced deployment models and are intentionally not managed by these controls.
+                    </div>
+                </div>
+            </section>
+
             <section class="card">
                 <div class="card-header">
                     <h2 class="card-title">Web destination ports</h2>

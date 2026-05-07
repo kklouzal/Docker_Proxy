@@ -145,8 +145,11 @@ class FakeProxyClient:
             "status": "healthy",
             "proxy_id": str(proxy_id),
             "proxy_status": "running",
+            "listener_ports": [3128, 3129],
+            "listener_details": [{"port": 3128, "mode": "explicit"}, {"port": 3129, "mode": "intercept"}],
             "stats": {},
             "services": {
+                "squid_listeners": {"ok": True, "detail": "explicit:3128, intercept:3129"},
                 "icap": {"ok": True, "detail": "ok"},
                 "clamav": {"ok": True, "detail": "ok"},
                 "av_icap": {"ok": True, "detail": "ok"},
@@ -183,6 +186,19 @@ class FakeController:
         self.config_text = config_text or "http_port 3128\nssl_bump splice all\nadaptation_access av_resp_set allow icap_av_scanable\n"
         self.applied: list[str] = []
 
+    def _listener_lines_from_options(self, options: dict[str, Any]) -> list[str]:
+        explicit_port = int(options.get("explicit_proxy_port") or 3128)
+        intercept_enabled = bool(options.get("intercept_enabled_on") or options.get("intercept_enabled"))
+        intercept_port = int(options.get("intercept_port") or (explicit_port + 1 if explicit_port < 65535 else 3129))
+        if intercept_port == explicit_port:
+            intercept_port = explicit_port + 1 if explicit_port < 65535 else 3129
+            if intercept_port == explicit_port:
+                intercept_port = 3129 if explicit_port != 3129 else 3130
+        lines = [f"http_port {explicit_port}"]
+        if intercept_enabled:
+            lines.append(f"http_port 0.0.0.0:{intercept_port} intercept")
+        return lines
+
     def get_current_config(self) -> str:
         return self.config_text
 
@@ -201,13 +217,24 @@ class FakeController:
         return b"reloaded", b""
 
     def get_tunable_options(self, _text: str) -> dict[str, Any]:
-        return {"workers": 1, "cache_mem_mb": 64, "cache_dir_size_mb": 128}
+        intercept_enabled = " intercept" in (self.config_text or "")
+        return {
+            "workers": 1,
+            "cache_mem_mb": 64,
+            "cache_dir_size_mb": 128,
+            "explicit_proxy_port": 3128,
+            "intercept_enabled": intercept_enabled,
+            "intercept_enabled_on": intercept_enabled,
+            "intercept_port": 3129,
+        }
 
     def get_cache_override_options(self, _text: str) -> dict[str, bool]:
         return {"client_no_cache": False, "origin_private": False, "client_no_store": False}
 
     def generate_config_from_template_with_exclusions(self, options: dict[str, Any], _exclusions: Any) -> str:
-        return f"http_port 3128\ncache_mem {int(options.get('cache_mem_mb') or 64)} MB\n"
+        lines = self._listener_lines_from_options(options)
+        lines.append(f"cache_mem {int(options.get('cache_mem_mb') or 64)} MB")
+        return "\n".join(lines) + "\n"
 
     def apply_cache_overrides(self, text: str, overrides: dict[str, bool]) -> str:
         suffix = "".join(f"# override_{key}={1 if value else 0}\n" for key, value in sorted(overrides.items()))

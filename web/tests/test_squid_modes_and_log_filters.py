@@ -236,6 +236,7 @@ ipcache_low 80
 ipcache_high 92
 sslcrtd_children 12 startup=3 idle=2 queue-size=96
 http_port 0.0.0.0:3128 ssl-bump dynamic_cert_mem_cache_size=256MB
+http_port 0.0.0.0:3129 intercept
 dns_packet_max 1232
 sslproxy_session_ttl 900
 sslproxy_session_cache_size 16 MB
@@ -282,6 +283,9 @@ max_open_disk_fds 512
     assert options["sslcrtd_children_idle"] == 2
     assert options["sslcrtd_children_queue_size"] == 96
     assert options["dynamic_cert_mem_cache_size_mb"] == 256
+    assert options["explicit_proxy_port"] == 3128
+    assert options["intercept_enabled"] is True
+    assert options["intercept_port"] == 3129
     assert options["dns_packet_max"] == 1232
     assert options["sslproxy_session_ttl_seconds"] == 900
     assert options["sslproxy_session_cache_size_mb"] == 16
@@ -411,3 +415,32 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
     assert "icap_preview_enable on" in rendered
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in rendered
     assert "cache_log stdio:/var/log/squid/cache.log" in rendered
+
+
+def test_squid_controller_generate_config_adds_optional_intercept_listener(tmp_path):
+    _add_web_to_path()
+
+    from services.squid_config_forms import build_template_options  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+    options = build_template_options(
+        {
+            "explicit_proxy_port": 8080,
+            "intercept_enabled": True,
+            "intercept_port": 8081,
+        },
+        max_workers=4,
+    )
+
+    rendered = ctl.generate_config_from_template(options)
+
+    assert "http_port 0.0.0.0:8080 ssl-bump" in rendered
+    assert "# BEGIN SQUID-UI INTERCEPT LISTENER" in rendered
+    assert "http_port 0.0.0.0:8081 intercept" in rendered
+    assert "SOCKS" not in rendered

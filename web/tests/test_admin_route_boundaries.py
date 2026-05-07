@@ -67,6 +67,49 @@ def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
     assert "Content-Security-Policy" not in response.headers
 
 
+def test_network_config_apply_can_publish_intercept_listener(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    response = client.post(
+        "/squid/config/apply-safe",
+        data={
+            "csrf_token": csrf_token(client, "/squid/config?tab=network"),
+            "form_kind": "network",
+            "explicit_proxy_port": "3128",
+            "intercept_enabled_on": "on",
+            "intercept_port": "3129",
+            "client_persistent_connections_on": "on",
+            "server_persistent_connections_on": "on",
+            "persistent_connection_after_error_on": "on",
+            "client_dst_passthru_on": "on",
+            "on_unsupported_protocol_action": "respond",
+            "happy_eyeballs_connect_timeout_ms": "250",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    config_text = loaded.config_revisions.get_active_config_text("default")
+    assert "http_port 3128" in config_text
+    assert "http_port 0.0.0.0:3129 intercept" in config_text
+    assert "PROXY" not in config_text
+
+
+def test_fleet_page_shows_explicit_and_intercept_listeners(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Listeners" in text
+    assert "explicit 3128" in text
+    assert "intercept 3129" in text
+
+
 def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()

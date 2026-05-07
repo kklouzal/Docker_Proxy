@@ -56,6 +56,9 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["quick_abort_min_kb"] == 16
     assert options["quick_abort_max_kb"] == 16
     assert options["quick_abort_pct"] == 95
+    assert options["explicit_proxy_port"] == 3128
+    assert options["intercept_enabled_on"] is False
+    assert options["intercept_port"] == 3129
     assert options["buffered_logs_on"] is False
     assert options["icap_preview_enable_on"] is True
     assert options["icap_206_enable_on"] is True
@@ -108,6 +111,8 @@ def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic()
     assert field_map["cache_dir_rock_slot_size_kb"].show_when == ("rock",)
     assert field_map["range_offset_limit_value"].depends_on == ("range_cache_on",)
     assert field_map["pipeline_prefetch_count"].depends_on == ("pipeline_prefetch_on",)
+    assert field_map["intercept_port"].depends_on == ("intercept_enabled_on",)
+    assert field_map["intercept_port"].show_when == ("checked",)
     assert field_map["allow_underscore_on"].depends_on == ("check_hostnames_on",)
     assert field_map["memory_pools_limit_mb"].depends_on == ("memory_pools_on",)
     assert field_map["icap_206_enable_on"].depends_on == ("icap_enable_on",)
@@ -138,6 +143,23 @@ def test_build_template_options_from_form_updates_only_requested_fields():
     assert options["workers"] == 4
     assert options["negative_ttl_seconds"] == 123
     assert options["cache_mem_mb"] == 96
+
+
+def test_build_template_options_from_form_supports_intercept_listener_controls():
+    options = build_template_options_from_form(
+        {},
+        {
+            "explicit_proxy_port": "8080",
+            "intercept_enabled_on": "on",
+            "intercept_port": "8080",
+        },
+        form_kind="network",
+        max_workers=4,
+    )
+
+    assert options["explicit_proxy_port"] == 8080
+    assert options["intercept_enabled_on"] is True
+    assert options["intercept_port"] == 8081
 
 
 def test_build_template_options_from_form_blank_optional_values_do_not_override():

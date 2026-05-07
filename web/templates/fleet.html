@@ -73,6 +73,7 @@
                     <tr>
                         <th>Proxy</th>
                         <th>Status</th>
+                        <th>Listeners</th>
                         <th>Heartbeat</th>
                         <th>Config SHA</th>
                         <th>Observability (24h)</th>
@@ -99,6 +100,21 @@
                             <span class="badge warn">{{ health.status if health and health.status else proxy.status }}</span>
                             {% endif %}
                             <div class="small">{{ health.proxy_status if health and health.proxy_status else (health.detail if health and health.detail else proxy.detail) }}</div>
+                        </td>
+                        <td>
+                            <div class="stack-sm small">
+                                {% if health and health.listener_details %}
+                                    <div>
+                                        {% for listener in health.listener_details %}
+                                            <span class="badge {{ 'warn' if listener.mode == 'intercept' else 'ok' }}">{{ listener.mode }} {{ listener.port }}</span>
+                                        {% endfor %}
+                                    </div>
+                                    {% if health.services and health.services.squid_listeners %}<div>{{ health.services.squid_listeners.detail }}</div>{% endif %}
+                                {% else %}
+                                    <div><span class="badge">explicit {{ proxy.public_http_proxy_port }}</span></div>
+                                    <div>Latest heartbeat did not include listener details.</div>
+                                {% endif %}
+                            </div>
                         </td>
                         <td>{{ fmt_ts(proxy.last_heartbeat) if proxy.last_heartbeat else 'n/a' }}</td>
                         <td><code class="mono">{{ (proxy.current_config_sha or '')[:12] or 'n/a' }}</code></td>

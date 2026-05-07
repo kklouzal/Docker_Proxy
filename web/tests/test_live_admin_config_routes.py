@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from .live_test_helpers import (
@@ -56,8 +58,55 @@ def test_live_api_squid_config_returns_running_config(admin_client: LiveStackCli
 def test_live_squid_config_network_tab_mentions_non_standard_ports(admin_client: LiveStackClient) -> None:
     response = admin_client.admin_request("/squid/config?tab=network")
     assert response.status == 200
+    assert "Proxy listeners" in response.text
+    assert "Enable HTTP NAT intercept listener" in response.text
     assert "Web destination ports" in response.text
     assert "Non-standard HTTP and HTTPS destination ports are allowed by default" in response.text
+
+
+def test_live_squid_config_can_enable_http_intercept_listener(admin_client: LiveStackClient) -> None:
+    original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
+    before_apply = latest_config_apply(LIVE_CONFIG.primary_proxy_id)
+
+    try:
+        response = admin_client.admin_post_form(
+            "/squid/config/apply-safe",
+            {
+                "form_kind": "network",
+                "explicit_proxy_port": "3128",
+                "intercept_enabled_on": "on",
+                "intercept_port": "3129",
+                "client_persistent_connections_on": "on",
+                "server_persistent_connections_on": "on",
+                "persistent_connection_after_error_on": "on",
+                "client_dst_passthru_on": "on",
+                "on_unsupported_protocol_action": "respond",
+                "happy_eyeballs_connect_timeout_ms": "250",
+            },
+            csrf_path="/squid/config?tab=network",
+            timeout_seconds=120.0,
+        )
+        assert response.status == 200
+        assert query_params(response.url).get("ok") == ["1"]
+
+        wait_for_config_apply(
+            LIVE_CONFIG.primary_proxy_id,
+            after_ts=_apply_ts(before_apply) or None,
+            timeout_seconds=120.0,
+        )
+        config_text = active_config_text(LIVE_CONFIG.primary_proxy_id)
+        assert "http_port 0.0.0.0:3128 ssl-bump" in config_text
+        assert "http_port 0.0.0.0:3129 intercept" in config_text
+
+        for port in (3128, 3129):
+            with socket.create_connection(("proxy", port), timeout=3.0):
+                pass
+
+        payload = wait_for_proxy_management_payload()
+        listener_details = payload.get("listener_details") or []
+        assert {item.get("mode") for item in listener_details} >= {"explicit", "intercept"}
+    finally:
+        _restore_primary_config(admin_client, original_config)
 
 
 @pytest.mark.parametrize(

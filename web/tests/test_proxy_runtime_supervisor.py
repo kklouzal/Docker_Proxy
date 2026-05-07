@@ -344,6 +344,34 @@ def test_squid_controller_validation_timeout_returns_actionable_detail(tmp_path)
     assert detail == "Squid config validation timed out after 15 seconds."
 
 
+def test_squid_controller_extracts_all_http_listener_ports(tmp_path) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    squid_conf.write_text(
+        """
+http_port 0.0.0.0:3128 ssl-bump \\
+    cert=/etc/squid/ssl/certs/ca.crt \\
+    key=/etc/squid/ssl/certs/ca.key
+http_port 0.0.0.0:3129 intercept
+http_port 3130 tproxy
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    controller = SquidController(str(squid_conf))
+
+    assert controller._http_listener_details() == (
+        {"port": 3128, "mode": "explicit"},
+        {"port": 3129, "mode": "intercept"},
+        {"port": 3130, "mode": "tproxy"},
+    )
+    assert controller._http_listener_ports() == (3128, 3129, 3130)
+    assert controller._http_listener_port() == 3128
+
+
 def test_squid_controller_removes_stale_pidfile_before_restart(monkeypatch, tmp_path) -> None:
     _add_repo_paths()
     import services.squid_core as squid_core  # type: ignore

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import socket
 import tempfile
 import time
@@ -256,42 +257,185 @@ class SquidController:
             return (out_text + "\n" + err_text).strip()
         return (out_text or err_text).strip()
 
-    def _http_listener_port(self, config_text: str | None = None) -> int:
+    def _http_listener_details(self, config_text: str | None = None) -> tuple[dict[str, object], ...]:
         text = config_text if config_text is not None else self.get_current_config()
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or not stripped.lower().startswith("http_port "):
-                continue
-            token = stripped.split()[1]
+        listeners: list[dict[str, object]] = []
+        pending: list[str] = []
+
+        def flush_pending() -> None:
+            if not pending:
+                return
+            logical = " ".join(line.rstrip().rstrip("\\").strip() for line in pending).strip()
+            pending.clear()
+            if not logical or logical.startswith("#") or not logical.lower().startswith("http_port "):
+                return
+            parts = logical.split()
+            if len(parts) < 2:
+                return
+            token = parts[1]
             try:
-                if ":" in token:
-                    return int(token.rsplit(":", 1)[1])
-                return int(token)
+                if token.isdigit():
+                    port = int(token)
+                elif token.startswith("[") and "]:" in token:
+                    port = int(token.rsplit(":", 1)[1])
+                elif ":" in token:
+                    port = int(token.rsplit(":", 1)[1])
+                else:
+                    return
             except Exception:
+                return
+            if not (1 <= port <= 65535):
+                return
+            modes = {part.strip().lower() for part in parts[2:]}
+            if "intercept" in modes:
+                mode = "intercept"
+            elif "tproxy" in modes:
+                mode = "tproxy"
+            else:
+                mode = "explicit"
+            if not any(int(item.get("port") or 0) == port for item in listeners):
+                listeners.append({"port": port, "mode": mode})
+
+        for line in (text or "").splitlines():
+            pending.append(line)
+            if line.rstrip().endswith("\\"):
                 continue
-        return 3128
+            flush_pending()
+        flush_pending()
+        return tuple(listeners or [{"port": 3128, "mode": "explicit"}])
+
+    def _http_listener_ports(self, config_text: str | None = None) -> tuple[int, ...]:
+        return tuple(int(item.get("port") or 3128) for item in self._http_listener_details(config_text))
+
+    def _http_listener_port(self, config_text: str | None = None) -> int:
+        return self._http_listener_ports(config_text)[0]
+
+    def _tcp_listener_accepts(self, port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
+                return True
+        except OSError:
+            return False
 
     def _wait_for_http_listener(self, *, timeout: float = 20.0) -> bool:
-        port = self._http_listener_port()
+        pending = set(self._http_listener_ports())
         deadline = time.time() + max(0.5, timeout)
-        while time.time() < deadline:
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                    return True
-            except OSError:
+        while pending and time.time() < deadline:
+            for port in tuple(pending):
+                if self._tcp_listener_accepts(port):
+                    pending.discard(port)
+            if pending:
                 time.sleep(0.5)
-        return False
+        return not pending
 
     def _wait_for_http_listener_absent(self, *, timeout: float = 20.0) -> bool:
-        port = self._http_listener_port()
+        ports = self._http_listener_ports()
         deadline = time.time() + max(0.5, timeout)
         while time.time() < deadline:
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                    time.sleep(0.5)
-            except OSError:
+            if not any(self._tcp_listener_accepts(port) for port in ports):
                 return True
+            time.sleep(0.5)
         return False
+
+    def _listening_socket_inodes_for_ports(self, ports: tuple[int, ...]) -> set[str]:
+        target_ports = {int(port) for port in ports if int(port) > 0}
+        inodes: set[str] = set()
+        for table_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(table_path, "r", encoding="utf-8", errors="replace") as handle:
+                    next(handle, None)
+                    for line in handle:
+                        parts = line.split()
+                        if len(parts) < 10 or parts[3] != "0A":
+                            continue
+                        try:
+                            _addr, port_hex = parts[1].rsplit(":", 1)
+                            port = int(port_hex, 16)
+                        except Exception:
+                            continue
+                        if port in target_ports:
+                            inode = parts[9]
+                            if inode and inode != "0":
+                                inodes.add(inode)
+            except FileNotFoundError:
+                continue
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "squid_core.inspect_listeners",
+                    interval_seconds=300.0,
+                    message=f"Failed to inspect {table_path} for Squid listener sockets",
+                )
+        return inodes
+
+    def _pids_with_socket_inodes(self, inodes: set[str]) -> set[int]:
+        if not inodes:
+            return set()
+        pids: set[int] = set()
+        proc_root = Path("/proc")
+        try:
+            entries = list(proc_root.iterdir())
+        except Exception:
+            return set()
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                pid = int(entry.name)
+            except Exception:
+                continue
+            if pid == os.getpid():
+                continue
+            fd_dir = entry / "fd"
+            try:
+                for fd in fd_dir.iterdir():
+                    try:
+                        target = os.readlink(fd)
+                    except Exception:
+                        continue
+                    if target.startswith("socket:[") and target.endswith("]") and target[8:-1] in inodes:
+                        pids.add(pid)
+                        break
+            except Exception:
+                continue
+        return pids
+
+    def _pid_looks_like_squid(self, pid: int) -> bool:
+        try:
+            comm = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip().lower()
+            if "squid" in comm:
+                return True
+        except Exception:
+            pass
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8", errors="replace").replace("\x00", " ").lower()
+            return "squid" in cmdline
+        except Exception:
+            return False
+
+    def _terminate_orphaned_http_listener_processes(self, *, timeout: float = 8.0) -> str:
+        ports = self._http_listener_ports()
+        inodes = self._listening_socket_inodes_for_ports(ports)
+        pids = {pid for pid in self._pids_with_socket_inodes(inodes) if self._pid_looks_like_squid(pid)}
+        if not pids:
+            return "No orphaned Squid listener processes were found."
+
+        detail_parts = [f"Terminating orphaned Squid listener process(es): {', '.join(str(pid) for pid in sorted(pids))}."]
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for pid in sorted(pids):
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+                except Exception as exc:
+                    detail_parts.append(f"Failed to send {sig.name} to PID {pid}: {exc}")
+            deadline = time.time() + max(0.5, timeout / 2)
+            while time.time() < deadline:
+                if self._wait_for_http_listener_absent(timeout=0.5):
+                    detail_parts.append("Squid HTTP listener sockets released after orphan cleanup.")
+                    return "\n".join(part for part in detail_parts if part)
+                time.sleep(0.2)
+        return "\n".join(part for part in detail_parts if part)
 
     def _remove_stale_squid_pidfile(self) -> str:
         pid_path = "/var/run/squid.pid"
@@ -368,6 +512,8 @@ class SquidController:
                 detail_parts.append(self._decode_completed(shutdown) or "squid shutdown requested")
             except Exception as exc:
                 detail_parts.append(f"squid shutdown fallback failed: {exc}")
+            if not self._wait_for_http_listener_absent(timeout=10.0):
+                detail_parts.append(self._terminate_orphaned_http_listener_processes(timeout=8.0))
             if not self._wait_for_http_listener_absent(timeout=30.0):
                 return False, "\n".join(
                     part for part in detail_parts + ["Squid HTTP listener did not release before restart."] if part
