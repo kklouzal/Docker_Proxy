@@ -468,13 +468,18 @@ class SquidController(_CoreSquidController):
             f" queue-size={sslcrtd_children_queue_size}"
         )
         lines.append("acl step1 at_step SslBump1")
+        lines.append("acl step2 at_step SslBump2")
+        lines.append("acl step3 at_step SslBump3")
+        lines.append("# Peek at step 1 to learn ClientHello/SNI without sacrificing later bumping.")
         lines.append("ssl_bump peek step1")
         lines.append("include /etc/squid/conf.d/10-sslfilter.conf")
         lines.append("acl steam_sites ssl::server_name .steamserver.net")
         lines.append("note ssl_exception steam steam_sites")
         lines.append("ssl_bump splice steam_sites")
         append_block(lines, "CUSTOM_SSL_RULES", additional_ssl_rules_text)
-        lines.append("ssl_bump bump all")
+        lines.append("# Stare at step 2 so the default path can inspect server certificates and still bump at step 3.")
+        lines.append("ssl_bump stare step2")
+        lines.append("ssl_bump bump step3")
 
         append_section(lines, "Cache settings", "Disk layout, memory sizing, and cache heuristics.")
         lines.append(cache_dir_line)
@@ -1650,10 +1655,13 @@ class SquidController(_CoreSquidController):
         cache_deny_lines = []
 
         if domains:
-            acl_lines.append("acl excluded_domains dstdomain " + " ".join(domains))
+            # Use ssl::server_name for SslBump decisions so step2 policy keys off SNI/cert
+            # data instead of the often-IP-only CONNECT URI seen before bumping.
+            acl_lines.append("acl excluded_domains ssl::server_name " + " ".join(domains))
+            acl_lines.append("acl excluded_cache_domains dstdomain " + " ".join(domains))
             note_lines.append("note exclusion_rule domain excluded_domains")
             splice_lines.append("ssl_bump splice excluded_domains")
-            cache_deny_lines.append("cache deny excluded_domains")
+            cache_deny_lines.append("cache deny excluded_cache_domains")
         if private_dst_nets:
             acl_lines.append("acl excluded_private_dst dst " + " ".join(private_dst_nets))
             note_lines.append("note exclusion_rule private_dst excluded_private_dst")
@@ -1668,7 +1676,12 @@ class SquidController(_CoreSquidController):
             return base
 
         insert_ssl = "\n".join(["", "# Exclusions (managed by web UI)"] + acl_lines + note_lines + splice_lines) + "\n"
-        base = base.replace("ssl_bump bump all", insert_ssl + "ssl_bump bump all", 1)
+        if "ssl_bump stare step2" in base:
+            base = base.replace("ssl_bump stare step2", insert_ssl + "ssl_bump stare step2", 1)
+        elif "ssl_bump bump step3" in base:
+            base = base.replace("ssl_bump bump step3", insert_ssl + "ssl_bump bump step3", 1)
+        else:
+            base = base.replace("ssl_bump bump all", insert_ssl + "ssl_bump bump all", 1)
 
         deny_block = "\n".join(["", "# Exclusions (managed by web UI)"] + cache_deny_lines) + "\n"
         for marker in ("# Logging", "# Log settings", self._MANAGED_SETTINGS_END):

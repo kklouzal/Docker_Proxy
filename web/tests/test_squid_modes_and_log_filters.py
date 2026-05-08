@@ -533,9 +533,31 @@ access_log stdio:/var/log/squid/access.log
         Exclusions(domains=["example.com", "*.example.com", "api.example.net", "api.example.net"], dst_nets=[], src_nets=[], exclude_private_nets=False),
     )
 
-    acl_line = next(line for line in rendered.splitlines() if line.startswith("acl excluded_domains dstdomain"))
-    acl_values = acl_line.split()[3:]
+    ssl_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl excluded_domains ssl::server_name"))
+    cache_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl excluded_cache_domains dstdomain"))
+    acl_values = ssl_acl_line.split()[3:]
+    assert cache_acl_line.split()[3:] == acl_values
     assert ".example.com" in acl_values
     assert "example.com" not in acl_values
     assert acl_values.count("api.example.net") == 1
     assert "ssl_bump splice excluded_domains" in rendered
+    assert "cache deny excluded_cache_domains" in rendered
+
+def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path):
+    _add_web_to_path()
+
+    from services.squid_config_forms import build_template_options  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template = tmp_path / "squid.conf.template"
+    template.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+    controller = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    controller.squid_conf_template_path = str(template)
+
+    rendered = controller.generate_config_from_template(build_template_options({}, max_workers=4))
+
+    assert "acl step2 at_step SslBump2" in rendered
+    assert "acl step3 at_step SslBump3" in rendered
+    assert rendered.index("ssl_bump peek step1") < rendered.index("ssl_bump stare step2") < rendered.index("ssl_bump bump step3")
+    assert "ssl_bump bump all" not in rendered

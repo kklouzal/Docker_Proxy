@@ -17,6 +17,9 @@ hopeless_kid_revival_delay 3600 seconds
 sslcrtd_program /usr/lib/squid/ssl_crtd -s /var/lib/ssl_db/store -M 16MB
 sslcrtd_children 4 startup=2 idle=1 queue-size=32
 acl step1 at_step SslBump1
+acl step2 at_step SslBump2
+acl step3 at_step SslBump3
+# Peek at step 1 to learn ClientHello/SNI without sacrificing later bumping.
 ssl_bump peek step1
 include /etc/squid/conf.d/10-sslfilter.conf
 acl steam_sites ssl::server_name .steamserver.net
@@ -24,7 +27,9 @@ note ssl_exception steam steam_sites
 ssl_bump splice steam_sites
 # BEGIN SQUID-UI BLOCK: CUSTOM_SSL_RULES
 # END SQUID-UI BLOCK: CUSTOM_SSL_RULES
-ssl_bump bump all
+# Stare at step 2 so the default path can inspect server certificates and still bump at step 3.
+ssl_bump stare step2
+ssl_bump bump step3
 
 # Cache settings
 # Disk layout, memory sizing, and cache heuristics.

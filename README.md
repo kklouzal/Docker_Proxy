@@ -565,7 +565,7 @@ Additional forward-proxy performance knobs now exposed in **Policy → Squid Con
 - **Caching**: cache-store type (`rock` vs `ufs`), rock slot size / swap throttling, memory-cache mode/sharing, transient shared-entry sizing, and freshness controls (`minimum_expiry_time`, `max_stale`, `refresh_all_ims`)
 - **Timeouts / network**: request-start + write timeouts, idle client/server keepalive lifetimes, persistent-connection lifetime/error handling, connect retries, and forward retry caps
 - **DNS**: `dns_packet_max`, `dns_retransmit_interval`, `ipcache_low/high`, and larger explicit IP/FQDN caches
-- **SSL**: richer `sslcrtd_children` tuning, `dynamic_cert_mem_cache_size`, `sslproxy_session_ttl`, and `sslproxy_session_cache_size`
+- **SSL**: richer `sslcrtd_children` tuning, `dynamic_cert_mem_cache_size`, `sslproxy_session_ttl`, `sslproxy_session_cache_size`, and a peek/stare/bump default that learns SNI first, applies splices before the default inspection path, then bumps after server-certificate context is available
 - **ICAP / performance**: `icap_206_enable`, `adaptation_send_client_ip`, `adaptation_send_username`, `icap_client_username_header`, `icap_client_username_encode`, `adaptation_service_iteration_limit`, `force_request_body_continuation`, `icap_retry`, `icap_retry_limit`, `icap_persistent_connections`, `icap_default_options_ttl`, `icap_service_failure_limit`, `icap_service_revival_delay`, `hopeless_kid_revival_delay`, `memory_pools_limit`, `shared_memory_locking`, `cpu_affinity_map`, `high_response_time_warning`, `high_page_fault_warning`, `store_avg_object_size`, and `store_objects_per_bucket`
 
 ICAP performance note:
@@ -593,7 +593,7 @@ The **Policy → SSL Filtering** page lets you define client CIDRs that should b
 
 Behavior:
 - Matching client IP → `ssl_bump splice` (no decryption; real website certs)
-- Other clients → existing rules apply (default: `ssl_bump bump all`)
+- Other clients → existing rules apply (default: peek step1, splice managed exceptions at step2, `stare` step2, then `bump` step3)
 
 Important limitation:
 - Certbot/Let’s Encrypt cannot be used as a “replacement bump CA” for general browsing, because public CAs only issue certificates for domains you control.

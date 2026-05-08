@@ -1862,7 +1862,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         _tunable_or_default_if_none("additional_ssl_rules_text", ""),
         _posted_multiline_reader("additional_ssl_rules_text"),
         rows=8,
-        help_text="Inserted before the final 'ssl_bump bump all'. Exclusions and SSL-filter CIDR bypasses remain managed on their dedicated pages.",
+        help_text="Inserted before the default step2 stare / step3 bump policy. Exclusions and SSL-filter CIDR bypasses remain managed on their dedicated pages.",
     ),
     _field(
         "sslproxy_cert_error_rules_text",
