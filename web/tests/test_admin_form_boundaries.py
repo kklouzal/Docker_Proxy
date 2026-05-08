@@ -100,6 +100,16 @@ def test_sslfilter_add_remove_and_unknown_actions(monkeypatch, tmp_path) -> None
     assert _params(ok_add.location)["ok"] == ["1"]
     assert store.no_bump_src_nets == ["10.1.2.0/24"]
 
+    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "add", "cidr": "172.31.250.0/24"}):
+        legacy_add = loaded.module._handle_sslfilter_post(store)
+    assert _params(legacy_add.location)["ok"] == ["1"]
+    assert "172.31.250.0/24" in store.no_bump_src_nets
+
+    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "remove", "cidr": "172.31.250.0/24"}):
+        legacy_remove = loaded.module._handle_sslfilter_post(store)
+    assert _params(legacy_remove.location)["removed"] == ["1"]
+    assert "172.31.250.0/24" not in store.no_bump_src_nets
+
     with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "unknown"}):
         unknown = loaded.module._handle_sslfilter_post(store)
     assert urlsplit(unknown.location).path == "/sslfilter"

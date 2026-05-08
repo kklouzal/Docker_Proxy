@@ -1246,6 +1246,16 @@ def _handle_sslfilter_post(store: Any):
             return _sslfilter_redirect(err=err)
         return _sslfilter_redirect(compatibility_added=added, compatibility_attempted=attempted)
 
+    if action == 'add':
+        ok, err, canonical = _add_sslfilter_src(store, 'nobump', request.form.get('cidr') or '')
+        if not ok:
+            return _sslfilter_redirect(err=err or 'Invalid CIDR.')
+        return _sslfilter_redirect(ok='1', added='1', value=canonical, policy='nobump')
+
+    if action == 'remove':
+        store.remove_src_net('nobump', request.form.get('cidr') or '')
+        return _sslfilter_redirect(removed='1')
+
     if action in {'add_domain', 'add_domain_bulk'}:
         if policy not in {'nobump', 'nocache'}:
             return _sslfilter_redirect(err='Invalid domain policy.')
