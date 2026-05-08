@@ -132,6 +132,7 @@ class FakeProxyClient:
         self.admin_app = admin_app
         self.fail = fail
         self.synced: list[tuple[str, bool]] = []
+        self.validated: list[tuple[str, str]] = []
         self.cleared: list[str] = []
 
     def _maybe_fail(self) -> None:
@@ -159,8 +160,10 @@ class FakeProxyClient:
 
     def validate_config(self, proxy_id: object, config_text: str) -> dict[str, Any]:
         self._maybe_fail()
-        ok = "not_a_real_squid_directive" not in config_text
-        return {"ok": ok, "detail": "valid" if ok else "invalid directive", "proxy_id": str(proxy_id)}
+        self.validated.append((str(proxy_id), config_text))
+        ok = "not_a_real_squid_directive" not in config_text and "*." not in config_text
+        detail = "valid" if ok else "invalid directive or wildcard domain"
+        return {"ok": ok, "detail": detail, "proxy_id": str(proxy_id)}
 
     def sync_proxy(self, proxy_id: object, *, force: bool = False) -> dict[str, Any]:
         self._maybe_fail()

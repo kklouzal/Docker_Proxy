@@ -1614,9 +1614,21 @@ class SquidController(_CoreSquidController):
         managed_block = self._render_managed_settings(options)
         return self._replace_managed_settings_block(rendered, managed_block)
 
+    def _normalize_excluded_domain_for_squid(self, domain: str) -> str:
+        value = (domain or "").strip().lower()
+        if value.startswith("*."):
+            return "." + value[2:].lstrip(".")
+        if value.startswith("."):
+            return "." + value.lstrip(".")
+        return value.lstrip(".")
+
     def generate_config_from_template_with_exclusions(self, options: Dict[str, Any], exclusions: Any) -> str:
         base = self.generate_config_from_template(options)
-        domains = [domain.strip().lower().lstrip(".") for domain in (getattr(exclusions, "domains", []) or []) if domain.strip()]
+        domains = [
+            normalized
+            for domain in (getattr(exclusions, "domains", []) or [])
+            if (normalized := self._normalize_excluded_domain_for_squid(str(domain)))
+        ]
         src_nets = [cidr.strip() for cidr in (getattr(exclusions, "src_nets", []) or []) if cidr.strip()]
         private_dst_nets = PRIVATE_NETS_V4 if bool(getattr(exclusions, "exclude_private_nets", False)) else []
 

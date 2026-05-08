@@ -129,10 +129,24 @@ class ExclusionsStore:
         return True, ""
 
     def remove_domain(self, domain: str) -> None:
-        d = (domain or "").strip().lower().lstrip(".")
+        raw = (domain or "").strip().lower()
+        candidates = {raw, raw.lstrip(".")}
+        if raw.startswith("*."):
+            candidates.add(raw[2:].lstrip("."))
+        elif raw.startswith("."):
+            candidates.add(f"*.{raw.lstrip('.')}")
+        elif raw:
+            candidates.add(f"*.{raw}")
+        values = [value for value in candidates if value]
+        if not values:
+            return
         proxy_id = get_proxy_id()
+        placeholders = ",".join(["%s"] * len(values))
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE proxy_id=%s AND domain=%s", (proxy_id, d))
+            conn.execute(
+                f"DELETE FROM {self._table(conn, 'domains')} WHERE proxy_id=%s AND domain IN ({placeholders})",
+                (proxy_id, *values),
+            )
 
     def add_net(self, table: str, cidr: str) -> Tuple[bool, str]:
         c = (cidr or "").strip()
