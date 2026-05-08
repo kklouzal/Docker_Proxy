@@ -128,29 +128,30 @@ def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> 
     assert "[2001:db8::20]" in pac_renderer.substitute_request_host(content, "[2001:db8::20]:3128")
 
 
-class _FakeExclusionsStore:
-    def __init__(self, exclusions):
-        self._exclusions = exclusions
+class _FakeSslfilterStore:
+    def __init__(self, rules):
+        self._rules = rules
 
     def list_all(self):
-        return self._exclusions
+        return self._rules
 
 
 def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rules(monkeypatch) -> None:
     _add_web_to_path()
     import services.pac_renderer as pac_renderer  # type: ignore
 
-    exclusions = type(
-        "Exclusions",
+    rules = type(
+        "SslFilterRules",
         (),
         {
-            "domains": ["no-bump.example", "*.fragile.example"],
-            "dst_nets": [],
-            "src_nets": ["192.0.2.0/24"],
+            "no_bump_domains": ["no-bump.example", "*.fragile.example"],
+            "no_cache_domains": [],
+            "no_bump_src_nets": ["192.0.2.0/24"],
+            "no_cache_src_nets": [],
             "exclude_private_nets": True,
         },
     )()
-    monkeypatch.setattr(pac_renderer, "get_exclusions_store", lambda: _FakeExclusionsStore(exclusions))
+    monkeypatch.setattr(pac_renderer, "get_sslfilter_store", lambda: _FakeSslfilterStore(rules))
 
     rendered = pac_renderer._render_fallback_pac(
         pac_renderer.ProxyPacTarget(
@@ -174,8 +175,8 @@ def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(m
     import services.pac_renderer as pac_renderer  # type: ignore
     from services.pac_profiles_store import PacProfile  # type: ignore
 
-    exclusions = type("Exclusions", (), {"exclude_private_nets": True})()
-    monkeypatch.setattr(pac_renderer, "get_exclusions_store", lambda: _FakeExclusionsStore(exclusions))
+    rules = type("SslFilterRules", (), {"exclude_private_nets": True})()
+    monkeypatch.setattr(pac_renderer, "get_sslfilter_store", lambda: _FakeSslfilterStore(rules))
 
     rendered = pac_renderer._render_profile_pac(
         PacProfile(

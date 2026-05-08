@@ -16,7 +16,7 @@
   </div>
     <div class="page-actions">
       {% if pac_url %}<a class="btn ghost" href="{{ pac_url }}" target="_blank" rel="noopener">Open proxy PAC</a>{% endif %}
-      <a class="btn ghost" href="{{ url_for('exclusions') }}">Open exclusions</a>
+      <a class="btn ghost" href="{{ url_for('sslfilter') }}">Open SSL Filtering</a>
     </div>
   </div>
 </section>
@@ -130,7 +130,7 @@
     </div>
     <div class="card-body">
       {% if profiles|length == 0 %}
-        <div class="surface-note small">No PAC profiles yet. Create one above. Until you do, the selected proxy&apos;s <span class="mono">/proxy.pac</span> proxies normal internet traffic and only sends local/private destinations DIRECT when that private-network option is enabled on Exclusions.</div>
+        <div class="surface-note small">No PAC profiles yet. Create one above. Until you do, the selected proxy&apos;s <span class="mono">/proxy.pac</span> proxies normal internet traffic and only sends local/private destinations DIRECT when that private-network option is enabled on SSL Filtering.</div>
       {% endif %}
 
       {% for p in profiles %}

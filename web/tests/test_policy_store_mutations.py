@@ -81,30 +81,35 @@ def test_pac_profiles_validate_scope_dedupe_match_and_delete(tmp_path) -> None:
         reset_proxy_id(token)
 
 
-def test_exclusions_store_validates_dedupes_and_scopes_rules(tmp_path) -> None:
-    configure_test_mysql_env(tmp_path / "exclusions-mutations")
+def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "sslfilter-policy-mutations")
 
-    from services.exclusions_store import ExclusionsStore  # type: ignore
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
+    from services.sslfilter_store import SslFilterStore  # type: ignore
 
-    store = ExclusionsStore()
+    store = SslFilterStore()
     store.init_db()
 
     token = set_proxy_id("edge-a")
     try:
-        assert store.add_domain("*.Example.COM") == (True, "")
-        assert store.add_domain("*.example.com") == (True, "")
-        ok, detail = store.add_domain("bad domain/example")
+        assert store.add_domain("nobump", "*.Example.COM") == (True, "", "*.example.com")
+        assert store.add_domain("nobump", "*.example.com") == (True, "", "*.example.com")
+        assert store.add_domain("nocache", "cache.example") == (True, "", "cache.example")
+        ok, detail, canonical = store.add_domain("nobump", "bad domain/example")
         assert ok is False
+        assert canonical == ""
         assert "invalid" in detail.lower()
 
-        assert store.add_net("src_nets", "192.168.44.99/24") == (True, "")
-        ok, detail = store.add_net("src_nets", "not-a-cidr")
+        assert store.add_src_net("nobump", "192.168.44.99/24") == (True, "", "192.168.44.0/24")
+        assert store.add_src_net("nocache", "192.168.55.99/24") == (True, "", "192.168.55.0/24")
+        ok, detail, canonical = store.add_src_net("nobump", "not-a-cidr")
         assert ok is False
+        assert canonical == ""
         assert "invalid cidr" in detail.lower()
-        ok, detail = store.add_net("unknown", "10.0.0.0/8")
+        ok, detail, canonical = store.add_src_net("unknown", "10.0.0.0/8")
         assert ok is False
-        assert "invalid target" in detail.lower()
+        assert canonical == ""
+        assert "invalid" in detail.lower()
 
         store.set_exclude_private_nets(False)
         added, attempted, err = store.install_compatibility_preset("discord")
@@ -116,28 +121,29 @@ def test_exclusions_store_validates_dedupes_and_scopes_rules(tmp_path) -> None:
         assert discord_preset["complete"] is True
 
         current = store.list_all()
-        assert "*.example.com" in current.domains
-        assert "*.discord.com" in current.domains
-        assert current.src_nets == ["192.168.44.0/24"]
+        assert "*.example.com" in current.no_bump_domains
+        assert "*.discord.com" in current.no_bump_domains
+        assert current.no_cache_domains == ["cache.example"]
+        assert current.no_bump_src_nets == ["192.168.44.0/24"]
+        assert current.no_cache_src_nets == ["192.168.55.0/24"]
         assert current.exclude_private_nets is False
 
-        store.remove_domain("*.example.com")
-        store.remove_net("src_nets", "192.168.44.0/24")
-        assert store.list_all().domains == []
-        assert store.list_all().src_nets == []
+        store.remove_domain("nobump", "*.example.com")
+        store.remove_src_net("nobump", "192.168.44.0/24")
+        assert store.list_all().no_bump_src_nets == []
     finally:
         reset_proxy_id(token)
 
     token = set_proxy_id("edge-b")
     try:
-        assert store.add_domain("edge-b.example") == (True, "")
-        assert store.list_all().domains == ["edge-b.example"]
+        assert store.add_domain("nobump", "edge-b.example") == (True, "", "edge-b.example")
+        assert store.list_all().no_bump_domains == ["edge-b.example"]
     finally:
         reset_proxy_id(token)
 
     token = set_proxy_id("edge-a")
     try:
-        assert store.list_all().domains == []
+        assert "edge-b.example" not in store.list_all().no_bump_domains
     finally:
         reset_proxy_id(token)
 

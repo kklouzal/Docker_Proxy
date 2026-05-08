@@ -35,17 +35,20 @@ def test_sslfilter_apply_squid_include_writes_materialized_files(tmp_path, monke
     store = module.SslFilterStore(
         squid_include_path=str(tmp_path / "etc" / "squid" / "conf.d" / "10-sslfilter.conf"),
         nobump_list_path=str(tmp_path / "var" / "lib" / "sslfilter_nobump.txt"),
+        nocache_src_list_path=str(tmp_path / "var" / "lib" / "sslfilter_nocache_src.txt"),
     )
     state = module.SslFilterMaterializedState(
         include_text="# include\nssl_bump splice sslfilter_nobump\n",
-        list_text="10.0.0.0/8\n",
+        nobump_src_list_text="10.0.0.0/8\n",
+        nocache_src_list_text="192.0.2.0/24\n",
     )
     monkeypatch.setattr(store, "render_materialized_state", lambda: state)
 
     store.apply_squid_include()
 
     assert Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
-    assert Path(store.nobump_list_path).read_text(encoding="utf-8") == state.list_text
+    assert Path(store.nobump_list_path).read_text(encoding="utf-8") == state.nobump_src_list_text
+    assert Path(store.nocache_src_list_path).read_text(encoding="utf-8") == state.nocache_src_list_text
 
 
 def test_webfilter_apply_squid_include_writes_materialized_files(tmp_path, monkeypatch):

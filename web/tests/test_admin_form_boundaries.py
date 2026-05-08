@@ -4,7 +4,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from .admin_route_test_utils import (
     FakeAdblockStore,
-    FakeExclusionsStore,
     FakePacProfilesStore,
     FakeSslfilterStore,
     FakeWebfilterStore,
@@ -43,43 +42,22 @@ def test_adblock_refresh_with_no_enabled_lists_redirects_with_warning(monkeypatc
     assert store.refresh_requested == 0
 
 
-def test_exclusions_bulk_domains_and_cidrs_report_counts_and_limit_error_detail(monkeypatch, tmp_path) -> None:
-    store = FakeExclusionsStore()
-    loaded = load_admin_app(monkeypatch, tmp_path, exclusions_store=store)
+def test_sslfilter_bulk_domains_and_cidrs_report_limited_error_detail(monkeypatch, tmp_path) -> None:
+    store = FakeSslfilterStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, sslfilter_store=store)
     domain_lines = "\n".join(["one.example", "bad domain/example", "two.example", "bad/2", "bad/3", "bad/4"])
-    with loaded.module.app.test_request_context("/exclusions", method="POST", data={"action": "add_domain_bulk", "domains_bulk": domain_lines}):
-        response = loaded.module._handle_exclusions_post(store)
+    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "add_domain_bulk", "policy": "nobump", "domains_bulk": domain_lines}):
+        response = loaded.module._handle_sslfilter_post(store)
     params = _params(response.location)
-    assert params["bulk_added"] == ["2"]
-    assert params["bulk_failed"] == ["4"]
-    assert params["exclude_error"][0].count("Invalid domain") == 3
+    assert params["added"] == ["2"]
+    assert params["err"][0].count("Invalid domain") == 3
 
     cidr_lines = "\n".join(["10.0.0.0/8", "bad", "192.0.2.0/24", "bad-cidr"])
-    with loaded.module.app.test_request_context("/exclusions", method="POST", data={"action": "add_src_bulk", "src_bulk": cidr_lines}):
-        cidr_response = loaded.module._handle_exclusions_post(store)
+    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "add_src_bulk", "policy": "nocache", "src_bulk": cidr_lines}):
+        cidr_response = loaded.module._handle_sslfilter_post(store)
     cidr_params = _params(cidr_response.location)
-    assert cidr_params["bulk_cidrs_added"] == ["2"]
-    assert cidr_params["bulk_cidrs_failed"] == ["2"]
-
-
-def test_exclusions_return_to_accepts_only_local_paths(monkeypatch, tmp_path) -> None:
-    store = FakeExclusionsStore()
-    loaded = load_admin_app(monkeypatch, tmp_path, exclusions_store=store)
-    with loaded.module.app.test_request_context(
-        "/exclusions",
-        method="POST",
-        data={"action": "add_domain", "domain": "local.example", "return_to": "/observability?pane=ssl"},
-    ):
-        local_response = loaded.module._handle_exclusions_post(store)
-    assert local_response.location.startswith("/observability")
-
-    with loaded.module.app.test_request_context(
-        "/exclusions",
-        method="POST",
-        data={"action": "add_domain", "domain": "fallback.example", "return_to": "https://evil.example/"},
-    ):
-        external_response = loaded.module._handle_exclusions_post(store)
-    assert external_response.location.startswith("/exclusions")
+    assert cidr_params["added"] == ["2"]
+    assert cidr_params["err"][0].count("Invalid CIDR") == 2
 
 
 def test_webfilter_save_validates_source_url_and_whitelist(monkeypatch, tmp_path) -> None:
@@ -113,14 +91,14 @@ def test_webfilter_save_validates_source_url_and_whitelist(monkeypatch, tmp_path
 def test_sslfilter_add_remove_and_unknown_actions(monkeypatch, tmp_path) -> None:
     store = FakeSslfilterStore()
     loaded = load_admin_app(monkeypatch, tmp_path, sslfilter_store=store)
-    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "add", "cidr": "bad"}):
+    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "add_src", "policy": "nobump", "cidr": "bad"}):
         bad_add = loaded.module._handle_sslfilter_post(store)
     assert "err" in _params(bad_add.location)
 
-    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "add", "cidr": "10.1.2.0/24"}):
+    with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "add_src", "policy": "nobump", "cidr": "10.1.2.0/24"}):
         ok_add = loaded.module._handle_sslfilter_post(store)
     assert _params(ok_add.location)["ok"] == ["1"]
-    assert store.rows == [("10.1.2.0/24", 1)]
+    assert store.no_bump_src_nets == ["10.1.2.0/24"]
 
     with loaded.module.app.test_request_context("/sslfilter", method="POST", data={"action": "unknown"}):
         unknown = loaded.module._handle_sslfilter_post(store)

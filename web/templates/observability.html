@@ -260,7 +260,7 @@
           <td class="num">{{ row.av_icap_events }}</td>
           <td class="num">{{ row.adblock_icap_events }}</td>
           <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
-          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Focus</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">SSL pane</a><a class="btn" href="{{ url_for('observability', pane='security', q=row.domain, window=window) }}">Security</a><a class="btn" href="{{ url_for('exclusions') }}">Exclusions</a></div></td>
+          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='destinations', q=row.domain, window=window) }}">Focus</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">SSL pane</a><a class="btn" href="{{ url_for('observability', pane='security', q=row.domain, window=window) }}">Security</a><a class="btn" href="{{ url_for('sslfilter') }}">SSL Filtering</a></div></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -350,7 +350,7 @@
           <td class="num">{{ row.total }}</td>
           <td class="num">{{ row.buckets }}</td>
           <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
-          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">Deep dive</a><a class="btn" href="{{ url_for('exclusions', domain=row.domain) }}">Exclusions</a></div></td>
+          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">Deep dive</a><a class="btn" href="{{ url_for( domain=row.domain) }}">SSL Filtering</a></div></td>
         </tr>
         {% endfor %}
       </tbody>

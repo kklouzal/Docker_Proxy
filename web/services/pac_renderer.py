@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 from urllib.parse import urlsplit
 
-from services.exclusions_store import get_exclusions_store
+from services.sslfilter_store import get_sslfilter_store
 from services.pac_profiles_store import PacProfile, get_pac_profiles_store
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_registry import get_proxy_registry
@@ -277,29 +277,29 @@ def _render_pac(
 
 
 def _render_profile_pac(profile: PacProfile, target: ProxyPacTarget | None = None) -> str:
-    exclusions = get_exclusions_store().list_all()
+    sslfilter_rules = get_sslfilter_store().list_all()
     resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
         resolved_target.proxy_chain,
         proxy_host=resolved_target.proxy_host_token,
         direct_domains=list(getattr(profile, "direct_domains", []) or []),
         direct_dst_nets=list(getattr(profile, "direct_dst_nets", []) or []),
-        include_private=bool(getattr(exclusions, "exclude_private_nets", False)),
+        include_private=bool(getattr(sslfilter_rules, "exclude_private_nets", False)),
     )
 
 
 def _render_fallback_pac(target: ProxyPacTarget | None = None) -> str:
-    exclusions = get_exclusions_store().list_all()
+    sslfilter_rules = get_sslfilter_store().list_all()
     resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
         resolved_target.proxy_chain,
         proxy_host=resolved_target.proxy_host_token,
-        # Squid no-bump/no-cache destination exclusions still go through the proxy;
-        # they are not client-side DIRECT rules. Only explicit PAC profiles and the
+        # Squid SSL-filter/no-cache destination policy still goes through the proxy;
+        # it is not a client-side DIRECT rule. Only explicit PAC profiles and the
         # private/local destination option should generate DIRECT routing.
         direct_domains=[],
         direct_dst_nets=[],
-        include_private=bool(getattr(exclusions, "exclude_private_nets", False)),
+        include_private=bool(getattr(sslfilter_rules, "exclude_private_nets", False)),
     )
 
 

@@ -512,42 +512,44 @@ def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):
 
 
 
-def test_squid_controller_exclusion_config_deduplicates_domains_covered_by_wildcards(tmp_path):
+def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards(tmp_path):
     _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "sslfilter-domain-dedupe")
 
-    from services.exclusions_store import Exclusions  # type: ignore
-    from services.squidctl import SquidController  # type: ignore
+    from services.sslfilter_store import SslFilterStore  # type: ignore
 
-    template = tmp_path / "squid.conf.template"
-    template.write_text("""
-http_port 3128 ssl-bump cert=/etc/squid/ssl/certs/ca.pem generate-host-certificates=on dynamic_cert_mem_cache_size=128MB
-ssl_bump bump all
-# Logging
-access_log stdio:/var/log/squid/access.log
-""", encoding="utf-8")
-    controller = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
-    controller.squid_conf_template_path = str(template)
-
-    rendered = controller.generate_config_from_template_with_exclusions(
-        {},
-        Exclusions(domains=["example.com", "*.example.com", "api.example.net", "api.example.net"], dst_nets=[], src_nets=[], exclude_private_nets=False),
+    store = SslFilterStore(
+        squid_include_path=str(tmp_path / "10-sslfilter.conf"),
+        nobump_list_path=str(tmp_path / "nobump.txt"),
+        nocache_src_list_path=str(tmp_path / "nocache-src.txt"),
     )
+    store.init_db()
+    for domain in ["example.com", "*.example.com", "api.example.net", "api.example.net"]:
+        assert store.add_domain("nobump", domain)[0] is True
+    for domain in ["cache.example", "*.cache.example", "cdn.example.net", "cdn.example.net"]:
+        assert store.add_domain("nocache", domain)[0] is True
 
-    ssl_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl excluded_domains ssl::server_name"))
-    cache_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl excluded_cache_domains dstdomain"))
-    acl_values = ssl_acl_line.split()[3:]
-    assert cache_acl_line.split()[3:] == acl_values
-    assert ".example.com" in acl_values
-    assert "example.com" not in acl_values
-    assert acl_values.count("api.example.net") == 1
-    assert "ssl_bump splice excluded_domains" in rendered
-    assert "cache deny excluded_cache_domains" in rendered
+    rendered = store.render_materialized_state().include_text
 
-def test_compatibility_presets_include_source_backed_collaboration_exclusions(tmp_path):
+    ssl_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl sslfilter_nobump_domains ssl::server_name"))
+    cache_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl sslfilter_nocache_domains dstdomain"))
+    ssl_values = ssl_acl_line.split()[3:]
+    cache_values = cache_acl_line.split()[3:]
+    assert ".example.com" in ssl_values
+    assert "example.com" not in ssl_values
+    assert ssl_values.count("api.example.net") == 1
+    assert ".cache.example" in cache_values
+    assert "cache.example" not in cache_values
+    assert cache_values.count("cdn.example.net") == 1
+    assert "ssl_bump splice sslfilter_nobump_domains" in rendered
+    assert "cache deny sslfilter_nocache_domains" in rendered
+
+def test_compatibility_presets_include_source_backed_collaboration_sslfilter_domains(tmp_path):
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "compatibility-presets")
 
-    from services.exclusions_store import COMPATIBILITY_PRESETS, get_exclusions_store  # type: ignore
+    from services.ssl_compatibility_presets import COMPATIBILITY_PRESETS  # type: ignore
+    from services.sslfilter_store import get_sslfilter_store  # type: ignore
 
     presets = {preset.id: preset for preset in COMPATIBILITY_PRESETS}
 
@@ -574,7 +576,7 @@ def test_compatibility_presets_include_source_backed_collaboration_exclusions(tm
     assert "*.atl-paas.net" in presets["developer-collaboration"].domains
     assert "*.okta.com" in presets["identity-mfa"].domains
 
-    store = get_exclusions_store()
+    store = get_sslfilter_store()
     added, attempted, error = store.install_compatibility_preset("all")
 
     assert attempted == sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)

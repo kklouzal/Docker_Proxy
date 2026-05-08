@@ -21,13 +21,15 @@ def test_store_initialization_does_not_create_local_db_files(tmp_path, monkeypat
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
 
     from services.audit_store import AuditStore
-    from services.exclusions_store import ExclusionsStore
     from services.pac_profiles_store import PacProfilesStore
     from services.sslfilter_store import SslFilterStore
 
     AuditStore().init_db()
-    ExclusionsStore().init_db()
     PacProfilesStore().init_db()
-    SslFilterStore(squid_include_path=str(tmp_path / "ssl.conf"), nobump_list_path=str(tmp_path / "nobump.txt")).init_db()
+    SslFilterStore(
+        squid_include_path=str(tmp_path / "ssl.conf"),
+        nobump_list_path=str(tmp_path / "nobump.txt"),
+        nocache_src_list_path=str(tmp_path / "nocache-src.txt"),
+    ).init_db()
 
     assert not list(tmp_path.glob("*.db"))

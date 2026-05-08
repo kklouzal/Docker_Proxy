@@ -72,13 +72,13 @@ def test_live_remote_pac_profile_updates_only_selected_proxy_pac(multi_proxy_adm
     assert direct_domain not in multi_proxy_admin.remote_pac_request().text
 
 
-def test_live_remote_exclusions_stay_proxy_side_and_scoped_to_selected_proxy(multi_proxy_admin: LiveStackClient) -> None:
-    domain = unique_domain("remote-exclusion")
+def test_live_remote_sslfilter_domain_policy_stays_proxy_side_and_scoped_to_selected_proxy(multi_proxy_admin: LiveStackClient) -> None:
+    domain = unique_domain("remote-sslfilter")
 
     add_response = multi_proxy_admin.admin_post_form(
-        with_proxy_id("/exclusions", LIVE_CONFIG.remote_proxy_id),
-        {"action": "add_domain", "domain": domain},
-        csrf_path=with_proxy_id("/exclusions", LIVE_CONFIG.remote_proxy_id),
+        with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
+        {"action": "add_domain", "policy": "nobump", "domain": domain},
+        csrf_path=with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
         timeout_seconds=90.0,
     )
     assert add_response.status == 200
@@ -86,14 +86,14 @@ def test_live_remote_exclusions_stay_proxy_side_and_scoped_to_selected_proxy(mul
 
     remote_pac = multi_proxy_admin.remote_pac_request()
     local_pac = multi_proxy_admin.pac_request()
-    # Remote proxy-side exclusions should not leak into any client PAC rules.
+    # Remote proxy-side SSL-filter policy should not leak into any client PAC rules.
     assert domain not in remote_pac.text
     assert domain not in local_pac.text
 
     remove_response = multi_proxy_admin.admin_post_form(
-        with_proxy_id("/exclusions", LIVE_CONFIG.remote_proxy_id),
-        {"action": "remove_domain", "domain": domain},
-        csrf_path=with_proxy_id("/exclusions", LIVE_CONFIG.remote_proxy_id),
+        with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
+        {"action": "remove_domain", "policy": "nobump", "domain": domain},
+        csrf_path=with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
         timeout_seconds=90.0,
     )
     assert remove_response.status == 200
@@ -106,7 +106,7 @@ def test_live_remote_sslfilter_rows_stay_scoped_to_selected_proxy(multi_proxy_ad
 
     add_response = multi_proxy_admin.admin_post_form(
         with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
-        {"action": "add", "cidr": cidr},
+        {"action": "add_src", "policy": "nobump", "cidr": cidr},
         csrf_path=with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
         timeout_seconds=90.0,
     )
@@ -120,7 +120,7 @@ def test_live_remote_sslfilter_rows_stay_scoped_to_selected_proxy(multi_proxy_ad
 
     remove_response = multi_proxy_admin.admin_post_form(
         with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
-        {"action": "remove", "cidr": cidr},
+        {"action": "remove_src", "policy": "nobump", "cidr": cidr},
         csrf_path=with_proxy_id("/sslfilter", LIVE_CONFIG.remote_proxy_id),
         timeout_seconds=90.0,
     )

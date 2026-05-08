@@ -48,7 +48,6 @@ class RecordingProxyClient:
         "/sslfilter",
         "/clamav",
         "/squid/config",
-        "/exclusions",
         "/pac",
         "/api/timeseries",
         "/certs",

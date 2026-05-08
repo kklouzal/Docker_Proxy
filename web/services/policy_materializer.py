@@ -47,7 +47,8 @@ def build_proxy_policy_state(proxy_id: object | None = None) -> ProxyPolicyState
 
         files = (
             MaterializedPolicyFile(path=sslfilter_store.squid_include_path, content=sslfilter_state.include_text),
-            MaterializedPolicyFile(path=sslfilter_store.nobump_list_path, content=sslfilter_state.list_text),
+            MaterializedPolicyFile(path=sslfilter_store.nobump_list_path, content=sslfilter_state.nobump_src_list_text),
+            MaterializedPolicyFile(path=sslfilter_store.nocache_src_list_path, content=sslfilter_state.nocache_src_list_text),
             MaterializedPolicyFile(path=webfilter_store.squid_include_path, content=webfilter_state.include_text),
             MaterializedPolicyFile(path=webfilter_store.whitelist_path, content=webfilter_state.whitelist_text),
         )

@@ -47,7 +47,7 @@ SSL_ERROR_CATEGORY_META: Dict[str, Dict[str, str]] = {
     'SSL_BUMP': {
         'label': 'Inspection policy conflict',
         'tone': 'warn',
-        'note': 'The failure occurred while Squid was applying SSL bump logic. Review bump/splice rules before adding exclusions.',
+        'note': 'The failure occurred while Squid was applying SSL bump logic. Review bump/splice rules before adding SSL filtering exceptions.',
     },
     'TLS_CLIENT_ACCEPT': {
         'label': 'Client-side TLS accept failure',
@@ -466,7 +466,7 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
         hints.append(
             {
                 'kind': 'info',
-                'title': 'Treat exclusions as a last-mile workaround',
+                'title': 'Treat SSL filtering exceptions as a last-mile workaround',
                 'body': 'Prefer fixing certificate trust, expiry, hostname mismatches, or bump rules before bypassing SSL inspection for a destination. Repeated known-good app failures are good candidates for a reviewed compatibility exclusion, not automatic mutation.',
             }
         )
@@ -483,7 +483,7 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
                 {
                     'kind': 'warning',
                     'title': 'Some events do not include a hostname',
-                    'body': 'Use the latest sample text and last-seen timestamp to correlate with Live traffic, access logs, or the affected application before creating exclusions.',
+                    'body': 'Use the latest sample text and last-seen timestamp to correlate with Live traffic, access logs, or the affected application before creating SSL filtering exceptions.',
                 }
             )
     else:

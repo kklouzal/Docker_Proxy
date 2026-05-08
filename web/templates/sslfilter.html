@@ -1,131 +1,214 @@
 {% extends 'layout.html' %}
 {% from "_scope_macros.html" import scope_notice %}
-{% block title %}SSL Filtering - Squid Flask Proxy{% endblock %}
+{% block title %}SSL Filtering · Squid Flask Proxy{% endblock %}
+
+{% macro policy_table(items, policy, kind, value_name) -%}
+  <div class="table-note">Current ({{ items|length }}):</div>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>{{ value_name }}</th><th class="num">Action</th></tr></thead>
+    <tbody>
+      {% for item in items %}
+        <tr>
+          <td class="mono">{{ item }}</td>
+          <td class="num">
+            <form method="post" action="{{ url_for('sslfilter') }}">
+              {{ csrf_field() }}
+              <input type="hidden" name="action" value="{{ 'remove_domain' if kind == 'domain' else 'remove_src' }}" />
+              <input type="hidden" name="policy" value="{{ policy }}" />
+              <input type="hidden" name="{{ 'domain' if kind == 'domain' else 'cidr' }}" value="{{ item }}" />
+              <button class="btn ghost" type="submit">Remove</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  {% if items|length == 0 %}<div class="surface-note small">No entries configured.</div>{% endif %}
+{%- endmacro %}
+
+{% macro domain_card(title, badge, policy, items, help_text) -%}
+<section class="card split-left">
+  <div class="card-header">
+    <h2 class="card-title">{{ title }}</h2>
+    <span class="badge">{{ badge }}</span>
+  </div>
+  <div class="card-body">
+    <form class="form" method="post" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="add_domain" />
+      <input type="hidden" name="policy" value="{{ policy }}" />
+      <label for="{{ policy }}_domain">Add domain</label>
+      <input id="{{ policy }}_domain" name="domain" type="text" placeholder="example.com or *.example.com" />
+      <div class="actions"><button class="btn primary" type="submit">Add</button></div>
+    </form>
+
+    <form class="form" method="post" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="add_domain_bulk" />
+      <input type="hidden" name="policy" value="{{ policy }}" />
+      <label for="{{ policy }}_domains_bulk">Bulk add domains</label>
+      <textarea id="{{ policy }}_domains_bulk" class="compact-textarea" name="domains_bulk" placeholder="example.com&#10;*.internal.example&#10;api.vendor.tld"></textarea>
+      <div class="small">One domain per line. Supports exact domains and wildcard suffixes like <span class="mono">*.example.com</span>.</div>
+      <div class="actions"><button class="btn" type="submit">Add list</button></div>
+    </form>
+
+    <div class="surface-note small">{{ help_text }}</div>
+    {{ policy_table(items, policy, 'domain', 'Domain') }}
+  </div>
+</section>
+{%- endmacro %}
+
+{% macro src_card(title, badge, policy, items, help_text) -%}
+<section class="card split-left">
+  <div class="card-header">
+    <h2 class="card-title">{{ title }}</h2>
+    <span class="badge">{{ badge }}</span>
+  </div>
+  <div class="card-body">
+    <form class="form" method="post" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="add_src" />
+      <input type="hidden" name="policy" value="{{ policy }}" />
+      <label for="{{ policy }}_src">Add client CIDR</label>
+      <input id="{{ policy }}_src" name="cidr" type="text" placeholder="192.168.1.0/24 or 192.168.1.50" />
+      <div class="actions"><button class="btn primary" type="submit">Add</button></div>
+    </form>
+
+    <form class="form" method="post" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="add_src_bulk" />
+      <input type="hidden" name="policy" value="{{ policy }}" />
+      <label for="{{ policy }}_src_bulk">Bulk add client CIDRs</label>
+      <textarea id="{{ policy }}_src_bulk" class="compact-textarea" name="src_bulk" placeholder="192.168.1.0/24&#10;10.42.0.0/16"></textarea>
+      <div class="small">Paste one client network per line when onboarding an office, VLAN, lab subnet, or unmanaged device group.</div>
+      <div class="actions"><button class="btn" type="submit">Add CIDR list</button></div>
+    </form>
+
+    <div class="surface-note small">{{ help_text }}</div>
+    {{ policy_table(items, policy, 'src', 'CIDR') }}
+  </div>
+</section>
+{%- endmacro %}
 
 {% block content %}
-<section class="card section-shell">
-  <div class="page-heading">
+<section class="page-heading" style="grid-column: 1 / -1; justify-self: stretch; width: 100%;">
   <div class="page-hero-copy">
-    <span class="page-eyebrow">TLS bypass rules</span>
+    <span class="page-eyebrow">TLS and cache policy</span>
     <h1 class="page-title">SSL Filtering</h1>
-    <p class="page-subtitle">Control which clients are exempt from TLS interception on {{ active_proxy.display_name }}.</p>
+    <p class="page-subtitle">Control destination and source exceptions for {{ active_proxy.display_name }}. No-bump means TLS splice/no MITM. No-cache means traffic still uses the proxy but is not stored.</p>
     <div class="hero-badges">
-      <span class="badge">{{ rows|length if rows else 0 }} no-bump entries</span>
-      <span class="badge">TLS splice for listed clients</span>
+      <span class="badge">{{ rules.no_bump_domains|length }} no-bump domains</span>
+      <span class="badge">{{ rules.no_cache_domains|length }} no-cache domains</span>
+      <span class="badge">{{ rules.no_bump_src_nets|length }} no-bump CIDRs</span>
+      <span class="badge">{{ rules.no_cache_src_nets|length }} no-cache CIDRs</span>
+      <span class="badge {{ 'ok' if rules.exclude_private_nets else 'warn' }}">Private PAC {{ 'on' if rules.exclude_private_nets else 'off' }}</span>
     </div>
   </div>
   <div class="page-actions">
     <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
     <a class="btn ghost" href="{{ url_for('observability', pane='ssl') }}">SSL incidents</a>
-  </div>
+    <a class="btn ghost" href="{{ url_for('observability', pane='cache') }}">Cache view</a>
   </div>
 </section>
 
-<section class="card section-shell">
-{% call scope_notice('proxy', 'Selected proxy only', 'The no-bump CIDRs configured here apply only to ' ~ active_proxy.display_name ~ '.') %}
-<div>This is intentionally per-proxy because different sites or network segments may need different TLS interception bypass lists.</div>
+{% call scope_notice('proxy', 'Selected proxy only', 'SSL filtering and cache-bypass policy on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
+<div>This lets you tune bypass behavior for one proxy without affecting the others.</div>
 {% endcall %}
-</section>
+
+{% if ok %}
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL filtering policy updated and sync requested.</span></div></div>
+{% endif %}
+{% if err %}
+  <div class="banner error"><span class="badge danger">Needs attention</span><div class="banner-copy"><span class="small">{{ err }}</span></div></div>
+{% endif %}
+{% if request.args.get('private_saved') %}
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private/local PAC bypass preference updated.</span></div></div>
+{% endif %}
+{% if request.args.get('compatibility_attempted') %}
+  <div class="banner success"><span class="badge ok">Compatibility set installed</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} new shipped no-bump domains.</span></div></div>
+{% endif %}
 
 <section class="card">
   <div class="card-header">
     <h2 class="card-title">At a glance</h2>
-    <span class="badge">client-side trust exceptions</span>
+    <span class="badge">policy behavior</span>
   </div>
   <div class="card-body">
     <div class="summary-grid">
-      <div class="stat compact-stat">
-        <div class="stat-k">No-bump CIDRs</div>
-        <div class="stat-v">{{ rows|length if rows else 0 }}</div>
-      </div>
-      <div class="stat compact-stat">
-        <div class="stat-k">Proxy behavior</div>
-        <div class="stat-v">Splice</div>
-      </div>
-      <div class="stat compact-stat">
-        <div class="stat-k">Best fit</div>
-        <div class="stat-v">Unmanaged</div>
-      </div>
+      <div class="stat compact-stat"><div class="stat-k">No-bump</div><div class="stat-v">Splice</div></div>
+      <div class="stat compact-stat"><div class="stat-k">No-cache</div><div class="stat-v">Proxy, no store</div></div>
+      <div class="stat compact-stat"><div class="stat-k">PAC private/local</div><div class="stat-v">{{ 'DIRECT' if rules.exclude_private_nets else 'Proxy' }}</div></div>
     </div>
+    <div class="surface-note help">No-bump and no-cache are intentionally separate now. A destination or client can be spliced without adding explicit cache-deny rules, cached normally while still being bumped, or both if you add it to both lists.</div>
   </div>
 </section>
 
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">Why this matters</h2>
-  </div>
-  <div class="card-body">
-    <div class="surface-note help">
-      Some networks contain unmanaged devices (guest BYOD, IoT, consoles, printers) that cannot have a custom CA certificate installed.
-      If Squid "bumps" TLS for these clients, they will see certificate errors or fail to connect.
-      <br><br>
-      Adding these clients (by CIDR) to the no-bump list makes Squid "splice" their TLS connections instead (a pass-through tunnel),
-      so they see the real website certificates.
-      <br><br>
-      Note: Certbot/Let's Encrypt cannot replace ssl-bump for general web browsing because Let's Encrypt only issues certificates for domains you control.
-      A bumping proxy would need certificates for arbitrary destinations (e.g. google.com), which public CAs will not issue.
+<div class="grid">
+  {{ domain_card('No bump requests going to the following domains', 'TLS splice', 'nobump', rules.no_bump_domains, 'Use this for destinations that break under TLS inspection or certificate pinning. HTTPS traffic is tunneled with the real site certificate.') }}
+  {{ domain_card('No cache requests going to the following domains', 'cache deny', 'nocache', rules.no_cache_domains, 'Use this for destinations that may be safely inspected/proxied but should not be stored in Squid cache.') }}
+  {{ src_card('No bump requests coming from IP CIDR', 'TLS splice', 'nobump', rules.no_bump_src_nets, 'Use this for clients that cannot trust the proxy CA: guest BYOD, IoT, consoles, printers, or unmanaged devices.') }}
+  {{ src_card('No cache requests coming from IP CIDR', 'cache deny', 'nocache', rules.no_cache_src_nets, 'Use this for clients whose traffic should pass through the proxy without being stored in cache.') }}
+
+  <aside class="card split-right">
+    <div class="card-header">
+      <h2 class="card-title">Private/local destinations</h2>
+      <span class="badge">PAC DIRECT</span>
     </div>
-  </div>
-</section>
-
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">No-bump client CIDRs</h2>
-    <span class="badge">Splice only</span>
-  </div>
-  <div class="card-body">
-    {% if ok %}
-      <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">No-bump CIDRs updated.</span></div></div>
-    {% endif %}
-    {% if err %}
-      <div class="banner error"><span class="badge danger">Error</span><div class="banner-copy"><span class="small">{{ err }}</span></div></div>
-    {% endif %}
-
-    <form method="post" class="form" action="{{ url_for('sslfilter') }}">
-      {{ csrf_field() }}
-      <input type="hidden" name="action" value="add">
-      <label for="cidr">Add CIDR</label>
-      <div class="inline-form">
-        <input id="cidr" class="input inline-fill" type="text" name="cidr" placeholder="10.0.0.0/8 or 192.168.1.50">
-        <button class="btn" type="submit">Add</button>
-      </div>
-      <div class="help">Matches client IPs; matching clients will be spliced (no TLS interception). Changes apply immediately.</div>
-    </form>
-
-    <div class="stack-sm">
-      {% if rows and rows|length > 0 %}
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>CIDR</th>
-                <th>Added</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for cidr, ts in rows %}
-                <tr>
-                  <td class="mono">{{ cidr }}</td>
-                  <td class="small">{{ fmt_ts(ts) if ts else '' }}</td>
-                  <td>
-                    <form method="post" action="{{ url_for('sslfilter') }}">
-                      {{ csrf_field() }}
-                      <input type="hidden" name="action" value="remove">
-                      <input type="hidden" name="cidr" value="{{ cidr }}">
-                      <button class="btn ghost" type="submit">Remove</button>
-                    </form>
-                  </td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+    <div class="card-body">
+      <form class="form" method="post" action="{{ url_for('sslfilter') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="toggle_private" />
+        <label class="check-row">
+          <input class="check" type="checkbox" name="exclude_private_nets" {% if rules.exclude_private_nets %}checked{% endif %} />
+          <span>Send common private/local destination ranges DIRECT in generated PAC files</span>
+        </label>
+        <div class="actions"><button class="btn primary" type="submit">Save</button></div>
+        <div class="surface-note small">This is client-side routing, not a Squid no-bump/no-cache rule. Current ranges: <span class="mono">{{ private_dst_nets|join(', ') }}</span>.</div>
+      </form>
+      {% if pac_url %}
+        <div class="actions"><a class="btn" href="{{ pac_url }}" target="_blank" rel="noopener">Open proxy.pac</a></div>
+        <div class="surface-note small">PAC URL for selected proxy: <span class="mono">{{ pac_url }}</span></div>
       {% else %}
-        <div class="help">No no-bump CIDRs configured.</div>
+        <div class="surface-note small">{{ pac_warning }}</div>
       {% endif %}
     </div>
-  </div>
-</section>
+  </aside>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Shipped compatibility no-bump domains</h2>
+      <span class="badge">reviewed presets</span>
+    </div>
+    <div class="card-body content-stack">
+      <div class="surface-note small">These presets splice known fragile SaaS/app destinations while leaving the rest of the proxy MITM-by-default. They install into the no-bump destination-domain list above.</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Preset</th><th>Purpose</th><th class="num">Installed</th><th class="num">Action</th></tr></thead>
+        <tbody>
+          {% for preset in compatibility_presets %}
+          <tr>
+            <td><div class="stack-sm"><span class="mono">{{ preset.title }}</span><span class="small">{{ preset.total }} domains</span></div></td>
+            <td class="small">{{ preset.description }}</td>
+            <td class="num"><span class="badge {{ 'ok' if preset.complete else 'warn' }}">{{ preset.installed }}/{{ preset.total }}</span></td>
+            <td class="num">
+              <form method="post" action="{{ url_for('sslfilter') }}">
+                {{ csrf_field() }}
+                <input type="hidden" name="action" value="install_compatibility_preset" />
+                <input type="hidden" name="preset_id" value="{{ preset.id }}" />
+                <button class="btn" type="submit">Install missing</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      <form method="post" action="{{ url_for('sslfilter') }}" class="actions">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="install_compatibility_preset" />
+        <input type="hidden" name="preset_id" value="all" />
+        <button class="btn" type="submit">Install all missing presets</button>
+      </form>
+    </div>
+  </section>
+</div>
 
 {% endblock %}

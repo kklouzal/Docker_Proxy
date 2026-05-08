@@ -1862,7 +1862,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         _tunable_or_default_if_none("additional_ssl_rules_text", ""),
         _posted_multiline_reader("additional_ssl_rules_text"),
         rows=8,
-        help_text="Inserted before the default step2 stare / step3 bump policy. Exclusions and SSL-filter CIDR bypasses remain managed on their dedicated pages.",
+        help_text="Inserted before the default step2 stare / step3 bump policy. SSL filtering/no-cache policies are managed on the SSL Filtering page.",
     ),
     _field(
         "sslproxy_cert_error_rules_text",
@@ -2795,7 +2795,7 @@ CONFIG_UI_SECTIONS: tuple[UiSectionSpec, ...] = (
         key="ssl",
         label="SSL/TLS",
         description="Bump helper sizing, outgoing TLS policy, and advanced certificate behavior.",
-        apply_note="Exclusions and SSL-filter CIDR bypasses remain managed on their dedicated pages; this tab focuses on Squid's TLS machinery itself.",
+        apply_note="SSL filtering/no-cache policies are managed on the SSL Filtering page; this tab focuses on Squid's TLS machinery itself.",
         groups=(
             UiGroupSpec(
                 key="tls",

@@ -144,80 +144,59 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert updated_domain not in fallback_pac.text
 
 
-def test_live_exclusions_add_remove_and_apply_stay_proxy_side_only(admin_client: LiveStackClient) -> None:
-    domain = unique_domain("exclude")
-    cidr = "10.55.77.0/24"
+def test_live_sslfilter_granular_policy_stays_proxy_side_only(admin_client: LiveStackClient) -> None:
+    nobump_domain = unique_domain("nobump")
+    nocache_domain = unique_domain("nocache")
+    nobump_cidr = "10.55.77.0/24"
+    nocache_cidr = "10.55.78.0/24"
 
-    add_domain_response = admin_client.admin_post_form(
-        "/exclusions",
-        {
-            "action": "add_domain",
-            "domain": domain,
-        },
-        csrf_path="/exclusions",
-    )
-    assert add_domain_response.status == 200
-    assert domain in add_domain_response.text
-
-    add_cidr_response = admin_client.admin_post_form(
-        "/exclusions",
-        {
-            "action": "add_src",
-            "cidr": cidr,
-        },
-        csrf_path="/exclusions",
-    )
-    assert add_cidr_response.status == 200
-    assert cidr in add_cidr_response.text
+    for payload in (
+        {"action": "add_domain", "policy": "nobump", "domain": nobump_domain},
+        {"action": "add_domain", "policy": "nocache", "domain": nocache_domain},
+        {"action": "add_src", "policy": "nobump", "cidr": nobump_cidr},
+        {"action": "add_src", "policy": "nocache", "cidr": nocache_cidr},
+    ):
+        response = admin_client.admin_post_form("/sslfilter", payload, csrf_path="/sslfilter", timeout_seconds=90.0)
+        assert response.status == 200
 
     toggle_private_response = admin_client.admin_post_form(
-        "/exclusions",
-        {
-            "action": "toggle_private",
-            "exclude_private_nets": "on",
-        },
-        csrf_path="/exclusions",
+        "/sslfilter",
+        {"action": "toggle_private", "exclude_private_nets": "on"},
+        csrf_path="/sslfilter",
     )
     assert toggle_private_response.status == 200
-    assert "Private-network bypass preference updated." in toggle_private_response.text
+    assert "Private/local PAC bypass preference updated." in toggle_private_response.text
 
-    exclusions_page = admin_client.admin_request("/exclusions")
-    assert domain in exclusions_page.text
-    assert cidr in exclusions_page.text
-    assert 'name="exclude_private_nets" checked' in exclusions_page.text
+    sslfilter_page = admin_client.admin_request("/sslfilter")
+    assert nobump_domain in sslfilter_page.text
+    assert nocache_domain in sslfilter_page.text
+    assert nobump_cidr in sslfilter_page.text
+    assert nocache_cidr in sslfilter_page.text
+    assert 'name="exclude_private_nets" checked' in sslfilter_page.text
 
     pac_response = admin_client.pac_request()
     assert pac_response.status == 200
-    # No-bump/no-cache exclusions are proxy-side policy. They must not become
-    # client-side PAC DIRECT rules.
-    assert domain not in pac_response.text
+    # SSL-filter/no-cache destination/source policies are proxy-side policy.
+    # They must not become client-side PAC DIRECT rules.
+    assert nobump_domain not in pac_response.text
+    assert nocache_domain not in pac_response.text
 
-    apply_response = admin_client.admin_post_form(
-        "/exclusions",
-        {"action": "apply"},
-        csrf_path="/exclusions",
-        timeout_seconds=90.0,
-    )
-    assert apply_response.status == 200
-    assert query_params(apply_response.url).get("ok") == ["1"]
-    assert "Squid reloaded with updated exclusions." in apply_response.text
     wait_for_proxy_management_payload()
 
-    remove_domain_response = admin_client.admin_post_form(
-        "/exclusions",
-        {"action": "remove_domain", "domain": domain},
-        csrf_path="/exclusions",
-    )
-    assert remove_domain_response.status == 200
-    remove_cidr_response = admin_client.admin_post_form(
-        "/exclusions",
-        {"action": "remove_src", "cidr": cidr},
-        csrf_path="/exclusions",
-    )
-    assert remove_cidr_response.status == 200
-    final_page = admin_client.admin_request("/exclusions")
-    assert domain not in final_page.text
-    assert cidr not in final_page.text
+    for payload in (
+        {"action": "remove_domain", "policy": "nobump", "domain": nobump_domain},
+        {"action": "remove_domain", "policy": "nocache", "domain": nocache_domain},
+        {"action": "remove_src", "policy": "nobump", "cidr": nobump_cidr},
+        {"action": "remove_src", "policy": "nocache", "cidr": nocache_cidr},
+    ):
+        response = admin_client.admin_post_form("/sslfilter", payload, csrf_path="/sslfilter", timeout_seconds=90.0)
+        assert response.status == 200
+
+    final_page = admin_client.admin_request("/sslfilter")
+    assert nobump_domain not in final_page.text
+    assert nocache_domain not in final_page.text
+    assert nobump_cidr not in final_page.text
+    assert nocache_cidr not in final_page.text
 
 
 def test_live_administration_add_change_and_delete_user(admin_client: LiveStackClient) -> None:

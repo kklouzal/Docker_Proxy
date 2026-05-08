@@ -17,12 +17,6 @@ from services.squid_config_forms import (
 
 logger = logging.getLogger(__name__)
 
-try:
-    from services.exclusions_store import Exclusions, PRIVATE_NETS_V4
-except Exception:  # pragma: no cover
-    Exclusions = None  # type: ignore[assignment]
-    PRIVATE_NETS_V4 = []  # type: ignore[assignment]
-
 
 class SquidController(_CoreSquidController):
     # -------------------------------------------------------------------------
@@ -1619,78 +1613,6 @@ class SquidController(_CoreSquidController):
         managed_block = self._render_managed_settings(options)
         return self._replace_managed_settings_block(rendered, managed_block)
 
-    def _normalize_excluded_domain_for_squid(self, domain: str) -> str:
-        value = (domain or "").strip().lower()
-        if value.startswith("*."):
-            return "." + value[2:].lstrip(".")
-        if value.startswith("."):
-            return "." + value.lstrip(".")
-        return value.lstrip(".")
-
-    def generate_config_from_template_with_exclusions(self, options: Dict[str, Any], exclusions: Any) -> str:
-        base = self.generate_config_from_template(options)
-        raw_domains = [
-            normalized
-            for domain in (getattr(exclusions, "domains", []) or [])
-            if (normalized := self._normalize_excluded_domain_for_squid(str(domain)))
-        ]
-        wildcard_domains = {value[1:] for value in raw_domains if value.startswith(".")}
-        domains = []
-        seen_domains = set()
-        for value in raw_domains:
-            # Squid dstdomain treats .example.com as covering both example.com and subdomains,
-            # so emitting both produces noisy "already covered" warnings during validation/reload.
-            if value in wildcard_domains:
-                continue
-            if value in seen_domains:
-                continue
-            seen_domains.add(value)
-            domains.append(value)
-        src_nets = [cidr.strip() for cidr in (getattr(exclusions, "src_nets", []) or []) if cidr.strip()]
-        private_dst_nets = PRIVATE_NETS_V4 if bool(getattr(exclusions, "exclude_private_nets", False)) else []
-
-        acl_lines = []
-        note_lines = []
-        splice_lines = []
-        cache_deny_lines = []
-
-        if domains:
-            # Use ssl::server_name for SslBump decisions so step2 policy keys off SNI/cert
-            # data instead of the often-IP-only CONNECT URI seen before bumping.
-            acl_lines.append("acl excluded_domains ssl::server_name " + " ".join(domains))
-            acl_lines.append("acl excluded_cache_domains dstdomain " + " ".join(domains))
-            note_lines.append("note exclusion_rule domain excluded_domains")
-            splice_lines.append("ssl_bump splice excluded_domains")
-            cache_deny_lines.append("cache deny excluded_cache_domains")
-        if private_dst_nets:
-            acl_lines.append("acl excluded_private_dst dst " + " ".join(private_dst_nets))
-            note_lines.append("note exclusion_rule private_dst excluded_private_dst")
-            splice_lines.append("ssl_bump splice excluded_private_dst")
-            cache_deny_lines.append("cache deny excluded_private_dst")
-        if src_nets:
-            acl_lines.append("acl excluded_src src " + " ".join(src_nets))
-            note_lines.append("note exclusion_rule src excluded_src")
-            splice_lines.append("ssl_bump splice excluded_src")
-            cache_deny_lines.append("cache deny excluded_src")
-        if not (acl_lines or splice_lines or cache_deny_lines):
-            return base
-
-        insert_ssl = "\n".join(["", "# Exclusions (managed by web UI)"] + acl_lines + note_lines + splice_lines) + "\n"
-        if "ssl_bump stare step2" in base:
-            base = base.replace("ssl_bump stare step2", insert_ssl + "ssl_bump stare step2", 1)
-        elif "ssl_bump bump step3" in base:
-            base = base.replace("ssl_bump bump step3", insert_ssl + "ssl_bump bump step3", 1)
-        else:
-            base = base.replace("ssl_bump bump all", insert_ssl + "ssl_bump bump all", 1)
-
-        deny_block = "\n".join(["", "# Exclusions (managed by web UI)"] + cache_deny_lines) + "\n"
-        for marker in ("# Logging", "# Log settings", self._MANAGED_SETTINGS_END):
-            if marker in base:
-                base = base.replace(marker, deny_block + "\n" + marker, 1)
-                break
-        else:
-            base = base.rstrip() + deny_block
-        return base
 
     def start_squid(self):
         try:

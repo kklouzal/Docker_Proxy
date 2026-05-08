@@ -16,7 +16,7 @@
                 <span class="badge {{ 'warn' if summary.intercept_enabled else '' }}">Intercept {{ summary.intercept_port if summary.intercept_enabled else 'off' }}</span>
                 {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
                 <span class="badge {{ 'warn' if summary.overrides_on else 'ok' }}">Overrides {{ 'on' if summary.overrides_on else 'off' }}</span>
-                <span class="badge">{{ summary.exclusions_count }} exclusions</span>
+                <span class="badge">{{ summary.sslfilter_count }} SSL filtering</span>
             </div>
         </div>
         <div class="page-actions">
@@ -61,8 +61,8 @@
                 <div class="stat-v">{{ summary.cache_mem_mb if summary.cache_mem_mb is not none else 'n/a' }}</div>
             </div>
             <div class="stat compact-stat">
-                <div class="stat-k">Exclusions</div>
-                <div class="stat-v">{{ summary.exclusions_count }}</div>
+                <div class="stat-k">SSL Filtering</div>
+                <div class="stat-v">{{ summary.sslfilter_count }}</div>
             </div>
         </div>
         <div class="surface-note small">Use the raw <span class="mono">Config</span> tab for exact <span class="mono">squid.conf</span> edits, and the grouped tabs for safer schema-backed Squid 7.x tuning with sane defaults.</div>

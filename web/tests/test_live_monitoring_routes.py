@@ -23,7 +23,7 @@ def test_live_monitoring_pages_link_back_to_observability(admin_client: LiveStac
     assert "Clamd backend" in clamav_response.text
     assert "Enable changes the Squid adaptation rule only" in clamav_response.text
 
-    for path in ("/adblock?window=3600", "/webfilter", "/sslfilter", "/exclusions"):
+    for path in ("/adblock?window=3600", "/webfilter", "/sslfilter"):
         response = admin_client.admin_request(path)
         assert response.status == 200
         body = response.text
@@ -58,40 +58,25 @@ def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(
     ssl_qs = query_params(ssl_exclude_response.url)
     assert ssl_qs.get("pane") == ["ssl"]
     assert ssl_qs.get("q") == [ssl_domain]
-    assert ssl_domain in admin_client.admin_request("/exclusions").text
+    assert ssl_domain in admin_client.admin_request("/sslfilter").text
 
     bulk_domain_a = unique_domain("bulk-a")
     bulk_domain_b = unique_domain("bulk-b")
     bulk_response = admin_client.admin_post_form(
-        "/exclusions",
+        "/sslfilter",
         {
             "action": "add_domain_bulk",
+            "policy": "nobump",
             "domains_bulk": f"{bulk_domain_a}\n{bulk_domain_b}\n",
         },
-        csrf_path="/exclusions",
+        csrf_path="/sslfilter",
     )
     assert bulk_response.status == 200
     bulk_qs = query_params(bulk_response.url)
-    assert bulk_qs.get("bulk_added") == ["2"]
-    exclusions_page = admin_client.admin_request("/exclusions")
-    assert bulk_domain_a in exclusions_page.text
-    assert bulk_domain_b in exclusions_page.text
-
-    return_domain = unique_domain("return-to-observability")
-    return_response = admin_client.admin_post_form(
-        "/exclusions",
-        {
-            "action": "add_domain",
-            "domain": return_domain,
-            "return_to": "/observability?pane=destinations&window=3600",
-        },
-        csrf_path="/observability?pane=destinations",
-    )
-    assert return_response.status == 200
-    return_qs = query_params(return_response.url)
-    assert return_qs.get("pane") == ["destinations"]
-    assert return_qs.get("window") == ["3600"]
-    assert return_qs.get("exclude_added") == [return_domain]
+    assert bulk_qs.get("added") == ["2"]
+    sslfilter_page = admin_client.admin_request("/sslfilter")
+    assert bulk_domain_a in sslfilter_page.text
+    assert bulk_domain_b in sslfilter_page.text
 
     webfilter_test = admin_client.admin_post_json("/webfilter/test", {"domain": "example.com"})
     assert webfilter_test.status == 200

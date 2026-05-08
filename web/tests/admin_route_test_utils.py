@@ -234,7 +234,7 @@ class FakeController:
     def get_cache_override_options(self, _text: str) -> dict[str, bool]:
         return {"client_no_cache": False, "origin_private": False, "client_no_store": False}
 
-    def generate_config_from_template_with_exclusions(self, options: dict[str, Any], _exclusions: Any) -> str:
+    def generate_config_from_template(self, options: dict[str, Any]) -> str:
         lines = self._listener_lines_from_options(options)
         lines.append(f"cache_mem {int(options.get('cache_mem_mb') or 64)} MB")
         return "\n".join(lines) + "\n"
@@ -286,50 +286,6 @@ class FakeConfigRevisions:
             return None
         row = self.applied[-1]
         return SimpleNamespace(applied_ts=1, ok=bool(row.get("ok")), detail=row.get("detail", ""), applied_by="test")
-
-
-class EmptyExclusions:
-    domains: list[str] = []
-    src_nets: list[str] = []
-    exclude_private_nets = False
-
-
-class FakeExclusionsStore:
-    def __init__(self) -> None:
-        self.domains: list[str] = []
-        self.src_nets: list[str] = []
-        self.exclude_private_nets = False
-
-    def list_all(self) -> Any:
-        return SimpleNamespace(domains=list(self.domains), src_nets=list(self.src_nets), exclude_private_nets=self.exclude_private_nets)
-
-    def add_domain(self, value: str) -> tuple[bool, str]:
-        value = (value or "").strip().lower()
-        if not value or " " in value or "/" in value:
-            return False, "Invalid domain."
-        if value not in self.domains:
-            self.domains.append(value)
-        return True, ""
-
-    def remove_domain(self, value: str) -> None:
-        value = (value or "").strip().lower()
-        self.domains = [item for item in self.domains if item != value]
-
-    def add_net(self, target: str, value: str) -> tuple[bool, str]:
-        value = (value or "").strip()
-        if target != "src_nets":
-            return False, "Invalid target."
-        if "/" not in value or "bad" in value:
-            return False, "Invalid CIDR."
-        if value not in self.src_nets:
-            self.src_nets.append(value)
-        return True, ""
-
-    def remove_net(self, _target: str, value: str) -> None:
-        self.src_nets = [item for item in self.src_nets if item != value]
-
-    def set_exclude_private_nets(self, enabled: bool) -> None:
-        self.exclude_private_nets = bool(enabled)
 
 
 class FakeTimeseriesStore:
@@ -456,23 +412,83 @@ class FakeWebfilterStore:
 
 class FakeSslfilterStore:
     def __init__(self) -> None:
-        self.rows: list[tuple[str, int]] = []
+        self.no_bump_domains: list[str] = []
+        self.no_cache_domains: list[str] = []
+        self.no_bump_src_nets: list[str] = []
+        self.no_cache_src_nets: list[str] = []
+        self.exclude_private_nets = False
+
+    @property
+    def private_dst_nets(self) -> list[str]:
+        return ["10.0.0.0/8", "192.168.0.0/16"]
 
     def init_db(self) -> None:
         return None
 
-    def list_nobump(self) -> list[tuple[str, int]]:
-        return list(self.rows)
+    def list_all(self) -> Any:
+        return SimpleNamespace(
+            no_bump_domains=list(self.no_bump_domains),
+            no_cache_domains=list(self.no_cache_domains),
+            no_bump_src_nets=list(self.no_bump_src_nets),
+            no_cache_src_nets=list(self.no_cache_src_nets),
+            exclude_private_nets=self.exclude_private_nets,
+        )
 
-    def add_nobump(self, cidr: str) -> tuple[bool, str, str]:
+    def list_nobump(self) -> list[tuple[str, int]]:
+        return [(cidr, 1) for cidr in self.no_bump_src_nets]
+
+    def add_domain(self, policy: str, value: str | None = None) -> tuple[bool, str, str]:
+        if value is None:
+            value = policy
+            policy = "nobump"
+        value = (value or "").strip().lower()
+        if not value or " " in value or "/" in value:
+            return False, "Invalid domain.", ""
+        target = self.no_bump_domains if policy == "nobump" else self.no_cache_domains if policy == "nocache" else None
+        if target is None:
+            return False, "Invalid domain policy.", ""
+        if value not in target:
+            target.append(value)
+        return True, "", value
+
+    def remove_domain(self, policy: str, value: str | None = None) -> None:
+        if value is None:
+            value = policy
+            policy = "nobump"
+        target = self.no_bump_domains if policy == "nobump" else self.no_cache_domains
+        target[:] = [item for item in target if item != (value or "").strip().lower()]
+
+    def add_src_net(self, policy: str, cidr: str) -> tuple[bool, str, str]:
         cidr = (cidr or "").strip()
         if not cidr or "bad" in cidr:
             return False, "Invalid CIDR.", ""
-        self.rows.append((cidr, 1))
+        target = self.no_bump_src_nets if policy == "nobump" else self.no_cache_src_nets if policy == "nocache" else None
+        if target is None:
+            return False, "Invalid CIDR policy.", ""
+        if cidr not in target:
+            target.append(cidr)
         return True, "", cidr
 
+    def remove_src_net(self, policy: str, cidr: str) -> None:
+        target = self.no_bump_src_nets if policy == "nobump" else self.no_cache_src_nets
+        target[:] = [item for item in target if item != cidr]
+
+    def add_nobump(self, cidr: str) -> tuple[bool, str, str]:
+        return self.add_src_net("nobump", cidr)
+
     def remove_nobump(self, cidr: str) -> None:
-        self.rows = [row for row in self.rows if row[0] != cidr]
+        self.remove_src_net("nobump", cidr)
+
+    def set_exclude_private_nets(self, enabled: bool) -> None:
+        self.exclude_private_nets = bool(enabled)
+
+    def list_compatibility_presets(self) -> list[dict[str, Any]]:
+        return [{"id": "discord", "title": "Discord", "description": "Discord domains", "domains": ["discord.com"], "installed": 1 if "discord.com" in self.no_bump_domains else 0, "missing": 0 if "discord.com" in self.no_bump_domains else 1, "total": 1, "complete": "discord.com" in self.no_bump_domains}]
+
+    def install_compatibility_preset(self, _preset_id: str) -> tuple[int, int, str]:
+        before = set(self.no_bump_domains)
+        self.add_domain("nobump", "discord.com")
+        return len(set(self.no_bump_domains) - before), 1, ""
 
 
 class FakePacProfilesStore:
@@ -549,7 +565,6 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         get_certificate_bundles=lambda: fake_certificates,
         get_config_revisions=lambda: fake_revisions,
         get_diagnostic_store=lambda: overrides.get("diagnostic_store") or FakeDiagnosticStore(),
-        get_exclusions_store=lambda: overrides.get("exclusions_store") or FakeExclusionsStore(),
         get_audit_store=lambda: fake_audit,
         get_timeseries_store=lambda: overrides.get("timeseries_store") or FakeTimeseriesStore(),
         get_ssl_errors_store=lambda: overrides.get("ssl_errors_store") or FakeSslErrorsStore(),

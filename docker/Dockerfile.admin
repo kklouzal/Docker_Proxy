@@ -37,7 +37,6 @@ COPY web/services/adblock_artifacts.py \
 	web/services/diagnostic_store.py \
 	web/services/db.py \
 	web/services/errors.py \
-	web/services/exclusions_store.py \
 	web/services/health_checks.py \
 	web/services/http_optimizations.py \
 	web/services/housekeeping.py \
@@ -56,6 +55,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/squid_core.py \
 	web/services/squid_config_forms.py \
 	web/services/squidctl.py \
+	web/services/ssl_compatibility_presets.py \
 	web/services/ssl_errors_store.py \
 	web/services/sslfilter_store.py \
 	web/services/stats.py \

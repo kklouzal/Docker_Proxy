@@ -14,7 +14,6 @@ pytestmark = pytest.mark.live
         ("/", "Status"),
         ("/observability", "Observability"),
         ("/squid/config", "Squid"),
-        ("/exclusions", "Exclusions"),
         ("/certs", "Certificates"),
         ("/adblock", "Ad"),
         ("/webfilter", "Web"),

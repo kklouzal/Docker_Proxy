@@ -6,11 +6,10 @@ from services.certificate_bundles import get_certificate_bundles as _default_get
 from services.auth_store import get_auth_store
 from services.config_revisions import get_config_revisions as _default_get_config_revisions
 from services.diagnostic_store import get_diagnostic_store as _default_get_diagnostic_store
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import os
 import shutil
-from services.exclusions_store import get_exclusions_store as _default_get_exclusions_store
 from services.audit_store import get_audit_store as _default_get_audit_store
 from services.timeseries_store import get_timeseries_store as _default_get_timeseries_store
 from services.ssl_errors_store import get_ssl_errors_store as _default_get_ssl_errors_store
@@ -40,7 +39,6 @@ from services.squid_config_forms import (
     parse_cache_override_form,
 )
 from services.ui_support import (
-    append_query_to_local_return as _append_query_to_local_return,
     bulk_lines as _bulk_lines,
     csv_safe as _csv_safe,
     present_observability_summary as _present_observability_summary,
@@ -158,7 +156,6 @@ class AppRuntimeServices:
     get_certificate_bundles: Any
     get_config_revisions: Any
     get_diagnostic_store: Any
-    get_exclusions_store: Any
     get_audit_store: Any
     get_timeseries_store: Any
     get_ssl_errors_store: Any
@@ -181,7 +178,6 @@ _default_app_runtime_services = AppRuntimeServices(
     get_certificate_bundles=_default_get_certificate_bundles,
     get_config_revisions=_default_get_config_revisions,
     get_diagnostic_store=_default_get_diagnostic_store,
-    get_exclusions_store=_default_get_exclusions_store,
     get_audit_store=_default_get_audit_store,
     get_timeseries_store=_default_get_timeseries_store,
     get_ssl_errors_store=_default_get_ssl_errors_store,
@@ -223,9 +219,6 @@ def get_config_revisions():
 def get_diagnostic_store():
     return _app_runtime_services().get_diagnostic_store()
 
-
-def get_exclusions_store():
-    return _app_runtime_services().get_exclusions_store()
 
 
 def get_audit_store():
@@ -550,58 +543,14 @@ def _redirect_after_pac_refresh(endpoint: str, **params):
     return _redirect_to(endpoint, **params)
 
 
-def _redirect_after_pac_refresh_to_return(return_to: str | None, fallback_endpoint: str, **params: Any):
-    _best_effort_refresh_pac_runtime()
-    target = _append_query_to_local_return(return_to, **params)
-    if target:
-        return redirect(target)
-    return _redirect_to(fallback_endpoint, **params)
-
-
-def _coerce_store_result(result: Any, *, success_default: bool = True, error_default: str = '') -> tuple[bool, str]:
-    if isinstance(result, tuple):
-        ok = bool(result[0])
-        err = str(result[1] or '') if len(result) > 1 else ''
-        return ok, err
-    if result is None:
-        return success_default, error_default
-    if isinstance(result, bool):
-        return bool(result), ('' if result else (error_default or 'Operation failed.'))
-    return success_default, error_default
-
-
-def _add_exclusion_domain(store: Any, value: str) -> tuple[bool, str, str]:
-    domain = _extract_domain(value)
-    if not domain:
-        return False, 'Domain is required.', ''
-    try:
-        ok, err = _coerce_store_result(store.add_domain(value), success_default=True)
-        return ok, err, domain
-    except Exception as exc:
-        return False, public_error_message(exc), domain
-
-
-def _add_exclusion_cidr(store: Any, value: str) -> tuple[bool, str, str]:
-    cidr = (value or '').strip()
-    if not cidr:
-        return False, 'CIDR is required.', ''
-    try:
-        ok, err = _coerce_store_result(store.add_net('src_nets', cidr), success_default=True)
-        return ok, err, cidr
-    except Exception as exc:
-        return False, public_error_message(exc), cidr
-
-
 def _render_template_config_text(
     options: Dict[str, Any],
     *,
     overrides: Dict[str, bool] | None = None,
-    exclusions: Any | None = None,
 ) -> str:
     current = _current_managed_config()
     effective_overrides = overrides if overrides is not None else squid_controller.get_cache_override_options(current)
-    effective_exclusions = exclusions if exclusions is not None else get_exclusions_store().list_all()
-    config_text = squid_controller.generate_config_from_template_with_exclusions(options, effective_exclusions)
+    config_text = squid_controller.generate_config_from_template(options)
     return squid_controller.apply_cache_overrides(config_text, effective_overrides)
 
 
@@ -611,9 +560,8 @@ def _publish_template_config(
     source_kind: str,
     audit_kind: str,
     overrides: Dict[str, bool] | None = None,
-    exclusions: Any | None = None,
 ) -> tuple[bool, str]:
-    config_text = _render_template_config_text(options, overrides=overrides, exclusions=exclusions)
+    config_text = _render_template_config_text(options, overrides=overrides)
     ok, detail = _publish_config_for_current_mode(config_text, source_kind=source_kind)
     _record_audit_event(audit_kind, ok=ok, detail=detail, config_text=config_text)
     return ok, str(detail or '')
@@ -917,7 +865,7 @@ def inject_now():
 
     return {
         # Use timezone-aware UTC to avoid deprecation warnings.
-        "current_year": datetime.now(UTC).year,
+        "current_year": datetime.now(timezone.utc).year,
         "asset_version": _asset_version,
         "fmt_ts": fmt_ts,
         "observability_default_window": OBSERVABILITY_DEFAULT_WINDOW,
@@ -1265,100 +1213,93 @@ def _handle_webfilter_post(store: Any, tab: str):
     return _redirect_to('webfilter', tab=tab)
 
 
+def _sslfilter_policy_from_form() -> str:
+    return (request.form.get('policy') or '').strip().lower()
+
+
+def _sslfilter_redirect(**params: Any):
+    return _redirect_after_policy_refresh('sslfilter', get_sslfilter_store(), force=True, **params)
+
+
+def _add_sslfilter_domain(store: Any, policy: str, value: str) -> tuple[bool, str, str]:
+    try:
+        return store.add_domain(policy, value)
+    except Exception as exc:
+        return False, public_error_message(exc), ''
+
+
+def _add_sslfilter_src(store: Any, policy: str, value: str) -> tuple[bool, str, str]:
+    try:
+        return store.add_src_net(policy, value)
+    except Exception as exc:
+        return False, public_error_message(exc), ''
+
+
 def _handle_sslfilter_post(store: Any):
     action = _form_action(lower=True)
-    if action == 'add':
-        entry = (request.form.get('cidr') or '').strip()
-        ok, err, _canonical = store.add_nobump(entry)
-        if not ok:
-            return _redirect_after_policy_refresh('sslfilter', store, force=True, err=(err or '1'))
-        return _redirect_after_policy_refresh('sslfilter', store, force=True, ok='1')
+    policy = _sslfilter_policy_from_form()
 
-    if action == 'remove':
-        cidr = (request.form.get('cidr') or '').strip()
-        try:
-            store.remove_nobump(cidr)
-        except Exception:
-            pass
-        return _redirect_after_policy_refresh('sslfilter', store, force=True)
-
-    return _redirect_to('sslfilter')
-
-
-def _handle_exclusions_post(store: Any):
-    action = _form_action()
-    return_to = request.form.get('return_to')
     if action == 'install_compatibility_preset':
         preset_id = (request.form.get('preset_id') or '').strip()
         added, attempted, err = store.install_compatibility_preset(preset_id)
         if err:
-            return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error=err)
-        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', compatibility_added=added, compatibility_attempted=attempted)
-    if action == 'add_domain':
-        ok, err, domain = _add_exclusion_domain(store, request.form.get('domain') or '')
-        if ok:
-            return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_added=domain, added_domain=domain)
-        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error=(err or 'Unable to add domain.'))
-    if action == 'add_domain_bulk':
-        lines = _bulk_lines(request.form.get('domains_bulk'))
+            return _sslfilter_redirect(err=err)
+        return _sslfilter_redirect(compatibility_added=added, compatibility_attempted=attempted)
+
+    if action in {'add_domain', 'add_domain_bulk'}:
+        if policy not in {'nobump', 'nocache'}:
+            return _sslfilter_redirect(err='Invalid domain policy.')
+        field = 'domains_bulk' if action == 'add_domain_bulk' else 'domain'
+        values = _bulk_lines(request.form.get(field)) if action == 'add_domain_bulk' else [request.form.get(field) or '']
         added = 0
         errors: list[str] = []
-        for line in lines:
-            ok, err, _domain = _add_exclusion_domain(store, line)
+        last_value = ''
+        for value in values:
+            ok, err, canonical = _add_sslfilter_domain(store, policy, value)
             if ok:
                 added += 1
+                last_value = canonical
             elif err:
-                errors.append(f"{line}: {err}")
-        return _redirect_after_pac_refresh_to_return(
-            return_to,
-            'exclusions',
-            bulk_added=added,
-            bulk_failed=len(errors),
-            exclude_error=(' | '.join(errors[:3]) if errors else None),
-        )
+                errors.append(f"{value}: {err}")
+        if errors:
+            return _sslfilter_redirect(err=' | '.join(errors[:3]), added=added)
+        return _sslfilter_redirect(ok='1', added=added, value=last_value, policy=policy)
+
     if action == 'remove_domain':
-        store.remove_domain(request.form.get('domain') or '')
-        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_removed='1')
-    if action == 'add_src':
-        ok, err, cidr = _add_exclusion_cidr(store, request.form.get('cidr') or '')
-        if ok:
-            return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', cidr_added=cidr)
-        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error=(err or 'Unable to add CIDR.'))
-    if action == 'add_src_bulk':
-        lines = _bulk_lines(request.form.get('src_bulk'))
+        if policy in {'nobump', 'nocache'}:
+            store.remove_domain(policy, request.form.get('domain') or '')
+        return _sslfilter_redirect(removed='1')
+
+    if action in {'add_src', 'add_src_bulk'}:
+        if policy not in {'nobump', 'nocache'}:
+            return _sslfilter_redirect(err='Invalid CIDR policy.')
+        field = 'src_bulk' if action == 'add_src_bulk' else 'cidr'
+        values = _bulk_lines(request.form.get(field)) if action == 'add_src_bulk' else [request.form.get(field) or '']
         added = 0
         errors: list[str] = []
-        for line in lines:
-            ok, err, _cidr = _add_exclusion_cidr(store, line)
+        last_value = ''
+        for value in values:
+            ok, err, canonical = _add_sslfilter_src(store, policy, value)
             if ok:
                 added += 1
+                last_value = canonical
             elif err:
-                errors.append(f"{line}: {err}")
-        return _redirect_after_pac_refresh_to_return(
-            return_to,
-            'exclusions',
-            bulk_cidrs_added=added,
-            bulk_cidrs_failed=len(errors),
-            exclude_error=(' | '.join(errors[:3]) if errors else None),
-        )
-    elif action == 'remove_src':
-        store.remove_net('src_nets', request.form.get('cidr') or '')
-        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_removed='1')
-    elif action == 'toggle_private':
+                errors.append(f"{value}: {err}")
+        if errors:
+            return _sslfilter_redirect(err=' | '.join(errors[:3]), added=added)
+        return _sslfilter_redirect(ok='1', added=added, value=last_value, policy=policy)
+
+    if action == 'remove_src':
+        if policy in {'nobump', 'nocache'}:
+            store.remove_src_net(policy, request.form.get('cidr') or '')
+        return _sslfilter_redirect(removed='1')
+
+    if action == 'toggle_private':
         store.set_exclude_private_nets(request.form.get('exclude_private_nets') == 'on')
-        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', private_saved='1')
-    elif action == 'apply':
-        current = _current_managed_config()
-        tunables = squid_controller.get_tunable_options(current)
-        options = _options_from_tunables(tunables)
-        ok, _details = _publish_template_config(
-            options,
-            source_kind='exclusions',
-            audit_kind='config_apply_exclusions',
-            exclusions=store.list_all(),
-        )
-        return _redirect_to('exclusions', ok=_query_flag(ok), error=_query_flag(not ok))
-    return _redirect_to('exclusions')
+        _best_effort_refresh_pac_runtime()
+        return _redirect_to('sslfilter', private_saved='1')
+
+    return _redirect_to('sslfilter')
 
 
 def _handle_pac_builder_post(store: Any):
@@ -1850,7 +1791,7 @@ def ssl_errors_exclude():
     domain = _extract_domain(request.form.get('domain'))
     if domain:
         try:
-            get_exclusions_store().add_domain(domain)
+            get_sslfilter_store().add_domain('nobump', domain)
         except Exception:
             pass
         return _redirect_after_pac_refresh('observability', pane='ssl', q=domain)
@@ -1988,10 +1929,16 @@ def sslfilter():
     if request.method == 'POST':
         return _handle_sslfilter_post(store)
 
-    rows = store.list_nobump()
+    rules = store.list_all()
+    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
     return render_template(
         'sslfilter.html',
-        rows=rows,
+        rules=rules,
+        pac_target=pac_target,
+        pac_url=pac_url,
+        pac_warning=pac_warning,
+        private_dst_nets=store.private_dst_nets,
+        compatibility_presets=store.list_compatibility_presets(),
         ok=(request.args.get('ok') == '1'),
         err=(request.args.get('err') or ''),
     )
@@ -2200,11 +2147,13 @@ def squid_config():
     }
     section_map = {section.key: section for section in config_sections}
     active_section = section_map.get(tab)
-    exclusions = get_exclusions_store().list_all()
-    exclusions_count = (
-        len(getattr(exclusions, 'domains', []) or [])
-        + len(getattr(exclusions, 'src_nets', []) or [])
-        + (1 if bool(getattr(exclusions, 'exclude_private_nets', False)) else 0)
+    sslfilter_rules = get_sslfilter_store().list_all()
+    sslfilter_count = (
+        len(getattr(sslfilter_rules, 'no_bump_domains', []) or [])
+        + len(getattr(sslfilter_rules, 'no_cache_domains', []) or [])
+        + len(getattr(sslfilter_rules, 'no_bump_src_nets', []) or [])
+        + len(getattr(sslfilter_rules, 'no_cache_src_nets', []) or [])
+        + (1 if bool(getattr(sslfilter_rules, 'exclude_private_nets', False)) else 0)
     )
     summary = {
         'workers': tunables.get('workers') if tunables else None,
@@ -2215,7 +2164,7 @@ def squid_config():
         'cache_mem_mb': tunables.get('cache_mem_mb') if tunables else None,
         'overrides': overrides or {},
         'overrides_on': any(overrides.values()) if overrides else False,
-        'exclusions_count': exclusions_count,
+        'sslfilter_count': sslfilter_count,
     }
     config_text = posted_config if posted_config is not None else current_config
     subtab = _normalize_choice(request.args.get('subtab') or 'safe', ('safe', 'overrides'), 'safe')
@@ -2229,7 +2178,7 @@ def squid_config():
         subtab=subtab,
         summary=summary,
         validation=validation,
-        exclusions=exclusions,
+        sslfilter_rules=sslfilter_rules,
         config_sections=config_sections,
         config_field_map=get_config_ui_field_map(),
         active_section=active_section,
@@ -2278,7 +2227,7 @@ def apply_safe_caching():
 
 @app.route('/squid/config/apply-overrides', methods=['POST'])
 def apply_cache_overrides():
-    # Apply cache override toggles on top of the current tunables/exclusions.
+    # Apply cache override toggles on top of the current tunables and managed policy includes.
     try:
         current = _current_managed_config()
         tunables = squid_controller.get_tunable_options(current)
@@ -2295,18 +2244,6 @@ def apply_cache_overrides():
         return _redirect_config('caching', subtab='overrides', error=True)
 
     return _redirect_config('caching', subtab='overrides', ok=ok, error=not ok)
-
-
-@app.route('/exclusions', methods=['GET', 'POST'])
-def exclusions():
-    store = get_exclusions_store()
-
-    if request.method == 'POST':
-        return _handle_exclusions_post(store)
-
-    ex = store.list_all()
-    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
-    return render_template('exclusions.html', ex=ex, pac_target=pac_target, pac_url=pac_url, pac_warning=pac_warning, compatibility_presets=store.list_compatibility_presets())
 
 
 @app.route('/pac', methods=['GET', 'POST'])
