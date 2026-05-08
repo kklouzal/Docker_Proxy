@@ -100,6 +100,49 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
     assert "connection: conn23" in rows[0]["sample"]
 
 
+def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "ssl-errors-master-context")
+
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+
+    store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    store.init_db()
+    with store._connect() as conn:  # noqa: SLF001 - targeted regression setup for cross-store log enrichment
+        conn.execute(
+            """
+            CREATE TABLE diagnostic_requests (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                ts BIGINT NOT NULL,
+                domain VARCHAR(255) NOT NULL,
+                sni VARCHAR(255) NOT NULL,
+                host VARCHAR(255) NOT NULL,
+                url TEXT NOT NULL,
+                master_xaction VARCHAR(128) NOT NULL,
+                KEY idx_diag_proxy_master_ts (proxy_id, master_xaction, ts)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO diagnostic_requests(proxy_id, ts, domain, sni, host, url, master_xaction)
+            VALUES('default', UNIX_TIMESTAMP('2026-04-21 23:37:04'), 'gateway.discord.gg', 'gateway.discord.gg', 'gateway.discord.gg:443', 'gateway.discord.gg:443', '55')
+            """
+        )
+
+    store.ingest_line("2026/04/21 23:37:04 kid1| ERROR: Cannot accept a TLS connection")
+    store.ingest_line("2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line("    current master transaction: master55")
+
+    rows = store.list_errors(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["domain"] == "gateway.discord.gg"
+    assert rows[0]["count"] == 1
+    assert "current master transaction: master55" in rows[0]["sample"]
+
+
 def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(tmp_path):
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-search")

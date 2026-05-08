@@ -34,6 +34,7 @@ _TS_PREFIX = re.compile(
     r"(?P<msg>.*)$"
 )
 _TLS_ERROR_SIGNATURE = re.compile(r"\b(SQUID_TLS_ERR_[A-Z_]+(?:\+TLS_LIB_ERR=[0-9A-F]+)?(?:\+TLS_IO_ERR=\d+)?)\b", re.I)
+_MASTER_XACTION_PATTERN = re.compile(r"\bcurrent\s+master\s+transaction:\s*master?([A-Za-z0-9_.:-]+)\b", re.I)
 
 # Best-effort extraction of a destination domain from cache.log lines.
 _DOMAIN_PATTERNS: List[re.Pattern[str]] = [
@@ -62,6 +63,11 @@ def _extract_domain(msg: str) -> str:
         if m:
             return _normalize_hostish(m.group(1))
     return ""
+
+
+def _extract_master_xaction(msg: str) -> str:
+    m = _MASTER_XACTION_PATTERN.search(msg or "")
+    return (m.group(1) if m else "").strip()
 
 
 def _normalize_reason(msg: str) -> str:
@@ -193,6 +199,55 @@ class SslErrorsStore:
             (int(ts), sample[:400], row_key),
         )
 
+    def _context_lookup_window_seconds(self) -> int:
+        try:
+            return max(1, min(300, int((os.environ.get("SSL_ERRORS_CONTEXT_LOOKUP_WINDOW_SECONDS") or "20").strip() or "20")))
+        except Exception:
+            return 20
+
+    def _lookup_domain_for_master_xaction(self, conn, master_xaction: str, ts: int) -> str:
+        tx = (master_xaction or "").strip()
+        if not tx:
+            return ""
+        window = self._context_lookup_window_seconds()
+        proxy_id = get_proxy_id()
+        try:
+            row = conn.execute(
+                """
+                SELECT domain, sni, host, url
+                FROM diagnostic_requests
+                WHERE proxy_id = %s
+                  AND master_xaction = %s
+                  AND ts BETWEEN %s AND %s
+                  AND COALESCE(NULLIF(TRIM(domain), ''), NULLIF(TRIM(sni), ''), NULLIF(TRIM(host), ''), NULLIF(TRIM(url), '')) IS NOT NULL
+                ORDER BY ABS(ts - %s) ASC, id DESC
+                LIMIT 1
+                """,
+                (proxy_id, tx, int(ts) - window, int(ts) + window, int(ts)),
+            ).fetchone()
+        except DATABASE_ERRORS:
+            return ""
+        except Exception:
+            if should_log("ssl_errors_store.context_lookup", interval_seconds=300.0):
+                logger.warning("SSL error context lookup failed; continuing without domain enrichment.")
+            return ""
+        if not row:
+            return ""
+        for value in row:
+            normalized = _normalize_hostish(str(value or ""))
+            if normalized and normalized != "-":
+                return normalized
+        return ""
+
+    def _enrich_domain_from_context(self, conn, domain: str, ts: int, sample: str) -> str:
+        current = _normalize_hostish(domain or "")
+        if current:
+            return current
+        master_xaction = _extract_master_xaction(sample or "")
+        if not master_xaction:
+            return ""
+        return self._lookup_domain_for_master_xaction(conn, master_xaction, int(ts))
+
     def _flush_pending_error(self, conn) -> bool:
         pending = self._pending_error
         if not pending or bool(pending.get("committed")):
@@ -219,16 +274,24 @@ class SslErrorsStore:
             if followup.lower() in current_sample.lower():
                 return False
             combined = f"{current_sample}\n{followup}".strip()[:400]
-            self._update_sample(
-                conn,
-                str(pending.get("domain") or ""),
-                str(pending.get("category") or "TLS_OTHER"),
-                str(pending.get("reason") or ""),
-                int(pending.get("ts") or _now()),
-                combined,
-            )
             pending["sample"] = combined
-            return True
+            if bool(pending.get("committed")):
+                # Do not re-key historical aggregate rows on late context.  New
+                # TLS accept header/detail blocks stay uncommitted until their
+                # immediate follow-up context is merged, so those can still be
+                # enriched safely before insertion.
+                self._update_sample(
+                    conn,
+                    str(pending.get("domain") or ""),
+                    str(pending.get("category") or "TLS_OTHER"),
+                    str(pending.get("reason") or ""),
+                    int(pending.get("ts") or _now()),
+                    combined,
+                )
+                return True
+            if not str(pending.get("domain") or ""):
+                pending["domain"] = self._enrich_domain_from_context(conn, "", int(pending.get("ts") or _now()), combined)
+            return self._flush_pending_error(conn)
 
         ts, msg = _parse_cache_log_ts(raw_line)
         classified = _classify_ssl_error(msg)
@@ -246,16 +309,15 @@ class SslErrorsStore:
         if pending and not bool(pending.get("committed")) and _is_tls_accept_detail(msg):
             domain = str(pending.get("domain") or domain)
             combined = f"{str(pending.get('sample') or '').strip()}\n{sample}".strip()[:400]
-            self._upsert(conn, domain, category, reason, ts, combined)
             self._pending_error = {
                 "ts": int(ts),
                 "domain": domain,
                 "category": category,
                 "reason": reason,
                 "sample": combined,
-                "committed": True,
+                "committed": False,
             }
-            return True
+            return False
 
         if _is_tls_accept_header(msg):
             self._flush_pending_error(conn)
@@ -365,6 +427,7 @@ class SslErrorsStore:
 
     def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
         proxy_id = get_proxy_id()
+        domain = self._enrich_domain_from_context(conn, domain, ts, sample)
         row_key = self._row_key(proxy_id, domain, category, reason)
         conn.execute(
             """
