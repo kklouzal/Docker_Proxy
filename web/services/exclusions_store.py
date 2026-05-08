@@ -41,12 +41,27 @@ COMPATIBILITY_PRESETS: Tuple[CompatibilityPreset, ...] = (
     ),
     CompatibilityPreset(
         id="microsoft-cloud",
-        title="Microsoft 365 / Copilot",
-        description="Microsoft, Office 365, Azure AD, Windows Update, GitHub/Copilot, and related SaaS endpoints that often pin TLS or use long-lived modern app sessions.",
+        title="Microsoft cloud / Windows update",
+        description="Source-backed Microsoft 365 Optimize/Allow, Entra sign-in, Teams, Windows Update, Microsoft Store, Edge update, and GitHub/Copilot endpoints that Microsoft or appliance vendors recommend bypassing for TLS break-and-inspect.",
         domains=(
+            "outlook.cloud.microsoft", "outlook.office.com", "outlook.office365.com", "*.sharepoint.com",
+            "*.auth.microsoft.com", "*.lync.com", "*.mail.protection.outlook.com", "*.msftidentity.com", "*.msidentity.com", "*.mx.microsoft",
+            "*.officeapps.live.com", "*.online.office.com", "*.protection.office.com", "*.protection.outlook.com", "*.security.microsoft.com",
+            "*.teams.cloud.microsoft", "*.teams.microsoft.com", "account.activedirectory.windowsazure.com", "accounts.accesscontrol.windows.net",
+            "adminwebservice.microsoftonline.com", "api.passwordreset.microsoftonline.com", "autologon.microsoftazuread-sso.com",
+            "becws.microsoftonline.com", "ccs.login.microsoftonline.com", "clientconfig.microsoftonline-p.net", "companymanager.microsoftonline.com",
+            "compliance.microsoft.com", "defender.microsoft.com", "device.login.microsoftonline.com", "graph.microsoft.com", "graph.windows.net",
+            "login-us.microsoftonline.com", "login.microsoft.com", "login.microsoftonline-p.com", "login.microsoftonline.com", "login.windows.net",
+            "logincert.microsoftonline.com", "loginex.microsoftonline.com", "nexus.microsoftonline-p.com", "office.live.com",
+            "passwordreset.microsoftonline.com", "protection.office.com", "provisioningapi.microsoftonline.com", "purview.microsoft.com",
+            "security.microsoft.com", "smtp.office365.com", "teams.cloud.microsoft", "teams.microsoft.com",
+            "windowsupdate.com", "*.windowsupdate.com", "*.download.windowsupdate.com", "ctldl.windowsupdate.com",
+            "*.delivery.mp.microsoft.com", "*.dl.delivery.mp.microsoft.com", "*.do.dsp.mp.microsoft.com",
+            "*.wns.windows.com", "storeedgefd.dsx.mp.microsoft.com", "livetileedge.dsx.mp.microsoft.com", "storecatalogrevocation.storequality.microsoft.com",
+            "manage.devcenter.microsoft.com", "displaycatalog.mp.microsoft.com", "*.displaycatalog.mp.microsoft.com", "share.microsoft.com", "licensing.mp.microsoft.com",
+            "login.live.com", "img-prod-cms-rt-microsoft-com.akamaized.net", "img-s-msn-com.akamaized.net", "msedge.api.cdp.microsoft.com",
             "microsoft.com", "*.microsoft.com", "office.com", "*.office.com", "office365.com", "*.office365.com",
             "live.com", "*.live.com", "msftauth.net", "*.msftauth.net", "msauth.net", "*.msauth.net",
-            "login.microsoftonline.com", "*.login.microsoftonline.com", "windowsupdate.com", "*.windowsupdate.com",
             "github.com", "*.github.com", "githubcopilot.com", "*.githubcopilot.com",
         ),
     ),
@@ -57,13 +72,43 @@ COMPATIBILITY_PRESETS: Tuple[CompatibilityPreset, ...] = (
         domains=("apple.com", "*.apple.com", "icloud.com", "*.icloud.com", "itunes.com", "*.itunes.com", "mzstatic.com", "*.mzstatic.com", "cdn-apple.com", "*.cdn-apple.com", "icloud-content.com", "*.icloud-content.com"),
     ),
     CompatibilityPreset(
+        id="webex",
+        title="Cisco Webex",
+        description="Cisco Webex service, API, content, activation, and CDN hostnames; Cisco specifically calls out mcs/cb/mcc Webex traffic for TLS inspection exemption.",
+        domains=(
+            "webex.com", "*.webex.com", "wbx2.com", "*.wbx2.com", "webexapis.com", "*.webexapis.com", "webexcontent.com", "*.webexcontent.com",
+            "activation.webex.com", "cisco.com", "*.cisco.com", "cloudfront.net", "*.cloudfront.net", "akamaiedge.net", "*.akamaiedge.net",
+            "akamai.net", "*.akamai.net", "akamaitechnologies.com", "*.akamaitechnologies.com", "fastly.net", "*.fastly.net", "s3.amazonaws.com", "*.s3.amazonaws.com",
+        ),
+    ),
+    CompatibilityPreset(
+        id="zoom",
+        title="Zoom",
+        description="Zoom recommends allowing zoom.us and subdomains through firewall/proxy configurations and commonly recommends bypassing proxy or SSL inspection for Zoom client traffic.",
+        domains=("zoom.us", "*.zoom.us"),
+    ),
+    CompatibilityPreset(
+        id="google-meet",
+        title="Google Meet / ChromeOS",
+        description="Google Meet media/API/static-resource hostnames plus ChromeOS/Chrome Enterprise hostnames Google says must be allowed or exempted for TLS-inspected networks.",
+        domains=(
+            "meet.google.com", "stream.meet.google.com", "workspace.turns.goog", "meet.turns.goog", "meetings.clients6.google.com",
+            "meetings.googleapis.com", "hangouts.googleapis.com", "clients1.google.com", "clients2.google.com", "clients3.google.com", "clients4.google.com",
+            "clients5.google.com", "clients6.google.com", "accounts.google.com", "accounts.gstatic.com", "apis.google.com", "apps.google.com", "docs.google.com",
+            "feedback.googleusercontent.com", "fonts.gstatic.com", "lh3.googleusercontent.com", "www.gstatic.com", "ssl.gstatic.com", "www.googleapis.com",
+            "*.googleapis.com", "*.googleusercontent.com", "*.gstatic.com", "*.ggpht.com", "*.gvt1.com", "*.gvt2.com", "*.gvt3.com", "*.1e100.net",
+            "dl.google.com", "dl-ssl.google.com", "edgedl.me.gvt1.com", "m.google.com", "mtalk.google.com", "oauthaccountmanager.googleapis.com",
+            "safebrowsing.google.com", "safebrowsing.googleapis.com", "storage.googleapis.com", "update.googleapis.com", "chrome.google.com", "play.google.com",
+            "android.clients.google.com", "fcm.googleapis.com", "fcm-xmpp.googleapis.com", "gcm-http.googleapis.com", "gcm-xmpp.googleapis.com", "pki.google.com",
+        ),
+    ),
+    CompatibilityPreset(
         id="collaboration-sync",
         title="Collaboration and sync apps",
-        description="WebEx and Dropbox compatibility domains often excluded from deep TLS inspection by default policies.",
-        domains=("webex.com", "*.webex.com", "dropbox.com", "*.dropbox.com", "dropboxapi.com", "*.dropboxapi.com", "dropboxstatic.com", "*.dropboxstatic.com"),
+        description="Dropbox compatibility domains often excluded from deep TLS inspection by default policies. Webex and Zoom now have dedicated, more complete presets.",
+        domains=("dropbox.com", "*.dropbox.com", "dropboxapi.com", "*.dropboxapi.com", "dropboxstatic.com", "*.dropboxstatic.com"),
     ),
 )
-
 
 @dataclass(frozen=True)
 class Exclusions:

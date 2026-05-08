@@ -1,4 +1,4 @@
-﻿# Squid Flask Proxy
+# Squid Flask Proxy
 
 A Dockerized Squid HTTP proxy bundled with a Flask admin UI for managing policy and operational settings.
 
@@ -689,6 +689,28 @@ On container start, the entrypoint copies the template into `/etc/squid/squid.co
 If you already edited `/etc/squid/squid.conf` (for example via the UI), changing the template alone will not overwrite your live config.
 To adopt new baseline changes, paste the updated template into the UI and reload Squid (or recreate the container after removing the existing config).
 
+### Source-backed shipped TLS inspection exclusions
+
+The UI ships compatibility presets for breakage-prone SaaS and device-update traffic. These presets are meant to splice/no-decrypt traffic that vendors or major proxy/security vendors identify as poor candidates for TLS break-and-inspect, while leaving the rest of HTTPS traffic eligible for Squid's staged peek/stare/bump flow.
+
+Current source-backed preset coverage:
+
+- **Microsoft cloud / Windows update**: Microsoft 365 Optimize and Allow endpoint categories from the Microsoft 365 endpoint web service, Entra sign-in, Teams, SharePoint/OneDrive, Exchange/Outlook, Office Online, Windows Update/Delivery Optimization, Microsoft Store, Edge update, and GitHub/Copilot compatibility domains. Microsoft explicitly recommends bypassing proxy processing, TLS break/inspect, and proxy authentication for M365 Optimize/Allow endpoints. Windows Update guidance is DNS-name based because Microsoft does not publish stable IP ranges for those endpoints.
+- **Cisco Webex**: Webex service/API/content/activation domains plus Cisco-listed CDN support domains. Cisco specifically calls out `*mcs*.webex.com`, `*cb*.webex.com`, and `*mcc*.webex.com` traffic for TLS inspection exemption; Docker_Proxy ships the broader `*.webex.com` suffix because Squid ACLs are suffix/domain based.
+- **Zoom**: `zoom.us` and `*.zoom.us`, matching Zoom's firewall/proxy guidance and common SSL-inspection bypass practice.
+- **Google Meet / ChromeOS**: Meet static/API/media SNI names and ChromeOS/Chrome Enterprise hostnames Google says must be allowed or exempted when TLS inspection or restrictive proxying is used.
+- **Apple, Discord, Dropbox**: retained compatibility presets for other application families that commonly pin certificates, use non-browser TLS stacks, or break under deep inspection.
+
+The hardcoded presets intentionally prefer FQDN/SNI suffixes over IP ranges. Microsoft 365, Webex, Zoom, and Google all revise endpoint data over time; dynamic vendor feeds/docs should remain the authority for strict enterprise allowlisting, while these presets provide safe out-of-the-box no-decrypt coverage for common deployments.
+
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
+
+## Research references for shipped TLS inspection exclusions
+
+- Microsoft: Microsoft 365 endpoint management and endpoint web service, Windows Update/security guidance, Windows 11/Microsoft Store endpoints, and Microsoft Edge endpoint guidance.
+- Cisco Webex: Webex network requirements including explicit TLS inspection exemptions for mcs/cb/mcc Webex traffic and Webex service/API/content/CDN tables.
+- Zoom: Zoom network firewall/proxy settings for zoom.us and subdomains.
+- Google: Google Meet network requirements and ChromeOS/Chrome Enterprise TLS-inspection hostname allowlist.
+- Appliance/vendor cross-checks: Palo Alto Networks predefined decryption-exclusion guidance, Zscaler SSL inspection guidance for pinned apps, and Fortinet/Sophos guidance around category/application exclusions and SNI-first decisions.

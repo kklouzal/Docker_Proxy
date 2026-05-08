@@ -543,6 +543,32 @@ access_log stdio:/var/log/squid/access.log
     assert "ssl_bump splice excluded_domains" in rendered
     assert "cache deny excluded_cache_domains" in rendered
 
+def test_compatibility_presets_include_source_backed_collaboration_exclusions(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "compatibility-presets")
+
+    from services.exclusions_store import COMPATIBILITY_PRESETS, get_exclusions_store  # type: ignore
+
+    presets = {preset.id: preset for preset in COMPATIBILITY_PRESETS}
+
+    assert "microsoft-cloud" in presets
+    assert "webex" in presets
+    assert "zoom" in presets
+    assert "google-meet" in presets
+    assert "*.teams.microsoft.com" in presets["microsoft-cloud"].domains
+    assert "*.download.windowsupdate.com" in presets["microsoft-cloud"].domains
+    assert "*.webex.com" in presets["webex"].domains
+    assert "*.zoom.us" in presets["zoom"].domains
+    assert "workspace.turns.goog" in presets["google-meet"].domains
+    assert "*.googleapis.com" in presets["google-meet"].domains
+
+    store = get_exclusions_store()
+    added, attempted, error = store.install_compatibility_preset("all")
+
+    assert attempted == sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)
+    assert added > 80
+    assert error == ""
+
 def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path):
     _add_web_to_path()
 
