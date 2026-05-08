@@ -277,13 +277,14 @@ def _render_pac(
 
 
 def _render_profile_pac(profile: PacProfile, target: ProxyPacTarget | None = None) -> str:
+    exclusions = get_exclusions_store().list_all()
     resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
         resolved_target.proxy_chain,
         proxy_host=resolved_target.proxy_host_token,
         direct_domains=list(getattr(profile, "direct_domains", []) or []),
         direct_dst_nets=list(getattr(profile, "direct_dst_nets", []) or []),
-        include_private=False,
+        include_private=bool(getattr(exclusions, "exclude_private_nets", False)),
     )
 
 
@@ -293,7 +294,10 @@ def _render_fallback_pac(target: ProxyPacTarget | None = None) -> str:
     return _render_pac(
         resolved_target.proxy_chain,
         proxy_host=resolved_target.proxy_host_token,
-        direct_domains=[str(item) for item in (getattr(exclusions, "domains", []) or [])],
+        # Squid no-bump/no-cache destination exclusions still go through the proxy;
+        # they are not client-side DIRECT rules. Only explicit PAC profiles and the
+        # private/local destination option should generate DIRECT routing.
+        direct_domains=[],
         direct_dst_nets=[],
         include_private=bool(getattr(exclusions, "exclude_private_nets", False)),
     )

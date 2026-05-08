@@ -8,7 +8,7 @@
   <div class="page-hero-copy">
     <span class="page-eyebrow">Bypass rules</span>
     <h1 class="page-title">Exclusions</h1>
-    <p class="page-subtitle">Define destination and source-IP exclusions for {{ active_proxy.display_name }}. Client-side bypass is available through this proxy&apos;s PAC file.</p>
+    <p class="page-subtitle">Define proxy-side no-bump/no-cache destination and source-IP exclusions for {{ active_proxy.display_name }}. Client-side DIRECT routing is managed separately in the PAC builder, except for the private/local destination option below.</p>
     <div class="hero-badges">
       <span class="badge">{{ ex.domains|length }} domains</span>
       <span class="badge">{{ ex.src_nets|length }} client CIDRs</span>
@@ -133,7 +133,7 @@
         <div class="actions">
           <a class="btn" href="{{ pac_url }}" target="_blank" rel="noopener">Open proxy.pac</a>
         </div>
-        <div class="surface-note small">Configure clients to fetch PAC directly from this proxy at <span class="mono">{{ pac_url }}</span> so excluded destinations go DIRECT and everything else uses the proxy chain <span class="mono">{{ pac_target.proxy_chain_display }}</span>.</div>
+        <div class="surface-note small">Configure clients to fetch PAC directly from this proxy at <span class="mono">{{ pac_url }}</span>. Proxy-side no-bump/no-cache domain and source-CIDR exclusions still use the proxy; only explicit PAC-builder DIRECT rules and the private/local destination option send clients DIRECT.</div>
       {% else %}
         <div class="surface-note small">{{ pac_warning }}</div>
       {% endif %}

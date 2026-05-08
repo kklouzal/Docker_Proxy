@@ -126,3 +126,75 @@ def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> 
 
     content = json.dumps({"proxy": pac_renderer.PAC_HOST_PLACEHOLDER})
     assert "[2001:db8::20]" in pac_renderer.substitute_request_host(content, "[2001:db8::20]:3128")
+
+
+class _FakeExclusionsStore:
+    def __init__(self, exclusions):
+        self._exclusions = exclusions
+
+    def list_all(self):
+        return self._exclusions
+
+
+def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rules(monkeypatch) -> None:
+    _add_web_to_path()
+    import services.pac_renderer as pac_renderer  # type: ignore
+
+    exclusions = type(
+        "Exclusions",
+        (),
+        {
+            "domains": ["no-bump.example", "*.fragile.example"],
+            "dst_nets": [],
+            "src_nets": ["192.0.2.0/24"],
+            "exclude_private_nets": True,
+        },
+    )()
+    monkeypatch.setattr(pac_renderer, "get_exclusions_store", lambda: _FakeExclusionsStore(exclusions))
+
+    rendered = pac_renderer._render_fallback_pac(
+        pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+        )
+    )
+
+    assert "no-bump.example" not in rendered
+    assert "fragile.example" not in rendered
+    assert "192.0.2.0" not in rendered
+    assert "isInNet(ip, '10.0.0.0', '255.0.0.0')" in rendered
+    assert "return 'PROXY proxy.example:3128; DIRECT';" in rendered
+
+
+def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(monkeypatch) -> None:
+    _add_web_to_path()
+    import services.pac_renderer as pac_renderer  # type: ignore
+    from services.pac_profiles_store import PacProfile  # type: ignore
+
+    exclusions = type("Exclusions", (), {"exclude_private_nets": True})()
+    monkeypatch.setattr(pac_renderer, "get_exclusions_store", lambda: _FakeExclusionsStore(exclusions))
+
+    rendered = pac_renderer._render_profile_pac(
+        PacProfile(
+            id=1,
+            name="Office",
+            client_cidr="192.168.50.0/24",
+            direct_domains=["intranet.example"],
+            direct_dst_nets=["10.20.0.0/16"],
+            created_ts=0,
+        ),
+        pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+        ),
+    )
+
+    assert "intranet.example" in rendered
+    assert "isInNet(ip, '10.20.0.0', '255.255.0.0')" in rendered
+    assert "isInNet(ip, '192.168.0.0', '255.255.0.0')" in rendered
