@@ -541,6 +541,10 @@ def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards
     assert ".cache.example" in cache_values
     assert "cache.example" not in cache_values
     assert cache_values.count("cdn.example.net") == 1
+    assert "note ssl_exception sslfilter_nobump_domain sslfilter_nobump_domains" in rendered
+    assert "note cache_bypass sslfilter_nocache_domain sslfilter_nocache_domains" in rendered
+    assert "note ssl_exception sslfilter_nobump_domains sslfilter_nobump_domain" not in rendered
+    assert "note cache_bypass sslfilter_nocache_domains sslfilter_nocache_domain" not in rendered
     assert "ssl_bump splice sslfilter_nobump_domains" in rendered
     assert "cache deny sslfilter_nocache_domains" in rendered
 
