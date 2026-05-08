@@ -489,3 +489,53 @@ def test_squid_controller_generate_config_adds_optional_intercept_listener(tmp_p
     assert "# BEGIN SQUID-UI INTERCEPT LISTENER" in rendered
     assert "http_port 0.0.0.0:8081 intercept" in rendered
     assert "SOCKS" not in rendered
+
+
+def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "ssl-errors-candidates")
+
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+
+    store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    store.init_db()
+    store.ingest_line("2026/04/18 04:04:40| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line("2026/04/18 04:04:41| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line("2026/04/18 04:04:42| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+
+    candidates = store.suggest_exclusion_candidates(min_events=3)
+
+    assert candidates
+    assert candidates[0]["domain"] == "gateway.discord.gg"
+    assert candidates[0]["total"] >= 3
+    assert "TLS_CLIENT_ACCEPT" in candidates[0]["categories"]
+
+
+
+def test_squid_controller_exclusion_config_deduplicates_domains_covered_by_wildcards(tmp_path):
+    _add_web_to_path()
+
+    from services.exclusions_store import Exclusions  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    template = tmp_path / "squid.conf.template"
+    template.write_text("""
+http_port 3128 ssl-bump cert=/etc/squid/ssl/certs/ca.pem generate-host-certificates=on dynamic_cert_mem_cache_size=128MB
+ssl_bump bump all
+# Logging
+access_log stdio:/var/log/squid/access.log
+""", encoding="utf-8")
+    controller = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    controller.squid_conf_template_path = str(template)
+
+    rendered = controller.generate_config_from_template_with_exclusions(
+        {},
+        Exclusions(domains=["example.com", "*.example.com", "api.example.net", "api.example.net"], dst_nets=[], src_nets=[], exclude_private_nets=False),
+    )
+
+    acl_line = next(line for line in rendered.splitlines() if line.startswith("acl excluded_domains dstdomain"))
+    acl_values = acl_line.split()[3:]
+    assert ".example.com" in acl_values
+    assert "example.com" not in acl_values
+    assert acl_values.count("api.example.net") == 1
+    assert "ssl_bump splice excluded_domains" in rendered

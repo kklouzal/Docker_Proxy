@@ -334,6 +334,31 @@
 <section class="card"><div class="card-header"><h2 class="card-title">Operator guidance</h2><span class="badge">workflow</span></div><div class="card-body content-stack">{% for hint in payload.hints %}<div class="banner {{ hint.kind }}"><div class="banner-copy"><strong>{{ hint.title }}</strong><div class="small">{{ hint.body }}</div></div></div>{% endfor %}</div></section>
 {% endif %}
 
+
+{% if payload.exclusion_candidates %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Compatibility exclusion candidates</h2><span class="badge">advisory only</span></div>
+  <div class="card-body content-stack">
+    <div class="surface-note small">This is the safe first step toward exclusion learning: repeated TLS failures are scored and surfaced, but the proxy does not mutate policy automatically. Review whether the app is known-good, inspect recent traffic, then add an exclusion manually if justified.</div>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Domain</th><th>Signal</th><th class="num">Events</th><th class="num">Buckets</th><th class="num">Last seen</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+        {% for row in payload.exclusion_candidates %}
+        <tr>
+          <td><div class="stack-sm"><span class="mono">{{ row.domain }}</span><span class="small">{{ row.recommendation }}</span></div></td>
+          <td><div class="stack-sm"><span class="badge {{ row.badge_tone }}">{{ row.confidence }} confidence</span><span class="small mono">{{ row.categories }}</span><span class="small text-break">{{ row.sample }}</span></div></td>
+          <td class="num">{{ row.total }}</td>
+          <td class="num">{{ row.buckets }}</td>
+          <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
+          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">Deep dive</a><a class="btn" href="{{ url_for('exclusions', domain=row.domain) }}">Exclusions</a></div></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+</section>
+{% endif %}
+
 <section class="card">
   <div class="card-header"><h2 class="card-title">Top domains</h2><span class="badge">{{ payload.top_domains|length }} rows</span></div>
   <div class="card-body">

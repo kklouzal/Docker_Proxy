@@ -557,6 +557,63 @@ class SslErrorsStore:
             for r in rows
         ]
 
+
+    def suggest_exclusion_candidates(
+        self,
+        *,
+        since: Optional[int] = None,
+        search: str = "",
+        limit: int = 20,
+        min_events: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """Return advisory destination-splice candidates based on repeated TLS failures."""
+        self.init_db()
+        where = ["proxy_id = %s", "domain <> ''"]
+        params: List[Any] = [get_proxy_id()]
+        if since is not None:
+            where.append("last_seen >= %s")
+            params.append(int(since))
+        if search:
+            where.append("domain LIKE %s ESCAPE '\\'")
+            params.append(f"%{_escape_like(search)}%")
+        where_sql = "WHERE " + " AND ".join(where)
+        lim = max(5, min(100, int(limit)))
+        threshold = max(1, int(min_events))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT domain, SUM(count) AS total, COUNT(*) AS buckets, MAX(last_seen) AS last_seen,
+                       GROUP_CONCAT(DISTINCT category ORDER BY category SEPARATOR ', ') AS categories,
+                       SUBSTRING_INDEX(GROUP_CONCAT(sample ORDER BY last_seen DESC SEPARATOR '
+---
+'), '
+---
+', 1) AS sample
+                FROM ssl_errors
+                {where_sql}
+                GROUP BY domain
+                HAVING total >= %s
+                ORDER BY total DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(params + [threshold, lim]),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            total = int(r[1] or 0)
+            buckets = int(r[2] or 0)
+            score = min(100, (total * 12) + (buckets * 8))
+            out.append({
+                "domain": str(r[0] or ""),
+                "total": total,
+                "buckets": buckets,
+                "last_seen": int(r[3] or 0),
+                "categories": str(r[4] or ""),
+                "sample": str(r[5] or "")[:400],
+                "score": score,
+            })
+        return out
+
     def start_background(self) -> None:
         with self._start_lock:
             if self._started:

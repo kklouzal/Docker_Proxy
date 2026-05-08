@@ -1288,6 +1288,12 @@ def _handle_sslfilter_post(store: Any):
 def _handle_exclusions_post(store: Any):
     action = _form_action()
     return_to = request.form.get('return_to')
+    if action == 'install_compatibility_preset':
+        preset_id = (request.form.get('preset_id') or '').strip()
+        added, attempted, err = store.install_compatibility_preset(preset_id)
+        if err:
+            return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', exclude_error=err)
+        return _redirect_after_pac_refresh_to_return(return_to, 'exclusions', compatibility_added=added, compatibility_attempted=attempted)
     if action == 'add_domain':
         ok, err, domain = _add_exclusion_domain(store, request.form.get('domain') or '')
         if ok:
@@ -2300,7 +2306,7 @@ def exclusions():
 
     ex = store.list_all()
     pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
-    return render_template('exclusions.html', ex=ex, pac_target=pac_target, pac_url=pac_url, pac_warning=pac_warning)
+    return render_template('exclusions.html', ex=ex, pac_target=pac_target, pac_url=pac_url, pac_warning=pac_warning, compatibility_presets=store.list_compatibility_presets())
 
 
 @app.route('/pac', methods=['GET', 'POST'])

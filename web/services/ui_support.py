@@ -467,7 +467,7 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
             {
                 'kind': 'info',
                 'title': 'Treat exclusions as a last-mile workaround',
-                'body': 'Prefer fixing certificate trust, expiry, hostname mismatches, or bump rules before bypassing SSL inspection for a destination.',
+                'body': 'Prefer fixing certificate trust, expiry, hostname mismatches, or bump rules before bypassing SSL inspection for a destination. Repeated known-good app failures are good candidates for a reviewed compatibility exclusion, not automatic mutation.',
             }
         )
         if category_totals.get('TLS_CLIENT_ACCEPT'):
@@ -511,6 +511,34 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> Dict[str, Any]:
         'hints': hints,
     }
 
+
+
+def present_ssl_exclusion_candidates(rows: Sequence[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    presented: list[Dict[str, Any]] = []
+    for row in rows:
+        domain = _normalize_hostish(str(row.get('domain') or ''))
+        if not domain:
+            continue
+        score = int(row.get('score') or 0)
+        if score >= 80:
+            confidence, tone = 'high', 'danger'
+        elif score >= 45:
+            confidence, tone = 'medium', 'warn'
+        else:
+            confidence, tone = 'low', 'info'
+        presented.append({
+            'domain': domain,
+            'total': int(row.get('total') or 0),
+            'buckets': int(row.get('buckets') or 0),
+            'last_seen': int(row.get('last_seen') or 0),
+            'categories': str(row.get('categories') or ''),
+            'sample': _truncate_text(row.get('sample') or '', max_len=220),
+            'score': score,
+            'confidence': confidence,
+            'badge_tone': tone,
+            'recommendation': 'Review then add a destination exclusion if this app is known-good and repeatedly fails under MITM.',
+        })
+    return presented
 
 def present_ssl_top_domains(rows: Sequence[Dict[str, Any]], *, limit: int = 15) -> list[Dict[str, Any]]:
     presented: list[Dict[str, Any]] = []

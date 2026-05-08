@@ -44,6 +44,9 @@
 {% if request.args.get('private_saved') %}
   <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private-network bypass preference updated.</span></div></div>
 {% endif %}
+{% if request.args.get('compatibility_attempted') %}
+  <div class="banner success"><span class="badge ok">Compatibility set installed</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} new shipped compatibility domains.</span></div></div>
+{% endif %}
 {% if request.args.get('exclude_removed') %}
   <div class="banner success"><span class="badge ok">Updated</span><div class="banner-copy"><span class="small">Exclusion entry removed.</span></div></div>
 {% endif %}
@@ -188,6 +191,43 @@
       {% if ex.src_nets|length == 0 %}
         <div class="surface-note small">No source CIDR exclusions yet.</div>
       {% endif %}
+    </div>
+  </section>
+
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Shipped compatibility exclusions</h2>
+      <span class="badge">reviewed presets</span>
+    </div>
+    <div class="card-body content-stack">
+      <div class="surface-note small">These presets keep the proxy MITM-by-default while splicing known fragile SaaS/app destinations. They are visible and reversible; install them per proxy, then use SSL incidents to decide whether more targeted exclusions are warranted.</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Preset</th><th>Purpose</th><th class="num">Installed</th><th class="num">Action</th></tr></thead>
+        <tbody>
+          {% for preset in compatibility_presets %}
+          <tr>
+            <td><div class="stack-sm"><span class="mono">{{ preset.title }}</span><span class="small">{{ preset.total }} domains</span></div></td>
+            <td class="small">{{ preset.description }}</td>
+            <td class="num"><span class="badge {{ 'ok' if preset.complete else 'warn' }}">{{ preset.installed }}/{{ preset.total }}</span></td>
+            <td class="num">
+              <form method="post" action="{{ url_for('exclusions') }}">
+                {{ csrf_field() }}
+                <input type="hidden" name="action" value="install_compatibility_preset" />
+                <input type="hidden" name="preset_id" value="{{ preset.id }}" />
+                <button class="btn" type="submit">{{ 'Refresh' if preset.complete else 'Install' }}</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      <form method="post" action="{{ url_for('exclusions') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="install_compatibility_preset" />
+        <input type="hidden" name="preset_id" value="all" />
+        <button class="btn primary" type="submit">Install all shipped compatibility exclusions</button>
+      </form>
     </div>
   </section>
 

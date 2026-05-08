@@ -107,8 +107,17 @@ def test_exclusions_store_validates_dedupes_and_scopes_rules(tmp_path) -> None:
         assert "invalid target" in detail.lower()
 
         store.set_exclude_private_nets(False)
+        added, attempted, err = store.install_compatibility_preset("discord")
+        assert err == ""
+        assert attempted > 0
+        assert added > 0
+        presets = store.list_compatibility_presets()
+        discord_preset = next(p for p in presets if p["id"] == "discord")
+        assert discord_preset["complete"] is True
+
         current = store.list_all()
-        assert current.domains == ["*.example.com"]
+        assert "*.example.com" in current.domains
+        assert "*.discord.com" in current.domains
         assert current.src_nets == ["192.168.44.0/24"]
         assert current.exclude_private_nets is False
 

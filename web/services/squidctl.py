@@ -1624,11 +1624,23 @@ class SquidController(_CoreSquidController):
 
     def generate_config_from_template_with_exclusions(self, options: Dict[str, Any], exclusions: Any) -> str:
         base = self.generate_config_from_template(options)
-        domains = [
+        raw_domains = [
             normalized
             for domain in (getattr(exclusions, "domains", []) or [])
             if (normalized := self._normalize_excluded_domain_for_squid(str(domain)))
         ]
+        wildcard_domains = {value[1:] for value in raw_domains if value.startswith(".")}
+        domains = []
+        seen_domains = set()
+        for value in raw_domains:
+            # Squid dstdomain treats .example.com as covering both example.com and subdomains,
+            # so emitting both produces noisy "already covered" warnings during validation/reload.
+            if value in wildcard_domains:
+                continue
+            if value in seen_domains:
+                continue
+            seen_domains.add(value)
+            domains.append(value)
         src_nets = [cidr.strip() for cidr in (getattr(exclusions, "src_nets", []) or []) if cidr.strip()]
         private_dst_nets = PRIVATE_NETS_V4 if bool(getattr(exclusions, "exclude_private_nets", False)) else []
 

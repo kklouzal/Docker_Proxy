@@ -14,6 +14,7 @@ from services.ui_support import (
     present_icap_events,
     present_observability_summary,
     present_ssl_error_rows,
+    present_ssl_exclusion_candidates,
     present_ssl_top_domains,
     present_top_tag_rows,
     present_top_value_rows,
@@ -460,6 +461,7 @@ class ObservabilityQueries:
             "summary": presented["summary"],
             "rows": presented["rows"],
             "top_domains": present_ssl_top_domains(store.top_domains(since=since, search=search, limit=10), limit=10),
+            "exclusion_candidates": present_ssl_exclusion_candidates(store.suggest_exclusion_candidates(since=since, search=search, limit=10)),
             "top_categories": _badge_rows(category_counts, limit=6),
             "hints": presented["hints"],
         }

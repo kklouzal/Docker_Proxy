@@ -4,7 +4,7 @@ import re
 import threading
 from dataclasses import dataclass
 from ipaddress import ip_network
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from services.db import connect
 from services.proxy_context import get_proxy_id
@@ -22,6 +22,47 @@ PRIVATE_NETS_V4 = [
     "127.0.0.0/8",
     "169.254.0.0/16",
 ]
+
+
+@dataclass(frozen=True)
+class CompatibilityPreset:
+    id: str
+    title: str
+    description: str
+    domains: Tuple[str, ...]
+
+
+COMPATIBILITY_PRESETS: Tuple[CompatibilityPreset, ...] = (
+    CompatibilityPreset(
+        id="discord",
+        title="Discord",
+        description="Voice/chat gateway, API, media, and CDN hosts commonly sensitive to TLS interception.",
+        domains=("discord.com", "*.discord.com", "discord.gg", "*.discord.gg", "discordapp.com", "*.discordapp.com", "discordapp.net", "*.discordapp.net"),
+    ),
+    CompatibilityPreset(
+        id="microsoft-cloud",
+        title="Microsoft 365 / Copilot",
+        description="Microsoft, Office 365, Azure AD, Windows Update, GitHub/Copilot, and related SaaS endpoints that often pin TLS or use long-lived modern app sessions.",
+        domains=(
+            "microsoft.com", "*.microsoft.com", "office.com", "*.office.com", "office365.com", "*.office365.com",
+            "live.com", "*.live.com", "msftauth.net", "*.msftauth.net", "msauth.net", "*.msauth.net",
+            "login.microsoftonline.com", "*.login.microsoftonline.com", "windowsupdate.com", "*.windowsupdate.com",
+            "github.com", "*.github.com", "githubcopilot.com", "*.githubcopilot.com",
+        ),
+    ),
+    CompatibilityPreset(
+        id="apple-cloud",
+        title="Apple services",
+        description="Apple/iCloud/App Store/software-update domains matching the compatibility bypass class commonly shipped by filtering gateways.",
+        domains=("apple.com", "*.apple.com", "icloud.com", "*.icloud.com", "itunes.com", "*.itunes.com", "mzstatic.com", "*.mzstatic.com", "cdn-apple.com", "*.cdn-apple.com", "icloud-content.com", "*.icloud-content.com"),
+    ),
+    CompatibilityPreset(
+        id="collaboration-sync",
+        title="Collaboration and sync apps",
+        description="WebEx and Dropbox compatibility domains often excluded from deep TLS inspection by default policies.",
+        domains=("webex.com", "*.webex.com", "dropbox.com", "*.dropbox.com", "dropboxapi.com", "*.dropboxapi.com", "dropboxstatic.com", "*.dropboxstatic.com"),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -127,6 +168,49 @@ class ExclusionsStore:
                 (proxy_id, store_value),
             )
         return True, ""
+
+
+    def _compatibility_preset_by_id(self, preset_id: str) -> Optional[CompatibilityPreset]:
+        wanted = (preset_id or "").strip().lower()
+        for preset in COMPATIBILITY_PRESETS:
+            if preset.id == wanted:
+                return preset
+        return None
+
+    def list_compatibility_presets(self) -> List[Dict[str, Any]]:
+        current = set(self.list_all().domains)
+        presets: List[Dict[str, Any]] = []
+        for preset in COMPATIBILITY_PRESETS:
+            installed = [domain for domain in preset.domains if domain in current]
+            missing = [domain for domain in preset.domains if domain not in current]
+            presets.append({
+                "id": preset.id,
+                "title": preset.title,
+                "description": preset.description,
+                "domains": list(preset.domains),
+                "installed": len(installed),
+                "missing": len(missing),
+                "total": len(preset.domains),
+                "complete": len(missing) == 0,
+            })
+        return presets
+
+    def install_compatibility_preset(self, preset_id: str) -> Tuple[int, int, str]:
+        wanted = (preset_id or "").strip().lower()
+        presets = list(COMPATIBILITY_PRESETS) if wanted in ("all", "*") else [p for p in COMPATIBILITY_PRESETS if p.id == wanted]
+        if not presets:
+            return 0, 0, "Unknown compatibility preset."
+        before = set(self.list_all().domains)
+        attempted = 0
+        errors: List[str] = []
+        for preset in presets:
+            for domain in preset.domains:
+                attempted += 1
+                ok, err = self.add_domain(domain)
+                if not ok and err:
+                    errors.append(f"{domain}: {err}")
+        after = set(self.list_all().domains)
+        return len(after - before), attempted, "; ".join(errors[:3])
 
     def remove_domain(self, domain: str) -> None:
         raw = (domain or "").strip().lower()
