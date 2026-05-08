@@ -707,6 +707,8 @@ Current source-backed preset coverage:
 
 The hardcoded presets intentionally prefer FQDN/SNI suffixes over IP ranges. Microsoft 365, Webex, Zoom, Google, Apple, Adobe, GitHub, Slack, Atlassian, Okta, and similar SaaS vendors revise endpoint data over time; dynamic vendor feeds/docs should remain the authority for strict enterprise allowlisting, while these presets provide safe out-of-the-box no-decrypt coverage for common deployments.
 
+Future work: investigate domain-categorization data sources and/or maintained category feeds. Major firewall and secure-web-gateway vendors commonly pair technical no-decrypt lists with category-based policy exclusions for finance, healthcare, personal privacy, government, legal, education, and pinned/mobile-app traffic. Docker_Proxy does not currently ship category intelligence, and a durable categorization layer would likely be useful beyond TLS exclusions for reporting, policy authoring, alerting, and risk/usage summaries. Avoid hand-curated category domain lists unless they are backed by a reliable maintained source.
+
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
