@@ -1,4 +1,6 @@
+# syntax=docker/dockerfile:1
 ARG ALPINE_VERSION=edge
+ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
@@ -8,7 +10,8 @@ WORKDIR /tmp/deps
 
 COPY web/requirements.txt /tmp/deps/requirements.txt
 
-RUN python3 -m pip install --no-cache-dir --no-compile --target /python-deps -r /tmp/deps/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --no-compile --target /python-deps -r /tmp/deps/requirements.txt
 
 FROM alpine:${ALPINE_VERSION} AS cicap_builder
 
@@ -65,6 +68,7 @@ RUN set -eu; \
     if [ -f /etc/clamd_mod.conf ]; then mkdir -p /out/etc; cp -a /etc/clamd_mod.conf /out/etc/; fi
 
 FROM alpine:${ALPINE_VERSION}
+ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 # Proxy container responsibilities only:
 # - Squid / c-icap runtime
@@ -83,9 +87,7 @@ RUN apk add --no-cache squid python3 supervisor openssl ca-certificates libatomi
 
 WORKDIR /app
 
-COPY --from=python_deps /python-deps/ /tmp/python-deps/
-RUN python3 -c "import os, shutil, site; src='/tmp/python-deps'; dst=site.getsitepackages()[0]; os.makedirs(dst, exist_ok=True); [shutil.rmtree(os.path.join(dst, name)) if os.path.isdir(os.path.join(dst, name)) and not os.path.islink(os.path.join(dst, name)) else (os.unlink(os.path.join(dst, name)) if os.path.lexists(os.path.join(dst, name)) else None) for name in os.listdir(src) if os.path.lexists(os.path.join(dst, name))]; [shutil.move(os.path.join(src, name), os.path.join(dst, name)) for name in os.listdir(src)]" \
-    && rm -rf /tmp/python-deps
+COPY --from=python_deps /python-deps/ ${PYTHON_SITE_PACKAGES}/
 COPY proxy /app/proxy
 COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
