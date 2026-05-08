@@ -144,7 +144,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert updated_domain not in fallback_pac.text
 
 
-def test_live_exclusions_add_remove_and_apply_reflect_in_proxy_pac(admin_client: LiveStackClient) -> None:
+def test_live_exclusions_add_remove_and_apply_stay_proxy_side_only(admin_client: LiveStackClient) -> None:
     domain = unique_domain("exclude")
     cidr = "10.55.77.0/24"
 
@@ -188,7 +188,9 @@ def test_live_exclusions_add_remove_and_apply_reflect_in_proxy_pac(admin_client:
 
     pac_response = admin_client.pac_request()
     assert pac_response.status == 200
-    assert domain in pac_response.text
+    # No-bump/no-cache exclusions are proxy-side policy. They must not become
+    # client-side PAC DIRECT rules.
+    assert domain not in pac_response.text
 
     apply_response = admin_client.admin_post_form(
         "/exclusions",

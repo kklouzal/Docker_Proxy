@@ -72,7 +72,7 @@ def test_live_remote_pac_profile_updates_only_selected_proxy_pac(multi_proxy_adm
     assert direct_domain not in multi_proxy_admin.remote_pac_request().text
 
 
-def test_live_remote_exclusions_update_only_selected_proxy_pac(multi_proxy_admin: LiveStackClient) -> None:
+def test_live_remote_exclusions_stay_proxy_side_and_scoped_to_selected_proxy(multi_proxy_admin: LiveStackClient) -> None:
     domain = unique_domain("remote-exclusion")
 
     add_response = multi_proxy_admin.admin_post_form(
@@ -86,7 +86,8 @@ def test_live_remote_exclusions_update_only_selected_proxy_pac(multi_proxy_admin
 
     remote_pac = multi_proxy_admin.remote_pac_request()
     local_pac = multi_proxy_admin.pac_request()
-    assert domain in remote_pac.text
+    # Remote proxy-side exclusions should not leak into any client PAC rules.
+    assert domain not in remote_pac.text
     assert domain not in local_pac.text
 
     remove_response = multi_proxy_admin.admin_post_form(
