@@ -57,7 +57,7 @@ a{ color: var(--text); text-decoration: none; }
 a:hover{ color: white; }
 
 .container{
-  width: min(1280px, calc(100% - 32px));
+  width: min(1600px, calc(100% - 32px));
   margin: 0 auto;
 }
 
@@ -409,12 +409,16 @@ a.brand:hover{
 
 .grid{
   display:grid;
-  grid-template-columns: repeat(12, 1fr);
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 16px;
+  width: 100%;
+  align-items: start;
 }
 
 .card{
   grid-column: span 12;
+  min-width: 0;
+  width: 100%;
   background: linear-gradient(180deg, var(--panel), rgba(255,255,255,.03));
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -427,6 +431,7 @@ a.brand:hover{
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255,255,255,.08);
   background: rgba(255,255,255,.03);
@@ -448,6 +453,7 @@ a.brand:hover{
   padding: 16px;
   display:grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .card-body > *{
@@ -1086,6 +1092,7 @@ select:focus{
 
 .table-wrap{
   width: 100%;
+  min-width: 0;
   overflow:auto;
   border-radius: var(--radius-sm);
   border: 1px solid rgba(255,255,255,.08);
@@ -1428,9 +1435,34 @@ pre{
 }
 
 @media (min-width: 900px){
-  .card.split-left{ grid-column: span 8; }
-  .card.split-right{ grid-column: span 4; }
-  .split-right{ grid-column: span 4; }
+  .grid.split-layout > .card.split-left,
+  .grid.split-layout > .split-left{
+    grid-column: span 8;
+  }
+
+  .grid.split-layout > .card.split-right,
+  .grid.split-layout > .split-right{
+    grid-column: span 4;
+  }
+
+  .grid.sidebar-wide-layout > .card.split-left,
+  .grid.sidebar-wide-layout > .split-left{
+    grid-column: span 7;
+  }
+
+  .grid.sidebar-wide-layout > .card.split-right,
+  .grid.sidebar-wide-layout > .split-right{
+    grid-column: span 5;
+  }
+}
+
+@media (min-width: 1200px){
+  .grid.data-pair-layout > .card.split-left,
+  .grid.data-pair-layout > .card.split-right,
+  .grid.data-pair-layout > .split-left,
+  .grid.data-pair-layout > .split-right{
+    grid-column: span 6;
+  }
 }
 
 @media (max-width: 1100px){

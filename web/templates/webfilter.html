@@ -116,7 +116,7 @@
   </section>
 
 {% else %}
-  <div class="grid">
+  <div class="grid sidebar-wide-layout">
     <form method="post" class="card split-left" action="{{ url_for('webfilter', tab='categories') }}">
       {{ csrf_field() }}
       <input type="hidden" name="tab" value="categories">
