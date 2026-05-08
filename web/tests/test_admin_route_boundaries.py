@@ -258,3 +258,39 @@ def test_sslfilter_apply_verify_forces_selected_proxy_sync(monkeypatch, tmp_path
     assert loaded.proxy_client.synced[-1] == ("default", True)
     assert "SSL filtering policy applied and verified" in text
     assert any(record["kind"] == "sslfilter_apply_policy" and record["ok"] for record in loaded.audit_store.records)
+
+
+def test_main_config_page_exposes_rebuild_apply_all_action(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/squid/config?tab=config")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Rebuild, Verify &amp; Apply Saved Settings" in text
+    assert 'form="apply-all-config-form"' in text
+    assert 'action="/squid/config/apply-all' in text
+
+
+def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/squid/config?tab=config")
+
+    response = client.post(
+        "/squid/config/apply-all",
+        data={"csrf_token": token},
+        follow_redirects=True,
+    )
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert loaded.proxy_client.validated[-1][0] == "default"
+    assert loaded.proxy_client.synced[-1] == ("default", True)
+    assert loaded.config_revisions.created[-1]["proxy_id"] == "default"
+    assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
+    assert "Saved settings were rebuilt, verified, and applied" in text
+    assert any(record["kind"] == "config_apply_all_saved" and record["ok"] for record in loaded.audit_store.records)

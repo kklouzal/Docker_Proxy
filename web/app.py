@@ -1245,7 +1245,7 @@ def _sslfilter_redirect(**params: Any):
     return _redirect_after_policy_refresh('sslfilter', get_sslfilter_store(), force=True, **params)
 
 
-def _sslfilter_apply_result_param(ok: bool) -> str:
+def _bool_result_param(ok: bool) -> str:
     return '1' if ok else '0'
 
 
@@ -1273,7 +1273,7 @@ def _handle_sslfilter_post(store: Any):
         _record_audit_event('sslfilter_apply_policy', ok=ok, detail=detail)
         return _redirect_to(
             'sslfilter',
-            apply_ok=_sslfilter_apply_result_param(ok),
+            apply_ok=_bool_result_param(ok),
             apply_msg=detail[:1000],
         )
 
@@ -2242,6 +2242,32 @@ def squid_config():
         limits_lines=limits_lines,
         performance_lines=performance_lines,
         http_lines=http_lines,
+    )
+
+
+@app.route('/squid/config/apply-all', methods=['POST'])
+def apply_all_saved_config():
+    """Rebuild the selected proxy config from saved UI settings, validate, and apply it."""
+    try:
+        current = _current_managed_config()
+        tunables = squid_controller.get_tunable_options(current)
+        options = _options_from_tunables(tunables)
+        overrides = squid_controller.get_cache_override_options(current)
+        ok, detail = _publish_template_config(
+            options,
+            source_kind='template-reconcile',
+            audit_kind='config_apply_all_saved',
+            overrides=overrides,
+        )
+    except Exception as exc:
+        _record_audit_event('config_apply_all_saved', ok=False, detail=public_error_message(exc))
+        return _redirect_to('squid_config', tab='config', apply_all_ok='0')
+
+    return _redirect_to(
+        'squid_config',
+        tab='config',
+        apply_all_ok=_bool_result_param(ok),
+        apply_all_msg=(detail or '')[:1000],
     )
 
 

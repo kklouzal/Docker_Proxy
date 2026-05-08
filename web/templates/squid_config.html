@@ -76,7 +76,11 @@
     {% endfor %}
 </div>
 
-{% if request.args.get('ok') %}
+{% if request.args.get('apply_all_ok') == '1' %}
+    <div class="banner success"><span class="badge ok">Rebuilt</span><div class="banner-copy"><span class="small">Saved settings were rebuilt, verified, and applied to {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_all_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_all_msg') }}</pre>{% endif %}</div></div>
+{% elif request.args.get('apply_all_ok') == '0' %}
+    <div class="banner error"><span class="badge danger">Rebuild failed</span><div class="banner-copy"><span class="small">Saved settings could not be rebuilt and applied to {{ active_proxy.display_name }}; previous config kept.</span>{% if request.args.get('apply_all_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_all_msg') }}</pre>{% endif %}</div></div>
+{% elif request.args.get('ok') %}
     <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">Config validated and Squid reloaded.</span></div></div>
 {% elif request.args.get('error') %}
     <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Config validation/reload failed; previous config kept.</span></div></div>
@@ -116,12 +120,16 @@
                     <textarea id="config_text" name="config_text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">{{ config_text }}</textarea>
                     <div class="actions config-editor-actions">
                         <button class="btn primary" type="submit" name="action" value="apply">Save & Reload</button>
+                        <button class="btn secondary" type="submit" form="apply-all-config-form">Rebuild, Verify &amp; Apply Saved Settings</button>
                         <button class="btn ghost" type="submit" name="action" value="validate">Validate only</button>
                         <button class="btn ghost" type="button" id="reload-running-config" data-url="{{ url_for('api_squid_config') }}">Reload from running config</button>
                         <button class="btn ghost" type="button" data-copy-target="#config_text">Copy editor contents</button>
                         <button class="btn ghost" type="button" data-config-reset-for="raw-config-form">Reset unsaved changes</button>
                     </div>
                     <div class="small">The server validates the config before applying it; if validation fails, it keeps the previous config.</div>
+                </form>
+                <form class="config-hidden-form" id="apply-all-config-form" action="{{ url_for('apply_all_saved_config') }}" method="post">
+                    {{ csrf_field() }}
                 </form>
             </div>
         </section>
