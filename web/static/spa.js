@@ -10,6 +10,8 @@
   let shellListenersBound = false;
   let currentSpaUrl = window.location.href;
   let unsavedConfigChanges = false;
+  let activeNavigationController = null;
+  let activeNavigationId = 0;
   const UNSAVED_CONFIG_MESSAGE = 'You have unsaved Squid configuration changes. Leave this page anyway?';
 
   const getCsrfToken = () => {
@@ -228,15 +230,22 @@
         if (!metricTargets.length) return;
         const textControl = controls.find((control) => control.name === 'config_text');
         const text = textControl ? String(textControl.value || '') : '';
-        const lineCount = text ? text.split(/\r?\n/).length : 0;
+        let lineCount = 0;
+        if (text) {
+          lineCount = 1;
+          for (let index = 0; index < text.length; index += 1) {
+            if (text.charCodeAt(index) === 10) lineCount += 1;
+          }
+        }
         const charCount = text.length;
         metricTargets.forEach((target) => {
           target.textContent = `${lineCount} line${lineCount === 1 ? '' : 's'} · ${charCount} char${charCount === 1 ? '' : 's'}`;
         });
       };
 
-      const recompute = () => {
-        applyDependencies();
+      const recompute = (options = {}) => {
+        const skipDependencies = Boolean(options.skipDependencies);
+        if (!skipDependencies) applyDependencies();
         updateMetrics();
 
         let dirtyCount = 0;
@@ -269,11 +278,27 @@
         syncPageDirtyState();
       };
 
+      let recomputeFrame = 0;
+      let recomputeNeedsDependencies = false;
+      const scheduleRecompute = (event) => {
+        const control = event && event.currentTarget;
+        if (!(control instanceof HTMLTextAreaElement && control.name === 'config_text' && event.type === 'input')) {
+          recomputeNeedsDependencies = true;
+        }
+        if (recomputeFrame) return;
+        recomputeFrame = window.requestAnimationFrame(() => {
+          recomputeFrame = 0;
+          const skipDependencies = !recomputeNeedsDependencies;
+          recomputeNeedsDependencies = false;
+          recompute({ skipDependencies });
+        });
+      };
+
       controls.forEach((control) => {
         if (control.dataset.spaBound === '1') return;
         control.dataset.spaBound = '1';
-        control.addEventListener('input', recompute);
-        control.addEventListener('change', recompute);
+        control.addEventListener('input', scheduleRecompute);
+        control.addEventListener('change', scheduleRecompute);
       });
 
       resetButtons.forEach((button) => {
@@ -668,6 +693,14 @@
     const container = getSpaContainer();
     if (!container) return false;
 
+    if (activeNavigationController) {
+      activeNavigationController.abort();
+    }
+    const navigationId = activeNavigationId + 1;
+    activeNavigationId = navigationId;
+    const controller = new AbortController();
+    activeNavigationController = controller;
+
     container.setAttribute('aria-busy', 'true');
 
     try {
@@ -681,9 +714,13 @@
       const response = await fetch(url, {
         method,
         body,
+        cache: 'no-store',
         credentials: 'same-origin',
         headers,
+        signal: controller.signal,
       });
+
+      if (navigationId !== activeNavigationId) return false;
 
       if (!response.ok) {
         window.location.assign(url);
@@ -691,6 +728,7 @@
       }
 
       const html = await response.text();
+      if (navigationId !== activeNavigationId) return false;
       const parsed = new DOMParser().parseFromString(html, 'text/html');
       const nextContainer = getSpaContainer(parsed);
       const nextAssetVersion = getAssetVersion(parsed);
@@ -727,11 +765,15 @@
       window.scrollTo(0, 0);
       focusPageHeading(container);
       return true;
-    } catch {
+    } catch (error) {
+      if (error && error.name === 'AbortError') return false;
       window.location.assign(url);
       return false;
     } finally {
-      container.removeAttribute('aria-busy');
+      if (navigationId === activeNavigationId) {
+        if (activeNavigationController === controller) activeNavigationController = null;
+        container.removeAttribute('aria-busy');
+      }
     }
   };
 
@@ -743,9 +785,9 @@
 
     const href = anchor.href;
     if (!isSameOrigin(href)) return;
+    event.preventDefault();
     if (!confirmDiscardUnsavedConfigChanges()) return;
 
-    event.preventDefault();
     void fetchAndSwap(href, { push: true, method: 'GET' });
   };
 
@@ -765,11 +807,11 @@
     // Let the browser handle non-GET/POST methods.
     if (method !== 'GET' && method !== 'POST') return;
 
+    event.preventDefault();
+
     if (form.dataset.allowDirtySubmit !== '1' && !confirmDiscardUnsavedConfigChanges()) {
       return;
     }
-
-    event.preventDefault();
 
     if (method === 'GET') {
       const url = new URL(action, window.location.href);

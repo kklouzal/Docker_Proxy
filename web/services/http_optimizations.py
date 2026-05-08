@@ -104,7 +104,10 @@ def install_http_optimizations(
         if endpoint == "static":
             response.headers["Cache-Control"] = f"public, max-age={int(static_max_age_seconds)}, immutable"
         elif default_dynamic_max_age_seconds <= 0:
-            response.headers.setdefault("Cache-Control", "no-store" if request.method != "GET" else "no-cache")
+            if request.method == "GET" and (request.headers.get("X-Requested-With") or "").lower() == "spa":
+                response.headers.setdefault("Cache-Control", "no-store, private")
+            else:
+                response.headers.setdefault("Cache-Control", "no-store" if request.method != "GET" else "no-cache")
         else:
             response.headers.setdefault("Cache-Control", f"private, max-age={int(default_dynamic_max_age_seconds)}")
 

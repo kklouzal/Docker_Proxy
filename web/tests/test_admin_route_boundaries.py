@@ -92,7 +92,19 @@ def test_index_uses_cold_cache_safe_proxy_health_timeout(monkeypatch, tmp_path) 
     response = client.get("/")
 
     assert response.status_code == 200
-    assert proxy_client.health_calls[-1] == ("default", 5.0)
+    assert proxy_client.health_calls[-1] == ("default", 1.5)
+
+
+def test_index_reuses_short_lived_proxy_health_cache(monkeypatch, tmp_path) -> None:
+    proxy_client = RecordingProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    assert client.get("/").status_code == 200
+    assert client.get("/").status_code == 200
+
+    assert proxy_client.health_calls == [("default", 1.5)]
 
 
 def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> None:
@@ -105,7 +117,7 @@ def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> No
     response = client.get("/proxies")
 
     assert response.status_code == 200
-    assert proxy_client.health_calls == [("default", 3.0)]
+    assert proxy_client.health_calls == [("default", 1.5)]
 
 
 def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:

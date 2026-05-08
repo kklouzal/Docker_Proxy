@@ -90,6 +90,28 @@ def test_admin_html_responses_are_gzip_compressed_when_requested(monkeypatch, tm
     assert b"Squid" in gzip.decompress(response.get_data())
 
 
+def test_spa_document_fetches_are_not_browser_cached(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/administration", headers={"X-Requested-With": "spa"})
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, private"
+
+
+def test_normal_admin_gets_revalidate_instead_of_immutable_cache(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/administration")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-cache"
+
+
 def test_proxy_pac_responses_have_cache_headers_and_conditional_etag(monkeypatch) -> None:
     _add_repo_paths()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
