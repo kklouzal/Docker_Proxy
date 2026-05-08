@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict
 
 from services.adblock_artifacts import get_adblock_artifacts, materialize_archive_to_directory, read_materialized_artifact_sha
@@ -102,11 +103,31 @@ def _log_recoverable_db_or_unexpected(key: str, *, recoverable_message: str, une
 
 
 def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0.8, tcp_timeout: float = 0.75) -> Dict[str, Dict[str, Any]]:
-    icap = _call_health_check(_check_icap_adblock, timeout=icap_timeout, error_formatter=error_formatter)
-    av_icap = _call_health_check(_check_icap_av, timeout=icap_timeout, error_formatter=error_formatter)
-    clamd = _call_health_check(_check_clamd, timeout=icap_timeout, error_formatter=error_formatter)
+    # Keep management health bounded by the slowest local probe instead of the
+    # sum of every ICAP/ClamAV timeout. The Admin UI calls this endpoint with a
+    # short timeout on page loads, so sequential checks can create false
+    # proxy-management timeouts when one or more optional services are absent.
+    checks = {
+        "icap": (_check_icap_adblock, {"timeout": icap_timeout, "error_formatter": error_formatter}),
+        "av_icap": (_check_icap_av, {"timeout": icap_timeout, "error_formatter": error_formatter}),
+        "clamd": (_check_clamd, {"timeout": icap_timeout, "error_formatter": error_formatter}),
+    }
+    results: Dict[str, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=len(checks), thread_name_prefix="proxy-health") as executor:
+        futures = {name: executor.submit(_call_health_check, func, **kwargs) for name, (func, kwargs) in checks.items()}
+        for name, future in futures.items():
+            try:
+                results[name] = future.result(timeout=max(icap_timeout + 0.5, 1.0))
+            except Exception as exc:
+                results[name] = {
+                    "ok": False,
+                    "detail": error_formatter(exc) if error_formatter else str(exc),
+                }
+
+    clamd = results.get("clamd") or {"ok": False, "detail": "clamd health unavailable"}
+    av_icap = results.get("av_icap") or {"ok": False, "detail": "c-icap av health unavailable"}
     return {
-        "icap": icap,
+        "icap": results.get("icap") or {"ok": False, "detail": "c-icap adblock health unavailable"},
         "av_icap": av_icap,
         "clamd": clamd,
         "clamav": build_clamav_health(clamd, av_icap),
@@ -159,6 +180,7 @@ class ProxyRuntime:
         except Exception:
             self.health_cache_ttl_seconds = 3.0
         self._health_cache_lock = threading.Lock()
+        self._health_refresh_lock = threading.Lock()
         self._health_cache_ts = 0.0
         self._health_cache_value: Dict[str, Any] | None = None
 
@@ -256,18 +278,36 @@ class ProxyRuntime:
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
         programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
-        statuses: dict[str, dict[str, Any]] = {}
-        ok = True
-        detail_parts: list[str] = []
-        for program in programs:
-            program_ok, detail = self._supervisor_program_status(program, timeout_seconds=5)
-            statuses[program] = {"ok": program_ok, "detail": detail}
-            if not program_ok:
-                ok = False
-                detail_parts.append(detail)
+        statuses: dict[str, dict[str, Any]] = {program: {"ok": False, "detail": f"{program} status unavailable."} for program in programs}
+        try:
+            status = subprocess.run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "status", *programs],
+                capture_output=True,
+                timeout=2,
+            )
+            output = _decode_completed(status).strip()
+        except Exception as exc:
+            detail = public_error_message(exc, default="Failed to inspect supervisor status.")
+            return {
+                "ok": False,
+                "detail": detail,
+                "programs": {program: {"ok": False, "detail": detail} for program in programs},
+            }
+
+        for line in output.splitlines():
+            parts = line.split(None, 2)
+            if not parts:
+                continue
+            program = parts[0]
+            if program not in statuses:
+                continue
+            statuses[program] = {"ok": status.returncode == 0 and len(parts) > 1 and parts[1] == "RUNNING", "detail": line.strip()}
+
+        detail_parts = [str(item.get("detail") or "") for item in statuses.values() if not item.get("ok")]
+        ok = not detail_parts
         return {
             "ok": ok,
-            "detail": "; ".join(detail_parts) if detail_parts else "supervisor programs running",
+            "detail": "; ".join(part for part in detail_parts if part) if detail_parts else "supervisor programs running",
             "programs": statuses,
         }
 
@@ -1002,106 +1042,130 @@ class ProxyRuntime:
             )
 
     def collect_health(self, *, force: bool = False) -> Dict[str, Any]:
+        now_mono = time.monotonic()
+        cached: Dict[str, Any] | None = None
         if not force and self.health_cache_ttl_seconds > 0:
-            now_mono = time.monotonic()
             with self._health_cache_lock:
                 cached = self._health_cache_value
                 if cached is not None and (now_mono - self._health_cache_ts) < self.health_cache_ttl_seconds:
                     return cached
 
-        stdout, stderr = self.controller.get_status()
-        proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
-        proxy_ok = not bool(stderr)
-        stats = self.stats_provider()
-        services = self.runtime_services_builder(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
-        services["supervisor"] = self._supervisor_programs_health()
-        try:
-            listener_details = tuple(self.controller._http_listener_details())
-            listener_ports = tuple(int(item.get("port") or 0) for item in listener_details if int(item.get("port") or 0))
-            listener_ok = bool(self.controller._wait_for_http_listener(timeout=1.0))
-        except Exception:
-            listener_details = ()
-            listener_ports = ()
-            listener_ok = proxy_ok
-        services["squid_listeners"] = {
-            "ok": bool(listener_ok),
-            "detail": _listener_mode_summary(listener_details) or "No Squid http_port listeners detected.",
-            "listeners": [dict(item) for item in listener_details],
-            "ports": list(listener_ports),
-        }
-        active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
-        active_certificate = self.certificate_bundles.get_active_bundle_metadata()
-        active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
-        current_sha = self._current_config_sha()
-        current_certificate_sha = self._current_certificate_bundle_sha()
-        current_adblock_sha = self._current_adblock_artifact_sha()
-        state_errors: list[str] = []
-        desired_policy_sha = ""
-        current_policy_sha = ""
-        desired_pac_sha = ""
-        current_pac_sha = self._current_pac_state_sha()
+        refresh_acquired = self._health_refresh_lock.acquire(blocking=force or cached is None)
+        if not refresh_acquired:
+            # Another request is already doing the expensive health probe. Return
+            # the last known result rather than letting Gunicorn threads pile up
+            # behind slow ICAP/supervisor/filesystem checks and causing Admin UI
+            # management requests to time out.
+            stale = dict(cached or {})
+            stale["health_cache_stale"] = True
+            stale["health_cache_detail"] = "Returned stale health while a refresh was already in progress."
+            return stale
 
         try:
-            desired_policy = self.policy_state_builder(self.proxy_id)
-            desired_policy_sha = desired_policy.policy_sha256
-            current_policy_sha = calculate_policy_sha(
-                tuple(
-                    MaterializedPolicyFile(path=item.path, content=self._read_text_file(item.path))
-                    for item in desired_policy.files
+            if not force and self.health_cache_ttl_seconds > 0:
+                now_mono = time.monotonic()
+                with self._health_cache_lock:
+                    cached = self._health_cache_value
+                    if cached is not None and (now_mono - self._health_cache_ts) < self.health_cache_ttl_seconds:
+                        return cached
+
+            started_mono = time.monotonic()
+            stdout, stderr = self.controller.get_status()
+            proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
+            proxy_ok = not bool(stderr)
+            stats = self.stats_provider()
+            services = self.runtime_services_builder(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
+            services["supervisor"] = self._supervisor_programs_health()
+            try:
+                listener_details = tuple(self.controller._http_listener_details())
+                listener_ports = tuple(int(item.get("port") or 0) for item in listener_details if int(item.get("port") or 0))
+                listener_ok = bool(self.controller._wait_for_http_listener(timeout=1.0))
+            except Exception:
+                listener_details = ()
+                listener_ports = ()
+                listener_ok = proxy_ok
+            services["squid_listeners"] = {
+                "ok": bool(listener_ok),
+                "detail": _listener_mode_summary(listener_details) or "No Squid http_port listeners detected.",
+                "listeners": [dict(item) for item in listener_details],
+                "ports": list(listener_ports),
+            }
+            active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
+            active_certificate = self.certificate_bundles.get_active_bundle_metadata()
+            active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
+            current_sha = self._current_config_sha()
+            current_certificate_sha = self._current_certificate_bundle_sha()
+            current_adblock_sha = self._current_adblock_artifact_sha()
+            state_errors: list[str] = []
+            desired_policy_sha = ""
+            current_policy_sha = ""
+            desired_pac_sha = ""
+            current_pac_sha = self._current_pac_state_sha()
+
+            try:
+                desired_policy = self.policy_state_builder(self.proxy_id)
+                desired_policy_sha = desired_policy.policy_sha256
+                current_policy_sha = calculate_policy_sha(
+                    tuple(
+                        MaterializedPolicyFile(path=item.path, content=self._read_text_file(item.path))
+                        for item in desired_policy.files
+                    )
                 )
-            )
-        except Exception as exc:
-            state_errors.append(f"policy: {public_error_message(exc, default='Failed to inspect desired proxy policy state.')}")
-            log_exception_throttled(
-                logger,
-                "proxy_runtime.collect_health.policy",
-                interval_seconds=30.0,
-                message="Failed to collect proxy policy health state",
-            )
+            except Exception as exc:
+                state_errors.append(f"policy: {public_error_message(exc, default='Failed to inspect desired proxy policy state.')}")
+                log_exception_throttled(
+                    logger,
+                    "proxy_runtime.collect_health.policy",
+                    interval_seconds=30.0,
+                    message="Failed to collect proxy policy health state",
+                )
 
-        try:
-            desired_pac = self.pac_state_builder(self.proxy_id)
-            desired_pac_sha = desired_pac.state_sha256
-        except Exception as exc:
-            state_errors.append(f"pac: {public_error_message(exc, default='Failed to inspect desired PAC state.')}")
-            log_exception_throttled(
-                logger,
-                "proxy_runtime.collect_health.pac",
-                interval_seconds=30.0,
-                message="Failed to collect proxy PAC health state",
-            )
+            try:
+                desired_pac = self.pac_state_builder(self.proxy_id)
+                desired_pac_sha = desired_pac.state_sha256
+            except Exception as exc:
+                state_errors.append(f"pac: {public_error_message(exc, default='Failed to inspect desired PAC state.')}")
+                log_exception_throttled(
+                    logger,
+                    "proxy_runtime.collect_health.pac",
+                    interval_seconds=30.0,
+                    message="Failed to collect proxy PAC health state",
+                )
 
-        ok = proxy_ok and all(bool(item.get("ok")) for item in services.values()) and not state_errors
-        result = {
-            "ok": ok,
-            "status": "healthy" if ok else "degraded",
-            "proxy_id": self.proxy_id,
-            "proxy_status": proxy_status,
-            "listener_ports": list(listener_ports),
-            "listener_details": [dict(item) for item in listener_details],
-            "stats": stats,
-            "services": services,
-            "active_revision_id": active_revision.revision_id if active_revision else None,
-            "active_revision_sha": active_revision.config_sha256 if active_revision else "",
-            "current_config_sha": current_sha,
-            "active_certificate_revision_id": active_certificate.revision_id if active_certificate else None,
-            "active_certificate_sha": active_certificate.bundle_sha256 if active_certificate else "",
-            "current_certificate_sha": current_certificate_sha,
-            "active_adblock_revision_id": active_adblock_artifact.revision_id if active_adblock_artifact else None,
-            "active_adblock_sha": active_adblock_artifact.artifact_sha256 if active_adblock_artifact else "",
-            "current_adblock_sha": current_adblock_sha,
-            "desired_policy_sha": desired_policy_sha,
-            "current_policy_sha": current_policy_sha,
-            "desired_pac_sha": desired_pac_sha,
-            "current_pac_sha": current_pac_sha,
-            "state_errors": state_errors,
-            "timestamp": int(time.time()),
-        }
-        if self.health_cache_ttl_seconds > 0:
-            with self._health_cache_lock:
-                self._health_cache_value = result
-                self._health_cache_ts = time.monotonic()
-        return result
+            ok = proxy_ok and all(bool(item.get("ok")) for item in services.values()) and not state_errors
+            result = {
+                "ok": ok,
+                "status": "healthy" if ok else "degraded",
+                "proxy_id": self.proxy_id,
+                "proxy_status": proxy_status,
+                "listener_ports": list(listener_ports),
+                "listener_details": [dict(item) for item in listener_details],
+                "stats": stats,
+                "services": services,
+                "active_revision_id": active_revision.revision_id if active_revision else None,
+                "active_revision_sha": active_revision.config_sha256 if active_revision else "",
+                "current_config_sha": current_sha,
+                "active_certificate_revision_id": active_certificate.revision_id if active_certificate else None,
+                "active_certificate_sha": active_certificate.bundle_sha256 if active_certificate else "",
+                "current_certificate_sha": current_certificate_sha,
+                "active_adblock_revision_id": active_adblock_artifact.revision_id if active_adblock_artifact else None,
+                "active_adblock_sha": active_adblock_artifact.artifact_sha256 if active_adblock_artifact else "",
+                "current_adblock_sha": current_adblock_sha,
+                "desired_policy_sha": desired_policy_sha,
+                "current_policy_sha": current_policy_sha,
+                "desired_pac_sha": desired_pac_sha,
+                "current_pac_sha": current_pac_sha,
+                "state_errors": state_errors,
+                "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
+                "timestamp": int(time.time()),
+            }
+            if self.health_cache_ttl_seconds > 0:
+                with self._health_cache_lock:
+                    self._health_cache_value = result
+                    self._health_cache_ts = time.monotonic()
+            return result
+        finally:
+            self._health_refresh_lock.release()
 
     def heartbeat(self) -> Dict[str, Any]:
         try:

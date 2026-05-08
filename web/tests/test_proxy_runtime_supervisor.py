@@ -484,3 +484,111 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
     assert (compiled / ".artifact-sha256").read_text(encoding="utf-8") == "old-sha"
     assert (compiled / "domains_block.txt").read_text(encoding="utf-8") == "old.example\n"
     assert recorded[-1]["ok"] is False
+
+
+def test_collect_health_returns_stale_cache_during_inflight_refresh() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 3.0
+    runtime._health_cache_lock = __import__("threading").Lock()
+    runtime._health_refresh_lock = __import__("threading").Lock()
+    runtime._health_cache_ts = 0.0
+    runtime._health_cache_value = {"ok": True, "status": "healthy", "timestamp": 1}
+    runtime._health_refresh_lock.acquire()
+    try:
+        result = runtime.collect_health()
+    finally:
+        runtime._health_refresh_lock.release()
+
+    assert result["ok"] is True
+    assert result["health_cache_stale"] is True
+    assert "refresh was already in progress" in result["health_cache_detail"]
+
+
+def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 3.0
+    runtime._health_cache_lock = runtime_module.threading.Lock()
+    runtime._health_refresh_lock = runtime_module.threading.Lock()
+    runtime._health_cache_ts = 0.0
+    runtime._health_cache_value = None
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime.stats_provider = lambda: {}
+    runtime.runtime_services_builder = lambda **_kwargs: {"icap": {"ok": True}}
+    runtime._supervisor_programs_health = lambda: {"ok": True, "detail": "supervisor programs running", "programs": {}}
+    runtime.revisions = SimpleNamespace(get_active_revision_metadata=lambda _proxy_id: None)
+    runtime.certificate_bundles = SimpleNamespace(get_active_bundle_metadata=lambda: None)
+    runtime.adblock_artifacts = SimpleNamespace(get_active_artifact_metadata=lambda: None)
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._current_certificate_bundle_sha = lambda: "cert-sha"
+    runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
+    runtime._current_pac_state_sha = lambda: "pac-sha"
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=())
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(state_sha256="desired-pac-sha")
+
+    result = runtime.collect_health()
+
+    assert result["ok"] is True
+    assert result["status"] == "healthy"
+    assert result["health_elapsed_seconds"] >= 0
+    assert runtime._health_cache_value is result
+
+
+def test_local_runtime_service_health_checks_run_in_parallel(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    calls: list[str] = []
+
+    def slow_ok(name):
+        def _inner(**_kwargs):
+            calls.append(name)
+            runtime_module.time.sleep(0.05)
+            return {"ok": True, "detail": name}
+        return _inner
+
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", slow_ok("icap"))
+    monkeypatch.setattr(runtime_module, "_check_icap_av", slow_ok("av_icap"))
+    monkeypatch.setattr(runtime_module, "_check_clamd", slow_ok("clamd"))
+    started = runtime_module.time.monotonic()
+
+    result = runtime_module.build_local_runtime_services(icap_timeout=0.8)
+
+    assert set(calls) == {"icap", "av_icap", "clamd"}
+    assert runtime_module.time.monotonic() - started < 0.13
+    assert result["clamav"]["ok"] is True
+
+
+def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return _cp(
+            0,
+            stdout=(
+                "squid RUNNING pid 1\n"
+                "cicap_adblock RUNNING pid 2\n"
+                "cicap_av RUNNING pid 3\n"
+                "proxy_api RUNNING pid 4\n"
+                "proxy_agent RUNNING pid 5\n"
+            ),
+        )
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    result = runtime._supervisor_programs_health()
+
+    assert result["ok"] is True
+    assert len(calls) == 1
+    assert calls[0][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "status"]
