@@ -1245,6 +1245,10 @@ def _sslfilter_redirect(**params: Any):
     return _redirect_after_policy_refresh('sslfilter', get_sslfilter_store(), force=True, **params)
 
 
+def _sslfilter_apply_result_param(ok: bool) -> str:
+    return '1' if ok else '0'
+
+
 def _add_sslfilter_domain(store: Any, policy: str, value: str) -> tuple[bool, str, str]:
     try:
         return store.add_domain(policy, value)
@@ -1262,6 +1266,16 @@ def _add_sslfilter_src(store: Any, policy: str, value: str) -> tuple[bool, str, 
 def _handle_sslfilter_post(store: Any):
     action = _form_action(lower=True)
     policy = _sslfilter_policy_from_form()
+
+    if action in {'apply_policy', 'apply_verify'}:
+        ok, detail = _trigger_proxy_sync(force=True)
+        detail = (detail or ('Policy sync requested.' if ok else 'Policy sync failed.')).strip()
+        _record_audit_event('sslfilter_apply_policy', ok=ok, detail=detail)
+        return _redirect_to(
+            'sslfilter',
+            apply_ok=_sslfilter_apply_result_param(ok),
+            apply_msg=detail[:1000],
+        )
 
     if action == 'install_compatibility_preset':
         preset_id = (request.form.get('preset_id') or '').strip()

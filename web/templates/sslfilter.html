@@ -105,6 +105,11 @@
     </div>
   </div>
   <div class="page-actions">
+    <form class="nav-inline-form" method="post" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="apply_policy" />
+      <button class="btn primary" type="submit">Apply &amp; Verify Config</button>
+    </form>
     <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
     <a class="btn ghost" href="{{ url_for('observability', pane='ssl') }}">SSL incidents</a>
     <a class="btn ghost" href="{{ url_for('observability', pane='cache') }}">Cache view</a>
@@ -115,6 +120,11 @@
 <div>This lets you tune bypass behavior for one proxy without affecting the others.</div>
 {% endcall %}
 
+{% if request.args.get('apply_ok') == '1' %}
+  <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">SSL filtering policy applied and verified for {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
+{% elif request.args.get('apply_ok') == '0' %}
+  <div class="banner error"><span class="badge danger">Apply failed</span><div class="banner-copy"><span class="small">SSL filtering policy could not be applied to {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
+{% endif %}
 {% if ok %}
   <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL filtering policy updated and sync requested.</span></div></div>
 {% endif %}
