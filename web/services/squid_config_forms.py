@@ -25,6 +25,12 @@ acl vary_encoding_only rep_header Vary ^Accept-Encoding$
 store_miss deny has_vary !vary_encoding_only"""
 
 
+DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES = """# Explicitly deny protocol upgrades by default.
+# The WebSocket protocol token is case-sensitive in Squid; RFC 6455 uses lowercase \"websocket\".
+http_upgrade_request_protocols websocket deny all
+http_upgrade_request_protocols OTHER deny all"""
+
+
 DEFAULT_REFRESH_PATTERNS = r"""# Safe heuristic caching when explicit expiry headers are absent.
 # Add more specific allow-lists above broader fallback rules.
 refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 1440 80% 10080 store-stale
@@ -2305,10 +2311,11 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "http_upgrade_request_protocols rules",
         "http_upgrade_request_protocols",
         "textarea",
-        _tunable_or_default_if_none("http_upgrade_request_protocols_rules_text", ""),
+        _tunable_or_default_if_none("http_upgrade_request_protocols_rules_text", DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES),
         _posted_multiline_reader("http_upgrade_request_protocols_rules_text"),
         rows=6,
-        help_text="Optional allow/deny rules for protocol upgrades such as WebSocket.",
+        placeholder=DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
+        help_text="Explicit allow/deny rules for protocol upgrades. Defaults deny WebSocket and all other Upgrade offers.",
     ),
     _field(
         "memory_pools_on",

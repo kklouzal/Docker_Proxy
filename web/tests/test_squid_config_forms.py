@@ -13,6 +13,7 @@ def _ensure_web_import_path() -> None:
 _ensure_web_import_path()
 
 from services.squid_config_forms import (  # type: ignore  # noqa: E402
+    DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
     build_template_options,
     build_template_options_from_form,
     get_config_ui_field_map,
@@ -85,6 +86,7 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["store_avg_object_size_kb"] == 13
     assert options["store_objects_per_bucket"] == 20
     assert options["client_db_on"] is True
+    assert options["http_upgrade_request_protocols_rules_text"] == DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES
 
 
 def test_generated_template_defaults_to_rock_cache_store() -> None:
@@ -101,6 +103,8 @@ def test_generated_template_defaults_to_rock_cache_store() -> None:
     assert "cache_replacement_policy heap GDSF" in config
     assert "maximum_object_size 128 MB" in config
     assert "store_avg_object_size 13 KB" in config
+    assert "http_upgrade_request_protocols websocket deny all" in config
+    assert "http_upgrade_request_protocols OTHER deny all" in config
 
 
 def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic():
@@ -124,6 +128,7 @@ def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic()
     assert field_map["icap_client_username_encode_on"].depends_on == ("icap_enable_on", "icap_send_client_username_on")
     assert field_map["force_request_body_continuation_rules_text"].placeholder == "force_request_body_continuation allow all"
     assert field_map["icap_retry_rules_text"].placeholder == "icap_retry allow all"
+    assert field_map["http_upgrade_request_protocols_rules_text"].placeholder == DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES
 
 
 def test_build_template_options_from_form_updates_only_requested_fields():

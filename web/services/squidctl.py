@@ -8,7 +8,11 @@ import logging
 
 from services.logutil import log_exception_throttled
 from services.squid_core import SquidController as _CoreSquidController
-from services.squid_config_forms import DEFAULT_CACHE_POLICY_RULES, DEFAULT_REFRESH_PATTERNS
+from services.squid_config_forms import (
+    DEFAULT_CACHE_POLICY_RULES,
+    DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
+    DEFAULT_REFRESH_PATTERNS,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -420,7 +424,11 @@ class SquidController(_CoreSquidController):
             ("strip", "deny", "allow", "encode", "chop"),
             "uri_whitespace",
         )
-        http_upgrade_request_protocols_rules_text = self._normalize_multiline_text(options.get("http_upgrade_request_protocols_rules_text") or "")
+        http_upgrade_request_protocols_rules_text = self._normalize_multiline_text(
+            options.get("http_upgrade_request_protocols_rules_text")
+            if options.get("http_upgrade_request_protocols_rules_text") is not None
+            else DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES
+        )
 
         visible_hostname = self._validate_hostname(str(options.get("visible_hostname") or ""), "visible_hostname")
         httpd_suppress_version_string_on = bool_value("httpd_suppress_version_string_on", False)
