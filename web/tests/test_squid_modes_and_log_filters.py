@@ -555,18 +555,30 @@ def test_compatibility_presets_include_source_backed_collaboration_exclusions(tm
     assert "webex" in presets
     assert "zoom" in presets
     assert "google-meet" in presets
+    assert "adobe-cloud" in presets
+    assert "apple-cloud" in presets
+    assert "developer-collaboration" in presets
+    assert "identity-mfa" in presets
     assert "*.teams.microsoft.com" in presets["microsoft-cloud"].domains
     assert "*.download.windowsupdate.com" in presets["microsoft-cloud"].domains
     assert "*.webex.com" in presets["webex"].domains
     assert "*.zoom.us" in presets["zoom"].domains
     assert "workspace.turns.goog" in presets["google-meet"].domains
     assert "*.googleapis.com" in presets["google-meet"].domains
+    assert "*.adobe.com" in presets["adobe-cloud"].domains
+    assert "ims-na1.adobelogin.com" in presets["adobe-cloud"].domains
+    assert "updates.cdn-apple.com" in presets["apple-cloud"].domains
+    assert "*.push.apple.com" in presets["apple-cloud"].domains
+    assert "copilot-proxy.githubusercontent.com" in presets["developer-collaboration"].domains
+    assert "wss-primary.slack.com" in presets["developer-collaboration"].domains
+    assert "*.atl-paas.net" in presets["developer-collaboration"].domains
+    assert "*.okta.com" in presets["identity-mfa"].domains
 
     store = get_exclusions_store()
     added, attempted, error = store.install_compatibility_preset("all")
 
     assert attempted == sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)
-    assert added > 80
+    assert added > 200
     assert error == ""
 
 def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path):

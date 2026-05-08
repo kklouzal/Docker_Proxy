@@ -695,13 +695,17 @@ The UI ships compatibility presets for breakage-prone SaaS and device-update tra
 
 Current source-backed preset coverage:
 
-- **Microsoft cloud / Windows update**: Microsoft 365 Optimize and Allow endpoint categories from the Microsoft 365 endpoint web service, Entra sign-in, Teams, SharePoint/OneDrive, Exchange/Outlook, Office Online, Windows Update/Delivery Optimization, Microsoft Store, Edge update, and GitHub/Copilot compatibility domains. Microsoft explicitly recommends bypassing proxy processing, TLS break/inspect, and proxy authentication for M365 Optimize/Allow endpoints. Windows Update guidance is DNS-name based because Microsoft does not publish stable IP ranges for those endpoints.
+- **Microsoft cloud / Windows update**: Microsoft 365 Optimize and Allow endpoint categories from the Microsoft 365 endpoint web service, Entra sign-in, Teams, SharePoint/OneDrive, Exchange/Outlook, Office Online, Windows Update/Delivery Optimization, Microsoft Store, and Edge update. Microsoft explicitly recommends bypassing proxy processing, TLS break/inspect, and proxy authentication for M365 Optimize/Allow endpoints. Windows Update guidance is DNS-name based because Microsoft does not publish stable IP ranges for those endpoints.
 - **Cisco Webex**: Webex service/API/content/activation domains plus Cisco-listed CDN support domains. Cisco specifically calls out `*mcs*.webex.com`, `*cb*.webex.com`, and `*mcc*.webex.com` traffic for TLS inspection exemption; Docker_Proxy ships the broader `*.webex.com` suffix because Squid ACLs are suffix/domain based.
 - **Zoom**: `zoom.us` and `*.zoom.us`, matching Zoom's firewall/proxy guidance and common SSL-inspection bypass practice.
 - **Google Meet / ChromeOS**: Meet static/API/media SNI names and ChromeOS/Chrome Enterprise hostnames Google says must be allowed or exempted when TLS inspection or restrictive proxying is used.
-- **Apple, Discord, Dropbox**: retained compatibility presets for other application families that commonly pin certificates, use non-browser TLS stacks, or break under deep inspection.
+- **Apple services**: Apple's enterprise-network list, including activation, APNs/MDM, Apple Business/School Manager, software updates, Apps/Books, Apple Account, iCloud, Siri/Search, Private Relay, and Private Cloud Compute. Apple explicitly says its services fail HTTPS interception and to disable inspection for the listed hosts.
+- **Adobe Creative Cloud / Acrobat**: Adobe's enterprise endpoint allowlist, including hosted Adobe domains, licensing/activation, Admin Console, sign-in/IMS, updates, Acrobat/Creative Cloud content, Fonts/Typekit, Stock/Behance, and common Adobe CDN dependencies.
+- **Developer and collaboration SaaS**: GitHub/Copilot allowlist domains, Slack WebSocket and huddles paths, Atlassian/Bitbucket Cloud domains, and Dropbox sync/API/static hosts.
+- **Identity and MFA services**: Okta domains that Okta explicitly says to exclude from SSL proxy inspection for Okta Verify/FastPass, plus stable Duo service/download domains. Duo Authentication Proxy API hostnames are tenant-specific, so operators should add their own Duo API hostname when deployed.
+- **Discord and Dropbox**: retained standalone compatibility presets for existing operators and common app-family breakage patterns.
 
-The hardcoded presets intentionally prefer FQDN/SNI suffixes over IP ranges. Microsoft 365, Webex, Zoom, and Google all revise endpoint data over time; dynamic vendor feeds/docs should remain the authority for strict enterprise allowlisting, while these presets provide safe out-of-the-box no-decrypt coverage for common deployments.
+The hardcoded presets intentionally prefer FQDN/SNI suffixes over IP ranges. Microsoft 365, Webex, Zoom, Google, Apple, Adobe, GitHub, Slack, Atlassian, Okta, and similar SaaS vendors revise endpoint data over time; dynamic vendor feeds/docs should remain the authority for strict enterprise allowlisting, while these presets provide safe out-of-the-box no-decrypt coverage for common deployments.
 
 ## License
 
@@ -713,4 +717,10 @@ This project is licensed under the MIT License. See the LICENSE file for details
 - Cisco Webex: Webex network requirements including explicit TLS inspection exemptions for mcs/cb/mcc Webex traffic and Webex service/API/content/CDN tables.
 - Zoom: Zoom network firewall/proxy settings for zoom.us and subdomains.
 - Google: Google Meet network requirements and ChromeOS/Chrome Enterprise TLS-inspection hostname allowlist.
+- Apple: Apple enterprise network requirements, including the explicit statement that Apple services fail HTTPS interception and listed hosts should be exempted from inspection.
+- Adobe: Adobe enterprise network endpoints, downloadable allowlist guidance, Creative Cloud proxy support, and Adobe Connect TLS/TURNS inspection caveats.
+- GitHub: GitHub Copilot allowlist reference, network/firewall settings, and GitHub content/API host guidance.
+- Slack: Slack connection troubleshooting guidance for WebSocket decryption exemptions and huddles guidance to bypass proxies and packet inspection for real-time paths.
+- Atlassian: Atlassian Cloud domain/IP allowlist and product access guidance for restrictive proxies.
+- Okta/Duo: Okta Verify/FastPass SSL proxy exclusion guidance and Duo Authentication Proxy certificate-pinning/connectivity documentation.
 - Appliance/vendor cross-checks: Palo Alto Networks predefined decryption-exclusion guidance, Zscaler SSL inspection guidance for pinned apps, and Fortinet/Sophos guidance around category/application exclusions and SNI-first decisions.
