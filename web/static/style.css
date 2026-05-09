@@ -1259,6 +1259,17 @@ input.check{
 .btn.ghost{
   background: transparent;
 }
+.btn.danger{
+  background: color-mix(in srgb, var(--danger) 18%, rgba(255,255,255,.04));
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--text);
+}
+
+.btn.danger:hover{
+  background: color-mix(in srgb, var(--danger) 26%, rgba(255,255,255,.06));
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--border));
+}
+
 
 .inline-form{
   display:flex;

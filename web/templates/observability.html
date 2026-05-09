@@ -23,14 +23,29 @@
       <a class="btn ghost" href="{{ url_for('clamav', window=window) }}">ClamAV controls</a>
       <a class="btn ghost" href="{{ url_for('webfilter', tab='categories') }}">Web filtering controls</a>
       <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Export CSV</a>
+      {% if pane == 'overview' %}
+      <form class="inline-form" method="post" action="{{ url_for('observability_clear_logs') }}" onsubmit="return confirm('Clear stored MySQL observability logs for every proxy? This cannot be undone.');">
+        {{ csrf_field() }}
+        <button class="btn danger" type="submit">Clear Logs</button>
+      </form>
+      {% endif %}
     </div>
   </div>
 </section>
 
 <section class="card section-shell">
-{% call scope_notice('proxy', 'Selected proxy only', 'Every number and quick action in this observability hub is scoped to ' ~ active_proxy.display_name ~ ' only.') %}
+{% call scope_notice('proxy', 'Selected proxy only', 'Every number and quick action in this observability hub is scoped to ' ~ active_proxy.display_name ~ ' only, except Clear Logs.') %}
 <div>Use the pane tabs below to reorganize the same request facts by destination, client, cache, SSL incidents, security enforcement, or performance.</div>
 {% endcall %}
+{% if pane == 'overview' %}
+  {% if request.args.get('logs_cleared') == '1' %}
+  <div class="surface-note small">Clear Logs completed. Wiped {{ request.args.get('clear_rows', '0') }} stored MySQL observability rows across the fleet.</div>
+  {% elif request.args.get('clear_error') == '1' %}
+  <div class="surface-note small">Clear Logs failed. Stored MySQL observability history was left unchanged; check Admin UI logs for the database error.</div>
+  {% else %}
+  <div class="surface-note small">Clear Logs is a fleet-wide database maintenance action. It wipes stored MySQL request, SSL, security, web-filter, ad-block, and performance log history for every proxy without changing proxy configuration or policy settings.</div>
+  {% endif %}
+{% endif %}
 </section>
 
 <div class="actions page-tabs">

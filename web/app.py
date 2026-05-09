@@ -26,6 +26,7 @@ from services.proxy_registry import get_proxy_registry as _default_get_proxy_reg
 from services.housekeeping import start_housekeeping
 from services.background_guard import acquire_background_lock
 from services.observability_queries import get_observability_queries as _default_get_observability_queries
+from services.observability_maintenance import clear_observability_logs as _default_clear_observability_logs
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
 from services.logutil import log_exception_throttled
@@ -168,6 +169,7 @@ class AppRuntimeServices:
     get_proxy_client: Any
     get_proxy_registry: Any
     get_observability_queries: Any
+    clear_observability_logs: Any
     check_icap_adblock: Any
     check_icap_av: Any
     check_clamd: Any
@@ -190,6 +192,7 @@ _default_app_runtime_services = AppRuntimeServices(
     get_proxy_client=_default_get_proxy_client,
     get_proxy_registry=_default_get_proxy_registry,
     get_observability_queries=_default_get_observability_queries,
+    clear_observability_logs=_default_clear_observability_logs,
     check_icap_adblock=_default_check_icap_adblock,
     check_icap_av=_default_check_icap_av,
     check_clamd=_default_check_clamd,
@@ -261,6 +264,10 @@ def get_proxy_registry():
 
 def get_observability_queries():
     return _app_runtime_services().get_observability_queries()
+
+
+def clear_observability_logs():
+    return _app_runtime_services().clear_observability_logs()
 
 
 def _cached_proxy_health(proxy_id: str, *, timeout_seconds: float, ttl_seconds: float = _PROXY_HEALTH_TTL_SECONDS) -> Dict[str, Any]:
@@ -1632,6 +1639,28 @@ def observability():
         summary=summary,
         pane_payload=pane_payload,
     )
+
+
+
+@app.route('/observability/clear-logs', methods=['POST'])
+def observability_clear_logs():
+    try:
+        result = clear_observability_logs()
+        deleted_rows = int(result.get('deleted_rows') or 0)
+        cleared_tables = sum(1 for table in result.get('tables') or [] if table.get('status') == 'cleared')
+        detail = f'cleared {deleted_rows} stored observability log rows from {cleared_tables} tables across the fleet'
+        _record_audit_event('observability_clear_logs', ok=True, detail=detail)
+        return _redirect_to('observability', pane='overview', logs_cleared='1', clear_rows=deleted_rows)
+    except Exception as exc:
+        detail = public_error_message(exc)
+        log_exception_throttled(
+            app.logger,
+            'web.app.observability.clear_logs',
+            interval_seconds=30.0,
+            message='Failed to clear stored observability logs',
+        )
+        _record_audit_event('observability_clear_logs', ok=False, detail=detail)
+        return _redirect_to('observability', pane='overview', clear_error='1')
 
 
 @app.route('/observability/export', methods=['GET'])

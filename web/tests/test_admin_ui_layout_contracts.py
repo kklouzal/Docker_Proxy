@@ -43,6 +43,15 @@ def test_observability_data_tables_use_balanced_pairs() -> None:
     assert "Slowest ICAP events" in html
 
 
+def test_observability_overview_explains_fleet_wide_clear_logs() -> None:
+    html = (TEMPLATES / "observability.html").read_text(encoding="utf-8")
+
+    assert "Clear Logs" in html
+    assert "fleet-wide database maintenance action" in html
+    assert "stored MySQL request, SSL, security, web-filter, ad-block, and performance log history" in html
+    assert "without changing proxy configuration or policy settings" in html
+
+
 def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:
     html = (TEMPLATES / "sslfilter.html").read_text(encoding="utf-8")
 

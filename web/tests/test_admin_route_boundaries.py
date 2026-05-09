@@ -367,3 +367,39 @@ def test_apply_all_saved_config_targets_selected_proxy(monkeypatch, tmp_path) ->
     assert loaded.config_revisions.created[-1]["proxy_id"] == "edge-2"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
     assert any(record["kind"] == "config_apply_all_saved" and record["ok"] for record in loaded.audit_store.records)
+
+
+def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) -> None:
+    calls: list[bool] = []
+
+    def clear_logs() -> dict[str, object]:
+        calls.append(True)
+        return {
+            "ok": True,
+            "deleted_rows": 42,
+            "tables": [
+                {"table": "diagnostic_requests", "status": "cleared", "deleted_rows": 30},
+                {"table": "ssl_errors", "status": "cleared", "deleted_rows": 12},
+            ],
+        }
+
+    loaded = load_admin_app(monkeypatch, tmp_path, clear_observability_logs=clear_logs)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/observability/clear-logs",
+        data={"csrf_token": csrf_token(client, "/")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert calls == [True]
+    location = response.headers["Location"]
+    assert "/observability" in location
+    assert "pane=overview" in location
+    assert "logs_cleared=1" in location
+    assert "clear_rows=42" in location
+    assert loaded.audit_store.records[-1]["kind"] == "observability_clear_logs"
+    assert loaded.audit_store.records[-1]["ok"] is True
+    assert "across the fleet" in loaded.audit_store.records[-1]["detail"]

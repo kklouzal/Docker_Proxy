@@ -575,6 +575,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         get_proxy_client=lambda: fake_proxy_client,
         get_proxy_registry=lambda: fake_registry,
         get_observability_queries=lambda: overrides.get("observability_queries") or FakeObservabilityQueries(),
+        clear_observability_logs=overrides.get("clear_observability_logs") or (lambda: {"ok": True, "deleted_rows": 0, "tables": []}),
         check_icap_adblock=lambda: {"ok": True, "detail": "ok"},
         check_icap_av=lambda: {"ok": True, "detail": "ok"},
         check_clamd=lambda: {"ok": True, "detail": "ok"},
