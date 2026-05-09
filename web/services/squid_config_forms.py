@@ -349,6 +349,10 @@ def _resolve_https_intercept_enabled(tunables: TunableMap, _max_workers: int) ->
     return bool(tunables.get("https_intercept_enabled"))
 
 
+def _resolve_https_intercept_splice_only(tunables: TunableMap, _max_workers: int) -> bool:
+    return bool(tunables.get("https_intercept_splice_only"))
+
+
 def _resolve_https_intercept_port(tunables: TunableMap, max_workers: int) -> int:
     explicit_port = _resolve_explicit_proxy_port(tunables, max_workers)
     default_port = 3130 if explicit_port != 3130 else 3131
@@ -1310,6 +1314,19 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         maximum=65535,
         step=1,
         help_text="Dedicated HTTPS NAT intercept port for TCP/443 redirection. Do not expose directly to untrusted clients.",
+        depends_on=("https_intercept_enabled_on",),
+        show_when=("checked",),
+    ),
+    _field(
+        "https_intercept_splice_only_on",
+        "network",
+        "listeners",
+        "Splice-only HTTPS intercept listener",
+        "ssl_bump splice myportname",
+        "checkbox",
+        _resolve_https_intercept_splice_only,
+        _checkbox_reader("https_intercept_splice_only_on"),
+        help_text="For the dedicated HTTPS NAT intercept listener, tunnel TLS with the real site certificate instead of bumping/decrypting. Useful for unmanaged clients that cannot trust the proxy CA; disables HTTPS content caching/filtering on this listener.",
         depends_on=("https_intercept_enabled_on",),
         show_when=("checked",),
     ),
@@ -2743,6 +2760,7 @@ CONFIG_UI_SECTIONS: tuple[UiSectionSpec, ...] = (
                     "intercept_port",
                     "https_intercept_enabled_on",
                     "https_intercept_port",
+                    "https_intercept_splice_only_on",
                 ),
             ),
             UiGroupSpec(
@@ -3074,6 +3092,7 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
         https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
     options["https_intercept_port"] = https_intercept_port
     options["https_intercept_enabled_on"] = bool(options.get("https_intercept_enabled_on", False))
+    options["https_intercept_splice_only_on"] = bool(options.get("https_intercept_splice_only_on", False)) and options["https_intercept_enabled_on"]
 
     range_value = _normalize_range_offset_limit_value(options.get("range_offset_limit_value"))
     if not bool(options.get("range_cache_on", True)):

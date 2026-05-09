@@ -280,7 +280,9 @@ ipcache_high 92
 sslcrtd_children 12 startup=3 idle=2 queue-size=96
 http_port 0.0.0.0:3128 ssl-bump dynamic_cert_mem_cache_size=256MB
 http_port 0.0.0.0:3129 intercept
-https_port 0.0.0.0:3130 intercept ssl-bump dynamic_cert_mem_cache_size=256MB
+https_port 0.0.0.0:3130 intercept ssl-bump name=https_intercept dynamic_cert_mem_cache_size=256MB
+acl https_intercept_listener myportname https_intercept
+ssl_bump splice https_intercept_listener
 dns_packet_max 1232
 sslproxy_session_ttl 900
 sslproxy_session_cache_size 16 MB
@@ -332,6 +334,7 @@ max_open_disk_fds 512
     assert options["intercept_port"] == 3129
     assert options["https_intercept_enabled"] is True
     assert options["https_intercept_port"] == 3130
+    assert options["https_intercept_splice_only"] is True
     assert options["dns_packet_max"] == 1232
     assert options["sslproxy_session_ttl_seconds"] == 900
     assert options["sslproxy_session_cache_size_mb"] == 16
@@ -513,6 +516,7 @@ def test_squid_controller_generate_config_adds_optional_https_intercept_listener
             "intercept_port": 8081,
             "https_intercept_enabled": True,
             "https_intercept_port": 8082,
+            "https_intercept_splice_only": True,
             "dynamic_cert_mem_cache_size_mb": 256,
         },
         max_workers=4,
@@ -524,7 +528,39 @@ def test_squid_controller_generate_config_adds_optional_https_intercept_listener
     assert "http_port 0.0.0.0:8081 intercept" in rendered
     assert "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" in rendered
     assert "https_port 0.0.0.0:8082 intercept ssl-bump" in rendered
+    assert "name=https_intercept" in rendered
     assert "dynamic_cert_mem_cache_size=256MB" in rendered
+    assert "acl https_intercept_listener myportname https_intercept" in rendered
+    assert "ssl_bump splice https_intercept_listener" in rendered
+    assert rendered.index("ssl_bump peek step1") < rendered.index("ssl_bump splice https_intercept_listener") < rendered.index("ssl_bump stare step2")
+
+
+
+def test_squid_controller_https_intercept_listener_does_not_splice_by_default(tmp_path):
+    _add_web_to_path()
+
+    from services.squid_config_forms import build_template_options  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+    options = build_template_options(
+        {
+            "https_intercept_enabled": True,
+            "https_intercept_port": 8082,
+        },
+        max_workers=4,
+    )
+
+    rendered = ctl.generate_config_from_template(options)
+
+    assert "https_port 0.0.0.0:8082 intercept ssl-bump" in rendered
+    assert "name=https_intercept" in rendered
+    assert "ssl_bump splice https_intercept_listener" not in rendered
 
 
 def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):

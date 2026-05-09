@@ -466,6 +466,10 @@ class SquidController(_CoreSquidController):
         lines.append("acl step3 at_step SslBump3")
         lines.append("# Peek at step 1 to learn ClientHello/SNI without sacrificing later bumping.")
         lines.append("ssl_bump peek step1")
+        if bool(options.get("https_intercept_enabled_on")) and bool(options.get("https_intercept_splice_only_on")):
+            lines.append("# Splice all traffic arriving on the dedicated HTTPS NAT intercept listener.")
+            lines.append("acl https_intercept_listener myportname https_intercept")
+            lines.append("ssl_bump splice https_intercept_listener")
         lines.append("include /etc/squid/conf.d/10-sslfilter.conf")
         append_block(lines, "CUSTOM_SSL_RULES", additional_ssl_rules_text)
         lines.append("# Stare at step 2 so the default path can inspect server certificates and still bump at step 3.")
@@ -744,12 +748,14 @@ class SquidController(_CoreSquidController):
                     explicit_port = port
 
         explicit = explicit_port if explicit_port is not None else 3128
+        https_intercept_splice_only = bool(re.search(r"^\s*ssl_bump\s+splice\s+https_intercept_listener\s*$", text or "", re.M | re.I))
         return {
             "explicit_proxy_port": explicit,
             "intercept_enabled": intercept_port is not None,
             "intercept_port": intercept_port if intercept_port is not None else self._default_intercept_port(explicit),
             "https_intercept_enabled": https_intercept_port is not None,
             "https_intercept_port": https_intercept_port if https_intercept_port is not None else (3130 if explicit != 3130 else 3131),
+            "https_intercept_splice_only": https_intercept_splice_only and https_intercept_port is not None,
         }
 
     def _render_explicit_http_port(self, port: int, dynamic_cert_mem_cache_size_mb: int) -> list[str]:
@@ -774,6 +780,7 @@ class SquidController(_CoreSquidController):
             "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER",
             "# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.",
             f"https_port 0.0.0.0:{self._coerce_port(port, 3130)} intercept ssl-bump \\",
+            "\tname=https_intercept \\",
             "\tcert=/etc/squid/ssl/certs/ca.crt \\",
             "\tkey=/etc/squid/ssl/certs/ca.key \\",
             "\tgenerate-host-certificates=on \\",
@@ -1240,6 +1247,8 @@ class SquidController(_CoreSquidController):
             "https_intercept_enabled": http_listener_settings.get("https_intercept_enabled"),
             "https_intercept_enabled_on": http_listener_settings.get("https_intercept_enabled"),
             "https_intercept_port": http_listener_settings.get("https_intercept_port"),
+            "https_intercept_splice_only": http_listener_settings.get("https_intercept_splice_only"),
+            "https_intercept_splice_only_on": http_listener_settings.get("https_intercept_splice_only"),
             "max_filedescriptors": find_int(r"^\s*max_filedescriptors\s+(\d+)\s*$"),
             "dns_timeout_seconds": find_time_seconds("dns_timeout"),
             "dns_retransmit_interval_seconds": find_time_seconds("dns_retransmit_interval"),
