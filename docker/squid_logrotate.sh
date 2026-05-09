@@ -14,18 +14,12 @@ while :; do
   ts="$(date -Iseconds 2>/dev/null || date)"
   echo "[squid-logrotate] ${ts} rotating logs"
 
-  # Ask the running Squid to rotate/reopen its logs.
-  # Do not crash the loop if Squid is temporarily restarting.
-  if ! squid -k rotate >/dev/null 2>&1; then
-    echo "[squid-logrotate] ${ts} squid -k rotate failed (will retry next interval)" >&2
-  fi
-
-  # Rotate unbounded c-icap logs.
-  # These services don't support signal-based rotation, so we copytruncate:
-  # copy the current file to a .1 backup, then truncate the original in-place.
-  # The log tailers in the web app detect the truncation (file size < position)
-  # and automatically seek back to the start.
-  for logfile in /var/log/cicap-access.log /var/log/cicap-access-av.log; do
+  # Rotate logs with copytruncate instead of `squid -k rotate`.
+  # Squid stdio logs can keep appending to access-observe.log.0/icap.log.0
+  # after a runtime rotate, which makes the Admin UI tailers miss explicit and
+  # intercept listener traffic.  Copytruncate keeps the active path stable; the
+  # tailers detect the truncation (file size < position) and seek to the start.
+  for logfile in /var/log/squid/access-observe.log /var/log/squid/icap.log /var/log/cicap-access.log /var/log/cicap-access-av.log; do
     if [ -f "$logfile" ]; then
       cp -- "$logfile" "${logfile}.1" 2>/dev/null || true
       : > "$logfile" 2>/dev/null || true
