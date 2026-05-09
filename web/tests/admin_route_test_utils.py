@@ -232,7 +232,7 @@ class FakeController:
         }
 
     def get_cache_override_options(self, _text: str) -> dict[str, bool]:
-        return {"client_no_cache": False, "origin_private": False, "client_no_store": False}
+        return {"override_expire": False, "override_lastmod": False, "reload_into_ims": False, "ignore_reload": False, "ignore_no_store": False, "ignore_private": False}
 
     def generate_config_from_template(self, options: dict[str, Any]) -> str:
         lines = self._listener_lines_from_options(options)

@@ -1516,12 +1516,16 @@ class SquidController(_CoreSquidController):
             return bool(match and match.group(1) == "1")
 
         return {
-            "client_no_cache": find_bool("override_client_no_cache"),
-            "client_no_store": find_bool("override_client_no_store"),
-            "origin_private": find_bool("override_origin_private"),
-            "origin_no_store": find_bool("override_origin_no_store"),
-            "origin_no_cache": find_bool("override_origin_no_cache"),
-            "ignore_auth": find_bool("override_ignore_auth"),
+            "override_expire": find_bool("override_expire"),
+            "override_lastmod": find_bool("override_lastmod"),
+            "reload_into_ims": find_bool("reload_into_ims"),
+            "ignore_reload": find_bool("ignore_reload")
+            or find_bool("override_client_no_cache")
+            or find_bool("override_origin_no_cache"),
+            "ignore_no_store": find_bool("ignore_no_store")
+            or find_bool("override_client_no_store")
+            or find_bool("override_origin_no_store"),
+            "ignore_private": find_bool("ignore_private") or find_bool("override_origin_private"),
         }
 
     def get_caching_lines(self, config_text: Optional[str] = None) -> list[str]:
@@ -1564,15 +1568,19 @@ class SquidController(_CoreSquidController):
 
     def apply_cache_overrides(self, config_text: str, overrides: Dict[str, bool]) -> str:
         values = overrides or {}
-        flags = []
-        if bool(values.get("client_no_cache")):
-            flags.append("ignore-reload")
-        if bool(values.get("origin_no_cache")):
-            flags.append("ignore-reload")
-        if bool(values.get("origin_private")):
-            flags.append("ignore-private")
-        if bool(values.get("client_no_store")) or bool(values.get("origin_no_store")):
-            flags.append("ignore-no-store")
+        override_flag_map = (
+            ("override_expire", "override-expire"),
+            ("override_lastmod", "override-lastmod"),
+            ("reload_into_ims", "reload-into-ims"),
+            ("ignore_reload", "ignore-reload", "client_no_cache", "origin_no_cache"),
+            ("ignore_no_store", "ignore-no-store", "client_no_store", "origin_no_store"),
+            ("ignore_private", "ignore-private", "origin_private"),
+        )
+        flags = [
+            option
+            for key, option, *legacy_keys in override_flag_map
+            if bool(values.get(key)) or any(bool(values.get(legacy_key)) for legacy_key in legacy_keys)
+        ]
 
         start_marker = "# Cache overrides (managed by web UI)"
         end_marker = "# End cache overrides"
@@ -1583,7 +1591,18 @@ class SquidController(_CoreSquidController):
             flags=re.M | re.S,
         )
 
-        override_tokens = ("ignore-reload", "ignore-no-cache", "ignore-no-store", "ignore-private", "ignore-auth")
+        override_tokens = (
+            "override-expire",
+            "override-lastmod",
+            "reload-into-ims",
+            "ignore-reload",
+            "ignore-no-store",
+            "ignore-private",
+            # Obsolete legacy options accepted with warnings by some Squid builds; strip them too.
+            "ignore-no-cache",
+            "ignore-must-revalidate",
+            "ignore-auth",
+        )
 
         def should_skip_refresh_pattern(line: str) -> bool:
             return "(/cgi-bin/|\\?)" in line
@@ -1593,12 +1612,12 @@ class SquidController(_CoreSquidController):
         for line in text.splitlines(True):
             if re.match(r"^\s*refresh_pattern\b", line):
                 saw_refresh = True
-                if should_skip_refresh_pattern(line):
-                    out_lines.append(line)
-                    continue
                 stripped = line
                 for token in override_tokens:
                     stripped = re.sub(rf"\s+{re.escape(token)}\b", "", stripped)
+                if should_skip_refresh_pattern(line):
+                    out_lines.append(stripped)
+                    continue
                 if flags:
                     newline = "\n" if stripped.endswith("\n") else ""
                     core = stripped.rstrip("\r\n").rstrip()
@@ -1611,12 +1630,12 @@ class SquidController(_CoreSquidController):
         meta_block = "\n".join(
             [
                 start_marker,
-                f"# override_client_no_cache={'1' if bool(values.get('client_no_cache')) else '0'}",
-                f"# override_client_no_store={'1' if bool(values.get('client_no_store')) else '0'}",
-                f"# override_origin_private={'1' if bool(values.get('origin_private')) else '0'}",
-                f"# override_origin_no_store={'1' if bool(values.get('origin_no_store')) else '0'}",
-                f"# override_origin_no_cache={'1' if bool(values.get('origin_no_cache')) else '0'}",
-                f"# override_ignore_auth={'1' if bool(values.get('ignore_auth')) else '0'}",
+                f"# override_expire={'1' if bool(values.get('override_expire')) else '0'}",
+                f"# override_lastmod={'1' if bool(values.get('override_lastmod')) else '0'}",
+                f"# reload_into_ims={'1' if bool(values.get('reload_into_ims')) else '0'}",
+                f"# ignore_reload={'1' if bool(values.get('ignore_reload')) else '0'}",
+                f"# ignore_no_store={'1' if bool(values.get('ignore_no_store')) else '0'}",
+                f"# ignore_private={'1' if bool(values.get('ignore_private')) else '0'}",
                 end_marker,
                 "",
             ]

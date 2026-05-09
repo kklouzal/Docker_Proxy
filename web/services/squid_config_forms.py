@@ -31,21 +31,21 @@ http_upgrade_request_protocols websocket deny all
 http_upgrade_request_protocols OTHER deny all"""
 
 
-DEFAULT_REFRESH_PATTERNS = r"""# Safe heuristic caching when explicit expiry headers are absent.
-# Add more specific allow-lists above broader fallback rules.
-refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 1440 80% 10080 store-stale
-refresh_pattern -i \.(iso|img|dmg|bin|exe|msi|msu)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(rar|jar|gz|tgz|tar|bz2|zip|7z)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(mp4|mkv|flv|mov|avi|mpeg|webm)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(mp3|wav|ogg|flac|aac)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(png|jpe?g|gif|webp|bmp|ico|svg|tiff)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(woff2?|ttf|otf|eot)(\?|$) 43800 85% 129600 store-stale
-refresh_pattern -i \.(pdf|docx?|xlsx?|pptx?)(\?|$) 10080 90% 43200 store-stale
-refresh_pattern -i \.(css)(\?|$) 10080 80% 43800 store-stale
-refresh_pattern -i \.(js)(\?|$) 1440 80% 10080 store-stale
-refresh_pattern -i \.(xhtml|html|htm)\?.* 0 0% 0 store-stale
-refresh_pattern -i \.(xml)(\?|$) 360 80% 1440 store-stale
-refresh_pattern -i \.(xhtml|html|htm)$ 360 80% 1440 store-stale
+DEFAULT_REFRESH_PATTERNS = r"""# Standards-respecting heuristic caching when explicit freshness headers are absent.
+# Squid uses first-match-wins ordering; keep static/versioned assets above the query guard.
+# Do not add override-expire, ignore-no-store, ignore-private, or ignore-reload to safe defaults.
+refresh_pattern ^ftp: 1440 20% 10080
+refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 0 90% 43200 store-stale
+refresh_pattern -i \.(woff2?|ttf|otf|eot)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(css|js|mjs|map|wasm)(\?.*)?$ 0 80% 43200 store-stale
+refresh_pattern -i \.(avif|jxl|heic|heif|png|jpe?g|gif|webp|bmp|ico|svgz?|tiff?)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(mp4|m4v|mkv|flv|mov|avi|mpeg|mpg|webm)(\?.*)?$ 0 80% 43200 store-stale
+refresh_pattern -i \.(mp3|m4a|wav|ogg|oga|opus|flac|aac)(\?.*)?$ 0 80% 43200 store-stale
+refresh_pattern -i \.(iso|img|dmg|bin|exe|msi|msu|msp|cab|deb|rpm|apk|appx|appxbundle|msix|msixbundle|ipa|pkg|run)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(rar|jar|war|ear|gz|tgz|tar|bz2|tbz2|xz|txz|zst|zip|7z)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|epub)(\?.*)?$ 0 70% 43200 store-stale
+refresh_pattern -i \.(xml|json|webmanifest|appcache)(\?.*)?$ 0 20% 1440
+refresh_pattern -i \.(xhtml|html|htm)(\?.*)?$ 0 0% 0
 refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern . 0 20% 4320"""
 
@@ -1027,8 +1027,8 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "textarea",
         _tunable_or_default_if_none("refresh_patterns_text", DEFAULT_REFRESH_PATTERNS),
         _posted_multiline_reader("refresh_patterns_text"),
-        rows=16,
-        help_text="Ordered refresh_pattern list; place more specific regexes above broad fallbacks.",
+        rows=22,
+        help_text="Ordered refresh_pattern list; place static/versioned asset regexes above broad query and catch-all fallbacks. Safe defaults must not use HTTP-standard-violating override or ignore options.",
     ),
     _field(
         "connect_timeout_seconds",
@@ -3029,13 +3029,20 @@ SAFE_FORM_KINDS = frozenset(FORM_KIND_FIELD_SPECS)
 
 
 CACHE_OVERRIDE_FIELDS: tuple[str, ...] = (
-    "client_no_cache",
-    "client_no_store",
-    "origin_private",
-    "origin_no_store",
-    "origin_no_cache",
-    "ignore_auth",
+    "override_expire",
+    "override_lastmod",
+    "reload_into_ims",
+    "ignore_reload",
+    "ignore_no_store",
+    "ignore_private",
 )
+
+
+_LEGACY_CACHE_OVERRIDE_FORM_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "ignore_reload": ("override_client_no_cache", "override_origin_no_cache"),
+    "ignore_no_store": ("override_client_no_store", "override_origin_no_store"),
+    "ignore_private": ("override_origin_private",),
+}
 
 
 def get_config_ui_sections() -> tuple[UiSectionSpec, ...]:
@@ -3121,4 +3128,9 @@ def build_template_options_from_form(
 
 
 def parse_cache_override_form(form: FormMap) -> dict[str, bool]:
-    return {field: form.get(f"override_{field}") == "on" for field in CACHE_OVERRIDE_FIELDS}
+    overrides: dict[str, bool] = {}
+    for field in CACHE_OVERRIDE_FIELDS:
+        modern_on = form.get(field) == "on"
+        legacy_on = any(form.get(legacy_field) == "on" for legacy_field in _LEGACY_CACHE_OVERRIDE_FORM_FIELDS.get(field, ()))
+        overrides[field] = modern_on or legacy_on
+    return overrides

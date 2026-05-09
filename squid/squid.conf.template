@@ -73,21 +73,21 @@ acl vary_encoding_only rep_header Vary ^Accept-Encoding$
 store_miss deny has_vary !vary_encoding_only
 # END SQUID-UI BLOCK: CACHE_POLICY
 # BEGIN SQUID-UI BLOCK: REFRESH_PATTERNS
-# Safe heuristic caching when explicit expiry headers are absent.
-# Add more specific allow-lists above broader fallback rules.
-refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 1440 80% 10080 store-stale
-refresh_pattern -i \.(iso|img|dmg|bin|exe|msi|msu)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(rar|jar|gz|tgz|tar|bz2|zip|7z)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(mp4|mkv|flv|mov|avi|mpeg|webm)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(mp3|wav|ogg|flac|aac)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(png|jpe?g|gif|webp|bmp|ico|svg|tiff)(\?|$) 43800 100% 129600 store-stale
-refresh_pattern -i \.(woff2?|ttf|otf|eot)(\?|$) 43800 85% 129600 store-stale
-refresh_pattern -i \.(pdf|docx?|xlsx?|pptx?)(\?|$) 10080 90% 43200 store-stale
-refresh_pattern -i \.(css)(\?|$) 10080 80% 43800 store-stale
-refresh_pattern -i \.(js)(\?|$) 1440 80% 10080 store-stale
-refresh_pattern -i \.(xhtml|html|htm)\?.* 0 0% 0 store-stale
-refresh_pattern -i \.(xml)(\?|$) 360 80% 1440 store-stale
-refresh_pattern -i \.(xhtml|html|htm)$ 360 80% 1440 store-stale
+# Standards-respecting heuristic caching when explicit freshness headers are absent.
+# Squid uses first-match-wins ordering; keep static/versioned assets above the query guard.
+# Do not add override-expire, ignore-no-store, ignore-private, or ignore-reload to safe defaults.
+refresh_pattern ^ftp: 1440 20% 10080
+refresh_pattern -i (fonts\.gstatic\.com|fonts\.googleapis\.com)/.* 0 90% 43200 store-stale
+refresh_pattern -i \.(woff2?|ttf|otf|eot)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(css|js|mjs|map|wasm)(\?.*)?$ 0 80% 43200 store-stale
+refresh_pattern -i \.(avif|jxl|heic|heif|png|jpe?g|gif|webp|bmp|ico|svgz?|tiff?)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(mp4|m4v|mkv|flv|mov|avi|mpeg|mpg|webm)(\?.*)?$ 0 80% 43200 store-stale
+refresh_pattern -i \.(mp3|m4a|wav|ogg|oga|opus|flac|aac)(\?.*)?$ 0 80% 43200 store-stale
+refresh_pattern -i \.(iso|img|dmg|bin|exe|msi|msu|msp|cab|deb|rpm|apk|appx|appxbundle|msix|msixbundle|ipa|pkg|run)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(rar|jar|war|ear|gz|tgz|tar|bz2|tbz2|xz|txz|zst|zip|7z)(\?.*)?$ 0 90% 129600 store-stale
+refresh_pattern -i \.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|epub)(\?.*)?$ 0 70% 43200 store-stale
+refresh_pattern -i \.(xml|json|webmanifest|appcache)(\?.*)?$ 0 20% 1440
+refresh_pattern -i \.(xhtml|html|htm)(\?.*)?$ 0 0% 0
 refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern . 0 20% 4320
 # END SQUID-UI BLOCK: REFRESH_PATTERNS

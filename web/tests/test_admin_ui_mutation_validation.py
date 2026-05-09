@@ -59,7 +59,7 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(monkeypatch,
     ("path", "data", "expected_source_kind"),
     [
         ("/squid/config/apply-safe", {"form_kind": "caching"}, "template"),
-        ("/squid/config/apply-overrides", {"client_no_cache": "on"}, "overrides"),
+        ("/squid/config/apply-overrides", {"ignore_reload": "on"}, "overrides"),
         ("/clamav/toggle", {"action": "enable"}, "clamav"),
     ],
 )

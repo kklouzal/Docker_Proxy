@@ -218,37 +218,37 @@
                     <form class="form config-form-shell" id="config-overrides-form" action="{{ url_for('apply_cache_overrides') }}" method="post" data-config-form="overrides" data-allow-dirty-submit="1">
                         {{ csrf_field() }}
                         <div class="small config-note">
-                            These settings intentionally override cache-control semantics to increase caching. Use with care.
+                            These six controls are the current Squid <span class="mono">refresh_pattern</span> HTTP-semantics override options. They intentionally violate normal cache-control behavior; use only for controlled networks where stale/private/no-store risk is understood.
                         </div>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_client_no_cache" {% if overrides and overrides.client_no_cache %}checked{% endif %} />
-                            <span>Override client no-cache (Cache-Control/Pragma)</span>
+                            <input class="check" type="checkbox" name="override_expire" {% if overrides and overrides.override_expire %}checked{% endif %} />
+                            <span>Override origin expiry/max-age minimums (override-expire)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_origin_private" {% if overrides and overrides.origin_private %}checked{% endif %} />
-                            <span>Override origin private (Cache-Control: private)</span>
+                            <input class="check" type="checkbox" name="override_lastmod" {% if overrides and overrides.override_lastmod %}checked{% endif %} />
+                            <span>Override recently modified heuristic guard (override-lastmod)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_origin_no_cache" {% if overrides and overrides.origin_no_cache %}checked{% endif %} />
-                            <span>Override origin no-cache (Cache-Control: no-cache)</span>
+                            <input class="check" type="checkbox" name="reload_into_ims" {% if overrides and overrides.reload_into_ims %}checked{% endif %} />
+                            <span>Convert reload/no-cache requests into conditional revalidation (reload-into-ims)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_client_no_store" {% if overrides and overrides.client_no_store %}checked{% endif %} />
-                            <span>Override client no-store (Cache-Control: no-store)</span>
+                            <input class="check" type="checkbox" name="ignore_reload" {% if overrides and overrides.ignore_reload %}checked{% endif %} />
+                            <span>Ignore client reload/no-cache requests (ignore-reload)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_origin_no_store" {% if overrides and overrides.origin_no_store %}checked{% endif %} />
-                            <span>Override origin no-store (Cache-Control/Pragma: no-store)</span>
+                            <input class="check" type="checkbox" name="ignore_no_store" {% if overrides and overrides.ignore_no_store %}checked{% endif %} />
+                            <span>Ignore origin no-store responses (ignore-no-store)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_ignore_auth" {% if overrides and overrides.ignore_auth %}checked{% endif %} />
-                            <span>Override authorization-required objects (ignore-auth)</span>
+                            <input class="check" type="checkbox" name="ignore_private" {% if overrides and overrides.ignore_private %}checked{% endif %} />
+                            <span>Ignore origin private responses (ignore-private)</span>
                         </label>
 
                         <div class="config-form-footer">

@@ -247,8 +247,8 @@ def test_live_squid_config_apply_overrides_publishes_override_metadata(admin_cli
         response = admin_client.admin_post_form(
             "/squid/config/apply-overrides",
             {
-                "override_client_no_cache": "on",
-                "override_origin_private": "on",
+                "ignore_reload": "on",
+                "ignore_private": "on",
             },
             csrf_path="/squid/config?tab=caching&subtab=overrides",
             timeout_seconds=120.0,
@@ -262,8 +262,8 @@ def test_live_squid_config_apply_overrides_publishes_override_metadata(admin_cli
             timeout_seconds=120.0,
         )
         config_text = active_config_text(LIVE_CONFIG.primary_proxy_id)
-        assert "# override_client_no_cache=1" in config_text
-        assert "# override_origin_private=1" in config_text
-        assert "# override_client_no_store=0" in config_text
+        assert "# ignore_reload=1" in config_text
+        assert "# ignore_private=1" in config_text
+        assert "# ignore_no_store=0" in config_text
     finally:
         _restore_primary_config(admin_client, original_config)

@@ -13,7 +13,9 @@ def _ensure_web_import_path() -> None:
 _ensure_web_import_path()
 
 from services.squid_config_forms import (  # type: ignore  # noqa: E402
+    CACHE_OVERRIDE_FIELDS,
     DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
+    DEFAULT_REFRESH_PATTERNS,
     build_template_options,
     build_template_options_from_form,
     get_config_ui_field_map,
@@ -89,6 +91,7 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["store_objects_per_bucket"] == 20
     assert options["client_db_on"] is True
     assert options["http_upgrade_request_protocols_rules_text"] == DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES
+    assert options["refresh_patterns_text"] == DEFAULT_REFRESH_PATTERNS
 
 
 def test_generated_template_defaults_to_rock_cache_store() -> None:
@@ -107,6 +110,38 @@ def test_generated_template_defaults_to_rock_cache_store() -> None:
     assert "store_avg_object_size 13 KB" in config
     assert "http_upgrade_request_protocols websocket deny all" in config
     assert "http_upgrade_request_protocols OTHER deny all" in config
+
+
+
+def test_default_refresh_patterns_are_standards_safe_and_modern_static_first() -> None:
+    lines = [line for line in DEFAULT_REFRESH_PATTERNS.splitlines() if line.startswith("refresh_pattern")]
+    query_guard_index = lines.index(r"refresh_pattern -i (/cgi-bin/|\?) 0 0% 0")
+
+    assert lines[0] == "refresh_pattern ^ftp: 1440 20% 10080"
+    assert lines[-2] == r"refresh_pattern -i (/cgi-bin/|\?) 0 0% 0"
+    assert lines[-1] == "refresh_pattern . 0 20% 4320"
+    assert any(r"\.(css|js|mjs|map|wasm)(\?.*)?$" in line for line in lines[:query_guard_index])
+    assert any("avif|jxl|heic|heif" in line for line in lines[:query_guard_index])
+    assert any("appx|appxbundle|msix|msixbundle" in line for line in lines[:query_guard_index])
+
+    dangerous_options = (
+        "override-expire",
+        "override-lastmod",
+        "ignore-no-store",
+        "ignore-private",
+        "ignore-reload",
+        "ignore-auth",
+        "reload-into-ims",
+        "override-expire",
+        "override-lastmod",
+    )
+    assert not any(option in line for line in lines for option in dangerous_options)
+
+
+def test_template_refresh_pattern_block_matches_form_default() -> None:
+    template = (Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template").read_text(encoding="utf-8")
+
+    assert DEFAULT_REFRESH_PATTERNS in template
 
 
 def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic():
@@ -331,16 +366,101 @@ def test_build_template_options_from_form_supports_multiline_advanced_rules():
 def test_parse_cache_override_form_defaults_unchecked_to_false():
     overrides = parse_cache_override_form(
         {
-            "override_client_no_cache": "on",
-            "override_origin_private": "on",
+            "override_expire": "on",
+            "ignore_private": "on",
         }
     )
 
-    assert overrides["client_no_cache"] is True
-    assert overrides["origin_private"] is True
-    assert overrides["client_no_store"] is False
-    assert overrides["origin_no_cache"] is False
-    assert overrides["ignore_auth"] is False
+    assert tuple(overrides) == CACHE_OVERRIDE_FIELDS
+    assert overrides["override_expire"] is True
+    assert overrides["ignore_private"] is True
+    assert overrides["override_lastmod"] is False
+    assert overrides["reload_into_ims"] is False
+    assert overrides["ignore_reload"] is False
+    assert overrides["ignore_no_store"] is False
+
+
+def test_parse_cache_override_form_accepts_legacy_semantic_names():
+    overrides = parse_cache_override_form(
+        {
+            "override_client_no_cache": "on",
+            "override_origin_private": "on",
+            "override_origin_no_store": "on",
+        }
+    )
+
+    assert overrides["ignore_reload"] is True
+    assert overrides["ignore_private"] is True
+    assert overrides["ignore_no_store"] is True
+    assert overrides["override_expire"] is False
+    assert overrides["override_lastmod"] is False
+    assert overrides["reload_into_ims"] is False
+
+
+def test_cache_override_form_contains_exact_current_squid_override_options():
+    expected = (
+        "override_expire",
+        "override_lastmod",
+        "reload_into_ims",
+        "ignore_reload",
+        "ignore_no_store",
+        "ignore_private",
+    )
+
+    assert CACHE_OVERRIDE_FIELDS == expected
+
+
+def test_apply_cache_overrides_applies_all_current_squid_override_flags_and_metadata():
+    from services.squidctl import SquidController  # type: ignore
+
+    config = "\n".join(
+        [
+            "refresh_pattern ^ftp: 1440 20% 10080 ignore-auth",
+            r"refresh_pattern -i (/cgi-bin/|\?) 0 0% 0 ignore-private",
+            "refresh_pattern . 0 20% 4320 ignore-no-cache",
+        ]
+    ) + "\n"
+    overrides = {field: True for field in CACHE_OVERRIDE_FIELDS}
+
+    rendered = SquidController().apply_cache_overrides(config, overrides)
+
+    expected_flags = "override-expire override-lastmod reload-into-ims ignore-reload ignore-no-store ignore-private"
+    assert f"refresh_pattern ^ftp: 1440 20% 10080 {expected_flags}" in rendered
+    assert f"refresh_pattern . 0 20% 4320 {expected_flags}" in rendered
+    assert r"refresh_pattern -i (/cgi-bin/|\?) 0 0% 0" in rendered
+    assert "ignore-auth" not in rendered
+    assert "ignore-no-cache" not in rendered
+    assert "ignore-must-revalidate" not in rendered
+
+    for field in CACHE_OVERRIDE_FIELDS:
+        assert f"# {field}=1" in rendered
+
+
+def test_get_cache_override_options_reads_current_and_legacy_metadata():
+    from services.squidctl import SquidController  # type: ignore
+
+    config = "\n".join(
+        [
+            "# override_expire=1",
+            "# override_lastmod=1",
+            "# reload_into_ims=0",
+            "# ignore_reload=0",
+            "# ignore_no_store=0",
+            "# ignore_private=0",
+            "# override_client_no_cache=1",
+            "# override_origin_no_store=1",
+            "# override_origin_private=1",
+        ]
+    )
+
+    overrides = SquidController().get_cache_override_options(config)
+
+    assert overrides["override_expire"] is True
+    assert overrides["override_lastmod"] is True
+    assert overrides["reload_into_ims"] is False
+    assert overrides["ignore_reload"] is True
+    assert overrides["ignore_no_store"] is True
+    assert overrides["ignore_private"] is True
 
 
 def test_normalize_safe_form_kind_falls_back_to_caching():
