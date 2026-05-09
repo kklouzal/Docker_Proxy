@@ -467,9 +467,6 @@ class SquidController(_CoreSquidController):
         lines.append("# Peek at step 1 to learn ClientHello/SNI without sacrificing later bumping.")
         lines.append("ssl_bump peek step1")
         lines.append("include /etc/squid/conf.d/10-sslfilter.conf")
-        lines.append("acl steam_sites ssl::server_name .steamserver.net")
-        lines.append("note ssl_exception steam steam_sites")
-        lines.append("ssl_bump splice steam_sites")
         append_block(lines, "CUSTOM_SSL_RULES", additional_ssl_rules_text)
         lines.append("# Stare at step 2 so the default path can inspect server certificates and still bump at step 3.")
         lines.append("ssl_bump stare step2")
@@ -721,9 +718,13 @@ class SquidController(_CoreSquidController):
     def _http_port_listener_settings(self, text: str) -> dict[str, Any]:
         explicit_port: Optional[int] = None
         intercept_port: Optional[int] = None
+        https_intercept_port: Optional[int] = None
         for _physical_lines, logical in self._logical_config_lines(text):
             stripped = logical.strip()
-            if not stripped or stripped.startswith("#") or not stripped.lower().startswith("http_port "):
+            if not stripped or stripped.startswith("#"):
+                continue
+            lower = stripped.lower()
+            if not (lower.startswith("http_port ") or lower.startswith("https_port ")):
                 continue
             parts = stripped.split()
             if len(parts) < 2:
@@ -732,10 +733,13 @@ class SquidController(_CoreSquidController):
             if port is None:
                 continue
             modes = {part.strip().lower() for part in parts[2:]}
-            if "intercept" in modes:
+            if lower.startswith("https_port ") and "intercept" in modes:
+                if https_intercept_port is None:
+                    https_intercept_port = port
+            elif lower.startswith("http_port ") and "intercept" in modes:
                 if intercept_port is None:
                     intercept_port = port
-            elif "tproxy" not in modes:
+            elif lower.startswith("http_port ") and "tproxy" not in modes:
                 if explicit_port is None:
                     explicit_port = port
 
@@ -744,6 +748,8 @@ class SquidController(_CoreSquidController):
             "explicit_proxy_port": explicit,
             "intercept_enabled": intercept_port is not None,
             "intercept_port": intercept_port if intercept_port is not None else self._default_intercept_port(explicit),
+            "https_intercept_enabled": https_intercept_port is not None,
+            "https_intercept_port": https_intercept_port if https_intercept_port is not None else (3130 if explicit != 3130 else 3131),
         }
 
     def _render_explicit_http_port(self, port: int, dynamic_cert_mem_cache_size_mb: int) -> list[str]:
@@ -763,14 +769,31 @@ class SquidController(_CoreSquidController):
             "# END SQUID-UI INTERCEPT LISTENER",
         ]
 
+    def _render_https_intercept_port_block(self, port: int, dynamic_cert_mem_cache_size_mb: int) -> list[str]:
+        return [
+            "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER",
+            "# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.",
+            f"https_port 0.0.0.0:{self._coerce_port(port, 3130)} intercept ssl-bump \\",
+            "\tcert=/etc/squid/ssl/certs/ca.crt \\",
+            "\tkey=/etc/squid/ssl/certs/ca.key \\",
+            "\tgenerate-host-certificates=on \\",
+            f"\tdynamic_cert_mem_cache_size={max(0, int(dynamic_cert_mem_cache_size_mb))}MB",
+            "# END SQUID-UI HTTPS INTERCEPT LISTENER",
+        ]
+
     def _render_http_port_listeners(self, text: str, options: Dict[str, Any], dynamic_cert_mem_cache_size_mb: int) -> str:
         explicit_port = self._coerce_port(options.get("explicit_proxy_port"), 3128)
         intercept_enabled = bool(options.get("intercept_enabled_on"))
         intercept_port = self._coerce_port(options.get("intercept_port"), self._default_intercept_port(explicit_port))
+        https_intercept_enabled = bool(options.get("https_intercept_enabled_on"))
+        https_intercept_port = self._coerce_port(options.get("https_intercept_port"), 3130 if explicit_port != 3130 else 3131)
         if intercept_port == explicit_port:
             intercept_port = self._default_intercept_port(explicit_port)
             if intercept_port == explicit_port:
                 intercept_port = 3129 if explicit_port != 3129 else 3130
+        used_ports = {explicit_port, intercept_port if intercept_enabled else None}
+        while https_intercept_port in used_ports:
+            https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
 
         rendered_lines: list[str] = []
         replaced_explicit = False
@@ -778,10 +801,10 @@ class SquidController(_CoreSquidController):
         logical_lines = self._logical_config_lines(text)
         for physical_lines, logical in logical_lines:
             stripped = logical.strip()
-            if any("# BEGIN SQUID-UI INTERCEPT LISTENER" in line for line in physical_lines):
+            if any("# BEGIN SQUID-UI INTERCEPT LISTENER" in line for line in physical_lines) or any("# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" in line for line in physical_lines):
                 skipping_managed_intercept = True
             if skipping_managed_intercept:
-                if any("# END SQUID-UI INTERCEPT LISTENER" in line for line in physical_lines):
+                if any("# END SQUID-UI INTERCEPT LISTENER" in line for line in physical_lines) or any("# END SQUID-UI HTTPS INTERCEPT LISTENER" in line for line in physical_lines):
                     skipping_managed_intercept = False
                 continue
 
@@ -792,6 +815,8 @@ class SquidController(_CoreSquidController):
                     rendered_lines.extend(self._render_explicit_http_port(explicit_port, dynamic_cert_mem_cache_size_mb))
                     if intercept_enabled:
                         rendered_lines.extend(self._render_intercept_http_port_block(intercept_port))
+                    if https_intercept_enabled:
+                        rendered_lines.extend(self._render_https_intercept_port_block(https_intercept_port, dynamic_cert_mem_cache_size_mb))
                     replaced_explicit = True
                     continue
 
@@ -801,6 +826,8 @@ class SquidController(_CoreSquidController):
             prefix = self._render_explicit_http_port(explicit_port, dynamic_cert_mem_cache_size_mb)
             if intercept_enabled:
                 prefix.extend(self._render_intercept_http_port_block(intercept_port))
+            if https_intercept_enabled:
+                prefix.extend(self._render_https_intercept_port_block(https_intercept_port, dynamic_cert_mem_cache_size_mb))
             rendered_lines = prefix + [""] + rendered_lines
         return "\n".join(rendered_lines) + ("\n" if text.endswith("\n") else "")
 
@@ -1210,6 +1237,9 @@ class SquidController(_CoreSquidController):
             "intercept_enabled": http_listener_settings.get("intercept_enabled"),
             "intercept_enabled_on": http_listener_settings.get("intercept_enabled"),
             "intercept_port": http_listener_settings.get("intercept_port"),
+            "https_intercept_enabled": http_listener_settings.get("https_intercept_enabled"),
+            "https_intercept_enabled_on": http_listener_settings.get("https_intercept_enabled"),
+            "https_intercept_port": http_listener_settings.get("https_intercept_port"),
             "max_filedescriptors": find_int(r"^\s*max_filedescriptors\s+(\d+)\s*$"),
             "dns_timeout_seconds": find_time_seconds("dns_timeout"),
             "dns_retransmit_interval_seconds": find_time_seconds("dns_retransmit_interval"),

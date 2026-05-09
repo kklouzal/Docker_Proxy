@@ -120,6 +120,22 @@ COMPATIBILITY_PRESETS: Tuple[CompatibilityPreset, ...] = (
         ),
     ),
     CompatibilityPreset(
+        id="steam",
+        title="Steam / Valve",
+        description="Steam client, community, chat, broadcast, content, and Valve CDN hosts commonly sensitive to TLS interception or used by game/update delivery paths.",
+        domains=(
+            "steampowered.com", "*.steampowered.com", "steamcommunity.com", "*.steamcommunity.com",
+            "steamcontent.com", "*.steamcontent.com", "steamserver.net", "*.steamserver.net",
+            "steamstatic.com", "*.steamstatic.com", "steamusercontent.com", "*.steamusercontent.com",
+            "valvesoftware.com", "*.valvesoftware.com", "steam-chat.com", "*.steam-chat.com",
+            "steam.tv", "*.steam.tv", "lancache.steamcontent.com",
+            "steamcdn-a.akamaihd.net", "*.steamcdn-a.akamaihd.net", "steamstore-a.akamaihd.net", "*.steamstore-a.akamaihd.net",
+            "steamcommunity-a.akamaihd.net", "*.steamcommunity-a.akamaihd.net", "steamusercontent-a.akamaihd.net", "*.steamusercontent-a.akamaihd.net",
+            "steamuserimages-a.akamaihd.net", "*.steamuserimages-a.akamaihd.net", "steamvideo-a.akamaihd.net", "*.steamvideo-a.akamaihd.net",
+            "cdn.cloudflare.steamstatic.com", "*.cdn.cloudflare.steamstatic.com", "steamcdn.cloudflare.steamstatic.com",
+        ),
+    ),
+    CompatibilityPreset(
         id="zoom",
         title="Zoom",
         description="Zoom recommends allowing zoom.us and subdomains through firewall/proxy configurations and commonly recommends bypassing proxy or SSL inspection for Zoom client traffic.",

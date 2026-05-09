@@ -451,7 +451,7 @@ iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port "$SQUIDPOR
 iptables -t mangle -A PREROUTING -p tcp --dport "$SQUIDPORT" -j DROP
 ```
 
-Transparent HTTPS interception and Linux TPROXY are separate advanced designs. HTTPS interception requires a dedicated `https_port ... intercept ssl-bump` capture path for TCP/443; TPROXY requires Squid/netfilter capability support, policy routing, fwmarks, and additional Docker/host privileges. They are intentionally not enabled by the HTTP NAT intercept toggle.
+HTTPS NAT interception is a separate explicit listener from plain HTTP interception. If enabled, redirect only TCP/443 traffic to the HTTPS intercept listener port configured in the Admin UI, ensure clients trust the proxy CA, and keep the listener blocked from direct untrusted access. Linux TPROXY remains a separate advanced design requiring Squid/netfilter capability support, policy routing, fwmarks, and additional Docker/host privileges.
 
 ## Data persistence
 This container uses an external MySQL database for runtime/admin state, including:
@@ -703,6 +703,7 @@ Current source-backed preset coverage:
 - **Adobe Creative Cloud / Acrobat**: Adobe's enterprise endpoint allowlist, including hosted Adobe domains, licensing/activation, Admin Console, sign-in/IMS, updates, Acrobat/Creative Cloud content, Fonts/Typekit, Stock/Behance, and common Adobe CDN dependencies.
 - **Developer and collaboration SaaS**: GitHub/Copilot allowlist domains, Slack WebSocket and huddles paths, Atlassian/Bitbucket Cloud domains, and Dropbox sync/API/static hosts.
 - **Identity and MFA services**: Okta domains that Okta explicitly says to exclude from SSL proxy inspection for Okta Verify/FastPass, plus stable Duo service/download domains. Duo Authentication Proxy API hostnames are tenant-specific, so operators should add their own Duo API hostname when deployed.
+- **Steam / Valve**: Steam client, community/chat/content, Valve domains, and common Steam CDN hostnames that frequently need splice/no-decrypt handling for client reliability.
 - **Discord and Dropbox**: retained standalone compatibility presets for existing operators and common app-family breakage patterns.
 
 The hardcoded presets intentionally prefer FQDN/SNI suffixes over IP ranges. Microsoft 365, Webex, Zoom, Google, Apple, Adobe, GitHub, Slack, Atlassian, Okta, and similar SaaS vendors revise endpoint data over time; dynamic vendor feeds/docs should remain the authority for strict enterprise allowlisting, while these presets provide safe out-of-the-box no-decrypt coverage for common deployments.

@@ -29,11 +29,22 @@ body{
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
+}
+
+body::before{
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background:
     radial-gradient(800px 500px at 10% 10%, rgba(122,162,255,.18), transparent 60%),
     radial-gradient(900px 600px at 90% 20%, rgba(155,135,255,.16), transparent 65%),
     radial-gradient(800px 600px at 50% 100%, rgba(46,229,157,.10), transparent 60%),
     var(--bg);
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 .skip-link{
@@ -425,6 +436,13 @@ a.brand:hover{
   gap: 16px;
   width: 100%;
   align-items: start;
+}
+
+.grid > .split-left,
+.grid > .split-right{
+  grid-column: span 12;
+  min-width: 0;
+  width: 100%;
 }
 
 .card{

@@ -576,7 +576,6 @@ replace_or_append(r'^\s*cache_log\s+(?:stdio:)?/var/log/squid/cache\.log\b.*$', 
 replace_or_append(r'^\s*icap_log\s+(?:stdio:)?/var/log/squid/icap\.log\b.*$', 'icap_log stdio:/var/log/squid/icap.log icapobserve')
 
 for note_line, acl_name in (
-    ('note ssl_exception steam steam_sites', 'steam_sites'),
     ('note cache_bypass auth has_auth', 'has_auth'),
     ('note cache_bypass cookie has_cookie', 'has_cookie'),
 ):
@@ -722,78 +721,6 @@ if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/10-sslfilter.con
                 print "";
                 print "# SSL filtering (no-bump CIDRs). Safe if empty.";
                 print "include /etc/squid/conf.d/10-sslfilter.conf";
-            }
-        }
-    ' /etc/squid/squid.conf > "$TMP" && mv "$TMP" /etc/squid/squid.conf || rm -f "$TMP"
-fi
-
-# Steam downloads/auth endpoints are frequently intolerant of TLS interception.
-# If the client shows "No Connection" unless bypassing *.steamserver.net, splice those
-# destinations (no MITM) while keeping bump enabled for other traffic.
-if [ -f /etc/squid/squid.conf ]; then
-    # NOTE: Use a single idempotent rewrite.
-    # - Removes any previously injected/corrupted steam lines.
-    # - Inserts the steam ACL in a safe location (after 'acl step1...' or before ssl_bump rules).
-    # - Inserts splice rule before any bump rule (or right after sslfilter include when present).
-    TMP="/tmp/squid.conf.$$"
-    awk '
-        BEGIN { added_acl=0; inserted_splice=0 }
-
-        # Drop any existing (or corrupted) steam ACL/splice lines to avoid duplicates.
-        /^[[:space:]]*(acl|cl)[[:space:]]+steam_sites[[:space:]]+ssl::server_name[[:space:]]+\.steamserver\.net[[:space:]]*$/ { next }
-        /^[[:space:]]*ssl_bump[[:space:]]+splice[[:space:]]+steam_sites[[:space:]]*$/ { next }
-
-        {
-            # Prefer placing the ACL alongside other ssl-bump ACLs.
-            if ($0 ~ /^acl step1 at_step SslBump1[[:space:]]*$/ && !added_acl) {
-                print;
-                print "acl steam_sites ssl::server_name .steamserver.net";
-                added_acl=1;
-                next;
-            }
-
-            # If we have not placed the ACL yet, place it just before the first ssl_bump rule.
-            if ($0 ~ /^ssl_bump[[:space:]]+/ && !added_acl) {
-                print "acl steam_sites ssl::server_name .steamserver.net";
-                added_acl=1;
-            }
-
-            # Prefer placing splice rule right after sslfilter include.
-            if ($0 ~ /^include[[:space:]]+\/etc\/squid\/conf\.d\/10-sslfilter\.conf[[:space:]]*$/ && !inserted_splice) {
-                print;
-                print "";
-                print "# Steam downloads/auth endpoints are frequently intolerant of TLS interception.";
-                print "# Splice steamserver.net (no MITM) to improve Steam client reliability.";
-                print "ssl_bump splice steam_sites";
-                inserted_splice=1;
-                next;
-            }
-
-            # Otherwise ensure splice happens before the first bump rule.
-            if ($0 ~ /^ssl_bump[[:space:]]+bump/ && !inserted_splice) {
-                print "";
-                print "# Steam downloads/auth endpoints are frequently intolerant of TLS interception.";
-                print "# Splice steamserver.net (no MITM) to improve Steam client reliability.";
-                print "ssl_bump splice steam_sites";
-                inserted_splice=1;
-                print;
-                next;
-            }
-
-            print;
-        }
-
-        END {
-            # If there are no ssl_bump rules at all, append at the end (best-effort).
-            if (!added_acl) {
-                print "";
-                print "acl steam_sites ssl::server_name .steamserver.net";
-            }
-            if (!inserted_splice) {
-                print "";
-                print "# Steam downloads/auth endpoints are frequently intolerant of TLS interception.";
-                print "# Splice steamserver.net (no MITM) to improve Steam client reliability.";
-                print "ssl_bump splice steam_sites";
             }
         }
     ' /etc/squid/squid.conf > "$TMP" && mv "$TMP" /etc/squid/squid.conf || rm -f "$TMP"

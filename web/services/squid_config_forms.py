@@ -345,6 +345,15 @@ def _resolve_intercept_port(tunables: TunableMap, max_workers: int) -> int:
     return _clamp_port(tunables.get("intercept_port"), default_port)
 
 
+def _resolve_https_intercept_enabled(tunables: TunableMap, _max_workers: int) -> bool:
+    return bool(tunables.get("https_intercept_enabled"))
+
+
+def _resolve_https_intercept_port(tunables: TunableMap, max_workers: int) -> int:
+    explicit_port = _resolve_explicit_proxy_port(tunables, max_workers)
+    default_port = 3130 if explicit_port != 3130 else 3131
+    return _clamp_port(tunables.get("https_intercept_port"), default_port)
+
 def _resolve_shared_transient_entries_limit(tunables: TunableMap, max_workers: int) -> int:
     value = tunables.get("shared_transient_entries_limit")
     if value is not None:
@@ -1275,6 +1284,33 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         step=1,
         help_text="Dedicated NAT intercept port, normally explicit proxy port + 1. Do not expose this port directly to untrusted clients.",
         depends_on=("intercept_enabled_on",),
+        show_when=("checked",),
+    ),
+    _field(
+        "https_intercept_enabled_on",
+        "network",
+        "listeners",
+        "Enable HTTPS NAT intercept listener",
+        "https_port intercept ssl-bump",
+        "checkbox",
+        _resolve_https_intercept_enabled,
+        _checkbox_reader("https_intercept_enabled_on"),
+        help_text="Adds a dedicated Squid HTTPS intercept listener for router/firewall redirected TCP/443 traffic. Requires an installed proxy CA and external REDIRECT/DNAT rules.",
+    ),
+    _field(
+        "https_intercept_port",
+        "network",
+        "listeners",
+        "HTTPS intercept listener port",
+        "https_port intercept ssl-bump",
+        "number",
+        _resolve_https_intercept_port,
+        _posted_int_reader("https_intercept_port"),
+        minimum=1,
+        maximum=65535,
+        step=1,
+        help_text="Dedicated HTTPS NAT intercept port for TCP/443 redirection. Do not expose directly to untrusted clients.",
+        depends_on=("https_intercept_enabled_on",),
         show_when=("checked",),
     ),
     _field(
@@ -2705,6 +2741,8 @@ CONFIG_UI_SECTIONS: tuple[UiSectionSpec, ...] = (
                     "explicit_proxy_port",
                     "intercept_enabled_on",
                     "intercept_port",
+                    "https_intercept_enabled_on",
+                    "https_intercept_port",
                 ),
             ),
             UiGroupSpec(
@@ -3023,6 +3061,12 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
     options["explicit_proxy_port"] = explicit_port
     options["intercept_port"] = intercept_port
     options["intercept_enabled_on"] = bool(options.get("intercept_enabled_on", False))
+    https_intercept_port = _clamp_port(options.get("https_intercept_port"), 3130 if explicit_port != 3130 else 3131)
+    used_ports = {explicit_port, intercept_port if options["intercept_enabled_on"] else None}
+    while https_intercept_port in used_ports:
+        https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
+    options["https_intercept_port"] = https_intercept_port
+    options["https_intercept_enabled_on"] = bool(options.get("https_intercept_enabled_on", False))
 
     range_value = _normalize_range_offset_limit_value(options.get("range_offset_limit_value"))
     if not bool(options.get("range_cache_on", True)):

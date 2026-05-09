@@ -12,6 +12,8 @@ def test_card_split_widths_are_opt_in_layouts() -> None:
     css = STYLE.read_text(encoding="utf-8")
 
     assert "width: min(1600px, calc(100% - 32px));" in css
+    assert ".grid > .split-left," in css
+    assert ".grid > .split-right" in css
     assert ".grid.split-layout > .card.split-left" in css
     assert ".grid.sidebar-wide-layout > .card.split-left" in css
     assert ".grid.data-pair-layout > .card.split-left" in css
@@ -68,3 +70,10 @@ def test_pac_nav_has_server_rendered_active_state() -> None:
     html = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
 
     assert "request.endpoint == 'pac_builder'" in html
+
+
+def test_proxy_management_lives_in_context_strip_not_top_nav() -> None:
+    html = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
+
+    assert ">Manage proxies</a>" in html
+    assert ">Proxies</a>" not in html

@@ -41,6 +41,8 @@ _DOMAIN_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"\bCONNECT\s+([A-Za-z0-9.-]+):\d+\b", re.I),
     re.compile(r"\bhttps?://([A-Za-z0-9.-]+)\b", re.I),
     re.compile(r"\bhost=([A-Za-z0-9.-]+)\b", re.I),
+    re.compile(r"\bpeer=([A-Za-z0-9.-]+)(?::\d+)?\b", re.I),
+    re.compile(r"\bserver_name=([A-Za-z0-9.-]+)\b", re.I),
     re.compile(r"\bsni=([A-Za-z0-9.-]+)\b", re.I),
     re.compile(r"\bSNI\s*[:=]\s*([A-Za-z0-9.-]+)\b", re.I),
 ]

@@ -280,6 +280,7 @@ ipcache_high 92
 sslcrtd_children 12 startup=3 idle=2 queue-size=96
 http_port 0.0.0.0:3128 ssl-bump dynamic_cert_mem_cache_size=256MB
 http_port 0.0.0.0:3129 intercept
+https_port 0.0.0.0:3130 intercept ssl-bump dynamic_cert_mem_cache_size=256MB
 dns_packet_max 1232
 sslproxy_session_ttl 900
 sslproxy_session_cache_size 16 MB
@@ -329,6 +330,8 @@ max_open_disk_fds 512
     assert options["explicit_proxy_port"] == 3128
     assert options["intercept_enabled"] is True
     assert options["intercept_port"] == 3129
+    assert options["https_intercept_enabled"] is True
+    assert options["https_intercept_port"] == 3130
     assert options["dns_packet_max"] == 1232
     assert options["sslproxy_session_ttl_seconds"] == 900
     assert options["sslproxy_session_cache_size_mb"] == 16
@@ -491,6 +494,39 @@ def test_squid_controller_generate_config_adds_optional_intercept_listener(tmp_p
     assert "SOCKS" not in rendered
 
 
+def test_squid_controller_generate_config_adds_optional_https_intercept_listener(tmp_path):
+    _add_web_to_path()
+
+    from services.squid_config_forms import build_template_options  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+    options = build_template_options(
+        {
+            "explicit_proxy_port": 8080,
+            "intercept_enabled": True,
+            "intercept_port": 8081,
+            "https_intercept_enabled": True,
+            "https_intercept_port": 8082,
+            "dynamic_cert_mem_cache_size_mb": 256,
+        },
+        max_workers=4,
+    )
+
+    rendered = ctl.generate_config_from_template(options)
+
+    assert "http_port 0.0.0.0:8080 ssl-bump" in rendered
+    assert "http_port 0.0.0.0:8081 intercept" in rendered
+    assert "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" in rendered
+    assert "https_port 0.0.0.0:8082 intercept ssl-bump" in rendered
+    assert "dynamic_cert_mem_cache_size=256MB" in rendered
+
+
 def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-candidates")
@@ -565,6 +601,9 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert "apple-cloud" in presets
     assert "developer-collaboration" in presets
     assert "identity-mfa" in presets
+    assert "steam" in presets
+    assert "*.steampowered.com" in presets["steam"].domains
+    assert "cdn.cloudflare.steamstatic.com" in presets["steam"].domains
     assert "*.teams.microsoft.com" in presets["microsoft-cloud"].domains
     assert "*.download.windowsupdate.com" in presets["microsoft-cloud"].domains
     assert "*.webex.com" in presets["webex"].domains
@@ -605,3 +644,4 @@ def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path):
     assert "acl step3 at_step SslBump3" in rendered
     assert rendered.index("ssl_bump peek step1") < rendered.index("ssl_bump stare step2") < rendered.index("ssl_bump bump step3")
     assert "ssl_bump bump all" not in rendered
+    assert "steam_sites" not in rendered

@@ -60,6 +60,8 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["explicit_proxy_port"] == 3128
     assert options["intercept_enabled_on"] is False
     assert options["intercept_port"] == 3129
+    assert options["https_intercept_enabled_on"] is False
+    assert options["https_intercept_port"] == 3130
     assert options["buffered_logs_on"] is False
     assert options["icap_preview_enable_on"] is True
     assert options["icap_206_enable_on"] is True
@@ -117,6 +119,8 @@ def test_config_ui_field_metadata_exposes_dependencies_for_polished_form_logic()
     assert field_map["pipeline_prefetch_count"].depends_on == ("pipeline_prefetch_on",)
     assert field_map["intercept_port"].depends_on == ("intercept_enabled_on",)
     assert field_map["intercept_port"].show_when == ("checked",)
+    assert field_map["https_intercept_port"].depends_on == ("https_intercept_enabled_on",)
+    assert field_map["https_intercept_port"].show_when == ("checked",)
     assert field_map["allow_underscore_on"].depends_on == ("check_hostnames_on",)
     assert field_map["memory_pools_limit_mb"].depends_on == ("memory_pools_on",)
     assert field_map["icap_206_enable_on"].depends_on == ("icap_enable_on",)
@@ -157,6 +161,8 @@ def test_build_template_options_from_form_supports_intercept_listener_controls()
             "explicit_proxy_port": "8080",
             "intercept_enabled_on": "on",
             "intercept_port": "8080",
+            "https_intercept_enabled_on": "on",
+            "https_intercept_port": "8080",
         },
         form_kind="network",
         max_workers=4,
@@ -165,6 +171,8 @@ def test_build_template_options_from_form_supports_intercept_listener_controls()
     assert options["explicit_proxy_port"] == 8080
     assert options["intercept_enabled_on"] is True
     assert options["intercept_port"] == 8081
+    assert options["https_intercept_enabled_on"] is True
+    assert options["https_intercept_port"] == 3130
 
 
 def test_build_template_options_from_form_blank_optional_values_do_not_override():

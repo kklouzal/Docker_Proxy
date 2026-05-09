@@ -22,9 +22,6 @@ acl step3 at_step SslBump3
 # Peek at step 1 to learn ClientHello/SNI without sacrificing later bumping.
 ssl_bump peek step1
 include /etc/squid/conf.d/10-sslfilter.conf
-acl steam_sites ssl::server_name .steamserver.net
-note ssl_exception steam steam_sites
-ssl_bump splice steam_sites
 # BEGIN SQUID-UI BLOCK: CUSTOM_SSL_RULES
 # END SQUID-UI BLOCK: CUSTOM_SSL_RULES
 # Stare at step 2 so the default path can inspect server certificates and still bump at step 3.
