@@ -1209,6 +1209,17 @@ input.check{
   filter: brightness(1.03);
 }
 
+.btn.secondary{
+  background: rgba(122,162,255,.14);
+  border-color: rgba(122,162,255,.32);
+  color: var(--text);
+}
+
+.btn.secondary:hover{
+  background: rgba(122,162,255,.20);
+  border-color: rgba(122,162,255,.44);
+}
+
 .btn:disabled{
   opacity: .58;
   cursor: not-allowed;

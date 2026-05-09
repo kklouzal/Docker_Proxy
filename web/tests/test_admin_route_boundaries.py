@@ -212,7 +212,19 @@ def test_post_routes_reject_missing_csrf_after_login(monkeypatch, tmp_path) -> N
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
-    for path in ("/reload", "/cache/clear", "/webfilter/test", "/ssl-errors/exclude"):
+    for path in (
+        "/reload",
+        "/cache/clear",
+        "/webfilter/test",
+        "/ssl-errors/exclude",
+        "/squid/config/apply-all",
+        "/squid/config/apply-safe",
+        "/squid/config/apply-overrides",
+        "/sslfilter",
+        "/certs/generate",
+        "/certs/upload",
+        "/clamav/toggle",
+    ):
         response = client.post(path, follow_redirects=False)
         assert response.status_code == 403, path
 
@@ -293,4 +305,45 @@ def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(monk
     assert loaded.config_revisions.created[-1]["proxy_id"] == "default"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
     assert "Saved settings were rebuilt, verified, and applied" in text
+    assert any(record["kind"] == "config_apply_all_saved" and record["ok"] for record in loaded.audit_store.records)
+
+
+def test_sslfilter_apply_verify_targets_selected_proxy(monkeypatch, tmp_path) -> None:
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/sslfilter?proxy_id=edge-2")
+
+    response = client.post(
+        "/sslfilter?proxy_id=edge-2",
+        data={"csrf_token": token, "action": "apply_policy"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303, 307, 308}
+    assert "proxy_id=edge-2" in response.headers["Location"]
+    assert loaded.proxy_client.synced[-1] == ("edge-2", True)
+    assert any(record["kind"] == "sslfilter_apply_policy" and record["ok"] for record in loaded.audit_store.records)
+
+
+def test_apply_all_saved_config_targets_selected_proxy(monkeypatch, tmp_path) -> None:
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/squid/config?tab=config&proxy_id=edge-2")
+
+    response = client.post(
+        "/squid/config/apply-all?proxy_id=edge-2",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303, 307, 308}
+    assert "proxy_id=edge-2" in response.headers["Location"]
+    assert loaded.proxy_client.validated[-1][0] == "edge-2"
+    assert loaded.proxy_client.synced[-1] == ("edge-2", True)
+    assert loaded.config_revisions.created[-1]["proxy_id"] == "edge-2"
+    assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
     assert any(record["kind"] == "config_apply_all_saved" and record["ok"] for record in loaded.audit_store.records)

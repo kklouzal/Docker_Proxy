@@ -165,7 +165,7 @@ def test_live_squid_config_manual_validate_and_apply_current_config(admin_client
     )
     assert apply_response.status == 200
     assert query_params(apply_response.url).get("ok") == ["1"]
-    assert "Config validated and Squid reloaded." in apply_response.text
+    assert "Config validated and apply requested" in apply_response.text
     payload = wait_for_proxy_management_payload()
     assert payload.get("status") in {"healthy", "degraded"}
 

@@ -22,7 +22,7 @@ pytestmark = pytest.mark.live
 
 
 _PAC_PROFILE_RE = re.compile(
-    r'(?s)<input type="hidden" name="action" value="update" />\s*<input type="hidden" name="profile_id" value="(\d+)" />.*?<input name="name" type="text" value="([^"]*)" />'
+    r'(?s)<input type="hidden" name="action" value="update" />\s*<input type="hidden" name="profile_id" value="(\d+)" />.*?<input [^>]*name="name"[^>]* value="([^"]*)" />'
 )
 
 
@@ -101,7 +101,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert query_params(create_response.url).get("ok") == ["1"]
     assert profile_name in create_response.text
 
-    pac_response = admin_client.pac_request()
+    pac_response = admin_client.pac_request(f"/proxy.pac?probe={profile_name}")
     assert pac_response.status == 200
     assert direct_domain in pac_response.text
 
@@ -124,7 +124,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert query_params(update_response.url).get("ok") == ["1"]
     assert updated_name in update_response.text
 
-    updated_pac = admin_client.pac_request()
+    updated_pac = admin_client.pac_request(f"/proxy.pac?probe={updated_name}")
     assert updated_domain in updated_pac.text
     assert direct_domain not in updated_pac.text
 
@@ -140,7 +140,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert query_params(delete_response.url).get("ok") == ["1"]
     assert updated_name not in delete_response.text
 
-    fallback_pac = admin_client.pac_request()
+    fallback_pac = admin_client.pac_request(f"/proxy.pac?probe=deleted-{updated_name}")
     assert updated_domain not in fallback_pac.text
 
 
@@ -174,7 +174,7 @@ def test_live_sslfilter_granular_policy_stays_proxy_side_only(admin_client: Live
     assert nocache_cidr in sslfilter_page.text
     assert 'name="exclude_private_nets" checked' in sslfilter_page.text
 
-    pac_response = admin_client.pac_request()
+    pac_response = admin_client.pac_request(f"/proxy.pac?probe={nobump_domain}")
     assert pac_response.status == 200
     # SSL-filter/no-cache destination/source policies are proxy-side policy.
     # They must not become client-side PAC DIRECT rules.

@@ -55,14 +55,14 @@
           </div>
 
           <div>
-            <label class="small field-note">Decision cache TTL (seconds)</label>
-            <input class="input" type="number" name="cache_ttl" value="{{ settings.cache_ttl }}" min="0" max="604800" step="1" />
+            <label class="small field-note" for="adblock-cache-ttl">Decision cache TTL (seconds)</label>
+            <input class="input" id="adblock-cache-ttl" type="number" name="cache_ttl" value="{{ settings.cache_ttl }}" min="0" max="604800" step="1" />
             <div class="small">0 disables caching.</div>
           </div>
 
           <div>
-            <label class="small field-note">Decision cache max entries</label>
-            <input class="input" type="number" name="cache_max" value="{{ settings.cache_max }}" min="0" max="1000000" step="1" />
+            <label class="small field-note" for="adblock-cache-max">Decision cache max entries</label>
+            <input class="input" id="adblock-cache-max" type="number" name="cache_max" value="{{ settings.cache_max }}" min="0" max="1000000" step="1" />
             <div class="small">0 disables caching.</div>
           </div>
         </div>

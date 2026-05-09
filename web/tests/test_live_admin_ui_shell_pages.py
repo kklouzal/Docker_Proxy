@@ -13,6 +13,7 @@ pytestmark = pytest.mark.live
     [
         ("/", "Status"),
         ("/observability", "Observability"),
+        ("/proxies", "Proxies"),
         ("/squid/config", "Squid"),
         ("/certs", "Certificates"),
         ("/adblock", "Ad"),

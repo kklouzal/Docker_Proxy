@@ -151,12 +151,12 @@
 
               <div class="row-2">
                 <div>
-                  <label>Name</label>
-                  <input name="name" type="text" value="{{ p.name }}" />
+                  <label for="pac-profile-name-{{ p.id }}">Name</label>
+                  <input id="pac-profile-name-{{ p.id }}" name="name" type="text" value="{{ p.name }}" />
                 </div>
                 <div>
-                  <label>Client CIDR</label>
-                  <input name="client_cidr" type="text" value="{{ p.client_cidr }}" placeholder="192.168.10.0/24" />
+                  <label for="pac-profile-cidr-{{ p.id }}">Client CIDR</label>
+                  <input id="pac-profile-cidr-{{ p.id }}" name="client_cidr" type="text" value="{{ p.client_cidr }}" placeholder="192.168.10.0/24" />
                 </div>
               </div>
 
