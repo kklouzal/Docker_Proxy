@@ -144,7 +144,7 @@
             {% endif %}
           </div>
           <div class="card-body">
-            <form class="form" method="post" action="{{ url_for('pac_builder') }}">
+            <form class="form" method="post" action="{{ url_for('pac_builder') }}" data-pac-profile-id="{{ p.id }}" data-pac-profile-name="{{ p.name }}">
               {{ csrf_field() }}
               <input type="hidden" name="action" value="update" />
               <input type="hidden" name="profile_id" value="{{ p.id }}" />
@@ -164,12 +164,12 @@
 
               <div class="row-2">
                 <div>
-                  <label>Domains that go DIRECT (one per line)</label>
-                  <textarea name="direct_domains">{{ p.direct_domains|join('\n') }}</textarea>
+                  <label for="pac-profile-direct-domains-{{ p.id }}">Domains that go DIRECT (one per line)</label>
+                  <textarea id="pac-profile-direct-domains-{{ p.id }}" name="direct_domains">{{ p.direct_domains|join('\n') }}</textarea>
                 </div>
                 <div>
-                  <label>Destination CIDR that go DIRECT (one per line)</label>
-                  <textarea name="direct_dst_nets">{{ p.direct_dst_nets|join('\n') }}</textarea>
+                  <label for="pac-profile-direct-dst-nets-{{ p.id }}">Destination CIDR that go DIRECT (one per line)</label>
+                  <textarea id="pac-profile-direct-dst-nets-{{ p.id }}" name="direct_dst_nets">{{ p.direct_dst_nets|join('\n') }}</textarea>
                 </div>
               </div>
 

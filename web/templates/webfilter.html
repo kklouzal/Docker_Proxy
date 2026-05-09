@@ -3,7 +3,7 @@
 {% block title %}Web Filtering - Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-heading" style="grid-column: 1 / -1; justify-self: stretch; width: 100%;">
+<section class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">Category policy</span>
     <h1 class="page-title">Web Filtering</h1>
@@ -168,7 +168,7 @@
           </div>
 
           <div class="form-row">
-            <div class="label">Test this proxy's current rules</div>
+            <label class="label" for="webfilter-test-domain">Test this proxy's current rules</label>
             <div class="inline-form">
               <input id="webfilter-test-domain" class="input inline-fill" type="text" placeholder="example.com">
               <button id="webfilter-test-btn" class="btn" type="button" data-url="{{ url_for('webfilter_test_domain') }}">Test domain</button>

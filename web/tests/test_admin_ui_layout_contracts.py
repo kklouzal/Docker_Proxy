@@ -47,3 +47,24 @@ def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:
     assert '<div class="grid">' in html
     assert 'class="grid split-layout"' not in html
     assert 'class="grid sidebar-wide-layout"' not in html
+
+
+def test_templates_do_not_force_full_width_with_inline_styles() -> None:
+    for template in TEMPLATES.glob("*.html"):
+        html = template.read_text(encoding="utf-8")
+        assert 'style="grid-column: 1 / -1; justify-self: stretch; width: 100%;"' not in html, template.name
+
+
+def test_login_page_does_not_advertise_default_credentials_or_fixed_port() -> None:
+    html = (TEMPLATES / "login.html").read_text(encoding="utf-8")
+
+    assert "admin / admin" not in html
+    assert "Default credentials" not in html
+    assert "Port 5000" not in html
+    assert "admin UI" in html
+
+
+def test_pac_nav_has_server_rendered_active_state() -> None:
+    html = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
+
+    assert "request.endpoint == 'pac_builder'" in html

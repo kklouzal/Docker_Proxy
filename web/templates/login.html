@@ -3,14 +3,14 @@
 {% block title %}Login · Squid Flask Proxy{% endblock %}
 
 {% block content %}
-<section class="page-hero" style="grid-column: 1 / -1; justify-self: stretch; width: 100%;">
+<section class="page-hero">
     <div class="page-hero-copy">
         <span class="page-eyebrow">Secure access</span>
         <h1 class="page-title">Welcome back</h1>
         <p class="page-subtitle">Sign in to manage proxy settings, diagnostics, and policy workflows from one intuitive control plane.</p>
         <div class="hero-badges">
             <span class="badge">Admin UI only</span>
-            <span class="badge">Port 5000</span>
+            <span class="badge">Admin UI port</span>
         </div>
     </div>
 </section>
@@ -46,9 +46,6 @@
                     <button class="btn primary" type="submit">Sign in</button>
                 </div>
             </form>
-            <div class="surface-note small">
-                Default credentials for first-run local setups: <strong>admin / admin</strong>
-            </div>
         </div>
     </section>
 
@@ -59,8 +56,8 @@
         <div class="card-body stack-md">
             <ul class="auth-list small">
                 <li>This login protects the admin UI only; proxy clients never use these credentials.</li>
-                <li>Use <strong>Administration</strong> after signing in to rotate the default password and add other operators.</li>
-                <li>For shared environments, restrict access to port <span class="mono">5000</span> to your management network or VPN.</li>
+                <li>Use <strong>Administration</strong> after signing in to rotate initial credentials and add other operators.</li>
+                <li>For shared environments, restrict access to the admin UI to your management network or VPN.</li>
             </ul>
             <div class="surface-note small">
                 Tip: keep this page as a dedicated control-plane login and let proxy traffic continue flowing separately on ports <span class="mono">3128</span> and <span class="mono">80</span>.

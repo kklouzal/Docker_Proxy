@@ -213,17 +213,24 @@ def test_post_routes_reject_missing_csrf_after_login(monkeypatch, tmp_path) -> N
     client = loaded.module.app.test_client()
     login_client(client)
     for path in (
-        "/reload",
+        "/adblock",
+        "/administration",
         "/cache/clear",
-        "/webfilter/test",
-        "/ssl-errors/exclude",
-        "/squid/config/apply-all",
-        "/squid/config/apply-safe",
-        "/squid/config/apply-overrides",
-        "/sslfilter",
         "/certs/generate",
         "/certs/upload",
+        "/clamav/test-eicar",
+        "/clamav/test-icap",
         "/clamav/toggle",
+        "/pac",
+        "/reload",
+        "/squid/config",
+        "/squid/config/apply-all",
+        "/squid/config/apply-overrides",
+        "/squid/config/apply-safe",
+        "/ssl-errors/exclude",
+        "/sslfilter",
+        "/webfilter",
+        "/webfilter/test",
     ):
         response = client.post(path, follow_redirects=False)
         assert response.status_code == 403, path

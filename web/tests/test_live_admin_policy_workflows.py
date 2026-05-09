@@ -22,7 +22,7 @@ pytestmark = pytest.mark.live
 
 
 _PAC_PROFILE_RE = re.compile(
-    r'(?s)<input type="hidden" name="action" value="update" />\s*<input type="hidden" name="profile_id" value="(\d+)" />.*?<input [^>]*name="name"[^>]* value="([^"]*)" />'
+    r'<form [^>]*data-pac-profile-id="(\d+)" [^>]*data-pac-profile-name="([^"]*)"'
 )
 
 

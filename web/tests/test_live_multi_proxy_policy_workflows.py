@@ -11,7 +11,7 @@ pytestmark = pytest.mark.live
 
 
 _PAC_PROFILE_RE = re.compile(
-    r'(?s)<input type="hidden" name="action" value="update" />\s*<input type="hidden" name="profile_id" value="(\d+)" />.*?<input name="name" type="text" value="([^"]*)" />'
+    r'<form [^>]*data-pac-profile-id="(\d+)" [^>]*data-pac-profile-name="([^"]*)"'
 )
 
 
@@ -52,8 +52,8 @@ def test_live_remote_pac_profile_updates_only_selected_proxy_pac(multi_proxy_adm
     assert query_params(create_response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
     assert profile_name in create_response.text
 
-    remote_pac = multi_proxy_admin.remote_pac_request()
-    local_pac = multi_proxy_admin.pac_request()
+    remote_pac = multi_proxy_admin.remote_pac_request(f"/proxy.pac?probe={profile_name}")
+    local_pac = multi_proxy_admin.pac_request(f"/proxy.pac?probe={profile_name}")
     assert remote_pac.status == 200
     assert local_pac.status == 200
     assert direct_domain in remote_pac.text
@@ -69,7 +69,7 @@ def test_live_remote_pac_profile_updates_only_selected_proxy_pac(multi_proxy_adm
     )
     assert delete_response.status == 200
     assert query_params(delete_response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
-    assert direct_domain not in multi_proxy_admin.remote_pac_request().text
+    assert direct_domain not in multi_proxy_admin.remote_pac_request(f"/proxy.pac?probe=deleted-{profile_name}").text
 
 
 def test_live_remote_sslfilter_domain_policy_stays_proxy_side_and_scoped_to_selected_proxy(multi_proxy_admin: LiveStackClient) -> None:
