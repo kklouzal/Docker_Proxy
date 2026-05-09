@@ -51,6 +51,17 @@ def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:
     assert 'class="grid sidebar-wide-layout"' not in html
 
 
+def test_relevant_ui_pages_warn_that_http3_quic_uses_udp_443() -> None:
+    expected = {
+        "squid_config.html": "HTTP/3/QUIC uses <strong>UDP/443</strong>",
+        "sslfilter.html": "HTTP/3/QUIC uses UDP/443",
+        "pac.html": "HTTP/3/QUIC over UDP/443",
+    }
+
+    for template_name, phrase in expected.items():
+        html = (TEMPLATES / template_name).read_text(encoding="utf-8")
+        assert phrase in html, template_name
+
 def test_templates_do_not_force_full_width_with_inline_styles() -> None:
     for template in TEMPLATES.glob("*.html"):
         html = template.read_text(encoding="utf-8")

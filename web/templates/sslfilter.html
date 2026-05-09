@@ -120,6 +120,16 @@
 <div>This lets you tune bypass behavior for one proxy without affecting the others.</div>
 {% endcall %}
 
+<section class="card section-shell">
+  <div class="card-header">
+    <h2 class="card-title">HTTP/3 and QUIC coverage</h2>
+    <span class="badge warn">UDP/443 bypass</span>
+  </div>
+  <div class="card-body">
+    <div class="surface-note small">SSL bump, splice/no-bump, and no-cache rules only apply to TLS traffic Squid receives over TCP, such as explicit CONNECT or TCP/443 intercept flows. HTTP/3/QUIC uses UDP/443; block or reject UDP/443 at the router/firewall for managed client groups when these proxy policies must be enforced.</div>
+  </div>
+</section>
+
 {% if request.args.get('apply_ok') == '1' %}
   <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">SSL filtering policy applied and verified for {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('apply_ok') == '0' %}

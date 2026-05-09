@@ -57,6 +57,7 @@
       </div>
     </div>
     <div class="surface-note small">PAC profiles now choose <em>who</em> gets which DIRECT rules. The selected proxy&apos;s own advertised listeners define the proxy chain returned to clients.</div>
+    <div class="surface-note small">PAC and explicit HTTP proxy settings cover the proxy's TCP path for HTTP and HTTPS CONNECT. They do not proxy HTTP/3/QUIC over UDP/443; block or reject UDP/443 at the network edge for clients that must not bypass the proxy.</div>
   </div>
 </section>
 

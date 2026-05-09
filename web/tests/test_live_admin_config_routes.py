@@ -62,6 +62,7 @@ def test_live_squid_config_network_tab_mentions_non_standard_ports(admin_client:
     assert "Enable HTTP NAT intercept listener" in response.text
     assert "Web destination ports" in response.text
     assert "Non-standard HTTP and HTTPS destination ports are allowed by default" in response.text
+    assert "HTTP/3/QUIC uses <strong>UDP/443</strong>" in response.text
 
 
 def test_live_squid_config_can_enable_http_intercept_listener(admin_client: LiveStackClient) -> None:

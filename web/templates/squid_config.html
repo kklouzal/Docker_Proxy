@@ -174,13 +174,13 @@
                 </div>
                 <div class="card-body">
                     <div class="surface-note small">
-                        The explicit proxy listener is the normal forward-proxy endpoint used by browser settings and PAC/WPAD. The optional <span class="mono">intercept</span> listener is for router/firewall redirected plain HTTP traffic only; clients do not configure or receive it in PAC files.
+                        The explicit proxy listener is the normal forward-proxy endpoint used by browser settings and PAC/WPAD. Optional <span class="mono">intercept</span> listeners are for router/firewall redirected HTTP and HTTPS TCP traffic; clients do not configure or receive them in PAC files.
                     </div>
                     <div class="surface-note small">
-                        Squid's NAT <span class="mono">intercept</span> mode disables proxy authentication on that listener and must be protected from direct external access. Add REDIRECT/DNAT rules on the router or host, exempt the proxy's own source traffic first to avoid loops, and redirect TCP/80 to the intercept port.
+                        Squid's NAT <span class="mono">intercept</span> mode disables proxy authentication on that listener and must be protected from direct external access. Add REDIRECT/DNAT rules on the router or host, exempt the proxy's own source traffic first to avoid loops, redirect TCP/80 to the HTTP intercept port, and redirect TCP/443 to the HTTPS intercept port when enabled.
                     </div>
                     <div class="surface-note small">
-                        Transparent HTTPS and TPROXY are separate advanced deployment models and are intentionally not managed by these controls.
+                        The HTTPS NAT intercept listener handles redirected <strong>TCP/443</strong> TLS only. HTTP/3/QUIC uses <strong>UDP/443</strong> and will not traverse Squid's TCP intercept or legacy HTTP proxy path; block or reject UDP/443 at the router/firewall for managed client groups when proxy enforcement matters so clients fall back to HTTP/2 or HTTP/1.1 over TCP.
                     </div>
                 </div>
             </section>

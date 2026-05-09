@@ -258,7 +258,20 @@ def test_sslfilter_page_exposes_apply_verify_action(monkeypatch, tmp_path) -> No
     assert response.status_code == 200
     assert "Apply &amp; Verify Config" in text
     assert 'name="action" value="apply_policy"' in text
+    assert "HTTP/3/QUIC uses UDP/443" in text
 
+
+def test_pac_page_warns_that_quic_does_not_use_the_http_proxy(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/pac")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "HTTP/3/QUIC over UDP/443" in text
+    assert "block or reject UDP/443" in text
 
 def test_sslfilter_apply_verify_forces_selected_proxy_sync(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
