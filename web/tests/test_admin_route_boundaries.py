@@ -376,7 +376,8 @@ def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) 
         calls.append(True)
         return {
             "ok": True,
-            "deleted_rows": 42,
+            "cleared_tables": 2,
+            "deleted_rows": 0,
             "tables": [
                 {"table": "diagnostic_requests", "status": "cleared", "deleted_rows": 30},
                 {"table": "ssl_errors", "status": "cleared", "deleted_rows": 12},
@@ -399,7 +400,8 @@ def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) 
     assert "/observability" in location
     assert "pane=overview" in location
     assert "logs_cleared=1" in location
-    assert "clear_rows=42" in location
+    assert "clear_tables=2" in location
     assert loaded.audit_store.records[-1]["kind"] == "observability_clear_logs"
     assert loaded.audit_store.records[-1]["ok"] is True
     assert "across the fleet" in loaded.audit_store.records[-1]["detail"]
+    assert "2 tables" in loaded.audit_store.records[-1]["detail"]

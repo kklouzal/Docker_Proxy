@@ -1646,11 +1646,15 @@ def observability():
 def observability_clear_logs():
     try:
         result = clear_observability_logs()
-        deleted_rows = int(result.get('deleted_rows') or 0)
-        cleared_tables = sum(1 for table in result.get('tables') or [] if table.get('status') == 'cleared')
-        detail = f'cleared {deleted_rows} stored observability log rows from {cleared_tables} tables across the fleet'
-        _record_audit_event('observability_clear_logs', ok=True, detail=detail)
-        return _redirect_to('observability', pane='overview', logs_cleared='1', clear_rows=deleted_rows)
+        cleared_tables = int(result.get('cleared_tables') or sum(1 for table in result.get('tables') or [] if table.get('status') == 'cleared'))
+        failed_tables = [str(table.get('table') or '') for table in result.get('tables') or [] if table.get('status') == 'failed']
+        detail = f'cleared stored observability log history from {cleared_tables} tables across the fleet'
+        if failed_tables:
+            detail += f'; failed tables: {", ".join(failed_tables[:5])}'
+        _record_audit_event('observability_clear_logs', ok=not failed_tables and bool(result.get('ok', True)), detail=detail)
+        if failed_tables or not bool(result.get('ok', True)):
+            return _redirect_to('observability', pane='overview', clear_error='1')
+        return _redirect_to('observability', pane='overview', logs_cleared='1', clear_tables=cleared_tables)
     except Exception as exc:
         detail = public_error_message(exc)
         log_exception_throttled(

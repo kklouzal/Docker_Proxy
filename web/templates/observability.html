@@ -39,7 +39,7 @@
 {% endcall %}
 {% if pane == 'overview' %}
   {% if request.args.get('logs_cleared') == '1' %}
-  <div class="surface-note small">Clear Logs completed. Wiped {{ request.args.get('clear_rows', '0') }} stored MySQL observability rows across the fleet.</div>
+  <div class="surface-note small">Clear Logs completed. Wiped stored MySQL observability history from {{ request.args.get('clear_tables', '0') }} tables across the fleet.</div>
   {% elif request.args.get('clear_error') == '1' %}
   <div class="surface-note small">Clear Logs failed. Stored MySQL observability history was left unchanged; check Admin UI logs for the database error.</div>
   {% else %}
