@@ -97,3 +97,9 @@ def test_proxy_management_lives_in_context_strip_not_top_nav() -> None:
 
     assert ">Manage proxies</a>" in html
     assert ">Proxies</a>" not in html
+
+
+def test_admin_dockerfile_packages_observability_maintenance_service() -> None:
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile.admin").read_text(encoding="utf-8")
+
+    assert "web/services/observability_maintenance.py" in dockerfile
