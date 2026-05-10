@@ -7,6 +7,7 @@ from functools import wraps
 from typing import Any, Callable, TypeVar
 
 from flask import Flask, Response, abort, jsonify, request
+from markupsafe import escape
 from werkzeug.exceptions import HTTPException
 
 from proxy.agent import start_agent
@@ -14,13 +15,15 @@ from proxy.runtime import get_runtime
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
 from services.pac_http import PAC_CONTENT_TYPE, client_ip_from_headers, pac_content_disposition, request_host_from_headers, resolve_pac_bytes
+from services.policy_requests import get_policy_request_store
+from services.proxy_context import get_proxy_id
 
 
 F = TypeVar("F", bound=Callable[..., Any])
 app = Flask(__name__)
 install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
-_PUBLIC_LISTENER_PATHS = frozenset({"/", "/health", "/proxy.pac", "/wpad.dat"})
+_PUBLIC_LISTENER_PATHS = frozenset({"/", "/health", "/proxy.pac", "/wpad.dat", "/policy-request"})
 
 
 def _runtime() -> Any:
@@ -154,6 +157,30 @@ def public_pac() -> Any:
     response.set_etag(hashlib.sha256(data).hexdigest())
     return response.make_conditional(request)
 
+
+
+@app.route("/policy-request", methods=["POST"])
+def public_policy_request() -> Any:
+    if not _is_public_listener_request():
+        abort(404)
+    form = request.form
+    try:
+        req = get_policy_request_store().create_request(
+            proxy_id=get_proxy_id(),
+            block_type=form.get("block_type") or "webfilter",
+            client_ip=request.remote_addr or form.get("client_ip") or "",
+            request_url=form.get("request_url") or "",
+            domain=form.get("domain") or form.get("destination") or "",
+            category=form.get("category") or "",
+            method=form.get("method") or "",
+            squid_error=form.get("squid_error") or form.get("error") or "",
+            user_note=form.get("user_note") or "",
+        )
+        body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Request submitted</title><style>body{{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}}main{{max-width:760px;margin:48px auto;padding:24px}}.card{{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}}code{{overflow-wrap:anywhere}}</style></head><body><main><section class="card"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #{req.id}: <code>{escape(req.domain)}</code></p></section></main></body></html>"""
+        return Response(body, mimetype="text/html; charset=utf-8")
+    except Exception as exc:
+        detail = escape(public_error_message(exc, default="The request could not be recorded."))
+        return Response(f"<!doctype html><title>Request failed</title><h1>Request failed</h1><p>{detail}</p>", status=400, mimetype="text/html; charset=utf-8")
 
 @app.route("/api/manage/health", methods=["GET"])
 @_require_management_auth

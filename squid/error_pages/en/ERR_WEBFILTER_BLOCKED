@@ -20,6 +20,9 @@
     code, .value { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #ffffff; }
     .user { margin: 24px 30px 0; padding: 18px; border-left: 4px solid #34d399; border-radius: 12px; background: rgba(52,211,153,.13); }
     .user strong { color: #bbf7d0; }
+    form.request { margin: 24px 30px; padding: 18px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(0,0,0,.16); }
+    textarea { display: block; box-sizing: border-box; width: auto; min-height: 90px; border-radius: 10px; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: #fff; padding: 10px; }
+    button { margin-top: 10px; border: 0; border-radius: 999px; padding: 10px 16px; font-weight: 700; background: #7aa2ff; color: #071021; cursor: pointer; }
     .admin { margin: 0 30px 30px; padding: 18px; border-left: 4px solid #7aa2ff; border-radius: 12px; background: rgba(122,162,255,.10); }
     .diag { margin-top: 12px; color: rgba(238,244,255,.72); font-size: 13px; }
     .footer { padding: 18px 30px; color: rgba(238,244,255,.55); border-top: 1px solid rgba(255,255,255,.10); font-size: 13px; }
@@ -47,6 +50,20 @@
       <div class="item"><span class="label">Squid error</span><span class="value">%c</span></div>
       <div class="item"><span class="label">Elapsed</span><span class="value">%d seconds</span></div>
     </div>
+    <form class="request" method="post" action="http://%h/policy-request">
+      <strong>Request an exception</strong>
+      <p>If this site is needed for legitimate work, send the details below to the proxy administrator.</p>
+      <input type="hidden" name="block_type" value="webfilter">
+      <input type="hidden" name="request_url" value="%U">
+      <input type="hidden" name="client_ip" value="%i">
+      <input type="hidden" name="domain" value="%H">
+      <input type="hidden" name="destination" value="%H:%p">
+      <input type="hidden" name="method" value="%M">
+      <input type="hidden" name="squid_error" value="%c">
+      <label for="user_note" class="label">Why should this be allowed?</label>
+      <textarea id="user_note" name="user_note" maxlength="2000" placeholder="Briefly explain the business or household need."></textarea>
+      <button type="submit">Submit request</button>
+    </form>
     <div class="admin">
       <strong>Administrator guidance</strong>
       <p>Review selected web-filter categories, whitelist entries, and the matching web-filter block log.</p>

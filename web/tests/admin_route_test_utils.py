@@ -570,6 +570,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         get_ssl_errors_store=lambda: overrides.get("ssl_errors_store") or FakeSslErrorsStore(),
         get_adblock_store=lambda: overrides.get("adblock_store") or FakeAdblockStore(),
         get_webfilter_store=lambda: overrides.get("webfilter_store") or FakeWebfilterStore(),
+        get_policy_request_store=lambda: overrides.get("policy_request_store") or None,
         get_sslfilter_store=lambda: overrides.get("sslfilter_store") or FakeSslfilterStore(),
         get_pac_profiles_store=lambda: overrides.get("pac_profiles_store") or FakePacProfilesStore(),
         get_proxy_client=lambda: fake_proxy_client,

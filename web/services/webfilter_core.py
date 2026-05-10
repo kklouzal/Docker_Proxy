@@ -11,6 +11,11 @@ from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_int as _env_int, now_ts as _now
 
+def get_policy_request_store():
+    from services.policy_requests import get_policy_request_store as _get_policy_request_store
+
+    return _get_policy_request_store()
+
 _DEFAULT_SOURCE_URL = "https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz"
 _DEFAULT_BLOCKED_CATEGORIES: List[str] = [
     "adult",
@@ -387,6 +392,23 @@ class WebFilterStoreBase:
             lines.append(f"acl webfilter_whitelist dstdomain \"{self.whitelist_path}\"")
             lines.append("note webfilter_allow whitelist webfilter_whitelist")
             lines.append("http_access allow webfilter_whitelist")
+
+        exceptions = []
+        if get_policy_request_store is not None:
+            try:
+                exceptions = get_policy_request_store().active_webfilter_exceptions(proxy_id=get_proxy_id())
+            except Exception:
+                exceptions = []
+        for ex in exceptions:
+            domain = _norm_domain(getattr(ex, "domain", ""))
+            client_ip = str(getattr(ex, "client_ip", "") or "").strip()
+            if not client_ip or not _looks_like_host(domain):
+                continue
+            suffix = f"{getattr(ex, 'id', 0)}"
+            lines.append(f"acl webfilter_exception_src_{suffix} src {client_ip}")
+            lines.append(f"acl webfilter_exception_dst_{suffix} dstdomain .{domain}")
+            lines.append(f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}")
+            lines.append(f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}")
 
         selected = self._resolve_category_aliases(list(settings.blocked_categories or []))
         for category in selected:

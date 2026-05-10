@@ -16,6 +16,7 @@ from services.ssl_errors_store import get_ssl_errors_store as _default_get_ssl_e
 from services.adblock_store import get_adblock_store as _default_get_adblock_store
 from services.adblock_artifacts import get_adblock_artifacts
 from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
+from services.policy_requests import get_policy_request_store as _default_get_policy_request_store
 from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilter_store
 from services.pac_profiles_store import get_pac_profiles_store as _default_get_pac_profiles_store
 from services.pac_renderer import resolve_proxy_pac_target
@@ -183,6 +184,7 @@ class AppRuntimeServices:
     check_clamd: Any
     send_sample_av_icap: Any
     test_eicar: Any
+    get_policy_request_store: Any = _default_get_policy_request_store
 
 
 _default_app_runtime_services = AppRuntimeServices(
@@ -195,6 +197,7 @@ _default_app_runtime_services = AppRuntimeServices(
     get_ssl_errors_store=_default_get_ssl_errors_store,
     get_adblock_store=_default_get_adblock_store,
     get_webfilter_store=_default_get_webfilter_store,
+    get_policy_request_store=_default_get_policy_request_store,
     get_sslfilter_store=_default_get_sslfilter_store,
     get_pac_profiles_store=_default_get_pac_profiles_store,
     get_proxy_client=_default_get_proxy_client,
@@ -252,6 +255,10 @@ def get_adblock_store():
 
 def get_webfilter_store():
     return _app_runtime_services().get_webfilter_store()
+
+
+def get_policy_request_store():
+    return _app_runtime_services().get_policy_request_store()
 
 
 def get_sslfilter_store():
@@ -1863,6 +1870,33 @@ def observability_export():
         )
         return _empty_observability_export_response(pane)
 
+
+
+@app.route('/requests', methods=['GET', 'POST'])
+def policy_requests():
+    store = get_policy_request_store()
+    _best_effort_init_store(store, key='policy_requests', description='policy request')
+    if request.method == 'POST':
+        action = _form_action(lower=True)
+        reviewer = str(session.get('user') or '')
+        try:
+            if action == 'approve':
+                duration = _posted_int('duration_seconds', 86400)
+                indefinite = request.form.get('duration_mode') == 'indefinite'
+                store.approve_request(int(request.form.get('request_id') or '0'), reviewer=reviewer, admin_note=request.form.get('admin_note') or '', duration_seconds=duration, indefinite=indefinite)
+                _best_effort_refresh_managed_policy(store, force=True)
+                return _redirect_to('policy_requests', ok='approved')
+            if action in {'reject', 'close'}:
+                store.close_request(int(request.form.get('request_id') or '0'), reviewer=reviewer, admin_note=request.form.get('admin_note') or '', status=('closed' if action == 'close' else 'rejected'))
+                return _redirect_to('policy_requests', ok=action)
+            if action == 'revoke':
+                store.revoke_exception(int(request.form.get('exception_id') or '0'), revoked_by=reviewer, admin_note=request.form.get('admin_note') or '')
+                _best_effort_refresh_managed_policy(store, force=True)
+                return _redirect_to('policy_requests', ok='revoked')
+        except Exception as exc:
+            return _redirect_to('policy_requests', error=public_error_message(exc))
+        return _redirect_to('policy_requests')
+    return render_template('requests.html', pending_requests=store.list_requests(statuses=['pending'], limit=200), recent_requests=store.list_requests(limit=200), exceptions=store.list_exceptions(include_inactive=True, limit=200), message=request.args.get('ok') or '', error=request.args.get('error') or '')
 
 @app.route('/ssl-errors', methods=['GET'])
 def ssl_errors():
