@@ -425,6 +425,10 @@ class SquidController(_CoreSquidController):
         )
 
         visible_hostname = self._validate_hostname(str(options.get("visible_hostname") or ""), "visible_hostname")
+        cache_mgr_email = self._validate_single_line_value(
+            str(options.get("cache_mgr_email") or "proxy-admin@example.invalid"),
+            "cache_mgr",
+        ) or "proxy-admin@example.invalid"
         httpd_suppress_version_string_on = bool_value("httpd_suppress_version_string_on", False)
         vary_ignore_expire_on = bool_value("vary_ignore_expire_on", False)
 
@@ -650,6 +654,7 @@ class SquidController(_CoreSquidController):
         append_section(lines, "HTTP identity", "How Squid identifies itself and handles a few compatibility edge cases.")
         if visible_hostname:
             lines.append(f"visible_hostname {visible_hostname}")
+        lines.append(f"cache_mgr {cache_mgr_email}")
         lines.append(f"httpd_suppress_version_string {'on' if httpd_suppress_version_string_on else 'off'}")
         lines.append(f"vary_ignore_expire {'on' if vary_ignore_expire_on else 'off'}")
 
@@ -1337,6 +1342,7 @@ class SquidController(_CoreSquidController):
             "paranoid_hit_validation_value": find_str("paranoid_hit_validation"),
             "cpu_affinity_map": find_str("cpu_affinity_map"),
             "visible_hostname": find_str("visible_hostname"),
+            "cache_mgr_email": find_str("cache_mgr"),
             "httpd_suppress_version_string": find_on_off("httpd_suppress_version_string"),
             "client_netmask_value": find_str("client_netmask"),
             "strip_query_terms": find_on_off("strip_query_terms"),
@@ -1483,7 +1489,7 @@ class SquidController(_CoreSquidController):
         )
 
     def get_http_lines(self, config_text: Optional[str] = None) -> list[str]:
-        return self._get_lines(config_text, ("visible_hostname", "httpd_suppress_version_string", "vary_ignore_expire"))
+        return self._get_lines(config_text, ("visible_hostname", "cache_mgr", "httpd_suppress_version_string", "vary_ignore_expire"))
 
     def get_logging_lines(self, config_text: Optional[str] = None) -> list[str]:
         return self._get_lines(

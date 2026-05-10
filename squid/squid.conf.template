@@ -247,6 +247,7 @@ adaptation_access av_resp_set deny all
 
 # Error handling
 error_directory /usr/share/squid/errors/en
+cache_mgr proxy-admin@example.invalid
 
 # MIME table for content-type detection.
 # Use the distro-provided table at /etc/squid/mime.conf; this repository

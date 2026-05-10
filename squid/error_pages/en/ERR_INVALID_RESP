@@ -18,6 +18,8 @@
     .item { border: 1px solid rgba(255,255,255,.10); border-radius: 14px; padding: 14px; background: rgba(0,0,0,.16); }
     .label { display: block; color: rgba(238,244,255,.58); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
     code, .value { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #ffffff; }
+    .user { margin: 24px 30px 0; padding: 18px; border-left: 4px solid #34d399; border-radius: 12px; background: rgba(52,211,153,.13); }
+    .user strong { color: #bbf7d0; }
     .admin { margin: 0 30px 30px; padding: 18px; border-left: 4px solid #7aa2ff; border-radius: 12px; background: rgba(122,162,255,.10); }
     .diag { margin-top: 12px; color: rgba(238,244,255,.72); font-size: 13px; }
     .footer { padding: 18px 30px; color: rgba(238,244,255,.55); border-top: 1px solid rgba(255,255,255,.10); font-size: 13px; }
@@ -30,6 +32,10 @@
       <span class="eyebrow">Docker Proxy · Invalid Resp</span>
       <h1 id="error-title">Invalid server response</h1>
       <p class="lead">The origin server returned a response the proxy could not parse or accept.</p>
+    </div>
+    <div class="user">
+      <strong>User guidance</strong>
+      <p>The request was not safe to process. Check the address or try a current browser.</p>
     </div>
     <div class="grid" aria-label="Request details">
       <div class="item"><span class="label">Requested URL</span><code>%U</code></div>
