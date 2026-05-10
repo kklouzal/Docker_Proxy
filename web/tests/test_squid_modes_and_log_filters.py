@@ -582,6 +582,11 @@ def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):
     assert candidates[0]["total"] >= 3
     assert "TLS_CLIENT_ACCEPT" in candidates[0]["categories"]
 
+    searched_candidates = store.suggest_exclusion_candidates(search="discord", min_events=3)
+
+    assert searched_candidates
+    assert searched_candidates[0]["domain"] == "gateway.discord.gg"
+
 
 
 def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards(tmp_path):
