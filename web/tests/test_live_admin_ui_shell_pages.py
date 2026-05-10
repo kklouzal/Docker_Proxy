@@ -21,6 +21,7 @@ pytestmark = pytest.mark.live
         ("/clamav", "Clam"),
         ("/sslfilter", "SSL"),
         ("/pac", "PAC"),
+        ("/requests", "Policy exception requests"),
         ("/administration", "Administration"),
     ],
 )

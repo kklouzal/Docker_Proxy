@@ -123,3 +123,72 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path):
     res = client.post("/requests", data={"csrf_token": token, "action": "approve", "request_id": "1", "duration_seconds": "3600"})
     assert res.status_code in {302, 303}
     assert store.approved and store.approved[0][0] == 1
+
+
+def test_policy_request_store_rejects_invalid_scope_and_filters_active_exceptions(tmp_path):
+    configure_test_mysql_env(tmp_path / "policy-request-filters")
+    ensure_web_import_path()
+    from services.policy_requests import PolicyRequestStore, normalize_block_type, normalize_client_ip, normalize_domain
+    store = PolicyRequestStore(); store.init_db()
+    assert normalize_client_ip("192.168.1.20, 10.0.0.9") == "192.168.1.20"
+    assert normalize_client_ip("not an ip") == ""
+    assert normalize_domain("https://Mixed.Example:443/path") == "mixed.example"
+    assert normalize_block_type("unknown<script>") == "webfilter"
+    for kwargs in ({"client_ip":"192.168.1.44","domain":"not a host"},{"client_ip":"not an ip","domain":"blocked.example"}):
+        try:
+            store.create_request(proxy_id="edge-a", request_url="https://blocked.example/", **kwargs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid request scope should be rejected")
+    edge_req=store.create_request(proxy_id="edge-a",client_ip="192.168.1.55",request_url="https://blocked.example/path",domain="blocked.example",category="adult")
+    remote_req=store.create_request(proxy_id="edge-b",client_ip="192.168.1.55",request_url="https://remote.example/path",domain="remote.example",category="adult")
+    adblock_req=store.create_request(proxy_id="edge-a",block_type="adblock",client_ip="192.168.1.55",request_url="https://ads.example/path",domain="ads.example")
+    active=store.approve_request(edge_req.id,reviewer="admin",indefinite=True)
+    expired=store.approve_request(remote_req.id,reviewer="admin",duration_seconds=60)
+    non_webfilter=store.approve_request(adblock_req.id,reviewer="admin",indefinite=True)
+    assert active.expires_ts == 0
+    assert non_webfilter.block_type == "adblock"
+    assert [ex.id for ex in store.active_webfilter_exceptions(proxy_id="edge-a")] == [active.id]
+    assert store.active_webfilter_exceptions(proxy_id="edge-b", at_ts=expired.expires_ts + 1) == []
+
+
+def test_policy_request_store_state_transitions_are_one_way(tmp_path):
+    configure_test_mysql_env(tmp_path / "policy-request-transitions")
+    ensure_web_import_path()
+    from services.policy_requests import PolicyRequestStore
+    store=PolicyRequestStore(); store.init_db()
+    rejected=store.create_request(proxy_id="edge-a",client_ip="192.168.1.55",request_url="https://reject.example/",domain="reject.example")
+    store.close_request(rejected.id,reviewer="admin",status="rejected",admin_note="no")
+    assert store.list_requests(statuses=["rejected"])[0].id == rejected.id
+    try:
+        store.approve_request(rejected.id,reviewer="admin",indefinite=True)
+    except ValueError as exc:
+        assert "Only pending" in str(exc)
+    else:
+        raise AssertionError("rejected request should not be approvable")
+    approved=store.create_request(proxy_id="edge-a",client_ip="192.168.1.56",request_url="https://approve.example/",domain="approve.example")
+    store.approve_request(approved.id,reviewer="admin",indefinite=True)
+    store.close_request(approved.id,reviewer="admin",status="closed",admin_note="late close")
+    assert store.list_requests(statuses=["approved"])[0].id == approved.id
+
+
+def test_proxy_policy_request_route_is_public_listener_only_and_ignores_spoofed_client_ip(monkeypatch):
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT","1")
+    monkeypatch.setenv("PAC_HTTP_PORT","80")
+    import proxy.app as proxy_app
+    proxy_app=importlib.reload(proxy_app)
+    recorded={}
+    class Store:
+        def create_request(self, **kwargs):
+            recorded.update(kwargs)
+            from services.policy_requests import PolicyRequest
+            return PolicyRequest(456, kwargs.get("proxy_id") or "default", "pending", "webfilter", kwargs["client_ip"], kwargs["request_url"], kwargs["domain"], "", "", "", "", "", 1, 1, 0, "", None)
+    monkeypatch.setattr(proxy_app,"get_policy_request_store",lambda:Store())
+    client=proxy_app.app.test_client()
+    management=client.post("/policy-request",base_url="http://localhost:5000",data={"request_url":"https://bad.example/","domain":"bad.example"})
+    assert management.status_code == 404
+    public=client.post("/policy-request",base_url="http://localhost:80",environ_base={"REMOTE_ADDR":"10.9.8.7"},data={"request_url":"https://bad.example/","client_ip":"1.2.3.4","domain":"bad.example"})
+    assert public.status_code == 200
+    assert recorded["client_ip"] == "10.9.8.7"

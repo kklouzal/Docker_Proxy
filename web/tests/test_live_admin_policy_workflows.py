@@ -516,3 +516,39 @@ def test_live_webfilter_category_validation_and_save_workflows(admin_client: Liv
         assert query_params(save_response.url).get("err_source") is None
     finally:
         _restore_webfilter_settings(LIVE_CONFIG.primary_proxy_id, original_settings)
+
+
+def test_live_policy_exception_request_public_submission_and_admin_lifecycle(admin_client: LiveStackClient) -> None:
+    from services.policy_requests import get_policy_request_store  # type: ignore
+    domain=unique_domain("policy-request")
+    note=unique_token("policy_note")
+    store=get_policy_request_store(); store.init_db()
+    before_ids={r.id for r in store.list_requests(limit=1000)}
+    submit_response=admin_client.proxy_public_request(
+        "/policy-request", method="POST",
+        data=(f"request_url=https%3A%2F%2F{domain}%2Fblocked&domain={domain}&block_type=webfilter&client_ip=1.2.3.4&user_note={note}").encode("utf-8"),
+        headers={"Content-Type":"application/x-www-form-urlencoded"}, timeout_seconds=30.0)
+    assert submit_response.status == 200
+    assert "Request submitted" in submit_response.text
+    pending=[r for r in store.list_requests(statuses=["pending"],limit=1000) if r.id not in before_ids and r.domain == domain]
+    assert len(pending) == 1
+    request_row=pending[0]
+    assert request_row.proxy_id == LIVE_CONFIG.primary_proxy_id
+    assert request_row.block_type == "webfilter"
+    assert request_row.client_ip != "1.2.3.4"
+    assert note in request_row.user_note
+    requests_page=admin_client.admin_request("/requests")
+    assert requests_page.status == 200
+    assert domain in requests_page.text
+    assert note in requests_page.text
+    approve_response=admin_client.admin_post_form("/requests", {"action":"approve","request_id":str(request_row.id),"duration_seconds":"3600","admin_note":"live approval"}, csrf_path="/requests", timeout_seconds=90.0)
+    assert approve_response.status == 200
+    assert query_params(approve_response.url).get("ok") == ["approved"]
+    active=[e for e in store.active_webfilter_exceptions(proxy_id=LIVE_CONFIG.primary_proxy_id) if e.source_request_id == request_row.id]
+    assert len(active) == 1
+    assert active[0].domain == domain
+    assert active[0].client_ip == request_row.client_ip
+    revoke_response=admin_client.admin_post_form("/requests", {"action":"revoke","exception_id":str(active[0].id),"admin_note":"live cleanup"}, csrf_path="/requests", timeout_seconds=90.0)
+    assert revoke_response.status == 200
+    assert query_params(revoke_response.url).get("ok") == ["revoked"]
+    assert all(e.id != active[0].id for e in store.active_webfilter_exceptions(proxy_id=LIVE_CONFIG.primary_proxy_id))
