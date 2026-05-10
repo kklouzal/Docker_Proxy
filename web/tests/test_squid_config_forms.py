@@ -472,3 +472,49 @@ def test_normalize_safe_form_kind_falls_back_to_caching():
     assert normalize_safe_form_kind("dns") == "dns"
     assert normalize_safe_form_kind("totally-unknown") == "caching"
     assert normalize_safe_form_kind(None) == "caching"
+
+
+def test_cache_mgr_contact_email_defaults_and_form_metadata():
+    options = build_template_options({}, max_workers=4)
+    field_map = get_config_ui_field_map()
+
+    assert options["cache_mgr_email"] == "proxy-admin@example.invalid"
+    assert field_map["cache_mgr_email"].label == "Administrator contact email"
+    assert field_map["cache_mgr_email"].placeholder == "proxy-admin@example.invalid"
+
+
+def test_build_template_options_from_form_accepts_cache_mgr_contact_email_and_preserves_blank():
+    updated = build_template_options_from_form(
+        {},
+        {"cache_mgr_email": "proxy-team@example.invalid"},
+        form_kind="http",
+        max_workers=4,
+    )
+    preserved = build_template_options_from_form(
+        {"cache_mgr_email": "helpdesk@example.invalid"},
+        {"cache_mgr_email": ""},
+        form_kind="http",
+        max_workers=4,
+    )
+
+    assert updated["cache_mgr_email"] == "proxy-team@example.invalid"
+    assert preserved["cache_mgr_email"] == "helpdesk@example.invalid"
+
+
+def test_generated_config_renders_and_parses_cache_mgr_contact_email() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template")
+
+    default_config = controller.generate_config_from_template(build_template_options({}, max_workers=4))
+    custom_config = controller.generate_config_from_template(
+        build_template_options({"cache_mgr_email": "helpdesk@example.invalid", "visible_hostname": "proxy-edge"}, max_workers=4)
+    )
+
+    assert "cache_mgr proxy-admin@example.invalid" in default_config
+    assert default_config.count("cache_mgr ") == 1
+    assert "cache_mgr helpdesk@example.invalid" in custom_config
+    assert custom_config.count("cache_mgr ") == 1
+    assert controller.get_tunable_options(custom_config)["cache_mgr_email"] == "helpdesk@example.invalid"
+    assert "cache_mgr helpdesk@example.invalid" in controller.get_http_lines(custom_config)

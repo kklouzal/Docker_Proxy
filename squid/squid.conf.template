@@ -215,7 +215,8 @@ paranoid_hit_validation 0
 max_filedescriptors 65535
 
 # HTTP identity
-# How Squid identifies itself and handles a few compatibility edge cases.
+# How Squid identifies itself, exposes user support contact, and handles a few compatibility edge cases.
+cache_mgr proxy-admin@example.invalid
 httpd_suppress_version_string off
 vary_ignore_expire off
 # END SQUID-UI MANAGED SETTINGS
@@ -247,7 +248,6 @@ adaptation_access av_resp_set deny all
 
 # Error handling
 error_directory /usr/share/squid/errors/en
-cache_mgr proxy-admin@example.invalid
 
 # MIME table for content-type detection.
 # Use the distro-provided table at /etc/squid/mime.conf; this repository
