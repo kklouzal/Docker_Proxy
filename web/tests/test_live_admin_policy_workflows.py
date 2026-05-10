@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import json
 import time
+import urllib.parse
 
 import pytest
 
@@ -69,6 +70,26 @@ def _webfilter_settings(proxy_id: object):
     return _with_proxy_id(proxy_id, lambda: _webfilter_store().get_settings())
 
 
+def _live_fixture_host() -> str:
+    host = urllib.parse.urlsplit(LIVE_CONFIG.traffic_fixture_url).hostname or "traffic-fixture"
+    return host.strip().lower().rstrip(".")
+
+
+def _set_live_webcat_category(domain: str, category: str | None) -> None:
+    from services.db import connect  # type: ignore
+    from tools import webcat_build  # type: ignore
+
+    normalized = (domain or "").strip().lower().rstrip(".")
+    with connect() as conn:
+        webcat_build._init_db(conn)  # type: ignore[attr-defined]
+        if category:
+            conn.execute("INSERT INTO webcat_domains(domain,categories) VALUES(%s,%s) ON DUPLICATE KEY UPDATE categories=VALUES(categories)", (normalized, category))
+            conn.execute("INSERT INTO webcat_categories(category,domains) VALUES(%s,1) ON DUPLICATE KEY UPDATE domains=GREATEST(domains,1)", (category,))
+        else:
+            conn.execute("DELETE FROM webcat_domains WHERE domain=%s", (normalized,))
+        conn.execute("INSERT INTO webcat_meta(k,v) VALUES('built_ts',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)", (str(int(time.time()) + 10),))
+
+
 def _restore_webfilter_settings(proxy_id: object, settings) -> None:
     def _restore() -> None:
         store = _webfilter_store()
@@ -85,6 +106,34 @@ def _restore_webfilter_settings(proxy_id: object, settings) -> None:
     _with_proxy_id(proxy_id, _restore)
 
 
+
+
+def _sync_primary_proxy(client: LiveStackClient, *, force: bool = True) -> dict:
+    response = client.proxy_management_post_json("/api/manage/sync", {"force": force}, timeout_seconds=120.0)
+    assert response.status == 200, response.text
+    payload = response.json()
+    assert payload.get("ok") is True, payload
+    wait_for_proxy_management_payload()
+    return payload
+
+
+def _wait_for_proxy_status(client: LiveStackClient, path: str, expected_status: int, *, timeout_seconds: float = 120.0):
+    deadline = time.time() + timeout_seconds
+    last = None
+    while time.time() < deadline:
+        last = client.proxy_fixture_request(path, timeout_seconds=10.0)
+        if last.status == expected_status:
+            return last
+        time.sleep(1.0)
+    raise AssertionError(f"Timed out waiting for proxied {path!r} to return HTTP {expected_status}; last={getattr(last, 'status', None)} body={getattr(last, 'text', '')[:500]}")
+
+
+def _write_live_adblock_artifact(directory, *, regex_block: str = "", regex_allow: str = "", domains_block: str = "", domains_allow: str = "", enabled: bool = True) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, content in {"domains_allow.txt": domains_allow, "domains_block.txt": domains_block, "regex_allow.txt": regex_allow, "regex_block.txt": regex_block}.items():
+        (directory / name).write_text(content, encoding="utf-8")
+    (directory / "settings.json").write_text(json.dumps({"enabled": enabled, "cache_ttl": 120, "cache_max": 1000, "settings_version": 2, "enabled_lists": ["live-fixture"] if enabled else []}, sort_keys=True) + "\n", encoding="utf-8")
+    (directory / "report.json").write_text(json.dumps({"enabled_lists": ["live-fixture"] if enabled else [], "counts": {"domains_block": bool(domains_block.strip()), "domains_allow": bool(domains_allow.strip()), "regex_block": bool(regex_block.strip()), "regex_allow": bool(regex_allow.strip())}}, sort_keys=True) + "\n", encoding="utf-8")
 def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client: LiveStackClient) -> None:
     profile_name = unique_token("live_pac")
     direct_domain = unique_domain("direct")
@@ -552,3 +601,108 @@ def test_live_policy_exception_request_public_submission_and_admin_lifecycle(adm
     assert revoke_response.status == 200
     assert query_params(revoke_response.url).get("ok") == ["revoked"]
     assert all(e.id != active[0].id for e in store.active_webfilter_exceptions(proxy_id=LIVE_CONFIG.primary_proxy_id))
+
+
+
+def _sync_primary_proxy(client: LiveStackClient, *, force: bool = True) -> dict:
+    response = client.proxy_management_post_json("/api/manage/sync", {"force": force}, timeout_seconds=120.0)
+    assert response.status == 200, response.text
+    payload = response.json()
+    assert payload.get("ok") is True, payload
+    wait_for_proxy_management_payload()
+    return payload
+
+
+def _wait_for_proxy_status(client: LiveStackClient, path: str, expected_status: int, *, timeout_seconds: float = 120.0):
+    deadline = time.time() + timeout_seconds
+    last = None
+    while time.time() < deadline:
+        last = client.proxy_fixture_request(path, timeout_seconds=10.0)
+        if last.status == expected_status:
+            return last
+        time.sleep(1.0)
+    raise AssertionError(f"Timed out waiting for proxied {path!r} to return HTTP {expected_status}; last={getattr(last, 'status', None)} body={getattr(last, 'text', '')[:500]}")
+
+
+def _write_live_adblock_artifact(directory, *, regex_block: str = "", regex_allow: str = "", domains_block: str = "", domains_allow: str = "", enabled: bool = True) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, content in {"domains_allow.txt": domains_allow, "domains_block.txt": domains_block, "regex_allow.txt": regex_allow, "regex_block.txt": regex_block}.items():
+        (directory / name).write_text(content, encoding="utf-8")
+    (directory / "settings.json").write_text(json.dumps({"enabled": enabled, "cache_ttl": 120, "cache_max": 1000, "settings_version": 2, "enabled_lists": ["live-fixture"] if enabled else []}, sort_keys=True) + "\n", encoding="utf-8")
+    (directory / "report.json").write_text(json.dumps({"enabled_lists": ["live-fixture"] if enabled else [], "counts": {"domains_block": bool(domains_block.strip()), "domains_allow": bool(domains_allow.strip()), "regex_block": bool(regex_block.strip()), "regex_allow": bool(regex_allow.strip())}}, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_live_adblock_enforces_compiled_artifact_and_allow_exception(admin_client: LiveStackClient, tmp_path) -> None:
+    artifacts = _adblock_artifacts_store()
+    blocked_token = unique_token("live_adblock_block")
+    allowed_token = unique_token("live_adblock_allow")
+    blocked_path = f"/ads/{blocked_token}.js"
+    allowed_path = f"/ads/{allowed_token}.js"
+
+    artifact_dir = tmp_path / "adblock-artifact"
+    _write_live_adblock_artifact(
+        artifact_dir,
+        regex_block=f"/{blocked_token}\\.js\\b\n/{allowed_token}\\.js\\b\n",
+        regex_allow=f"/{allowed_token}\\.js\\b\n",
+    )
+    revision = artifacts.create_revision_from_directory(
+        artifact_dir,
+        settings_version=2,
+        enabled_lists=["live-fixture"],
+        created_by="live-tests",
+        source_kind="live_enforcement",
+        activate=True,
+    )
+
+    _sync_primary_proxy(admin_client)
+    apply_row = artifacts.latest_apply(LIVE_CONFIG.primary_proxy_id)
+    assert apply_row is not None
+    assert apply_row.revision_id == revision.revision_id
+    assert apply_row.ok is True
+
+    blocked = _wait_for_proxy_status(admin_client, blocked_path, 403)
+    assert "ERR_ACCESS_DENIED" in blocked.text or "Access Denied" in blocked.text
+    allowed = wait_for_proxy_fixture_response(admin_client, allowed_path, timeout_seconds=60.0)
+    assert allowed.status == 200
+    assert allowed.json().get("path") == allowed_path
+
+
+def test_live_webfilter_blocks_category_and_policy_exception_allows_same_client(admin_client: LiveStackClient) -> None:
+    from services.policy_requests import get_policy_request_store  # type: ignore
+
+    proxy_id = LIVE_CONFIG.primary_proxy_id
+    settings = _webfilter_settings(proxy_id)
+    block_domain = _live_fixture_host()
+    block_path = f"/category/{unique_token('webfilter')}"
+
+    def _configure() -> None:
+        store = _webfilter_store()
+        store.set_settings(enabled=True, source_url="", blocked_categories=["adult"])
+        store.clear_refresh_requested()
+
+    try:
+        _set_live_webcat_category(block_domain, "adult")
+        _with_proxy_id(proxy_id, _configure)
+        _sync_primary_proxy(admin_client)
+        blocked = _wait_for_proxy_status(admin_client, block_path, 403)
+        assert "Docker Proxy policy" in blocked.text or "ERR_WEBFILTER_BLOCKED" in blocked.text
+
+        # Use the source address Squid sees for the live-test runner on the proxy listener.
+        request_client_ip = __import__("web.tests.live_test_helpers", fromlist=["live_client_ip"]).live_client_ip()
+        req = get_policy_request_store().create_request(
+            proxy_id=proxy_id,
+            client_ip=request_client_ip,
+            request_url=f"{LIVE_CONFIG.traffic_fixture_url}{block_path}",
+            domain=block_domain,
+            category="adult",
+            method="GET",
+        )
+        get_policy_request_store().approve_request(req.id, reviewer="live-tests", duration_seconds=300)
+        _sync_primary_proxy(admin_client)
+        allowed = wait_for_proxy_fixture_response(admin_client, block_path, timeout_seconds=60.0)
+        assert allowed.status == 200
+        assert allowed.json().get("headers", {}).get("host") == block_domain
+    finally:
+        _restore_webfilter_settings(proxy_id, settings)
+        _set_live_webcat_category(block_domain, None)
+        _sync_primary_proxy(admin_client)
