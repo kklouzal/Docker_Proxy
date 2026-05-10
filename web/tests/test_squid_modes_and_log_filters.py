@@ -178,6 +178,7 @@ def test_render_icap_include_uses_single_endpoint_services_without_identity_rewr
     assert "icap_service av_resp_0" not in out
     assert "icap://127.0.0.1:24000/adblockreq" in out
     assert "icap://127.0.0.1:24001/avrespmod" in out
+    assert "adaptation_access adblock_req_set allow all" in out
     assert "Accept-Encoding identity" not in out
 
 
@@ -249,6 +250,8 @@ http_access allow all
     assert "logformat icapobserve" in text
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
     assert "/var/log/squid/access.log" not in text
+    assert "include /etc/squid/conf.d/30-webfilter.conf" in text
+    assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index("http_access allow all")
     assert "icap_log stdio:/var/log/squid/icap.log icapobserve" in text
     assert "note ssl_exception steam steam_sites" in text
     assert "note cache_bypass auth has_auth" in text

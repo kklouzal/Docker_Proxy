@@ -726,6 +726,27 @@ if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/10-sslfilter.con
     ' /etc/squid/squid.conf > "$TMP" && mv "$TMP" /etc/squid/squid.conf || rm -f "$TMP"
 fi
 
+# Ensure web-filter HTTP access policy is evaluated before broad http_access rules.
+if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/30-webfilter.conf" /etc/squid/squid.conf 2>/dev/null; then
+    TMP="/tmp/squid-webfilter.conf.$$"
+    awk '
+        BEGIN{inserted=0}
+        /^[[:space:]]*http_access[[:space:]]+/ && !inserted {
+            print "# Web filtering (category/domain policy). Safe if empty.";
+            print "include /etc/squid/conf.d/30-webfilter.conf";
+            inserted=1;
+        }
+        {print}
+        END{
+            if(!inserted){
+                print "";
+                print "# Web filtering (category/domain policy). Safe if empty.";
+                print "include /etc/squid/conf.d/30-webfilter.conf";
+            }
+        }
+    ' /etc/squid/squid.conf > "$TMP" && mv "$TMP" /etc/squid/squid.conf || rm -f "$TMP"
+fi
+
 WORKERS=""
 if [ -f /etc/squid/squid.conf ]; then
     # Extract the first "workers N" directive.
@@ -864,6 +885,7 @@ EOF
     echo "icap_service av_resp respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
     echo "adaptation_service_set adblock_req_set adblock_req"
     echo "adaptation_service_set av_resp_set av_resp"
+    echo "adaptation_access adblock_req_set allow all"
 } > /etc/squid/conf.d/20-icap.conf
 
 # Normalize known distro path differences without overwriting user config

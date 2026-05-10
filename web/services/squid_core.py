@@ -137,6 +137,17 @@ class SquidController:
             return regex.sub(replacement, text, count=1)
         return text.rstrip() + "\n" + replacement + "\n"
 
+    def _ensure_line_before_first_http_access(self, text: str, line: str) -> str:
+        wanted = line.strip()
+        if not wanted:
+            return text
+        if re.search(rf"^\s*{re.escape(wanted)}\s*$", text, re.M):
+            return text
+        match = re.search(r"^\s*http_access\s+", text, re.M)
+        if match:
+            return text[: match.start()] + wanted + "\n" + text[match.start() :]
+        return text.rstrip() + "\n" + wanted + "\n"
+
     def normalize_config_text(self, config_text: str) -> str:
         text = (config_text or "").strip()
         if not text:
@@ -150,6 +161,7 @@ class SquidController:
         text = self._replace_or_append_directive(text, r"^\s*cache_log\s+(?:stdio:)?/var/log/squid/cache\.log\b.*$", "cache_log stdio:/var/log/squid/cache.log")
         text = self._replace_or_append_directive(text, r"^\s*icap_log\s+(?:stdio:)?/var/log/squid/icap\.log\b.*$", "icap_log stdio:/var/log/squid/icap.log icapobserve")
         text = self._replace_or_append_directive(text, r"^\s*cache_store_log\s+.*$", "cache_store_log none")
+        text = self._ensure_line_before_first_http_access(text, "include /etc/squid/conf.d/30-webfilter.conf")
 
         note_requirements = (
             (r"^\s*acl\s+steam_sites\b", "note ssl_exception steam steam_sites"),
@@ -219,6 +231,7 @@ class SquidController:
             f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             "adaptation_service_set adblock_req_set adblock_req",
             "adaptation_service_set av_resp_set av_resp",
+            "adaptation_access adblock_req_set allow all",
         ]
         return "\n".join(lines) + "\n"
 
