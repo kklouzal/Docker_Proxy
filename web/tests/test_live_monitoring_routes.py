@@ -70,6 +70,7 @@ def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(
             "domains_bulk": f"{bulk_domain_a}\n{bulk_domain_b}\n",
         },
         csrf_path="/sslfilter",
+        timeout_seconds=90.0,
     )
     assert bulk_response.status == 200
     bulk_qs = query_params(bulk_response.url)

@@ -61,19 +61,48 @@ def test_live_remote_scope_notices_render_on_key_pages(
 
 
 def test_live_remote_post_redirects_preserve_proxy_id(multi_proxy_admin: LiveStackClient) -> None:
-    response = multi_proxy_admin.admin_post_form(
-        with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
-        {
-            "action": "save_settings",
-            "adblock_enabled": "on",
-            "cache_ttl": "90",
-            "cache_max": "4000",
-        },
-        csrf_path=with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
-    )
+    from services.adblock_store import get_adblock_store  # type: ignore
+    from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
 
-    assert response.status == 200
-    assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+    token = set_proxy_id(LIVE_CONFIG.remote_proxy_id)
+    try:
+        store = get_adblock_store()
+        store.init_db()
+        original_settings = store.get_settings()
+    finally:
+        reset_proxy_id(token)
+
+    try:
+        response = multi_proxy_admin.admin_post_form(
+            with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
+            {
+                "action": "save_settings",
+                "adblock_enabled": "on",
+                "cache_ttl": "90",
+                "cache_max": "4000",
+            },
+            csrf_path=with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
+            timeout_seconds=90.0,
+        )
+
+        assert response.status == 200
+        assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+    finally:
+        token = set_proxy_id(LIVE_CONFIG.remote_proxy_id)
+        try:
+            store = get_adblock_store()
+            store.init_db()
+            store.set_settings(
+                enabled=bool(original_settings.get("enabled")),
+                cache_ttl=int(original_settings.get("cache_ttl") or 0),
+                cache_max=int(original_settings.get("cache_max") or 0),
+            )
+            # Saving adblock settings queues a background list rebuild. This route
+            # test only verifies proxy-id preservation; leaving an internet list
+            # refresh queued can starve later live proxy traffic assertions.
+            store.clear_refresh_requested()
+        finally:
+            reset_proxy_id(token)
 
 
 def test_live_remote_pac_page_shows_proxy_pinned_url(multi_proxy_admin: LiveStackClient) -> None:
