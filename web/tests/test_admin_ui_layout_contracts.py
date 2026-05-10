@@ -53,6 +53,16 @@ def test_observability_overview_explains_fleet_wide_clear_logs() -> None:
     assert "without changing proxy configuration or policy settings" in html
 
 
+def test_clamav_page_explains_configurable_failure_behavior() -> None:
+    html = (TEMPLATES / "clamav.html").read_text(encoding="utf-8")
+
+    assert "fail-{{ clamav_options.clamav_fail_mode }}" in html
+    assert "bypass=on" in html
+    assert "bypass=off" in html
+    assert "virus_scan.PassOnError on" in html
+    assert "PassOnError off" in html
+
+
 def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:
     html = (TEMPLATES / "sslfilter.html").read_text(encoding="utf-8")
 

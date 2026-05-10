@@ -190,6 +190,51 @@ def test_live_squid_config_rejects_invalid_manual_apply_without_changing_active_
     wait_for_proxy_management_payload()
 
 
+def test_live_clamav_settings_publish_and_apply_runtime_controls(admin_client: LiveStackClient) -> None:
+    original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
+    before_apply = latest_config_apply(LIVE_CONFIG.primary_proxy_id)
+
+    try:
+        response = admin_client.admin_post_form(
+            "/clamav/settings",
+            {
+                "clamav_fail_mode": "closed",
+                "virus_scan_scan_file_types": "TEXT DATA",
+                "virus_scan_send_percent_data": "77",
+                "virus_scan_start_send_percent_after": "64K",
+                "virus_scan_max_object_size": "64M",
+                "virus_scan_default_engine": "clamd",
+            },
+            csrf_path="/clamav",
+            timeout_seconds=120.0,
+        )
+        assert response.status == 200
+        assert query_params(response.url).get("settings_ok") == ["1"]
+
+        wait_for_config_apply(
+            LIVE_CONFIG.primary_proxy_id,
+            after_ts=_apply_ts(before_apply) or None,
+            timeout_seconds=120.0,
+        )
+        config_text = active_config_text(LIVE_CONFIG.primary_proxy_id)
+        assert "# BEGIN SQUID-UI CLAMAV SETTINGS" in config_text
+        assert "# clamav_fail_mode: closed" in config_text
+        assert "# virus_scan_scan_file_types: TEXT DATA" in config_text
+        assert "# virus_scan_send_percent_data: 77" in config_text
+        assert "# virus_scan_start_send_percent_after: 64K" in config_text
+        assert "# virus_scan_allow_204_on: off" in config_text
+        assert "# virus_scan_max_object_size: 64M" in config_text
+        assert "# virus_scan_default_engine: clamd" in config_text
+
+        page = admin_client.admin_request("/clamav")
+        assert page.status == 200
+        assert "Fail closed" in page.text
+        payload = wait_for_proxy_management_payload()
+        assert payload.get("status") in {"healthy", "degraded"}
+    finally:
+        _restore_primary_config(admin_client, original_config)
+
+
 def test_live_observability_and_ssl_exports_return_csv(admin_client: LiveStackClient) -> None:
     observability_export = admin_client.admin_request("/observability/export?pane=destinations&window=3600&limit=25")
     assert observability_export.status == 200

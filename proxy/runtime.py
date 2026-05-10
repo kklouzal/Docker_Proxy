@@ -1251,6 +1251,30 @@ class ProxyRuntime:
             return pac_result
 
         current_sha = self._current_config_sha()
+        clamav_runtime_changed = False
+        controller = getattr(self, "controller", None)
+        materialize_clamav_runtime_files = getattr(controller, "materialize_clamav_runtime_files", None)
+        if callable(materialize_clamav_runtime_files):
+            current_config_reader = getattr(controller, "get_current_config", None)
+            current_config_text = current_config_reader() if callable(current_config_reader) else ""
+            ok_clamav_runtime, clamav_runtime_detail = materialize_clamav_runtime_files(current_config_text or "")
+            clamav_runtime_changed = bool(ok_clamav_runtime and "updated" in (clamav_runtime_detail or "").lower())
+            if str(clamav_runtime_detail or "").strip() and clamav_runtime_changed:
+                detail_parts.append(str(clamav_runtime_detail or "").strip())
+            if not ok_clamav_runtime:
+                detail = "\n".join(detail_parts + [str(clamav_runtime_detail or "ClamAV runtime file materialization failed.")]).strip()
+                self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+                return {
+                    "ok": False,
+                    "proxy_id": self.proxy_id,
+                    "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                    "certificate_changed": cert_changed,
+                    "policy_changed": policy_changed,
+                    "adblock_changed": adblock_changed,
+                    "pac_changed": pac_changed,
+                    "config_changed": False,
+                    "detail": detail,
+                }
         revision_meta = self.revisions.get_active_revision_metadata(self.proxy_id)
         if revision_meta is None:
             reload_ok = True
@@ -1262,7 +1286,7 @@ class ProxyRuntime:
             result = {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1294,7 +1318,7 @@ class ProxyRuntime:
                 "ok": False,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1320,7 +1344,7 @@ class ProxyRuntime:
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1336,7 +1360,7 @@ class ProxyRuntime:
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,

@@ -54,6 +54,81 @@
   {% endif %}
 </div>
 
+
+{% if settings_ok == '1' %}
+  <div class="banner success"><span class="badge ok">Settings saved</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings were validated and applied for {{ active_proxy.display_name }}.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
+{% elif settings_ok == '0' %}
+  <div class="banner error"><span class="badge danger">Settings failed</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings could not be applied; previous config kept.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
+{% endif %}
+
+<section class="card config-editor-card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">ClamAV and c-icap settings</h2>
+      <div class="small">Schema-backed controls for Squid AV ICAP failure behavior and the container-local <span class="mono">/etc/virus_scan.conf</span> runtime file.</div>
+    </div>
+    <span class="badge {{ 'warn' if clamav_options.clamav_fail_mode == 'closed' else 'ok' }}">Fail {{ clamav_options.clamav_fail_mode }}</span>
+  </div>
+  <div class="card-body">
+    <form class="form config-form-shell" id="clamav-settings-form" action="{{ url_for('clamav_settings') }}" method="post" data-config-form="clamav">
+      {{ csrf_field() }}
+      <div class="surface-note small">
+        Fail-open keeps browsing available when AV ICAP or clamd is unavailable. Fail-closed changes both Squid's AV ICAP <span class="mono">bypass</span> behavior and c-icap <span class="mono">virus_scan.PassOnError</span> so affected transfers fail instead of passing unscanned.
+      </div>
+      {% for section in clamav_sections %}
+        <section class="config-safe-section" data-config-section="{{ section.key }}">
+          <div class="config-safe-section-heading">
+            <div>
+              <h3>{{ section.label }}</h3>
+              <p class="small">{{ section.description }}</p>
+            </div>
+            <span class="badge">{{ section.apply_note }}</span>
+          </div>
+          {% for group in section.groups %}
+            <div class="config-field-group" data-config-group="{{ group.key }}">
+              <div class="config-field-group-heading">
+                <h4>{{ group.title }}</h4>
+                <p class="small">{{ group.description }}</p>
+              </div>
+              <div class="config-field-grid">
+                {% for field_key in group.field_keys %}
+                  {% set field = clamav_field_map[field_key] %}
+                  {% set value = clamav_options[field.key] %}
+                  <div class="config-field-card" data-config-field="{{ field.key }}">
+                    {% if field.input_type == 'checkbox' %}
+                      <label class="check-row config-check-row">
+                        <input class="check" type="checkbox" id="{{ field.key }}" name="{{ field.key }}" {% if value %}checked{% endif %} />
+                        <span>{{ field.label }}</span>
+                      </label>
+                    {% elif field.input_type == 'select' %}
+                      <label for="{{ field.key }}">{{ field.label }}</label>
+                      <select id="{{ field.key }}" name="{{ field.key }}">
+                        {% for choice in field.choices %}
+                          <option value="{{ choice.value }}" {% if choice.value == (value|string) %}selected{% endif %}>{{ choice.label }}</option>
+                        {% endfor %}
+                      </select>
+                    {% else %}
+                      <label for="{{ field.key }}">{{ field.label }}</label>
+                      <input id="{{ field.key }}" name="{{ field.key }}" type="{{ field.input_type }}" value="{{ '' if value is none else value }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.minimum is not none %}min="{{ field.minimum }}"{% endif %} {% if field.maximum is not none %}max="{{ field.maximum }}"{% endif %} {% if field.step is not none %}step="{{ field.step }}"{% endif %} />
+                    {% endif %}
+                    <div class="config-field-meta">
+                      <div class="small mono config-field-directive">{{ field.directive }}</div>
+                      {% if field.help_text %}<div class="small">{{ field.help_text }}</div>{% endif %}
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          {% endfor %}
+        </section>
+      {% endfor %}
+      <div class="actions config-editor-actions">
+        <button class="btn primary" type="submit">Save &amp; Apply AV settings</button>
+      </div>
+    </form>
+  </div>
+</section>
+
 <div class="grid">
   <section class="card">
     <div class="card-header">
@@ -139,8 +214,8 @@
     </div>
     <div class="card-body">
       <div class="surface-note small">
-        Squid is configured with <span class="mono">bypass=on</span> for ICAP services.
-        If ClamAV or c-icap is down, browsing should continue (fail-open) but scans won’t occur.
+        Current AV failure mode is <strong>fail-{{ clamav_options.clamav_fail_mode }}</strong>.
+        Fail-open renders Squid <span class="mono">bypass=on</span> and c-icap <span class="mono">virus_scan.PassOnError on</span> so browsing continues unscanned during scanner outages; fail-closed renders <span class="mono">bypass=off</span> and <span class="mono">PassOnError off</span> so affected transfers fail instead.
       </div>
       <div class="surface-note small">
         The <strong>Enable</strong> button changes the proxy's AV policy only. It does <strong>not</strong> supervise or start the <span class="mono">clamd</span> daemon or the AV <span class="mono">c-icap</span> service.

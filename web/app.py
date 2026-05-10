@@ -31,6 +31,13 @@ from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import decode_bytes as _decode_bytes, extract_domain as _extract_domain
+from services.clamav_config_forms import (
+    apply_clamav_options_to_config,
+    extract_clamav_options,
+    get_clamav_ui_field_map,
+    get_clamav_ui_sections,
+    read_clamav_options_from_form,
+)
 from services.squid_config_forms import (
     build_template_options,
     build_template_options_from_form,
@@ -2072,6 +2079,8 @@ def clamav():
     except Exception:
         clamav_icap_summary = {'events': 0, 'avg_icap_time_ms': 0, 'max_icap_time_ms': 0}
 
+    clamav_options = extract_clamav_options(cfg)
+
     return render_template(
         'clamav.html',
         health=health,
@@ -2080,12 +2089,31 @@ def clamav():
         health_source=health_source,
         clamav_enabled=clamav_enabled,
         clamav_icap_summary=clamav_icap_summary,
+        clamav_sections=get_clamav_ui_sections(),
+        clamav_field_map=get_clamav_ui_field_map(),
+        clamav_options=clamav_options,
         window=window_i,
         window_label=_window_label(window_i),
         eicar_result=request.args.get('eicar'),
         eicar_detail=request.args.get('eicar_detail'),
         icap_result=request.args.get('icap_sample'),
         icap_detail=request.args.get('icap_detail'),
+        settings_ok=request.args.get('settings_ok'),
+        settings_msg=request.args.get('settings_msg'),
+    )
+
+
+@app.route('/clamav/settings', methods=['POST'])
+def clamav_settings():
+    current = _current_managed_config()
+    options = read_clamav_options_from_form(request.form, extract_clamav_options(current))
+    new_cfg = apply_clamav_options_to_config(current, options)
+    ok, details = _publish_config_for_current_mode(new_cfg, source_kind='clamav-settings')
+    _record_audit_event('clamav_settings_apply', ok=ok, detail=(details or ''), config_text=new_cfg)
+    return _redirect_to(
+        'clamav',
+        settings_ok=_bool_result_param(ok),
+        settings_msg=(details or '')[:1000],
     )
 
 

@@ -15,6 +15,7 @@ import logging
 
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.clamav_config_forms import clamav_fail_open, extract_clamav_options, render_virus_scan_config
 
 
 logger = logging.getLogger(__name__)
@@ -161,7 +162,47 @@ class SquidController:
 
         return text if text.endswith("\n") else text + "\n"
 
-    def _render_icap_include(self) -> str:
+    def _icap_include_path(self) -> Path:
+        return Path((os.environ.get("SQUID_ICAP_INCLUDE_PATH") or "/etc/squid/conf.d/20-icap.conf").strip() or "/etc/squid/conf.d/20-icap.conf")
+
+    def _virus_scan_config_path(self) -> Path:
+        return Path((os.environ.get("VIRUS_SCAN_CONFIG_PATH") or "/etc/virus_scan.conf").strip() or "/etc/virus_scan.conf")
+
+    def _snapshot_runtime_file(self, path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+
+    def _restore_runtime_file_snapshot(self, path: Path, content: str | None) -> None:
+        try:
+            if content is None:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                return
+            self._atomic_write_file(str(path), content)
+        except Exception:
+            log_exception_throttled(
+                logger,
+                f"squid_core.restore_runtime_file.{path}",
+                interval_seconds=300.0,
+                message=f"Failed to restore {path}",
+            )
+
+    def _write_if_changed(self, path: Path, content: str) -> bool:
+        try:
+            if path.exists() and path.read_text(encoding="utf-8") == content:
+                return False
+        except Exception:
+            pass
+        self._atomic_write_file(str(path), content)
+        return True
+
+    def _render_icap_include(self, config_text: str | None = None) -> str:
         try:
             cicap_adblock_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
         except Exception:
@@ -171,19 +212,38 @@ class SquidController:
         except Exception:
             cicap_av_port = 14001
 
+        clamav_options = extract_clamav_options(config_text or "")
+        av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
         lines = [
             f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
-            f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass=on",
+            f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             "adaptation_service_set adblock_req_set adblock_req",
             "adaptation_service_set av_resp_set av_resp",
         ]
         return "\n".join(lines) + "\n"
 
-    def _generate_icap_include(self, workers: int) -> None:
-        conf_dir = Path("/etc/squid/conf.d")
-        conf_dir.mkdir(parents=True, exist_ok=True)
-        out_path = conf_dir / "20-icap.conf"
-        out_path.write_text(self._render_icap_include(), encoding="utf-8")
+    def _generate_icap_include(self, workers: int, config_text: str | None = None) -> None:
+        out_path = self._icap_include_path()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_if_changed(out_path, self._render_icap_include(config_text))
+
+    def materialize_clamav_runtime_files(self, config_text: str) -> Tuple[bool, str]:
+        try:
+            normalized = self.normalize_config_text(config_text or "")
+            options = extract_clamav_options(normalized)
+            virus_path = self._virus_scan_config_path()
+            icap_path = self._icap_include_path()
+            changed = []
+            if self._write_if_changed(virus_path, render_virus_scan_config(options)):
+                changed.append(str(virus_path))
+            if self._write_if_changed(icap_path, self._render_icap_include(normalized)):
+                changed.append(str(icap_path))
+            if changed:
+                return True, "ClamAV runtime files updated: " + ", ".join(changed)
+            return True, "ClamAV runtime files already current."
+        except Exception as exc:
+            logger.exception("ClamAV runtime file materialization failed")
+            return False, public_error_message(exc)
 
     def _supervisor_reread_update(self) -> Tuple[bool, str]:
         try:
@@ -198,9 +258,9 @@ class SquidController:
             logger.exception("supervisorctl reread/update failed")
             return False, public_error_message(exc, default="supervisorctl failed. Check server logs for details.")
 
-    def apply_icap_scaling(self, workers: int) -> Tuple[bool, str]:
+    def apply_icap_scaling(self, workers: int, config_text: str | None = None) -> Tuple[bool, str]:
         try:
-            self._generate_icap_include(workers)
+            self._generate_icap_include(workers, config_text)
             return True, "ICAP include updated."
         except Exception as exc:
             logger.exception("ICAP scaling apply failed")
@@ -688,13 +748,12 @@ class SquidController:
             new_cache_dirs = self._extract_cache_dir_lines(normalized_config)
             cache_dirs_changed = new_cache_dirs != old_cache_dirs
 
-            old_icap_include = None
+            icap_include_path = self._icap_include_path()
+            virus_scan_config_path = self._virus_scan_config_path()
+            old_icap_include = self._snapshot_runtime_file(icap_include_path)
+            old_virus_scan_config = self._snapshot_runtime_file(virus_scan_config_path)
             old_icap_supervisor = None
             if workers_changed and new_workers is not None:
-                try:
-                    old_icap_include = Path("/etc/squid/conf.d/20-icap.conf").read_text(encoding="utf-8")
-                except Exception:
-                    old_icap_include = None
                 try:
                     old_icap_supervisor = Path("/etc/supervisor.d/icap.conf").read_text(encoding="utf-8")
                 except Exception:
@@ -705,14 +764,26 @@ class SquidController:
                 self._write_file(backup_path, current)
             os.replace(new_path, self.squid_conf_path)
 
+            ok_runtime, runtime_details = self.materialize_clamav_runtime_files(normalized_config)
+            if not ok_runtime:
+                if os.path.exists(backup_path):
+                    os.replace(backup_path, self.squid_conf_path)
+                self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
+                self._restore_runtime_file_snapshot(virus_scan_config_path, old_virus_scan_config)
+                _rollback_ok, rollback_detail = self.restore_last_known_good_config(
+                    reason=runtime_details or "Failed to materialize ClamAV runtime files.",
+                    fallback_config=current,
+                )
+                return False, rollback_detail or (runtime_details or "Failed to materialize ClamAV runtime files.")
+
             if workers_changed:
-                ok_scale, scale_details = self.apply_icap_scaling(new_workers or 1)
+                ok_scale, scale_details = self.apply_icap_scaling(new_workers or 1, config_text=normalized_config)
                 if not ok_scale:
                     if os.path.exists(backup_path):
                         os.replace(backup_path, self.squid_conf_path)
                     try:
-                        if old_icap_include is not None:
-                            Path("/etc/squid/conf.d/20-icap.conf").write_text(old_icap_include, encoding="utf-8")
+                        self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
+                        self._restore_runtime_file_snapshot(virus_scan_config_path, old_virus_scan_config)
                     except Exception:
                         log_exception_throttled(
                             logger,
@@ -742,8 +813,8 @@ class SquidController:
                     if os.path.exists(backup_path):
                         os.replace(backup_path, self.squid_conf_path)
                         try:
-                            if old_icap_include is not None:
-                                Path("/etc/squid/conf.d/20-icap.conf").write_text(old_icap_include, encoding="utf-8")
+                            self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
+                            self._restore_runtime_file_snapshot(virus_scan_config_path, old_virus_scan_config)
                         except Exception:
                             log_exception_throttled(
                                 logger,
@@ -788,6 +859,8 @@ class SquidController:
                 if not ok_restart:
                     if os.path.exists(backup_path):
                         os.replace(backup_path, self.squid_conf_path)
+                    self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
+                    self._restore_runtime_file_snapshot(virus_scan_config_path, old_virus_scan_config)
                     _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                         reason=restart_details or "Squid restart failed after cache reinitialization.",
                         fallback_config=current,
@@ -810,6 +883,8 @@ class SquidController:
             if reconfigure.returncode != 0:
                 if os.path.exists(backup_path):
                     os.replace(backup_path, self.squid_conf_path)
+                self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
+                self._restore_runtime_file_snapshot(virus_scan_config_path, old_virus_scan_config)
                 failure_detail = self._decode_completed(reconfigure) or "Squid reconfigure failed."
                 _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                     reason=failure_detail,
@@ -823,6 +898,8 @@ class SquidController:
                 if not ok_restart:
                     if os.path.exists(backup_path):
                         os.replace(backup_path, self.squid_conf_path)
+                    self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
+                    self._restore_runtime_file_snapshot(virus_scan_config_path, old_virus_scan_config)
                     _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                         reason=restart_details or "Squid HTTP listener did not recover after reconfigure.",
                         fallback_config=current,
