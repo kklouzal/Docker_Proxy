@@ -311,6 +311,13 @@ class SquidController:
         return self._http_listener_ports(config_text)[0]
 
     def _tcp_listener_accepts(self, port: int) -> bool:
+        # Prefer passive /proc inspection for local readiness checks. Opening a
+        # TCP connection to Squid only to test readiness creates synthetic
+        # access-log rows such as transaction-end-before-headers.
+        if self._listening_socket_inodes_for_ports((int(port),)):
+            return True
+        if os.path.exists("/proc/net/tcp") or os.path.exists("/proc/net/tcp6"):
+            return False
         try:
             with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
                 return True

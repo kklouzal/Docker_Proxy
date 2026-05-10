@@ -1,3 +1,5 @@
+import ipaddress
+
 from services.diagnostic_store import DiagnosticStore
 
 
@@ -153,3 +155,49 @@ def test_list_recent_transactions_attaches_related_icap_and_filters_service() ->
     av_rows = store.list_recent_transactions(limit=10, service="av")
     assert len(av_rows) == 1
     assert av_rows[0]["master_xaction"] == "tx123"
+
+
+
+def _diagnostic_request_line(client_ip: str, *, url: str = "http://example.com/", method: str = "GET") -> str:
+    return (
+        f"1777357408\t79\t{client_ip}\t{method}\t{url}\tTCP_MISS/200\t482"
+        "\t54\tHIER_DIRECT\t-\t-\t-\t-\t-\t-\texample.com\tcurl/8.19.0\t-"
+        "\t-\t-\t-\t-"
+    )
+
+
+def test_build_request_insert_params_filters_self_and_container_networks(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLE_TEST_MODE", raising=False)
+    monkeypatch.setenv("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC", "1")
+    monkeypatch.setattr("services.diagnostic_store._local_link_networks", lambda: (ipaddress.ip_network("172.19.0.0/16"),))
+    store = DiagnosticStore()
+    self_probe = (
+        "1778373091\t0\t127.0.0.1\t-\terror:transaction-end-before-headers\tNONE_NONE/0\t0"
+        "\t-\tHIER_NONE\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-"
+    )
+    assert store._build_request_insert_params(self_probe) is None
+    assert store._build_request_insert_params(_diagnostic_request_line("172.19.0.1")) is None
+    assert store._build_request_insert_params(_diagnostic_request_line("192.0.2.10")) is not None
+
+
+def test_build_request_insert_params_keeps_live_test_container_traffic_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_TEST_MODE", "1")
+    monkeypatch.delenv("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC", raising=False)
+    monkeypatch.setattr("services.diagnostic_store._local_link_networks", lambda: (ipaddress.ip_network("172.19.0.0/16"),))
+    store = DiagnosticStore()
+    assert store._build_request_insert_params(_diagnostic_request_line("172.19.0.1")) is not None
+    monkeypatch.setenv("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC", "1")
+    assert store._build_request_insert_params(_diagnostic_request_line("172.19.0.1")) is None
+
+
+def test_build_icap_insert_params_filters_internal_sources(monkeypatch) -> None:
+    monkeypatch.delenv("ENABLE_TEST_MODE", raising=False)
+    monkeypatch.setenv("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC", "1")
+    monkeypatch.setattr("services.diagnostic_store._local_link_networks", lambda: (ipaddress.ip_network("172.19.0.0/16"),))
+    store = DiagnosticStore()
+    line = (
+        "1777000001\ttx123\t172.19.0.3\tGET\thttps://example.com/file.exe\t87"
+        "\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0\texample.com"
+        "\t\tsslfilter_nobump\t\t"
+    )
+    assert store._build_icap_insert_params(line) is None

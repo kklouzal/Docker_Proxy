@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import ipaddress
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -16,6 +18,104 @@ from services.runtime_helpers import env_float as _env_float, env_int as _env_in
 
 
 logger = logging.getLogger(__name__)
+
+
+_INTERNAL_NETWORK_CACHE: tuple[float, tuple[Any, ...]] = (0.0, ())
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_truthy(value: object | None) -> bool:
+    return str(value or "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def _env_falsey(value: object | None) -> bool:
+    return str(value or "").strip().lower() in _FALSE_ENV_VALUES
+
+
+def _running_in_container() -> bool:
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
+def _diagnostic_filter_internal_traffic_enabled() -> bool:
+    override = os.environ.get("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC")
+    if override is not None:
+        if _env_falsey(override):
+            return False
+        if _env_truthy(override):
+            return True
+    return not _env_truthy(os.environ.get("ENABLE_TEST_MODE"))
+
+
+def _read_local_link_networks() -> tuple[Any, ...]:
+    networks: list[Any] = []
+    try:
+        networks.append(ipaddress.ip_network("127.0.0.0/8"))
+        networks.append(ipaddress.ip_network("::1/128"))
+    except Exception:
+        pass
+    if not _running_in_container():
+        return tuple(networks)
+    try:
+        lines = open("/proc/net/fib_trie", "r", encoding="utf-8", errors="replace").read().splitlines()
+    except FileNotFoundError:
+        return tuple(networks)
+    except Exception:
+        log_exception_throttled(logger, "diagnostic_store.local_networks", interval_seconds=300.0, message="Failed to inspect local network routes for diagnostic self-traffic filtering")
+        return tuple(networks)
+    candidate = ""
+    for line in lines:
+        match = re.search(r"\+--\s+([0-9.]+/\d+)\b", line)
+        if match:
+            candidate = match.group(1)
+            try:
+                network = ipaddress.ip_network(candidate, strict=False)
+                if network.prefixlen > 0 and network.is_private and network not in networks:
+                    networks.append(network)
+            except Exception:
+                pass
+            continue
+        if candidate and " link " in line and "UNICAST" in line:
+            try:
+                network = ipaddress.ip_network(candidate, strict=False)
+                if network.prefixlen > 0 and network not in networks:
+                    networks.append(network)
+            except Exception:
+                pass
+            candidate = ""
+    return tuple(networks)
+
+
+def _local_link_networks() -> tuple[Any, ...]:
+    global _INTERNAL_NETWORK_CACHE
+    now = time.time()
+    cache_ts, cached = _INTERNAL_NETWORK_CACHE
+    if cached and now - cache_ts < 60.0:
+        return cached
+    networks = _read_local_link_networks()
+    _INTERNAL_NETWORK_CACHE = (now, networks)
+    return networks
+
+
+def _is_internal_diagnostic_row(row: Dict[str, Any]) -> bool:
+    if not _diagnostic_filter_internal_traffic_enabled():
+        return False
+    client_ip = _safe_text(row.get("client_ip"), max_len=64)
+    if not client_ip:
+        return False
+    try:
+        address = ipaddress.ip_address(client_ip)
+    except Exception:
+        return False
+    if address.is_loopback:
+        return True
+    for network in _local_link_networks():
+        try:
+            if address.version == network.version and address in network:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 _REQUEST_DIMENSIONS: Dict[str, str] = {
@@ -544,7 +644,7 @@ class DiagnosticStore:
 
     def _build_request_insert_params(self, line: str) -> Optional[tuple[Any, ...]]:
         row = self._parse_request_log_line(line)
-        if not row:
+        if not row or _is_internal_diagnostic_row(row):
             return None
         proxy_id = get_proxy_id()
         event_key = _event_key(
@@ -634,7 +734,7 @@ class DiagnosticStore:
 
     def _build_icap_insert_params(self, line: str) -> Optional[tuple[Any, ...]]:
         row = self._parse_icap_log_line(line)
-        if not row:
+        if not row or _is_internal_diagnostic_row(row):
             return None
         proxy_id = get_proxy_id()
         event_key = _event_key(

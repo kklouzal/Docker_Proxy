@@ -99,3 +99,31 @@ def test_restart_squid_fails_when_listener_never_releases(monkeypatch):
         ["squid", "-k", "shutdown"],
     ]
     assert "did not release" in detail
+
+
+
+def test_http_listener_check_uses_passive_proc_inspection(monkeypatch):
+    import services.squidctl as squidctl  # type: ignore
+
+    controller = squidctl.SquidController()
+    calls: list[tuple[int, ...]] = []
+    monkeypatch.setattr(controller, "_listening_socket_inodes_for_ports", lambda ports: calls.append(ports) or {"123"})
+
+    assert controller._tcp_listener_accepts(3128) is True
+    assert calls == [(3128,)]
+
+
+def test_http_listener_check_does_not_connect_when_proc_is_available(monkeypatch):
+    import services.squid_core as squid_core  # type: ignore
+    import services.squidctl as squidctl  # type: ignore
+
+    controller = squidctl.SquidController()
+    monkeypatch.setattr(controller, "_listening_socket_inodes_for_ports", lambda ports: set())
+    monkeypatch.setattr(squid_core.os.path, "exists", lambda path: path in {"/proc/net/tcp", "/proc/net/tcp6"})
+
+    def fail_connect(*_args, **_kwargs):
+        raise AssertionError("listener readiness checks must not create TCP probes when /proc is available")
+
+    monkeypatch.setattr(squid_core.socket, "create_connection", fail_connect)
+
+    assert controller._tcp_listener_accepts(3128) is False
