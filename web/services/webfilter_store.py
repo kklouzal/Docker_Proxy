@@ -109,6 +109,9 @@ class WebFilterStore(WebFilterStoreBase):
         with self._connect() as conn:
             self._set_meta(conn, "refresh_requested", "1")
 
+    def clear_refresh_requested(self) -> None:
+        self._clear_refresh_requested()
+
     def list_available_categories(self, limit: int = 5000) -> List[Tuple[str, int]]:
         try:
             with self._connect_webcat() as conn:

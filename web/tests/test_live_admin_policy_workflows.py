@@ -71,11 +71,16 @@ def _webfilter_settings(proxy_id: object):
 
 def _restore_webfilter_settings(proxy_id: object, settings) -> None:
     def _restore() -> None:
-        _webfilter_store().set_settings(
+        store = _webfilter_store()
+        store.set_settings(
             enabled=settings.enabled,
             source_url=settings.source_url,
             blocked_categories=list(settings.blocked_categories),
         )
+        # Live tests must not leave a background web-category rebuild queued against
+        # the production default internet feed. That external download can consume
+        # the shared live-test stack long enough to starve later proxy/admin calls.
+        store.clear_refresh_requested()
 
     _with_proxy_id(proxy_id, _restore)
 
