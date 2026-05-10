@@ -337,6 +337,8 @@ def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeo
             raise subprocess.TimeoutExpired(args, timeout=15)
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(tmp_path / "20-icap.conf"))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(tmp_path / "virus_scan.conf"))
     controller = SquidController(str(squid_conf), cmd_run=fake_run)
     controller.persisted_squid_conf_path = str(persisted_conf)
     monkeypatch.setattr(controller, "_wait_for_http_listener_absent", lambda *, timeout: True)
