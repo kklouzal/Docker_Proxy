@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from flask import Flask, g, render_template, request, redirect, url_for, jsonify, abort, session
+from flask import Flask, Response, g, render_template, request, redirect, url_for, jsonify, abort, session
 from services.squidctl import SquidController
 from services.cert_manager import generate_self_signed_ca_bundle, install_pfx_as_ca, materialize_certificate_bundle, parse_pfx_bundle
 from services.certificate_bundles import get_certificate_bundles as _default_get_certificate_bundles
@@ -28,6 +28,7 @@ from services.background_guard import acquire_background_lock
 from services.observability_queries import get_observability_queries as _default_get_observability_queries
 from services.observability_maintenance import clear_observability_logs as _default_clear_observability_logs
 from services.errors import public_error_message
+from services.error_pages import list_error_pages, read_template, render_preview, template_tokens
 from services.http_optimizations import install_http_optimizations
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import decode_bytes as _decode_bytes, extract_domain as _extract_domain
@@ -2058,6 +2059,31 @@ def _check_clamd() -> Dict[str, Any]:
 
 def _test_eicar() -> Dict[str, Any]:
     return _app_runtime_services().test_eicar()
+
+
+@app.route('/error-pages', methods=['GET'])
+def error_pages():
+    pages = list_error_pages()
+    token_summary = {
+        page.name: ', '.join(template_tokens(read_template(page.name)))
+        for page in pages
+    }
+    return render_template(
+        'error_pages.html',
+        pages=pages,
+        token_summary=token_summary,
+    )
+
+
+@app.route('/error-pages/preview/<name>', methods=['GET'])
+def error_page_preview(name: str):
+    try:
+        html = render_preview(name)
+    except KeyError:
+        abort(404)
+    response = Response(html, mimetype='text/html')
+    response.headers['X-Robots-Tag'] = 'noindex, nofollow'
+    return response
 
 
 @app.route('/clamav', methods=['GET'])

@@ -140,8 +140,8 @@ COPY docker/adblock_req.conf /etc/adblock_req.conf
 COPY docker/virus_scan.conf /etc/virus_scan.conf
 
 RUN mkdir -p /etc/squid/ssl/certs /var/lib/ssl_db /var/spool/squid \
-    && if [ -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED ] && [ -d /usr/share/squid/errors/en ]; then \
-        cp -f /squid/error_pages/en/ERR_WEBFILTER_BLOCKED /usr/share/squid/errors/en/; \
+    && if [ -d /squid/error_pages/en ] && [ -d /usr/share/squid/errors/en ]; then \
+        cp -f /squid/error_pages/en/ERR_* /usr/share/squid/errors/en/; \
     fi
 
 EXPOSE 5000 3128 80

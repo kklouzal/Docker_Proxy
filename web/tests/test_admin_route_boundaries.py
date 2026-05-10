@@ -46,6 +46,8 @@ class RecordingProxyClient:
         "/adblock",
         "/webfilter",
         "/sslfilter",
+        "/error-pages",
+        "/error-pages/preview/ERR_ACCESS_DENIED",
         "/clamav",
         "/squid/config",
         "/pac",

@@ -79,6 +79,7 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
         "web/services/certificate_bundles.py",
         "web/services/clamav_config_forms.py",
         "web/services/diagnostic_store.py",
+        "web/services/error_pages.py",
         "web/services/proxy_client.py",
         "web/services/squid_core.py",
         "web/services/squidctl.py",

@@ -1,0 +1,85 @@
+{% extends "layout.html" %}
+{% block title %}Error Pages · Squid Flask Proxy{% endblock %}
+{% block content %}
+<div class="hero-card">
+  <div>
+    <div class="eyebrow">Policy · Error Pages</div>
+    <h1>Branded proxy error pages</h1>
+    <p class="muted">Docker Proxy ships a complete Squid error template set so users see clear, branded guidance instead of generic Squid screens.</p>
+  </div>
+  <div class="hero-actions">
+    <a class="btn ghost" href="{{ url_for('squid_config') }}">Squid config</a>
+    <a class="btn ghost" href="{{ url_for('webfilter') }}">Web filtering</a>
+  </div>
+</div>
+
+<div class="grid cards-3">
+  <section class="stat card">
+    <span class="stat-label">Squid templates</span>
+    <span class="stat-value">42</span>
+    <span class="small">Complete upstream `ERR_*` surface covered.</span>
+  </section>
+  <section class="stat card">
+    <span class="stat-label">Docker Proxy custom</span>
+    <span class="stat-value">1</span>
+    <span class="small">Web-filter block page for generated policy denies.</span>
+  </section>
+  <section class="stat card">
+    <span class="stat-label">Sensitive diagnostics</span>
+    <span class="stat-value">Controlled</span>
+    <span class="small">End-user pages avoid credential-bearing URL tokens and isolate admin guidance.</span>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Template manifest</h2>
+      <p class="small">Open any page in a new tab to preview representative Squid substitutions. Live values are supplied by Squid at request time.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Template</th>
+          <th>Family</th>
+          <th>Purpose</th>
+          <th>Tokens</th>
+          <th class="num">Preview</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for page in pages %}
+        <tr>
+          <td>
+            <div class="stack-sm">
+              <strong class="mono">{{ page.name }}</strong>
+              <span>{% if page.custom %}<span class="badge success">Docker Proxy</span>{% endif %}{% if page.high_priority %}<span class="badge">High visibility</span>{% endif %}</span>
+            </div>
+          </td>
+          <td>{{ page.family }}</td>
+          <td><div class="stack-sm"><span>{{ page.description }}</span><span class="small">Admin: {{ page.admin_guidance }}</span></div></td>
+          <td><span class="small text-break">{{ token_summary[page.name] }}</span></td>
+          <td class="num"><a class="btn" href="{{ url_for('error_page_preview', name=page.name) }}" target="_blank" rel="noopener">Open in new tab</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Token guidance</h2></div>
+  <div class="grid two-col">
+    <div>
+      <h3>Safe defaults for users</h3>
+      <p class="small">Use non-credential request context: error code, sanitized URL, method, destination, proxy node, client IP, and timestamp.</p>
+    </div>
+    <div>
+      <h3>Administrator diagnostics</h3>
+      <p class="small">Details like full requests, helper messages, DNS/system errors, and password-bearing URLs can expose sensitive data. Keep them minimal and purposeful.</p>
+    </div>
+  </div>
+</section>
+{% endblock %}
