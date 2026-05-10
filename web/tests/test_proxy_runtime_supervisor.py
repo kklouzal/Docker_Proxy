@@ -488,6 +488,39 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
     assert recorded[-1]["ok"] is False
 
 
+def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() -> None:
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def get_active_artifact(self):  # pragma: no cover - should not be reached
+            raise AssertionError("current artifact should not be fetched for a no-op force sync")
+
+        def record_apply_result(self, *args, **kwargs):  # pragma: no cover - should not be reached
+            raise AssertionError("no-op force sync should not record an adblock apply")
+
+    class Store:
+        def init_db(self):
+            pass
+
+        def get_cache_flush_requested(self):
+            return False
+
+    restarts = []
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime._restart_adblock_service = lambda: restarts.append(True) or (True, "restarted")
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["artifact_changed"] is False
+    assert restarts == []
+
+
 def test_collect_health_returns_stale_cache_during_inflight_refresh() -> None:
     runtime = _runtime_shell()
     runtime.health_cache_ttl_seconds = 3.0

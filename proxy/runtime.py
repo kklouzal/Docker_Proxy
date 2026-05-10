@@ -738,7 +738,12 @@ class ProxyRuntime:
                 "detail": restart_detail.strip() or "Adblock runtime restarted.",
             }
 
-        artifact_changed = bool(force or revision_meta.artifact_sha256 != current_sha)
+        # Force sync should refresh policy/config/PAC state, but it must not churn the
+        # adblock ICAP helper when the active artifact is already materialized. Live
+        # policy workflows can issue many forced syncs in quick succession; restarting
+        # cicap_adblock on every no-op sync can starve Squid/admin requests and leave
+        # traffic probes hanging. Cache flush remains an explicit restart trigger.
+        artifact_changed = bool(revision_meta.artifact_sha256 != current_sha)
         if not artifact_changed and not flush_requested:
             return {
                 "ok": True,

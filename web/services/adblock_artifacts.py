@@ -663,7 +663,7 @@ def apply_active_artifact_locally(
     current_sha = read_materialized_artifact_sha(target_dir)
     changed = False
 
-    if revision is not None and (force or current_sha != revision.artifact_sha256):
+    if revision is not None and current_sha != revision.artifact_sha256:
         materialize_archive_to_directory(target_dir, archive_blob=revision.archive_blob, artifact_sha256=revision.artifact_sha256)
         changed = True
 
