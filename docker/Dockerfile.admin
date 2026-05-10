@@ -48,6 +48,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/observability_queries.py \
 	web/services/observability_maintenance.py \
 	web/services/pac_profiles_store.py \
+	web/services/policy_requests.py \
 	web/services/pac_renderer.py \
 	web/services/proxy_client.py \
 	web/services/proxy_context.py \
