@@ -133,6 +133,9 @@ def test_policy_request_store_rejects_invalid_scope_and_filters_active_exception
     assert normalize_client_ip("192.168.1.20, 10.0.0.9") == "192.168.1.20"
     assert normalize_client_ip("not an ip") == ""
     assert normalize_domain("https://Mixed.Example:443/path") == "mixed.example"
+    assert normalize_domain("traffic-fixture") == "traffic-fixture"
+    assert normalize_domain("", request_url="http://proxy:5000/path") == "proxy"
+    assert normalize_domain("12345") == ""
     assert normalize_block_type("unknown<script>") == "webfilter"
     for kwargs in ({"client_ip":"192.168.1.44","domain":"not a host"},{"client_ip":"not an ip","domain":"blocked.example"}):
         try:

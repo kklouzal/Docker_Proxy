@@ -642,8 +642,8 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(admin_clien
     artifact_dir = tmp_path / "adblock-artifact"
     _write_live_adblock_artifact(
         artifact_dir,
-        regex_block=f"/{blocked_token}\\.js\\b\n/{allowed_token}\\.js\\b\n",
-        regex_allow=f"/{allowed_token}\\.js\\b\n",
+        regex_block=f"/{blocked_token}[.]js/\n/{allowed_token}[.]js/\n",
+        regex_allow=f"/{allowed_token}[.]js/\n",
     )
     revision = artifacts.create_revision_from_directory(
         artifact_dir,

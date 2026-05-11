@@ -36,11 +36,18 @@ def _norm_domain(value: object) -> str:
 
 def _looks_like_host(value: object) -> bool:
     host = str(value or "").strip()
-    if not host or len(host) > 255 or "." not in host:
+    if not host or len(host) > 255:
         return False
     if any(ch.isspace() for ch in host):
         return False
-    return all(re.fullmatch(r"[a-z0-9-]{1,63}", part or "") for part in host.split("."))
+    parts = host.split(".")
+    if not all(re.fullmatch(r"[a-z0-9-]{1,63}", part or "") for part in parts):
+        return False
+    # Single-label DNS names are valid inside container and private networks
+    # (for example Docker Compose service names such as ``traffic-fixture``).
+    # Keep obviously non-host tokens out by requiring at least one alphabetic
+    # character, which also avoids accepting IPv4-looking numeric strings here.
+    return any(re.search(r"[a-z]", part) for part in parts)
 
 
 @dataclass(frozen=True)
