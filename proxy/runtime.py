@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import hashlib
 import logging
@@ -37,6 +38,40 @@ from services.timeseries_store import get_timeseries_store
 
 
 logger = logging.getLogger(__name__)
+
+
+_SUPERVISOR_CONTROL_LOCK = threading.RLock()
+_SYNC_CONTROL_LOCK = threading.RLock()
+
+
+@contextmanager
+def _exclusive_runtime_lock(name: str, thread_lock: threading.RLock):
+    """Serialize runtime mutations across proxy_api threads and proxy_agent."""
+    with thread_lock:
+        handle = None
+        fcntl_mod = None
+        try:
+            lock_dir = (os.environ.get("PROXY_RUNTIME_LOCK_DIR") or "/tmp").strip() or "/tmp"
+            os.makedirs(lock_dir, exist_ok=True)
+            handle = open(os.path.join(lock_dir, f"docker-proxy-{name}.lock"), "a+", encoding="utf-8")
+            try:
+                import fcntl as fcntl_mod  # type: ignore
+
+                fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_EX)
+            except Exception:
+                fcntl_mod = None
+            yield
+        finally:
+            if handle is not None:
+                try:
+                    if fcntl_mod is not None:
+                        fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    handle.close()
+                except Exception:
+                    pass
 
 
 @dataclass(frozen=True)
@@ -374,6 +409,10 @@ class ProxyRuntime:
         }
 
     def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30, stop_on_failure: bool = False) -> tuple[bool, str]:
+        with _exclusive_runtime_lock("supervisor", _SUPERVISOR_CONTROL_LOCK):
+            return self._restart_supervisor_program_unlocked(program_name, timeout_seconds=timeout_seconds, stop_on_failure=stop_on_failure)
+
+    def _restart_supervisor_program_unlocked(self, program_name: str, *, timeout_seconds: int = 30, stop_on_failure: bool = False) -> tuple[bool, str]:
         details: list[str] = []
         try:
             stop = subprocess.run(
@@ -1208,6 +1247,10 @@ class ProxyRuntime:
         return health
 
     def sync_from_db(self, *, force: bool = False) -> Dict[str, Any]:
+        with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
+            return self._sync_from_db_unlocked(force=force)
+
+    def _sync_from_db_unlocked(self, *, force: bool = False) -> Dict[str, Any]:
         self._invalidate_health_cache()
         self.ensure_registered()
         self.bootstrap_revision_if_missing()
