@@ -395,7 +395,8 @@ def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> 
     ok, detail = runtime._reload_for_policy_update()
 
     assert ok is True
-    assert detail == "reconfigured"
+    assert "reconfigured" in detail
+    assert "Squid reconfigured for policy update." in detail
     assert calls["icap"] == 2
     assert sleeps == [0.25]
 

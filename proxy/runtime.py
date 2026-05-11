@@ -559,6 +559,10 @@ class ProxyRuntime:
                 ok = False
                 icap_detail = str(last_icap.get("detail") or "cicap_adblock ICAP health check did not pass after policy reload.")
                 detail = "\n".join(part for part in (detail, icap_detail) if str(part or "").strip()).strip()
+        if ok:
+            success_detail = "Squid reconfigured for policy update."
+            if success_detail not in detail:
+                detail = "\n".join(part for part in (detail, success_detail) if str(part or "").strip()).strip()
         return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid reconfigure failed for policy update.")
 
     def validate_config_text(self, config_text: str) -> Dict[str, Any]:
