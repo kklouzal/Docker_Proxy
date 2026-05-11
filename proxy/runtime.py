@@ -1326,7 +1326,7 @@ class ProxyRuntime:
         revision_meta = self.revisions.get_active_revision_metadata(self.proxy_id)
         if revision_meta is None:
             reload_ok = True
-            if policy_reload_required:
+            if policy_reload_required or adblock_changed:
                 reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
@@ -1378,7 +1378,7 @@ class ProxyRuntime:
 
         if not force and revision_meta.config_sha256 == current_sha:
             reload_ok = True
-            if policy_reload_required:
+            if policy_reload_required or adblock_changed:
                 reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)

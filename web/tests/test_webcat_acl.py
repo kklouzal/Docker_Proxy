@@ -40,3 +40,27 @@ def test_webcat_acl_uses_local_snapshot_for_parent_domain_lookups(tmp_path, monk
     db._last_open_attempt = webcat_acl._now()
 
     assert db.lookup_categories("cdn.example.com") == {"adult", "phishing"}
+
+def test_webcat_acl_normalizes_explicit_proxy_uri_host():
+    _add_web_to_path()
+
+    from tools import webcat_acl  # type: ignore
+
+    assert webcat_acl._norm_domain('http://traffic-fixture:8080/live.js') == 'traffic-fixture'
+    assert webcat_acl._norm_domain('traffic-fixture:8080') == 'traffic-fixture'
+
+
+def test_webcat_acl_prefers_uri_host_over_dst_field():
+    _add_web_to_path()
+
+    from tools import webcat_acl  # type: ignore
+
+    channel, src_ip, domain, url, category = webcat_acl._parse_line(
+        '7 172.18.0.4 93.184.216.34 http://traffic-fixture:8080/live.js malware'
+    )
+
+    assert channel == '7'
+    assert src_ip == '172.18.0.4'
+    assert domain == '93.184.216.34'
+    assert webcat_acl._norm_domain(url) == 'traffic-fixture'
+    assert category == 'malware'

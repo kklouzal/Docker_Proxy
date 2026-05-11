@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.parse
 from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable, Optional, Sequence, Set, Tuple
@@ -24,18 +25,29 @@ from services.runtime_helpers import env_float as _env_float, env_int as _env_in
 
 
 def _norm_domain(s: str) -> str:
-    d = (s or "").strip().lower().rstrip(".")
+    raw = (s or "").strip().lower().rstrip(".")
+    if not raw:
+        return ""
+
+    # Squid helper fields can be a bare host, host:port, or a full URI.  Parse
+    # URIs first so explicit-proxy requests like http://traffic-fixture:8080/x
+    # normalize to the host rather than leaving the port attached.
+    if "://" in raw:
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+            if parsed.hostname:
+                raw = parsed.hostname
+        except Exception:
+            raw = raw.split("://", 1)[1]
+
+    d = raw.strip().rstrip(".")
     if d.startswith("."):
         d = d[1:]
-    # Squid passes host:port sometimes
+    d = d.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     if ":" in d:
         host, port = d.rsplit(":", 1)
         if port.isdigit():
             d = host
-    # Also handle accidental scheme/path
-    if "://" in d:
-        d = d.split("://", 1)[1]
-    d = d.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     return d
 
 
@@ -168,11 +180,15 @@ class _Db:
 
     def _swap_local_snapshot(self, conn: sqlite3.Connection, *, built_ts: int, mtime_ns: int) -> None:
         old_conn: sqlite3.Connection | None = None
+        previous_built_ts = 0
         with self._snapshot_state_lock:
             old_conn = self._local_conn
+            previous_built_ts = self._local_snapshot_built_ts
             self._local_conn = conn
             self._local_snapshot_built_ts = int(built_ts or 0)
             self._local_snapshot_mtime_ns = int(mtime_ns or 0)
+        if int(built_ts or 0) != int(previous_built_ts or 0):
+            self._cache.clear()
         if old_conn is not None:
             try:
                 old_conn.close()
@@ -567,6 +583,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     for raw in sys.stdin:
         ch, src_ip, domain, url, category = _parse_line(raw)
+        if url:
+            url_domain = _norm_domain(url)
+            if url_domain:
+                domain = url_domain
         if not domain or not category:
             # Fail-open: do not match the ACL (allow). Fail-closed: match (block).
             _write_response(ch, not fail_open)
