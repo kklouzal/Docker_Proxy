@@ -526,13 +526,24 @@ class ProxyRuntime:
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
     def _reload_for_policy_update(self) -> tuple[bool, str]:
-        # Policy/adblock materialization can alter ICAP inputs and external ACL
-        # decisions. A plain Squid reconfigure leaves helper/adaptation caches alive,
-        # so freshly-applied live policy can be bypassed until cache TTL expiry. Use
-        # a controlled restart for semantic policy changes and require the listener
-        # to come back before reporting sync success.
-        ok, detail = self.controller.restart_squid()
-        return bool(ok), detail or ("Squid restarted for policy update." if ok else "Squid restart failed for policy update.")
+        # Policy materialization changes included ACL files and external ACL inputs.
+        # A full Squid process restart is too disruptive during live policy churn:
+        # Squid can take multiple seconds to drain helper children, making the proxy
+        # listener hang long enough for traffic probes to time out. A reconfigure is
+        # the right first-line operation for include/ACL changes; it reloads the
+        # active config and refreshes helper state while keeping the listener stable.
+        try:
+            proc = self.controller._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
+        except Exception as exc:
+            return False, public_error_message(exc, default="Squid reconfigure failed for policy update.")
+        detail = _decode_completed(proc).strip()
+        ok = int(getattr(proc, "returncode", 1) or 0) == 0
+        if ok:
+            try:
+                ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
+            except Exception:
+                ok = True
+        return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid reconfigure failed for policy update.")
 
     def validate_config_text(self, config_text: str) -> Dict[str, Any]:
         normalized = self.controller.normalize_config_text(config_text or "")
@@ -942,10 +953,12 @@ class ProxyRuntime:
             applied_by="proxy",
             artifact_sha256=revision.artifact_sha256,
         )
+        adblock_runtime_changed = bool(artifact_changed or flush_requested)
         return {
             "ok": ok_restart,
             "proxy_id": self.proxy_id,
-            "changed": bool(artifact_changed or flush_requested),
+            "changed": adblock_runtime_changed,
+            "adblock_changed": adblock_runtime_changed,
             "artifact_changed": artifact_changed,
             "cache_flushed": bool(ok_restart and flush_requested),
             "revision_id": revision.revision_id,
@@ -1365,7 +1378,7 @@ class ProxyRuntime:
         revision_meta = self.revisions.get_active_revision_metadata(self.proxy_id)
         if revision_meta is None:
             reload_ok = True
-            if policy_reload_required or adblock_changed:
+            if policy_reload_required:
                 reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
@@ -1417,7 +1430,7 @@ class ProxyRuntime:
 
         if not force and revision_meta.config_sha256 == current_sha:
             reload_ok = True
-            if policy_reload_required or adblock_changed:
+            if policy_reload_required:
                 reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
