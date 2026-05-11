@@ -858,3 +858,53 @@ def test_squid_reload_preserves_nonzero_reconfigure_failure() -> None:
 
     assert stdout == b""
     assert b"fatal squid error" in stderr
+
+
+def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> None:
+    runtime = _runtime_shell()
+    reloads: list[bool] = []
+
+    class Controller:
+        def set_adblock_icap_revision_token(self, token):
+            self.token = token
+
+        def materialize_clamav_runtime_files(self, config_text):
+            assert config_text == "http_port 3128\n"
+            return True, "ClamAV runtime files updated: /etc/squid/conf.d/20-icap.conf"
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id):
+            return None
+
+        def get_active_revision(self, _proxy_id):  # pragma: no cover - should not be reached
+            raise AssertionError("current config should not be reapplied")
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs):
+            raise AssertionError("successful runtime include reload should not mark failed apply")
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {"ok": True, "changed": False, "reload_required": False}
+    runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False, "artifact_sha256": "adblock-sha"}
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime.controller.get_current_config = lambda: "http_port 3128\n"
+    runtime._reload_for_policy_update = lambda: reloads.append(True) or (True, "Squid reconfigured for policy update.")
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert reloads == [True]
+    assert getattr(runtime.controller, "token") == "adblock-sha"
+    assert "ClamAV runtime files updated" in result["detail"]
+    assert "Squid reconfigured for policy update." in result["detail"]

@@ -33,6 +33,7 @@ class SquidController:
             "PERSISTED_SQUID_CONF_PATH", "/var/lib/squid-flask-proxy/squid.conf"
         )
         self._run = cmd_run
+        self._adblock_icap_revision_token = ""
 
     def _write_file(self, path: str, content: str) -> None:
         with open(path, "w", encoding="utf-8") as handle:
@@ -232,6 +233,10 @@ class SquidController:
         self._atomic_write_file(str(path), content)
         return True
 
+    def set_adblock_icap_revision_token(self, token: object) -> None:
+        raw = re.sub(r"[^A-Za-z0-9_.-]", "", str(token or ""))[:32]
+        self._adblock_icap_revision_token = raw
+
     def _render_icap_include(self, config_text: str | None = None) -> str:
         try:
             cicap_adblock_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
@@ -244,8 +249,16 @@ class SquidController:
 
         clamav_options = extract_clamav_options(config_text or "")
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
+        # Version the adblock ICAP URI with the active artifact. Squid tracks ICAP
+        # service health by URI; changing the URI after a c-icap artifact reload
+        # prevents stale bypass/broken-service state from allowing requests until
+        # the normal revival delay expires.
+        adblock_path = "/adblockreq"
+        adblock_token = (self._adblock_icap_revision_token or "").strip()
+        if adblock_token:
+            adblock_path = f"{adblock_path}?rev={adblock_token}"
         lines = [
-            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{cicap_adblock_port}{adblock_path} bypass=on",
             f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             "adaptation_service_set adblock_req_set adblock_req",
             "adaptation_service_set av_resp_set av_resp",

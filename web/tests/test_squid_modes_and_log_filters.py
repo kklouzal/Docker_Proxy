@@ -725,3 +725,47 @@ def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path):
     assert rendered.index("ssl_bump peek step1") < rendered.index("ssl_bump stare step2") < rendered.index("ssl_bump bump step3")
     assert "ssl_bump bump all" not in rendered
     assert "steam_sites" not in rendered
+
+
+def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "webfilter-helper-version")
+
+    from services.db import connect  # type: ignore
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    store = WebFilterStore(
+        squid_include_path=str(tmp_path / "30-webfilter.conf"),
+        whitelist_path=str(tmp_path / "webfilter_whitelist.txt"),
+    )
+    store.init_db()
+    store.set_settings(enabled=True, source_url="", blocked_categories=["adult"])
+
+    with connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS webcat_meta (k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
+        conn.execute("INSERT INTO webcat_meta(k,v) VALUES('built_ts','100') ON DUPLICATE KEY UPDATE v=VALUES(v)")
+
+    first = store.render_materialized_state().include_text
+    assert "external_acl_type webcat_" in first
+    assert "acl webfilter_block_adult external webcat_" in first
+
+    with connect() as conn:
+        conn.execute("INSERT INTO webcat_meta(k,v) VALUES('built_ts','200') ON DUPLICATE KEY UPDATE v=VALUES(v)")
+
+    second = store.render_materialized_state().include_text
+    assert second != first
+    assert "acl webfilter_block_adult external webcat_" in second
+
+
+def test_squid_icap_include_versions_adblock_service_uri():
+    _add_web_to_path()
+    from services.squid_core import SquidController  # type: ignore
+
+    controller = SquidController.__new__(SquidController)
+    controller._adblock_icap_revision_token = ""
+    unversioned = controller._render_icap_include("")
+    assert "icap://127.0.0.1:14000/adblockreq bypass=on" in unversioned
+
+    controller.set_adblock_icap_revision_token("abc123:unsafe value")
+    versioned = controller._render_icap_include("")
+    assert "icap://127.0.0.1:14000/adblockreq?rev=abc123unsafevalue bypass=on" in versioned
