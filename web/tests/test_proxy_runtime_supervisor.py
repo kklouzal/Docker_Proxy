@@ -431,8 +431,13 @@ def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> 
     sleeps: list[float] = []
 
     class Controller:
-        def restart_squid(self):
-            return True, "restarted"
+        def _run(self, args, **_kwargs):
+            assert args == ["squid", "-k", "reconfigure"]
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout):
+            assert timeout == 10.0
+            return True
 
     def fake_icap(**_kwargs):
         calls["icap"] += 1
@@ -445,7 +450,7 @@ def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> 
     ok, detail = runtime._reload_for_policy_update()
 
     assert ok is True
-    assert "restarted" in detail
+    assert "reconfigured" in detail
     assert "Squid reconfigured for policy update." in detail
     assert calls["icap"] == 2
     assert sleeps == [0.5]
@@ -459,8 +464,13 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(monkeyp
     now = {"value": 0.0}
 
     class Controller:
-        def restart_squid(self):
-            return True, "restarted"
+        def _run(self, args, **_kwargs):
+            assert args == ["squid", "-k", "reconfigure"]
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout):
+            assert timeout == 10.0
+            return True
 
     runtime.controller = Controller()
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", lambda **_kwargs: {"ok": False, "detail": "icap not ready"})
@@ -470,7 +480,7 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(monkeyp
     ok, detail = runtime._reload_for_policy_update()
 
     assert ok is False
-    assert "restarted" in detail
+    assert "reconfigured" in detail
     assert "icap not ready" in detail
 
 def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(tmp_path, monkeypatch) -> None:

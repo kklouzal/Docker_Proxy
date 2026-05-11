@@ -526,34 +526,30 @@ class ProxyRuntime:
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
     def _reload_for_policy_update(self) -> tuple[bool, str]:
-        # Policy materialization changes files consumed by long-lived Squid
-        # workers/helpers and by the c-icap REQMOD path. In live stacks, `squid -k
-        # reconfigure` can report success while existing helper/adaptation state
-        # continues allowing requests against the previous policy indefinitely.
-        # Restart Squid for policy/adblock convergence: it is heavier than a plain
-        # reconfigure, but it gives callers a reliable post-sync contract that new
-        # traffic is evaluated against the materialized policy files.
-        restart = getattr(self.controller, "restart_squid", None)
-        if callable(restart):
-            ok, detail = restart()
-        else:
+        # Policy materialization changes included ACL files, external ACL inputs,
+        # and the c-icap REQMOD artifact path. A full Squid process restart is too
+        # disruptive during live policy churn: Squid drains helper children slowly
+        # under active proxied traffic, supervisor eventually SIGKILLs it, and the
+        # proxy/admin test stack can hang behind half-closed sockets. Reconfigure is
+        # the correct first-line operation for include/ACL changes because it reloads
+        # the active config while keeping the listener stable.
+        try:
+            proc = self.controller._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
+        except Exception as exc:
+            return False, public_error_message(exc, default="Squid reconfigure failed for policy update.")
+        detail = _decode_completed(proc).strip()
+        ok = int(getattr(proc, "returncode", 1) or 0) == 0
+        if ok:
             try:
-                proc = self.controller._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-            except Exception as exc:
-                return False, public_error_message(exc, default="Squid policy reload failed.")
-            detail = _decode_completed(proc).strip()
-            ok = int(getattr(proc, "returncode", 1) or 0) == 0
-            if ok:
-                try:
-                    ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
-                except Exception:
-                    ok = True
+                ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
+            except Exception:
+                ok = True
         if ok:
             # Squid can accept TCP connections before ICAP OPTIONS/helper state has
-            # fully converged after rapid policy/adblock churn. Wait briefly for the
-            # local adblock ICAP service too so the sync API does not hand traffic
-            # back to callers while first requests can still hang on adaptation.
-            deadline = time.time() + 10.0
+            # fully converged after rapid policy/adblock churn. Wait for the local
+            # adblock ICAP service too so the sync API does not hand traffic back to
+            # callers while first requests can still bypass or hang on adaptation.
+            deadline = time.time() + 15.0
             last_icap: dict[str, Any] = {}
             while time.time() < deadline:
                 last_icap = _check_icap_adblock(timeout=1.0, error_formatter=str)
@@ -568,7 +564,7 @@ class ProxyRuntime:
             success_detail = "Squid reconfigured for policy update."
             if success_detail not in detail:
                 detail = "\n".join(part for part in (detail, success_detail) if str(part or "").strip()).strip()
-        return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid policy reload failed.")
+        return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid reconfigure failed for policy update.")
 
     def validate_config_text(self, config_text: str) -> Dict[str, Any]:
         normalized = self.controller.normalize_config_text(config_text or "")
