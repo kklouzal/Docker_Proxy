@@ -627,3 +627,31 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
     assert result["ok"] is True
     assert len(calls) == 1
     assert calls[0][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "status"]
+
+
+def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    controller = SquidController.__new__(SquidController)
+    controller._run = lambda *_args, **_kwargs: _cp(0, stdout="", stderr="WARNING: benign squid warning")
+    controller._wait_for_http_listener = lambda **_kwargs: True
+
+    stdout, stderr = controller.reload_squid()
+
+    assert stderr == b""
+    assert b"WARNING: benign squid warning" in stdout
+
+
+def test_squid_reload_preserves_nonzero_reconfigure_failure() -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    controller = SquidController.__new__(SquidController)
+    controller._run = lambda *_args, **_kwargs: _cp(1, stdout="", stderr="fatal squid error")
+    controller._wait_for_http_listener = lambda **_kwargs: True
+
+    stdout, stderr = controller.reload_squid()
+
+    assert stdout == b""
+    assert b"fatal squid error" in stderr

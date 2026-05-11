@@ -604,34 +604,6 @@ def test_live_policy_exception_request_public_submission_and_admin_lifecycle(adm
 
 
 
-def _sync_primary_proxy(client: LiveStackClient, *, force: bool = True) -> dict:
-    response = client.proxy_management_post_json("/api/manage/sync", {"force": force}, timeout_seconds=120.0)
-    assert response.status == 200, response.text
-    payload = response.json()
-    assert payload.get("ok") is True, payload
-    wait_for_proxy_management_payload()
-    return payload
-
-
-def _wait_for_proxy_status(client: LiveStackClient, path: str, expected_status: int, *, timeout_seconds: float = 120.0):
-    deadline = time.time() + timeout_seconds
-    last = None
-    while time.time() < deadline:
-        last = client.proxy_fixture_request(path, timeout_seconds=10.0)
-        if last.status == expected_status:
-            return last
-        time.sleep(1.0)
-    raise AssertionError(f"Timed out waiting for proxied {path!r} to return HTTP {expected_status}; last={getattr(last, 'status', None)} body={getattr(last, 'text', '')[:500]}")
-
-
-def _write_live_adblock_artifact(directory, *, regex_block: str = "", regex_allow: str = "", domains_block: str = "", domains_allow: str = "", enabled: bool = True) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
-    for name, content in {"domains_allow.txt": domains_allow, "domains_block.txt": domains_block, "regex_allow.txt": regex_allow, "regex_block.txt": regex_block}.items():
-        (directory / name).write_text(content, encoding="utf-8")
-    (directory / "settings.json").write_text(json.dumps({"enabled": enabled, "cache_ttl": 120, "cache_max": 1000, "settings_version": 2, "enabled_lists": ["live-fixture"] if enabled else []}, sort_keys=True) + "\n", encoding="utf-8")
-    (directory / "report.json").write_text(json.dumps({"enabled_lists": ["live-fixture"] if enabled else [], "counts": {"domains_block": bool(domains_block.strip()), "domains_allow": bool(domains_allow.strip()), "regex_block": bool(regex_block.strip()), "regex_allow": bool(regex_allow.strip())}}, sort_keys=True) + "\n", encoding="utf-8")
-
-
 def test_live_adblock_enforces_compiled_artifact_and_allow_exception(admin_client: LiveStackClient, tmp_path) -> None:
     artifacts = _adblock_artifacts_store()
     blocked_token = unique_token("live_adblock_block")
@@ -642,8 +614,8 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(admin_clien
     artifact_dir = tmp_path / "adblock-artifact"
     _write_live_adblock_artifact(
         artifact_dir,
-        regex_block=f"/{blocked_token}[.]js/\n/{allowed_token}[.]js/\n",
-        regex_allow=f"/{allowed_token}[.]js/\n",
+        regex_block=f"/.*{blocked_token}[.]js.*/\n/.*{allowed_token}[.]js.*/\n",
+        regex_allow=f"/.*{allowed_token}[.]js.*/\n",
     )
     revision = artifacts.create_revision_from_directory(
         artifact_dir,
@@ -701,7 +673,7 @@ def test_live_webfilter_blocks_category_and_policy_exception_allows_same_client(
         _sync_primary_proxy(admin_client)
         allowed = wait_for_proxy_fixture_response(admin_client, block_path, timeout_seconds=60.0)
         assert allowed.status == 200
-        assert allowed.json().get("headers", {}).get("host") == block_domain
+        assert (allowed.json().get("headers", {}).get("host") or "").split(":", 1)[0] == block_domain
     finally:
         _restore_webfilter_settings(proxy_id, settings)
         _set_live_webcat_category(block_domain, None)

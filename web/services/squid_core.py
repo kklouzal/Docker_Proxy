@@ -954,7 +954,15 @@ class SquidController:
             proc = self._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
             stdout = proc.stdout or b""
             stderr = proc.stderr or b""
-            if proc.returncode == 0 and not self._wait_for_http_listener(timeout=20.0):
+            if proc.returncode != 0:
+                return stdout, stderr or f"Squid reconfigure exited with status {proc.returncode}.".encode("utf-8", errors="replace")
+            if stderr:
+                # Squid emits benign parser/runtime warnings on stderr even when
+                # reconfigure succeeds. Preserve those warnings in the detail, but
+                # do not report a failed sync unless the command or listener failed.
+                stdout = (stdout + b"\n" + stderr).strip()
+                stderr = b""
+            if not self._wait_for_http_listener(timeout=20.0):
                 ok_restart, detail = self.restart_squid()
                 recovery = ("Squid HTTP listener was unavailable after reconfigure; " + detail).encode("utf-8", errors="replace")
                 if ok_restart:
