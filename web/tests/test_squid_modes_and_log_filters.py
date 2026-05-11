@@ -7,8 +7,11 @@ from .mysql_test_utils import configure_test_mysql_env
 
 def _add_web_to_path() -> None:
     web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    repo_dir = os.path.abspath(os.path.join(web_dir, ".."))
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
+    if repo_dir not in sys.path:
+        sys.path.insert(0, repo_dir)
 
 
 def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(tmp_path):
@@ -759,12 +762,77 @@ def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path):
 
 
 
-def test_adblock_req_regex_tables_use_c_icap_url_lookup_type():
+def test_adblock_req_regex_tables_keep_c_icap_domain_and_legacy_regex_tables():
     config = Path("docker/adblock_req.conf").read_text(encoding="utf-8")
 
+    assert "url_check.LookupTableDB adblock_allow domain hash:" in config
+    assert "url_check.LookupTableDB adblock_block domain hash:" in config
     assert "url_check.LookupTableDB adblock_regex_allow url regex:" in config
     assert "url_check.LookupTableDB adblock_regex_block url regex:" in config
     assert " full_url regex:" not in config
+
+
+def test_proxy_runtime_derives_squid_url_regex_tables_from_c_icap_regex_files(tmp_path):
+    _add_web_to_path()
+    from proxy.runtime import ProxyRuntime  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / "regex_allow.txt").write_text("/.*allow_token[.]js.*/\n# comment\n\n", encoding="utf-8")
+    (compiled / "regex_block.txt").write_text("/.*block_token[.]js.*/\nraw_legacy_regex\n", encoding="utf-8")
+
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    runtime.adblock_compiled_dir = str(compiled)
+
+    assert runtime._ensure_squid_adblock_regex_files() is True
+    assert (compiled / "regex_allow_squid.txt").read_text(encoding="utf-8") == ".*allow_token[.]js.*\n"
+    assert (compiled / "regex_block_squid.txt").read_text(encoding="utf-8") == ".*block_token[.]js.*\nraw_legacy_regex\n"
+    assert runtime._ensure_squid_adblock_regex_files() is False
+
+
+def test_repo_template_orders_generated_policy_includes_before_enforcement_hooks():
+    template = Path("squid/squid.conf.template").read_text(encoding="utf-8")
+
+    assert template.count("include /etc/squid/conf.d/20-icap.conf") == 1
+    assert template.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
+    assert template.index("include /etc/squid/conf.d/20-icap.conf") < template.index("adaptation_access adblock_req_set allow icap_adblockable")
+    assert template.index("include /etc/squid/conf.d/30-webfilter.conf") < template.index("http_access allow all")
+
+
+def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_includes():
+    _add_web_to_path()
+    from services.squid_core import SquidController  # type: ignore
+
+    controller = SquidController.__new__(SquidController)
+    legacy = "\n".join(
+        [
+            "http_port 3128",
+            "icap_service adblock_req_old reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on",
+            "icap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod bypass=on",
+            "adaptation_service_set adblock_req_set adblock_req_old",
+            "adaptation_service_set av_resp_set av_resp",
+            "adaptation_access adblock_req_set allow all",
+            "adaptation_access adblock_req_set allow icap_adblockable",
+            "adaptation_access adblock_req_set deny all",
+            "http_access allow manager localhost",
+            "http_access deny manager",
+            "http_access allow all",
+            "include /etc/squid/conf.d/30-webfilter.conf",
+            "",
+        ]
+    )
+
+    normalized = controller.normalize_config_text(legacy)
+
+    assert normalized.count("include /etc/squid/conf.d/20-icap.conf") == 1
+    assert normalized.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
+    assert "icap_service adblock_req_old" not in normalized
+    assert "adaptation_service_set adblock_req_set adblock_req_old" not in normalized
+    assert "adaptation_access adblock_req_set allow all" not in normalized
+    assert normalized.index("include /etc/squid/conf.d/20-icap.conf") < normalized.index("adaptation_access adblock_req_set allow icap_adblockable")
+    assert normalized.index("include /etc/squid/conf.d/30-webfilter.conf") < normalized.index("http_access allow manager localhost")
+    assert normalized.index("include /etc/squid/conf.d/30-webfilter.conf") < normalized.index("http_access allow all")
+
 
 def test_squid_icap_include_versions_adblock_service_name_not_uri():
     _add_web_to_path()
@@ -781,3 +849,6 @@ def test_squid_icap_include_versions_adblock_service_name_not_uri():
     assert "icap_service adblock_req_abc123unsafevalue reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on" in versioned
     assert "adaptation_service_set adblock_req_set adblock_req_abc123unsafevalue" in versioned
     assert "adblockreq?rev=" not in versioned
+    assert "acl adblock_regex_allow url_regex -i" in versioned
+    assert "acl adblock_regex_block url_regex -i" in versioned
+    assert "http_access deny adblock_regex_block !adblock_regex_allow" in versioned

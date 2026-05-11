@@ -525,6 +525,48 @@ class ProxyRuntime:
         os.makedirs(os.path.dirname(self.adblock_compiled_dir) or ".", exist_ok=True)
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
+    def _squid_adblock_regex_path(self, name: str) -> str:
+        base, ext = os.path.splitext(os.path.join(self.adblock_compiled_dir, name))
+        return f"{base}_squid{ext or '.txt'}"
+
+    def _read_cicap_regex_table_as_squid(self, name: str) -> str:
+        path = os.path.join(self.adblock_compiled_dir, name)
+        lines: list[str] = []
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                raw_lines = handle.readlines()
+        except FileNotFoundError:
+            raw_lines = []
+        for raw in raw_lines:
+            item = (raw or "").strip()
+            if not item or item.startswith("#"):
+                continue
+            if len(item) >= 2 and item.startswith("/") and item.endswith("/"):
+                item = item[1:-1]
+            if item:
+                lines.append(item)
+        return ("\n".join(lines) + "\n") if lines else ""
+
+    def _ensure_squid_adblock_regex_files(self) -> bool:
+        changed = False
+        os.makedirs(self.adblock_compiled_dir, exist_ok=True)
+        for name in ("regex_allow.txt", "regex_block.txt"):
+            target = self._squid_adblock_regex_path(name)
+            content = self._read_cicap_regex_table_as_squid(name)
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as handle:
+                    current = handle.read()
+            except FileNotFoundError:
+                current = None
+            if current == content:
+                continue
+            tmp = f"{target}.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            os.replace(tmp, target)
+            changed = True
+        return changed
+
     def _ensure_policy_runtime_config(self) -> tuple[bool, str, bool]:
         controller = getattr(self, "controller", None)
         current_reader = getattr(controller, "get_current_config", None)
@@ -873,16 +915,24 @@ class ProxyRuntime:
         # cicap_adblock on every no-op sync can starve Squid/admin requests and leave
         # traffic probes hanging. Cache flush remains an explicit restart trigger.
         artifact_changed = bool(revision_meta.artifact_sha256 != current_sha)
+        squid_regex_changed = False
+        if not artifact_changed:
+            try:
+                squid_regex_changed = self._ensure_squid_adblock_regex_files()
+            except Exception:
+                squid_regex_changed = False
         if not artifact_changed and not flush_requested:
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
-                "changed": False,
+                "changed": bool(squid_regex_changed),
+                "adblock_changed": bool(squid_regex_changed),
                 "artifact_changed": False,
+                "squid_regex_changed": bool(squid_regex_changed),
                 "cache_flushed": False,
                 "revision_id": revision_meta.revision_id,
                 "artifact_sha256": revision_meta.artifact_sha256,
-                "detail": "Proxy is already using the active adblock artifact.",
+                "detail": "Proxy is already using the active adblock artifact." + (" Squid adblock regex ACL files were refreshed." if squid_regex_changed else ""),
             }
 
         revision = self.adblock_artifacts.get_active_artifact()
@@ -906,6 +956,7 @@ class ProxyRuntime:
                     archive_blob=revision.archive_blob,
                     artifact_sha256=revision.artifact_sha256,
                 )
+                squid_regex_changed = self._ensure_squid_adblock_regex_files()
             except Exception as exc:
                 detail = public_error_message(exc, default="Failed to materialize adblock artifact.")
                 try:
@@ -993,13 +1044,14 @@ class ProxyRuntime:
             applied_by="proxy",
             artifact_sha256=revision.artifact_sha256,
         )
-        adblock_runtime_changed = bool(artifact_changed or flush_requested)
+        adblock_runtime_changed = bool(artifact_changed or flush_requested or squid_regex_changed)
         return {
             "ok": ok_restart,
             "proxy_id": self.proxy_id,
             "changed": adblock_runtime_changed,
             "adblock_changed": adblock_runtime_changed,
             "artifact_changed": artifact_changed,
+            "squid_regex_changed": bool(squid_regex_changed),
             "cache_flushed": bool(ok_restart and flush_requested),
             "revision_id": revision.revision_id,
             "application_id": applied.application_id,

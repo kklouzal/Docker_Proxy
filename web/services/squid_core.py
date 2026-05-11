@@ -263,12 +263,19 @@ class SquidController:
         adblock_token = (self._adblock_icap_revision_token or "").strip()
         if adblock_token:
             adblock_service_name = f"adblock_req_{adblock_token}"
+        adblock_dir = (os.environ.get("ADBLOCK_COMPILED_DIR") or "/var/lib/squid-flask-proxy/adblock/compiled").strip() or "/var/lib/squid-flask-proxy/adblock/compiled"
+        regex_allow_path = os.path.join(adblock_dir, "regex_allow_squid.txt")
+        regex_block_path = os.path.join(adblock_dir, "regex_block_squid.txt")
         lines = [
             f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
             f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             f"adaptation_service_set adblock_req_set {adblock_service_name}",
             "adaptation_service_set av_resp_set av_resp",
             "adaptation_access adblock_req_set allow all",
+            f"acl adblock_regex_allow url_regex -i \"{regex_allow_path}\"",
+            f"acl adblock_regex_block url_regex -i \"{regex_block_path}\"",
+            "deny_info ERR_ACCESS_DENIED adblock_regex_block",
+            "http_access deny adblock_regex_block !adblock_regex_allow",
         ]
         return "\n".join(lines) + "\n"
 
