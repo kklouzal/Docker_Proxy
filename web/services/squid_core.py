@@ -249,18 +249,19 @@ class SquidController:
 
         clamav_options = extract_clamav_options(config_text or "")
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
-        # Version the adblock ICAP URI with the active artifact. Squid tracks ICAP
-        # service health by URI; changing the URI after a c-icap artifact reload
-        # prevents stale bypass/broken-service state from allowing requests until
-        # the normal revival delay expires.
-        adblock_path = "/adblockreq"
+        # Version the Squid ICAP service name with the active artifact while
+        # keeping the c-icap service URI stable. Squid tracks ICAP service health
+        # and persistent connections by service object; changing the local service
+        # name after a c-icap artifact reload prevents stale bypass/broken-service
+        # state without sending c-icap an unsupported query-string service path.
+        adblock_service_name = "adblock_req"
         adblock_token = (self._adblock_icap_revision_token or "").strip()
         if adblock_token:
-            adblock_path = f"{adblock_path}?rev={adblock_token}"
+            adblock_service_name = f"adblock_req_{adblock_token}"
         lines = [
-            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{cicap_adblock_port}{adblock_path} bypass=on",
+            f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
             f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
-            "adaptation_service_set adblock_req_set adblock_req",
+            f"adaptation_service_set adblock_req_set {adblock_service_name}",
             "adaptation_service_set av_resp_set av_resp",
             "adaptation_access adblock_req_set allow all",
         ]

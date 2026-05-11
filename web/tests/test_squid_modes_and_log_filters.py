@@ -757,15 +757,18 @@ def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path):
     assert "acl webfilter_block_adult external webcat_" in second
 
 
-def test_squid_icap_include_versions_adblock_service_uri():
+def test_squid_icap_include_versions_adblock_service_name_not_uri():
     _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
     controller._adblock_icap_revision_token = ""
     unversioned = controller._render_icap_include("")
-    assert "icap://127.0.0.1:14000/adblockreq bypass=on" in unversioned
+    assert "icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on" in unversioned
+    assert "adaptation_service_set adblock_req_set adblock_req" in unversioned
 
     controller.set_adblock_icap_revision_token("abc123:unsafe value")
     versioned = controller._render_icap_include("")
-    assert "icap://127.0.0.1:14000/adblockreq?rev=abc123unsafevalue bypass=on" in versioned
+    assert "icap_service adblock_req_abc123unsafevalue reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on" in versioned
+    assert "adaptation_service_set adblock_req_set adblock_req_abc123unsafevalue" in versioned
+    assert "adblockreq?rev=" not in versioned
