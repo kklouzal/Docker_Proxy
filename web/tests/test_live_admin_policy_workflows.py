@@ -626,11 +626,14 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(admin_clien
         activate=True,
     )
 
-    _sync_primary_proxy(admin_client)
+    sync_payload = _sync_primary_proxy(admin_client)
     apply_row = artifacts.latest_apply(LIVE_CONFIG.primary_proxy_id)
     assert apply_row is not None
     assert apply_row.revision_id == revision.revision_id
     assert apply_row.ok is True
+
+    sync_detail = sync_payload.get("detail", "")
+    assert "Squid reconfigured for policy update." in sync_detail
 
     blocked = _wait_for_proxy_status(admin_client, blocked_path, 403)
     assert "ERR_ACCESS_DENIED" in blocked.text or "Access Denied" in blocked.text

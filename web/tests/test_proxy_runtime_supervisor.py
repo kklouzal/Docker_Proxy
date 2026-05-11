@@ -324,6 +324,48 @@ def test_sync_from_db_quarantines_previously_failed_active_revision_without_retr
     assert marked == [(False, result["detail"], "last-good-sha")]
 
 
+
+def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None:
+    runtime = _runtime_shell()
+    reloads: list[bool] = []
+    marked: list[tuple[bool, str, str]] = []
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id):
+            raise AssertionError("matching current config should not inspect failed apply history")
+
+        def get_active_revision(self, _proxy_id):  # pragma: no cover - should not be reached
+            raise AssertionError("current config should not be reapplied")
+
+    class Registry:
+        def mark_apply_result(self, proxy_id, *, ok, detail, current_config_sha):
+            marked.append((ok, detail, current_config_sha))
+            return SimpleNamespace(proxy_id=proxy_id)
+
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {"ok": True, "changed": False, "reload_required": False}
+    runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": True, "adblock_changed": True, "detail": "Adblock artifact applied."}
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._reload_for_policy_update = lambda: reloads.append(True) or (True, "Squid reconfigured for policy update.")
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert result["config_changed"] is False
+    assert result["adblock_changed"] is True
+    assert reloads == [True]
+    assert "Squid reconfigured for policy update." in result["detail"]
+    assert marked == []
+
 def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(tmp_path, monkeypatch) -> None:
     _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore

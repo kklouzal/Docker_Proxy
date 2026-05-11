@@ -1378,7 +1378,7 @@ class ProxyRuntime:
         revision_meta = self.revisions.get_active_revision_metadata(self.proxy_id)
         if revision_meta is None:
             reload_ok = True
-            if policy_reload_required:
+            if policy_reload_required or adblock_changed:
                 reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
@@ -1394,7 +1394,7 @@ class ProxyRuntime:
                 "config_changed": False,
                 "detail": detail,
             }
-            if policy_reload_required and not reload_ok:
+            if (policy_reload_required or adblock_changed) and not reload_ok:
                 self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
             return result
 
@@ -1430,7 +1430,7 @@ class ProxyRuntime:
 
         if not force and revision_meta.config_sha256 == current_sha:
             reload_ok = True
-            if policy_reload_required:
+            if policy_reload_required or adblock_changed:
                 reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
@@ -1438,7 +1438,7 @@ class ProxyRuntime:
             if detail_parts:
                 detail_parts.append(detail)
                 detail = "\n".join(detail_parts).strip()
-            if policy_reload_required and not reload_ok:
+            if (policy_reload_required or adblock_changed) and not reload_ok:
                 self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
             return {
                 "ok": reload_ok,
