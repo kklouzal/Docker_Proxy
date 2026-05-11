@@ -412,6 +412,27 @@ class ProxyRuntime:
         with _exclusive_runtime_lock("supervisor", _SUPERVISOR_CONTROL_LOCK):
             return self._restart_supervisor_program_unlocked(program_name, timeout_seconds=timeout_seconds, stop_on_failure=stop_on_failure)
 
+    def _wait_for_supervisor_program_stopped(self, program_name: str, *, timeout_seconds: float = 30.0) -> tuple[bool, str]:
+        deadline = time.time() + max(1.0, float(timeout_seconds))
+        last_detail = ""
+        while time.time() < deadline:
+            try:
+                proc = subprocess.run(
+                    ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                    capture_output=True,
+                    timeout=min(8.0, max(1.0, deadline - time.time())),
+                )
+                last_detail = _decode_completed(proc).strip()
+                upper = last_detail.upper()
+                if any(state in upper for state in ("STOPPED", "EXITED", "FATAL", "BACKOFF", "UNKNOWN")):
+                    return True, last_detail
+                if proc.returncode != 0 and "RUNNING" not in upper and "STARTING" not in upper and "STOPPING" not in upper:
+                    return True, last_detail
+            except Exception as exc:
+                last_detail = public_error_message(exc, default=f"Failed to check {program_name} supervisor status.")
+            time.sleep(0.5)
+        return False, last_detail or f"Timed out waiting for {program_name} to stop."
+
     def _restart_supervisor_program_unlocked(self, program_name: str, *, timeout_seconds: int = 30, stop_on_failure: bool = False) -> tuple[bool, str]:
         details: list[str] = []
         try:
@@ -425,6 +446,12 @@ class ProxyRuntime:
         else:
             stop_detail = _decode_completed(stop).strip() or f"{program_name} stop requested."
             details.append(stop_detail)
+
+        stopped_ok, stopped_detail = self._wait_for_supervisor_program_stopped(program_name, timeout_seconds=timeout_seconds)
+        if stopped_detail and stopped_detail not in details:
+            details.append(stopped_detail)
+        if not stopped_ok:
+            return False, "\n".join(part for part in details if part).strip() or f"Failed to stop {program_name} before restart."
 
         for attempt in range(1, 6):
             if attempt > 1:
@@ -468,7 +495,19 @@ class ProxyRuntime:
     def _restart_adblock_service(self) -> tuple[bool, str]:
         if self.services.adblock_service_restarter is not None:
             return self.services.adblock_service_restarter()
-        return self._restart_supervisor_program("cicap_adblock", stop_on_failure=True)
+        ok, detail = self._restart_supervisor_program("cicap_adblock", stop_on_failure=True)
+        if not ok:
+            return ok, detail
+        deadline = time.time() + 15.0
+        last_health: dict[str, Any] = {}
+        while time.time() < deadline:
+            last_health = _check_icap_adblock(timeout=1.0, error_formatter=str)
+            if bool(last_health.get("ok")):
+                health_detail = str(last_health.get("detail") or "cicap_adblock ICAP health check passed.")
+                return True, "\n".join(part for part in (detail, health_detail) if str(part or "").strip()).strip()
+            time.sleep(0.5)
+        health_detail = str(last_health.get("detail") or "cicap_adblock ICAP health check did not pass after restart.")
+        return False, "\n".join(part for part in (detail, health_detail) if str(part or "").strip()).strip()
 
     def _snapshot_adblock_compiled_dir(self) -> str:
         snapshot_root = tempfile.mkdtemp(prefix="adblock-compiled-snapshot-")
@@ -487,13 +526,13 @@ class ProxyRuntime:
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
     def _reload_for_policy_update(self) -> tuple[bool, str]:
-        result = self.controller.reload_squid()
-        if isinstance(result, tuple) and len(result) == 2:
-            stdout, stderr = result
-        else:
-            stdout, stderr = b"", b""
-        detail = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
-        return (not bool(stderr)), detail or "Squid reloaded."
+        # Policy/adblock materialization can alter ICAP inputs and external ACL
+        # decisions. A plain Squid reconfigure leaves helper/adaptation caches alive,
+        # so freshly-applied live policy can be bypassed until cache TTL expiry. Use
+        # a controlled restart for semantic policy changes and require the listener
+        # to come back before reporting sync success.
+        ok, detail = self.controller.restart_squid()
+        return bool(ok), detail or ("Squid restarted for policy update." if ok else "Squid restart failed for policy update.")
 
     def validate_config_text(self, config_text: str) -> Dict[str, Any]:
         normalized = self.controller.normalize_config_text(config_text or "")

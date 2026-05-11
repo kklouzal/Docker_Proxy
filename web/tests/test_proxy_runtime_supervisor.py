@@ -33,6 +33,7 @@ def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) 
     calls: list[list[str]] = []
     results = [
         _cp(0, stdout="cicap_adblock: stopped"),
+        _cp(0, stdout="cicap_adblock STOPPED May 11 03:54 AM"),
         _cp(1, stderr="cicap_adblock: ERROR (already started)"),
         _cp(0, stdout="cicap_adblock RUNNING pid 123, uptime 0:00:01"),
     ]
@@ -48,6 +49,7 @@ def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) 
     assert ok is True
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "cicap_adblock"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "cicap_adblock"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "cicap_adblock"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "cicap_adblock"],
     ]
@@ -61,6 +63,7 @@ def test_restart_supervisor_program_trusts_running_status_after_failed_start(mon
     monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
     results = [
         _cp(0, stdout="cicap_adblock: stopped"),
+        _cp(0, stdout="cicap_adblock STOPPED May 11 03:54 AM"),
         _cp(1, stderr="cicap_adblock: ERROR (abnormal termination)"),
         _cp(0, stdout="cicap_adblock RUNNING pid 123, uptime 0:00:01"),
     ]
@@ -93,7 +96,7 @@ def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> 
 
     ok, detail = _runtime_shell()._restart_supervisor_program("service")
     assert ok is False
-    assert calls["count"] == 11  # stop + five start/status attempts
+    assert calls["count"] == 12  # stop + stopped-status wait + five start/status attempts
     assert "abnormal termination" in detail
 
 
