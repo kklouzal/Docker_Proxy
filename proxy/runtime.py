@@ -525,6 +525,25 @@ class ProxyRuntime:
         os.makedirs(os.path.dirname(self.adblock_compiled_dir) or ".", exist_ok=True)
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
+    def _ensure_policy_runtime_config(self) -> tuple[bool, str, bool]:
+        controller = getattr(self, "controller", None)
+        current_reader = getattr(controller, "get_current_config", None)
+        normalizer = getattr(controller, "normalize_config_text", None)
+        apply_config = getattr(controller, "apply_config_text", None)
+        if not (callable(current_reader) and callable(normalizer) and callable(apply_config)):
+            return True, "", False
+        try:
+            current = current_reader() or ""
+            normalized = normalizer(current)
+        except Exception as exc:
+            return False, public_error_message(exc, default="Failed to inspect Squid config before policy reload."), False
+        if normalized == current:
+            return True, "", False
+        ok, detail = apply_config(normalized)
+        if ok:
+            return True, (detail.strip() or "Squid config normalized for generated policy includes."), True
+        return False, (detail.strip() or "Failed to normalize Squid config for generated policy includes."), False
+
     def _reload_for_policy_update(self) -> tuple[bool, str]:
         # Policy materialization changes included ACL files, external ACL inputs,
         # and the c-icap REQMOD artifact path. A full Squid process restart is too
@@ -1399,6 +1418,25 @@ class ProxyRuntime:
                     "config_changed": False,
                     "detail": detail,
                 }
+        policy_config_ok, policy_config_detail, policy_config_changed = self._ensure_policy_runtime_config()
+        if policy_config_detail.strip():
+            detail_parts.append(policy_config_detail.strip())
+        if not policy_config_ok:
+            detail = "\n".join(detail_parts).strip() or "Failed to normalize Squid config for policy reload."
+            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "certificate_changed": cert_changed,
+                "policy_changed": policy_changed,
+                "adblock_changed": adblock_changed,
+                "pac_changed": pac_changed,
+                "config_changed": bool(policy_config_changed),
+                "detail": detail,
+            }
+        if policy_config_changed:
+            current_sha = self._current_config_sha()
         revision_meta = self.revisions.get_active_revision_metadata(self.proxy_id)
         if revision_meta is None:
             reload_ok = True
@@ -1410,12 +1448,12 @@ class ProxyRuntime:
             result = {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
-                "config_changed": False,
+                "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
             if (policy_reload_required or adblock_changed or clamav_runtime_changed) and not reload_ok:
@@ -1442,12 +1480,12 @@ class ProxyRuntime:
                 "ok": False,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
-                "config_changed": False,
+                "config_changed": bool(policy_config_changed),
                 "rollback_active": True,
                 "detail": detail,
             }
@@ -1468,12 +1506,12 @@ class ProxyRuntime:
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
-                "config_changed": False,
+                "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
 
@@ -1484,12 +1522,12 @@ class ProxyRuntime:
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed,
+                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
-                "config_changed": False,
+                "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
 

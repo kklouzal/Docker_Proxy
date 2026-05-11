@@ -153,14 +153,19 @@ class SquidController:
 
     def _ensure_icap_include_if_needed(self, text: str) -> str:
         include_line = "include /etc/squid/conf.d/20-icap.conf"
-        if re.search(r"^\s*include\s+/etc/squid/conf\.d/20-icap\.conf\s*$", text, re.M):
-            return text
-        # Legacy/manual revisions may predate the generated ICAP include. If they
-        # still declare the managed services inline, do not add duplicate service
-        # names. Otherwise add the include so adblock/AV adaptation survives config
-        # restore and safe-form apply cycles.
-        if re.search(r"^\s*icap_service\s+(?:adblock_req|av_resp)\b", text, re.M):
-            return text
+        # Historical/manual configs may carry an inline copy of the managed ICAP
+        # service definitions. That copy becomes stale as soon as the runtime
+        # versions the adblock service name for a new artifact revision, so migrate
+        # managed inline service plumbing back to the generated include instead of
+        # preserving a dead static copy. Keep unrelated/manual ICAP policy alone.
+        text = re.sub(r"^\s*include\s+/etc/squid/conf\.d/20-icap\.conf\s*$\n?", "", text, flags=re.M)
+        managed_patterns = (
+            r"^\s*icap_service\s+(?:adblock_req(?:_[A-Za-z0-9]+)?|av_resp)\b.*$\n?",
+            r"^\s*adaptation_service_set\s+(?:adblock_req_set|av_resp_set)\b.*$\n?",
+            r"^\s*adaptation_access\s+adblock_req_set\s+allow\s+all\s*$\n?",
+        )
+        for pattern in managed_patterns:
+            text = re.sub(pattern, "", text, flags=re.M)
         match = re.search(r"^\s*adaptation_access\s+", text, re.M)
         if match:
             return text[: match.start()] + include_line + "\n" + text[match.start() :]

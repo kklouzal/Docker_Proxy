@@ -276,7 +276,7 @@ include /etc/squid/conf.d/30-webfilter.conf
     assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index("http_access allow all")
 
 
-def test_squid_controller_normalize_config_text_does_not_duplicate_legacy_inline_icap_services():
+def test_squid_controller_normalize_config_text_migrates_legacy_inline_icap_services_to_include():
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -290,8 +290,9 @@ http_access allow all
 """.strip()
     )
 
-    assert "include /etc/squid/conf.d/20-icap.conf" not in text
-    assert text.count("icap_service adblock_req") == 1
+    assert "include /etc/squid/conf.d/20-icap.conf" in text
+    assert "icap_service adblock_req" not in text
+    assert "adaptation_access adblock_req_set allow all" not in text
 
 
 def test_squid_controller_parses_new_perf_tunables():
@@ -756,6 +757,14 @@ def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path):
     assert second != first
     assert "acl webfilter_block_adult external webcat_" in second
 
+
+
+def test_adblock_req_regex_tables_use_c_icap_url_lookup_type():
+    config = Path("docker/adblock_req.conf").read_text(encoding="utf-8")
+
+    assert "url_check.LookupTableDB adblock_regex_allow url regex:" in config
+    assert "url_check.LookupTableDB adblock_regex_block url regex:" in config
+    assert " full_url regex:" not in config
 
 def test_squid_icap_include_versions_adblock_service_name_not_uri():
     _add_web_to_path()

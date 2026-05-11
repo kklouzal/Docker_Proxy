@@ -45,6 +45,7 @@ class LiveStackConfig:
     password: str
     wait_timeout_seconds: float
     request_timeout_seconds: float
+    poll_interval_seconds: float
 
 
 LIVE_CONFIG = LiveStackConfig(
@@ -64,6 +65,7 @@ LIVE_CONFIG = LiveStackConfig(
     password=_env_text("LIVE_TEST_PASSWORD", "admin"),
     wait_timeout_seconds=max(5.0, float(_env_text("LIVE_TEST_WAIT_TIMEOUT_SECONDS", "180"))),
     request_timeout_seconds=max(1.0, float(_env_text("LIVE_TEST_REQUEST_TIMEOUT_SECONDS", "10"))),
+    poll_interval_seconds=max(0.1, float(_env_text("LIVE_TEST_POLL_INTERVAL_SECONDS", "0.5"))),
 )
 
 _READY_CACHE: dict[str, dict[str, Any]] | None = None
@@ -193,6 +195,10 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _live_poll_sleep() -> None:
+    time.sleep(LIVE_CONFIG.poll_interval_seconds)
+
+
 def _wait_for_response(
     requester: Callable[[], HttpResponse],
     *,
@@ -212,7 +218,7 @@ def _wait_for_response(
             last_error = AssertionError(f"Unexpected response while waiting for {description}: HTTP {response.status} @ {response.url}")
         except Exception as exc:  # pragma: no cover - only used during stack convergence failures
             last_error = exc
-        time.sleep(1.0)
+        _live_poll_sleep()
 
     detail = f" Last response was HTTP {last_response.status} @ {last_response.url}." if last_response is not None else ""
     raise AssertionError(f"Timed out waiting for {description}.{detail}") from last_error
@@ -237,7 +243,7 @@ def _wait_for_value(
             last_error = AssertionError(f"Unexpected value while waiting for {description}: {value!r}")
         except Exception as exc:  # pragma: no cover - only used during convergence failures
             last_error = exc
-        time.sleep(1.0)
+        _live_poll_sleep()
 
     detail = f" Last value was {last_value!r}." if last_value is not None else ""
     raise AssertionError(f"Timed out waiting for {description}.{detail}") from last_error

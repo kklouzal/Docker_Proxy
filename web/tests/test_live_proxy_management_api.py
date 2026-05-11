@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, active_config_text, live_stack_ready, wait_for_proxy_management_payload
+from .live_test_helpers import LIVE_CONFIG, LiveStackClient, _live_poll_sleep, active_config_text, live_stack_ready, wait_for_proxy_management_payload
 
 
 pytestmark = pytest.mark.live
@@ -71,7 +71,7 @@ def test_live_proxy_management_health_reports_supervisor_programs(live_stack_rea
         programs = supervisor.get("programs") or {}
         if all(program in programs and programs[program].get("ok") is True for program in expected_programs):
             break
-        time.sleep(1.0)
+        _live_poll_sleep()
         payload = wait_for_proxy_management_payload()
 
     services = payload.get("services") or {}

@@ -908,3 +908,72 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     assert getattr(runtime.controller, "token") == "adblock-sha"
     assert "ClamAV runtime files updated" in result["detail"]
     assert "Squid reconfigured for policy update." in result["detail"]
+
+
+def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() -> None:
+    runtime = _runtime_shell()
+    reloads: list[bool] = []
+
+    class Controller:
+        def __init__(self):
+            self.config = (
+                "icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on\n"
+                "adaptation_access adblock_req_set allow all\n"
+                "http_access allow all\n"
+            )
+            self.applied: list[str] = []
+
+        def set_adblock_icap_revision_token(self, token):
+            self.token = token
+
+        def materialize_clamav_runtime_files(self, _config_text):
+            return True, ""
+
+        def get_current_config(self):
+            return self.config
+
+        def normalize_config_text(self, text):
+            assert "icap_service adblock_req" in text
+            return "include /etc/squid/conf.d/20-icap.conf\ninclude /etc/squid/conf.d/30-webfilter.conf\nhttp_access allow all\n"
+
+        def apply_config_text(self, text):
+            self.applied.append(text)
+            self.config = text
+            return True, "Squid config normalized for generated policy includes."
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="normalized-sha")
+
+        def latest_apply(self, _proxy_id):
+            return None
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs):
+            raise AssertionError("successful runtime include normalization should not mark failed apply")
+
+    controller = Controller()
+    runtime.controller = controller
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {"ok": True, "changed": True, "reload_required": True}
+    runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": True, "artifact_sha256": "adblock-sha"}
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "normalized-sha"
+    runtime._reload_for_policy_update = lambda: reloads.append(True) or (True, "Squid reconfigured for policy update.")
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert controller.applied == [
+        "include /etc/squid/conf.d/20-icap.conf\n"
+        "include /etc/squid/conf.d/30-webfilter.conf\n"
+        "http_access allow all\n"
+    ]
+    assert reloads == [True]
+    assert "Squid config normalized for generated policy includes." in result["detail"]
+    assert "Squid reconfigured for policy update." in result["detail"]

@@ -16,6 +16,7 @@ from .live_test_helpers import (
     unique_token,
     wait_for_proxy_fixture_response,
     wait_for_proxy_management_payload,
+    _live_poll_sleep,
 )
 
 
@@ -133,7 +134,7 @@ def _wait_for_proxy_status(client: LiveStackClient, path: str, expected_status: 
             # convergence and keep polling for the policy result instead of failing
             # the live gate on the first timed-out socket read.
             last_error = exc
-        time.sleep(1.0)
+        _live_poll_sleep()
     detail = f"last={getattr(last, 'status', None)} body={getattr(last, 'text', '')[:500]}"
     if last_error is not None:
         detail += f" last_error={last_error!r}"

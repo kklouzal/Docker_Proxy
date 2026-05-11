@@ -83,10 +83,10 @@ services:
       test:
         - CMD-SHELL
         - squid -k check >/dev/null 2>&1 && python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read(); urllib.request.urlopen('http://127.0.0.1/health', timeout=2).read()"
-      interval: 15s
+      interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 30s
+      retries: 24
+      start_period: 10s
 
   proxy-edge-2:
     build:
@@ -136,10 +136,10 @@ services:
       test:
         - CMD-SHELL
         - squid -k check >/dev/null 2>&1 && python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read(); urllib.request.urlopen('http://127.0.0.1/health', timeout=2).read()"
-      interval: 15s
+      interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 30s
+      retries: 24
+      start_period: 10s
     networks:
       - control
 
