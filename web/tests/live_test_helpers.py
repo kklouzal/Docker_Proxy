@@ -369,12 +369,15 @@ def wait_for_config_apply(
     *,
     revision_id: int | None = None,
     after_ts: int | None = None,
+    after_application_id: int | None = None,
     timeout_seconds: float | None = None,
 ) -> Any:
     def _accept(application: Any) -> bool:
         if application is None:
             return False
         if revision_id is not None and int(getattr(application, "revision_id", 0) or 0) != int(revision_id):
+            return False
+        if after_application_id is not None and int(getattr(application, "application_id", 0) or 0) <= int(after_application_id):
             return False
         if after_ts is not None and int(getattr(application, "applied_ts", 0) or 0) <= int(after_ts):
             return False

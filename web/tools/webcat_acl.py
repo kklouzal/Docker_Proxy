@@ -131,10 +131,12 @@ class _Db:
             self._snapshot_started = True
         try:
             self._load_snapshot_from_disk(force=True)
-            if self._snapshot_available():
-                pass
-            else:
-                self._ensure_snapshot(force=True)
+            # A reconfigured Squid starts fresh helper processes, and those
+            # helpers must not pin an older on-disk category snapshot when the
+            # Admin UI has already published a newer webcat build timestamp.
+            # Always compare the loaded snapshot with MySQL once at helper
+            # startup; the steady-state refresh loop still owns periodic updates.
+            self._ensure_snapshot(force=True)
         except Exception:
             pass
         thread = threading.Thread(target=self._snapshot_loop, name="webcat-snapshot-refresh", daemon=True)

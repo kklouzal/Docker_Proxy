@@ -92,6 +92,7 @@ def test_live_squid_config_can_enable_http_intercept_listener(admin_client: Live
 
         wait_for_config_apply(
             LIVE_CONFIG.primary_proxy_id,
+            after_application_id=getattr(before_apply, "application_id", 0) or None,
             after_ts=_apply_ts(before_apply) or None,
             timeout_seconds=120.0,
         )
@@ -213,6 +214,7 @@ def test_live_clamav_settings_publish_and_apply_runtime_controls(admin_client: L
 
         wait_for_config_apply(
             LIVE_CONFIG.primary_proxy_id,
+            after_application_id=getattr(before_apply, "application_id", 0) or None,
             after_ts=_apply_ts(before_apply) or None,
             timeout_seconds=120.0,
         )
@@ -277,6 +279,7 @@ def test_live_squid_config_apply_safe_publishes_and_syncs_template_revision(admi
 
         wait_for_config_apply(
             LIVE_CONFIG.primary_proxy_id,
+            after_application_id=getattr(before_apply, "application_id", 0) or None,
             after_ts=_apply_ts(before_apply) or None,
             timeout_seconds=120.0,
         )
@@ -304,6 +307,7 @@ def test_live_squid_config_apply_overrides_publishes_override_metadata(admin_cli
 
         wait_for_config_apply(
             LIVE_CONFIG.primary_proxy_id,
+            after_application_id=getattr(before_apply, "application_id", 0) or None,
             after_ts=_apply_ts(before_apply) or None,
             timeout_seconds=120.0,
         )

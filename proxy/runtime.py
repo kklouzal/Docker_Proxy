@@ -1495,6 +1495,10 @@ class ProxyRuntime:
         ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
+        if ok and (policy_reload_required or adblock_changed):
+            success_detail = "Squid reconfigured for policy update."
+            if not any(success_detail in part for part in detail_parts):
+                detail_parts.append(success_detail)
         detail = "\n".join([part for part in detail_parts if part]).strip() or config_detail
         applied = self.revisions.record_apply_result(
             self.proxy_id,
