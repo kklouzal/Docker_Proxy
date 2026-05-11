@@ -212,6 +212,12 @@ _default_app_runtime_services = AppRuntimeServices(
 )
 
 
+# Admin-initiated proxy sync can legitimately take longer than the generic
+# ProxyClient default: config, policy, adblock, cache, and certificate changes
+# may perform controlled Squid/c-icap restarts. Keep the UI request bounded, but
+# do not report a failed apply while the proxy is still safely restarting.
+_ADMIN_PROXY_SYNC_TIMEOUT_SECONDS = 120.0
+
 def _app_runtime_services() -> AppRuntimeServices:
     return _default_app_runtime_services
 
@@ -1042,7 +1048,7 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
         )
         return ok, str(detail or f'Revision {revision.revision_id} applied locally.')
     try:
-        result = get_proxy_client().sync_proxy(proxy_id, force=True)
+        result = get_proxy_client().sync_proxy(proxy_id, force=True, timeout_seconds=_ADMIN_PROXY_SYNC_TIMEOUT_SECONDS)
         ok = bool(result.get('ok', False))
         detail = str(result.get('detail') or f'Revision {revision.revision_id} queued for sync.')
         return ok, detail
@@ -1053,7 +1059,7 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
 def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
     """Request an immediate config sync for the selected proxy."""
     try:
-        result = get_proxy_client().sync_proxy(get_proxy_id(), force=force)
+        result = get_proxy_client().sync_proxy(get_proxy_id(), force=force, timeout_seconds=_ADMIN_PROXY_SYNC_TIMEOUT_SECONDS)
         return bool(result.get('ok', False)), str(result.get('detail') or 'Sync requested.')
     except ProxyClientError as exc:
         return False, str(exc)

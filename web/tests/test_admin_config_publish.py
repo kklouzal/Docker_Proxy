@@ -91,9 +91,10 @@ def test_publish_config_saves_revision_but_reports_remote_sync_failure(monkeypat
     revisions = _Revisions()
 
     class Client:
-        def sync_proxy(self, proxy_id, *, force=False):
+        def sync_proxy(self, proxy_id, *, force=False, timeout_seconds=None):
             assert proxy_id == "edge-a"
             assert force is True
+            assert timeout_seconds == admin_app._ADMIN_PROXY_SYNC_TIMEOUT_SECONDS
             raise admin_app.ProxyClientError("proxy unavailable")
 
     monkeypatch.setattr(admin_app, "squid_controller", controller)

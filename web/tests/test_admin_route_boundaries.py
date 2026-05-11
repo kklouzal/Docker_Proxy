@@ -26,7 +26,7 @@ class RecordingProxyClient:
     def validate_config(self, proxy_id: object, config_text: str) -> dict[str, object]:
         return {"ok": True, "detail": "valid", "proxy_id": str(proxy_id)}
 
-    def sync_proxy(self, proxy_id: object, *, force: bool = False) -> dict[str, object]:
+    def sync_proxy(self, proxy_id: object, *, force: bool = False, timeout_seconds: float | None = None) -> dict[str, object]:
         return {"ok": True, "detail": "sync requested"}
 
     def clear_proxy_cache(self, proxy_id: object) -> dict[str, object]:
