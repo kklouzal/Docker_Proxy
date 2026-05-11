@@ -543,6 +543,22 @@ class ProxyRuntime:
                 ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
             except Exception:
                 ok = True
+        if ok:
+            # Squid can accept TCP connections before ICAP OPTIONS/helper state has
+            # fully converged after rapid policy/adblock churn. Wait briefly for the
+            # local adblock ICAP service too so the sync API does not hand traffic
+            # back to callers while first requests can still hang on adaptation.
+            deadline = time.time() + 5.0
+            last_icap: dict[str, Any] = {}
+            while time.time() < deadline:
+                last_icap = _check_icap_adblock(timeout=0.8, error_formatter=str)
+                if bool(last_icap.get("ok")):
+                    break
+                time.sleep(0.25)
+            else:
+                ok = False
+                icap_detail = str(last_icap.get("detail") or "cicap_adblock ICAP health check did not pass after policy reload.")
+                detail = "\n".join(part for part in (detail, icap_detail) if str(part or "").strip()).strip()
         return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid reconfigure failed for policy update.")
 
     def validate_config_text(self, config_text: str) -> Dict[str, Any]:

@@ -120,12 +120,24 @@ def _sync_primary_proxy(client: LiveStackClient, *, force: bool = True) -> dict:
 def _wait_for_proxy_status(client: LiveStackClient, path: str, expected_status: int, *, timeout_seconds: float = 120.0):
     deadline = time.time() + timeout_seconds
     last = None
+    last_error: Exception | None = None
     while time.time() < deadline:
-        last = client.proxy_fixture_request(path, timeout_seconds=10.0)
-        if last.status == expected_status:
-            return last
+        try:
+            last = client.proxy_fixture_request(path, timeout_seconds=10.0)
+            last_error = None
+            if last.status == expected_status:
+                return last
+        except Exception as exc:
+            # Squid policy/adblock reloads can leave one in-flight proxied request
+            # waiting on a closing ICAP/Squid worker. Treat that as transient stack
+            # convergence and keep polling for the policy result instead of failing
+            # the live gate on the first timed-out socket read.
+            last_error = exc
         time.sleep(1.0)
-    raise AssertionError(f"Timed out waiting for proxied {path!r} to return HTTP {expected_status}; last={getattr(last, 'status', None)} body={getattr(last, 'text', '')[:500]}")
+    detail = f"last={getattr(last, 'status', None)} body={getattr(last, 'text', '')[:500]}"
+    if last_error is not None:
+        detail += f" last_error={last_error!r}"
+    raise AssertionError(f"Timed out waiting for proxied {path!r} to return HTTP {expected_status}; {detail}")
 
 
 def _write_live_adblock_artifact(directory, *, regex_block: str = "", regex_allow: str = "", domains_block: str = "", domains_allow: str = "", enabled: bool = True) -> None:

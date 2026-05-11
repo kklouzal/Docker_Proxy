@@ -366,6 +366,65 @@ def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None
     assert "Squid reconfigured for policy update." in result["detail"]
     assert marked == []
 
+
+def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    calls = {"icap": 0}
+    sleeps: list[float] = []
+
+    class Controller:
+        def _run(self, args, **_kwargs):
+            assert args == ["squid", "-k", "reconfigure"]
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout):
+            assert timeout == 10.0
+            return True
+
+    def fake_icap(**_kwargs):
+        calls["icap"] += 1
+        return {"ok": calls["icap"] >= 2, "detail": "icap ready"}
+
+    runtime.controller = Controller()
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", fake_icap)
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    ok, detail = runtime._reload_for_policy_update()
+
+    assert ok is True
+    assert detail == "reconfigured"
+    assert calls["icap"] == 2
+    assert sleeps == [0.25]
+
+
+def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    now = {"value": 0.0}
+
+    class Controller:
+        def _run(self, args, **_kwargs):
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout):
+            return True
+
+    runtime.controller = Controller()
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", lambda **_kwargs: {"ok": False, "detail": "icap not ready"})
+    monkeypatch.setattr(runtime_module.time, "time", lambda: now["value"])
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda seconds: now.__setitem__("value", now["value"] + seconds + 1.0))
+
+    ok, detail = runtime._reload_for_policy_update()
+
+    assert ok is False
+    assert "reconfigured" in detail
+    assert "icap not ready" in detail
+
 def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(tmp_path, monkeypatch) -> None:
     _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
