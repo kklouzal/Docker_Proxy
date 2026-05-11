@@ -250,12 +250,48 @@ http_access allow all
     assert "logformat icapobserve" in text
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
     assert "/var/log/squid/access.log" not in text
+    assert "include /etc/squid/conf.d/20-icap.conf" in text
     assert "include /etc/squid/conf.d/30-webfilter.conf" in text
     assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index("http_access allow all")
     assert "icap_log stdio:/var/log/squid/icap.log icapobserve" in text
     assert "note ssl_exception steam steam_sites" in text
     assert "note cache_bypass auth has_auth" in text
     assert "note cache_bypass cookie has_cookie" in text
+
+
+def test_squid_controller_normalize_config_text_repositions_legacy_webfilter_include():
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+    text = ctl.normalize_config_text(
+        """
+http_access allow all
+include /etc/squid/conf.d/30-webfilter.conf
+""".strip()
+    )
+
+    assert text.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
+    assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index("http_access allow all")
+
+
+def test_squid_controller_normalize_config_text_does_not_duplicate_legacy_inline_icap_services():
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+    text = ctl.normalize_config_text(
+        """
+icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on
+adaptation_access adblock_req_set allow all
+http_access allow all
+""".strip()
+    )
+
+    assert "include /etc/squid/conf.d/20-icap.conf" not in text
+    assert text.count("icap_service adblock_req") == 1
 
 
 def test_squid_controller_parses_new_perf_tunables():

@@ -141,12 +141,29 @@ class SquidController:
         wanted = line.strip()
         if not wanted:
             return text
-        if re.search(rf"^\s*{re.escape(wanted)}\s*$", text, re.M):
-            return text
+        # This include is order-sensitive: if a legacy/manual config already has it
+        # after a broad `http_access allow all`, webfilter denies are unreachable.
+        # Normalize to one copy immediately before the first http_access directive.
+        text = re.sub(rf"^\s*{re.escape(wanted)}\s*$\n?", "", text, flags=re.M)
         match = re.search(r"^\s*http_access\s+", text, re.M)
         if match:
             return text[: match.start()] + wanted + "\n" + text[match.start() :]
         return text.rstrip() + "\n" + wanted + "\n"
+
+    def _ensure_icap_include_if_needed(self, text: str) -> str:
+        include_line = "include /etc/squid/conf.d/20-icap.conf"
+        if re.search(r"^\s*include\s+/etc/squid/conf\.d/20-icap\.conf\s*$", text, re.M):
+            return text
+        # Legacy/manual revisions may predate the generated ICAP include. If they
+        # still declare the managed services inline, do not add duplicate service
+        # names. Otherwise add the include so adblock/AV adaptation survives config
+        # restore and safe-form apply cycles.
+        if re.search(r"^\s*icap_service\s+(?:adblock_req|av_resp)\b", text, re.M):
+            return text
+        match = re.search(r"^\s*adaptation_access\s+", text, re.M)
+        if match:
+            return text[: match.start()] + include_line + "\n" + text[match.start() :]
+        return text.rstrip() + "\n" + include_line + "\n"
 
     def normalize_config_text(self, config_text: str) -> str:
         text = (config_text or "").strip()
@@ -161,6 +178,7 @@ class SquidController:
         text = self._replace_or_append_directive(text, r"^\s*cache_log\s+(?:stdio:)?/var/log/squid/cache\.log\b.*$", "cache_log stdio:/var/log/squid/cache.log")
         text = self._replace_or_append_directive(text, r"^\s*icap_log\s+(?:stdio:)?/var/log/squid/icap\.log\b.*$", "icap_log stdio:/var/log/squid/icap.log icapobserve")
         text = self._replace_or_append_directive(text, r"^\s*cache_store_log\s+.*$", "cache_store_log none")
+        text = self._ensure_icap_include_if_needed(text)
         text = self._ensure_line_before_first_http_access(text, "include /etc/squid/conf.d/30-webfilter.conf")
 
         note_requirements = (
