@@ -526,35 +526,40 @@ class ProxyRuntime:
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
     def _reload_for_policy_update(self) -> tuple[bool, str]:
-        # Policy materialization changes included ACL files and external ACL inputs.
-        # A full Squid process restart is too disruptive during live policy churn:
-        # Squid can take multiple seconds to drain helper children, making the proxy
-        # listener hang long enough for traffic probes to time out. A reconfigure is
-        # the right first-line operation for include/ACL changes; it reloads the
-        # active config and refreshes helper state while keeping the listener stable.
-        try:
-            proc = self.controller._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
-        except Exception as exc:
-            return False, public_error_message(exc, default="Squid reconfigure failed for policy update.")
-        detail = _decode_completed(proc).strip()
-        ok = int(getattr(proc, "returncode", 1) or 0) == 0
-        if ok:
+        # Policy materialization changes files consumed by long-lived Squid
+        # workers/helpers and by the c-icap REQMOD path. In live stacks, `squid -k
+        # reconfigure` can report success while existing helper/adaptation state
+        # continues allowing requests against the previous policy indefinitely.
+        # Restart Squid for policy/adblock convergence: it is heavier than a plain
+        # reconfigure, but it gives callers a reliable post-sync contract that new
+        # traffic is evaluated against the materialized policy files.
+        restart = getattr(self.controller, "restart_squid", None)
+        if callable(restart):
+            ok, detail = restart()
+        else:
             try:
-                ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
-            except Exception:
-                ok = True
+                proc = self.controller._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
+            except Exception as exc:
+                return False, public_error_message(exc, default="Squid policy reload failed.")
+            detail = _decode_completed(proc).strip()
+            ok = int(getattr(proc, "returncode", 1) or 0) == 0
+            if ok:
+                try:
+                    ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
+                except Exception:
+                    ok = True
         if ok:
             # Squid can accept TCP connections before ICAP OPTIONS/helper state has
             # fully converged after rapid policy/adblock churn. Wait briefly for the
             # local adblock ICAP service too so the sync API does not hand traffic
             # back to callers while first requests can still hang on adaptation.
-            deadline = time.time() + 5.0
+            deadline = time.time() + 10.0
             last_icap: dict[str, Any] = {}
             while time.time() < deadline:
-                last_icap = _check_icap_adblock(timeout=0.8, error_formatter=str)
+                last_icap = _check_icap_adblock(timeout=1.0, error_formatter=str)
                 if bool(last_icap.get("ok")):
                     break
-                time.sleep(0.25)
+                time.sleep(0.5)
             else:
                 ok = False
                 icap_detail = str(last_icap.get("detail") or "cicap_adblock ICAP health check did not pass after policy reload.")
@@ -563,7 +568,7 @@ class ProxyRuntime:
             success_detail = "Squid reconfigured for policy update."
             if success_detail not in detail:
                 detail = "\n".join(part for part in (detail, success_detail) if str(part or "").strip()).strip()
-        return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid reconfigure failed for policy update.")
+        return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid policy reload failed.")
 
     def validate_config_text(self, config_text: str) -> Dict[str, Any]:
         normalized = self.controller.normalize_config_text(config_text or "")
@@ -1496,9 +1501,10 @@ class ProxyRuntime:
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
         if ok and (policy_reload_required or adblock_changed):
-            success_detail = "Squid reconfigured for policy update."
-            if not any(success_detail in part for part in detail_parts):
-                detail_parts.append(success_detail)
+            policy_reload_ok, policy_reload_detail = self._reload_for_policy_update()
+            ok = bool(policy_reload_ok)
+            if policy_reload_detail.strip():
+                detail_parts.append(policy_reload_detail.strip())
         detail = "\n".join([part for part in detail_parts if part]).strip() or config_detail
         applied = self.revisions.record_apply_result(
             self.proxy_id,
