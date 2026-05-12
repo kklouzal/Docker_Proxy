@@ -117,7 +117,7 @@ def normalize_client_ip(v: object) -> str:
 
 
 def normalize_domain(v: object, *, request_url: object = "") -> str:
-    h = _norm_domain(str(v or "")) or _norm_domain(extract_domain(request_url))
+    h = _norm_domain(extract_domain(v)) or _norm_domain(str(v or "")) or _norm_domain(extract_domain(request_url))
     return h if _looks_like_host(h) else ""
 
 
@@ -181,7 +181,7 @@ class PolicyRequestStore:
 
     def create_request(self, *, proxy_id: str | None = None, block_type: object = "webfilter", client_ip: object = "", request_url: object = "", domain: object = "", category: object = "", method: object = "", squid_error: object = "", user_note: object = "") -> PolicyRequest:
         self.init_db()
-        p = normalize_proxy_id(proxy_id or get_proxy_id())
+        p = normalize_proxy_id(proxy_id or get_proxy_id()).lower()
         url = _text(request_url, 2048)
         d = normalize_domain(domain, request_url=url)
         ip = normalize_client_ip(client_ip)
@@ -234,7 +234,7 @@ class PolicyRequestStore:
             c.execute(f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'", (now, now, _text(revoked_by, 128), note, note, int(exception_id)))
 
     def active_webfilter_exceptions(self, *, proxy_id: str | None = None, at_ts: int | None = None, limit: int = 5000) -> list[PolicyException]:
-        self.init_db(); now = int(at_ts if at_ts is not None else now_ts()); p = normalize_proxy_id(proxy_id or get_proxy_id())
+        self.init_db(); now = int(at_ts if at_ts is not None else now_ts()); p = normalize_proxy_id(proxy_id or get_proxy_id()).lower()
         with self._connect() as c:
             rows = c.execute(self._esql("WHERE proxy_id=%s AND status='active' AND block_type='webfilter' AND (expires_ts=0 OR expires_ts>%s) ORDER BY domain ASC,client_ip ASC,id ASC LIMIT %s"), (p, now, max(1, min(int(limit), 10000)))).fetchall()
         return [_exc(x) for x in rows]

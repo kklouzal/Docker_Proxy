@@ -383,7 +383,7 @@ class WebFilterStoreBase:
     def render_materialized_state(self) -> WebFilterMaterializedState:
         settings = self.get_settings()
         helpers = _env_int("WEBFILTER_HELPERS", _default_webfilter_helpers(), minimum=1, maximum=256)
-        ttl = _env_int("WEBFILTER_TTL_SECONDS", 3600, minimum=60, maximum=86400)
+        ttl = _env_int("WEBFILTER_TTL_SECONDS", 0, minimum=0, maximum=86400)
         neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 0, minimum=0, maximum=3600)
         fail = "open"
 
@@ -439,7 +439,7 @@ class WebFilterStoreBase:
         for ex in exceptions:
             domain = _norm_domain(getattr(ex, "domain", ""))
             client_ip = str(getattr(ex, "client_ip", "") or "").strip()
-            if not client_ip or not _looks_like_host(domain):
+            if not client_ip or not domain:
                 continue
             suffix = f"{getattr(ex, 'id', 0)}"
             lines.append(f"acl webfilter_exception_src_{suffix} src {client_ip}")
@@ -459,7 +459,21 @@ class WebFilterStoreBase:
             whitelist_text=whitelist_text,
         )
 
+    def _publish_webcat_snapshot_for_helper(self) -> None:
+        try:
+            expected_built_ts = self._webcat_built_ts()
+            if expected_built_ts <= 0:
+                return
+            from tools.webcat_acl import _Db as WebCatSnapshotDb  # type: ignore
+
+            WebCatSnapshotDb()._build_snapshot_from_db(expected_built_ts=expected_built_ts)
+        except Exception:
+            return
+
     def apply_squid_include(self) -> None:
+        settings = self.get_settings()
+        if settings.enabled and settings.blocked_categories:
+            self._publish_webcat_snapshot_for_helper()
         state = self.render_materialized_state()
         write_managed_text_files(
             (self.whitelist_path, state.whitelist_text),

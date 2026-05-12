@@ -822,7 +822,19 @@ class ProxyRuntime:
             details.append(restart_detail)
         return ok_restart, "\n".join([part for part in details if part]).strip()
 
+    def _publish_webcat_snapshot_for_policy_sync(self) -> None:
+        try:
+            from tools.webcat_acl import _Db as WebCatSnapshotDb  # type: ignore
+
+            snapshot_db = WebCatSnapshotDb()
+            expected_built_ts = snapshot_db._load_remote_built_ts()
+            if expected_built_ts > 0:
+                snapshot_db._build_snapshot_from_db(expected_built_ts=expected_built_ts)
+        except Exception:
+            return
+
     def sync_policy_state(self, *, force: bool = False) -> Dict[str, Any]:
+        self._publish_webcat_snapshot_for_policy_sync()
         desired = self.policy_state_builder(self.proxy_id)
         current_sha = self._current_policy_sha()
         if not force and desired.policy_sha256 == current_sha:
