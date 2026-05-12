@@ -30,10 +30,6 @@ def _config_store():
     return get_config_revisions()
 
 
-def _apply_ts(application: object | None) -> int:
-    return int(getattr(application, "applied_ts", 0) or 0)
-
-
 def _append_marker(config_text: str, marker: str) -> str:
     base = (config_text or "").rstrip()
     return f"{base}\n# {marker}\n" if base else f"# {marker}\n"
@@ -110,7 +106,7 @@ def test_live_reload_route_targets_selected_remote_proxy(multi_proxy_admin: Live
         applied = wait_for_config_apply(
             LIVE_CONFIG.remote_proxy_id,
             revision_id=new_revision.revision_id,
-            after_ts=_apply_ts(remote_before) or None,
+            after_application_id=getattr(remote_before, "application_id", None),
             timeout_seconds=120.0,
         )
         assert applied is not None
@@ -176,7 +172,7 @@ def test_live_clamav_toggle_publishes_revision_for_selected_remote_proxy(multi_p
 
         wait_for_config_apply(
             LIVE_CONFIG.remote_proxy_id,
-            after_ts=_apply_ts(remote_before) or None,
+            after_application_id=getattr(remote_before, "application_id", None),
             timeout_seconds=120.0,
         )
         assert _clamav_enabled(active_config_text(LIVE_CONFIG.remote_proxy_id)) is expected_enabled
