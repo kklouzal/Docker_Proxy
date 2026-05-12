@@ -77,6 +77,23 @@ def test_restart_supervisor_program_trusts_running_status_after_failed_start(mon
     assert "RUNNING" in detail
 
 
+def test_restart_supervisor_program_accepts_supervisor_auto_restart_after_stop(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    results = [_cp(0, stdout="squid: stopped")]
+    monkeypatch.setattr(runtime_module.subprocess, "run", lambda *_args, **_kwargs: results.pop(0))
+    runtime = _runtime_shell()
+    runtime._wait_for_supervisor_program_stopped = lambda _program, timeout_seconds=30.0: (False, "squid RUNNING pid 3769, uptime 0:00:29")
+    runtime._supervisor_program_status = lambda _program, timeout_seconds=30: (True, "squid RUNNING pid 3769, uptime 0:00:29")
+
+    ok, detail = runtime._restart_supervisor_program("squid")
+
+    assert ok is True
+    assert "already restarted by supervisor" in detail
+    assert "RUNNING" in detail
+
+
 def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

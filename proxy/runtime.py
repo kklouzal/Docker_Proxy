@@ -451,6 +451,12 @@ class ProxyRuntime:
         if stopped_detail and stopped_detail not in details:
             details.append(stopped_detail)
         if not stopped_ok:
+            status_ok, status_detail = self._supervisor_program_status(program_name, timeout_seconds=timeout_seconds)
+            if status_detail and status_detail not in details:
+                details.append(status_detail)
+            if status_ok:
+                details.append(f"{program_name} was already restarted by supervisor.")
+                return True, "\n".join(part for part in details if part).strip() or f"{program_name} restarted."
             return False, "\n".join(part for part in details if part).strip() or f"Failed to stop {program_name} before restart."
 
         for attempt in range(1, 6):
