@@ -71,7 +71,7 @@ class _Db:
         self._last_open_attempt = 0
         self._cache_max_entries = _env_int("WEBFILTER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000)
         self._cache_ttl = _env_float("WEBFILTER_CACHE_TTL_SECONDS", 3600.0, minimum=5.0, maximum=86400.0)
-        self._cache_negative_ttl = _env_float("WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS", 300.0, minimum=1.0, maximum=3600.0)
+        self._cache_negative_ttl = _env_float("WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS", 1.0, minimum=0.1, maximum=3600.0)
         self._cache: OrderedDict[str, tuple[float, tuple[str, ...]]] = OrderedDict()
         self._snapshot_dir = Path(
             (os.environ.get("WEBFILTER_SNAPSHOT_DIR") or "/var/lib/squid-flask-proxy/webfilter").strip()
@@ -325,7 +325,7 @@ class _Db:
     def _ensure_snapshot(self, *, force: bool = False) -> bool:
         now = time.monotonic()
         if not force and (now - self._snapshot_attempt_ts) < self._snapshot_refresh_seconds:
-            return self._snapshot_available() or self._load_snapshot_from_disk(force=False)
+            return self._load_snapshot_from_disk(force=False) or self._snapshot_available()
         self._snapshot_attempt_ts = now
 
         remote_built_ts = self._load_remote_built_ts()

@@ -384,7 +384,7 @@ class WebFilterStoreBase:
         settings = self.get_settings()
         helpers = _env_int("WEBFILTER_HELPERS", _default_webfilter_helpers(), minimum=1, maximum=256)
         ttl = _env_int("WEBFILTER_TTL_SECONDS", 3600, minimum=60, maximum=86400)
-        neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 300, minimum=0, maximum=3600)
+        neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 0, minimum=0, maximum=3600)
         fail = "open"
 
         def _safe_acl_name(category: str) -> str:
