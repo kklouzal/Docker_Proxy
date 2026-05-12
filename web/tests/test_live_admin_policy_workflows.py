@@ -88,7 +88,16 @@ def _set_live_webcat_category(domain: str, category: str | None) -> None:
             conn.execute("INSERT INTO webcat_categories(category,domains) VALUES(%s,1) ON DUPLICATE KEY UPDATE domains=GREATEST(domains,1)", (category,))
         else:
             conn.execute("DELETE FROM webcat_domains WHERE domain=%s", (normalized,))
-        conn.execute("INSERT INTO webcat_meta(k,v) VALUES('built_ts',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)", (str(int(time.time()) + 10),))
+        row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",)).fetchone()
+        try:
+            previous_built_ts = int(str(row[0]).strip()) if row and row[0] is not None and str(row[0]).strip() else 0
+        except (TypeError, ValueError):
+            previous_built_ts = 0
+        # Proxy helpers refresh their local webcat snapshot only when MySQL's
+        # built_ts increases. Earlier live tests can leave a newer timestamp
+        # than wall-clock+10, so make fixture mutations monotonic.
+        built_ts = max(previous_built_ts + 1, int(time.time()) + 10)
+        conn.execute("INSERT INTO webcat_meta(k,v) VALUES('built_ts',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)", (str(built_ts),))
 
 
 def _restore_webfilter_settings(proxy_id: object, settings) -> None:
