@@ -61,10 +61,18 @@ def test_webfilter_apply_squid_include_writes_materialized_files(tmp_path, monke
         include_text="# include\nhttp_access deny webfilter_block_adult\n",
         whitelist_text="example.com\n",
     )
+    snapshot_publish_calls = []
     monkeypatch.setattr(store, "render_materialized_state", lambda: state)
+    monkeypatch.setattr(store, "_publish_webcat_snapshot_for_helper", lambda: snapshot_publish_calls.append(True))
+
+    def fail_if_settings_loaded():
+        raise AssertionError("apply_squid_include must not require settings/MySQL before writing materialized files")
+
+    monkeypatch.setattr(store, "get_settings", fail_if_settings_loaded)
 
     store.apply_squid_include()
 
+    assert snapshot_publish_calls == [True]
     assert Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
     assert Path(store.whitelist_path).read_text(encoding="utf-8") == state.whitelist_text
 
