@@ -90,27 +90,30 @@ def test_publish_config_saves_revision_but_reports_remote_sync_failure(monkeypat
     controller = _Controller()
     revisions = _Revisions()
 
-    class Client:
-        def sync_proxy(self, proxy_id, *, force=False, timeout_seconds=None):
-            assert proxy_id == "edge-a"
-            assert force is True
-            assert timeout_seconds == admin_app._ADMIN_PROXY_SYNC_TIMEOUT_SECONDS
-            raise admin_app.ProxyClientError("proxy unavailable")
+    class Op:
+        operation_id = 42
+
+    def fake_request_proxy_reconcile(proxy_id, **kwargs):
+        assert proxy_id == "edge-a"
+        assert kwargs["operation_type"] == "config_apply"
+        assert kwargs["target_kind"] == "config_revision"
+        assert kwargs["target_ref"] == 17
+        return Op()
 
     monkeypatch.setattr(admin_app, "squid_controller", controller)
     monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
     monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
     monkeypatch.setattr(admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok"))
     monkeypatch.setattr(admin_app, "_uses_remote_proxy_runtime", lambda: True)
-    monkeypatch.setattr(admin_app, "get_proxy_client", lambda: Client())
+    monkeypatch.setattr(admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile)
 
     with admin_app.app.test_request_context("/"):
         admin_app.session["user"] = "operator"
         ok, detail = admin_app._publish_config_for_current_mode("workers 1", source_kind="manual")
 
-    assert ok is False
+    assert ok is True
     assert "Revision 17 saved" in detail
-    assert "proxy unavailable" in detail
+    assert "operation #42" in detail
     assert revisions.created == [
         {
             "proxy_id": "edge-a",
@@ -206,3 +209,104 @@ def test_administration_handler_allows_other_user_deletion_and_rejects_unknown_a
     with admin_app.app.test_request_context("/administration", method="POST", data={"action": "definitely_unknown"}):
         response = admin_app._handle_administration_post(store, "admin")
         assert _message_from_redirect(response.location) == "Unknown action."
+
+
+
+def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    class Op:
+        operation_id = 7
+        status = "pending"
+        updated_ts = 123
+
+        def to_dict(self):
+            return {"operation_id": self.operation_id, "status": self.status, "updated_ts": self.updated_ts}
+
+    class Ledger:
+        def list_operations(self, proxy_id, *, limit):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            return [Op()]
+
+        def counts_by_status(self, proxy_id):
+            assert proxy_id == "edge-a"
+            return {"pending": 1, "applying": 0, "applied": 0, "failed": 0}
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", lambda: Ledger())
+
+    with admin_app.app.test_request_context("/api/operations"):
+        response, status = admin_app.api_operations()
+
+    assert status == 200
+    data = response.get_json()
+    assert data["ok"] is True
+    assert data["proxy_id"] == "edge-a"
+    assert data["operations"] == [{"operation_id": 7, "status": "pending", "updated_ts": 123}]
+    assert data["counts"]["pending"] == 1
+
+
+def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+    queued: list[dict[str, object]] = []
+
+    class Op:
+        operation_id = 9
+        proxy_id = "edge-a"
+        can_revert = True
+        rollback_kind = "config_revision"
+        rollback_ref = "3"
+        operation_type = "config_apply"
+        target_ref = "4"
+
+    class Ledger:
+        def get_operation(self, operation_id):
+            assert operation_id == 9
+            return Op()
+
+    class Revisions:
+        def get_revision(self, revision_id, *, proxy_id=None):
+            assert revision_id == "3"
+            assert proxy_id == "edge-a"
+            return SimpleNamespace(revision_id=3, config_text="workers 1\n")
+
+        def create_revision(self, proxy_id, config_text, *, created_by, source_kind, activate):
+            assert proxy_id == "edge-a"
+            assert config_text == "workers 1\n"
+            assert created_by == "operator"
+            assert source_kind == "revert-config_apply"
+            assert activate is True
+            return SimpleNamespace(revision_id=12, config_sha256="abc")
+
+    def fake_request_proxy_reconcile(proxy_id, **kwargs):
+        queued.append({"proxy_id": proxy_id, **kwargs})
+        return SimpleNamespace(operation_id=10)
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", lambda: Ledger())
+    monkeypatch.setattr(admin_app, "get_config_revisions", lambda: Revisions())
+    monkeypatch.setattr(admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile)
+
+    with admin_app.app.test_request_context("/operations/9/revert", method="POST"):
+        admin_app.session["user"] = "operator"
+        response = admin_app.revert_operation(9)
+
+    assert response.status_code == 302
+    assert "/operations" in response.location
+    assert queued == [
+        {
+            "proxy_id": "edge-a",
+            "operation_type": "revert",
+            "subject": "Revert #9",
+            "summary": "Restored config revision 3; applying asynchronously.",
+            "target_kind": "config_revision",
+            "target_ref": 12,
+            "rollback_kind": "config_revision",
+            "rollback_ref": "4",
+            "request_hash": "abc",
+            "detail": "Revert queued from failed operation #9.",
+            "created_by": "operator",
+            "force": False,
+        }
+    ]

@@ -13,6 +13,9 @@
   let activeNavigationController = null;
   let activeNavigationId = 0;
   const UNSAVED_CONFIG_MESSAGE = 'You have unsaved Squid configuration changes. Leave this page anyway?';
+  const OPERATION_STATUSES = ['pending', 'applying', 'applied', 'failed'];
+  const seenOperationStatuses = new Map();
+  let operationPollTimer = null;
 
   const getCsrfToken = () => {
     const meta = document.querySelector('meta[name="csrf-token"]');
@@ -76,6 +79,161 @@
       button.textContent = button.dataset.originalLabel || '';
       delete button.dataset.labelTimer;
     }, 1600));
+  };
+
+  const getToastRegion = () => {
+    let region = document.querySelector('[data-toast-region]');
+    if (region) return region;
+    region = document.createElement('div');
+    region.className = 'toast-region';
+    region.setAttribute('data-toast-region', '');
+    region.setAttribute('aria-live', 'polite');
+    document.body.appendChild(region);
+    return region;
+  };
+
+  const normalizeOperationStatus = (status) => {
+    const value = String(status || '');
+    return OPERATION_STATUSES.includes(value) ? value : 'pending';
+  };
+
+  const showToast = (message, status = 'pending') => {
+    const safeStatus = normalizeOperationStatus(status);
+    const toast = document.createElement('div');
+    toast.className = `operation-toast ${safeStatus}`;
+    toast.textContent = message;
+    getToastRegion().appendChild(toast);
+    window.setTimeout(() => toast.classList.add('visible'), 10);
+    window.setTimeout(() => {
+      toast.classList.remove('visible');
+      window.setTimeout(() => toast.remove(), 300);
+    }, safeStatus === 'failed' ? 9000 : 4500);
+  };
+
+  const operationMessage = (operation) => {
+    const subject = operation.subject || operation.operation_type || `Operation #${operation.operation_id}`;
+    return `#${operation.operation_id} ${subject}: ${operation.status}`;
+  };
+
+  const noteOperationStatus = (operation, { notifyInitial = false } = {}) => {
+    if (!operation || !operation.operation_id) return;
+    const key = String(operation.operation_id);
+    const status = normalizeOperationStatus(operation.status);
+    const previous = seenOperationStatuses.get(key);
+    if (previous !== status) {
+      seenOperationStatuses.set(key, status);
+      if (previous || notifyInitial) showToast(operationMessage({ ...operation, status }), status);
+    }
+  };
+
+  const setFormPending = (form, pending) => {
+    form.classList.toggle('is-submitting', Boolean(pending));
+    form.setAttribute('aria-busy', pending ? 'true' : 'false');
+    form.querySelectorAll('button').forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) return;
+      if (pending) {
+        if (!button.dataset.originalLabel) button.dataset.originalLabel = button.textContent || '';
+        button.disabled = true;
+        if (button.type === 'submit') button.textContent = button.dataset.pendingLabel || 'Saving…';
+      } else {
+        button.disabled = false;
+        if (button.dataset.originalLabel) button.textContent = button.dataset.originalLabel;
+      }
+    });
+  };
+
+  const renderOperationRow = (operation) => {
+    const row = document.createElement('article');
+    row.className = 'operation-row';
+    row.dataset.operationId = String(operation.operation_id || '');
+    const status = normalizeOperationStatus(operation.status);
+    row.dataset.operationStatus = status;
+    row.dataset.operationUpdated = String(operation.updated_ts || 0);
+
+    const main = document.createElement('div');
+    main.className = 'operation-main';
+
+    const title = document.createElement('div');
+    title.className = 'operation-title';
+    const badge = document.createElement('span');
+    badge.className = `status-badge ${status}`;
+    badge.textContent = status;
+    const strong = document.createElement('strong');
+    strong.textContent = `#${operation.operation_id || 0} · ${operation.subject || operation.operation_type || 'Operation'}`;
+    title.append(badge, strong);
+
+    const summary = document.createElement('p');
+    summary.textContent = operation.summary || '';
+    main.append(title, summary);
+
+    if (operation.detail) {
+      const detail = document.createElement('p');
+      detail.className = 'small muted';
+      detail.textContent = operation.detail;
+      main.appendChild(detail);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'operation-actions';
+    if (operation.can_revert && status === 'failed' && operation.operation_id) {
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = `/operations/${encodeURIComponent(String(operation.operation_id))}/revert`;
+      const csrf = getCsrfToken();
+      if (csrf) {
+        const csrfInput = document.createElement('input');
+        csrfInput.type = 'hidden';
+        csrfInput.name = 'csrf_token';
+        csrfInput.value = csrf;
+        form.appendChild(csrfInput);
+      }
+      const button = document.createElement('button');
+      button.className = 'btn danger';
+      button.type = 'submit';
+      button.textContent = 'Revert';
+      form.appendChild(button);
+      actions.appendChild(form);
+    } else if (operation.can_revert) {
+      const note = document.createElement('span');
+      note.className = 'small muted';
+      note.textContent = 'Revert available if this fails';
+      actions.appendChild(note);
+    }
+    row.append(main, actions);
+    return row;
+  };
+
+  const refreshOperationLedger = async ({ notifyInitial = false } = {}) => {
+    const activeProxyId = document.body.dataset.activeProxyId || '';
+    if (!activeProxyId) return;
+    try {
+      const response = await fetch('/api/operations', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'spa' } });
+      if (!response.ok) return;
+      const data = await response.json();
+      (data.operations || []).forEach((operation) => noteOperationStatus(operation, { notifyInitial }));
+      OPERATION_STATUSES.forEach((status) => {
+        document.querySelectorAll(`[data-operation-count="${status}"]`).forEach((node) => { node.textContent = String((data.counts || {})[status] || 0); });
+      });
+      const ledger = document.querySelector('[data-operation-ledger]');
+      if (ledger) {
+        ledger.innerHTML = '';
+        (data.operations || []).forEach((operation) => ledger.appendChild(renderOperationRow(operation)));
+        if (!(data.operations || []).length) {
+          const empty = document.createElement('p');
+          empty.className = 'muted';
+          empty.textContent = 'No operations recorded for this proxy yet.';
+          ledger.appendChild(empty);
+        }
+      }
+    } catch {
+      // Polling is best effort.
+    }
+  };
+
+  const startOperationPolling = () => {
+    if (operationPollTimer) window.clearInterval(operationPollTimer);
+    void refreshOperationLedger();
+    operationPollTimer = window.setInterval(() => refreshOperationLedger(), 3000);
   };
 
   const copyTextToClipboard = async (text) => {
@@ -748,6 +906,7 @@
       syncShellFromDocument(parsed);
       container.innerHTML = nextContainer.innerHTML;
       enhanceContainer(container);
+      void refreshOperationLedger({ notifyInitial: true });
 
       if (parsed && parsed.title) {
         document.title = parsed.title;
@@ -826,8 +985,13 @@
     }
 
     const body = new FormData(form);
+    setFormPending(form, true);
+    showToast('Saved locally; queuing proxy reconciliation…', 'pending');
     // For POST, avoid adding noisy history entries; the server usually redirects back.
-    void fetchAndSwap(action, { push: false, method: 'POST', body });
+    void fetchAndSwap(action, { push: false, method: 'POST', body }).finally(() => {
+      setFormPending(form, false);
+      void refreshOperationLedger({ notifyInitial: true });
+    });
   };
 
   const onPopState = () => {
@@ -848,6 +1012,14 @@
     updateNavActive(window.location.href);
 
     enhanceContainer(getSpaContainer());
+    startOperationPolling();
+    document.addEventListener('click', (event) => {
+      const refresh = event.target instanceof Element ? event.target.closest('[data-operation-refresh]') : null;
+      if (refresh) {
+        event.preventDefault();
+        void refreshOperationLedger({ notifyInitial: true });
+      }
+    });
 
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('submit', onDocumentSubmit, true);

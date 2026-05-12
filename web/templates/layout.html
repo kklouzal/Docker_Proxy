@@ -31,9 +31,10 @@
 
                 <nav class="nav" id="primary-nav" aria-label="Primary">
                     <div class="nav-dropdown">
-                        <button class="nav-trigger {{ 'active' if request.endpoint in ['index','observability','policy_requests'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Status</button>
+                        <button class="nav-trigger {{ 'active' if request.endpoint in ['index','operations_status','observability','policy_requests'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Status</button>
                         <div class="nav-menu">
                             <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
+                            <a class="{{ 'active' if request.endpoint == 'operations_status' else '' }}" href="{{ url_for('operations_status') }}">Operations</a>
                             <a class="{{ 'active' if request.endpoint == 'observability' else '' }}" href="{{ url_for('observability') }}">Observability</a>
                             <a class="{{ 'active' if request.endpoint == 'policy_requests' else '' }}" href="{{ url_for('policy_requests') }}">Requests</a>
                         </div>

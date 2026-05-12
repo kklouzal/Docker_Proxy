@@ -25,6 +25,7 @@ from services.errors import public_error_message
 from services.health_checks import build_clamav_health
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
+from services.operation_ledger import get_operation_ledger
 from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
 from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_context import get_proxy_id
@@ -309,7 +310,11 @@ class ProxyRuntime:
         except Exception as exc:
             return False, public_error_message(exc, default=f"Failed to inspect {program_name} supervisor status.")
         detail = _decode_completed(status).strip() or f"{program_name} status unavailable."
-        return status.returncode == 0 and "RUNNING" in detail, detail
+        for line in detail.splitlines():
+            parts = line.split(None, 2)
+            if parts and parts[0] == program_name:
+                return len(parts) > 1 and parts[1] == "RUNNING", detail
+        return False, detail
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
         programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
@@ -336,7 +341,7 @@ class ProxyRuntime:
             program = parts[0]
             if program not in statuses:
                 continue
-            statuses[program] = {"ok": status.returncode == 0 and len(parts) > 1 and parts[1] == "RUNNING", "detail": line.strip()}
+            statuses[program] = {"ok": len(parts) > 1 and parts[1] == "RUNNING", "detail": line.strip()}
 
         detail_parts = [str(item.get("detail") or "") for item in statuses.values() if not item.get("ok")]
         ok = not detail_parts
@@ -1410,7 +1415,34 @@ class ProxyRuntime:
 
     def sync_from_db(self, *, force: bool = False) -> Dict[str, Any]:
         with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
-            return self._sync_from_db_unlocked(force=force)
+            claimed_operations = []
+            ledger = None
+            try:
+                ledger = get_operation_ledger()
+                ledger.requeue_stale_applying(self.proxy_id)
+                claimed_operations = ledger.claim_pending(self.proxy_id, limit=100)
+            except Exception:
+                claimed_operations = []
+                ledger = None
+            try:
+                result = self._sync_from_db_unlocked(force=force)
+            except Exception as exc:
+                if ledger is not None and claimed_operations:
+                    try:
+                        ledger.mark_many(claimed_operations, status="failed", detail=str(exc)[:4000])
+                    except Exception:
+                        pass
+                raise
+            if ledger is not None and claimed_operations:
+                try:
+                    ledger.mark_many(
+                        claimed_operations,
+                        status="applied" if bool(result.get("ok")) else "failed",
+                        detail=str(result.get("detail") or "Proxy reconciliation completed.")[:4000],
+                    )
+                except Exception:
+                    pass
+            return result
 
     def _sync_from_db_unlocked(self, *, force: bool = False) -> Dict[str, Any]:
         self._invalidate_health_cache()

@@ -113,12 +113,15 @@ class ProxyClient:
             timeout_seconds=timeout_seconds,
         ).data
 
-    def sync_proxy(self, proxy_id: object | None, *, force: bool = False, timeout_seconds: float = 15.0) -> dict[str, Any]:
+    def sync_proxy(self, proxy_id: object | None, *, force: bool = False, operation_id: int | None = None, timeout_seconds: float = 15.0) -> dict[str, Any]:
+        payload: dict[str, Any] = {"force": bool(force)}
+        if operation_id is not None:
+            payload["operation_id"] = int(operation_id)
         return self._request(
             proxy_id,
             method="POST",
             path="/api/manage/sync",
-            payload={"force": bool(force)},
+            payload=payload,
             timeout_seconds=timeout_seconds,
         ).data
 

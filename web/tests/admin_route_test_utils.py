@@ -258,6 +258,42 @@ class FakeController:
     get_http_lines = get_caching_lines
 
 
+class FakeOperationLedger:
+    def __init__(self) -> None:
+        self.operations: list[Any] = []
+        self.next_id = 1
+
+    def create_operation(self, proxy_id: object, **kwargs: Any) -> Any:
+        import time
+        now = int(time.time())
+        op = SimpleNamespace(operation_id=self.next_id, proxy_id=str(proxy_id), status="pending", operation_type=str(kwargs.get("operation_type") or "sync"), subject=str(kwargs.get("subject") or ""), summary=str(kwargs.get("summary") or ""), target_kind=str(kwargs.get("target_kind") or ""), target_ref=str(kwargs.get("target_ref") or ""), rollback_kind=str(kwargs.get("rollback_kind") or ""), rollback_ref=str(kwargs.get("rollback_ref") or ""), request_hash=str(kwargs.get("request_hash") or ""), detail=str(kwargs.get("detail") or ""), created_by=str(kwargs.get("created_by") or ""), created_ts=now, started_ts=0, completed_ts=0, updated_ts=now)
+        op.can_revert = bool(op.rollback_kind and op.rollback_ref)
+        op.to_dict = lambda op=op: dict(op.__dict__)
+        self.next_id += 1
+        self.operations.append(op)
+        return op
+
+    def list_operations(self, proxy_id: object, *, limit: int = 100, statuses: list[str] | None = None) -> list[Any]:
+        rows = [op for op in self.operations if op.proxy_id == str(proxy_id)]
+        if statuses:
+            rows = [op for op in rows if op.status in statuses]
+        return list(reversed(rows))[:limit]
+
+    def counts_by_status(self, proxy_id: object) -> dict[str, int]:
+        counts = {"pending": 0, "applying": 0, "applied": 0, "failed": 0}
+        for op in self.operations:
+            if op.proxy_id == str(proxy_id) and op.status in counts:
+                counts[op.status] += 1
+        return counts
+
+    def list_recent_since(self, proxy_id: object, *, after_updated_ts: int = 0, after_id: int = 0, limit: int = 100) -> list[Any]:
+        return [op for op in self.list_operations(proxy_id, limit=limit) if op.updated_ts > after_updated_ts or (op.updated_ts == after_updated_ts and op.operation_id > after_id)]
+
+    def get_operation(self, operation_id: object) -> Any | None:
+        target = int(operation_id or 0)
+        return next((op for op in self.operations if op.operation_id == target), None)
+
+
 class FakeConfigRevisions:
     def __init__(self, config_text: str | None = None) -> None:
         self.config_text = config_text or "http_port 3128\nssl_bump splice all\nadaptation_access av_resp_set allow icap_av_scanable\n"
@@ -559,6 +595,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     fake_revisions = overrides.get("config_revisions") or FakeConfigRevisions(fake_controller.get_current_config())
     fake_proxy_client = overrides.get("proxy_client") or FakeProxyClient(admin_app)
     fake_certificates = overrides.get("certificate_bundles") or FakeCertificateBundles()
+    fake_operation_ledger = overrides.get("operation_ledger") or FakeOperationLedger()
 
     services = admin_app.AppRuntimeServices(
         controller=fake_controller,
@@ -585,6 +622,9 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     )
 
     monkeypatch.setattr(admin_app, "_auth_store", fake_auth)
+    monkeypatch.setattr(admin_app, "get_operation_ledger", lambda: fake_operation_ledger)
+    import services.proxy_sync as proxy_sync
+    monkeypatch.setattr(proxy_sync, "get_operation_ledger", lambda: fake_operation_ledger)
     monkeypatch.setattr(admin_app, "_app_runtime_services", lambda: services)
     admin_app.app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
     return SimpleNamespace(
@@ -596,6 +636,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         config_revisions=fake_revisions,
         proxy_client=fake_proxy_client,
         certificate_bundles=fake_certificates,
+        operation_ledger=fake_operation_ledger,
     )
 
 

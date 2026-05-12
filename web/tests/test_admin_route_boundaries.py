@@ -291,8 +291,11 @@ def test_sslfilter_apply_verify_forces_selected_proxy_sync(monkeypatch, tmp_path
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert loaded.proxy_client.synced[-1] == ("default", True)
-    assert "SSL filtering policy applied and verified" in text
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+    assert "Proxy reconciliation queued" in text
     assert any(record["kind"] == "sslfilter_apply_policy" and record["ok"] for record in loaded.audit_store.records)
 
 
@@ -325,7 +328,9 @@ def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(monk
 
     assert response.status_code == 200
     assert loaded.proxy_client.validated[-1][0] == "default"
-    assert loaded.proxy_client.synced[-1] == ("default", True)
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "config_apply"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
     assert loaded.config_revisions.created[-1]["proxy_id"] == "default"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
     assert "Saved settings were rebuilt, verified, and applied" in text
@@ -347,7 +352,10 @@ def test_sslfilter_apply_verify_targets_selected_proxy(monkeypatch, tmp_path) ->
 
     assert response.status_code in {301, 302, 303, 307, 308}
     assert "proxy_id=edge-2" in response.headers["Location"]
-    assert loaded.proxy_client.synced[-1] == ("edge-2", True)
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
     assert any(record["kind"] == "sslfilter_apply_policy" and record["ok"] for record in loaded.audit_store.records)
 
 
@@ -367,7 +375,9 @@ def test_apply_all_saved_config_targets_selected_proxy(monkeypatch, tmp_path) ->
     assert response.status_code in {301, 302, 303, 307, 308}
     assert "proxy_id=edge-2" in response.headers["Location"]
     assert loaded.proxy_client.validated[-1][0] == "edge-2"
-    assert loaded.proxy_client.synced[-1] == ("edge-2", True)
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert loaded.operation_ledger.operations[-1].operation_type == "config_apply"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
     assert loaded.config_revisions.created[-1]["proxy_id"] == "edge-2"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
     assert any(record["kind"] == "config_apply_all_saved" and record["ok"] for record in loaded.audit_store.records)

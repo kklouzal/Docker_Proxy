@@ -26,6 +26,21 @@ def _cp(returncode: int, stdout: str = "", stderr: str = ""):
     return SimpleNamespace(returncode=returncode, stdout=stdout.encode("utf-8"), stderr=stderr.encode("utf-8"))
 
 
+def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_returncode(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setattr(
+        runtime_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _cp(3, stdout="squid RUNNING pid 3769, uptime 0:00:29"),
+    )
+
+    ok, detail = _runtime_shell()._supervisor_program_status("squid")
+
+    assert ok is True
+    assert "RUNNING" in detail
+
 def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
@@ -994,3 +1009,36 @@ def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() ->
     assert reloads == [True]
     assert "Squid config normalized for generated policy includes." in result["detail"]
     assert "Squid reconfigured for policy update." in result["detail"]
+
+
+def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(operation_id=5)
+    calls: list[tuple[str, object]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id):
+            calls.append(("requeue", proxy_id))
+
+        def claim_pending(self, proxy_id, *, limit):
+            calls.append(("claim", (proxy_id, limit)))
+            return [op]
+
+        def mark_many(self, operations, *, status, detail):
+            calls.append(("mark", (operations, status, detail)))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", lambda: Ledger())
+    runtime._sync_from_db_unlocked = lambda *, force=False: {"ok": True, "detail": "runtime reconciled"}
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls == [
+        ("requeue", "edge-a"),
+        ("claim", ("edge-a", 100)),
+        ("mark", ([op], "applied", "runtime reconciled")),
+    ]

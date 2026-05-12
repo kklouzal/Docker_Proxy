@@ -46,13 +46,19 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(monkeypatch,
     _assert_redirect_success(response)
 
     assert loaded.sslfilter_store.no_bump_domains == ["*.discord.com"]
-    assert loaded.proxy_client.synced[-1] == ("default", True)
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
 
     response = _post(client, "/sslfilter", {"action": "add_domain", "policy": "nocache", "domain": "cache.example"})
     _assert_redirect_success(response)
 
     assert loaded.sslfilter_store.no_cache_domains == ["cache.example"]
-    assert loaded.proxy_client.synced[-1] == ("default", True)
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
 @pytest.mark.parametrize(
@@ -84,7 +90,10 @@ def test_program_controlled_admin_config_mutations_validate_before_sync(monkeypa
     _assert_redirect_success(response)
     assert len(loaded.proxy_client.validated) == 1
     assert loaded.config_revisions.created[-1]["source_kind"] == expected_source_kind
-    assert loaded.proxy_client.synced == [("default", True)]
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "config_apply"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
 def test_clamav_settings_route_persists_validated_runtime_controls(monkeypatch, tmp_path) -> None:
@@ -109,7 +118,10 @@ def test_clamav_settings_route_persists_validated_runtime_controls(monkeypatch, 
     config_text = str(created["config_text"])
     assert created["source_kind"] == "clamav-settings"
     assert loaded.proxy_client.validated[-1] == ("default", config_text)
-    assert loaded.proxy_client.synced[-1] == ("default", True)
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "config_apply"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
     assert "# BEGIN SQUID-UI CLAMAV SETTINGS" in config_text
     assert "# clamav_fail_mode: closed" in config_text
     assert "# virus_scan_scan_file_types: TEXT DATA" in config_text
@@ -133,4 +145,7 @@ def test_policy_store_mutations_request_sync_without_config_revision_validation(
     response = _post(client, path, data)
 
     _assert_redirect_success(response)
-    assert loaded.proxy_client.synced[-1] == ("default", True)
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"

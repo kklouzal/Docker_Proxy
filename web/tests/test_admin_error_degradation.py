@@ -113,7 +113,9 @@ def test_reload_and_cache_clear_record_failure_without_crashing(monkeypatch, tmp
 
     failure_records = [record for record in loaded.audit_store.records if record["kind"] in {"proxy_sync", "cache_clear"}]
     assert [record["kind"] for record in failure_records] == ["proxy_sync", "cache_clear"]
-    assert all(record["ok"] is False for record in failure_records)
+    assert failure_records[0]["ok"] is True
+    assert "Proxy reconciliation queued" in failure_records[0]["detail"]
+    assert failure_records[1]["ok"] is False
 
 
 def test_adblock_page_renders_when_init_db_fails(monkeypatch, tmp_path) -> None:

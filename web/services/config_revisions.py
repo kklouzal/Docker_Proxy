@@ -156,6 +156,19 @@ class ConfigRevisionStore:
             ).fetchone()
         return self._row_to_revision(row)
 
+    def get_revision(self, revision_id: object, *, proxy_id: object | None = None) -> Optional[ConfigRevision]:
+        self.init_db()
+        params: tuple[object, ...]
+        if proxy_id is None:
+            where = "id=%s"
+            params = (int(revision_id or 0),)
+        else:
+            where = "id=%s AND proxy_id=%s"
+            params = (int(revision_id or 0), normalize_proxy_id(proxy_id))
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT * FROM proxy_config_revisions WHERE {where} LIMIT 1", params).fetchone()
+        return self._row_to_revision(row)
+
     def get_active_revision_metadata(self, proxy_id: object | None) -> Optional[ConfigRevisionMetadata]:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)

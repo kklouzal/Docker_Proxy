@@ -21,6 +21,8 @@ from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilt
 from services.pac_profiles_store import get_pac_profiles_store as _default_get_pac_profiles_store
 from services.pac_renderer import resolve_proxy_pac_target
 from services.proxy_client import ProxyClientError, get_proxy_client as _default_get_proxy_client
+from services.operation_ledger import get_operation_ledger
+from services.proxy_sync import request_proxy_reconcile
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_health import build_remote_clamav_view, build_unavailable_runtime_health, check_adblock_icap_health, check_av_icap_health, check_clamd_health, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
@@ -1021,6 +1023,11 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
     proxy_id = get_proxy_id()
     created_by = str(session.get('user') or '')
     revisions = get_config_revisions()
+    previous_revision = None
+    try:
+        previous_revision = revisions.get_active_revision(proxy_id)
+    except Exception:
+        previous_revision = None
     valid, validation_detail = _validate_config_for_current_mode(config_text)
     if not valid:
         detail = (validation_detail or 'Squid config validation failed.').strip()
@@ -1047,22 +1054,41 @@ def _publish_config_for_current_mode(config_text: str, *, source_kind: str) -> t
             applied_by='admin-ui',
         )
         return ok, str(detail or f'Revision {revision.revision_id} applied locally.')
-    try:
-        result = get_proxy_client().sync_proxy(proxy_id, force=True, timeout_seconds=_ADMIN_PROXY_SYNC_TIMEOUT_SECONDS)
-        ok = bool(result.get('ok', False))
-        detail = str(result.get('detail') or f'Revision {revision.revision_id} queued for sync.')
-        return ok, detail
-    except ProxyClientError as exc:
-        return False, f'Revision {revision.revision_id} saved, but immediate sync failed: {exc}'
+    operation = request_proxy_reconcile(
+        proxy_id,
+        operation_type='config_apply',
+        subject='Squid config',
+        summary=f'Revision {revision.revision_id} saved; applying asynchronously to proxy {proxy_id}.',
+        target_kind='config_revision',
+        target_ref=revision.revision_id,
+        rollback_kind='config_revision' if previous_revision is not None else '',
+        rollback_ref=getattr(previous_revision, 'revision_id', '') if previous_revision is not None else '',
+        request_hash=getattr(revision, 'config_sha256', ''),
+        detail=f'Revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.',
+        created_by=created_by,
+        force=False,
+    )
+    if not getattr(operation, 'operation_id', 0) and getattr(operation, 'status', '') == 'failed':
+        return False, str(getattr(operation, 'detail', '') or 'Revision saved, but proxy reconcile was not queued.')
+    op_suffix = f' operation #{operation.operation_id}' if getattr(operation, 'operation_id', 0) else ' operation'
+    return True, f'Revision {revision.revision_id} saved; applying asynchronously as{op_suffix}.'
 
 
 def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
-    """Request an immediate config sync for the selected proxy."""
-    try:
-        result = get_proxy_client().sync_proxy(get_proxy_id(), force=force, timeout_seconds=_ADMIN_PROXY_SYNC_TIMEOUT_SECONDS)
-        return bool(result.get('ok', False)), str(result.get('detail') or 'Sync requested.')
-    except ProxyClientError as exc:
-        return False, str(exc)
+    """Queue reconciliation for the selected proxy through the operation ledger."""
+    operation = request_proxy_reconcile(
+        get_proxy_id(),
+        operation_type='manual_sync',
+        subject='Proxy reconciliation',
+        summary='Manual proxy reconciliation queued.',
+        detail='Admin requested proxy reconciliation.',
+        created_by=str(session.get('user') or ''),
+        force=force,
+    )
+    if not getattr(operation, 'operation_id', 0) and getattr(operation, 'status', '') == 'failed':
+        return False, str(getattr(operation, 'detail', '') or 'Proxy reconcile was not queued.')
+    op_suffix = f' operation #{operation.operation_id}' if getattr(operation, 'operation_id', 0) else ''
+    return True, f'Proxy reconciliation queued{op_suffix}.'
 
 
 def _trigger_proxy_cache_clear() -> tuple[bool, str]:
@@ -1131,32 +1157,34 @@ def _publish_certificate_bundle_remote(bundle, *, original_filename: str = '') -
     )
     proxies = get_proxy_registry().list_proxies()
     attempted = len(proxies)
-    ok_count = 0
-    if attempted:
-        try:
-            client = get_proxy_client()
-        except Exception:
-            client = None
-        if client is not None:
-            for proxy in proxies:
-                try:
-                    result = client.sync_proxy(proxy.proxy_id, force=True)
-                except ProxyClientError:
-                    continue
-                if bool(result.get('ok', False)):
-                    ok_count += 1
+    queued_count = 0
+    for proxy in proxies:
+        operation = request_proxy_reconcile(
+            proxy.proxy_id,
+            operation_type='certificate_apply',
+            subject='Certificate bundle',
+            summary=f'Certificate revision {revision.revision_id} saved; applying asynchronously to proxy {proxy.proxy_id}.',
+            target_kind='certificate_revision',
+            target_ref=revision.revision_id,
+            request_hash=getattr(revision, 'bundle_sha256', ''),
+            detail=f'Certificate revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.',
+            created_by=str(session.get('user') or ''),
+            force=True,
+        )
+        if getattr(operation, 'operation_id', 0) and operation.status == 'pending':
+            queued_count += 1
     if attempted == 0:
         detail = (
             f'Certificate revision {revision.revision_id} saved. '
-            'No registered proxies were available to nudge; proxies will apply it on their next poll.'
+            'No registered proxies were available to queue; proxies will apply it when reconciliation is requested.'
         )
-    elif ok_count == attempted:
-        plural = 'proxy' if ok_count == 1 else 'proxies'
-        detail = f'Certificate revision {revision.revision_id} saved. Nudged {ok_count} {plural} immediately.'
+    elif queued_count == attempted:
+        plural = 'operation' if queued_count == 1 else 'operations'
+        detail = f'Certificate revision {revision.revision_id} saved. Queued {queued_count} async {plural}.'
     else:
         detail = (
             f'Certificate revision {revision.revision_id} saved. '
-            f'Nudged {ok_count}/{attempted} proxies immediately; remaining proxies will apply it on their next poll.'
+            f'Queued {queued_count}/{attempted} async operations; check the operations ledger for failures.'
         )
     return True, detail
 
@@ -1564,6 +1592,80 @@ def proxies():
         finally:
             reset_proxy_id(token)
     return render_template('fleet.html', proxies=proxies, live_health=live_health, observability_by_proxy=observability_by_proxy)
+
+
+
+@app.route('/operations', methods=['GET'])
+def operations_status():
+    proxy_id = get_proxy_id()
+    ledger = get_operation_ledger()
+    try:
+        operations = ledger.list_operations(proxy_id, limit=100)
+        operation_counts = ledger.counts_by_status(proxy_id)
+    except Exception:
+        operations = []
+        operation_counts = {'pending': 0, 'applying': 0, 'applied': 0, 'failed': 0}
+    return render_template('operations.html', operations=operations, operation_counts=operation_counts)
+
+
+@app.route('/api/operations', methods=['GET'])
+def api_operations():
+    proxy_id = get_proxy_id()
+    ledger = get_operation_ledger()
+    try:
+        after_ts = int(request.args.get('after_updated_ts') or 0)
+        after_id = int(request.args.get('after_id') or 0)
+    except Exception:
+        after_ts = 0
+        after_id = 0
+    try:
+        if after_ts or after_id:
+            operations = ledger.list_recent_since(proxy_id, after_updated_ts=after_ts, after_id=after_id, limit=100)
+        else:
+            operations = ledger.list_operations(proxy_id, limit=100)
+        counts = ledger.counts_by_status(proxy_id)
+        return jsonify({'ok': True, 'proxy_id': proxy_id, 'operations': [op.to_dict() for op in operations], 'counts': counts}), 200
+    except Exception as exc:
+        return jsonify({'ok': False, 'proxy_id': proxy_id, 'operations': [], 'counts': {}, 'error': public_error_message(exc)}), 200
+
+
+@app.route('/operations/<int:operation_id>/revert', methods=['POST'])
+def revert_operation(operation_id: int):
+    ledger = get_operation_ledger()
+    try:
+        op = ledger.get_operation(operation_id)
+    except Exception:
+        op = None
+    if op is None or op.proxy_id != get_proxy_id() or not op.can_revert:
+        return _redirect_to('operations_status', error='not_revertible')
+    if op.rollback_kind == 'config_revision':
+        revisions = get_config_revisions()
+        previous = revisions.get_revision(op.rollback_ref, proxy_id=op.proxy_id)
+        if previous is None:
+            return _redirect_to('operations_status', error='rollback_missing')
+        revision = revisions.create_revision(
+            op.proxy_id,
+            previous.config_text,
+            created_by=str(session.get('user') or ''),
+            source_kind=f'revert-{op.operation_type}',
+            activate=True,
+        )
+        request_proxy_reconcile(
+            op.proxy_id,
+            operation_type='revert',
+            subject=f'Revert #{op.operation_id}',
+            summary=f'Restored config revision {previous.revision_id}; applying asynchronously.',
+            target_kind='config_revision',
+            target_ref=revision.revision_id,
+            rollback_kind='config_revision',
+            rollback_ref=op.target_ref,
+            request_hash=revision.config_sha256,
+            detail=f'Revert queued from failed operation #{op.operation_id}.',
+            created_by=str(session.get('user') or ''),
+            force=False,
+        )
+        return _redirect_to('operations_status', reverted='1')
+    return _redirect_to('operations_status', error='unsupported_rollback')
 
 
 @app.route('/observability', methods=['GET'])
