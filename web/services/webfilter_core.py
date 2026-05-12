@@ -471,9 +471,7 @@ class WebFilterStoreBase:
             return
 
     def apply_squid_include(self) -> None:
-        settings = self.get_settings()
-        if settings.enabled and settings.blocked_categories:
-            self._publish_webcat_snapshot_for_helper()
+        self._publish_webcat_snapshot_for_helper()
         state = self.render_materialized_state()
         write_managed_text_files(
             (self.whitelist_path, state.whitelist_text),
