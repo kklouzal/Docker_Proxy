@@ -328,17 +328,15 @@ class _Db:
             return self._snapshot_available() or self._load_snapshot_from_disk(force=False)
         self._snapshot_attempt_ts = now
 
-        if self._load_snapshot_from_disk(force=False) and not force:
-            return True
-
         remote_built_ts = self._load_remote_built_ts()
+        disk_ready = self._load_snapshot_from_disk(force=False)
         with self._snapshot_state_lock:
             local_built_ts = self._local_snapshot_built_ts
             local_ready = self._local_conn is not None
+        if remote_built_ts <= 0:
+            return disk_ready or local_ready
         if local_ready and remote_built_ts <= local_built_ts:
             return True
-        if remote_built_ts <= 0:
-            return self._load_snapshot_from_disk(force=False)
         return self._build_snapshot_from_db(expected_built_ts=remote_built_ts)
 
     def _snapshot_loop(self) -> None:
@@ -396,10 +394,6 @@ class _Db:
             return cached
 
         self.start()
-        snapshot_hit = self._lookup_categories_from_snapshot(normalized)
-        if snapshot_hit is not None:
-            return self._cache_put(normalized, snapshot_hit)
-
         self._ensure_snapshot(force=False)
         snapshot_hit = self._lookup_categories_from_snapshot(normalized)
         if snapshot_hit is not None:

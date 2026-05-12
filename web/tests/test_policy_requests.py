@@ -50,7 +50,7 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(monkeypatch,
     finally:
         reset_proxy_id(token)
     assert "acl webfilter_exception_src_7 src 192.168.1.55" in text
-    assert "acl webfilter_exception_dst_7 dstdomain .bad.example" in text
+    assert "acl webfilter_exception_dst_7 dstdomain bad.example .bad.example" in text
     assert text.index("http_access allow webfilter_exception_src_7") < text.index("http_access deny webfilter_block_adult")
 
 

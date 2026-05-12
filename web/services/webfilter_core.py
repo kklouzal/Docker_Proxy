@@ -443,7 +443,8 @@ class WebFilterStoreBase:
                 continue
             suffix = f"{getattr(ex, 'id', 0)}"
             lines.append(f"acl webfilter_exception_src_{suffix} src {client_ip}")
-            lines.append(f"acl webfilter_exception_dst_{suffix} dstdomain .{domain}")
+            dst_domains = f"{domain} .{domain}" if "." in domain else domain
+            lines.append(f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}")
             lines.append(f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}")
             lines.append(f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}")
 
