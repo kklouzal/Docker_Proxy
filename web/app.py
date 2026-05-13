@@ -1215,7 +1215,23 @@ def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> No
 
 def _best_effort_refresh_pac_runtime() -> None:
     try:
-        _trigger_proxy_sync()
+        operation = request_proxy_reconcile(
+            get_proxy_id(),
+            operation_type='pac_refresh',
+            subject='PAC profile refresh',
+            summary='PAC profile changes queued for proxy materialization.',
+            detail='Admin changed PAC profile state; proxy should refresh materialized PAC files.',
+            created_by=str(session.get('user') or ''),
+            force=True,
+        )
+        operation_id = getattr(operation, 'operation_id', 0) or None
+        if _uses_remote_proxy_runtime():
+            get_proxy_client().sync_proxy(
+                get_proxy_id(),
+                force=True,
+                operation_id=operation_id,
+                timeout_seconds=15.0,
+            )
     except Exception:
         log_exception_throttled(
             app.logger,
