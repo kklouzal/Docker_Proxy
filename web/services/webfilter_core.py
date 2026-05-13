@@ -51,13 +51,13 @@ _GLOBAL_SETTINGS_KEYS = {"source_url", "source_provider", "last_success", "last_
 class WebFilterSettings:
     enabled: bool
     source_url: str
-    source_provider: str
     blocked_categories: List[str]
     whitelist_domains: List[str]
     last_success: int
     last_attempt: int
     last_error: str
     next_run_ts: int
+    source_provider: str = "auto"
 
 
 @dataclass(frozen=True)

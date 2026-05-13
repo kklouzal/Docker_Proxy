@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 from flask import Flask, Response, g, render_template, request, redirect, url_for, jsonify, abort, session
 from services.squidctl import SquidController
 from services.cert_manager import generate_self_signed_ca_bundle, install_pfx_as_ca, materialize_certificate_bundle, parse_pfx_bundle
@@ -1291,7 +1292,14 @@ def _handle_webfilter_post(store: Any, tab: str):
             if parsed.scheme not in ('http', 'https'):
                 return _redirect_to('webfilter', tab='categories', err_source='1')
 
-        store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories, source_provider=source_provider)
+        set_settings_kwargs = {"enabled": enabled, "source_url": source_url, "blocked_categories": categories}
+        try:
+            accepts_provider = "source_provider" in inspect.signature(store.set_settings).parameters
+        except (TypeError, ValueError):
+            accepts_provider = True
+        if accepts_provider:
+            set_settings_kwargs["source_provider"] = source_provider
+        store.set_settings(**set_settings_kwargs)
         return _redirect_after_policy_refresh('webfilter', store, force=True, tab='categories')
 
     if action == 'whitelist_add':
