@@ -8,7 +8,6 @@ import sqlite3
 import sys
 import threading
 import time
-import urllib.parse
 from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable, Optional, Sequence, Set, Tuple
@@ -20,35 +19,9 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 from services.db import connect  # noqa: E402
+from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id  # noqa: E402
 from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now  # noqa: E402
-
-
-def _norm_domain(s: str) -> str:
-    raw = (s or "").strip().lower().rstrip(".")
-    if not raw:
-        return ""
-
-    # Squid helper fields can be a bare host, host:port, or a full URI.  Parse
-    # URIs first so explicit-proxy requests like http://traffic-fixture:8080/x
-    # normalize to the host rather than leaving the port attached.
-    if "://" in raw:
-        try:
-            parsed = urllib.parse.urlsplit(raw)
-            if parsed.hostname:
-                raw = parsed.hostname
-        except Exception:
-            raw = raw.split("://", 1)[1]
-
-    d = raw.strip().rstrip(".")
-    if d.startswith("."):
-        d = d[1:]
-    d = d.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if ":" in d:
-        host, port = d.rsplit(":", 1)
-        if port.isdigit():
-            d = host
-    return d
 
 
 def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
@@ -296,7 +269,7 @@ class _Db:
                     if not rows:
                         break
                     batch = [
-                        (str(domain).strip().lower().rstrip("."), str(categories or ""))
+                        (_norm_domain(domain), str(categories or ""))
                         for domain, categories in rows
                         if domain
                     ]

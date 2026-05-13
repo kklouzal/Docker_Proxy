@@ -111,7 +111,11 @@ def test_download_rejects_oversized_content_length(monkeypatch: pytest.MonkeyPat
             raise AssertionError("body should not be read after oversized Content-Length")
 
     monkeypatch.setenv("WEBCAT_MAX_DOWNLOAD_BYTES", "10")
-    monkeypatch.setattr(webcat_build.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+    class _Opener:
+        def open(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr(webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener())
 
     with tempfile.TemporaryDirectory(prefix="webcat_download_") as td:
         with pytest.raises(ValueError, match="Content-Length=11"):
@@ -191,3 +195,70 @@ def test_provider_category_dir_can_parse_non_ut1_archive() -> None:
         assert pairs == [("example.com", "adult")]
         assert source.startswith("tar:")
         assert aliases == {}
+
+
+
+def test_download_rejects_redirect_to_internal_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+    from email.message import Message
+
+    headers = Message()
+    headers["Location"] = "http://127.0.0.1/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            raise webcat_build.urllib.error.HTTPError(req.full_url, 302, "Found", headers, None)
+
+    monkeypatch.setattr(webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener())
+
+    with pytest.raises(ValueError, match="internal/localhost"):
+        webcat_build._open_download_url("https://public.example/feed.csv", timeout=1)
+
+
+def test_webcat_domain_normalization_is_shared_and_idna() -> None:
+    webcat_build = _import_webcat_build()
+    _add_web_to_path = None
+    web_dir = Path(__file__).resolve().parents[1]
+    if str(web_dir) not in sys.path:
+        sys.path.insert(0, str(web_dir))
+    from tools import webcat_acl  # type: ignore
+
+    assert webcat_build._norm_domain("http://Bücher.Example:8080/path") == "xn--bcher-kva.example"
+    assert webcat_acl._norm_domain("http://Bücher.Example:8080/path") == "xn--bcher-kva.example"
+    assert webcat_build._norm_domain("user@Example.COM:443") == "example.com"
+
+
+def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+
+    class _Conn:
+        def __init__(self):
+            self.sql: list[str] = []
+
+        def execute(self, sql: str, params=()):
+            self.sql.append(sql)
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    conn = _Conn()
+    monkeypatch.setattr(webcat_build, "_connect", lambda: conn)
+    monkeypatch.setattr(webcat_build, "_now", lambda: 12345)
+    monkeypatch.setattr(webcat_build.os, "getpid", lambda: 678)
+
+    domains, pairs = webcat_build._build_db(
+        [("HTTP://Bücher.Example:443/path", "adult"), ("xn--bcher-kva.example", "gambling")],
+        source="unit-test",
+    )
+
+    assert domains == 1
+    assert pairs == 2
+    joined = "\n".join(conn.sql)
+    assert "DELETE FROM webcat_domains" not in joined
+    assert "CREATE TABLE `webcat_domains_stage_678_12345` LIKE `webcat_domains`" in joined
+    assert "RENAME TABLE" in joined
+    assert "`webcat_domains_stage_678_12345` TO `webcat_domains`" in joined

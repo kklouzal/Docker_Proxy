@@ -7,13 +7,14 @@ import os
 import re
 import sys
 import tarfile
+import urllib.error
 import urllib.request
 import socket
 import zipfile
 import shutil
 import hashlib
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
@@ -23,38 +24,8 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from services.db import connect  # noqa: E402
+from services.domain_normalization import looks_like_domain as _looks_like_host, normalize_domain as _norm_domain  # noqa: E402
 from services.runtime_helpers import now_ts as _now  # noqa: E402
-
-
-_HOST_RE = re.compile(
-    r"^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
-    re.IGNORECASE,
-)
-
-
-def _norm_domain(s: str) -> str:
-    d = (s or "").strip().lower().rstrip(".")
-    if d.startswith("."):
-        d = d[1:]
-    # Strip obvious scheme/path if present
-    if "://" in d:
-        d = d.split("://", 1)[1]
-    d = d.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    # Strip userinfo/port
-    if "@" in d:
-        d = d.split("@", 1)[1]
-    if ":" in d:
-        host, port = d.rsplit(":", 1)
-        if port.isdigit():
-            d = host
-    return d
-
-
-def _looks_like_host(s: str) -> bool:
-    d = _norm_domain(s)
-    if not d or "." not in d or ".." in d:
-        return False
-    return _HOST_RE.match(d) is not None
 
 
 def _norm_category(s: str) -> str:
@@ -207,24 +178,50 @@ def _is_internal_host(hostname: str) -> bool:
     return any(_is_forbidden_download_ip(address) for address in resolved)
 
 
-def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _validate_download_url(url: str):
     u = urlparse(url or "")
     if u.scheme not in ("http", "https"):
         raise ValueError("Only http/https URLs are supported for downloads.")
-    # SSRF protection: block requests to internal/localhost addresses
     if _is_internal_host(u.hostname or ""):
         raise ValueError("Downloads from internal/localhost addresses are not allowed.")
+    return u
+
+
+def _open_download_url(url: str, *, timeout: int, max_redirects: int = 5):
+    current = url
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    for _ in range(max_redirects + 1):
+        _validate_download_url(current)
+        req = urllib.request.Request(current, headers={"User-Agent": "squid-flask-proxy-webcat/1.0"})
+        try:
+            return opener.open(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {301, 302, 303, 307, 308}:
+                raise
+            location = exc.headers.get("Location") if exc.headers is not None else None
+            if not location:
+                raise ValueError("Download redirect response did not include a Location header.")
+            current = urljoin(current, location)
+            _validate_download_url(current)
+    raise ValueError(f"Download exceeded redirect limit ({max_redirects}).")
+
+def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _validate_download_url(url)
 
     max_bytes = int(os.environ.get("WEBCAT_MAX_DOWNLOAD_BYTES", str(512 * 1024 * 1024)))
     if max_bytes <= 0:
         max_bytes = 512 * 1024 * 1024
 
-    req = urllib.request.Request(url, headers={"User-Agent": "squid-flask-proxy-webcat/1.0"})
     tmp = dest.with_suffix(dest.suffix + ".tmp")
 
     total = 0
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open_download_url(url, timeout=timeout) as r:
         cl = r.headers.get("Content-Length")
         if cl is not None:
             try:
@@ -383,57 +380,83 @@ def _upsert_meta(conn, k: str, v: str) -> None:
     )
 
 
+
+def _quote_table_name(name: str) -> str:
+    if not name.replace("_", "").isalnum():
+        raise ValueError(f"Unsafe table name: {name}")
+    return f"`{name}`"
+
+
+def _upsert_meta_table(conn, table: str, k: str, v: str) -> None:
+    conn.execute(
+        f"INSERT INTO {_quote_table_name(table)}(k,v) VALUES(%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+        (k, v),
+    )
+
+
 def _build_db(
     pairs: Sequence[Tuple[str, str]],
     *,
     source: str,
     aliases: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, int]:
-    # Collapse domain -> set(categories)
     by_domain: Dict[str, Set[str]] = {}
     for d, c in pairs:
-        if not d or not c:
+        domain = _norm_domain(d)
+        if not domain or not c:
             continue
-        s = by_domain.setdefault(d, set())
-        s.add(c)
+        by_domain.setdefault(domain, set()).add(c)
 
-    # Category counts for UI
     cat_counts: Dict[str, int] = {}
-    for domain, cats in by_domain.items():
+    for _domain, cats in by_domain.items():
         for c in cats:
             cat_counts[c] = cat_counts.get(c, 0) + 1
 
+    suffix = f"{os.getpid()}_{_now()}"
+    stages = {
+        "webcat_domains": f"webcat_domains_stage_{suffix}",
+        "webcat_categories": f"webcat_categories_stage_{suffix}",
+        "webcat_aliases": f"webcat_aliases_stage_{suffix}",
+        "webcat_meta": f"webcat_meta_stage_{suffix}",
+    }
+    old_tables = {name: f"{name}_old_{suffix}" for name in stages}
+
     with _connect() as conn:
         _init_db(conn)
-        conn.execute("DELETE FROM webcat_domains")
-        conn.execute("DELETE FROM webcat_categories")
-        conn.execute("DELETE FROM webcat_aliases")
+        for table in list(stages.values()) + list(old_tables.values()):
+            conn.execute(f"DROP TABLE IF EXISTS {_quote_table_name(table)}")
+        for live, stage in stages.items():
+            conn.execute(f"CREATE TABLE {_quote_table_name(stage)} LIKE {_quote_table_name(live)}")
         for domain, cats in by_domain.items():
             conn.execute(
-                "INSERT INTO webcat_domains(domain,categories) VALUES(%s,%s) ON DUPLICATE KEY UPDATE categories=VALUES(categories)",
+                f"INSERT INTO {_quote_table_name(stages['webcat_domains'])}(domain,categories) VALUES(%s,%s) ON DUPLICATE KEY UPDATE categories=VALUES(categories)",
                 (domain, "|".join(sorted(cats))),
             )
-
         for c, n in sorted(cat_counts.items()):
             conn.execute(
-                "INSERT INTO webcat_categories(category,domains) VALUES(%s,%s) ON DUPLICATE KEY UPDATE domains=VALUES(domains)",
+                f"INSERT INTO {_quote_table_name(stages['webcat_categories'])}(category,domains) VALUES(%s,%s) ON DUPLICATE KEY UPDATE domains=VALUES(domains)",
                 (c, int(n)),
             )
-
         if aliases:
             for alias, canonical in sorted(aliases.items()):
                 if alias and canonical and alias != canonical:
                     conn.execute(
-                        "INSERT INTO webcat_aliases(alias,canonical) VALUES(%s,%s) ON DUPLICATE KEY UPDATE canonical=VALUES(canonical)",
+                        f"INSERT INTO {_quote_table_name(stages['webcat_aliases'])}(alias,canonical) VALUES(%s,%s) ON DUPLICATE KEY UPDATE canonical=VALUES(canonical)",
                         (alias, canonical),
                     )
-        _upsert_meta(conn, "built_ts", str(_now()))
-        _upsert_meta(conn, "source", source)
-        _upsert_meta(conn, "domains", str(len(by_domain)))
-        _upsert_meta(conn, "pairs", str(len(pairs)))
-        _upsert_meta(conn, "aliases", str(len(aliases or {})))
+        _upsert_meta_table(conn, stages["webcat_meta"], "built_ts", str(_now()))
+        _upsert_meta_table(conn, stages["webcat_meta"], "source", source)
+        _upsert_meta_table(conn, stages["webcat_meta"], "domains", str(len(by_domain)))
+        _upsert_meta_table(conn, stages["webcat_meta"], "pairs", str(len(pairs)))
+        _upsert_meta_table(conn, stages["webcat_meta"], "aliases", str(len(aliases or {})))
+        rename_parts: list[str] = []
+        for live, stage in stages.items():
+            rename_parts.append(f"{_quote_table_name(live)} TO {_quote_table_name(old_tables[live])}")
+            rename_parts.append(f"{_quote_table_name(stage)} TO {_quote_table_name(live)}")
+        conn.execute("RENAME TABLE " + ", ".join(rename_parts))
+        for table in old_tables.values():
+            conn.execute(f"DROP TABLE IF EXISTS {_quote_table_name(table)}")
     return len(by_domain), len(pairs)
-
 
 def _collect(source_path: Path, *, provider: str = "auto") -> Tuple[List[Tuple[str, str]], str, Dict[str, str]]:
     provider = (provider or "auto").strip().lower()
