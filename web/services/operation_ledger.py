@@ -197,25 +197,42 @@ class OperationLedger:
             )
         return int(getattr(cur, "rowcount", 0) or 0)
 
-    def claim_pending(self, proxy_id: object | None, *, limit: int = 50) -> list[ProxyOperation]:
+    def claim_pending(self, proxy_id: object | None, *, limit: int = 50, operation_id: object | None = None) -> list[ProxyOperation]:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
         limit = max(1, min(200, int(limit)))
+        target_operation_id = int(operation_id or 0)
+        params: list[Any] = [proxy_key]
+        where = "proxy_id=%s AND status='pending'"
+        if target_operation_id > 0:
+            where += " AND id=%s"
+            params.append(target_operation_id)
+            limit = 1
+        params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT * FROM proxy_operations
-                WHERE proxy_id=%s AND status='pending'
+                f"""
+                SELECT id FROM proxy_operations
+                WHERE {where}
                 ORDER BY created_ts ASC, id ASC LIMIT %s
+                FOR UPDATE SKIP LOCKED
                 """,
-                (proxy_key, limit),
+                tuple(params),
             ).fetchall()
             ids = [int(row["id"] or 0) for row in rows]
-            if ids:
-                placeholders = ",".join(["%s"] * len(ids))
-                conn.execute(f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})", tuple([now, now, proxy_key] + ids))
-        return [op for op in (self.get_operation(op_id) for op_id in ids) if op is not None and op.status == 'applying']
+            if not ids:
+                return []
+            placeholders = ",".join(["%s"] * len(ids))
+            conn.execute(
+                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
+                tuple([now, now, proxy_key] + ids),
+            )
+            claimed_rows = conn.execute(
+                f"SELECT * FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
+                tuple([proxy_key] + ids),
+            ).fetchall()
+        return [op for op in (self._row_to_operation(row) for row in claimed_rows) if op is not None]
 
     def mark_status(self, operation_id: object, *, status: str, detail: str = "") -> Optional[ProxyOperation]:
         if status not in OPERATION_STATUSES:

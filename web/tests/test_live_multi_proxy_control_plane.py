@@ -8,7 +8,6 @@ from .live_test_helpers import (
     LIVE_CONFIG,
     LiveStackClient,
     active_config_text,
-    admin_client,
     latest_config_apply,
     query_params,
     unique_token,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from .live_test_helpers import LiveStackClient, admin_client, unique_token, wait_for_proxy_fixture_response, wait_for_proxy_management_payload
+from .live_test_helpers import LiveStackClient, unique_token, wait_for_proxy_fixture_response, wait_for_proxy_management_payload
 
 
 pytestmark = pytest.mark.live

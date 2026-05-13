@@ -196,27 +196,38 @@ class PolicyRequestStore:
         return _req(row)
 
     def list_requests(self, *, statuses: list[str] | None = None, limit: int = 200) -> list[PolicyRequest]:
-        self.init_db(); limit = max(1, min(int(limit), 1000)); statuses = [s for s in (statuses or []) if s in REQ_STATUS]
+        self.init_db()
+        limit = max(1, min(int(limit), 1000))
+        statuses = [s for s in (statuses or []) if s in REQ_STATUS]
         with self._connect() as c:
             if statuses:
-                ph = ",".join(["%s"] * len(statuses)); rows = c.execute(self._rsql(f"WHERE status IN ({ph}) ORDER BY created_ts DESC,id DESC LIMIT %s"), tuple(statuses + [limit])).fetchall()
+                ph = ",".join(["%s"] * len(statuses))
+                rows = c.execute(self._rsql(f"WHERE status IN ({ph}) ORDER BY created_ts DESC,id DESC LIMIT %s"), tuple(statuses + [limit])).fetchall()
             else:
                 rows = c.execute(self._rsql("ORDER BY created_ts DESC,id DESC LIMIT %s"), (limit,)).fetchall()
         return [_req(x) for x in rows]
 
     def list_exceptions(self, *, include_inactive: bool = True, limit: int = 200) -> list[PolicyException]:
-        self.init_db(); limit = max(1, min(int(limit), 1000)); w = "ORDER BY updated_ts DESC,id DESC LIMIT %s" if include_inactive else "WHERE status='active' ORDER BY updated_ts DESC,id DESC LIMIT %s"
+        self.init_db()
+        limit = max(1, min(int(limit), 1000))
+        w = "ORDER BY updated_ts DESC,id DESC LIMIT %s" if include_inactive else "WHERE status='active' ORDER BY updated_ts DESC,id DESC LIMIT %s"
         with self._connect() as c:
             rows = c.execute(self._esql(w), (limit,)).fetchall()
         return [_exc(x) for x in rows]
 
     def approve_request(self, request_id: int, *, reviewer: object = "", admin_note: object = "", duration_seconds: int | None = None, indefinite: bool = False) -> PolicyException:
-        self.init_db(); now = now_ts(); exp = 0 if indefinite or not duration_seconds else now + max(60, int(duration_seconds)); reviewer_s = _text(reviewer, 128); note = _text(admin_note, 2000, True)
+        self.init_db()
+        now = now_ts()
+        exp = 0 if indefinite or not duration_seconds else now + max(60, int(duration_seconds))
+        reviewer_s = _text(reviewer, 128)
+        note = _text(admin_note, 2000, True)
         with self._connect() as c:
             row = c.execute(self._rsql("WHERE id=%s"), (int(request_id),)).fetchone()
-            if not row: raise ValueError("Request not found.")
+            if not row:
+                raise ValueError("Request not found.")
             req = _req(row)
-            if req.status != PENDING: raise ValueError("Only pending requests can be approved.")
+            if req.status != PENDING:
+                raise ValueError("Only pending requests can be approved.")
             r = c.execute(f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)", (req.proxy_id, req.block_type, req.client_ip, req.domain, req.category, now, now, reviewer_s, note, exp, req.id))
             exid = int(r.lastrowid or 0)
             c.execute(f"UPDATE {self.REQUEST_TABLE} SET status='approved',admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s,exception_id=%s WHERE id=%s", (note, now, now, reviewer_s, exid, req.id))
@@ -224,17 +235,23 @@ class PolicyRequestStore:
         return _exc(exrow)
 
     def close_request(self, request_id: int, *, reviewer: object = "", admin_note: object = "", status: str = REJECTED) -> None:
-        self.init_db(); status = status if status in {REJECTED, CLOSED} else REJECTED; now = now_ts()
+        self.init_db()
+        status = status if status in {REJECTED, CLOSED} else REJECTED
+        now = now_ts()
         with self._connect() as c:
             c.execute(f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending'", (status, _text(admin_note, 2000, True), now, now, _text(reviewer, 128), int(request_id)))
 
     def revoke_exception(self, exception_id: int, *, revoked_by: object = "", admin_note: object = "") -> None:
-        self.init_db(); now = now_ts(); note = _text(admin_note, 2000, True)
+        self.init_db()
+        now = now_ts()
+        note = _text(admin_note, 2000, True)
         with self._connect() as c:
             c.execute(f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'", (now, now, _text(revoked_by, 128), note, note, int(exception_id)))
 
     def active_webfilter_exceptions(self, *, proxy_id: str | None = None, at_ts: int | None = None, limit: int = 5000) -> list[PolicyException]:
-        self.init_db(); now = int(at_ts if at_ts is not None else now_ts()); p = normalize_proxy_id(proxy_id or get_proxy_id()).lower()
+        self.init_db()
+        now = int(at_ts if at_ts is not None else now_ts())
+        p = normalize_proxy_id(proxy_id or get_proxy_id()).lower()
         with self._connect() as c:
             rows = c.execute(self._esql("WHERE proxy_id=%s AND status='active' AND block_type='webfilter' AND (expires_ts=0 OR expires_ts>%s) ORDER BY domain ASC,client_ip ASC,id ASC LIMIT %s"), (p, now, max(1, min(int(limit), 10000)))).fetchall()
         return [_exc(x) for x in rows]

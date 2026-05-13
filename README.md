@@ -1,4 +1,4 @@
-# Squid Flask Proxy
+# Docker Proxy
 
 A Dockerized Squid HTTP proxy bundled with a Flask admin UI for managing policy and operational settings.
 
@@ -291,7 +291,7 @@ On Windows, the most common “works on host but not on LAN” issue is the inbo
 Run in elevated PowerShell to allow inbound TCP on the Private profile:
 
 ```powershell
-New-NetFirewallRule -DisplayName "Squid Flask Proxy UI (5000)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5000 -Profile Private
+New-NetFirewallRule -DisplayName "Docker Proxy UI (5000)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5000 -Profile Private
 New-NetFirewallRule -DisplayName "Squid Proxy (3128)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3128 -Profile Private
 New-NetFirewallRule -DisplayName "Squid WPAD/PAC (80)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 80 -Profile Private
 ```

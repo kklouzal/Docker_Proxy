@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.ssl_errors_store import _extract_domain  # type: ignore
+from services.ssl_errors_store import _extract_domain  # type: ignore  # noqa: E402
 
 
 def test_ssl_error_domain_extraction_accepts_peer_token() -> None:
@@ -21,7 +21,7 @@ def test_ssl_error_domain_extraction_accepts_server_name_token() -> None:
 
 
 def test_steam_compatibility_preset_is_shipped_once() -> None:
-    from services.ssl_compatibility_presets import COMPATIBILITY_PRESETS  # type: ignore
+    from services.ssl_compatibility_presets import COMPATIBILITY_PRESETS  # type: ignore  # noqa: E402
     matches = [preset for preset in COMPATIBILITY_PRESETS if preset.id == 'steam']
     assert len(matches) == 1
     assert '*.steamserver.net' in matches[0].domains

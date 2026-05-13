@@ -4,7 +4,7 @@ import urllib.parse
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, admin_client, live_stack_ready
+from .live_test_helpers import LIVE_CONFIG, LiveStackClient
 
 
 pytestmark = pytest.mark.live

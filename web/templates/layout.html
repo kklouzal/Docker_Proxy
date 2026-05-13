@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <meta name="asset-version" content="{{ asset_version }}">
-    <title>{% block title %}Squid Flask Proxy{% endblock %}</title>
+    <title>{% block title %}Docker Proxy{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=asset_version) }}">
     <script src="{{ url_for('static', filename='spa.js', v=asset_version) }}" defer></script>
 </head>
@@ -15,10 +15,10 @@
 
     <header class="site-header" id="site-header">
         <div class="container header-inner">
-            <a class="brand" href="{{ url_for('index') if session.get('user') else url_for('login') }}" aria-label="Squid Flask Proxy home">
+            <a class="brand" href="{{ url_for('index') if session.get('user') else url_for('login') }}" aria-label="Docker Proxy home">
                 <div class="brand-mark" aria-hidden="true"></div>
                 <div class="brand-title">
-                    <strong>Squid Flask Proxy</strong>
+                    <strong>Docker Proxy</strong>
                     <span>Admin control plane{% if session.get('user') and active_proxy %} · {{ active_proxy.display_name }}{% endif %}</span>
                 </div>
             </a>
@@ -109,7 +109,7 @@
 
     <footer class="site-footer">
         <div class="container">
-            <div class="small">&copy; {{ current_year }} Squid Flask Proxy</div>
+            <div class="small">&copy; {{ current_year }} Docker Proxy</div>
         </div>
     </footer>
 </body>

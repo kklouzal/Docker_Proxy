@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from services.health_checks import ErrorFormatter, annotate_service_target, build_clamav_health, check_clamd, check_icap_service, check_local_listener, check_tcp, is_local_host, resolve_host_port, send_sample_respmod_to, test_clamd_eicar
+from services.health_checks import ErrorFormatter, annotate_service_target, build_clamav_health, check_clamd, check_icap_service, check_local_listener, is_local_host, resolve_host_port, send_sample_respmod_to, test_clamd_eicar
 
 
 def _resolve_host_port_override(

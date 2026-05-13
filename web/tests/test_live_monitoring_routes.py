@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from .live_test_helpers import LiveStackClient, admin_client, query_params, unique_domain
+from .live_test_helpers import LiveStackClient, query_params, unique_domain
 
 
 pytestmark = pytest.mark.live

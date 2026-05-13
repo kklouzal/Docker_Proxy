@@ -13,7 +13,6 @@ from .live_test_helpers import (
     LIVE_CONFIG,
     LiveStackClient,
     active_certificate_bundle,
-    admin_client,
     latest_certificate_apply,
     query_params,
     wait_for_certificate_apply,

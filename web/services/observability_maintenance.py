@@ -151,7 +151,7 @@ def clear_observability_logs(*, optimize: bool = False) -> Dict[str, Any]:
                     maintenance="truncated",
                 )
             )
-        except DATABASE_ERRORS as exc:
+        except DATABASE_ERRORS:
             status, deleted, detail = _best_effort_delete_fallback(table)
             total_deleted += deleted
             row = ObservabilityLogTableResult(
@@ -164,7 +164,7 @@ def clear_observability_logs(*, optimize: bool = False) -> Dict[str, Any]:
             table_results.append(row)
             if status == "failed":
                 failed.append(row)
-        except Exception as exc:
+        except Exception:
             status, deleted, detail = _best_effort_delete_fallback(table)
             total_deleted += deleted
             row = ObservabilityLogTableResult(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from .live_test_helpers import LiveStackClient, admin_client, live_stack_ready
+from .live_test_helpers import LiveStackClient
 
 
 pytestmark = pytest.mark.live

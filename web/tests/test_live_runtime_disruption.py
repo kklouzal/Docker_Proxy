@@ -7,11 +7,9 @@ import pytest
 from .live_test_helpers import (
     LIVE_CONFIG,
     LiveStackClient,
-    admin_client,
     management_auth_headers,
     resolve_url,
     wait_for_json_url,
-    wait_for_proxy_fixture_response,
     wait_for_proxy_management_payload,
 )
 

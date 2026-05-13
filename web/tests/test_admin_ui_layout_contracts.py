@@ -110,6 +110,26 @@ def test_proxy_management_lives_in_context_strip_not_top_nav() -> None:
     assert ">Proxies</a>" not in html
 
 
+def test_layout_uses_docker_proxy_visible_branding_and_titles() -> None:
+    html = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
+
+    assert "Docker Proxy" in html
+    assert "Squid Flask Proxy" not in html
+    assert "{% block title %}Docker Proxy{% endblock %}" in html
+    assert 'aria-label="Docker Proxy home"' in html
+
+
+def test_policy_requests_template_has_accessible_review_forms() -> None:
+    html = (TEMPLATES / "requests.html").read_text(encoding="utf-8")
+
+    assert "Policy Requests | Docker Proxy" in html
+    assert 'aria-labelledby="pending-requests-heading"' in html
+    assert 'aria-label="Review request {{ r.id }} for {{ r.domain }}"' in html
+    assert 'for="admin-note-{{ r.id }}"' in html
+    assert 'for="duration-seconds-{{ r.id }}"' in html
+    assert 'aria-label="Revoke exception {{ e.id }} for {{ e.domain }}"' in html
+
+
 def test_admin_dockerfile_packages_observability_maintenance_service() -> None:
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile.admin").read_text(encoding="utf-8")
 

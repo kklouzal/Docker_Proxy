@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
 
 from .mysql_test_utils import configure_test_mysql_env, ensure_proxy_runtime_import_path, ensure_web_import_path
@@ -12,7 +11,8 @@ def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path):
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore
 
-    store = PolicyRequestStore(); store.init_db()
+    store = PolicyRequestStore()
+    store.init_db()
     req = store.create_request(proxy_id="Edge A!!", client_ip="192.168.1.55", request_url="https://Bad.Example/path", domain="BAD.example:443", category="adult", method="get", user_note=" please\nallow ")
     assert req.proxy_id == "edge-a"
     assert req.domain == "bad.example"
@@ -129,7 +129,8 @@ def test_policy_request_store_rejects_invalid_scope_and_filters_active_exception
     configure_test_mysql_env(tmp_path / "policy-request-filters")
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore, normalize_block_type, normalize_client_ip, normalize_domain
-    store = PolicyRequestStore(); store.init_db()
+    store = PolicyRequestStore()
+    store.init_db()
     assert normalize_client_ip("192.168.1.20, 10.0.0.9") == "192.168.1.20"
     assert normalize_client_ip("not an ip") == ""
     assert normalize_domain("https://Mixed.Example:443/path") == "mixed.example"
@@ -160,7 +161,8 @@ def test_policy_request_store_state_transitions_are_one_way(tmp_path):
     configure_test_mysql_env(tmp_path / "policy-request-transitions")
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore
-    store=PolicyRequestStore(); store.init_db()
+    store=PolicyRequestStore()
+    store.init_db()
     rejected=store.create_request(proxy_id="edge-a",client_ip="192.168.1.55",request_url="https://reject.example/",domain="reject.example")
     store.close_request(rejected.id,reviewer="admin",status="rejected",admin_note="no")
     assert store.list_requests(statuses=["rejected"])[0].id == rejected.id

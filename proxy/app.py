@@ -208,7 +208,15 @@ def manage_health() -> Any:
 @_require_management_auth
 def manage_sync() -> Any:
     payload = request.get_json(silent=True) or {}
-    result = _runtime().sync_from_db(force=bool(payload.get("force")))
+    operation_id = None
+    if payload.get("operation_id") is not None:
+        try:
+            operation_id = int(payload.get("operation_id") or 0)
+        except Exception:
+            return jsonify({"ok": False, "detail": "operation_id must be an integer."}), 400
+        if operation_id <= 0:
+            return jsonify({"ok": False, "detail": "operation_id must be a positive integer."}), 400
+    result = _runtime().sync_from_db(force=bool(payload.get("force")), operation_id=operation_id)
     return jsonify(result), (200 if result.get("ok") else 409)
 
 

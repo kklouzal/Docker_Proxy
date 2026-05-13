@@ -10,7 +10,6 @@ import pytest
 from .live_test_helpers import (
     LIVE_CONFIG,
     LiveStackClient,
-    admin_client,
     query_params,
     unique_domain,
     unique_token,
@@ -596,7 +595,8 @@ def test_live_policy_exception_request_public_submission_and_admin_lifecycle(adm
     from services.policy_requests import get_policy_request_store  # type: ignore
     domain=unique_domain("policy-request")
     note=unique_token("policy_note")
-    store=get_policy_request_store(); store.init_db()
+    store=get_policy_request_store()
+    store.init_db()
     before_ids={r.id for r in store.list_requests(limit=1000)}
     submit_response=admin_client.proxy_public_request(
         "/policy-request", method="POST",

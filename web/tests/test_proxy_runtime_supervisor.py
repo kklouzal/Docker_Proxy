@@ -1024,8 +1024,8 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
         def requeue_stale_applying(self, proxy_id):
             calls.append(("requeue", proxy_id))
 
-        def claim_pending(self, proxy_id, *, limit):
-            calls.append(("claim", (proxy_id, limit)))
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            calls.append(("claim", (proxy_id, limit, operation_id)))
             return [op]
 
         def mark_many(self, operations, *, status, detail):
@@ -1039,6 +1039,6 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
     assert result["ok"] is True
     assert calls == [
         ("requeue", "edge-a"),
-        ("claim", ("edge-a", 100)),
+        ("claim", ("edge-a", 100, None)),
         ("mark", ([op], "applied", "runtime reconciled")),
     ]

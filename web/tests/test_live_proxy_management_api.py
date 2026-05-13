@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, _live_poll_sleep, active_config_text, live_stack_ready, wait_for_proxy_management_payload
+from .live_test_helpers import LIVE_CONFIG, LiveStackClient, _live_poll_sleep, active_config_text, wait_for_proxy_management_payload
 
 
 pytestmark = pytest.mark.live

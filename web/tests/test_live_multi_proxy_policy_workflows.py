@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, admin_client, query_params, unique_domain, unique_token, wait_for_proxy_inventory, wait_for_remote_proxy_management_payload, with_proxy_id
+from .live_test_helpers import LIVE_CONFIG, LiveStackClient, query_params, unique_domain, unique_token, wait_for_proxy_inventory, wait_for_remote_proxy_management_payload, with_proxy_id
 
 
 pytestmark = pytest.mark.live

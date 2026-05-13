@@ -1413,14 +1413,14 @@ class ProxyRuntime:
         )
         return health
 
-    def sync_from_db(self, *, force: bool = False) -> Dict[str, Any]:
+    def sync_from_db(self, *, force: bool = False, operation_id: int | None = None) -> Dict[str, Any]:
         with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
             claimed_operations = []
             ledger = None
             try:
                 ledger = get_operation_ledger()
                 ledger.requeue_stale_applying(self.proxy_id)
-                claimed_operations = ledger.claim_pending(self.proxy_id, limit=100)
+                claimed_operations = ledger.claim_pending(self.proxy_id, limit=100, operation_id=operation_id)
             except Exception:
                 claimed_operations = []
                 ledger = None

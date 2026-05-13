@@ -346,7 +346,6 @@ class SquidController(_CoreSquidController):
         sslcrtd_children_startup = int_value("sslcrtd_children_startup", min(sslcrtd_children, 2), minimum=0)
         sslcrtd_children_idle = int_value("sslcrtd_children_idle", 1, minimum=1)
         sslcrtd_children_queue_size = int_value("sslcrtd_children_queue_size", max(32, sslcrtd_children * 8), minimum=1)
-        dynamic_cert_mem_cache_size_mb = int_value("dynamic_cert_mem_cache_size_mb", 128, minimum=0)
         tls_outgoing_options_line = self._validate_single_line_value(
             str(options.get("tls_outgoing_options_line") or "min-version=1.2 options=NO_SSLv3"),
             "tls_outgoing_options",

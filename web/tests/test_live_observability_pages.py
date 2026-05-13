@@ -4,7 +4,6 @@ import pytest
 
 from .live_test_helpers import (
     LiveStackClient,
-    admin_client,
     live_client_ip,
     unique_token,
     wait_for_admin_contains,

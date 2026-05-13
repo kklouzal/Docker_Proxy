@@ -39,14 +39,16 @@ class _Runtime:
 
     def __init__(self):
         self.sync_force = None
+        self.sync_operation_id = None
         self.validation_text = None
         self.rollback_reason = None
 
     def collect_health(self):
         return {"ok": True, "status": "healthy", "proxy_id": self.proxy_id, "services": {}, "stats": {}}
 
-    def sync_from_db(self, *, force=False):
+    def sync_from_db(self, *, force=False, operation_id=None):
         self.sync_force = force
+        self.sync_operation_id = operation_id
         return {"ok": False, "detail": "sync failed"}
 
     def validate_config_text(self, config_text: str):
@@ -127,7 +129,7 @@ def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> N
     client = proxy_app.app.test_client()
     headers = {"Authorization": "Bearer secret"}
 
-    sync = _management_post(client, "/api/manage/sync", json={"force": True}, headers=headers)
+    sync = _management_post(client, "/api/manage/sync", json={"force": True, "operation_id": 42}, headers=headers)
     validate = _management_post(client, "/api/manage/config/validate", json={"config_text": "bad\n"}, headers=headers)
     rollback = _management_post(client, "/api/manage/config/rollback", json={"reason": "bad apply"}, headers=headers)
     cache = _management_post(client, "/api/manage/cache/clear", json={}, headers=headers)
@@ -137,6 +139,7 @@ def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> N
     assert sync.status_code == 409
     assert sync.get_json()["detail"] == "sync failed"
     assert runtime.sync_force is True
+    assert runtime.sync_operation_id == 42
     assert validate.status_code == 200
     assert validate.get_json()["detail"] == "parse failed"
     assert runtime.validation_text == "bad\n"
@@ -145,6 +148,22 @@ def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> N
     assert cache.status_code == 500
     assert eicar.status_code == 503
     assert icap.status_code == 503
+
+
+def test_proxy_management_sync_rejects_invalid_operation_id(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    response = _management_post(client, "/api/manage/sync", json={"operation_id": "not-an-int"}, headers=headers)
+
+    assert response.status_code == 400
+    assert response.get_json()["ok"] is False
+    assert "operation_id" in response.get_json()["detail"]
+    assert runtime.sync_operation_id is None
 
 
 def test_proxy_management_health_degrades_without_leaking_traceback(monkeypatch) -> None:
