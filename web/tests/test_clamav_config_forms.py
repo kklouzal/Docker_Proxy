@@ -10,6 +10,38 @@ def _add_web_path() -> None:
         sys.path.insert(0, str(web_root))
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _directives(config_text: str) -> dict[str, str]:
+    directives: dict[str, str] = {}
+    for raw_line in config_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or not line.startswith("virus_scan."):
+            continue
+        key, value = line.split(None, 1)
+        directives[key] = value
+    return directives
+
+
+def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract() -> None:
+    _add_web_path()
+    from services.clamav_config_forms import DEFAULTS, normalize_clamav_options, render_virus_scan_config
+
+    options = normalize_clamav_options()
+
+    assert options["clamav_fail_mode"] == "open"
+    assert options["virus_scan_start_send_percent_after"] == "1K"
+    assert options["virus_scan_send_percent_data"] == 99
+    assert DEFAULTS["virus_scan_start_send_percent_after"] == "1K"
+
+    rendered = render_virus_scan_config()
+    assert "virus_scan.StartSendPercentDataAfter 1K" in rendered
+    assert "virus_scan.SendPercentData 99" in rendered
+    assert "virus_scan.PassOnError on" in rendered
+
+
 def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
     _add_web_path()
     from services.clamav_config_forms import (
@@ -43,6 +75,19 @@ def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
     assert "virus_scan.DefaultEngine clamd" in rendered
 
 
+
+def test_packaged_virus_scan_config_matches_schema_streaming_defaults() -> None:
+    _add_web_path()
+    from services.clamav_config_forms import render_virus_scan_config
+
+    packaged = _directives((_repo_root() / "docker" / "virus_scan.conf").read_text(encoding="utf-8"))
+    rendered = _directives(render_virus_scan_config())
+
+    assert packaged["virus_scan.StartSendPercentDataAfter"] == rendered["virus_scan.StartSendPercentDataAfter"] == "1K"
+    assert packaged["virus_scan.SendPercentData"] == rendered["virus_scan.SendPercentData"] == "99"
+    assert packaged["virus_scan.PassOnError"] == rendered["virus_scan.PassOnError"] == "on"
+
+
 def test_squid_controller_materializes_clamav_runtime_files(tmp_path, monkeypatch) -> None:
     _add_web_path()
     from services.clamav_config_forms import apply_clamav_options_to_config
@@ -66,4 +111,6 @@ def test_squid_controller_materializes_clamav_runtime_files(tmp_path, monkeypatc
     assert "avrespmod bypass=off" in icap_path.read_text(encoding="utf-8")
     virus_conf = virus_path.read_text(encoding="utf-8")
     assert "virus_scan.PassOnError off" in virus_conf
+    assert "virus_scan.SendPercentData 99" in virus_conf
+    assert "virus_scan.StartSendPercentDataAfter 1K" in virus_conf
     assert "virus_scan.MaxObjectSize 64M" in virus_conf

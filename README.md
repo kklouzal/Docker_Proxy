@@ -528,7 +528,7 @@ Topology / startup behavior:
 - The local AV c-icap instance talks to a remote ClamAV daemon at `CLAMD_HOST:CLAMD_PORT`.
 - The AV instance does not write a per-transaction access log by default; only the adblock REQMOD instance keeps request logging for the UI/event pipeline.
 - Squid only routes `GET` response bodies through the AV RESPMOD path by default; `HEAD` responses are no longer adapted because they do not carry a body to scan.
-- The bundled `virus_scan` settings start streaming after `32K` and allow up to `99%` of already-received data to flow while the scan continues, which keeps browsing responsive while still reserving a final tail for the scanner to complete before the client receives 100% of the payload.
+- The bundled `virus_scan` settings start streaming after `1K` and allow up to `99%` of already-received data to flow while the scan continues, so browser downloads show progress almost immediately while still reserving a final tail for the scanner to complete before the client receives 100% of the payload.
 
 Remote ClamAV host:
 - Run `clamd` (and optional `freshclam`) on a separate trusted host/container.
