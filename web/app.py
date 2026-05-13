@@ -1278,6 +1278,9 @@ def _handle_webfilter_post(store: Any, tab: str):
     if action == 'save':
         enabled = request.form.get('enabled') == 'on'
         source_url = (request.form.get('source_url') or '').strip()
+        source_provider = (request.form.get('source_provider') or 'auto').strip().lower()
+        if source_provider not in ('auto', 'ut1', 'category-dir', 'csv'):
+            source_provider = 'auto'
         categories = [c.strip() for c in request.form.getlist('categories') if (c or '').strip()]
 
         if enabled and not source_url:
@@ -1288,7 +1291,7 @@ def _handle_webfilter_post(store: Any, tab: str):
             if parsed.scheme not in ('http', 'https'):
                 return _redirect_to('webfilter', tab='categories', err_source='1')
 
-        store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories)
+        store.set_settings(enabled=enabled, source_url=source_url, blocked_categories=categories, source_provider=source_provider)
         return _redirect_after_policy_refresh('webfilter', store, force=True, tab='categories')
 
     if action == 'whitelist_add':

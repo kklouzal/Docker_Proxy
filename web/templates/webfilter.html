@@ -122,6 +122,7 @@
       <input type="hidden" name="tab" value="categories">
       <input type="hidden" name="action" value="save">
       <input type="hidden" name="source_url" value="{{ feed_url }}">
+      <input type="hidden" name="source_provider" value="{{ settings.source_provider or 'auto' }}">
 
       <div class="card-header">
         <div>
@@ -223,6 +224,9 @@
           <div class="kv">
             <div class="k">Source URL</div>
             <div class="v"><span class="mono text-break">{{ feed_url }}</span></div>
+
+            <div class="k">Provider</div>
+            <div class="v"><span class="badge">{{ settings.source_provider or 'auto' }}</span></div>
 
             <div class="k">Last update</div>
             <div class="v">{{ fmt_ts(settings.last_success) if settings.last_success else 'never' }}</div>
