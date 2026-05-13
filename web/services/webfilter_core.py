@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import threading
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 
 from services.db import connect, table_exists
+from services.domain_normalization import looks_like_domain as _looks_like_host, normalize_domain as _norm_domain
+from services.errors import public_error_message
 from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_int as _env_int, now_ts as _now
@@ -31,14 +32,10 @@ _DEFAULT_BLOCKED_CATEGORIES: List[str] = [
     "stalkerware",
 ]
 
-_HOST_RE = re.compile(
-    r"^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
-    re.IGNORECASE,
-)
-
 _DEFAULTS: dict[str, str] = {
     "enabled": "0",
     "source_url": _DEFAULT_SOURCE_URL,
+    "source_provider": "auto",
     "blocked_categories": ",".join(_DEFAULT_BLOCKED_CATEGORIES),
     "last_success": "0",
     "last_attempt": "0",
@@ -47,13 +44,14 @@ _DEFAULTS: dict[str, str] = {
 }
 
 _GLOBAL_SCOPE = "__global__"
-_GLOBAL_SETTINGS_KEYS = {"source_url", "last_success", "last_attempt", "last_error", "next_run_ts"}
+_GLOBAL_SETTINGS_KEYS = {"source_url", "source_provider", "last_success", "last_attempt", "last_error", "next_run_ts"}
 
 
 @dataclass(frozen=True)
 class WebFilterSettings:
     enabled: bool
     source_url: str
+    source_provider: str
     blocked_categories: List[str]
     whitelist_domains: List[str]
     last_success: int
@@ -79,29 +77,6 @@ def _next_midnight_ts(now: Optional[int] = None) -> int:
 
 def _strip_comment(line: str) -> str:
     return (line or "").split("#", 1)[0].strip()
-
-
-def _norm_domain(value: str) -> str:
-    domain = (value or "").strip().lower().rstrip(".")
-    if domain.startswith("."):
-        domain = domain[1:]
-    if "://" in domain:
-        domain = domain.split("://", 1)[1]
-    domain = domain.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if "@" in domain:
-        domain = domain.split("@", 1)[1]
-    if ":" in domain:
-        host, port = domain.rsplit(":", 1)
-        if port.isdigit():
-            domain = host
-    return domain
-
-
-def _looks_like_host(value: str) -> bool:
-    domain = _norm_domain(value)
-    if not domain or "." not in domain or ".." in domain:
-        return False
-    return _HOST_RE.match(domain) is not None
 
 
 def _parent_domains(domain: str, *, max_levels: int = 6) -> List[str]:
@@ -181,6 +156,7 @@ class WebFilterStoreBase:
     ):
         self.squid_include_path = squid_include_path
         self.whitelist_path = whitelist_path
+        self.last_webcat_snapshot_status: tuple[bool, str] = (True, "")
 
     def _connect(self):
         return connect()
@@ -300,6 +276,9 @@ class WebFilterStoreBase:
     def _get_settings(self, conn) -> WebFilterSettings:
         enabled = self._get(conn, "enabled", "0") == "1"
         source_url = self._get(conn, "source_url", "")
+        source_provider = self._get(conn, "source_provider", "auto") or "auto"
+        if source_provider not in {"auto", "ut1", "category-dir", "csv"}:
+            source_provider = "auto"
         blocked_raw = self._get(conn, "blocked_categories", "")
         blocked = [item.strip() for item in blocked_raw.replace("\n", ",").split(",") if item.strip()]
         whitelist = self._get_whitelist_patterns(conn)
@@ -310,6 +289,7 @@ class WebFilterStoreBase:
         return WebFilterSettings(
             enabled=enabled,
             source_url=source_url,
+            source_provider=source_provider,
             blocked_categories=blocked,
             whitelist_domains=whitelist,
             last_success=last_success,
@@ -459,19 +439,23 @@ class WebFilterStoreBase:
             whitelist_text=whitelist_text,
         )
 
-    def _publish_webcat_snapshot_for_helper(self) -> None:
+    def _publish_webcat_snapshot_for_helper(self) -> tuple[bool, str]:
         try:
             expected_built_ts = self._webcat_built_ts()
             if expected_built_ts <= 0:
-                return
+                return True, "No web category snapshot build is available yet."
             from tools.webcat_acl import _Db as WebCatSnapshotDb  # type: ignore
 
-            WebCatSnapshotDb()._build_snapshot_from_db(expected_built_ts=expected_built_ts)
-        except Exception:
-            return
+            if WebCatSnapshotDb()._build_snapshot_from_db(expected_built_ts=expected_built_ts):
+                return True, "Web category snapshot is current."
+            return False, "Failed to publish local web category snapshot; helper will use the last usable snapshot if present."
+        except Exception as exc:
+            return False, public_error_message(exc, default="Failed to publish local web category snapshot.")
 
     def apply_squid_include(self) -> None:
-        self._publish_webcat_snapshot_for_helper()
+        snapshot_status = self._publish_webcat_snapshot_for_helper()
+        if snapshot_status is not None:
+            self.last_webcat_snapshot_status = snapshot_status
         state = self.render_materialized_state()
         write_managed_text_files(
             (self.whitelist_path, state.whitelist_text),

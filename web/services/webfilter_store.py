@@ -78,9 +78,13 @@ class WebFilterStore(WebFilterStoreBase):
         enabled: bool,
         source_url: str,
         blocked_categories: List[str],
+        source_provider: str = "auto",
     ) -> None:
         self.init_db()
         source = (source_url or "").strip()
+        provider = (source_provider or "auto").strip().lower()
+        if provider not in {"auto", "ut1", "category-dir", "csv"}:
+            provider = "auto"
         categories = [item.strip() for item in (blocked_categories or []) if (item or "").strip()]
         categories = self._resolve_category_aliases(categories)
         categories_csv = ",".join(sorted(set(categories)))
@@ -88,12 +92,14 @@ class WebFilterStore(WebFilterStoreBase):
         with self._connect() as conn:
             previous_enabled = self._get(conn, "enabled", "0") == "1"
             previous_source = self._get_global_setting_conn(conn, "source_url", "")
+            previous_provider = self._get_global_setting_conn(conn, "source_provider", "auto")
 
             self._set(conn, "enabled", "1" if enabled else "0")
             self._set(conn, "source_url", source)
+            self._set(conn, "source_provider", provider)
             self._set(conn, "blocked_categories", categories_csv)
 
-            if source and source != previous_source:
+            if source and (source != previous_source or provider != previous_provider):
                 self._set_meta(conn, "refresh_requested", "1")
                 self._set(conn, "next_run_ts", str(_next_midnight_ts(_now())))
             elif enabled and not previous_enabled:
@@ -266,17 +272,22 @@ class WebFilterStore(WebFilterStoreBase):
     def _refresh_requested_conn(self, conn) -> bool:
         return self._get_meta(conn, "refresh_requested", "0") == "1"
 
-    def _run_build(self, source_url: str) -> Tuple[bool, str]:
+    def _run_build(self, source_url: str, *, source_provider: str = "auto") -> Tuple[bool, str]:
         if not source_url:
             return False, "source_url is empty"
 
         try:
+            provider = (source_provider or "auto").strip().lower()
+            if provider not in {"auto", "ut1", "category-dir", "csv"}:
+                provider = "auto"
             proc = run(
                 [
                     "python3",
                     "/app/tools/webcat_build.py",
                     "--source-url",
                     source_url,
+                    "--provider",
+                    provider,
                     "--download-to",
                     "/var/lib/squid-flask-proxy/webcat/source",
                 ],
@@ -315,6 +326,7 @@ class WebFilterStore(WebFilterStoreBase):
                 self.init_db()
                 with self._connect() as conn:
                     source_url = self._get_global_setting_conn(conn, "source_url", _DEFAULT_SOURCE_URL)
+                    source_provider = self._get_global_setting_conn(conn, "source_provider", "auto")
                     next_ts = int(self._get_global_setting_conn(conn, "next_run_ts", "0") or 0)
                     refresh = self._refresh_requested_conn(conn)
                     if next_ts <= 0:
@@ -339,7 +351,7 @@ class WebFilterStore(WebFilterStoreBase):
                         sleep_seconds = min(enabled_sleep, float(remaining))
 
                 if do_build:
-                    ok, err = self._run_build(source_url)
+                    ok, err = self._run_build(source_url, source_provider=source_provider)
                     with self._connect() as conn:
                         self._record_attempt_conn(conn, ok=ok, err=err)
                         if refresh:

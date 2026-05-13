@@ -210,6 +210,7 @@ def _open_download_url(url: str, *, timeout: int, max_redirects: int = 5):
             _validate_download_url(current)
     raise ValueError(f"Download exceeded redirect limit ({max_redirects}).")
 
+
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     _validate_download_url(url)

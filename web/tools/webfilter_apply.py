@@ -22,6 +22,9 @@ def main() -> int:
     store = ProxyWebFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
+        snapshot_ok, snapshot_detail = getattr(store, "last_webcat_snapshot_status", (True, ""))
+        if not snapshot_ok:
+            print(f"[webfilter] warning: {snapshot_detail}", file=sys.stderr)
         return 0
     except Exception as e:
         print(f"[webfilter] apply failed: {type(e).__name__}: {e}", file=sys.stderr)
