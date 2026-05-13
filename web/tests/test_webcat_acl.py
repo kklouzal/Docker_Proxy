@@ -101,3 +101,51 @@ def test_webcat_acl_prefers_uri_host_over_dst_field():
     assert domain == '93.184.216.34'
     assert webcat_acl._norm_domain(url) == 'traffic-fixture'
     assert category == 'malware'
+
+
+def test_webcat_acl_discards_stale_remote_connection_after_lookup_error():
+    _add_web_to_path()
+
+    from tools import webcat_acl  # type: ignore
+
+    class BrokenConn:
+        def __init__(self):
+            self.closed = False
+
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("stale connection")
+
+        def close(self):
+            self.closed = True
+
+    db = webcat_acl._Db()
+    broken = BrokenConn()
+    db._conn = broken
+
+    assert db._lookup_categories_remote("example.com") == set()
+    assert broken.closed is True
+    assert db._conn is None
+
+
+def test_webcat_acl_discards_stale_remote_connection_after_metadata_error():
+    _add_web_to_path()
+
+    from tools import webcat_acl  # type: ignore
+
+    class BrokenConn:
+        def __init__(self):
+            self.closed = False
+
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("stale connection")
+
+        def close(self):
+            self.closed = True
+
+    db = webcat_acl._Db()
+    broken = BrokenConn()
+    db._conn = broken
+
+    assert db._load_remote_built_ts() == 0
+    assert broken.closed is True
+    assert db._conn is None

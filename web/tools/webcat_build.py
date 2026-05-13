@@ -435,16 +435,24 @@ def _build_db(
     return len(by_domain), len(pairs)
 
 
-def _collect(source_path: Path) -> Tuple[List[Tuple[str, str]], str, Dict[str, str]]:
+def _collect(source_path: Path, *, provider: str = "auto") -> Tuple[List[Tuple[str, str]], str, Dict[str, str]]:
+    provider = (provider or "auto").strip().lower()
+    if provider not in {"auto", "ut1", "category-dir", "csv"}:
+        raise ValueError(f"Unsupported webcat provider: {provider}")
     if source_path.is_dir():
-        # UT1 canonical layout: blacklists/<category>/domains
-        ut1_root = _find_ut1_blacklists_dir(source_path)
-        if ut1_root is not None:
-            pairs, aliases = _collect_from_ut1_blacklists_dedup(ut1_root)
-            return pairs, f"ut1:{ut1_root}", aliases
+        if provider in {"auto", "ut1"}:
+            # UT1 canonical layout: blacklists/<category>/domains
+            ut1_root = _find_ut1_blacklists_dir(source_path)
+            if ut1_root is not None:
+                pairs, aliases = _collect_from_ut1_blacklists_dedup(ut1_root)
+                return pairs, f"ut1:{ut1_root}", aliases
+            if provider == "ut1":
+                raise ValueError(f"UT1 provider selected but no blacklists/ directory was found under {source_path}")
 
-        pairs = _collect_from_category_dir(source_path)
-        return pairs, f"dir:{source_path}", {}
+        if provider in {"auto", "category-dir"}:
+            pairs = _collect_from_category_dir(source_path)
+            return pairs, f"dir:{source_path}", {}
+        raise ValueError(f"Provider {provider} expects a file source, not a directory: {source_path}")
 
     # Files: treat archives specially, else attempt CSV/TSV
     if source_path.is_file() and source_path.suffix.lower() == ".zip":
@@ -462,10 +470,13 @@ def _collect(source_path: Path) -> Tuple[List[Tuple[str, str]], str, Dict[str, s
                     pass
         _extract_zip(source_path, extracted)
         # Prefer UT1 layout if present.
-        ut1_root = _find_ut1_blacklists_dir(extracted)
-        if ut1_root is not None:
-            pairs, aliases = _collect_from_ut1_blacklists_dedup(ut1_root)
-            return pairs, f"ut1zip:{source_path}", aliases
+        if provider in {"auto", "ut1"}:
+            ut1_root = _find_ut1_blacklists_dir(extracted)
+            if ut1_root is not None:
+                pairs, aliases = _collect_from_ut1_blacklists_dedup(ut1_root)
+                return pairs, f"ut1zip:{source_path}", aliases
+            if provider == "ut1":
+                raise ValueError(f"UT1 provider selected but archive {source_path} did not contain blacklists/<category>/domains")
         pairs = _collect_from_category_dir(extracted)
         return pairs, f"zip:{source_path}", {}
 
@@ -491,14 +502,19 @@ def _collect(source_path: Path) -> Tuple[List[Tuple[str, str]], str, Dict[str, s
         _extract_tar(source_path, extracted)
 
         # UT1 layout may be nested; detect case-insensitively.
-        ut1_root = _find_ut1_blacklists_dir(extracted)
-        if ut1_root is not None:
-            pairs, aliases = _collect_from_ut1_blacklists_dedup(ut1_root)
-            return pairs, f"ut1tar:{source_path}", aliases
+        if provider in {"auto", "ut1"}:
+            ut1_root = _find_ut1_blacklists_dir(extracted)
+            if ut1_root is not None:
+                pairs, aliases = _collect_from_ut1_blacklists_dedup(ut1_root)
+                return pairs, f"ut1tar:{source_path}", aliases
+            if provider == "ut1":
+                raise ValueError(f"UT1 provider selected but archive {source_path} did not contain blacklists/<category>/domains")
 
         pairs = _collect_from_category_dir(extracted)
         return pairs, f"tar:{source_path}", {}
 
+    if provider == "ut1":
+        raise ValueError(f"UT1 provider expects a directory or archive source: {source_path}")
     pairs = _collect_from_csv(source_path)
     return pairs, f"file:{source_path}", {}
 
@@ -614,6 +630,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--source-url", default="", help="Optional URL to download (zip or csv)")
     ap.add_argument("--source-path", default="", help="Optional local path (dir, zip, csv)")
     ap.add_argument("--download-to", default="/var/lib/squid-flask-proxy/webcat/source", help="Where to save downloaded artifact")
+    ap.add_argument("--provider", default=os.environ.get("WEBCAT_PROVIDER", "auto"), choices=("auto", "ut1", "category-dir", "csv"), help="Feed parser/provider contract. auto keeps legacy layout detection; ut1 requires blacklists/<category>/domains.")
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     source_path_s = (args.source_path or "").strip()
@@ -629,7 +646,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # Guess filename
         name = "webcat_feed"
         # Prefer exact matches for common archive types.
-        lower_url = source_url.lower()
+        parsed_name = urlparse(source_url).path.lower()
+        lower_url = parsed_name or source_url.lower()
         if lower_url.endswith(".tar.gz"):
             name += ".tar.gz"
         elif lower_url.endswith(".tgz"):
@@ -651,7 +669,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     print(f"[webcat] collecting categories from {source_path}", file=sys.stderr)
-    pairs, source_label, aliases = _collect(source_path)
+    try:
+        pairs, source_label, aliases = _collect(source_path, provider=args.provider)
+    except ValueError as exc:
+        print(f"[webcat] {exc}", file=sys.stderr)
+        return 3
     if not pairs:
         print("[webcat] no domain/category pairs found (format mismatch?)", file=sys.stderr)
         return 3

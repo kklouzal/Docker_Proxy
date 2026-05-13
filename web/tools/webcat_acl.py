@@ -104,6 +104,15 @@ class _Db:
         except Exception:
             return None
 
+    def _discard_remote_conn(self):
+        conn = self._conn
+        self._conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def _cache_get(self, domain: str) -> Optional[Set[str]]:
         entry = self._cache.get(domain)
         if entry is None:
@@ -238,6 +247,7 @@ class _Db:
         try:
             row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",)).fetchone()
         except Exception:
+            self._discard_remote_conn()
             return 0
         try:
             return int(str(row[0]).strip()) if row and row[0] is not None and str(row[0]).strip() else 0
@@ -308,6 +318,7 @@ class _Db:
             os.replace(tmp_path, self._snapshot_path)
             return self._load_snapshot_from_disk(force=True)
         except Exception:
+            self._discard_remote_conn()
             return False
         finally:
             if local_db is not None:
@@ -378,6 +389,7 @@ class _Db:
                 params,
             ).fetchone()
         except Exception:
+            self._discard_remote_conn()
             return set()
         if row and row[0]:
             raw = str(row[0])

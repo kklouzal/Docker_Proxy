@@ -158,3 +158,36 @@ def test_download_rejects_hostname_resolving_private(monkeypatch: pytest.MonkeyP
     with tempfile.TemporaryDirectory(prefix="webcat_ssrf_") as td:
         with pytest.raises(ValueError, match="internal/localhost"):
             webcat_build._download("https://public.example/feed.csv", Path(td) / "feed.csv")
+
+
+def test_provider_ut1_rejects_non_ut1_archive() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_provider_") as td:
+        root = Path(td) / "payload"
+        root.mkdir()
+        (root / "adult.txt").write_text("example.com\n", encoding="utf-8")
+        tar_path = Path(td) / "category-dir.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as archive:
+            archive.add(root, arcname="")
+
+        with pytest.raises(ValueError, match="UT1 provider selected"):
+            webcat_build._collect(tar_path, provider="ut1")
+
+
+def test_provider_category_dir_can_parse_non_ut1_archive() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_provider_") as td:
+        root = Path(td) / "payload"
+        root.mkdir()
+        (root / "adult.txt").write_text("example.com\n", encoding="utf-8")
+        tar_path = Path(td) / "category-dir.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as archive:
+            archive.add(root, arcname="")
+
+        pairs, source, aliases = webcat_build._collect(tar_path, provider="category-dir")
+
+        assert pairs == [("example.com", "adult")]
+        assert source.startswith("tar:")
+        assert aliases == {}
