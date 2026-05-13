@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, admin_client, query_params, unique_domain, unique_token, wait_for_proxy_inventory, with_proxy_id
+from .live_test_helpers import LIVE_CONFIG, LiveStackClient, admin_client, query_params, unique_domain, unique_token, wait_for_proxy_inventory, wait_for_remote_proxy_management_payload, with_proxy_id
 
 
 pytestmark = pytest.mark.live
@@ -32,6 +32,15 @@ def multi_proxy_admin(admin_client: LiveStackClient) -> LiveStackClient:
     return admin_client
 
 
+def _sync_remote_proxy(client: LiveStackClient, *, force: bool = True) -> dict:
+    response = client.remote_proxy_management_post_json("/api/manage/sync", {"force": force}, timeout_seconds=120.0)
+    assert response.status == 200, response.text
+    payload = response.json()
+    assert payload.get("ok") is True, payload
+    wait_for_remote_proxy_management_payload()
+    return payload
+
+
 def test_live_remote_pac_profile_updates_only_selected_proxy_pac(multi_proxy_admin: LiveStackClient) -> None:
     profile_name = unique_token("remote_pac")
     direct_domain = unique_domain("remote-direct")
@@ -51,6 +60,7 @@ def test_live_remote_pac_profile_updates_only_selected_proxy_pac(multi_proxy_adm
     assert create_response.status == 200
     assert query_params(create_response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
     assert profile_name in create_response.text
+    _sync_remote_proxy(multi_proxy_admin)
 
     remote_pac = multi_proxy_admin.remote_pac_request(f"/proxy.pac?probe={profile_name}")
     local_pac = multi_proxy_admin.pac_request(f"/proxy.pac?probe={profile_name}")
@@ -69,6 +79,7 @@ def test_live_remote_pac_profile_updates_only_selected_proxy_pac(multi_proxy_adm
     )
     assert delete_response.status == 200
     assert query_params(delete_response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+    _sync_remote_proxy(multi_proxy_admin)
     assert direct_domain not in multi_proxy_admin.remote_pac_request(f"/proxy.pac?probe=deleted-{profile_name}").text
 
 

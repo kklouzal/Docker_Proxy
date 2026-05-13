@@ -176,6 +176,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert create_response.status == 200
     assert query_params(create_response.url).get("ok") == ["1"]
     assert profile_name in create_response.text
+    _sync_primary_proxy(admin_client)
 
     pac_response = admin_client.pac_request(f"/proxy.pac?probe={profile_name}")
     assert pac_response.status == 200
@@ -199,6 +200,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert update_response.status == 200
     assert query_params(update_response.url).get("ok") == ["1"]
     assert updated_name in update_response.text
+    _sync_primary_proxy(admin_client)
 
     updated_pac = admin_client.pac_request(f"/proxy.pac?probe={updated_name}")
     assert updated_domain in updated_pac.text
@@ -215,6 +217,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(admin_client
     assert delete_response.status == 200
     assert query_params(delete_response.url).get("ok") == ["1"]
     assert updated_name not in delete_response.text
+    _sync_primary_proxy(admin_client)
 
     fallback_pac = admin_client.pac_request(f"/proxy.pac?probe=deleted-{updated_name}")
     assert updated_domain not in fallback_pac.text
