@@ -833,19 +833,22 @@ class ProxyRuntime:
             details.append(restart_detail)
         return ok_restart, "\n".join([part for part in details if part]).strip()
 
-    def _publish_webcat_snapshot_for_policy_sync(self) -> None:
+    def _publish_webcat_snapshot_for_policy_sync(self) -> tuple[bool, str]:
         try:
             from tools.webcat_acl import _Db as WebCatSnapshotDb  # type: ignore
 
             snapshot_db = WebCatSnapshotDb()
             expected_built_ts = snapshot_db._load_remote_built_ts()
-            if expected_built_ts > 0:
-                snapshot_db._build_snapshot_from_db(expected_built_ts=expected_built_ts)
-        except Exception:
-            return
+            if expected_built_ts <= 0:
+                return True, "No web category snapshot build is available yet."
+            if snapshot_db._build_snapshot_from_db(expected_built_ts=expected_built_ts):
+                return True, "Web category snapshot is current."
+            return False, "Failed to publish local web category snapshot; proxy will use the last usable snapshot if present."
+        except Exception as exc:
+            return False, public_error_message(exc, default="Failed to publish local web category snapshot.")
 
     def sync_policy_state(self, *, force: bool = False) -> Dict[str, Any]:
-        self._publish_webcat_snapshot_for_policy_sync()
+        snapshot_ok, snapshot_detail = self._publish_webcat_snapshot_for_policy_sync()
         desired = self.policy_state_builder(self.proxy_id)
         current_sha = self._current_policy_sha()
         if not force and desired.policy_sha256 == current_sha:
@@ -855,7 +858,8 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "detail": "Proxy is already using the active policy materialization.",
+                "detail": "Proxy is already using the active policy materialization." if snapshot_ok else snapshot_detail,
+                "degraded": not snapshot_ok,
             }
 
         changed_paths: list[str] = []
@@ -883,7 +887,8 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "detail": "Policy materialization is already current.",
+                "detail": "Policy materialization is already current." if snapshot_ok else snapshot_detail,
+                "degraded": not snapshot_ok,
             }
 
         return {
@@ -892,7 +897,8 @@ class ProxyRuntime:
             "changed": True,
             "reload_required": True,
             "policy_sha256": desired.policy_sha256,
-            "detail": f"Updated {len(changed_paths)} local policy file(s).",
+            "detail": f"Updated {len(changed_paths)} local policy file(s)." if snapshot_ok else f"Updated {len(changed_paths)} local policy file(s); {snapshot_detail}",
+            "degraded": not snapshot_ok,
         }
 
     def sync_adblock_state(self, *, force: bool = False) -> Dict[str, Any]:
