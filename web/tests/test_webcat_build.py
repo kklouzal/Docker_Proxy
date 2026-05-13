@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import sys
 import tarfile
+import io
 import tempfile
 import zipfile
+import pytest
 from pathlib import Path
 
 
@@ -87,3 +89,72 @@ def test_zip_extraction_blocks_path_traversal() -> None:
         assert {category for _domain, category in pairs} >= {"adult", "drogue"}
         assert aliases == {}
         assert not os.path.exists(pwned_path)
+
+
+def test_download_rejects_oversized_content_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+
+    class _Headers:
+        def get(self, name: str) -> str | None:
+            return "11" if name == "Content-Length" else None
+
+    class _Response:
+        headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, _size: int) -> bytes:
+            raise AssertionError("body should not be read after oversized Content-Length")
+
+    monkeypatch.setenv("WEBCAT_MAX_DOWNLOAD_BYTES", "10")
+    monkeypatch.setattr(webcat_build.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+
+    with tempfile.TemporaryDirectory(prefix="webcat_download_") as td:
+        with pytest.raises(ValueError, match="Content-Length=11"):
+            webcat_build._download("https://example.com/feed.csv", Path(td) / "feed.csv")
+
+
+def test_tar_extraction_blocks_traversal_and_enforces_size_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_tar_duplicated_") as td:
+        tar_path = Path(td) / "payload.tar"
+        pwned_path = Path(td) / "pwned.txt"
+        with tarfile.open(tar_path, "w") as archive:
+            traversal = tarfile.TarInfo("../pwned.txt")
+            traversal_data = b"you should not see this"
+            traversal.size = len(traversal_data)
+            archive.addfile(traversal, io.BytesIO(traversal_data))
+
+            safe = tarfile.TarInfo("blacklists/adult/domains")
+            safe_data = b"example.com\n"
+            safe.size = len(safe_data)
+            archive.addfile(safe, io.BytesIO(safe_data))
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", "5")
+        with pytest.raises(ValueError, match="Extracted data exceeded limit"):
+            webcat_build._extract_tar(tar_path, Path(td) / "out")
+        assert not pwned_path.exists()
+
+
+def test_download_rejects_hostname_resolving_private(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [(webcat_build.socket.AF_INET, webcat_build.socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+
+    monkeypatch.setattr(webcat_build.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        webcat_build.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("urlopen should not be called")),
+    )
+
+    with tempfile.TemporaryDirectory(prefix="webcat_ssrf_") as td:
+        with pytest.raises(ValueError, match="internal/localhost"):
+            webcat_build._download("https://public.example/feed.csv", Path(td) / "feed.csv")

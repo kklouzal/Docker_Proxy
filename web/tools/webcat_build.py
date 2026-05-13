@@ -8,6 +8,7 @@ import re
 import sys
 import tarfile
 import urllib.request
+import socket
 import zipfile
 import shutil
 import hashlib
@@ -165,28 +166,45 @@ def _collect_from_csv(path: Path) -> List[Tuple[str, str]]:
     return pairs
 
 
+def _is_forbidden_download_ip(address: str) -> bool:
+    import ipaddress
+
+    ip = ipaddress.ip_address(address)
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_reserved
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def _is_internal_host(hostname: str) -> bool:
     """Check if hostname resolves to or appears to be an internal/localhost address."""
-    h = (hostname or "").strip().lower()
+    h = (hostname or "").strip().lower().rstrip(".")
     if not h:
         return True
     # Block common localhost patterns
     if h in ("localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"):
         return True
-    # Block loopback and link-local ranges
-    import ipaddress
     try:
-        ip = ipaddress.ip_address(h)
-        return (
-            ip.is_loopback or ip.is_private or ip.is_reserved
-            or ip.is_link_local or ip.is_multicast
-        )
+        return _is_forbidden_download_ip(h)
     except ValueError:
         pass
     # Block internal-looking hostnames
     if h.endswith(".local") or h.endswith(".internal") or h.endswith(".localhost"):
         return True
-    return False
+
+    try:
+        infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    except OSError:
+        return True
+
+    resolved = {info[4][0] for info in infos if info and info[4]}
+    return any(_is_forbidden_download_ip(address) for address in resolved)
 
 
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
@@ -207,12 +225,14 @@ def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
 
     total = 0
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        try:
-            cl = r.headers.get("Content-Length")
-            if cl is not None and int(cl) > max_bytes:
+        cl = r.headers.get("Content-Length")
+        if cl is not None:
+            try:
+                content_length = int(cl)
+            except (TypeError, ValueError):
+                content_length = None
+            if content_length is not None and content_length > max_bytes:
                 raise ValueError(f"Download too large (Content-Length={cl}).")
-        except Exception:
-            pass
 
         with open(tmp, "wb") as f:
             while True:
@@ -268,34 +288,24 @@ def _extract_zip(zip_path: Path, out_dir: Path) -> None:
 
 def _extract_tar(tar_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_root = out_dir.resolve()
     # Supports .tar, .tar.gz, .tgz
     max_bytes = int(os.environ.get("WEBCAT_MAX_EXTRACT_BYTES", str(2 * 1024 * 1024 * 1024)))
     if max_bytes <= 0:
         max_bytes = 2 * 1024 * 1024 * 1024
     total = 0
     with tarfile.open(tar_path, "r:*") as t:
-        # Prefer safe extraction mode when supported (avoids future default changes).
-        try:
-            t.extractall(out_dir, filter="data")
-            return
-        except TypeError:
-            pass
-
-        out_root = out_dir.resolve()
         for m in t.getmembers():
-            # Skip special file types
-            if m.ischr() or m.isblk() or m.isfifo() or m.isdev() or m.issym() or m.islnk():
+            # Preserve data-filter behavior: only directories and regular files are extracted.
+            if not (m.isdir() or m.isfile()):
                 continue
 
-            # Prevent tar bombs / runaway extraction
-            if m.isfile():
-                size = int(getattr(m, "size", 0) or 0)
-                total += size
-                if total > max_bytes:
-                    raise ValueError(f"Extracted data exceeded limit ({max_bytes} bytes).")
+            name = (m.name or "").replace("\\", "/")
+            if not name or name.startswith("/") or name.startswith("../") or "/../" in name:
+                continue
 
-            # Prevent path traversal / absolute paths
-            target = (out_dir / m.name).resolve()
+            # Prevent path traversal / absolute paths, including Windows drive paths.
+            target = (out_dir / name).resolve()
             try:
                 ok = str(target).startswith(str(out_root) + os.sep) or target == out_root
             except Exception:
@@ -303,7 +313,28 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
             if not ok:
                 continue
 
-            t.extract(m, out_dir)
+            if m.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+
+            size = int(getattr(m, "size", 0) or 0)
+            total += size
+            if total > max_bytes:
+                raise ValueError(f"Extracted data exceeded limit ({max_bytes} bytes).")
+
+            src = t.extractfile(m)
+            if src is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with src, open(target, "wb") as dst:
+                while True:
+                    chunk = src.read(512 * 1024)
+                    if not chunk:
+                        break
+                    total += max(0, len(chunk) - size)
+                    if total > max_bytes:
+                        raise ValueError(f"Extracted data exceeded limit ({max_bytes} bytes).")
+                    dst.write(chunk)
 
 
 def _connect():
