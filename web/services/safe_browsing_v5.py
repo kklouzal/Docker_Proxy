@@ -194,6 +194,22 @@ class SafeBrowsingSettings:
 
 
 @dataclass(frozen=True)
+class SafeBrowsingStatus:
+    enabled: bool
+    configured: bool
+    lists: tuple[str, ...]
+    list_count: int
+    prefix_count: int
+    cache_entries: int
+    positive_cache_entries: int
+    negative_cache_entries: int
+    last_success: int
+    last_attempt: int
+    last_error: str
+    next_run_ts: int
+
+
+@dataclass(frozen=True)
 class SafeBrowsingVerdict:
     verdict: str
     threat_type: str = ""
@@ -304,6 +320,55 @@ class SafeBrowsingStore:
                 return True, "", min_wait
         except Exception as exc:
             return False, public_error_message(exc, default="Google Safe Browsing list update failed.", max_len=500), 1800
+
+    def status(self, settings: SafeBrowsingSettings) -> SafeBrowsingStatus:
+        selected = self.normalize_lists(settings.lists)
+        try:
+            self.init_db()
+            now = _now()
+            placeholders = ",".join(["%s"] * len(selected))
+            with self._connect() as conn:
+                list_count = int(
+                    conn.execute(f"SELECT COUNT(*) FROM safe_browsing_hash_lists WHERE name IN ({placeholders})", selected).fetchone()[0] or 0
+                )
+                prefix_count = int(
+                    conn.execute(f"SELECT COUNT(*) FROM safe_browsing_hash_prefixes WHERE list_name IN ({placeholders})", selected).fetchone()[0] or 0
+                )
+                positive_cache = int(
+                    conn.execute("SELECT COUNT(*) FROM safe_browsing_full_hash_cache WHERE expires_ts >= %s", (now,)).fetchone()[0] or 0
+                )
+                negative_cache = int(
+                    conn.execute("SELECT COUNT(*) FROM safe_browsing_negative_cache WHERE expires_ts >= %s", (now,)).fetchone()[0] or 0
+                )
+            return SafeBrowsingStatus(
+                enabled=settings.enabled,
+                configured=bool(settings.api_key),
+                lists=selected,
+                list_count=list_count,
+                prefix_count=prefix_count,
+                cache_entries=positive_cache + negative_cache,
+                positive_cache_entries=positive_cache,
+                negative_cache_entries=negative_cache,
+                last_success=settings.last_success,
+                last_attempt=settings.last_attempt,
+                last_error=settings.last_error,
+                next_run_ts=settings.next_run_ts,
+            )
+        except Exception as exc:
+            return SafeBrowsingStatus(
+                enabled=settings.enabled,
+                configured=bool(settings.api_key),
+                lists=selected,
+                list_count=0,
+                prefix_count=0,
+                cache_entries=0,
+                positive_cache_entries=0,
+                negative_cache_entries=0,
+                last_success=settings.last_success,
+                last_attempt=settings.last_attempt,
+                last_error=settings.last_error or public_error_message(exc, default="Safe Browsing status unavailable.", max_len=300),
+                next_run_ts=settings.next_run_ts,
+            )
 
     def _apply_hash_list(self, conn, item: dict[str, object]) -> None:
         name = str(item.get("name") or "").strip()

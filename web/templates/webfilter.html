@@ -271,6 +271,18 @@
             <div class="k">Safe Browsing</div>
             <div class="v"><span class="badge {{ 'ok' if settings.safe_browsing_enabled else 'warn' }}">{{ 'Enabled' if settings.safe_browsing_enabled else 'Disabled' }}</span></div>
 
+            <div class="k">Safe Browsing API key</div>
+            <div class="v">{{ 'Configured' if safe_browsing_status and safe_browsing_status.configured else 'Not configured' }}</div>
+
+            <div class="k">Safe Browsing lists</div>
+            <div class="v">{{ safe_browsing_status.list_count if safe_browsing_status else 0 }}</div>
+
+            <div class="k">Safe Browsing prefixes</div>
+            <div class="v">{{ safe_browsing_status.prefix_count if safe_browsing_status else 0 }}</div>
+
+            <div class="k">Safe Browsing cache</div>
+            <div class="v">{{ safe_browsing_status.cache_entries if safe_browsing_status else 0 }}</div>
+
             <div class="k">Safe Browsing last update</div>
             <div class="v">{{ fmt_ts(settings.safe_browsing_last_success) if settings.safe_browsing_last_success else 'never' }}</div>
 

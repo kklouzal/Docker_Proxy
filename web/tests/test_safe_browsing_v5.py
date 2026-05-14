@@ -3,6 +3,8 @@ import hashlib
 
 from services.safe_browsing_v5 import (
     SafeBrowsingLocalChecker,
+    SafeBrowsingSettings,
+    SafeBrowsingStore,
     SafeBrowsingVerdict,
     canonicalize_url,
     decode_rice_delta_32,
@@ -87,3 +89,56 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch):
     assert safe_browsing_acl.main([]) == 0
     assert outputs == ["OK\n"]
     assert inserted[0]["category"] == "google-safe-browsing/social-engineering"
+
+
+def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch):
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def fetchone(self):
+            return (self.value,)
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            if sql.startswith("CREATE TABLE"):
+                return Result(0)
+            if "safe_browsing_hash_lists" in sql:
+                assert params == ("mw-4b", "se-4b")
+                return Result(2)
+            if "safe_browsing_hash_prefixes" in sql:
+                assert params == ("mw-4b", "se-4b")
+                return Result(42)
+            if "safe_browsing_full_hash_cache" in sql:
+                return Result(3)
+            if "safe_browsing_negative_cache" in sql:
+                return Result(5)
+            raise AssertionError(sql)
+
+    store = SafeBrowsingStore()
+    monkeypatch.setattr(store, "_connect", lambda: FakeConn())
+    settings = SafeBrowsingSettings(
+        enabled=True,
+        api_key="key",
+        lists=("mw-4b", "se-4b"),
+        last_success=10,
+        last_attempt=9,
+        last_error="",
+        next_run_ts=20,
+    )
+
+    status = store.status(settings)
+
+    assert status.enabled is True
+    assert status.configured is True
+    assert status.list_count == 2
+    assert status.prefix_count == 42
+    assert status.positive_cache_entries == 3
+    assert status.negative_cache_entries == 5
+    assert status.cache_entries == 8

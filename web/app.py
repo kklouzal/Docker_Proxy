@@ -2156,6 +2156,10 @@ def webfilter():
         return _handle_webfilter_post(store, tab)
 
     settings = store.get_settings()
+    try:
+        safe_browsing_status = store.safe_browsing_status()
+    except Exception:
+        safe_browsing_status = None
     available = store.list_available_categories()
     selected = set(settings.blocked_categories)
     whitelist_rows = store.list_whitelist()
@@ -2167,6 +2171,7 @@ def webfilter():
         available_categories=available,
         selected=selected,
         whitelist_rows=whitelist_rows,
+        safe_browsing_status=safe_browsing_status,
         window=window_i,
         window_label=_window_label(window_i),
         err_source=(request.args.get('err_source') == '1'),

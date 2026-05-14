@@ -333,6 +333,9 @@ class WebFilterStore(WebFilterStoreBase):
         with self._connect() as conn:
             return SafeBrowsingStore.settings_from_webfilter(conn, self._get_global_setting_conn)
 
+    def safe_browsing_status(self):
+        return SafeBrowsingStore().status(self._safe_browsing_settings())
+
     def _record_safe_browsing_status(self, ok: bool, err: str, next_run_ts: int) -> None:
         self.init_db()
         with self._connect() as conn:
