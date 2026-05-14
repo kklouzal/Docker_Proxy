@@ -1,4 +1,4 @@
-{% extends 'layout.html' %}
+﻿{% extends 'layout.html' %}
 {% from "_scope_macros.html" import scope_notice, scope_chip %}
 {% block title %}Web Filtering - Squid Flask Proxy{% endblock %}
 
@@ -296,9 +296,15 @@
           </div>
           {% endif %}
           {% if settings.last_error %}
+          {% if 'timed out' in settings.last_error|lower and not settings.last_success %}
+          <div class="alert warning">
+            The first category build timed out before completing. The feed builder now waits up to 30 minutes before declaring failure.
+          </div>
+          {% else %}
           <div class="alert error">
             Last refresh error: {{ settings.last_error }}
           </div>
+          {% endif %}
           {% endif %}
           <div class="surface-note small">The feed is downloaded automatically when filtering is first enabled and refreshed on a schedule in the background.</div>
         </div>
@@ -329,7 +335,7 @@
             </div>
           </div>
           <div class="surface-note small">
-            Blocked-request review and recent enforcement evidence now live in <strong>Observability → Security</strong>, leaving this page focused on rule configuration.
+            Blocked-request review and recent enforcement evidence now live in <strong>Observability â†’ Security</strong>, leaving this page focused on rule configuration.
           </div>
           <div class="actions">
             <a class="btn" href="{{ url_for('observability', pane='security', window=window if window is defined else observability_default_window) }}">Open security pane</a>
@@ -341,3 +347,4 @@
 {% endif %}
 
 {% endblock %}
+

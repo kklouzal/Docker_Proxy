@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import threading
@@ -302,7 +302,7 @@ class WebFilterStore(WebFilterStoreBase):
                     "/var/lib/squid-flask-proxy/webcat/source",
                 ],
                 capture_output=True,
-                timeout=300,
+                timeout=1800,
             )
             if proc.returncode != 0:
                 stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
@@ -422,3 +422,4 @@ __all__ = [
     "_parse_whitelist_lines",
     "_whitelist_match",
 ]
+
