@@ -197,6 +197,7 @@ The Compose files expose the common production knobs as environment variables. T
 | Database | `DATABASE_URL`, `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_CREATE_DATABASE`, `MYSQL_CONNECT_TIMEOUT`, `MYSQL_READ_TIMEOUT`, `MYSQL_WRITE_TIMEOUT`, `MYSQL_CONNECT_RETRIES`, `MYSQL_LOCK_WAIT_TIMEOUT`, `MYSQL_INNODB_LOCK_WAIT_TIMEOUT`, `MYSQL_SESSION_WAIT_TIMEOUT`, `MYSQL_TRANSACTION_ISOLATION`, `DB_POOL_ACQUIRE_TIMEOUT_SECONDS` |
 | Container logging | `DOCKER_LOG_DRIVER`, `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE` |
 | Security | `FLASK_SECRET_KEY`, `SESSION_COOKIE_SECURE`, `SESSION_TIMEOUT_HOURS`, `PROXY_MANAGEMENT_TOKEN`, `DISABLE_CSRF` for controlled test/dev bypasses |
+| Runtime health | `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_UI_CACHE_TTL_SECONDS`, `PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` |
 | Proxy identity | `DEFAULT_PROXY_ID`, `PROXY_INSTANCE_ID`, `PROXY_DISPLAY_NAME`, `PROXY_MANAGEMENT_URL`, `PROXY_PUBLIC_HOST`, `PROXY_PUBLIC_PAC_URL` |
 | Public ports | `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`, `PROXY_PUBLIC_HTTP_PROXY_PORT`, `SQUID_HTTP_PORT`, `SQUID_INTERCEPT_ENABLED`, `SQUID_INTERCEPT_PORT`, `PROXY_PUBLIC_INTERCEPT_PORT` |
 | Squid sizing | `SQUID_WORKERS`, `SQUID_CACHE_MEM_MB`, `PROXY_SHM_SIZE`, `SQUID_SSLCRTD_CHILDREN`, `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`, `SQUID_MAX_FILEDESCRIPTORS`, `ULIMIT_NOFILE` |
@@ -220,6 +221,8 @@ docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d --build
 The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, caps `innodb_redo_log_capacity=256M`, and expires binary logs after one day when binlogs are enabled. Operators who need verbose SQL logging or longer PITR retention should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
 
 For externally managed MySQL containers, apply equivalent MySQL settings and Docker log rotation on that host. Host-global Docker daemon rotation, if desired for every container on the host, still belongs in `/etc/docker/daemon.json`; this application can provide Compose defaults but cannot safely rewrite the host daemon policy.
+
+Older or disk-constrained hosts can legitimately take longer to answer management health requests. The Admin UI defaults to a 5 second management-health timeout and a 10 second UI cache, while the proxy runtime caches full health for 10 seconds. The ClamAV page uses a lightweight `/api/manage/health/clamav` management endpoint so AV c-icap and clamd status does not depend on the heavier full runtime health snapshot. Tune `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, and `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` for slower deployments.
 
 ## Persistence
 

@@ -158,6 +158,9 @@ class FakeProxyClient:
             },
         }
 
+    def get_clamav_health(self, proxy_id: object, *_, **__) -> dict[str, Any]:
+        return self.get_health(proxy_id)
+
     def validate_config(self, proxy_id: object, config_text: str) -> dict[str, Any]:
         self._maybe_fail()
         self.validated.append((str(proxy_id), config_text))

@@ -72,8 +72,30 @@ app = Flask(__name__)
 install_http_optimizations(app)
 _asset_version = str(int(time.time()))
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
-_PROXY_HEALTH_CACHE: Dict[tuple[str, float], tuple[float, Dict[str, Any]]] = {}
-_PROXY_HEALTH_TTL_SECONDS = 2.0
+_PROXY_HEALTH_CACHE: Dict[tuple[Any, ...], tuple[float, Dict[str, Any]]] = {}
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float((os.environ.get(name) or str(default)).strip() or default)
+    except Exception:
+        value = float(default)
+    return max(float(minimum), min(float(maximum), value))
+
+
+_PROXY_HEALTH_TTL_SECONDS = _env_float("PROXY_HEALTH_UI_CACHE_TTL_SECONDS", 10.0, minimum=0.0, maximum=120.0)
+_PROXY_OBSERVABILITY_TTL_SECONDS = _env_float("PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS", 15.0, minimum=0.0, maximum=300.0)
+_OBSERVABILITY_SUMMARY_CACHE: Dict[tuple[Any, ...], tuple[float, Dict[str, int]]] = {}
+
+
+def _proxy_health_timeout_seconds() -> float:
+    return _env_float("PROXY_HEALTH_UI_TIMEOUT_SECONDS", 1.5, minimum=0.5, maximum=30.0)
+
+
+def _proxy_clamav_health_timeout_seconds() -> float:
+    return _env_float("PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS", 5.0, minimum=0.5, maximum=30.0)
+
+
 _OBSERVABILITY_PANES = (
     'overview',
     'destinations',
@@ -947,6 +969,20 @@ def _build_observability_snapshot(window_i: int = OBSERVABILITY_DEFAULT_WINDOW) 
     return _present_observability_summary(diagnostic_summary=diagnostic_summary, ssl_summary=ssl_summary), _window_label(window_i)
 
 
+def _cached_observability_summary(proxy_id: str, window_i: int = OBSERVABILITY_DEFAULT_WINDOW) -> Dict[str, int]:
+    window_i = max(300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW))
+    key = (str(proxy_id or ''), window_i)
+    now = time.monotonic()
+    cached = _OBSERVABILITY_SUMMARY_CACHE.get(key)
+    if cached is not None:
+        cached_at, payload = cached
+        if now - cached_at <= max(0.0, float(_PROXY_OBSERVABILITY_TTL_SECONDS)):
+            return dict(payload)
+    summary, _label = _build_observability_snapshot(window_i)
+    _OBSERVABILITY_SUMMARY_CACHE[key] = (now, dict(summary))
+    return summary
+
+
 def _correlate_request_for_icap_events(diagnostic_store: Any, icap_events: List[Dict[str, Any]], *, icap_limit: int = 0) -> List[Dict[str, Any]]:
     for event in icap_events:
         event['correlated_request'] = None
@@ -1506,10 +1542,11 @@ def _handle_administration_post(store: Any, current_user: str):
 
 @app.route('/')
 def index():
-    observability, observability_window_label = _build_observability_snapshot(OBSERVABILITY_DEFAULT_WINDOW)
     proxy_id = get_proxy_id()
+    observability = _cached_observability_summary(proxy_id, OBSERVABILITY_DEFAULT_WINDOW)
+    observability_window_label = _window_label(OBSERVABILITY_DEFAULT_WINDOW)
     try:
-        health = _cached_proxy_health(proxy_id, timeout_seconds=1.5)
+        health = _cached_proxy_health(proxy_id, timeout_seconds=_proxy_health_timeout_seconds())
     except ProxyClientError as exc:
         proxy = get_proxy_registry().get_proxy(proxy_id)
         health = {
@@ -1589,7 +1626,6 @@ def api_squid_config():
 
 @app.route('/proxies', methods=['GET'])
 def proxies():
-
     registry = get_proxy_registry()
     proxies = registry.list_proxies()
     live_health = {
@@ -1606,7 +1642,7 @@ def proxies():
     active_proxy_id = get_proxy_id()
     if active_proxy_id in live_health:
         try:
-            live_health[active_proxy_id] = _cached_proxy_health(active_proxy_id, timeout_seconds=1.5)
+            live_health[active_proxy_id] = _cached_proxy_health(active_proxy_id, timeout_seconds=_proxy_health_timeout_seconds())
         except ProxyClientError as exc:
             active_proxy = next((proxy for proxy in proxies if proxy.proxy_id == active_proxy_id), None)
             live_health[active_proxy_id] = {
@@ -1617,21 +1653,11 @@ def proxies():
                 'services': {},
             }
     observability_by_proxy: Dict[str, Dict[str, Any]] = {}
-    for proxy in proxies:
-        token = set_proxy_id(proxy.proxy_id)
+    if active_proxy_id:
         try:
-            diagnostic_summary = get_diagnostic_store().activity_summary(since=int(time.time()) - OBSERVABILITY_DEFAULT_WINDOW)
-            ssl_summary = _present_ssl_error_rows(
-                get_ssl_errors_store().list_recent(since=int(time.time()) - 3600, search='', limit=100)
-            ).get('summary', {})
-            observability_by_proxy[proxy.proxy_id] = _present_observability_summary(
-                diagnostic_summary=diagnostic_summary,
-                ssl_summary=ssl_summary,
-            )
+            observability_by_proxy[active_proxy_id] = _cached_observability_summary(active_proxy_id, OBSERVABILITY_DEFAULT_WINDOW)
         except Exception:
-            observability_by_proxy[proxy.proxy_id] = _present_observability_summary()
-        finally:
-            reset_proxy_id(token)
+            observability_by_proxy[active_proxy_id] = _present_observability_summary()
     return render_template('fleet.html', proxies=proxies, live_health=live_health, observability_by_proxy=observability_by_proxy)
 
 
@@ -2230,11 +2256,31 @@ def _check_icap_av() -> Dict[str, Any]:
 
 
 def _clamav_remote_health(proxy_id: str) -> Dict[str, Any]:
+    timeout_seconds = _proxy_clamav_health_timeout_seconds()
+    key = (str(proxy_id or ''), 'clamav', float(timeout_seconds))
+    now = time.monotonic()
+    cached = _PROXY_HEALTH_CACHE.get(key)
+    if cached is not None:
+        cached_at, payload = cached
+        if now - cached_at <= max(0.0, float(_PROXY_HEALTH_TTL_SECONDS)):
+            return dict(payload)
     try:
-        return _cached_proxy_health(proxy_id, timeout_seconds=1.5)
+        payload = get_proxy_client().get_clamav_health(proxy_id, timeout_seconds=timeout_seconds)
+    except AttributeError:
+        return _cached_proxy_health(proxy_id, timeout_seconds=timeout_seconds)
     except ProxyClientError as exc:
+        if cached is not None:
+            stale_payload = dict(cached[1])
+            stale_payload.setdefault('detail', 'using recent cached ClamAV health after refresh failure')
+            stale_payload['_stale'] = True
+            return stale_payload
         proxy = get_proxy_registry().get_proxy(proxy_id)
-        return build_unavailable_runtime_health(str(exc), proxy_status=proxy.status if proxy else 'offline')
+        payload = build_unavailable_runtime_health(str(exc), proxy_status=proxy.status if proxy else 'offline')
+        payload['_unavailable_cached'] = True
+        _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
+        return payload
+    _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
+    return payload
 
 
 def _send_sample_av_icap() -> Dict[str, Any]:

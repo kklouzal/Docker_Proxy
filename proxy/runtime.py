@@ -212,13 +212,15 @@ class ProxyRuntime:
         self.adblock_compiled_dir = (os.environ.get("ADBLOCK_COMPILED_DIR") or self.adblock_artifacts.compiled_dir).strip() or self.adblock_artifacts.compiled_dir
         self.pac_render_dir = (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
         try:
-            self.health_cache_ttl_seconds = max(0.0, min(30.0, float((os.environ.get("PROXY_HEALTH_CACHE_TTL_SECONDS") or "3.0").strip() or "3.0")))
+            self.health_cache_ttl_seconds = max(0.0, min(120.0, float((os.environ.get("PROXY_HEALTH_CACHE_TTL_SECONDS") or "10.0").strip() or "10.0")))
         except Exception:
-            self.health_cache_ttl_seconds = 3.0
+            self.health_cache_ttl_seconds = 10.0
         self._health_cache_lock = threading.Lock()
         self._health_refresh_lock = threading.Lock()
         self._health_cache_ts = 0.0
         self._health_cache_value: Dict[str, Any] | None = None
+        self._navigation_health_cache_ts = 0.0
+        self._navigation_health_cache_value: Dict[str, Any] | None = None
 
     @property
     def proxy_id(self) -> str:
@@ -231,6 +233,8 @@ class ProxyRuntime:
         with self._health_cache_lock:
             self._health_cache_ts = 0.0
             self._health_cache_value = None
+            self._navigation_health_cache_ts = 0.0
+            self._navigation_health_cache_value = None
 
     def _current_config_sha(self) -> str:
         if self.services.current_config_sha_reader is not None:
@@ -1257,6 +1261,80 @@ class ProxyRuntime:
                 exc=exc,
                 interval_seconds=30.0,
             )
+
+    def collect_clamav_health(self) -> Dict[str, Any]:
+        started_mono = time.monotonic()
+        try:
+            probe_timeout = max(0.2, min(10.0, float((os.environ.get("PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS") or "1.5").strip() or "1.5")))
+        except Exception:
+            probe_timeout = 1.5
+        services = self.runtime_services_builder(error_formatter=str, icap_timeout=probe_timeout, tcp_timeout=probe_timeout)
+        clamd = services.get("clamd") or {"ok": False, "detail": "clamd health unavailable"}
+        av_icap = services.get("av_icap") or {"ok": False, "detail": "c-icap AV health unavailable"}
+        clamav = services.get("clamav") or {"ok": bool(clamd.get("ok")) and bool(av_icap.get("ok")), "detail": "ClamAV health unavailable"}
+        ok = bool(clamav.get("ok"))
+        return {
+            "ok": ok,
+            "status": "healthy" if ok else "degraded",
+            "proxy_id": self.proxy_id,
+            "proxy_status": "ClamAV health checked via lightweight management endpoint.",
+            "services": {
+                "clamav": clamav,
+                "av_icap": av_icap,
+                "clamd": clamd,
+            },
+            "health_scope": "clamav",
+            "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
+            "timestamp": int(time.time()),
+        }
+
+    def collect_navigation_health(self, *, force: bool = False) -> Dict[str, Any]:
+        now_mono = time.monotonic()
+        if not force and self.health_cache_ttl_seconds > 0:
+            with self._health_cache_lock:
+                cached = self._navigation_health_cache_value
+                if cached is not None and (now_mono - self._navigation_health_cache_ts) < self.health_cache_ttl_seconds:
+                    return cached
+
+        started_mono = time.monotonic()
+        stdout, stderr = self.controller.get_status()
+        proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
+        proxy_ok = not bool(stderr)
+        try:
+            listener_details = tuple(self.controller._http_listener_details())
+            listener_ports = tuple(int(item.get("port") or 0) for item in listener_details if int(item.get("port") or 0))
+            listener_ok = bool(self.controller._wait_for_http_listener(timeout=0.5))
+        except Exception:
+            listener_details = ()
+            listener_ports = ()
+            listener_ok = proxy_ok
+        services = {
+            "squid_listeners": {
+                "ok": bool(listener_ok),
+                "detail": _listener_mode_summary(listener_details) or "No Squid http_port listeners detected.",
+                "listeners": [dict(item) for item in listener_details],
+                "ports": list(listener_ports),
+            }
+        }
+        ok = proxy_ok and all(bool(item.get("ok")) for item in services.values())
+        result = {
+            "ok": ok,
+            "status": "healthy" if ok else "degraded",
+            "proxy_id": self.proxy_id,
+            "proxy_status": proxy_status,
+            "listener_ports": list(listener_ports),
+            "listener_details": [dict(item) for item in listener_details],
+            "stats": {},
+            "services": services,
+            "health_scope": "navigation",
+            "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
+            "timestamp": int(time.time()),
+        }
+        if self.health_cache_ttl_seconds > 0:
+            with self._health_cache_lock:
+                self._navigation_health_cache_value = result
+                self._navigation_health_cache_ts = time.monotonic()
+        return result
 
     def collect_health(self, *, force: bool = False) -> Dict[str, Any]:
         now_mono = time.monotonic()

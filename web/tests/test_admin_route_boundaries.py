@@ -32,6 +32,20 @@ class RecordingProxyClient:
     def clear_proxy_cache(self, proxy_id: object) -> dict[str, object]:
         return {"ok": True, "detail": "cache cleared"}
 
+    def get_clamav_health(self, proxy_id: object, *_, timeout_seconds: float | None = None, **__) -> dict[str, object]:
+        self.health_calls.append((f"clamav:{proxy_id}", timeout_seconds))
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": str(proxy_id),
+            "services": {
+                "clamav": {"ok": True, "detail": "clamav lightweight"},
+                "av_icap": {"ok": True, "detail": "ok"},
+                "clamd": {"ok": True, "detail": "ok"},
+            },
+            "health_scope": "clamav",
+        }
+
 
 @pytest.mark.parametrize(
     "path",
@@ -419,3 +433,38 @@ def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) 
     assert loaded.audit_store.records[-1]["ok"] is True
     assert "across the fleet" in loaded.audit_store.records[-1]["detail"]
     assert "2 tables" in loaded.audit_store.records[-1]["detail"]
+
+def test_clamav_page_uses_dedicated_clamav_health_endpoint(monkeypatch, tmp_path) -> None:
+    proxy_client = RecordingProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/clamav")
+
+    assert response.status_code == 200
+    assert proxy_client.health_calls == [("clamav:default", 5.0)]
+
+
+def test_fleet_observability_summary_is_not_repeated_per_proxy(monkeypatch, tmp_path) -> None:
+    class CountingDiagnosticStore:
+        def __init__(self) -> None:
+            self.activity_calls = 0
+
+        def activity_summary(self, **_kwargs):
+            self.activity_calls += 1
+            return {"requests": 7, "transactions": 3, "icap_events": 2}
+
+        def icap_summary(self, **_kwargs):
+            return {"events": 0, "avg_icap_time_ms": 0, "max_icap_time_ms": 0}
+
+    diagnostic_store = CountingDiagnosticStore()
+    registry = FakeRegistry(["default", "edge-2", "edge-3"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry, diagnostic_store=diagnostic_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies")
+
+    assert response.status_code == 200
+    assert diagnostic_store.activity_calls == 1

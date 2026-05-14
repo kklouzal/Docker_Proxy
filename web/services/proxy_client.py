@@ -105,11 +105,20 @@ class ProxyClient:
         except Exception as exc:
             raise ProxyClientError(f"Proxy management request failed: {exc} (proxy={normalize_proxy_id(proxy_id)}, url={url})") from exc
 
-    def get_health(self, proxy_id: object | None, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    def get_health(self, proxy_id: object | None, *, timeout_seconds: float = 5.0, full: bool = False) -> dict[str, Any]:
+        path = "/api/manage/health?full=1" if full else "/api/manage/health"
         return self._request(
             proxy_id,
             method="GET",
-            path="/api/manage/health",
+            path=path,
+            timeout_seconds=timeout_seconds,
+        ).data
+
+    def get_clamav_health(self, proxy_id: object | None, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+        return self._request(
+            proxy_id,
+            method="GET",
+            path="/api/manage/health/clamav",
             timeout_seconds=timeout_seconds,
         ).data
 

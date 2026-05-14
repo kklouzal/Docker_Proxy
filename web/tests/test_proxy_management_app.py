@@ -43,8 +43,11 @@ class _Runtime:
         self.validation_text = None
         self.rollback_reason = None
 
-    def collect_health(self):
-        return {"ok": True, "status": "healthy", "proxy_id": self.proxy_id, "services": {}, "stats": {}}
+    def collect_health(self, *, force=False):
+        return {"ok": True, "status": "healthy", "proxy_id": self.proxy_id, "services": {}, "stats": {}, "health_scope": "full"}
+
+    def collect_navigation_health(self, *, force=False):
+        return {"ok": True, "status": "healthy", "proxy_id": self.proxy_id, "services": {}, "stats": {}, "health_scope": "navigation"}
 
     def sync_from_db(self, *, force=False, operation_id=None):
         self.sync_force = force
@@ -75,7 +78,10 @@ class _Runtime:
 
 
 class _BrokenHealthRuntime(_Runtime):
-    def collect_health(self):
+    def collect_health(self, *, force=False):
+        raise RuntimeError("boom")
+
+    def collect_navigation_health(self, *, force=False):
         raise RuntimeError("boom")
 
 
@@ -242,3 +248,18 @@ def test_proxy_public_listener_rejects_management_and_management_listener_reject
     assert sync.is_json
     assert _management_get(client, "/proxy.pac").status_code == 404
     assert _management_get(client, "/wpad.dat").status_code == 404
+
+def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    navigation = _management_get(client, "/api/manage/health", headers=headers)
+    full = _management_get(client, "/api/manage/health?full=1", headers=headers)
+
+    assert navigation.status_code == 200
+    assert navigation.get_json()["health_scope"] == "navigation"
+    assert full.status_code == 200
+    assert full.get_json()["health_scope"] == "full"

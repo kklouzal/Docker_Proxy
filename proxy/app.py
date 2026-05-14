@@ -187,7 +187,14 @@ def public_policy_request() -> Any:
 def manage_health() -> Any:
     try:
         current_runtime = _runtime()
-        return jsonify(current_runtime.collect_health()), 200
+        full = str(request.args.get("full") or "").strip().lower() in {"1", "true", "yes", "full"}
+        force = str(request.args.get("force") or "").strip().lower() in {"1", "true", "yes"}
+        if full:
+            return jsonify(current_runtime.collect_health(force=force)), 200
+        collector = getattr(current_runtime, "collect_navigation_health", None)
+        if collector is not None:
+            return jsonify(collector(force=force)), 200
+        return jsonify(current_runtime.collect_health(force=force)), 200
     except Exception as exc:
         detail = public_error_message(exc, default="Proxy health collection failed.")
         return jsonify(
@@ -197,6 +204,30 @@ def manage_health() -> Any:
                 "proxy_id": getattr(runtime, "proxy_id", ""),
                 "proxy_status": detail,
                 "stats": {},
+                "services": {},
+                "state_errors": [detail],
+                "timestamp": int(time.time()),
+            }
+        ), 200
+
+
+@app.route("/api/manage/health/clamav", methods=["GET"])
+@_require_management_auth
+def manage_clamav_health() -> Any:
+    try:
+        current_runtime = _runtime()
+        collector = getattr(current_runtime, "collect_clamav_health", None)
+        if collector is None:
+            return jsonify(current_runtime.collect_health()), 200
+        return jsonify(collector()), 200
+    except Exception as exc:
+        detail = public_error_message(exc, default="Proxy ClamAV health collection failed.")
+        return jsonify(
+            {
+                "ok": False,
+                "status": "degraded",
+                "proxy_id": getattr(runtime, "proxy_id", ""),
+                "proxy_status": detail,
                 "services": {},
                 "state_errors": [detail],
                 "timestamp": int(time.time()),
