@@ -64,6 +64,11 @@ class _Db:
 
     def _connect(self):
         now = _now()
+        # Reuse only a pre-existing connection so older helper/test paths can
+        # discard stale handles explicitly; newly opened connections remain
+        # one-shot to avoid pinning broken MySQL sockets.
+        if self._conn is not None:
+            return self._conn
         # Retry open at most once per second if DB missing during startup.
         if now == self._last_open_attempt:
             return None
@@ -217,6 +222,7 @@ class _Db:
             row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",)).fetchone()
             return int(str(row[0]).strip()) if row and row[0] is not None and str(row[0]).strip() else 0
         except Exception:
+            self._discard_remote_conn()
             return 0
         finally:
             try:
