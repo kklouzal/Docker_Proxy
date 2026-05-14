@@ -57,7 +57,7 @@ def test_returning_connection_to_pool_rolls_back_any_open_transaction(monkeypatc
     db._return_connection(cfg, native)
 
     assert calls == ["rollback"]
-    assert any(bucket and bucket[-1][1] is native for bucket in db._pooled_connections.values())
+    assert any(state.idle and state.idle[-1][1] is native for state in db._pooled_connections.values())
     db.reset_mysql_ready_for_tests()
 
 
@@ -122,6 +122,46 @@ def test_new_native_connections_receive_session_guardrails(monkeypatch) -> None:
     assert ("SET SESSION wait_timeout=%s", (123,)) in statements
     assert any(sql == "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED" for sql, _params in statements)
     assert calls == ["rollback"]
+
+
+def test_open_native_connection_retries_transient_mysql_errors(monkeypatch) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    import services.db as db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    attempts = {"count": 0}
+
+    class NativeConnection:
+        def cursor(self):
+            class Cursor:
+                def execute(self, sql, params=()):
+                    return None
+            return Cursor()
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+        def ping(self, reconnect=False):
+            return None
+
+    def flaky_open(_cfg):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise pymysql.err.OperationalError(1040, "Too many connections")
+        return NativeConnection()
+
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "2")
+    monkeypatch.setenv("MYSQL_CONNECT_RETRY_DELAY_SECONDS", "0")
+    monkeypatch.setattr(db, "_open_native_connection", flaky_open)
+
+    native = db._retry_mysql_operation(lambda: db._open_native_connection(db.DatabaseConfig(host="db")))
+
+    assert attempts["count"] == 2
+    assert native is not None
 
 
 def test_ssl_errors_store_getter_tolerates_transient_database_init_failure(monkeypatch) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 from urllib.parse import unquote, urlparse
 
@@ -150,10 +150,16 @@ INTEGRITY_ERRORS: tuple[type[BaseException], ...] = (pymysql.IntegrityError,)  #
 OPERATIONAL_ERRORS: tuple[type[BaseException], ...] = (pymysql.OperationalError,)  # type: ignore[attr-defined]
 
 
+@dataclass
+class _PoolState:
+    idle: list[tuple[float, Any]] = field(default_factory=list)
+    active: int = 0
+
+
 _mysql_ready = False
 _mysql_ready_lock = threading.Lock()
-_pool_lock = threading.Lock()
-_pooled_connections: dict[tuple[str, int, str, str, str, str, int], list[tuple[float, Any]]] = {}
+_pool_condition = threading.Condition()
+_pooled_connections: dict[tuple[str, int, str, str, str, str, int, int, int], _PoolState] = {}
 
 
 def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
@@ -166,6 +172,53 @@ def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: in
     if maximum is not None:
         value = min(int(maximum), value)
     return value
+
+
+def _is_retryable_mysql_error(exc: BaseException) -> bool:
+    if not isinstance(exc, pymysql.MySQLError):
+        return False
+    code = None
+    try:
+        if getattr(exc, 'args', None):
+            code = int(exc.args[0])
+    except Exception:
+        code = None
+    return code in {1040, 2002, 2003, 2006, 2013, 1205, 1213}
+
+
+def _mysql_connect_retries() -> int:
+    return _env_int('MYSQL_CONNECT_RETRIES', 4, minimum=1, maximum=10)
+
+
+def _mysql_connect_retry_delay_seconds() -> float:
+    try:
+        return max(0.05, min(5.0, float((os.environ.get('MYSQL_CONNECT_RETRY_DELAY_SECONDS') or '0.2').strip() or '0.2')))
+    except Exception:
+        return 0.2
+
+
+def _pool_acquire_timeout_seconds() -> float:
+    try:
+        return max(1.0, min(600.0, float((os.environ.get('DB_POOL_ACQUIRE_TIMEOUT_SECONDS') or '30').strip() or '30')))
+    except Exception:
+        return 30.0
+
+
+def _retry_mysql_operation(operation):
+    attempts = _mysql_connect_retries()
+    base_delay = _mysql_connect_retry_delay_seconds()
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except Exception as exc:
+            last_exc = exc
+            if not _is_retryable_mysql_error(exc) or attempt >= attempts - 1:
+                raise
+            time.sleep(min(5.0, base_delay * (2 ** attempt)))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError('MySQL operation failed')
 
 
 def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
@@ -229,9 +282,9 @@ def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int, i
 
 def _pool_maxsize() -> int:
     try:
-        return max(0, min(16, int((os.environ.get("DB_POOL_SIZE") or "4").strip() or "4")))
+        return max(0, min(16, int((os.environ.get("DB_POOL_SIZE") or "1").strip() or "1")))
     except Exception:
-        return 4
+        return 1
 
 
 def _pool_max_idle_seconds() -> float:
@@ -264,70 +317,116 @@ def _close_native_connection(native: Any) -> None:
 
 
 def _clear_pooled_connections() -> None:
-    with _pool_lock:
+    with _pool_condition:
         buckets = list(_pooled_connections.values())
         _pooled_connections.clear()
     for bucket in buckets:
-        for _ts, native in bucket:
+        for _ts, native in bucket.idle:
             _close_native_connection(native)
 
 
 def _reap_pool_locked(now: float | None = None) -> None:
     current = time.monotonic() if now is None else float(now)
     max_idle = _pool_max_idle_seconds()
-    stale_keys: list[tuple[str, int, str, str, str, str, int]] = []
-    for key, bucket in _pooled_connections.items():
+    stale_keys: list[tuple[str, int, str, str, str, str, int, int, int]] = []
+    for key, state in _pooled_connections.items():
         keep: list[tuple[float, Any]] = []
-        for last_used, native in bucket:
+        for last_used, native in state.idle:
             if (current - float(last_used)) > max_idle:
                 _close_native_connection(native)
             else:
                 keep.append((last_used, native))
         if keep:
-            _pooled_connections[key] = keep[-_pool_maxsize():]
+            state.idle = keep[-_pool_maxsize():]
         else:
             stale_keys.append(key)
     for key in stale_keys:
         _pooled_connections.pop(key, None)
 
 
+def _release_pool_slot_locked(key: tuple[str, int, str, str, str, str, int, int, int]) -> None:
+    state = _pooled_connections.get(key)
+    if state is not None:
+        state.active = max(0, state.active - 1)
+        if state.active <= 0 and not state.idle:
+            _pooled_connections.pop(key, None)
+    _pool_condition.notify_all()
+
+
 def _checkout_connection(cfg: DatabaseConfig) -> Any:
     key = _pool_key(cfg)
-    with _pool_lock:
-        _reap_pool_locked()
-        bucket = _pooled_connections.get(key) or []
-        while bucket:
-            _last_used, native = bucket.pop()
-            _pooled_connections[key] = bucket
+    maxsize = _pool_maxsize()
+    if maxsize <= 0:
+        native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+        _configure_native_connection(native, cfg)
+        return native
+
+    deadline = time.monotonic() + _pool_acquire_timeout_seconds()
+    while True:
+        source = ''
+        native = None
+        with _pool_condition:
+            _reap_pool_locked()
+            state = _pooled_connections.setdefault(key, _PoolState())
+            while True:
+                if state.idle:
+                    _last_used, native = state.idle.pop()
+                    state.active += 1
+                    source = 'idle'
+                    break
+                if state.active < maxsize:
+                    state.active += 1
+                    source = 'new'
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise pymysql.OperationalError(1040, 'Database pool exhausted')
+                _pool_condition.wait(timeout=min(remaining, 0.25))
+                _reap_pool_locked()
+                state = _pooled_connections.setdefault(key, _PoolState())
+
+        if source == 'idle':
             try:
                 native.ping(reconnect=True)
                 _configure_native_connection(native, cfg)
                 return native
             except Exception:
                 _close_native_connection(native)
-        if not bucket:
-            _pooled_connections.pop(key, None)
-    native = _open_native_connection(cfg)
-    _configure_native_connection(native, cfg)
-    return native
+                with _pool_condition:
+                    _release_pool_slot_locked(key)
+                continue
+
+        try:
+            native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+            _configure_native_connection(native, cfg)
+            return native
+        except Exception:
+            with _pool_condition:
+                _release_pool_slot_locked(key)
+            raise
 
 
 def _return_connection(cfg: DatabaseConfig, native: Any) -> None:
-    if not _rollback_native_connection(native):
-        _close_native_connection(native)
-        return
     maxsize = _pool_maxsize()
     if maxsize <= 0:
         _close_native_connection(native)
         return
     key = _pool_key(cfg)
-    with _pool_lock:
-        _reap_pool_locked()
-        bucket = _pooled_connections.setdefault(key, [])
-        bucket.append((time.monotonic(), native))
-        while len(bucket) > maxsize:
-            _ts, old = bucket.pop(0)
-            _close_native_connection(old)
+    if not _rollback_native_connection(native):
+        _close_native_connection(native)
+        with _pool_condition:
+            _release_pool_slot_locked(key)
+        return
+    with _pool_condition:
+        state = _pooled_connections.setdefault(key, _PoolState())
+        state.active = max(0, state.active - 1)
+        if len(state.idle) < maxsize:
+            state.idle.append((time.monotonic(), native))
+        else:
+            _close_native_connection(native)
+        if state.active <= 0 and not state.idle:
+            _pooled_connections.pop(key, None)
+        _pool_condition.notify_all()
 
 
 def _env_bool(name: str, default: str = "0") -> bool:
@@ -395,24 +494,28 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
     with _mysql_ready_lock:
         if _mysql_ready or not cfg.create_database:
             return
-        native = pymysql.connect(  # type: ignore[call-arg]
-            host=cfg.host,
-            port=int(cfg.port),
-            user=cfg.user,
-            password=cfg.password,
-            charset=cfg.charset,
-            autocommit=True,
-            connect_timeout=int(cfg.connect_timeout),
-            read_timeout=int(cfg.read_timeout),
-            write_timeout=int(cfg.write_timeout),
-        )
-        try:
-            cur = native.cursor()
-            cur.execute(
-                f"CREATE DATABASE IF NOT EXISTS `{cfg.database}` CHARACTER SET {cfg.charset} COLLATE {cfg.charset}_unicode_ci"
+
+        def _create_database() -> None:
+            native = pymysql.connect(  # type: ignore[call-arg]
+                host=cfg.host,
+                port=int(cfg.port),
+                user=cfg.user,
+                password=cfg.password,
+                charset=cfg.charset,
+                autocommit=True,
+                connect_timeout=int(cfg.connect_timeout),
+                read_timeout=int(cfg.read_timeout),
+                write_timeout=int(cfg.write_timeout),
             )
-        finally:
-            native.close()
+            try:
+                cur = native.cursor()
+                cur.execute(
+                    f"CREATE DATABASE IF NOT EXISTS `{cfg.database}` CHARACTER SET {cfg.charset} COLLATE {cfg.charset}_unicode_ci"
+                )
+            finally:
+                native.close()
+
+        _retry_mysql_operation(_create_database)
         _mysql_ready = True
 
 

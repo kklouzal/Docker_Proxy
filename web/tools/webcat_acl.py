@@ -65,15 +65,11 @@ class _Db:
     def _connect(self):
         now = _now()
         # Retry open at most once per second if DB missing during startup.
-        if self._conn is not None:
-            return self._conn
         if now == self._last_open_attempt:
             return None
         self._last_open_attempt = now
         try:
-            conn = connect()
-            self._conn = conn
-            return conn
+            return connect()
         except Exception:
             return None
 
@@ -219,13 +215,14 @@ class _Db:
             return 0
         try:
             row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",)).fetchone()
-        except Exception:
-            self._discard_remote_conn()
-            return 0
-        try:
             return int(str(row[0]).strip()) if row and row[0] is not None and str(row[0]).strip() else 0
         except Exception:
             return 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _build_snapshot_from_db(self, *, expected_built_ts: int = 0) -> bool:
         lock_fd = self._acquire_snapshot_lock()
@@ -234,6 +231,7 @@ class _Db:
 
         tmp_path = self._snapshot_dir / f"webcat.sqlite.tmp-{os.getpid()}"
         local_db: sqlite3.Connection | None = None
+        remote_conn = None
         try:
             self._snapshot_dir.mkdir(parents=True, exist_ok=True)
             self._load_snapshot_from_disk(force=True)
@@ -294,6 +292,11 @@ class _Db:
             self._discard_remote_conn()
             return False
         finally:
+            if remote_conn is not None:
+                try:
+                    remote_conn.close()
+                except Exception:
+                    pass
             if local_db is not None:
                 try:
                     local_db.close()
@@ -353,6 +356,10 @@ class _Db:
             return set()
         candidates = list(_parent_domains(normalized))
         if not candidates:
+            try:
+                conn.close()
+            except Exception:
+                pass
             return set()
         placeholders = ",".join(["%s"] * len(candidates))
         params = tuple(candidates + candidates)
@@ -364,6 +371,11 @@ class _Db:
         except Exception:
             self._discard_remote_conn()
             return set()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
         if row and row[0]:
             raw = str(row[0])
             return {c for c in raw.split("|") if c}
