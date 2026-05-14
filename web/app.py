@@ -2062,7 +2062,7 @@ def ssl_errors_exclude():
             get_sslfilter_store().add_domain('nobump', domain)
         except Exception:
             pass
-        return _redirect_after_pac_refresh('observability', pane='ssl', q=domain)
+        return _redirect_after_policy_refresh('observability', get_sslfilter_store(), force=True, pane='ssl', q=domain)
     return _redirect_to('observability', pane='ssl', q=domain)
 
 

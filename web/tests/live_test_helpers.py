@@ -188,6 +188,17 @@ def _read_response(opener: Any, request: urllib.request.Request, *, timeout_seco
             body=exc.read(),
             headers=dict(exc.headers.items()),
         )
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, TimeoutError):
+            method = request.get_method()
+            url = getattr(request, "full_url", "") or str(request)
+            raise AssertionError(f"Timed out after {timeout_value:.1f}s while waiting for {method} {url}.") from exc
+        raise
+    except TimeoutError as exc:
+        method = request.get_method()
+        url = getattr(request, "full_url", "") or str(request)
+        raise AssertionError(f"Timed out after {timeout_value:.1f}s while waiting for {method} {url}.") from exc
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -609,6 +620,7 @@ class LiveStackClient:
         csrf_path: str = "/",
         include_csrf: bool = True,
         timeout_seconds: float | None = None,
+        follow_redirects: bool = True,
     ) -> HttpResponse:
         payload = dict(fields)
         if include_csrf and "csrf_token" not in payload:
@@ -620,6 +632,7 @@ class LiveStackClient:
             data=encoded,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout_seconds=timeout_seconds,
+            follow_redirects=follow_redirects,
         )
 
     def admin_post_multipart(

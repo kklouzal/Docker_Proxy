@@ -53,9 +53,11 @@ def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(
         "/ssl-errors/exclude",
         {"domain": ssl_domain},
         csrf_path="/observability?pane=ssl",
+        follow_redirects=False,
     )
-    assert ssl_exclude_response.status == 200
-    ssl_qs = query_params(ssl_exclude_response.url)
+    assert ssl_exclude_response.status in {302, 303}
+    ssl_location = ssl_exclude_response.headers.get("Location", "")
+    ssl_qs = query_params(ssl_location)
     assert ssl_qs.get("pane") == ["ssl"]
     assert ssl_qs.get("q") == [ssl_domain]
     assert ssl_domain in admin_client.admin_request("/sslfilter").text
@@ -70,10 +72,12 @@ def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(
             "domains_bulk": f"{bulk_domain_a}\n{bulk_domain_b}\n",
         },
         csrf_path="/sslfilter",
+        follow_redirects=False,
         timeout_seconds=90.0,
     )
-    assert bulk_response.status == 200
-    bulk_qs = query_params(bulk_response.url)
+    assert bulk_response.status in {302, 303}
+    bulk_location = bulk_response.headers.get("Location", "")
+    bulk_qs = query_params(bulk_location)
     assert bulk_qs.get("added") == ["2"]
     sslfilter_page = admin_client.admin_request("/sslfilter")
     assert bulk_domain_a in sslfilter_page.text

@@ -61,6 +61,22 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(monkeypatch,
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
+def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(monkeypatch, tmp_path) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(client, "/ssl-errors/exclude", {"domain": "Blocked.Example"})
+    _assert_redirect_success(response)
+
+    location = response.headers.get("Location", "")
+    assert "pane=ssl" in location
+    assert "q=blocked.example" in location
+    assert loaded.sslfilter_store.no_bump_domains == ["blocked.example"]
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "default"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+
+
 @pytest.mark.parametrize(
     ("path", "data", "expected_source_kind"),
     [
