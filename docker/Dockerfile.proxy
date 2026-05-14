@@ -116,6 +116,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/proxy_registry.py \
     web/services/proxy_sync.py \
     web/services/runtime_helpers.py \
+    web/services/safe_browsing_v5.py \
     web/services/squid_core.py \
     web/services/ssl_compatibility_presets.py \
     web/services/ssl_errors_store.py \
@@ -127,6 +128,7 @@ COPY web/services/adblock_artifacts.py \
 COPY web/tools/adblock_compile.py \
     web/tools/sslfilter_apply.py \
     web/tools/webcat_acl.py \
+    web/tools/safe_browsing_acl.py \
     web/tools/webfilter_apply.py \
     /app/tools/
 COPY squid /squid

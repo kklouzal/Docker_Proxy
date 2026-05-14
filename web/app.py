@@ -1283,8 +1283,11 @@ def _handle_webfilter_post(store: Any, tab: str):
         if source_provider not in ('auto', 'ut1', 'category-dir', 'csv'):
             source_provider = 'auto'
         categories = [c.strip() for c in request.form.getlist('categories') if (c or '').strip()]
+        safe_browsing_enabled = request.form.get('safe_browsing_enabled') == 'on'
+        safe_browsing_api_key = (request.form.get('safe_browsing_api_key') or '').strip()
+        safe_browsing_lists = [c.strip() for c in request.form.getlist('safe_browsing_lists') if (c or '').strip()]
 
-        if enabled and not source_url:
+        if enabled and categories and not source_url:
             return _redirect_to('webfilter', tab='categories', err_source='1')
 
         if source_url:
@@ -1293,12 +1296,19 @@ def _handle_webfilter_post(store: Any, tab: str):
                 return _redirect_to('webfilter', tab='categories', err_source='1')
 
         set_settings_kwargs = {"enabled": enabled, "source_url": source_url, "blocked_categories": categories}
+        optional_settings = {
+            "source_provider": source_provider,
+            "safe_browsing_enabled": safe_browsing_enabled,
+            "safe_browsing_api_key": safe_browsing_api_key,
+            "safe_browsing_lists": safe_browsing_lists,
+        }
         try:
-            accepts_provider = "source_provider" in inspect.signature(store.set_settings).parameters
+            accepted_settings = set(inspect.signature(store.set_settings).parameters)
         except (TypeError, ValueError):
-            accepts_provider = True
-        if accepts_provider:
-            set_settings_kwargs["source_provider"] = source_provider
+            accepted_settings = set(optional_settings)
+        for key, value in optional_settings.items():
+            if key in accepted_settings:
+                set_settings_kwargs[key] = value
         store.set_settings(**set_settings_kwargs)
         return _redirect_after_policy_refresh('webfilter', store, force=True, tab='categories')
 

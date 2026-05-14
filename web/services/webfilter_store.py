@@ -10,6 +10,7 @@ from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.webfilter_core import _DEFAULT_SOURCE_URL, _env_int, _looks_like_host, _next_midnight_ts, _norm_domain, _now, _parent_domains, _parse_whitelist_lines, _whitelist_match, WebFilterStoreBase
+from services.safe_browsing_v5 import DEFAULT_SAFE_BROWSING_LISTS, SafeBrowsingStore
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,9 @@ class WebFilterStore(WebFilterStoreBase):
         source_url: str,
         blocked_categories: List[str],
         source_provider: str = "auto",
+        safe_browsing_enabled: bool = False,
+        safe_browsing_api_key: str = "",
+        safe_browsing_lists: List[str] | None = None,
     ) -> None:
         self.init_db()
         source = (source_url or "").strip()
@@ -88,6 +92,7 @@ class WebFilterStore(WebFilterStoreBase):
         categories = [item.strip() for item in (blocked_categories or []) if (item or "").strip()]
         categories = self._resolve_category_aliases(categories)
         categories_csv = ",".join(sorted(set(categories)))
+        gsb_lists = SafeBrowsingStore.normalize_lists(safe_browsing_lists or DEFAULT_SAFE_BROWSING_LISTS)
 
         with self._connect() as conn:
             previous_enabled = self._get(conn, "enabled", "0") == "1"
@@ -98,6 +103,11 @@ class WebFilterStore(WebFilterStoreBase):
             self._set(conn, "source_url", source)
             self._set(conn, "source_provider", provider)
             self._set(conn, "blocked_categories", categories_csv)
+            self._set(conn, "safe_browsing_enabled", "1" if safe_browsing_enabled else "0")
+            self._set(conn, "safe_browsing_api_key", (safe_browsing_api_key or "").strip())
+            self._set(conn, "safe_browsing_lists", ",".join(gsb_lists))
+            if safe_browsing_enabled and (not self._get_global_setting_conn(conn, "safe_browsing_next_run_ts", "0") or self._get_global_setting_conn(conn, "safe_browsing_next_run_ts", "0") == "0"):
+                self._set(conn, "safe_browsing_next_run_ts", str(_now()))
 
             if source and (source != previous_source or provider != previous_provider):
                 self._set_meta(conn, "refresh_requested", "1")
@@ -315,6 +325,24 @@ class WebFilterStore(WebFilterStoreBase):
             self.init_db()
             thread = threading.Thread(target=self._loop, name="webfilter-updater", daemon=True)
             thread.start()
+            SafeBrowsingStore().start_background(self._safe_browsing_settings, self._record_safe_browsing_status)
+
+
+    def _safe_browsing_settings(self):
+        self.init_db()
+        with self._connect() as conn:
+            return SafeBrowsingStore.settings_from_webfilter(conn, self._get_global_setting_conn)
+
+    def _record_safe_browsing_status(self, ok: bool, err: str, next_run_ts: int) -> None:
+        self.init_db()
+        with self._connect() as conn:
+            self._set(conn, "safe_browsing_last_attempt", str(_now()))
+            if ok:
+                self._set(conn, "safe_browsing_last_success", str(_now()))
+                self._set(conn, "safe_browsing_last_error", "")
+            else:
+                self._set(conn, "safe_browsing_last_error", (err or "")[:500])
+            self._set(conn, "safe_browsing_next_run_ts", str(int(next_run_ts or 0)))
 
     def _loop(self) -> None:
         disabled_sleep = float(_env_int("WEBFILTER_DISABLED_POLL_SECONDS", 60, minimum=5, maximum=3600))

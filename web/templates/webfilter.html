@@ -178,6 +178,34 @@
             <div class="help">Checks whether this domain would be allowed or blocked by the effective rules for this proxy.</div>
           </div>
 
+
+          <section class="surface-panel">
+            <div class="section-header-row">
+              <div>
+                <h3>Google Safe Browsing v5</h3>
+                <div class="small">Optional cached/local-list provider. Requires your Google API key. Request checks use local hash-prefix lists first; Google is contacted only to confirm a local prefix hit.</div>
+              </div>
+              <span class="badge {{ 'ok' if settings.safe_browsing_enabled else 'warn' }}">{{ 'Enabled' if settings.safe_browsing_enabled else 'Opt-in' }}</span>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" name="safe_browsing_enabled" value="on" {% if settings.safe_browsing_enabled %}checked{% endif %}>
+              Enable Google Safe Browsing cached/local-list checks
+            </label>
+            <label class="label" for="safe-browsing-api-key">API key</label>
+            <input id="safe-browsing-api-key" class="input" type="password" name="safe_browsing_api_key" value="{{ settings.safe_browsing_api_key or '' }}" autocomplete="off" placeholder="AIza...">
+            <div class="help">Stored in the local control database and used by the updater/full-hash confirmation path. This feature is intentionally cached-only; there is no live lookup mode.</div>
+            <div class="form-row">
+              <div class="label">Threat lists</div>
+              {% set gsb_lists = settings.safe_browsing_lists or ['se-4b','mw-4b','uws-4b'] %}
+              {% for list_id, label in [('se-4b','Social engineering / phishing'), ('mw-4b','Malware'), ('uws-4b','Unwanted software'), ('uwsa-4b','Android unwanted software'), ('pha-4b','Potentially harmful Android apps')] %}
+                <label class="checkbox-row">
+                  <input type="checkbox" name="safe_browsing_lists" value="{{ list_id }}" {% if list_id in gsb_lists %}checked{% endif %}>
+                  {{ label }} <span class="mono">{{ list_id }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          </section>
+
           <div class="form-row">
             <div class="label">Categories to block on this proxy</div>
 
@@ -239,7 +267,22 @@
 
             <div class="k">Available categories</div>
             <div class="v">{{ available_categories|length }}</div>
+
+            <div class="k">Safe Browsing</div>
+            <div class="v"><span class="badge {{ 'ok' if settings.safe_browsing_enabled else 'warn' }}">{{ 'Enabled' if settings.safe_browsing_enabled else 'Disabled' }}</span></div>
+
+            <div class="k">Safe Browsing last update</div>
+            <div class="v">{{ fmt_ts(settings.safe_browsing_last_success) if settings.safe_browsing_last_success else 'never' }}</div>
+
+            <div class="k">Safe Browsing next refresh</div>
+            <div class="v">{{ fmt_ts(settings.safe_browsing_next_run_ts) if settings.safe_browsing_next_run_ts else 'Not scheduled' }}</div>
+
           </div>
+          {% if settings.safe_browsing_last_error %}
+          <div class="alert error">
+            Safe Browsing refresh error: {{ settings.safe_browsing_last_error }}
+          </div>
+          {% endif %}
           {% if settings.last_error %}
           <div class="alert error">
             Last refresh error: {{ settings.last_error }}
