@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
+import posixpath
+import re
 import sqlite3
 import threading
 import time
@@ -28,6 +31,10 @@ SAFE_BROWSING_LISTS: dict[str, str] = {
 DEFAULT_SAFE_BROWSING_LISTS = ("se-4b", "mw-4b", "uws-4b")
 SAFE_BROWSING_PROVIDER_CATEGORY = "google-safe-browsing"
 _API_BASE = "https://safebrowsing.googleapis.com/v5"
+_VALID_THREAT_TYPES = {"MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"}
+_IGNORED_THREAT_ATTRIBUTES = {"THREAT_ATTRIBUTE_UNSPECIFIED", "CANARY", "FRAME_ONLY"}
+_COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
+
 
 
 def parse_duration_seconds(value: object, default: int = 0) -> int:
@@ -54,66 +61,212 @@ def _decode_b64(text: object) -> bytes:
     return base64.urlsafe_b64decode(raw.encode("ascii"))
 
 
+def _strip_control_url_chars(value: str) -> str:
+    return (value or "").replace("\t", "").replace("\r", "").replace("\n", "")
+
+
+def _recursive_unquote(value: str, *, limit: int = 8) -> str:
+    current = value or ""
+    for _ in range(limit):
+        decoded = urllib.parse.unquote(current)
+        if decoded == current:
+            break
+        current = decoded
+    return current
+
+
+def _escape_safe_browsing_component(value: str, *, safe: str) -> str:
+    out: list[str] = []
+    allowed = set(safe)
+    for b in value.encode("utf-8", errors="surrogatepass"):
+        ch = chr(b)
+        if b <= 32 or b >= 127 or ch in "#%":
+            out.append(f"%{b:02X}")
+        elif ch.isalnum() or ch in allowed:
+            out.append(ch)
+        else:
+            out.append(f"%{b:02X}")
+    return "".join(out)
+
+
+def _normalize_ipv4_loose(host: str) -> str | None:
+    text = (host or "").strip().lower()
+    if not text:
+        return None
+    try:
+        return str(ipaddress.IPv4Address(text))
+    except Exception:
+        pass
+    parts = text.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    values: list[int] = []
+    try:
+        for part in parts:
+            if not part:
+                return None
+            if part.startswith("0x"):
+                value = int(part, 16)
+            elif len(part) > 1 and part.startswith("0"):
+                value = int(part, 8)
+            else:
+                value = int(part, 10)
+            if value < 0:
+                return None
+            values.append(value)
+        if len(values) == 1:
+            number = values[0]
+            if number > 0xFFFFFFFF:
+                return None
+            return str(ipaddress.IPv4Address(number))
+        if any(v > 255 for v in values[:-1]):
+            return None
+        last_bits = 8 * (5 - len(values))
+        if values[-1] >= (1 << last_bits):
+            return None
+        number = 0
+        for v in values[:-1]:
+            number = (number << 8) | v
+        number = (number << last_bits) | values[-1]
+        return str(ipaddress.IPv4Address(number))
+    except Exception:
+        return None
+
+
+def _normalize_host(host: str) -> str:
+    text = (host or "").strip().strip(".").lower()
+    text = re.sub(r"\.+", ".", text)
+    if not text:
+        return ""
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    ipv4 = _normalize_ipv4_loose(text)
+    if ipv4:
+        return ipv4
+    try:
+        ip6 = ipaddress.IPv6Address(text)
+        if ip6.ipv4_mapped is not None:
+            return str(ip6.ipv4_mapped)
+        nat64_prefix = ipaddress.IPv6Network("64:ff9b::/96")
+        if ip6 in nat64_prefix:
+            return str(ipaddress.IPv4Address(int(ip6) & 0xFFFFFFFF))
+        return ip6.compressed
+    except Exception:
+        pass
+    try:
+        return text.encode("idna").decode("ascii")
+    except Exception:
+        return _norm_domain(text)
+
+
+def _canonical_path(path: str) -> str:
+    path = _recursive_unquote(path or "/")
+    if not path.startswith("/"):
+        path = "/" + path
+    path = re.sub(r"/{2,}", "/", path)
+    trailing = path.endswith("/")
+    normalized = posixpath.normpath(path)
+    if normalized == ".":
+        normalized = "/"
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized
+    if trailing and normalized != "/":
+        normalized += "/"
+    return _escape_safe_browsing_component(normalized, safe="/-._~!$&'()*+,;=:@")
+
+
 def canonicalize_url(value: str) -> str:
-    raw = (value or "").strip()
+    raw = _strip_control_url_chars((value or "").strip())
     if not raw:
         return ""
+    raw = urllib.parse.urldefrag(raw)[0]
+    raw = _recursive_unquote(raw)
     if "://" not in raw:
         raw = "http://" + raw
     parsed = urllib.parse.urlsplit(raw)
     scheme = (parsed.scheme or "http").lower()
-    host = _norm_domain(parsed.hostname or parsed.netloc.split("@")[-1].split(":")[0])
+    host = _normalize_host(parsed.hostname or parsed.netloc.split("@")[ -1].split(":")[0])
     if not host:
         return ""
-    port = parsed.port
-    netloc = host
-    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
-        netloc = f"{host}:{port}"
-    path = parsed.path or "/"
-    # Normalize percent-encoded dot segments enough for Safe Browsing expression stability.
-    path = urllib.parse.quote(urllib.parse.unquote(path), safe="/-._~!$&'()*+,;=:@")
-    query = parsed.query
-    return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
+    path = _canonical_path(parsed.path or "/")
+    query = _escape_safe_browsing_component(_recursive_unquote(parsed.query or ""), safe="=&?/:;+,$-_.!~*'()@")
+    # Safe Browsing expression generation discards scheme, credentials, and port;
+    # the canonical URL keeps only host/path/query for stable hashing input.
+    return urllib.parse.urlunsplit((scheme, host, path, query, ""))
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except Exception:
+        return False
+
+
+def _etld_plus_one_index(parts: list[str]) -> int:
+    if len(parts) <= 2:
+        return 0
+    # Prefer a PSL library when present; keep a deterministic fallback for the
+    # common second-level public suffixes used by the docs and many ccTLDs.
+    host = ".".join(parts)
+    try:  # pragma: no cover - optional dependency path
+        from publicsuffix2 import get_sld  # type: ignore
+
+        sld = get_sld(host)
+        if sld:
+            sld_parts = sld.split(".")
+            return max(0, len(parts) - len(sld_parts))
+    except Exception:
+        pass
+    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES:
+        return len(parts) - 3
+    return len(parts) - 2
 
 
 def _host_suffixes(host: str) -> list[str]:
-    host = _norm_domain(host)
+    host = _normalize_host(host)
     if not host:
         return []
+    if _is_ip_literal(host):
+        return [host]
     parts = [p for p in host.split(".") if p]
-    if len(parts) <= 5:
-        starts = range(0, max(1, len(parts) - 1))
-    else:
-        starts = range(len(parts) - 5, len(parts) - 1)
-    out: list[str] = []
-    for i in starts:
-        suffix = ".".join(parts[i:])
+    if not parts:
+        return []
+    exact = ".".join(parts)
+    etld1_index = _etld_plus_one_index(parts)
+    # Google's examples order the exact host first, then up to four suffixes
+    # from the last five hostname components, stopping at eTLD+1.
+    start = max(0, etld1_index - 3, len(parts) - 5)
+    suffixes = [".".join(parts[i:]) for i in range(start, etld1_index + 1)]
+    out: list[str] = [exact]
+    for suffix in suffixes:
         if suffix and suffix not in out:
             out.append(suffix)
-    return out
+    return out[:5]
 
 
 def _path_prefixes(path: str, query: str = "") -> list[str]:
     path = path or "/"
     if not path.startswith("/"):
         path = "/" + path
-    out = [path]
+    out: list[str] = []
     if query:
-        out.insert(0, path + "?" + query)
+        out.append(path + "?" + query)
+    out.append(path)
     if path != "/":
-        out.append("/")
+        if "/" not in out:
+            out.append("/")
         segments = [s for s in path.split("/") if s]
         current = "/"
-        for segment in segments[:-1][:3]:
+        for segment in segments[:-1][:4]:
             current += segment + "/"
             if current not in out:
                 out.append(current)
-    # Safe Browsing uses at most four path expressions.
     dedup: list[str] = []
     for item in out:
         if item not in dedup:
             dedup.append(item)
-    return dedup[:4]
+    return dedup[:6]
 
 
 def url_expressions(url: str) -> list[str]:
@@ -127,7 +280,6 @@ def url_expressions(url: str) -> list[str]:
         for prefix in _path_prefixes(parsed.path or "/", parsed.query):
             expressions.append(suffix + prefix)
     return expressions
-
 
 def expression_hashes(url: str) -> list[bytes]:
     return [hashlib.sha256(expr.encode("utf-8")).digest() for expr in url_expressions(url)]
@@ -176,6 +328,29 @@ def decode_rice_delta_32(payload: dict[str, object] | None) -> list[int]:
 
 def _ints_to_prefixes(values: Iterable[int]) -> list[bytes]:
     return [int(v).to_bytes(4, "big", signed=False) for v in values]
+
+
+def _checksum_for_prefixes(prefixes: Sequence[bytes]) -> bytes:
+    digest = hashlib.sha256()
+    for prefix in sorted(prefixes):
+        digest.update(prefix)
+    return digest.digest()
+
+
+def _enforceable_threat(details: object, fallback: str = "") -> str:
+    if not isinstance(details, list):
+        return fallback if fallback in _VALID_THREAT_TYPES else ""
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        threat = str(detail.get("threatType") or "")
+        attrs = {str(a or "") for a in (detail.get("attributes") or [])}
+        if threat not in _VALID_THREAT_TYPES:
+            continue
+        if attrs & _IGNORED_THREAT_ATTRIBUTES:
+            continue
+        return threat
+    return ""
 
 
 def _threat_type_for_list(name: str) -> str:
@@ -386,6 +561,14 @@ class SafeBrowsingStore:
         additions_payload = item.get("additionsFourBytes")
         additions = _ints_to_prefixes(decode_rice_delta_32(additions_payload if isinstance(additions_payload, dict) else None))
         merged = sorted(set(current).union(additions))
+        checksum = _decode_b64(item.get("sha256Checksum"))
+        if checksum and _checksum_for_prefixes(merged) != checksum:
+            # The v5 local database spec requires a full refresh whenever the
+            # post-update checksum disagrees. Drop local state/version for this
+            # list so the next scheduler pass requests a complete replacement.
+            conn.execute("DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,))
+            conn.execute("DELETE FROM safe_browsing_hash_lists WHERE name=%s", (name,))
+            raise ValueError(f"Google Safe Browsing checksum mismatch for {name}; full refresh required")
         conn.execute("DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,))
         if merged:
             conn.executemany("INSERT IGNORE INTO safe_browsing_hash_prefixes(list_name, prefix) VALUES(%s,%s)", [(name, p) for p in merged])
@@ -495,10 +678,9 @@ class SafeBrowsingLocalChecker:
                 full = _decode_b64(item.get("fullHash"))
                 if len(full) != 32:
                     continue
-                details = item.get("fullHashDetails") or []
-                threat = "UNKNOWN"
-                if details and isinstance(details, list) and isinstance(details[0], dict):
-                    threat = str(details[0].get("threatType") or "UNKNOWN")
+                threat = _enforceable_threat(item.get("fullHashDetails") or [])
+                if not threat:
+                    continue
                 conn.execute(
                     "INSERT INTO safe_browsing_full_hash_cache(prefix, full_hash, threat_type, list_name, expires_ts) VALUES(%s,%s,%s,%s,%s) "
                     "ON DUPLICATE KEY UPDATE threat_type=VALUES(threat_type), list_name=VALUES(list_name), expires_ts=VALUES(expires_ts)",
@@ -542,10 +724,9 @@ class SafeBrowsingLocalChecker:
                     for item in response:
                         returned = _decode_b64(item.get("fullHash"))
                         if returned in full_set:
-                            details = item.get("fullHashDetails") or []
-                            threat = _threat_type_for_list(local_lists[0])
-                            if details and isinstance(details, list) and isinstance(details[0], dict):
-                                threat = str(details[0].get("threatType") or threat)
+                            threat = _enforceable_threat(item.get("fullHashDetails") or [], _threat_type_for_list(local_lists[0]))
+                            if not threat:
+                                continue
                             verdict = SafeBrowsingVerdict("unsafe", threat, local_lists[0], False, "confirmed by hashes.search")
                             break
             self._verdict_cache[canonical] = (time.monotonic() + 300, verdict)
