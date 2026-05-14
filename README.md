@@ -61,6 +61,9 @@ MYSQL_PASSWORD=change_me
 MYSQL_DATABASE=squid_proxy
 MYSQL_CREATE_DATABASE=1
 PROXY_MANAGEMENT_TOKEN=change_me_too
+DOCKER_LOG_DRIVER=json-file
+DOCKER_LOG_MAX_SIZE=10m
+DOCKER_LOG_MAX_FILE=3
 ```
 
 Build and run from source:
@@ -191,7 +194,8 @@ The Compose files expose the common production knobs as environment variables. T
 
 | Area | Variables |
 | --- | --- |
-| Database | `DATABASE_URL`, `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_CREATE_DATABASE`, `MYSQL_CONNECT_TIMEOUT`, `MYSQL_READ_TIMEOUT`, `MYSQL_WRITE_TIMEOUT` |
+| Database | `DATABASE_URL`, `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_CREATE_DATABASE`, `MYSQL_CONNECT_TIMEOUT`, `MYSQL_READ_TIMEOUT`, `MYSQL_WRITE_TIMEOUT`, `MYSQL_CONNECT_RETRIES`, `MYSQL_LOCK_WAIT_TIMEOUT`, `MYSQL_INNODB_LOCK_WAIT_TIMEOUT`, `MYSQL_SESSION_WAIT_TIMEOUT`, `MYSQL_TRANSACTION_ISOLATION`, `DB_POOL_ACQUIRE_TIMEOUT_SECONDS` |
+| Container logging | `DOCKER_LOG_DRIVER`, `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE` |
 | Security | `FLASK_SECRET_KEY`, `SESSION_COOKIE_SECURE`, `SESSION_TIMEOUT_HOURS`, `PROXY_MANAGEMENT_TOKEN`, `DISABLE_CSRF` for controlled test/dev bypasses |
 | Proxy identity | `DEFAULT_PROXY_ID`, `PROXY_INSTANCE_ID`, `PROXY_DISPLAY_NAME`, `PROXY_MANAGEMENT_URL`, `PROXY_PUBLIC_HOST`, `PROXY_PUBLIC_PAC_URL` |
 | Public ports | `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`, `PROXY_PUBLIC_HTTP_PROXY_PORT`, `SQUID_HTTP_PORT`, `SQUID_INTERCEPT_ENABLED`, `SQUID_INTERCEPT_PORT`, `PROXY_PUBLIC_INTERCEPT_PORT` |
@@ -202,6 +206,20 @@ The Compose files expose the common production knobs as environment variables. T
 | Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE` |
 
 Both containers also load `/config/app.env` at startup when mounted. Use this for host-managed deployments that prefer a mounted environment file over a root `.env`.
+
+### Bounded logging and optional bundled MySQL
+
+The Compose services set Docker `json-file` rotation by default (`10m`, `3` files) so the Admin UI, proxy, and optional bundled MySQL service do not leave unbounded stdout/stderr logs on Docker hosts. These Compose interpolation values must be supplied from the root `.env` or shell environment; mounted `/config/app.env` files are loaded inside containers too late to affect Docker logging.
+
+Docker_Proxy normally targets an external MySQL 8+ server. If you deploy MySQL alongside the stack, include the optional MySQL Compose file:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d --build
+```
+
+The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, caps `innodb_redo_log_capacity=256M`, and expires binary logs after one day when binlogs are enabled. Operators who need verbose SQL logging or longer PITR retention should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
+
+For externally managed MySQL containers, apply equivalent MySQL settings and Docker log rotation on that host. Host-global Docker daemon rotation, if desired for every container on the host, still belongs in `/etc/docker/daemon.json`; this application can provide Compose defaults but cannot safely rewrite the host daemon policy.
 
 ## Persistence
 

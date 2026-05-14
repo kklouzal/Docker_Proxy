@@ -15,10 +15,22 @@ x-shared-app-env: &shared-app-env
   MYSQL_CONNECT_TIMEOUT: ${MYSQL_CONNECT_TIMEOUT:-}
   MYSQL_READ_TIMEOUT: ${MYSQL_READ_TIMEOUT:-}
   MYSQL_WRITE_TIMEOUT: ${MYSQL_WRITE_TIMEOUT:-}
+  MYSQL_CONNECT_RETRIES: ${MYSQL_CONNECT_RETRIES:-}
+  MYSQL_CONNECT_RETRY_DELAY_SECONDS: ${MYSQL_CONNECT_RETRY_DELAY_SECONDS:-}
+  MYSQL_LOCK_WAIT_TIMEOUT: ${MYSQL_LOCK_WAIT_TIMEOUT:-}
+  MYSQL_INNODB_LOCK_WAIT_TIMEOUT: ${MYSQL_INNODB_LOCK_WAIT_TIMEOUT:-}
+  MYSQL_SESSION_WAIT_TIMEOUT: ${MYSQL_SESSION_WAIT_TIMEOUT:-}
+  MYSQL_TRANSACTION_ISOLATION: ${MYSQL_TRANSACTION_ISOLATION:-}
+  DB_POOL_ACQUIRE_TIMEOUT_SECONDS: ${DB_POOL_ACQUIRE_TIMEOUT_SECONDS:-}
 
 services:
   admin-ui:
     restart: unless-stopped
+    logging:
+      driver: ${DOCKER_LOG_DRIVER:-json-file}
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILE:-3}
     ports:
       - "0.0.0.0:5000:5000"       # Flask UI
     volumes:
@@ -37,6 +49,11 @@ services:
 
   proxy:
     restart: unless-stopped
+    logging:
+      driver: ${DOCKER_LOG_DRIVER:-json-file}
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILE:-3}
     shm_size: ${PROXY_SHM_SIZE:-512m}
     sysctls:
       net.ipv6.conf.all.disable_ipv6: ${DISABLE_IPV6:-1}

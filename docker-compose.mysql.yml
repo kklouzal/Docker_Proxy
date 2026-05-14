@@ -1,0 +1,36 @@
+name: squid-flask-proxy
+
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.4}
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change_me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-squid_proxy}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./config/mysql/conf.d:/etc/mysql/conf.d:ro
+    logging:
+      driver: ${DOCKER_LOG_DRIVER:-json-file}
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILE:-3}
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    networks:
+      control:
+        aliases:
+          - mysql
+
+volumes:
+  mysql_data:
+
+networks:
+  control:

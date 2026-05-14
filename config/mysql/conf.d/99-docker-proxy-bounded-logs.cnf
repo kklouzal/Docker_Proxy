@@ -1,0 +1,19 @@
+# Docker_Proxy deployable MySQL defaults.
+# Keep the control-plane database from filling disks with verbose logs.
+# MySQL 8+ syntax.
+
+[mysqld]
+# Full query streams can grow into tens or hundreds of GB under proxy
+# observability/control-plane write load.
+general_log=OFF
+slow_query_log=OFF
+
+# Useful errors without note-level chatter.
+log_error_verbosity=2
+
+# Bound redo growth on small/edge deployments.
+innodb_redo_log_capacity=256M
+
+# If binary logging is enabled, retain only one day by default. Operators who
+# rely on longer PITR windows should override this in a later conf.d file.
+binlog_expire_logs_seconds=86400
