@@ -305,13 +305,17 @@ def _cached_proxy_health(proxy_id: str, *, timeout_seconds: float, ttl_seconds: 
             return dict(payload)
     try:
         payload = get_proxy_client().get_health(proxy_id, timeout_seconds=timeout_seconds)
-    except ProxyClientError:
+    except ProxyClientError as exc:
         if cached is not None:
             stale_payload = dict(cached[1])
             stale_payload.setdefault('detail', 'using recent cached health after refresh failure')
             stale_payload['_stale'] = True
             return stale_payload
-        raise
+        proxy = get_proxy_registry().get_proxy(proxy_id)
+        payload = build_unavailable_runtime_health(str(exc), proxy_status=proxy.status if proxy else 'offline')
+        payload['_unavailable_cached'] = True
+        _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
+        return payload
     _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
     return payload
 

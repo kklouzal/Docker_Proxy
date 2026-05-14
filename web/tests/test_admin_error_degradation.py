@@ -96,6 +96,32 @@ def test_clamav_page_and_test_routes_degrade_when_proxy_unavailable(monkeypatch,
     assert "icap_sample=fail" in icap.headers["Location"]
 
 
+def test_clamav_page_caches_unavailable_proxy_health(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    class CountingFailingProxyClient(FakeProxyClient):
+        def __init__(self, admin_app):
+            super().__init__(admin_app, fail=True)
+            self.health_calls = 0
+
+        def get_health(self, proxy_id, *args, **kwargs):
+            self.health_calls += 1
+            return super().get_health(proxy_id, *args, **kwargs)
+
+    failing_client = CountingFailingProxyClient(loaded.module)
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=failing_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    first = client.get("/clamav")
+    second = client.get("/clamav")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert failing_client.health_calls == 1
+    assert "proxy unavailable" in second.get_data(as_text=True)
+
+
 def test_reload_and_cache_clear_record_failure_without_crashing(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     failing_client = FakeProxyClient(loaded.module, fail=True)
