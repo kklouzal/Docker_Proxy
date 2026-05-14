@@ -42,9 +42,16 @@ The project is designed for home labs, small offices, schools, managed LANs, and
 
 The admin UI can run with local or remote proxy runtimes. Each proxy registers its management URL and public PAC/proxy coordinates in MySQL. The admin UI targets the selected proxy for runtime checks and queues durable operations when policy changes need to be materialized.
 
+## Requirements
+
+- Docker Engine with Docker Compose v2.
+- A reachable MySQL 8+ database; runtime and admin state are MySQL-backed.
+- A remote `clamd` service when ClamAV response scanning is enabled.
+- Managed clients must trust the proxy CA before TLS inspection is enabled for them.
+
 ## Quick start
 
-Docker Proxy requires Docker Compose and a reachable MySQL 8+ database. Put database settings in a root `.env` file or your launch environment:
+Put database and management-token settings in a root `.env` file or your launch environment:
 
 ```dotenv
 MYSQL_HOST=192.168.1.10
@@ -72,7 +79,7 @@ Default endpoints:
 
 - Admin UI: `http://localhost:5000`
 - Explicit HTTP proxy: `http://localhost:3128`
-- HTTP NAT intercept listener: `localhost:3129` when enabled and published
+- HTTP NAT intercept listener: `localhost:3129` when enabled and routed by your network
 - Proxy public health: `http://localhost/health`
 - PAC file: `http://localhost/proxy.pac`
 - WPAD: `http://localhost/wpad.dat`
@@ -82,7 +89,7 @@ Default first-run login:
 - Username: `admin`
 - Password: `admin`
 
-Change the administrator password after first login and set a persistent `FLASK_SECRET_KEY` for stable sessions.
+Change the administrator password after first login. The admin UI stores a persistent session secret in MySQL when available; set `FLASK_SECRET_KEY` explicitly when you want host-managed secret rotation.
 
 ## Deployment options
 
@@ -149,7 +156,7 @@ The admin UI still requires MySQL. Proxy-specific actions become available after
 
 - UT1-style category feed ingestion and category selection.
 - Exact and wildcard whitelist support.
-- MySQL-backed category tables with proxy-local SQLite snapshots for request-path decisions.
+- MySQL-backed category tables with proxy-local lookup snapshots for request-path decisions.
 - Squid external ACL integration and a custom `ERR_WEBFILTER_BLOCKED` page.
 - Blocked-request logging with client, destination, URL, category, and timestamp.
 - Optional Google Safe Browsing v5 integration using local hash-prefix lists and full-hash lookups only after a local prefix match.
@@ -194,7 +201,7 @@ The Compose files expose the common production knobs as environment variables. T
 | Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS` |
 | Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE` |
 
-The containers also load `/config/app.env` at startup when mounted. Use this for host-managed deployments that prefer a mounted environment file over a root `.env`.
+Both containers also load `/config/app.env` at startup when mounted. Use this for host-managed deployments that prefer a mounted environment file over a root `.env`.
 
 ## Persistence
 
@@ -214,17 +221,22 @@ Published ports in the default Compose configuration:
 - `5000/tcp`: admin UI.
 - `80/tcp`: public proxy health, PAC, and WPAD only.
 - `3128/tcp`: explicit HTTP proxy.
-- `3129/tcp`: optional plain-HTTP NAT intercept listener.
+- `3129/tcp`: plain-HTTP NAT intercept listener, useful only when intercept mode is enabled and client traffic is redirected by the surrounding network.
+
+Destination-port policy:
+
+- Non-standard HTTP and HTTPS destination ports are allowed by default.
+- The baseline Squid template does not enforce restrictive `Safe_ports` or `SSL_ports` deny ACLs unless an operator adds them.
 
 Operational guidance:
 
 - Do not publish the admin UI to untrusted networks.
 - Put the admin UI behind a management VLAN, VPN, reverse proxy, or SSH tunnel for shared environments.
 - Use a strong `PROXY_MANAGEMENT_TOKEN`; the admin UI and proxy management API must agree on this token.
-- Set `FLASK_SECRET_KEY` for persistent sessions.
+- Set `FLASK_SECRET_KEY` when you want host-managed session-secret rotation instead of the MySQL-backed generated secret.
 - Use `SESSION_COOKIE_SECURE=1` when the UI is served over HTTPS by a reverse proxy.
 - Treat SSL-bump as managed-device infrastructure: clients must trust the proxy CA, and applications with certificate pinning should be spliced.
-- HTTP NAT intercept mode requires external router or host firewall rules; the container does not install topology-specific redirect rules.
+- HTTP NAT intercept mode requires external router or host firewall rules; the container listens on the intercept port but does not install topology-specific redirect rules.
 
 ## Testing and release gates
 
@@ -246,7 +258,7 @@ Teardown:
 docker compose -f docker-compose.yml -f docker-compose.live-tests.yml down -v
 ```
 
-The live harness starts MySQL, the admin UI, two proxy runtimes, a traffic fixture, and a dedicated pytest runner. It verifies real login, health, PAC, proxy management, sync, config apply, multi-proxy selection, cache clear, ClamAV reporting, and proxied request telemetry paths.
+The live harness starts MySQL, the admin UI, two proxy runtimes, a traffic fixture, and a dedicated pytest runner. It verifies real login, health, PAC, proxy management, sync, config apply, multi-proxy selection, cache clear, selected-proxy ClamAV reporting, and proxied request telemetry paths.
 
 GitHub Actions runs the release gate on `main`: deterministic tests -> image build tests -> live tests -> GHCR publish.
 
