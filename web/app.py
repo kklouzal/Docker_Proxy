@@ -1640,6 +1640,7 @@ def observability():
                     search=search,
                     limit=min(limit, 10),
                     resolve_hostnames=resolve_hostnames,
+                    summary=summary,
                 ),
             )
         elif pane == 'clients':
@@ -1652,6 +1653,7 @@ def observability():
                         limit=limit,
                         sort=sort,
                         resolve_hostnames=resolve_hostnames,
+                        total_requests=int(summary.get('request_records') or 0),
                     )
                 },
             )
@@ -1688,7 +1690,7 @@ def observability():
         elif pane == 'performance':
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, limit),
-                lambda: queries.performance_overview(since=since_ts, limit=limit),
+                lambda: queries.performance_overview(since=since_ts, limit=limit, summary=summary),
             )
         else:
             pane_payload = _cached_observability_result(
@@ -1699,6 +1701,7 @@ def observability():
                         search=search,
                         limit=limit,
                         sort=sort,
+                        total_requests=int(summary.get('request_records') or 0),
                     )
                 },
             )
@@ -1762,12 +1765,18 @@ def observability_export():
     search = (request.args.get('q') or '').strip().lower()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
     try:
+        summary_data: Dict[str, Any] | None = None
+        total_requests = 0
+        if pane in ('overview', 'clients', 'destinations', 'performance'):
+            summary_data = queries.summary(since=since_ts)
+            total_requests = int(summary_data.get('request_records') or 0)
         if pane == 'overview':
             overview = queries.overview_bundle(
                 since=since_ts,
                 search=search,
                 limit=min(limit, 10),
                 resolve_hostnames=resolve_hostnames,
+                summary=summary_data or {},
             )
             summary = overview['summary']
             headers = ['metric', 'value']
@@ -1795,6 +1804,7 @@ def observability_export():
                 limit=limit,
                 sort=sort,
                 resolve_hostnames=resolve_hostnames,
+                total_requests=total_requests,
             )
             headers = ['client_ip', 'hostname', 'requests', 'percent_of_total', 'destinations', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen']
             data_rows = (
@@ -1887,7 +1897,7 @@ def observability_export():
             return _csv_response(headers, rows)
 
         if pane == 'performance':
-            payload = queries.performance_overview(since=since_ts, limit=limit)
+            payload = queries.performance_overview(since=since_ts, limit=limit, summary=summary_data or {})
             headers = ['type', 'timestamp', 'subject', 'metric', 'detail']
             rows = []
             for row in payload.get('slow_requests', []):
@@ -1913,6 +1923,7 @@ def observability_export():
             search=search,
             limit=limit,
             sort=sort,
+            total_requests=total_requests,
         )
         headers = ['domain', 'requests', 'percent_of_total', 'clients', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen']
         data_rows = (

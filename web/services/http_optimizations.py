@@ -39,33 +39,33 @@ def _client_accepts_gzip() -> bool:
     return "gzip" in {part.split(";", 1)[0].strip().lower() for part in header.split(",")}
 
 
-def _should_compress(response: Any, *, min_size: int) -> bool:
+def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
     if request.method == "HEAD":
-        return False
+        return None
     if not _client_accepts_gzip():
-        return False
+        return None
     if response.status_code < 200 or response.status_code >= 300:
-        return False
+        return None
     if response.direct_passthrough:
-        return False
+        return None
     if response.headers.get("Content-Encoding"):
-        return False
+        return None
     if "no-transform" in (response.headers.get("Cache-Control") or "").lower():
-        return False
+        return None
     mimetype = (response.mimetype or "").split(";", 1)[0].strip().lower()
     if mimetype not in _COMPRESSIBLE_MIMETYPES and not mimetype.endswith("+json"):
-        return False
+        return None
     try:
         data = response.get_data()
     except Exception:
-        return False
-    return len(data or b"") >= max(1, int(min_size))
+        return None
+    return data if len(data or b"") >= max(1, int(min_size)) else None
 
 
 def _compress_response(response: Any, *, min_size: int, compresslevel: int) -> Any:
-    if not _should_compress(response, min_size=min_size):
+    data = _compressed_body_candidate(response, min_size=min_size)
+    if data is None:
         return response
-    data = response.get_data()
     compressed = gzip.compress(data, compresslevel=max(1, min(9, int(compresslevel))))
     if len(compressed) >= len(data):
         return response
