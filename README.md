@@ -527,7 +527,7 @@ Topology / startup behavior:
 - The proxy container runs two c-icap instances: the adblock instance binds immediately, while the AV instance waits for a reachable remote `clamd` backend.
 - The local AV c-icap instance talks to a remote ClamAV daemon at `CLAMD_HOST:CLAMD_PORT`.
 - The AV instance does not write a per-transaction access log by default; only the adblock REQMOD instance keeps request logging for the UI/event pipeline.
-- Squid only routes `GET` response bodies through the AV RESPMOD path by default; `HEAD` responses are no longer adapted because they do not carry a body to scan.
+- Squid only routes complete `GET` response bodies through the AV RESPMOD path by default; `HEAD`, byte-range, and HTTP `206 Partial Content` responses are not adapted because they either do not carry a full object or are commonly delivered as update/download chunks where partial-object scanning creates high latency with weak AV value.
 - The bundled `virus_scan` settings start streaming after `32K` and allow up to `99%` of already-received data to flow while the scan continues, which keeps browsing responsive while still reserving a final tail for the scanner to complete before the client receives 100% of the payload.
 
 Remote ClamAV host:
@@ -554,7 +554,7 @@ The default baseline config in [squid/squid.conf.template](squid/squid.conf.temp
 - It caches HTTP and bumped-HTTPS content only when the origin server permits caching (no aggressive overrides of `private` / `no-store` / `no-cache`).
 - It enables heuristic caching via `refresh_pattern` only when explicit expiry headers are absent.
 - It now defaults to the SMP-safe `rock` disk store instead of legacy `ufs`, which keeps multi-worker cache deployments within the Squid 7.x guidance.
-- It allows larger objects to be cached (`maximum_object_size 128 MB`) and enables bounded caching of Range responses (`range_offset_limit 128 MB`) so browsers still see progressive delivery.
+- It allows larger objects to be cached (`maximum_object_size 128 MB`) and enables bounded caching of Range responses (`range_offset_limit 128 MB`) so browsers still see progressive delivery. AV RESPMOD skips byte-range and `206 Partial Content` downloads by default so update managers and app stores do not crawl through repeated partial-object ICAP scans.
 - It now makes the intended replacement-policy baseline explicit (`cache_replacement_policy heap GDSF`, `memory_replacement_policy heap GDSF`) instead of falling back to Squid's default `lru` on fresh template-only starts.
 - It keeps `cache_miss_revalidate on` by default for standards-friendlier MISS handling, while the admin UI can now turn that off when operators want faster cache warming on a mostly empty cache.
 - It now makes Squid's memory/SMP cache behavior explicit (`memory_cache_mode always`, `memory_cache_shared on`, `shared_transient_entries_limit 16384`) so the hot-object cache and in-flight transaction table do not depend on ambiguous build/runtime defaults.

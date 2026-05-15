@@ -213,6 +213,10 @@ def test_repo_template_includes_cache_first_defaults():
     assert "client_db on" in text
     assert "buffered_logs off" in text
     assert "icap_206_enable on" in text
+    assert "acl icap_range_request req_header Range .+" in text
+    assert "acl icap_partial_response http_status 206" in text
+    assert "adaptation_access av_resp_set deny icap_range_request" in text
+    assert "adaptation_access av_resp_set deny icap_partial_response" in text
     assert "adaptation_send_client_ip on" in text
     assert "adaptation_send_username off" in text
     assert "icap_client_username_header X-Client-Username" in text

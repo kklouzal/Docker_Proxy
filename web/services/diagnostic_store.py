@@ -1349,7 +1349,12 @@ class DiagnosticStore:
         ]
 
     def slowest_requests(self, *, since: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
-        where = ["proxy_id = %s"]
+        where = [
+            "proxy_id = %s",
+            "UPPER(COALESCE(method, '')) <> 'CONNECT'",
+            "UPPER(COALESCE(result_code, '')) NOT LIKE 'TCP_TUNNEL%%'",
+            "UPPER(COALESCE(result_code, '')) NOT LIKE 'TCP_CONNECT%%'",
+        ]
         params: List[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= %s")

@@ -41,6 +41,20 @@ class CountingRegistry:
         return self._inner.mark_apply_result(*args, **kwargs)
 
 
+class CountingObservabilityQueries:
+    def __init__(self) -> None:
+        self.summary_calls = 0
+        self.performance_calls = 0
+
+    def summary(self, **_kwargs):
+        self.summary_calls += 1
+        return {}
+
+    def performance_overview(self, **_kwargs):
+        self.performance_calls += 1
+        return {"slow_requests": [], "slow_icap_events": []}
+
+
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     web_root = repo_root / "web"
@@ -88,6 +102,21 @@ def test_admin_html_responses_are_gzip_compressed_when_requested(monkeypatch, tm
     assert response.headers.get("Content-Encoding") == "gzip"
     assert "Accept-Encoding" in response.headers.get("Vary", "")
     assert b"Squid" in gzip.decompress(response.get_data())
+
+
+def test_observability_route_reuses_short_ttl_cache(monkeypatch, tmp_path) -> None:
+    queries = CountingObservabilityQueries()
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    first = client.get("/observability?pane=performance&window=3600")
+    second = client.get("/observability?pane=performance&window=3600")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert queries.summary_calls == 1
+    assert queries.performance_calls == 1
 
 
 def test_spa_document_fetches_are_not_browser_cached(monkeypatch, tmp_path) -> None:

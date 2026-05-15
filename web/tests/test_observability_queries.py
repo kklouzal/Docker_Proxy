@@ -19,12 +19,13 @@ def _request_line(
     method: str,
     url: str,
     result_code: str,
+    duration_ms: int = 25,
     bytes_sent: int = 0,
     master_xaction: str = "",
 ) -> str:
     fields = [
         str(ts),
-        "25",
+        str(duration_ms),
         client_ip,
         method,
         url,
@@ -292,6 +293,18 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
             result_code="TCP_BYPASS/200",
             bytes_sent=120,
             master_xaction="tx-block-1",
+        ),
+    )
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=3025,
+            client_ip="192.0.2.42",
+            method="CONNECT",
+            url="id.evidence.com:443",
+            result_code="TCP_TUNNEL/200",
+            duration_ms=2589651,
+            master_xaction="tx-tunnel-1",
         ),
     )
     _insert_icap(
