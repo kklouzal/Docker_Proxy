@@ -1783,17 +1783,14 @@ def observability():
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
-    summary_data: Dict[str, Any] | None = None
     total_requests = 0
-    if pane in ('overview', 'clients', 'destinations', 'performance'):
-        summary_data = queries.summary(since=since_ts)
-        total_requests = int(summary_data.get('request_records') or 0)
 
     try:
         summary = _cached_observability_result(
             _observability_result_cache_key('observability', 'summary', get_proxy_id(), since_ts),
             lambda: queries.summary(since=since_ts),
         )
+        total_requests = int(summary.get('request_records') or 0)
     except Exception:
         log_exception_throttled(
             app.logger,
@@ -1861,10 +1858,13 @@ def observability():
                 ),
             )
         elif pane == 'performance':
-            pane_payload = _cached_observability_result(
+            performance_payload = _cached_observability_result(
                 _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, limit),
                 lambda: queries.performance_overview(since=since_ts, limit=limit, summary=summary),
             )
+            pane_payload = _empty_observability_payload(pane, summary=summary)
+            if isinstance(performance_payload, dict):
+                pane_payload.update(performance_payload)
         else:
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit, sort),
@@ -1939,10 +1939,13 @@ def observability_export():
     resolve_hostnames = _observability_resolve_hostnames_from_request()
     summary_data: Dict[str, Any] | None = None
     total_requests = 0
-    if pane in ('overview', 'clients', 'destinations', 'performance'):
-        summary_data = queries.summary(since=since_ts)
-        total_requests = int(summary_data.get('request_records') or 0)
     try:
+        if pane in ('overview', 'clients', 'destinations', 'performance'):
+            summary_data = _cached_observability_result(
+                _observability_result_cache_key('observability', 'summary', get_proxy_id(), since_ts),
+                lambda: queries.summary(since=since_ts),
+            )
+            total_requests = int(summary_data.get('request_records') or 0)
         if pane == 'overview':
             overview = queries.overview_bundle(
                 since=since_ts,
