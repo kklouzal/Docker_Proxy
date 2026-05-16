@@ -86,6 +86,9 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
 _PROXY_HEALTH_TTL_SECONDS = _env_float("PROXY_HEALTH_UI_CACHE_TTL_SECONDS", 10.0, minimum=0.0, maximum=120.0)
 _PROXY_OBSERVABILITY_TTL_SECONDS = _env_float("PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS", 15.0, minimum=0.0, maximum=300.0)
 _OBSERVABILITY_SUMMARY_CACHE: Dict[tuple[Any, ...], tuple[float, Dict[str, int]]] = {}
+_OBSERVABILITY_RESULT_CACHE: Dict[tuple[Any, ...], tuple[float, Any]] = {}
+_OBSERVABILITY_RESULT_CACHE_LIMIT = 24
+_OBSERVABILITY_RESULT_CACHE_TTL_SECONDS = 5.0
 
 
 def _proxy_health_timeout_seconds() -> float:
@@ -340,6 +343,33 @@ def _cached_proxy_health(proxy_id: str, *, timeout_seconds: float, ttl_seconds: 
         return payload
     _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
     return payload
+
+
+def _prune_observability_result_cache() -> None:
+    while len(_OBSERVABILITY_RESULT_CACHE) > _OBSERVABILITY_RESULT_CACHE_LIMIT:
+        first_key = next(iter(_OBSERVABILITY_RESULT_CACHE), None)
+        if first_key is None:
+            break
+        _OBSERVABILITY_RESULT_CACHE.pop(first_key, None)
+
+
+def _observability_result_cache_key(*parts: Any, bucket_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS) -> tuple[Any, ...]:
+    bucket = max(1.0, float(bucket_seconds))
+    return tuple(parts) + (int(time.time() // bucket),)
+
+
+def _cached_observability_result(cache_key: tuple[Any, ...], builder: Any, *, ttl_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS) -> Any:
+    now = time.monotonic()
+    cached = _OBSERVABILITY_RESULT_CACHE.get(cache_key)
+    if cached is not None:
+        cached_at, payload = cached
+        if now - cached_at <= max(0.0, float(ttl_seconds)):
+            return dict(payload) if isinstance(payload, dict) else payload
+    payload = builder()
+    stored = dict(payload) if isinstance(payload, dict) else payload
+    _OBSERVABILITY_RESULT_CACHE[cache_key] = (now, stored)
+    _prune_observability_result_cache()
+    return dict(stored) if isinstance(stored, dict) else stored
 
 
 def _max_workers() -> int:
@@ -955,18 +985,26 @@ def inject_now():
 
 def _build_observability_snapshot(window_i: int = OBSERVABILITY_DEFAULT_WINDOW) -> tuple[Dict[str, int], str]:
     since_ts = int(time.time()) - max(300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW))
-    diagnostic_summary: Dict[str, Any] = {}
-    ssl_summary: Dict[str, Any] = {}
-    try:
-        diagnostic_summary = get_diagnostic_store().activity_summary(since=since_ts)
-    except Exception:
-        diagnostic_summary = {}
-    try:
-        ssl_rows = get_ssl_errors_store().list_recent(since=since_ts, search='', limit=100)
-        ssl_summary = _present_ssl_error_rows(ssl_rows).get('summary', {})
-    except Exception:
-        ssl_summary = {}
-    return _present_observability_summary(diagnostic_summary=diagnostic_summary, ssl_summary=ssl_summary), _window_label(window_i)
+
+    def _build_snapshot() -> Dict[str, int]:
+        diagnostic_summary: Dict[str, Any] = {}
+        ssl_summary: Dict[str, Any] = {}
+        try:
+            diagnostic_summary = get_diagnostic_store().activity_summary(since=since_ts)
+        except Exception:
+            diagnostic_summary = {}
+        try:
+            ssl_rows = get_ssl_errors_store().list_recent(since=since_ts, search='', limit=100)
+            ssl_summary = _present_ssl_error_rows(ssl_rows).get('summary', {})
+        except Exception:
+            ssl_summary = {}
+        return _present_observability_summary(diagnostic_summary=diagnostic_summary, ssl_summary=ssl_summary)
+
+    summary = _cached_observability_result(
+        _observability_result_cache_key('observability-snapshot', get_proxy_id(), since_ts),
+        _build_snapshot,
+    )
+    return summary, _window_label(window_i)
 
 
 def _cached_observability_summary(proxy_id: str, window_i: int = OBSERVABILITY_DEFAULT_WINDOW) -> Dict[str, int]:
@@ -1745,9 +1783,17 @@ def observability():
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
+    summary_data: Dict[str, Any] | None = None
+    total_requests = 0
+    if pane in ('overview', 'clients', 'destinations', 'performance'):
+        summary_data = queries.summary(since=since_ts)
+        total_requests = int(summary_data.get('request_records') or 0)
 
     try:
-        summary = queries.summary(since=since_ts)
+        summary = _cached_observability_result(
+            _observability_result_cache_key('observability', 'summary', get_proxy_id(), since_ts),
+            lambda: queries.summary(since=since_ts),
+        )
     except Exception:
         log_exception_throttled(
             app.logger,
@@ -1760,54 +1806,78 @@ def observability():
     try:
         pane_payload: Dict[str, Any]
         if pane == 'overview':
-            pane_payload = queries.overview_bundle(
-                since=since_ts,
-                search=search,
-                limit=min(limit, 10),
-                resolve_hostnames=resolve_hostnames,
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, min(limit, 10), int(resolve_hostnames)),
+                lambda: queries.overview_bundle(
+                    since=since_ts,
+                    search=search,
+                    limit=min(limit, 10),
+                    resolve_hostnames=resolve_hostnames,
+                    summary=summary,
+                ),
             )
         elif pane == 'clients':
-            pane_payload = {
-                'rows': queries.top_clients(
-                    since=since_ts,
-                    search=search,
-                    limit=limit,
-                    sort=sort,
-                    resolve_hostnames=resolve_hostnames,
-                )
-            }
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit, sort, int(resolve_hostnames)),
+                lambda: {
+                    'rows': queries.top_clients(
+                        since=since_ts,
+                        search=search,
+                        limit=limit,
+                        sort=sort,
+                        resolve_hostnames=resolve_hostnames,
+                        total_requests=int(summary.get('request_records') or 0),
+                    )
+                },
+            )
         elif pane == 'cache':
-            pane_payload = {
-                'rows': queries.top_cache_reasons(
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit, sort),
+                lambda: {
+                    'rows': queries.top_cache_reasons(
+                        since=since_ts,
+                        search=search,
+                        limit=limit,
+                        sort=sort,
+                    )
+                },
+            )
+        elif pane == 'ssl':
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit),
+                lambda: queries.ssl_overview(
                     since=since_ts,
                     search=search,
                     limit=limit,
-                    sort=sort,
-                )
-            }
-        elif pane == 'ssl':
-            pane_payload = queries.ssl_overview(
-                since=since_ts,
-                search=search,
-                limit=limit,
+                ),
             )
         elif pane == 'security':
-            pane_payload = queries.security_overview(
-                since=since_ts,
-                search=search,
-                limit=limit,
-            )
-        elif pane == 'performance':
-            pane_payload = queries.performance_overview(since=since_ts, limit=limit)
-        else:
-            pane_payload = {
-                'rows': queries.top_destinations(
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit),
+                lambda: queries.security_overview(
                     since=since_ts,
                     search=search,
                     limit=limit,
-                    sort=sort,
-                )
-            }
+                ),
+            )
+        elif pane == 'performance':
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, limit),
+                lambda: queries.performance_overview(since=since_ts, limit=limit, summary=summary),
+            )
+        else:
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit, sort),
+                lambda: {
+                    'rows': queries.top_destinations(
+                        since=since_ts,
+                        search=search,
+                        limit=limit,
+                        sort=sort,
+                        total_requests=int(summary.get('request_records') or 0),
+                    )
+                },
+            )
     except Exception:
         log_exception_throttled(
             app.logger,
@@ -1867,6 +1937,11 @@ def observability_export():
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
+    summary_data: Dict[str, Any] | None = None
+    total_requests = 0
+    if pane in ('overview', 'clients', 'destinations', 'performance'):
+        summary_data = queries.summary(since=since_ts)
+        total_requests = int(summary_data.get('request_records') or 0)
     try:
         if pane == 'overview':
             overview = queries.overview_bundle(
@@ -1874,6 +1949,7 @@ def observability_export():
                 search=search,
                 limit=min(limit, 10),
                 resolve_hostnames=resolve_hostnames,
+                summary=summary_data or {},
             )
             summary = overview['summary']
             headers = ['metric', 'value']
@@ -1901,6 +1977,7 @@ def observability_export():
                 limit=limit,
                 sort=sort,
                 resolve_hostnames=resolve_hostnames,
+                total_requests=total_requests,
             )
             headers = ['client_ip', 'hostname', 'requests', 'percent_of_total', 'destinations', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen']
             data_rows = (
@@ -1993,7 +2070,7 @@ def observability_export():
             return _csv_response(headers, rows)
 
         if pane == 'performance':
-            payload = queries.performance_overview(since=since_ts, limit=limit)
+            payload = queries.performance_overview(since=since_ts, limit=limit, summary=summary_data or {})
             headers = ['type', 'timestamp', 'subject', 'metric', 'detail']
             rows = []
             for row in payload.get('slow_requests', []):
@@ -2019,6 +2096,7 @@ def observability_export():
             search=search,
             limit=limit,
             sort=sort,
+            total_requests=total_requests,
         )
         headers = ['domain', 'requests', 'percent_of_total', 'clients', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen']
         data_rows = (

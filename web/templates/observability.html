@@ -247,7 +247,7 @@
 
 <div class="grid">
   <section class="card split-left">
-    <div class="card-header"><h2 class="card-title">Slowest request paths</h2><span class="badge">performance</span></div>
+    <div class="card-header"><h2 class="card-title">Slowest HTTP request paths</h2><span class="badge">performance</span></div>
     <div class="card-body stack-sm">
       {% for row in payload.performance.slow_requests %}
         <div class="surface-note small"><span class="mono">{{ row.method }} {{ row.target_display }}</span> · {{ row.duration_ms }} ms · {{ row.result_summary }}</div>

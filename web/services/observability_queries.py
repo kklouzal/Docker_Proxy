@@ -171,6 +171,7 @@ class ObservabilityQueries:
         search: str = "",
         limit: int = 50,
         sort: str = "requests",
+        total_requests: int | None = None,
     ) -> List[Dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
@@ -246,8 +247,7 @@ class ObservabilityQueries:
                 tuple(request_params + icap_params + [lim]),
             ).fetchall()
 
-        totals = self.summary(since=since)
-        total_requests = int(totals.get("request_records") or 0)
+        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get("request_records") or 0))
         return [
             {
                 "domain": str(row[0] or ""),
@@ -272,6 +272,7 @@ class ObservabilityQueries:
         limit: int = 50,
         sort: str = "requests",
         resolve_hostnames: bool = True,
+        total_requests: int | None = None,
     ) -> List[Dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
@@ -347,8 +348,7 @@ class ObservabilityQueries:
                 tuple(request_params + icap_params + [lim]),
             ).fetchall()
 
-        totals = self.summary(since=since)
-        total_requests = int(totals.get("request_records") or 0)
+        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get("request_records") or 0))
         out = [
             {
                 "ip": str(row[0] or ""),
@@ -696,11 +696,12 @@ class ObservabilityQueries:
             ],
         }
 
-    def performance_overview(self, *, since: int, limit: int = 10) -> Dict[str, Any]:
+    def performance_overview(self, *, since: int, limit: int = 10, summary: Dict[str, Any] | None = None) -> Dict[str, Any]:
         diagnostic_store = get_diagnostic_store()
         lim = max(3, min(20, int(limit)))
+        summary_payload = present_observability_summary(diagnostic_summary=summary or diagnostic_store.activity_summary(since=since), ssl_summary={})
         return {
-            'summary': present_observability_summary(diagnostic_summary=diagnostic_store.activity_summary(since=since), ssl_summary={}),
+            'summary': summary_payload,
             'slow_requests': present_transaction_rows(diagnostic_store.slowest_requests(since=since, limit=lim), icap_limit=0),
             'slow_icap_events': present_icap_events(diagnostic_store.slowest_icap_events(since=since, limit=lim), limit=lim),
             'top_user_agents': present_top_value_rows(diagnostic_store.top_request_dimension('user_agent', since=since, limit=8), max_label=72),
@@ -711,16 +712,26 @@ class ObservabilityQueries:
             'adblock_icap_summary': diagnostic_store.icap_summary(since=since, service='adblock'),
         }
 
-    def overview_bundle(self, *, since: int, search: str = '', limit: int = 6, resolve_hostnames: bool = False) -> Dict[str, Any]:
+    def overview_bundle(
+        self,
+        *,
+        since: int,
+        search: str = '',
+        limit: int = 6,
+        resolve_hostnames: bool = False,
+        summary: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         lim = max(3, min(10, int(limit)))
+        summary_payload = summary or self.summary(since=since)
+        total_requests = int(summary_payload.get('request_records') or 0)
         return {
-            'summary': self.summary(since=since),
-            'destinations': self.top_destinations(since=since, search=search, limit=lim, sort='requests'),
-            'clients': self.top_clients(since=since, search=search, limit=lim, sort='requests', resolve_hostnames=resolve_hostnames),
+            'summary': summary_payload,
+            'destinations': self.top_destinations(since=since, search=search, limit=lim, sort='requests', total_requests=total_requests),
+            'clients': self.top_clients(since=since, search=search, limit=lim, sort='requests', resolve_hostnames=resolve_hostnames, total_requests=total_requests),
             'cache_reasons': self.top_cache_reasons(since=since, search=search, limit=lim, sort='requests'),
             'ssl': self.ssl_overview(since=since, search=search, limit=lim),
             'security': self.security_overview(since=since, search=search, limit=lim),
-            'performance': self.performance_overview(since=since, limit=lim),
+            'performance': self.performance_overview(since=since, limit=lim, summary=summary_payload),
         }
 
 

@@ -19,12 +19,13 @@ def _request_line(
     method: str,
     url: str,
     result_code: str,
+    duration_ms: int = 25,
     bytes_sent: int = 0,
     master_xaction: str = "",
 ) -> str:
     fields = [
         str(ts),
-        "25",
+        str(duration_ms),
         client_ip,
         method,
         url,
@@ -294,6 +295,18 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
             master_xaction="tx-block-1",
         ),
     )
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=3025,
+            client_ip="192.0.2.42",
+            method="CONNECT",
+            url="id.evidence.com:443",
+            result_code="TCP_TUNNEL/200",
+            duration_ms=2589651,
+            master_xaction="tx-tunnel-1",
+        ),
+    )
     _insert_icap(
         diag_store,
         _icap_line(
@@ -360,3 +373,87 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
     assert overview["summary"]["request_records"] == 2
     assert overview["ssl"]["summary"]["total_events"] == 5
     assert overview["security"]["summary"]["combined_blocks"] == 2
+
+
+def test_observability_overview_bundle_reuses_precomputed_summary(tmp_path, monkeypatch):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-queries-summary-reuse")
+
+    import services.observability_queries as observability_queries  # type: ignore
+
+    queries = observability_queries.ObservabilityQueries()
+    summary_calls = {"count": 0}
+
+    def _summary(**_kwargs):
+        summary_calls["count"] += 1
+        return {
+            "request_records": 7,
+            "cache_hits": 3,
+            "cache_misses": 4,
+            "cache_hit_pct": 42.9,
+            "clients": 2,
+            "destinations": 2,
+            "transactions": 7,
+            "icap_events": 1,
+            "av_icap_events": 1,
+            "adblock_icap_events": 0,
+        }
+
+    monkeypatch.setattr(queries, "summary", _summary)
+    monkeypatch.setattr(queries, "top_destinations", lambda **_kwargs: [])
+    monkeypatch.setattr(queries, "top_clients", lambda **_kwargs: [])
+    monkeypatch.setattr(queries, "top_cache_reasons", lambda **_kwargs: [])
+    monkeypatch.setattr(queries, "ssl_overview", lambda **_kwargs: {"summary": {}, "rows": [], "top_domains": [], "exclusion_candidates": [], "top_categories": [], "hints": []})
+    monkeypatch.setattr(queries, "security_overview", lambda **_kwargs: {"summary": {}, "av_rows": [], "av_top_targets": [], "adblock_rows": [], "adblock_top_domains": [], "webfilter_rows": [], "webfilter_top_categories": [], "webfilter_top_domains": [], "notes": []})
+    monkeypatch.setattr(queries, "performance_overview", lambda **_kwargs: {"summary": {}, "slow_requests": [], "slow_icap_events": [], "top_user_agents": [], "top_bump_modes": [], "top_tls_server_versions": [], "top_policy_tags": [], "av_icap_summary": {}, "adblock_icap_summary": {}})
+
+    payload = queries.overview_bundle(since=2800, limit=5, resolve_hostnames=False, summary=_summary())
+
+    assert summary_calls["count"] == 1
+    assert payload["summary"]["request_records"] == 7
+
+
+def test_observability_performance_overview_reuses_precomputed_summary(tmp_path, monkeypatch):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-queries-performance-summary-reuse")
+
+    import services.observability_queries as observability_queries  # type: ignore
+
+    class CountingDiagnosticStore:
+        def __init__(self) -> None:
+            self.activity_summary_calls = 0
+
+        def activity_summary(self, *, since):
+            self.activity_summary_calls += 1
+            return {"request_records": 1, "cache_hits": 1, "cache_misses": 0, "cache_hit_pct": 100.0, "clients": 1, "destinations": 1, "transactions": 1, "icap_events": 0, "av_icap_events": 0, "adblock_icap_events": 0}
+
+        def slowest_requests(self, **_kwargs):
+            return []
+
+        def slowest_icap_events(self, **_kwargs):
+            return []
+
+        def top_request_dimension(self, **_kwargs):
+            return []
+
+        def top_policy_tags(self, **_kwargs):
+            return []
+
+        def icap_summary(self, **_kwargs):
+            return {"events": 0, "avg_icap_time_ms": 0, "max_icap_time_ms": 0}
+
+        def list_recent_icap(self, **_kwargs):
+            return []
+
+    fake_store = CountingDiagnosticStore()
+    monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: fake_store)
+
+    queries = observability_queries.ObservabilityQueries()
+    payload = queries.performance_overview(
+        since=2800,
+        limit=5,
+        summary={"request_records": 1, "cache_hits": 1, "cache_misses": 0, "cache_hit_pct": 100.0, "clients": 1, "destinations": 1, "transactions": 1, "icap_events": 0, "av_icap_events": 0, "adblock_icap_events": 0},
+    )
+
+    assert fake_store.activity_summary_calls == 0
+    assert payload["summary"]["request_records"] == 1

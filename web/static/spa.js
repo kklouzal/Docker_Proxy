@@ -7,11 +7,16 @@
     context: '#context-strip-slot',
   };
   const DESKTOP_NAV_MEDIA = '(min-width: 1101px)';
+  const SPA_PAGE_CACHE_TTL_MS = 15000;
+  const SPA_PAGE_CACHE_LIMIT = 12;
   let shellListenersBound = false;
   let currentSpaUrl = window.location.href;
   let unsavedConfigChanges = false;
   let activeNavigationController = null;
   let activeNavigationId = 0;
+  const spaPageCache = new Map();
+  const spaPagePrefetches = new Map();
+  let linkIntentListenersBound = false;
   const UNSAVED_CONFIG_MESSAGE = 'You have unsaved Squid configuration changes. Leave this page anyway?';
   const OPERATION_STATUSES = ['pending', 'applying', 'applied', 'failed'];
   const seenOperationStatuses = new Map();
@@ -37,6 +42,210 @@
   const getSpaContainer = (root = document) => root.getElementById(SPA_CONTAINER_ID);
 
   const getHeader = () => document.querySelector('.site-header');
+
+  const normalizeSpaUrl = (url) => {
+    try {
+      const resolved = new URL(url, window.location.href);
+      resolved.hash = '';
+      return resolved.toString();
+    } catch {
+      return '';
+    }
+  };
+
+  const spaPageCacheKey = (url, proxyId = document.body.dataset.activeProxyId || '') => {
+    const normalized = normalizeSpaUrl(url);
+    if (!normalized) return '';
+    return `${String(proxyId || '')}::${normalized}`;
+  };
+
+  const pruneSpaPageCache = () => {
+    while (spaPageCache.size > SPA_PAGE_CACHE_LIMIT) {
+      const firstKey = spaPageCache.keys().next().value;
+      if (firstKey === undefined) break;
+      spaPageCache.delete(firstKey);
+    }
+  };
+
+  const getCachedSpaPage = (url) => {
+    const key = spaPageCacheKey(url);
+    if (!key) return null;
+    const entry = spaPageCache.get(key);
+    if (!entry) return null;
+    if (entry.assetVersion !== getAssetVersion(document)) {
+      spaPageCache.delete(key);
+      return null;
+    }
+    if (Date.now() - entry.cachedAt > SPA_PAGE_CACHE_TTL_MS) {
+      spaPageCache.delete(key);
+      return null;
+    }
+    return entry;
+  };
+
+  const cacheSpaPage = (requestedUrl, finalUrl, html, assetVersion, proxyId) => {
+    const normalizedRequested = normalizeSpaUrl(requestedUrl);
+    const normalizedFinal = normalizeSpaUrl(finalUrl || requestedUrl);
+    if (!normalizedRequested || !normalizedFinal || !html) return;
+    const entry = {
+      html,
+      finalUrl: normalizedFinal,
+      assetVersion,
+      cachedAt: Date.now(),
+    };
+    spaPageCache.set(spaPageCacheKey(normalizedRequested, proxyId), entry);
+    spaPageCache.set(spaPageCacheKey(normalizedFinal, proxyId), entry);
+    pruneSpaPageCache();
+  };
+
+  const parseSpaDocument = (html) => {
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const nextContainer = getSpaContainer(parsed);
+    if (!nextContainer) return null;
+    return {
+      parsed,
+      nextContainer,
+      assetVersion: getAssetVersion(parsed),
+    };
+  };
+
+  const canUseSpaPrefetch = (anchor) => {
+    if (!(anchor instanceof HTMLAnchorElement)) return false;
+    const hrefAttr = anchor.getAttribute('href');
+    if (!hrefAttr || hrefAttr.startsWith('mailto:') || hrefAttr.startsWith('tel:')) return false;
+    if (anchor.hasAttribute('download')) return false;
+    const target = anchor.getAttribute('target');
+    if (target && target !== '' && target !== '_self') return false;
+    try {
+      const resolved = new URL(anchor.href, window.location.href);
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return false;
+      if (resolved.origin !== window.location.origin) return false;
+      const current = new URL(window.location.href);
+      if (resolved.pathname === current.pathname && resolved.search === current.search && resolved.hash) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const SPA_PREFETCH_SCOPE_SELECTOR = [
+    '.nav',
+    '.context-strip-actions',
+    '.page-actions',
+    '.page-tabs',
+  ].join(', ');
+
+  const canIntentPrefetchAnchor = (anchor) => {
+    if (!canUseSpaPrefetch(anchor)) return false;
+    return Boolean(anchor.closest(SPA_PREFETCH_SCOPE_SELECTOR));
+  };
+
+  const prefetchKeyForUrl = (url) => {
+    const normalized = normalizeSpaUrl(url);
+    if (!normalized) return '';
+    return spaPageCacheKey(normalized);
+  };
+
+  const prefetchSpaPage = async (url) => {
+    const normalized = normalizeSpaUrl(url);
+    const key = prefetchKeyForUrl(normalized);
+    if (!normalized || !key) return null;
+    if (getCachedSpaPage(normalized)) return null;
+    if (spaPagePrefetches.has(key)) return spaPagePrefetches.get(key);
+
+    const promise = (async () => {
+      try {
+        const response = await fetch(normalized, {
+          cache: 'no-store',
+          credentials: 'same-origin',
+          headers: {
+            'X-Requested-With': 'spa',
+          },
+        });
+        if (!response.ok) return null;
+        const html = await response.text();
+        const payload = parseSpaDocument(html);
+        if (!payload) return null;
+        if (payload.assetVersion && payload.assetVersion !== getAssetVersion(document)) return null;
+        cacheSpaPage(normalized, response.url || normalized, html, payload.assetVersion, payload.parsed.body?.dataset?.activeProxyId || '');
+        return getCachedSpaPage(normalized);
+      } catch {
+        return null;
+      } finally {
+        spaPagePrefetches.delete(key);
+      }
+    })();
+
+    spaPagePrefetches.set(key, promise);
+    return promise;
+  };
+
+  const getInFlightPrefetch = (url) => {
+    const normalized = normalizeSpaUrl(url);
+    const key = prefetchKeyForUrl(normalized);
+    if (!normalized || !key) return null;
+    return spaPagePrefetches.get(key) || null;
+  };
+
+  const prefetchAnchorIfUseful = (anchor) => {
+    if (!(anchor instanceof HTMLAnchorElement) || !canIntentPrefetchAnchor(anchor)) return;
+    const href = normalizeSpaUrl(anchor.href);
+    const current = normalizeSpaUrl(window.location.href);
+    if (!href || href === current) return;
+    void prefetchSpaPage(href);
+  };
+
+  const bindLinkIntentPrefetch = () => {
+    if (linkIntentListenersBound) return;
+    linkIntentListenersBound = true;
+
+    document.addEventListener('pointerover', (event) => {
+      const anchor = event.target instanceof Element ? event.target.closest('a') : null;
+      prefetchAnchorIfUseful(anchor);
+    }, { passive: true });
+
+    document.addEventListener('focusin', (event) => {
+      const anchor = event.target instanceof Element ? event.target.closest('a') : null;
+      prefetchAnchorIfUseful(anchor);
+    });
+
+    document.addEventListener('touchstart', (event) => {
+      const anchor = event.target instanceof Element ? event.target.closest('a') : null;
+      prefetchAnchorIfUseful(anchor);
+    }, { passive: true });
+  };
+
+  const applySpaPageEntry = (entry, url, { push = true } = {}) => {
+    const container = getSpaContainer();
+    if (!container || !entry) return false;
+    const payload = parseSpaDocument(entry.html);
+    if (!payload || (payload.assetVersion && payload.assetVersion !== getAssetVersion(document))) {
+      return false;
+    }
+
+    syncShellFromDocument(payload.parsed);
+    container.innerHTML = payload.nextContainer.innerHTML;
+    enhanceContainer(container);
+
+    if (payload.parsed && payload.parsed.title) {
+      document.title = payload.parsed.title;
+    }
+
+    const finalUrl = entry.finalUrl || normalizeSpaUrl(url) || url;
+    if (push) {
+      window.history.pushState({ url: finalUrl }, '', finalUrl);
+    } else {
+      window.history.replaceState({ url: finalUrl }, '', finalUrl);
+    }
+    currentSpaUrl = finalUrl;
+
+    updateNavActive(finalUrl);
+    window.scrollTo(0, 0);
+    focusPageHeading(container);
+    return true;
+  };
 
   const closeHeaderDropdowns = () => {
     const header = getHeader();
@@ -331,6 +540,14 @@
 
       const controls = getTrackableFormControls(form);
       const initialValues = new Map(controls.map((control) => [control, serializeControlValue(control)]));
+      const controlsByName = new Map();
+      Array.from(form.elements).forEach((element) => {
+        if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
+          if (!controlsByName.has(element.name)) {
+            controlsByName.set(element.name, element);
+          }
+        }
+      });
       const dependencyFields = Array.from(configPage.querySelectorAll('.config-field[data-config-form-owner]'))
         .filter((field) => field.getAttribute('data-config-form-owner') === form.id && field.hasAttribute('data-depends-on'));
 
@@ -339,12 +556,7 @@
       const metricTargets = getTargetsForForm('data-config-metrics-for', form.id);
       const resetButtons = getTargetsForForm('data-config-reset-for', form.id).filter((button) => button instanceof HTMLButtonElement);
 
-      const getControlByName = (name) => Array.from(form.elements).find((element) => {
-        if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement)) {
-          return false;
-        }
-        return element.name === name;
-      });
+      const getControlByName = (name) => controlsByName.get(name) || null;
 
       const dependencyMatches = (control, expected) => {
         const expectation = String(expected || '').trim().toLowerCase();
@@ -634,6 +846,13 @@
       closeTimers.set(dropdown, timer);
     };
 
+    const prefetchDropdownLinks = (dropdown) => {
+      Array.from(dropdown.querySelectorAll('a[href]')).forEach((anchor) => {
+        if (!(anchor instanceof HTMLAnchorElement) || !canUseSpaPrefetch(anchor)) return;
+        void prefetchSpaPage(anchor.href);
+      });
+    };
+
     dropdowns.forEach((dropdown) => {
       const trigger = dropdown.querySelector('.nav-trigger');
       if (trigger && trigger.dataset.spaBound !== '1') {
@@ -652,6 +871,7 @@
       dropdown.addEventListener('mouseenter', () => {
         if (window.matchMedia(DESKTOP_NAV_MEDIA).matches) {
           openDropdown(dropdown);
+          prefetchDropdownLinks(dropdown);
         }
       });
       dropdown.addEventListener('mouseleave', () => {
@@ -659,6 +879,7 @@
           scheduleClose(dropdown);
         }
       });
+      dropdown.addEventListener('focusin', () => prefetchDropdownLinks(dropdown));
     });
 
     if (navToggle && navToggle.dataset.spaBound !== '1') {
@@ -850,6 +1071,34 @@
   const fetchAndSwap = async (url, { push = true, method = 'GET', body = undefined } = {}) => {
     const container = getSpaContainer();
     if (!container) return false;
+    const isGet = !method || String(method).toUpperCase() === 'GET';
+
+    if (isGet) {
+      const cached = getCachedSpaPage(url);
+      if (cached && applySpaPageEntry(cached, url, { push })) return true;
+
+      const inFlightPrefetch = getInFlightPrefetch(url);
+      if (inFlightPrefetch) {
+        if (activeNavigationController) {
+          activeNavigationController.abort();
+        }
+        const prefetchNavigationId = activeNavigationId + 1;
+        activeNavigationId = prefetchNavigationId;
+        container.setAttribute('aria-busy', 'true');
+        try {
+          const prefetched = await inFlightPrefetch;
+          if (prefetchNavigationId !== activeNavigationId) return false;
+          const cached = prefetched || getCachedSpaPage(url);
+          if (cached && applySpaPageEntry(cached, url, { push })) return true;
+        } catch {
+          // Fall through to a normal navigation fetch.
+        } finally {
+          if (prefetchNavigationId === activeNavigationId) {
+            container.removeAttribute('aria-busy');
+          }
+        }
+      }
+    }
 
     if (activeNavigationController) {
       activeNavigationController.abort();
@@ -901,6 +1150,10 @@
         // Unexpected response shape; fall back to full navigation.
         window.location.assign(response.url || url);
         return false;
+      }
+
+      if (isGet) {
+        cacheSpaPage(url, response.url || url, html, nextAssetVersion, parsed?.body?.dataset?.activeProxyId || '');
       }
 
       syncShellFromDocument(parsed);
@@ -1009,6 +1262,7 @@
       window.history.replaceState({ url: currentSpaUrl }, '', currentSpaUrl);
     }
     bindShell();
+    bindLinkIntentPrefetch();
     updateNavActive(window.location.href);
 
     enhanceContainer(getSpaContainer());

@@ -67,6 +67,7 @@ def test_build_template_options_defaults_match_perf_baseline():
     assert options["https_intercept_splice_only_on"] is False
     assert options["buffered_logs_on"] is False
     assert options["icap_preview_enable_on"] is True
+    assert options["icap_preview_size_kb"] == 128
     assert options["icap_206_enable_on"] is True
     assert options["icap_default_options_ttl_seconds"] == 300
     assert options["icap_client_username_header"] == "X-Client-Username"
