@@ -1309,6 +1309,7 @@ class ProxyRuntime:
             listener_ports = ()
             listener_ok = proxy_ok
         services = {
+            "supervisor": self._supervisor_programs_health(),
             "squid_listeners": {
                 "ok": bool(listener_ok),
                 "detail": _listener_mode_summary(listener_details) or "No Squid http_port listeners detected.",

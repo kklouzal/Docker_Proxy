@@ -400,12 +400,14 @@ def wait_for_config_apply(
             return False
         return True
 
-    return _wait_for_value(
+    application = _wait_for_value(
         lambda: latest_config_apply(proxy_id),
         accept=_accept,
         description=f"config apply for proxy {proxy_id!r}",
         timeout_seconds=timeout_seconds,
     )
+    wait_for_proxy_management_payload(require_ok=True)
+    return application
 
 
 def registry_proxy(proxy_id: object | None) -> Any:
