@@ -297,9 +297,10 @@ def management_auth_headers(*, include_content_type: bool = False) -> dict[str, 
     return headers
 
 
-def wait_for_proxy_management_payload(*, require_ok: bool | None = None) -> dict[str, Any]:
+def wait_for_proxy_management_payload(*, require_ok: bool | None = None, force: bool = False) -> dict[str, Any]:
+    health_path = with_query_params("/api/manage/health", force="1") if force else "/api/manage/health"
     return wait_for_json_url(
-        resolve_url(LIVE_CONFIG.proxy_management_url, "/api/manage/health"),
+        resolve_url(LIVE_CONFIG.proxy_management_url, health_path),
         headers=management_auth_headers(),
         description="proxy management health",
         accept=lambda payload, _response: payload.get("status") in {"healthy", "degraded"}
@@ -406,7 +407,7 @@ def wait_for_config_apply(
         description=f"config apply for proxy {proxy_id!r}",
         timeout_seconds=timeout_seconds,
     )
-    wait_for_proxy_management_payload(require_ok=True)
+    wait_for_proxy_management_payload(require_ok=True, force=True)
     return application
 
 

@@ -41,6 +41,25 @@ def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_ret
     assert ok is True
     assert "RUNNING" in detail
 
+
+def test_test_control_supervisor_program_uses_squid_controller_restart() -> None:
+    runtime = _runtime_shell()
+    runtime.controller = SimpleNamespace(restart_squid=lambda: (True, "Squid HTTP listener is accepting connections."))
+    runtime._invalidate_health_cache = lambda: None
+    runtime._restart_supervisor_program = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("squid restart should use the SquidController restart path")
+    )
+
+    result = runtime.test_control_supervisor_program("squid", action="restart")
+
+    assert result == {
+        "ok": True,
+        "proxy_id": "default",
+        "program": "squid",
+        "action": "restart",
+        "detail": "Squid HTTP listener is accepting connections.",
+    }
+
 def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

@@ -378,7 +378,10 @@ class ProxyRuntime:
             ok, detail = self._supervisor_program_status(program, timeout_seconds=timeout_seconds)
             return {"ok": ok, "proxy_id": self.proxy_id, "program": program, "action": requested_action, "detail": detail}
         if requested_action == "restart":
-            ok, detail = self._restart_supervisor_program(program, timeout_seconds=timeout_seconds, stop_on_failure=False)
+            if program == "squid":
+                ok, detail = self.controller.restart_squid()
+            else:
+                ok, detail = self._restart_supervisor_program(program, timeout_seconds=timeout_seconds, stop_on_failure=False)
             return {"ok": ok, "proxy_id": self.proxy_id, "program": program, "action": requested_action, "detail": detail}
         if requested_action not in {"stop", "start"}:
             return {
