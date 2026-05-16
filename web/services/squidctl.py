@@ -379,7 +379,7 @@ class SquidController(_CoreSquidController):
         icap_client_username_encode_on = bool_value("icap_client_username_encode_on", False)
         icap_persistent_connections_on = bool_value("icap_persistent_connections_on", True)
         icap_preview_enable_on = bool_value("icap_preview_enable_on", True)
-        icap_preview_size_kb = int_value("icap_preview_size_kb", 1024, minimum=0)
+        icap_preview_size_kb = int_value("icap_preview_size_kb", 128, minimum=0)
         icap_default_options_ttl_seconds = int_value("icap_default_options_ttl_seconds", 300, minimum=0)
         icap_connect_timeout_seconds = int_value("icap_connect_timeout_seconds", 15, minimum=0)
         icap_io_timeout_seconds = int_value("icap_io_timeout_seconds", 300, minimum=0)

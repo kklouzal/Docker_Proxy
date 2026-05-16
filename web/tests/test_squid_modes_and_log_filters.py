@@ -506,6 +506,7 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
     assert "max_open_disk_fds 512" in rendered
     assert "cache_miss_revalidate off" in rendered
     assert "icap_preview_enable on" in rendered
+    assert "icap_preview_size 128 KB" in rendered
     assert "http_upgrade_request_protocols websocket deny all" in rendered
     assert "http_upgrade_request_protocols OTHER deny all" in rendered
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in rendered

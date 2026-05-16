@@ -174,7 +174,7 @@ icap_client_username_header X-Client-Username
 icap_client_username_encode off
 icap_persistent_connections on
 icap_preview_enable on
-icap_preview_size 1024 KB
+icap_preview_size 128 KB
 icap_default_options_ttl 300
 icap_service_failure_limit 10 in 30 seconds
 icap_service_revival_delay 60 seconds

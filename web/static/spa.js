@@ -127,6 +127,18 @@
     }
   };
 
+  const SPA_PREFETCH_SCOPE_SELECTOR = [
+    '.nav',
+    '.context-strip-actions',
+    '.page-actions',
+    '.page-tabs',
+  ].join(', ');
+
+  const canIntentPrefetchAnchor = (anchor) => {
+    if (!canUseSpaPrefetch(anchor)) return false;
+    return Boolean(anchor.closest(SPA_PREFETCH_SCOPE_SELECTOR));
+  };
+
   const prefetchKeyForUrl = (url) => {
     const normalized = normalizeSpaUrl(url);
     if (!normalized) return '';
@@ -175,7 +187,7 @@
   };
 
   const prefetchAnchorIfUseful = (anchor) => {
-    if (!(anchor instanceof HTMLAnchorElement) || !canUseSpaPrefetch(anchor)) return;
+    if (!(anchor instanceof HTMLAnchorElement) || !canIntentPrefetchAnchor(anchor)) return;
     const href = normalizeSpaUrl(anchor.href);
     const current = normalizeSpaUrl(window.location.href);
     if (!href || href === current) return;
@@ -370,6 +382,14 @@
 
       const controls = getTrackableFormControls(form);
       const initialValues = new Map(controls.map((control) => [control, serializeControlValue(control)]));
+      const controlsByName = new Map();
+      Array.from(form.elements).forEach((element) => {
+        if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
+          if (!controlsByName.has(element.name)) {
+            controlsByName.set(element.name, element);
+          }
+        }
+      });
       const dependencyFields = Array.from(configPage.querySelectorAll('.config-field[data-config-form-owner]'))
         .filter((field) => field.getAttribute('data-config-form-owner') === form.id && field.hasAttribute('data-depends-on'));
 
@@ -378,12 +398,7 @@
       const metricTargets = getTargetsForForm('data-config-metrics-for', form.id);
       const resetButtons = getTargetsForForm('data-config-reset-for', form.id).filter((button) => button instanceof HTMLButtonElement);
 
-      const getControlByName = (name) => Array.from(form.elements).find((element) => {
-        if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement)) {
-          return false;
-        }
-        return element.name === name;
-      });
+      const getControlByName = (name) => controlsByName.get(name) || null;
 
       const dependencyMatches = (control, expected) => {
         const expectation = String(expected || '').trim().toLowerCase();
