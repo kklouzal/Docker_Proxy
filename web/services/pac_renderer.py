@@ -327,7 +327,7 @@ def _profile_sort_key(profile: PacProfile) -> tuple[int, int]:
 
 def _manifest_profiles(profiles: Iterable[PacProfile]) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
-    for profile in sorted(list(profiles), key=_profile_sort_key):
+    for profile in sorted(profiles, key=_profile_sort_key):
         entries.append(
             {
                 "profile_id": int(profile.id),
@@ -354,7 +354,7 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
     token = set_proxy_id(normalized_proxy_id)
     try:
         target = resolve_proxy_pac_target(normalized_proxy_id)
-        sorted_profiles = sorted(list(get_pac_profiles_store().list_profiles()), key=_profile_sort_key)
+        sorted_profiles = sorted(get_pac_profiles_store().list_profiles(), key=_profile_sort_key)
         include_private = _pac_include_private_nets()
         pac_files = {
             f"profile-{int(profile.id)}.pac": _render_profile_pac(profile, target, include_private=include_private)

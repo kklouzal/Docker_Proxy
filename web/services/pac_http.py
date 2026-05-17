@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from services.pac_renderer import (
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 
 
+@lru_cache(maxsize=1)
 def pac_render_dir() -> str:
     return (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
 
