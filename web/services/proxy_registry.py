@@ -1,1 +1,459 @@
-{"content": "from __future__ import annotations\n\nimport os\nimport re\nimport socket\nimport threading\nimport time\nfrom dataclasses import dataclass\nfrom typing import Optional\nfrom urllib.parse import urlsplit\n\nfrom services.db import connect\nfrom services.proxy_context import get_default_proxy_id, normalize_proxy_id\n\n\ndef _normalize_public_scheme(value: object | None) -> str:\n    candidate = str(value or \"\").strip().lower()\n    if candidate in {\"http\", \"https\"}:\n        return candidate\n    return \"http\"\n\n\ndef _coerce_port(value: object | None, default: int) -> int:\n    try:\n        parsed = int(str(value or \"\").strip() or str(default))\n    except Exception:\n        parsed = int(default)\n    if parsed < 1 or parsed > 65535:\n        return int(default)\n    return parsed\n\n\ndef _coerce_bool(value: object | None, default: bool) -> bool:\n    if isinstance(value, bool):\n        return value\n    if value is None:\n        return bool(default)\n    candidate = str(value).strip().lower()\n    if not candidate:\n        return bool(default)\n    if candidate in {\"1\", \"true\", \"yes\", \"on\"}:\n        return True\n    if candidate in {\"0\", \"false\", \"no\", \"off\"}:\n        return False\n    return bool(default)\n\n\ndef _dns_safe_proxy_host(value: object | None) -> str:\n    raw = str(value or \"\").strip().lower()\n    if not raw or raw == \"default\":\n        return \"proxy\"\n    candidate = re.sub(r\"[^a-z0-9-]+\", \"-\", raw).strip(\"-\")\n    return candidate or \"proxy\"\n\n\ndef _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:\n    candidate = str(raw_url or \"\").strip()\n    if not candidate:\n        return \"\", \"http\", 80\n    if \"://\" not in candidate:\n        candidate = f\"http://{candidate}\"\n    try:\n        parsed = urlsplit(candidate)\n    except Exception:\n        return \"\", \"http\", 80\n    scheme = _normalize_public_scheme(parsed.scheme)\n    host = str(parsed.hostname or \"\").strip()\n    default_port = 443 if scheme == \"https\" else 80\n    try:\n        parsed_port = parsed.port\n    except ValueError:\n        parsed_port = None\n    return host, scheme, int(parsed_port or default_port)\n\n\ndef resolve_local_proxy_public_fields() -> dict[str, object]:\n    url_host, url_scheme, url_port = _parse_public_pac_url(os.environ.get(\"PROXY_PUBLIC_PAC_URL\"))\n    public_host = (os.environ.get(\"PROXY_PUBLIC_HOST\") or \"\").strip() or url_host\n    public_pac_scheme = _normalize_public_scheme(os.environ.get(\"PROXY_PUBLIC_PAC_SCHEME\") or url_scheme or \"http\")\n    default_pac_port = 443 if public_pac_scheme == \"https\" else 80\n    public_pac_port = _coerce_port(os.environ.get(\"PROXY_PUBLIC_PAC_PORT\"), url_port or default_pac_port)\n    public_http_proxy_port = _coerce_port(os.environ.get(\"PROXY_PUBLIC_HTTP_PROXY_PORT\"), 3128)\n    return {\n        \"public_host\": public_host,\n        \"public_pac_scheme\": public_pac_scheme,\n        \"public_pac_port\": public_pac_port,\n        \"public_http_proxy_port\": public_http_proxy_port,\n    }\n\n\ndef resolve_local_proxy_management_url(proxy_id: object | None, public_host: object | None = None) -> str:\n    explicit_url = (os.environ.get(\"PROXY_MANAGEMENT_URL\") or \"\").strip()\n    if explicit_url:\n        return explicit_url.rstrip(\"/\")\n\n    scheme = _normalize_public_scheme(os.environ.get(\"PROXY_MANAGEMENT_SCHEME\") or \"http\")\n    port = _coerce_port(os.environ.get(\"PROXY_MANAGEMENT_PORT\"), 5000)\n    explicit_host = (os.environ.get(\"PROXY_MANAGEMENT_HOST\") or \"\").strip()\n    host = explicit_host or str(public_host or \"\").strip() or _dns_safe_proxy_host(proxy_id)\n    return f\"{scheme}://{host}:{port}\"\n\n\n@dataclass(frozen=True)\nclass ProxyInstance:\n    proxy_id: str\n    display_name: str\n    hostname: str\n    management_url: str\n    public_host: str\n    public_pac_scheme: str\n    public_pac_port: int\n    public_http_proxy_port: int\n    status: str\n    last_heartbeat: int\n    last_apply_ts: int\n    last_apply_ok: bool\n    current_config_sha: str\n    detail: str\n    created_ts: int\n    updated_ts: int\n\n\nclass ProxyRegistry:\n    def _connect(self):\n        return connect()\n\n    def _existing_columns(self, conn, table_name: str) -> set[str]:\n        rows = conn.execute(\n            \"\"\"\n            SELECT column_name AS column_name\n            FROM information_schema.columns\n            WHERE table_schema = DATABASE() AND table_name = %s\n            \"\"\",\n            (table_name,),\n        ).fetchall()\n        return {str(row[\"column_name\"] or \"\") for row in rows}\n\n    def init_db(self) -> None:\n        with self._connect() as conn:\n            conn.execute(\n                \"\"\"\n                CREATE TABLE IF NOT EXISTS proxy_instances (\n                    proxy_id VARCHAR(64) PRIMARY KEY,\n                    display_name VARCHAR(255) NOT NULL,\n                    hostname VARCHAR(255) NOT NULL DEFAULT '',\n                    management_url VARCHAR(512) NOT NULL DEFAULT '',\n                    public_host VARCHAR(255) NOT NULL DEFAULT '',\n                    public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',\n                    public_pac_port INT NOT NULL DEFAULT 80,\n                    public_http_proxy_port INT NOT NULL DEFAULT 3128,\n                    status VARCHAR(32) NOT NULL DEFAULT 'unknown',\n                    last_heartbeat BIGINT NOT NULL DEFAULT 0,\n                    last_apply_ts BIGINT NOT NULL DEFAULT 0,\n                    last_apply_ok TINYINT(1) NOT NULL DEFAULT 0,\n                    current_config_sha CHAR(64) NOT NULL DEFAULT '',\n                    detail TEXT,\n                    created_ts BIGINT NOT NULL,\n                    updated_ts BIGINT NOT NULL,\n                    KEY idx_proxy_instances_status (status, last_heartbeat),\n                    KEY idx_proxy_instances_updated (updated_ts)\n                )\n                \"\"\"\n            )\n            columns = self._existing_columns(conn, \"proxy_instances\")\n            required_columns = {\n                \"public_host\": \"ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url\",\n                \"public_pac_scheme\": \"ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host\",\n                \"public_pac_port\": \"ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme\",\n                \"public_http_proxy_port\": \"ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port\",\n            }\n            for column_name, ddl in required_columns.items():\n                if column_name not in columns:\n                    conn.execute(ddl)\n            # Explicit destructive cleanup for removed SOCKS support.\n            for column_name in (\"public_socks_enabled\", \"public_socks_proxy_port\"):\n                if column_name in columns:\n                    conn.execute(f\"ALTER TABLE proxy_instances DROP COLUMN {column_name}\")\n            conn.execute(\"DROP TABLE IF EXISTS socks_events\")\n\n    def _row_to_instance(self, row: object | None) -> Optional[ProxyInstance]:\n        if not row:\n            return None\n        return ProxyInstance(\n            proxy_id=str(row[\"proxy_id\"]),\n            display_name=str(row[\"display_name\"] or row[\"proxy_id\"]),\n            hostname=str(row[\"hostname\"] or \"\"),\n            management_url=str(row[\"management_url\"] or \"\"),\n            public_host=str(row[\"public_host\"] or \"\"),\n            public_pac_scheme=_normalize_public_scheme(row[\"public_pac_scheme\"]),\n            public_pac_port=_coerce_port(row[\"public_pac_port\"], 80),\n            public_http_proxy_port=_coerce_port(row[\"public_http_proxy_port\"], 3128),\n            status=str(row[\"status\"] or \"unknown\"),\n            last_heartbeat=int(row[\"last_heartbeat\"] or 0),\n            last_apply_ts=int(row[\"last_apply_ts\"] or 0),\n            last_apply_ok=bool(int(row[\"last_apply_ok\"] or 0)),\n            current_config_sha=str(row[\"current_config_sha\"] or \"\"),\n            detail=str(row[\"detail\"] or \"\"),\n            created_ts=int(row[\"created_ts\"] or 0),\n            updated_ts=int(row[\"updated_ts\"] or 0),\n        )\n\n    def ensure_proxy(\n        self,\n        proxy_id: object | None,\n        *,\n        display_name: str | None = None,\n        hostname: str | None = None,\n        management_url: str | None = None,\n        public_host: str | None = None,\n        public_pac_scheme: str | None = None,\n        public_pac_port: int | None = None,\n        public_http_proxy_port: int | None = None,\n        status: str | None = None,\n        detail: str | None = None,\n    ) -> ProxyInstance:\n        self.init_db()\n        proxy_key = normalize_proxy_id(proxy_id)\n        now = int(time.time())\n        with self._connect() as conn:\n            row = conn.execute(\n                \"SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1\",\n                (proxy_key,),\n            ).fetchone()\n            if row is None:\n                conn.execute(\n                    \"\"\"\n                    INSERT INTO proxy_instances(\n                        proxy_id, display_name, hostname, management_url,\n                        public_host, public_pac_scheme, public_pac_port,\n                        public_http_proxy_port, status,\n                        last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha,\n                        detail, created_ts, updated_ts\n                    )\n                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)\n                    \"\"\",\n                    (\n                        proxy_key,\n                        (display_name or proxy_key).strip() or proxy_key,\n                        (hostname or \"\").strip(),\n                        (management_url or \"\").strip(),\n                        (public_host or \"\").strip(),\n                        _normalize_public_scheme(public_pac_scheme),\n                        _coerce_port(public_pac_port, 80),\n                        _coerce_port(public_http_proxy_port, 3128),\n                        (status or \"unknown\").strip() or \"unknown\",\n                        0,\n                        0,\n                        0,\n                        \"\",\n                        (detail or \"\").strip(),\n                        now,\n                        now,\n                    ),\n                )\n                row = conn.execute(\n                    \"SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1\",\n                    (proxy_key,),\n                ).fetchone()\n            else:\n                next_display = (display_name or row[\"display_name\"] or proxy_key).strip() or proxy_key\n                next_hostname = (hostname or row[\"hostname\"] or \"\").strip()\n                next_url = (management_url or row[\"management_url\"] or \"\").strip()\n                next_public_host = (public_host if public_host is not None else row[\"public_host\"] or \"\").strip()\n                next_public_pac_scheme = _normalize_public_scheme(\n                    public_pac_scheme if public_pac_scheme is not None else row[\"public_pac_scheme\"]\n                )\n                next_public_pac_port = _coerce_port(\n                    public_pac_port if public_pac_port is not None else row[\"public_pac_port\"],\n                    80,\n                )\n                next_public_http_proxy_port = _coerce_port(\n                    public_http_proxy_port if public_http_proxy_port is not None else row[\"public_http_proxy_port\"],\n                    3128,\n                )\n                next_status = (row[\"status\"] if status is None else status)\n                next_status = (next_status or \"unknown\").strip() or \"unknown\"\n                next_detail = (detail if detail is not None else row[\"detail\"] or \"\").strip()\n                conn.execute(\n                    \"\"\"\n                    UPDATE proxy_instances\n                    SET display_name=%s, hostname=%s, management_url=%s,\n                        public_host=%s, public_pac_scheme=%s, public_pac_port=%s,\n                        public_http_proxy_port=%s, status=%s, detail=%s, updated_ts=%s\n                    WHERE proxy_id=%s\n                    \"\"\",\n                    (\n                        next_display,\n                        next_hostname,\n                        next_url,\n                        next_public_host,\n                        next_public_pac_scheme,\n                        next_public_pac_port,\n                        next_public_http_proxy_port,\n                        next_status,\n                        next_detail,\n                        now,\n                        proxy_key,\n                    ),\n                )\n                row = conn.execute(\n                    \"SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1\",\n                    (proxy_key,),\n                ).fetchone()\n        instance = self._row_to_instance(row)\n        assert instance is not None\n        return instance\n\n    def ensure_default_proxy(self) -> ProxyInstance:\n        default_id = get_default_proxy_id()\n        return self.ensure_proxy(default_id, display_name=os.environ.get(\"DEFAULT_PROXY_NAME\") or default_id)\n\n    def get_proxy(self, proxy_id: object | None) -> Optional[ProxyInstance]:\n        self.init_db()\n        proxy_key = normalize_proxy_id(proxy_id)\n        with self._connect() as conn:\n            row = conn.execute(\n                \"SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1\",\n                (proxy_key,),\n            ).fetchone()\n        return self._row_to_instance(row)\n\n    def list_proxies(self) -> list[ProxyInstance]:\n        self.init_db()\n        with self._connect() as conn:\n            rows = conn.execute(\n                \"SELECT * FROM proxy_instances ORDER BY display_name ASC, proxy_id ASC\"\n            ).fetchall()\n        instances = [self._row_to_instance(row) for row in rows]\n        return [instance for instance in instances if instance is not None]\n\n    def resolve_proxy_id(self, preferred: object | None = None) -> str:\n        if preferred:\n            proxy_key = normalize_proxy_id(preferred)\n            existing = self.get_proxy(proxy_key)\n            if existing is not None:\n                return existing.proxy_id\n        proxies = self.list_proxies()\n        if proxies:\n            return proxies[0].proxy_id\n        return self.ensure_default_proxy().proxy_id\n\n    def heartbeat(\n        self,\n        proxy_id: object | None,\n        *,\n        status: str = \"healthy\",\n        hostname: str | None = None,\n        management_url: str | None = None,\n        public_host: str | None = None,\n        public_pac_scheme: str | None = None,\n        public_pac_port: int | None = None,\n        public_http_proxy_port: int | None = None,\n        current_config_sha: str | None = None,\n        detail: str | None = None,\n    ) -> ProxyInstance:\n        instance = self.ensure_proxy(\n            proxy_id,\n            display_name=None,\n            hostname=hostname,\n            management_url=management_url,\n            public_host=public_host,\n            public_pac_scheme=public_pac_scheme,\n            public_pac_port=public_pac_port,\n            public_http_proxy_port=public_http_proxy_port,\n            status=status,\n            detail=detail,\n        )\n        now = int(time.time())\n        with self._connect() as conn:\n            conn.execute(\n                \"\"\"\n                UPDATE proxy_instances\n                SET status=%s, hostname=%s, management_url=%s,\n                    public_host=%s, public_pac_scheme=%s, public_pac_port=%s,\n                    public_http_proxy_port=%s, last_heartbeat=%s,\n                    current_config_sha=%s, detail=%s, updated_ts=%s\n                WHERE proxy_id=%s\n                \"\"\",\n                (\n                    (status or instance.status).strip() or \"unknown\",\n                    (hostname or instance.hostname).strip(),\n                    (management_url or instance.management_url).strip(),\n                    (public_host if public_host is not None else instance.public_host).strip(),\n                    _normalize_public_scheme(public_pac_scheme if public_pac_scheme is not None else instance.public_pac_scheme),\n                    _coerce_port(public_pac_port if public_pac_port is not None else instance.public_pac_port, 80),\n                    _coerce_port(\n                        public_http_proxy_port if public_http_proxy_port is not None else instance.public_http_proxy_port,\n                        3128,\n                    ),\n                    now,\n                    (current_config_sha or instance.current_config_sha).strip(),\n                    (detail if detail is not None else instance.detail).strip(),\n                    now,\n                    instance.proxy_id,\n                ),\n            )\n        refreshed = self.get_proxy(instance.proxy_id)\n        assert refreshed is not None\n        return refreshed\n\n    def mark_apply_result(\n        self,\n        proxy_id: object | None,\n        *,\n        ok: bool,\n        detail: str = \"\",\n        current_config_sha: str = \"\",\n    ) -> ProxyInstance:\n        instance = self.ensure_proxy(proxy_id)\n        now = int(time.time())\n        with self._connect() as conn:\n            conn.execute(\n                \"\"\"\n                UPDATE proxy_instances\n                SET last_apply_ts=%s, last_apply_ok=%s, current_config_sha=%s, detail=%s, updated_ts=%s\n                WHERE proxy_id=%s\n                \"\"\",\n                (now, 1 if ok else 0, current_config_sha.strip(), detail[:4000], now, instance.proxy_id),\n            )\n        refreshed = self.get_proxy(instance.proxy_id)\n        assert refreshed is not None\n        return refreshed\n\n    def register_local_proxy(self) -> ProxyInstance:\n        proxy_id = normalize_proxy_id(\n            os.environ.get(\"PROXY_INSTANCE_ID\")\n            or os.environ.get(\"PROXY_ID\")\n            or get_default_proxy_id()\n        )\n        display_name = (os.environ.get(\"PROXY_DISPLAY_NAME\") or proxy_id).strip() or proxy_id\n        hostname = (os.environ.get(\"PROXY_HOSTNAME\") or socket.gethostname()).strip()\n        public_fields = resolve_local_proxy_public_fields()\n        management_url = resolve_local_proxy_management_url(proxy_id, public_fields.get(\"public_host\"))\n        existing = self.get_proxy(proxy_id)\n        return self.ensure_proxy(\n            proxy_id,\n            display_name=display_name,\n            hostname=hostname,\n            management_url=management_url,\n            public_host=str(public_fields[\"public_host\"] or \"\"),\n            public_pac_scheme=str(public_fields[\"public_pac_scheme\"] or \"http\"),\n            public_pac_port=int(public_fields[\"public_pac_port\"] or 80),\n            public_http_proxy_port=int(public_fields[\"public_http_proxy_port\"] or 3128),\n            status=\"starting\" if existing is None else None,\n        )\n\n\n_store: Optional[ProxyRegistry] = None\n_store_lock = threading.Lock()\n\n\ndef get_proxy_registry() -> ProxyRegistry:\n    global _store\n    if _store is not None:\n        return _store\n    with _store_lock:\n        if _store is None:\n            _store = ProxyRegistry()\n        return _store\n", "encoding": "utf-8", "sha": "2ecadfe3bb2e94d58e80127b934b104f41fb316f", "display_url": "https://github.com/kklouzal/Docker_Proxy/blob/main/web/services/proxy_registry.py", "display_title": "proxy_registry.py"}
+from __future__ import annotations
+
+import os
+import re
+import socket
+import threading
+import time
+from dataclasses import dataclass
+from typing import Optional
+from urllib.parse import urlsplit
+
+from services.db import connect
+from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+
+
+def _normalize_public_scheme(value: object | None) -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"http", "https"}:
+        return candidate
+    return "http"
+
+
+def _coerce_port(value: object | None, default: int) -> int:
+    try:
+        parsed = int(str(value or "").strip() or str(default))
+    except Exception:
+        parsed = int(default)
+    if parsed < 1 or parsed > 65535:
+        return int(default)
+    return parsed
+
+
+def _coerce_bool(value: object | None, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    candidate = str(value).strip().lower()
+    if not candidate:
+        return bool(default)
+    if candidate in {"1", "true", "yes", "on"}:
+        return True
+    if candidate in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _dns_safe_proxy_host(value: object | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw or raw == "default":
+        return "proxy"
+    candidate = re.sub(r"[^a-z0-9-]+", "-", raw).strip("-")
+    return candidate or "proxy"
+
+
+def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
+    candidate = str(raw_url or "").strip()
+    if not candidate:
+        return "", "http", 80
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    try:
+        parsed = urlsplit(candidate)
+    except Exception:
+        return "", "http", 80
+    scheme = _normalize_public_scheme(parsed.scheme)
+    host = str(parsed.hostname or "").strip()
+    default_port = 443 if scheme == "https" else 80
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    return host, scheme, int(parsed_port or default_port)
+
+
+def resolve_local_proxy_public_fields() -> dict[str, object]:
+    url_host, url_scheme, url_port = _parse_public_pac_url(os.environ.get("PROXY_PUBLIC_PAC_URL"))
+    public_host = (os.environ.get("PROXY_PUBLIC_HOST") or "").strip() or url_host
+    public_pac_scheme = _normalize_public_scheme(os.environ.get("PROXY_PUBLIC_PAC_SCHEME") or url_scheme or "http")
+    default_pac_port = 443 if public_pac_scheme == "https" else 80
+    public_pac_port = _coerce_port(os.environ.get("PROXY_PUBLIC_PAC_PORT"), url_port or default_pac_port)
+    public_http_proxy_port = _coerce_port(os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"), 3128)
+    return {
+        "public_host": public_host,
+        "public_pac_scheme": public_pac_scheme,
+        "public_pac_port": public_pac_port,
+        "public_http_proxy_port": public_http_proxy_port,
+    }
+
+
+def resolve_local_proxy_management_url(proxy_id: object | None, public_host: object | None = None) -> str:
+    explicit_url = (os.environ.get("PROXY_MANAGEMENT_URL") or "").strip()
+    if explicit_url:
+        return explicit_url.rstrip("/")
+
+    scheme = _normalize_public_scheme(os.environ.get("PROXY_MANAGEMENT_SCHEME") or "http")
+    port = _coerce_port(os.environ.get("PROXY_MANAGEMENT_PORT"), 5000)
+    explicit_host = (os.environ.get("PROXY_MANAGEMENT_HOST") or "").strip()
+    host = explicit_host or str(public_host or "").strip() or _dns_safe_proxy_host(proxy_id)
+    return f"{scheme}://{host}:{port}"
+
+
+@dataclass(frozen=True)
+class ProxyInstance:
+    proxy_id: str
+    display_name: str
+    hostname: str
+    management_url: str
+    public_host: str
+    public_pac_scheme: str
+    public_pac_port: int
+    public_http_proxy_port: int
+    status: str
+    last_heartbeat: int
+    last_apply_ts: int
+    last_apply_ok: bool
+    current_config_sha: str
+    detail: str
+    created_ts: int
+    updated_ts: int
+
+
+class ProxyRegistry:
+    def _connect(self):
+        return connect()
+
+    def _existing_columns(self, conn, table_name: str) -> set[str]:
+        rows = conn.execute(
+            """
+            SELECT column_name AS column_name
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = %s
+            """,
+            (table_name,),
+        ).fetchall()
+        return {str(row["column_name"] or "") for row in rows}
+
+    def init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS proxy_instances (
+                    proxy_id VARCHAR(64) PRIMARY KEY,
+                    display_name VARCHAR(255) NOT NULL,
+                    hostname VARCHAR(255) NOT NULL DEFAULT '',
+                    management_url VARCHAR(512) NOT NULL DEFAULT '',
+                    public_host VARCHAR(255) NOT NULL DEFAULT '',
+                    public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',
+                    public_pac_port INT NOT NULL DEFAULT 80,
+                    public_http_proxy_port INT NOT NULL DEFAULT 3128,
+                    status VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                    last_heartbeat BIGINT NOT NULL DEFAULT 0,
+                    last_apply_ts BIGINT NOT NULL DEFAULT 0,
+                    last_apply_ok TINYINT(1) NOT NULL DEFAULT 0,
+                    current_config_sha CHAR(64) NOT NULL DEFAULT '',
+                    detail TEXT,
+                    created_ts BIGINT NOT NULL,
+                    updated_ts BIGINT NOT NULL,
+                    KEY idx_proxy_instances_status (status, last_heartbeat),
+                    KEY idx_proxy_instances_updated (updated_ts)
+                )
+                """
+            )
+            columns = self._existing_columns(conn, "proxy_instances")
+            required_columns = {
+                "public_host": "ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url",
+                "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
+                "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
+                "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
+            }
+            for column_name, ddl in required_columns.items():
+                if column_name not in columns:
+                    conn.execute(ddl)
+            # Explicit destructive cleanup for removed SOCKS support.
+            for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
+                if column_name in columns:
+                    conn.execute(f"ALTER TABLE proxy_instances DROP COLUMN {column_name}")
+            conn.execute("DROP TABLE IF EXISTS socks_events")
+
+    def _row_to_instance(self, row: object | None) -> Optional[ProxyInstance]:
+        if not row:
+            return None
+        return ProxyInstance(
+            proxy_id=str(row["proxy_id"]),
+            display_name=str(row["display_name"] or row["proxy_id"]),
+            hostname=str(row["hostname"] or ""),
+            management_url=str(row["management_url"] or ""),
+            public_host=str(row["public_host"] or ""),
+            public_pac_scheme=_normalize_public_scheme(row["public_pac_scheme"]),
+            public_pac_port=_coerce_port(row["public_pac_port"], 80),
+            public_http_proxy_port=_coerce_port(row["public_http_proxy_port"], 3128),
+            status=str(row["status"] or "unknown"),
+            last_heartbeat=int(row["last_heartbeat"] or 0),
+            last_apply_ts=int(row["last_apply_ts"] or 0),
+            last_apply_ok=bool(int(row["last_apply_ok"] or 0)),
+            current_config_sha=str(row["current_config_sha"] or ""),
+            detail=str(row["detail"] or ""),
+            created_ts=int(row["created_ts"] or 0),
+            updated_ts=int(row["updated_ts"] or 0),
+        )
+
+    def ensure_proxy(
+        self,
+        proxy_id: object | None,
+        *,
+        display_name: str | None = None,
+        hostname: str | None = None,
+        management_url: str | None = None,
+        public_host: str | None = None,
+        public_pac_scheme: str | None = None,
+        public_pac_port: int | None = None,
+        public_http_proxy_port: int | None = None,
+        status: str | None = None,
+        detail: str | None = None,
+    ) -> ProxyInstance:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        now = int(time.time())
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                (proxy_key,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO proxy_instances(
+                        proxy_id, display_name, hostname, management_url,
+                        public_host, public_pac_scheme, public_pac_port,
+                        public_http_proxy_port, status,
+                        last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha,
+                        detail, created_ts, updated_ts
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        proxy_key,
+                        (display_name or proxy_key).strip() or proxy_key,
+                        (hostname or "").strip(),
+                        (management_url or "").strip(),
+                        (public_host or "").strip(),
+                        _normalize_public_scheme(public_pac_scheme),
+                        _coerce_port(public_pac_port, 80),
+                        _coerce_port(public_http_proxy_port, 3128),
+                        (status or "unknown").strip() or "unknown",
+                        0,
+                        0,
+                        0,
+                        "",
+                        (detail or "").strip(),
+                        now,
+                        now,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                    (proxy_key,),
+                ).fetchone()
+            else:
+                next_display = (display_name or row["display_name"] or proxy_key).strip() or proxy_key
+                next_hostname = (hostname or row["hostname"] or "").strip()
+                next_url = (management_url or row["management_url"] or "").strip()
+                next_public_host = (public_host if public_host is not None else row["public_host"] or "").strip()
+                next_public_pac_scheme = _normalize_public_scheme(
+                    public_pac_scheme if public_pac_scheme is not None else row["public_pac_scheme"]
+                )
+                next_public_pac_port = _coerce_port(
+                    public_pac_port if public_pac_port is not None else row["public_pac_port"],
+                    80,
+                )
+                next_public_http_proxy_port = _coerce_port(
+                    public_http_proxy_port if public_http_proxy_port is not None else row["public_http_proxy_port"],
+                    3128,
+                )
+                next_status = (row["status"] if status is None else status)
+                next_status = (next_status or "unknown").strip() or "unknown"
+                next_detail = (detail if detail is not None else row["detail"] or "").strip()
+                conn.execute(
+                    """
+                    UPDATE proxy_instances
+                    SET display_name=%s, hostname=%s, management_url=%s,
+                        public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
+                        public_http_proxy_port=%s, status=%s, detail=%s, updated_ts=%s
+                    WHERE proxy_id=%s
+                    """,
+                    (
+                        next_display,
+                        next_hostname,
+                        next_url,
+                        next_public_host,
+                        next_public_pac_scheme,
+                        next_public_pac_port,
+                        next_public_http_proxy_port,
+                        next_status,
+                        next_detail,
+                        now,
+                        proxy_key,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                    (proxy_key,),
+                ).fetchone()
+        instance = self._row_to_instance(row)
+        assert instance is not None
+        return instance
+
+    def ensure_default_proxy(self) -> ProxyInstance:
+        default_id = get_default_proxy_id()
+        return self.ensure_proxy(default_id, display_name=os.environ.get("DEFAULT_PROXY_NAME") or default_id)
+
+    def get_proxy(self, proxy_id: object | None) -> Optional[ProxyInstance]:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                (proxy_key,),
+            ).fetchone()
+        return self._row_to_instance(row)
+
+    def list_proxies(self) -> list[ProxyInstance]:
+        self.init_db()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM proxy_instances ORDER BY display_name ASC, proxy_id ASC"
+            ).fetchall()
+        instances = [self._row_to_instance(row) for row in rows]
+        return [instance for instance in instances if instance is not None]
+
+    def resolve_proxy_id(self, preferred: object | None = None) -> str:
+        if preferred:
+            proxy_key = normalize_proxy_id(preferred)
+            existing = self.get_proxy(proxy_key)
+            if existing is not None:
+                return existing.proxy_id
+        proxies = self.list_proxies()
+        if proxies:
+            return proxies[0].proxy_id
+        return self.ensure_default_proxy().proxy_id
+
+    def heartbeat(
+        self,
+        proxy_id: object | None,
+        *,
+        status: str = "healthy",
+        hostname: str | None = None,
+        management_url: str | None = None,
+        public_host: str | None = None,
+        public_pac_scheme: str | None = None,
+        public_pac_port: int | None = None,
+        public_http_proxy_port: int | None = None,
+        current_config_sha: str | None = None,
+        detail: str | None = None,
+    ) -> ProxyInstance:
+        instance = self.ensure_proxy(
+            proxy_id,
+            display_name=None,
+            hostname=hostname,
+            management_url=management_url,
+            public_host=public_host,
+            public_pac_scheme=public_pac_scheme,
+            public_pac_port=public_pac_port,
+            public_http_proxy_port=public_http_proxy_port,
+            status=status,
+            detail=detail,
+        )
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE proxy_instances
+                SET status=%s, hostname=%s, management_url=%s,
+                    public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
+                    public_http_proxy_port=%s, last_heartbeat=%s,
+                    current_config_sha=%s, detail=%s, updated_ts=%s
+                WHERE proxy_id=%s
+                """,
+                (
+                    (status or instance.status).strip() or "unknown",
+                    (hostname or instance.hostname).strip(),
+                    (management_url or instance.management_url).strip(),
+                    (public_host if public_host is not None else instance.public_host).strip(),
+                    _normalize_public_scheme(public_pac_scheme if public_pac_scheme is not None else instance.public_pac_scheme),
+                    _coerce_port(public_pac_port if public_pac_port is not None else instance.public_pac_port, 80),
+                    _coerce_port(
+                        public_http_proxy_port if public_http_proxy_port is not None else instance.public_http_proxy_port,
+                        3128,
+                    ),
+                    now,
+                    (current_config_sha or instance.current_config_sha).strip(),
+                    (detail if detail is not None else instance.detail).strip(),
+                    now,
+                    instance.proxy_id,
+                ),
+            )
+        refreshed = self.get_proxy(instance.proxy_id)
+        assert refreshed is not None
+        return refreshed
+
+    def mark_apply_result(
+        self,
+        proxy_id: object | None,
+        *,
+        ok: bool,
+        detail: str = "",
+        current_config_sha: str = "",
+    ) -> ProxyInstance:
+        instance = self.ensure_proxy(proxy_id)
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE proxy_instances
+                SET last_apply_ts=%s, last_apply_ok=%s, current_config_sha=%s, detail=%s, updated_ts=%s
+                WHERE proxy_id=%s
+                """,
+                (now, 1 if ok else 0, current_config_sha.strip(), detail[:4000], now, instance.proxy_id),
+            )
+        refreshed = self.get_proxy(instance.proxy_id)
+        assert refreshed is not None
+        return refreshed
+
+    def register_local_proxy(self) -> ProxyInstance:
+        proxy_id = normalize_proxy_id(
+            os.environ.get("PROXY_INSTANCE_ID")
+            or os.environ.get("PROXY_ID")
+            or get_default_proxy_id()
+        )
+        display_name = (os.environ.get("PROXY_DISPLAY_NAME") or proxy_id).strip() or proxy_id
+        hostname = (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip()
+        public_fields = resolve_local_proxy_public_fields()
+        management_url = resolve_local_proxy_management_url(proxy_id, public_fields.get("public_host"))
+        existing = self.get_proxy(proxy_id)
+        return self.ensure_proxy(
+            proxy_id,
+            display_name=display_name,
+            hostname=hostname,
+            management_url=management_url,
+            public_host=str(public_fields["public_host"] or ""),
+            public_pac_scheme=str(public_fields["public_pac_scheme"] or "http"),
+            public_pac_port=int(public_fields["public_pac_port"] or 80),
+            public_http_proxy_port=int(public_fields["public_http_proxy_port"] or 3128),
+            status="starting" if existing is None else None,
+        )
+
+
+_store: Optional[ProxyRegistry] = None
+_store_lock = threading.Lock()
+
+
+def get_proxy_registry() -> ProxyRegistry:
+    global _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is None:
+            _store = ProxyRegistry()
+        return _store
