@@ -1,1 +1,745 @@
-{"content": "from __future__ import annotations\n\nfrom collections import Counter\nfrom typing import Any, Dict, List\n\nfrom services.adblock_store import get_adblock_store\nfrom services.client_identity_cache import get_client_identity_cache\nfrom services.db import connect\nfrom services.diagnostic_store import get_diagnostic_store\nfrom services.proxy_context import get_proxy_id\nfrom services.runtime_helpers import cache_hit_sql as _cache_hit_sql, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason_sql as _not_cached_reason_sql, present_value_sql as _present_value_sql\nfrom services.ssl_errors_store import get_ssl_errors_store\nfrom services.ui_support import (\n    present_icap_events,\n    present_observability_summary,\n    present_ssl_error_rows,\n    present_ssl_exclusion_candidates,\n    present_ssl_top_domains,\n    present_top_tag_rows,\n    present_top_value_rows,\n    present_transaction_rows,\n)\nfrom services.webfilter_store import get_webfilter_store\n\n\ndef _pct(part: int, whole: int) -> float:\n    if whole <= 0:\n        return 0.0\n    return round((float(part) / float(whole)) * 100.0, 1)\n\n\ndef _badge_rows(counter: Counter[str], *, limit: int = 8) -> List[Dict[str, Any]]:\n    rows: List[Dict[str, Any]] = []\n    for label, count in counter.most_common(max(1, limit)):\n        clean = str(label or \"\").strip()\n        if not clean:\n            continue\n        rows.append(\n            {\n                \"label\": clean,\n                \"full_label\": clean,\n                \"count\": int(count or 0),\n            }\n        )\n    return rows\n\n\nclass ObservabilityQueries:\n    def _connect(self):\n        return connect()\n\n    @staticmethod\n    def _request_identity_sql(id_column: str = \"id\", master_xaction_column: str = \"master_xaction\") -> str:\n        return (\n            \"CASE \"\n            f\"WHEN COALESCE(NULLIF(TRIM({master_xaction_column}), ''), '') <> '' \"\n            f\"THEN CONCAT('tx:', {master_xaction_column}) \"\n            f\"ELSE CONCAT('req:', CAST({id_column} AS CHAR)) END\"\n        )\n\n    @staticmethod\n    def _hit_sql(result_column: str = \"result_code\") -> str:\n        return _cache_hit_sql(result_column)\n\n    @staticmethod\n    def _present_sql(column: str) -> str:\n        return _present_value_sql(column)\n\n    @staticmethod\n    def _url_host_sql(url_column: str = \"url\") -> str:\n        return (\n            \"LOWER(TRIM(BOTH '.' FROM \"\n            \"CASE \"\n            f\"WHEN LOCATE('://', {url_column}) > 0 THEN \"\n            f\"SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING({url_column}, LOCATE('://', {url_column}) + 3), '/', 1), ':', 1) \"\n            \"ELSE \"\n            f\"SUBSTRING_INDEX(SUBSTRING_INDEX({url_column}, '/', 1), ':', 1) \"\n            \"END))\"\n        )\n\n    @staticmethod\n    def _not_cached_reason_sql(\n        *,\n        method_column: str = \"method\",\n        result_column: str = \"result_code\",\n        status_column: str = \"http_status\",\n    ) -> str:\n        return _not_cached_reason_sql(\n            method_column=method_column,\n            result_column=result_column,\n            status_column=status_column,\n        )\n\n    @staticmethod\n    def _av_status(summary: str, details: str) -> str:\n        haystack = f\"{summary} {details}\".lower()\n        if any(token in haystack for token in (\"found\", \"eicar\", \"malware\", \"virus\", \"infect\", \"trojan\", \"blocked\", \"deny\")):\n            return \"finding\"\n        if any(token in haystack for token in (\"clean\", \"allow\", \"passed\")):\n            return \"clean\"\n        return \"activity\"\n\n    @staticmethod\n    def _av_status_meta(status: str) -> Dict[str, str]:\n        normalized = (status or \"activity\").strip().lower()\n        if normalized == \"finding\":\n            return {\"label\": \"Potential finding\", \"tone\": \"danger\"}\n        if normalized == \"clean\":\n            return {\"label\": \"Clean / allowed\", \"tone\": \"ok\"}\n        return {\"label\": \"General AV activity\", \"tone\": \"ghost\"}\n\n    @staticmethod\n    def _av_finding_sql() -> str:\n        haystack = \"LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, '')))\"\n        return (\n            f\"({haystack} LIKE '%%found%%' OR {haystack} LIKE '%%eicar%%' OR {haystack} LIKE '%%malware%%' \"\n            f\"OR {haystack} LIKE '%%virus%%' OR {haystack} LIKE '%%infect%%' OR {haystack} LIKE '%%trojan%%' \"\n            f\"OR {haystack} LIKE '%%blocked%%' OR {haystack} LIKE '%%deny%%')\"\n        )\n\n    def summary(self, *, since: int) -> Dict[str, Any]:\n        proxy_id = get_proxy_id()\n        hit_sql = self._hit_sql(\"result_code\")\n        tx_sql = self._request_identity_sql(\"id\", \"master_xaction\")\n\n        with self._connect() as conn:\n            requests_row = conn.execute(\n                f\"\"\"\n                SELECT\n                    COUNT(*) AS request_records,\n                    COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS cache_hits,\n                    COUNT(DISTINCT client_ip) AS clients,\n                    COUNT(DISTINCT domain) AS destinations,\n                    COUNT(DISTINCT {tx_sql}) AS transactions\n                FROM diagnostic_requests\n                WHERE proxy_id = %s AND ts >= %s AND {self._present_sql('domain')}\n                \"\"\",\n                (proxy_id, int(since)),\n            ).fetchone()\n            icap_row = conn.execute(\n                \"\"\"\n                SELECT\n                    COUNT(*) AS icap_events,\n                    COALESCE(SUM(CASE WHEN service_family = 'av' THEN 1 ELSE 0 END), 0) AS av_icap_events,\n                    COALESCE(SUM(CASE WHEN service_family = 'adblock' THEN 1 ELSE 0 END), 0) AS adblock_icap_events\n                FROM diagnostic_icap_events\n                WHERE proxy_id = %s AND ts >= %s\n                \"\"\",\n                (proxy_id, int(since)),\n            ).fetchone()\n\n        request_records = int(requests_row[0] or 0) if requests_row else 0\n        cache_hits = int(requests_row[1] or 0) if requests_row else 0\n        return {\n            \"request_records\": request_records,\n            \"cache_hits\": cache_hits,\n            \"cache_misses\": max(0, request_records - cache_hits),\n            \"cache_hit_pct\": _pct(cache_hits, request_records),\n            \"clients\": int(requests_row[2] or 0) if requests_row else 0,\n            \"destinations\": int(requests_row[3] or 0) if requests_row else 0,\n            \"transactions\": int(requests_row[4] or 0) if requests_row else 0,\n            \"icap_events\": int(icap_row[0] or 0) if icap_row else 0,\n            \"av_icap_events\": int(icap_row[1] or 0) if icap_row else 0,\n            \"adblock_icap_events\": int(icap_row[2] or 0) if icap_row else 0,\n        }\n\n    def top_destinations(\n        self,\n        *,\n        since: int,\n        search: str = \"\",\n        limit: int = 50,\n        sort: str = \"requests\",\n        total_requests: int | None = None,\n    ) -> List[Dict[str, Any]]:\n        proxy_id = get_proxy_id()\n        lim = max(5, min(200, int(limit)))\n        search_value = (search or \"\").strip().lower()\n        hit_sql = self._hit_sql(\"r.result_code\")\n        tx_sql = self._request_identity_sql(\"r.id\", \"r.master_xaction\")\n        request_where = [\"r.proxy_id = %s\", \"r.ts >= %s\", self._present_sql(\"r.domain\")]\n        request_params: List[Any] = [proxy_id, int(since)]\n        icap_where = [\"proxy_id = %s\", \"ts >= %s\", self._present_sql(\"domain\")]\n        icap_params: List[Any] = [proxy_id, int(since)]\n        if search_value:\n            like = f\"%{_escape_like(search_value)}%\"\n            request_where.append(\"LOWER(r.domain) LIKE %s ESCAPE '\\\\\\\\'\")\n            request_params.append(like)\n            icap_where.append(\"LOWER(domain) LIKE %s ESCAPE '\\\\\\\\'\")\n            icap_params.append(like)\n\n        request_where_sql = \"WHERE \" + \" AND \".join(request_where)\n        icap_where_sql = \"WHERE \" + \" AND \".join(icap_where)\n\n        if sort == \"recent\":\n            order_by = \"req.last_seen DESC, req.requests DESC\"\n        elif sort == \"cache\":\n            order_by = \"req.cache_pct DESC, req.requests DESC, req.last_seen DESC\"\n        elif sort == \"clients\":\n            order_by = \"req.clients DESC, req.requests DESC, req.last_seen DESC\"\n        else:\n            order_by = \"req.requests DESC, req.last_seen DESC\"\n\n        with self._connect() as conn:\n            rows = conn.execute(\n                f\"\"\"\n                SELECT\n                    req.domain,\n                    req.requests,\n                    req.hit_requests,\n                    req.clients,\n                    req.transactions,\n                    req.last_seen,\n                    req.cache_pct,\n                    COALESCE(icap.av_icap_events, 0) AS av_icap_events,\n                    COALESCE(icap.adblock_icap_events, 0) AS adblock_icap_events\n                FROM (\n                    SELECT\n                        r.domain AS domain,\n                        COUNT(*) AS requests,\n                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,\n                        COUNT(DISTINCT r.client_ip) AS clients,\n                        COUNT(DISTINCT {tx_sql}) AS transactions,\n                        MAX(r.ts) AS last_seen,\n                        ROUND(\n                            CASE WHEN COUNT(*) > 0\n                                THEN (100.0 * COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) / COUNT(*))\n                                ELSE 0 END,\n                            1\n                        ) AS cache_pct\n                    FROM diagnostic_requests r\n                    {request_where_sql}\n                    GROUP BY r.domain\n                ) req\n                LEFT JOIN (\n                    SELECT\n                        domain,\n                        COALESCE(SUM(CASE WHEN service_family = 'av' THEN 1 ELSE 0 END), 0) AS av_icap_events,\n                        COALESCE(SUM(CASE WHEN service_family = 'adblock' THEN 1 ELSE 0 END), 0) AS adblock_icap_events\n                    FROM diagnostic_icap_events\n                    {icap_where_sql}\n                    GROUP BY domain\n                ) icap ON icap.domain = req.domain\n                ORDER BY {order_by}\n                LIMIT %s\n                \"\"\",\n                tuple(request_params + icap_params + [lim]),\n            ).fetchall()\n\n        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get(\"request_records\") or 0))\n        return [\n            {\n                \"domain\": str(row[0] or \"\"),\n                \"requests\": int(row[1] or 0),\n                \"hit_requests\": int(row[2] or 0),\n                \"clients\": int(row[3] or 0),\n                \"transactions\": int(row[4] or 0),\n                \"last_seen\": int(row[5] or 0),\n                \"cache_pct\": float(row[6] or 0.0),\n                \"av_icap_events\": int(row[7] or 0),\n                \"adblock_icap_events\": int(row[8] or 0),\n                \"pct\": _pct(int(row[1] or 0), total_requests),\n            }\n            for row in rows\n        ]\n\n    def top_clients(\n        self,\n        *,\n        since: int,\n        search: str = \"\",\n        limit: int = 50,\n        sort: str = \"requests\",\n        resolve_hostnames: bool = True,\n        total_requests: int | None = None,\n    ) -> List[Dict[str, Any]]:\n        proxy_id = get_proxy_id()\n        lim = max(5, min(200, int(limit)))\n        search_value = (search or \"\").strip().lower()\n        hit_sql = self._hit_sql(\"r.result_code\")\n        tx_sql = self._request_identity_sql(\"r.id\", \"r.master_xaction\")\n        request_where = [\"r.proxy_id = %s\", \"r.ts >= %s\", self._present_sql(\"r.domain\")]\n        request_params: List[Any] = [proxy_id, int(since)]\n        icap_where = [\"proxy_id = %s\", \"ts >= %s\", self._present_sql(\"client_ip\")]\n        icap_params: List[Any] = [proxy_id, int(since)]\n        if search_value:\n            like = f\"%{_escape_like(search_value)}%\"\n            request_where.append(\"LOWER(r.client_ip) LIKE %s ESCAPE '\\\\\\\\'\")\n            request_params.append(like)\n            icap_where.append(\"LOWER(client_ip) LIKE %s ESCAPE '\\\\\\\\'\")\n            icap_params.append(like)\n\n        request_where_sql = \"WHERE \" + \" AND \".join(request_where)\n        icap_where_sql = \"WHERE \" + \" AND \".join(icap_where)\n\n        if sort == \"recent\":\n            order_by = \"req.last_seen DESC, req.requests DESC\"\n        elif sort == \"cache\":\n            order_by = \"req.cache_pct DESC, req.requests DESC, req.last_seen DESC\"\n        elif sort == \"destinations\":\n            order_by = \"req.destinations DESC, req.requests DESC, req.last_seen DESC\"\n        else:\n            order_by = \"req.requests DESC, req.last_seen DESC\"\n\n        with self._connect() as conn:\n            rows = conn.execute(\n                f\"\"\"\n                SELECT\n                    req.client_ip,\n                    req.requests,\n                    req.hit_requests,\n                    req.destinations,\n                    req.transactions,\n                    req.last_seen,\n                    req.cache_pct,\n                    COALESCE(icap.av_icap_events, 0) AS av_icap_events,\n                    COALESCE(icap.adblock_icap_events, 0) AS adblock_icap_events\n                FROM (\n                    SELECT\n                        r.client_ip AS client_ip,\n                        COUNT(*) AS requests,\n                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,\n                        COUNT(DISTINCT r.domain) AS destinations,\n                        COUNT(DISTINCT {tx_sql}) AS transactions,\n                        MAX(r.ts) AS last_seen,\n                        ROUND(\n                            CASE WHEN COUNT(*) > 0\n                                THEN (100.0 * COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) / COUNT(*))\n                                ELSE 0 END,\n                            1\n                        ) AS cache_pct\n                    FROM diagnostic_requests r\n                    {request_where_sql}\n                    GROUP BY r.client_ip\n                ) req\n                LEFT JOIN (\n                    SELECT\n                        client_ip,\n                        COALESCE(SUM(CASE WHEN service_family = 'av' THEN 1 ELSE 0 END), 0) AS av_icap_events,\n                        COALESCE(SUM(CASE WHEN service_family = 'adblock' THEN 1 ELSE 0 END), 0) AS adblock_icap_events\n                    FROM diagnostic_icap_events\n                    {icap_where_sql}\n                    GROUP BY client_ip\n                ) icap ON icap.client_ip = req.client_ip\n                ORDER BY {order_by}\n                LIMIT %s\n                \"\"\",\n                tuple(request_params + icap_params + [lim]),\n            ).fetchall()\n\n        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get(\"request_records\") or 0))\n        out = [\n            {\n                \"ip\": str(row[0] or \"\"),\n                \"requests\": int(row[1] or 0),\n                \"hit_requests\": int(row[2] or 0),\n                \"destinations\": int(row[3] or 0),\n                \"transactions\": int(row[4] or 0),\n                \"last_seen\": int(row[5] or 0),\n                \"cache_pct\": float(row[6] or 0.0),\n                \"av_icap_events\": int(row[7] or 0),\n                \"adblock_icap_events\": int(row[8] or 0),\n                \"pct\": _pct(int(row[1] or 0), total_requests),\n                \"hostname\": \"\",\n                \"hostname_source\": \"\",\n                \"hostname_status\": \"disabled\",\n            }\n            for row in rows\n        ]\n        if resolve_hostnames and out:\n            cache = get_client_identity_cache()\n            resolved = cache.resolve_many(row[\"ip\"] for row in out)\n            for row in out:\n                info = resolved.get(row[\"ip\"], {\"hostname\": \"\", \"hostname_source\": \"\", \"hostname_status\": \"unresolved\"})\n                row.update(info)\n        return out\n\n    def top_cache_reasons(\n        self,\n        *,\n        since: int,\n        search: str = \"\",\n        limit: int = 50,\n        sort: str = \"requests\",\n    ) -> List[Dict[str, Any]]:\n        proxy_id = get_proxy_id()\n        lim = max(5, min(200, int(limit)))\n        search_value = (search or \"\").strip().lower()\n        hit_sql = self._hit_sql(\"result_code\")\n        reason_sql = self._not_cached_reason_sql()\n        where = [\"proxy_id = %s\", \"ts >= %s\", self._present_sql(\"domain\"), f\"NOT {hit_sql}\"]\n        params: List[Any] = [proxy_id, int(since)]\n        if search_value:\n            like = f\"%{_escape_like(search_value)}%\"\n            where.append(\n                \"(\" + \" OR \".join([\n                    \"LOWER(domain) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(client_ip) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(url) LIKE %s ESCAPE '\\\\\\\\'\",\n                ]) + \")\"\n            )\n            params.extend([like, like, like])\n        where_sql = \"WHERE \" + \" AND \".join(where)\n\n        if sort == \"recent\":\n            order_by = \"last_seen DESC, requests DESC\"\n        elif sort == \"domains\":\n            order_by = \"domains DESC, requests DESC, last_seen DESC\"\n        elif sort == \"clients\":\n            order_by = \"clients DESC, requests DESC, last_seen DESC\"\n        else:\n            order_by = \"requests DESC, last_seen DESC\"\n\n        with self._connect() as conn:\n            total_row = conn.execute(\n                f\"SELECT COUNT(*) FROM diagnostic_requests {where_sql}\",\n                tuple(params),\n            ).fetchone()\n            rows = conn.execute(\n                f\"\"\"\n                SELECT\n                    {reason_sql} AS reason,\n                    COUNT(*) AS requests,\n                    COUNT(DISTINCT domain) AS domains,\n                    COUNT(DISTINCT client_ip) AS clients,\n                    MAX(ts) AS last_seen\n                FROM diagnostic_requests\n                {where_sql}\n                GROUP BY reason\n                ORDER BY {order_by}\n                LIMIT %s\n                \"\"\",\n                tuple(params + [lim]),\n            ).fetchall()\n\n        total_requests = int(total_row[0] or 0) if total_row else 0\n        return [\n            {\n                \"reason\": str(row[0] or \"\"),\n                \"requests\": int(row[1] or 0),\n                \"domains\": int(row[2] or 0),\n                \"clients\": int(row[3] or 0),\n                \"last_seen\": int(row[4] or 0),\n                \"pct\": _pct(int(row[1] or 0), total_requests),\n            }\n            for row in rows\n        ]\n\n    def ssl_overview(self, *, since: int, search: str = \"\", limit: int = 50) -> Dict[str, Any]:\n        store = get_ssl_errors_store()\n        try:\n            store.init_db()\n        except Exception:\n            pass\n        raw_rows = store.list_recent(since=since, search=search, limit=max(10, min(500, int(limit))))\n        presented = present_ssl_error_rows(raw_rows)\n        category_counts: Counter[str] = Counter()\n        for row in presented[\"rows\"]:\n            category_counts[str(row.get(\"category_label\") or row.get(\"category\") or \"Other\")] += int(row.get(\"count\") or 0)\n        return {\n            \"summary\": presented[\"summary\"],\n            \"rows\": presented[\"rows\"],\n            \"top_domains\": present_ssl_top_domains(store.top_domains(since=since, search=search, limit=10), limit=10),\n            \"exclusion_candidates\": present_ssl_exclusion_candidates(store.suggest_exclusion_candidates(since=since, search=search, limit=10)),\n            \"top_categories\": _badge_rows(category_counts, limit=6),\n            \"hints\": presented[\"hints\"],\n        }\n\n    def security_overview(self, *, since: int, search: str = \"\", limit: int = 50) -> Dict[str, Any]:\n        proxy_id = get_proxy_id()\n        lim = max(5, min(100, int(limit)))\n        search_value = (search or \"\").strip().lower()\n        diagnostic_store = get_diagnostic_store()\n        get_adblock_store().init_db()\n        get_webfilter_store().init_db()\n\n        av_where = [\"proxy_id = %s\", \"ts >= %s\", \"service_family = 'av'\"]\n        av_params: List[Any] = [proxy_id, int(since)]\n        if search_value:\n            like = f\"%{_escape_like(search_value)}%\"\n            av_where.append(\n                \"(\" + \" OR \".join([\n                    \"LOWER(domain) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(url) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(client_ip) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(adapt_summary) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(adapt_details) LIKE %s ESCAPE '\\\\\\\\'\",\n                ]) + \")\"\n            )\n            av_params.extend([like, like, like, like, like])\n        av_where_sql = \"WHERE \" + \" AND \".join(av_where)\n        av_finding_sql = self._av_finding_sql()\n\n        adblock_where = [\"proxy_id = %s\", \"ts >= %s\"]\n        adblock_params: List[Any] = [proxy_id, int(since)]\n        if search_value:\n            like = f\"%{_escape_like(search_value)}%\"\n            adblock_where.append(\"(LOWER(url) LIKE %s ESCAPE '\\\\\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\\\\\')\")\n            adblock_params.extend([like, like])\n        adblock_where_sql = \"WHERE \" + \" AND \".join(adblock_where)\n\n        webfilter_where = [\"proxy_id = %s\", \"ts >= %s\"]\n        webfilter_params: List[Any] = [proxy_id, int(since)]\n        if search_value:\n            like = f\"%{_escape_like(search_value)}%\"\n            webfilter_where.append(\n                \"(\" + \" OR \".join([\n                    \"LOWER(url) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(src_ip) LIKE %s ESCAPE '\\\\\\\\'\",\n                    \"LOWER(category) LIKE %s ESCAPE '\\\\\\\\'\",\n                ]) + \")\"\n            )\n            webfilter_params.extend([like, like, like])\n        webfilter_where_sql = \"WHERE \" + \" AND \".join(webfilter_where)\n\n        with self._connect() as conn:\n            av_summary_row = conn.execute(\n                f\"\"\"\n                SELECT\n                    COUNT(*) AS events,\n                    COALESCE(SUM(CASE WHEN {av_finding_sql} THEN 1 ELSE 0 END), 0) AS findings,\n                    MAX(ts) AS last_seen\n                FROM diagnostic_icap_events\n                {av_where_sql}\n                \"\"\",\n                tuple(av_params),\n            ).fetchone()\n            adblock_summary_row = conn.execute(\n                f\"\"\"\n                SELECT COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, MAX(ts) AS last_seen\n                FROM adblock_events\n                {adblock_where_sql}\n                \"\"\",\n                tuple(adblock_params),\n            ).fetchone()\n            webfilter_summary_row = conn.execute(\n                f\"\"\"\n                SELECT COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, COUNT(DISTINCT category) AS categories, MAX(ts) AS last_seen\n                FROM webfilter_blocked_log\n                {webfilter_where_sql}\n                \"\"\",\n                tuple(webfilter_params),\n            ).fetchone()\n            top_adblock_domains_rows = conn.execute(\n                f\"\"\"\n                SELECT {self._url_host_sql('url')} AS domain, COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, MAX(ts) AS last_seen\n                FROM adblock_events\n                {adblock_where_sql}\n                GROUP BY domain\n                HAVING domain <> ''\n                ORDER BY blocks DESC, last_seen DESC\n                LIMIT %s\n                \"\"\",\n                tuple(adblock_params + [min(lim, 10)]),\n            ).fetchall()\n            top_webfilter_category_rows = conn.execute(\n                f\"\"\"\n                SELECT category, COUNT(*) AS blocks, MAX(ts) AS last_seen\n                FROM webfilter_blocked_log\n                {webfilter_where_sql}\n                GROUP BY category\n                ORDER BY blocks DESC, last_seen DESC\n                LIMIT %s\n                \"\"\",\n                tuple(webfilter_params + [min(lim, 10)]),\n            ).fetchall()\n            top_webfilter_domain_rows = conn.execute(\n                f\"\"\"\n                SELECT {self._url_host_sql('url')} AS domain, COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, MAX(ts) AS last_seen\n                FROM webfilter_blocked_log\n                {webfilter_where_sql}\n                GROUP BY domain\n                HAVING domain <> ''\n                ORDER BY blocks DESC, last_seen DESC\n                LIMIT %s\n                \"\"\",\n                tuple(webfilter_params + [min(lim, 10)]),\n            ).fetchall()\n            adblock_recent_rows = conn.execute(\n                f\"\"\"\n                SELECT ts, src_ip, method, url, http_status\n                FROM adblock_events\n                {adblock_where_sql}\n                ORDER BY ts DESC, id DESC\n                LIMIT %s\n                \"\"\",\n                tuple(adblock_params + [min(max(lim * 2, 20), 100)]),\n            ).fetchall()\n            webfilter_recent_rows = conn.execute(\n                f\"\"\"\n                SELECT ts, src_ip, url, category\n                FROM webfilter_blocked_log\n                {webfilter_where_sql}\n                ORDER BY ts DESC, id DESC\n                LIMIT %s\n                \"\"\",\n                tuple(webfilter_params + [min(max(lim * 2, 20), 100)]),\n            ).fetchall()\n\n        av_raw = diagnostic_store.list_recent_icap(\n            since=since,\n            search=search_value,\n            service='av',\n            limit=max(lim, 20),\n        )\n        av_enriched: List[Dict[str, Any]] = []\n        av_target_counter: Counter[str] = Counter()\n        for row in av_raw:\n            event = dict(row)\n            status = self._av_status(str(event.get('adapt_summary') or ''), str(event.get('adapt_details') or ''))\n            meta = self._av_status_meta(status)\n            event['av_status'] = status\n            event['av_status_label'] = meta['label']\n            event['av_status_tone'] = meta['tone']\n            if status == 'finding':\n                av_target_counter[str(event.get('target_display') or event.get('domain') or '-')] += 1\n            av_enriched.append(event)\n        av_enriched.sort(\n            key=lambda row: (\n                0 if row.get('av_status') == 'finding' else (1 if row.get('av_status') == 'activity' else 2),\n                -int(row.get('ts') or 0),\n            )\n        )\n\n        adblock_rows = [\n            {\n                'ts': int(row[0] or 0),\n                'src_ip': str(row[1] or ''),\n                'method': str(row[2] or ''),\n                'url': str(row[3] or ''),\n                'domain': _extract_domain(row[3]),\n                'http_status': int(row[4] or 0),\n                'result': 'BLOCKED',\n            }\n            for row in adblock_recent_rows\n        ]\n        webfilter_rows = [\n            {\n                'ts': int(row[0] or 0),\n                'src_ip': str(row[1] or ''),\n                'url': str(row[2] or ''),\n                'domain': _extract_domain(row[2]),\n                'category': str(row[3] or ''),\n                'result': 'BLOCKED',\n            }\n            for row in webfilter_recent_rows\n        ]\n\n        return {\n            'summary': {\n                'av_events': int(av_summary_row[0] or 0) if av_summary_row else 0,\n                'potential_findings': int(av_summary_row[1] or 0) if av_summary_row else 0,\n                'av_last_seen': int(av_summary_row[2] or 0) if av_summary_row else 0,\n                'adblock_blocks': int(adblock_summary_row[0] or 0) if adblock_summary_row else 0,\n                'adblock_clients': int(adblock_summary_row[1] or 0) if adblock_summary_row else 0,\n                'adblock_last_seen': int(adblock_summary_row[2] or 0) if adblock_summary_row else 0,\n                'webfilter_blocks': int(webfilter_summary_row[0] or 0) if webfilter_summary_row else 0,\n                'webfilter_clients': int(webfilter_summary_row[1] or 0) if webfilter_summary_row else 0,\n                'webfilter_categories': int(webfilter_summary_row[2] or 0) if webfilter_summary_row else 0,\n                'webfilter_last_seen': int(webfilter_summary_row[3] or 0) if webfilter_summary_row else 0,\n                'combined_blocks': (int(adblock_summary_row[0] or 0) if adblock_summary_row else 0) + (int(webfilter_summary_row[0] or 0) if webfilter_summary_row else 0),\n            },\n            'av_rows': present_icap_events(av_enriched, limit=lim),\n            'av_top_targets': _badge_rows(av_target_counter, limit=6),\n            'adblock_rows': adblock_rows[:lim],\n            'adblock_top_domains': [\n                {\n                    'domain': str(row[0] or ''),\n                    'blocks': int(row[1] or 0),\n                    'clients': int(row[2] or 0),\n                    'last_seen': int(row[3] or 0),\n                }\n                for row in top_adblock_domains_rows\n            ],\n            'webfilter_rows': webfilter_rows[:lim],\n            'webfilter_top_categories': [\n                {\n                    'category': str(row[0] or ''),\n                    'blocks': int(row[1] or 0),\n                    'last_seen': int(row[2] or 0),\n                }\n                for row in top_webfilter_category_rows\n            ],\n            'webfilter_top_domains': [\n                {\n                    'domain': str(row[0] or ''),\n                    'blocks': int(row[1] or 0),\n                    'clients': int(row[2] or 0),\n                    'last_seen': int(row[3] or 0),\n                }\n                for row in top_webfilter_domain_rows\n            ],\n            'notes': [\n                'AV findings are best-effort string matches over the AV ICAP trace stream. If the scanner logs only generic allow/clean messages, suspicious hits may not appear here.',\n                'Adblock and web-filter rows come from explicit block logs, so they are stronger evidence of enforcement than ICAP activity counts alone.',\n            ],\n        }\n\n    def performance_overview(self, *, since: int, limit: int = 10, summary: Dict[str, Any] | None = None) -> Dict[str, Any]:\n        diagnostic_store = get_diagnostic_store()\n        lim = max(3, min(20, int(limit)))\n        summary_payload = present_observability_summary(diagnostic_summary=summary or diagnostic_store.activity_summary(since=since), ssl_summary={})\n        return {\n            'summary': summary_payload,\n            'slow_requests': present_transaction_rows(diagnostic_store.slowest_requests(since=since, limit=lim), icap_limit=0),\n            'slow_icap_events': present_icap_events(diagnostic_store.slowest_icap_events(since=since, limit=lim), limit=lim),\n            'top_user_agents': present_top_value_rows(diagnostic_store.top_request_dimension('user_agent', since=since, limit=8), max_label=72),\n            'top_bump_modes': present_top_value_rows(diagnostic_store.top_request_dimension('bump_mode', since=since, limit=8), max_label=40),\n            'top_tls_server_versions': present_top_value_rows(diagnostic_store.top_request_dimension('tls_server_version', since=since, limit=8), max_label=40),\n            'top_policy_tags': present_top_tag_rows(diagnostic_store.top_policy_tags(since=since, limit=10), max_label=64),\n            'av_icap_summary': diagnostic_store.icap_summary(since=since, service='av'),\n            'adblock_icap_summary': diagnostic_store.icap_summary(since=since, service='adblock'),\n        }\n\n    def overview_bundle(\n        self,\n        *,\n        since: int,\n        search: str = '',\n        limit: int = 6,\n        resolve_hostnames: bool = False,\n        summary: Dict[str, Any] | None = None,\n    ) -> Dict[str, Any]:\n        lim = max(3, min(10, int(limit)))\n        summary_payload = summary or self.summary(since=since)\n        total_requests = int(summary_payload.get('request_records') or 0)\n        return {\n            'summary': summary_payload,\n            'destinations': self.top_destinations(since=since, search=search, limit=lim, sort='requests', total_requests=total_requests),\n            'clients': self.top_clients(since=since, search=search, limit=lim, sort='requests', resolve_hostnames=resolve_hostnames, total_requests=total_requests),\n            'cache_reasons': self.top_cache_reasons(since=since, search=search, limit=lim, sort='requests'),\n            'ssl': self.ssl_overview(since=since, search=search, limit=lim),\n            'security': self.security_overview(since=since, search=search, limit=lim),\n            'performance': self.performance_overview(since=since, limit=lim, summary=summary_payload),\n        }\n\n\n_store: ObservabilityQueries | None = None\n\n\ndef get_observability_queries() -> ObservabilityQueries:\n    global _store\n    if _store is None:\n        _store = ObservabilityQueries()\n    return _store\n", "encoding": "utf-8", "sha": "85bfd22b2deb7a59dd6b54fb7a56f7f61a24f307", "display_url": "https://github.com/kklouzal/Docker_Proxy/blob/main/web/services/observability_queries.py", "display_title": "observability_queries.py"}
+from __future__ import annotations
+
+from collections import Counter
+from typing import Any, Dict, List
+
+from services.adblock_store import get_adblock_store
+from services.client_identity_cache import get_client_identity_cache
+from services.db import connect
+from services.diagnostic_store import get_diagnostic_store
+from services.proxy_context import get_proxy_id
+from services.runtime_helpers import cache_hit_sql as _cache_hit_sql, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason_sql as _not_cached_reason_sql, present_value_sql as _present_value_sql
+from services.ssl_errors_store import get_ssl_errors_store
+from services.ui_support import (
+    present_icap_events,
+    present_observability_summary,
+    present_ssl_error_rows,
+    present_ssl_exclusion_candidates,
+    present_ssl_top_domains,
+    present_top_tag_rows,
+    present_top_value_rows,
+    present_transaction_rows,
+)
+from services.webfilter_store import get_webfilter_store
+
+
+def _pct(part: int, whole: int) -> float:
+    if whole <= 0:
+        return 0.0
+    return round((float(part) / float(whole)) * 100.0, 1)
+
+
+def _badge_rows(counter: Counter[str], *, limit: int = 8) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for label, count in counter.most_common(max(1, limit)):
+        clean = str(label or "").strip()
+        if not clean:
+            continue
+        rows.append(
+            {
+                "label": clean,
+                "full_label": clean,
+                "count": int(count or 0),
+            }
+        )
+    return rows
+
+
+class ObservabilityQueries:
+    def _connect(self):
+        return connect()
+
+    @staticmethod
+    def _request_identity_sql(id_column: str = "id", master_xaction_column: str = "master_xaction") -> str:
+        return (
+            "CASE "
+            f"WHEN COALESCE(NULLIF(TRIM({master_xaction_column}), ''), '') <> '' "
+            f"THEN CONCAT('tx:', {master_xaction_column}) "
+            f"ELSE CONCAT('req:', CAST({id_column} AS CHAR)) END"
+        )
+
+    @staticmethod
+    def _hit_sql(result_column: str = "result_code") -> str:
+        return _cache_hit_sql(result_column)
+
+    @staticmethod
+    def _present_sql(column: str) -> str:
+        return _present_value_sql(column)
+
+    @staticmethod
+    def _url_host_sql(url_column: str = "url") -> str:
+        return (
+            "LOWER(TRIM(BOTH '.' FROM "
+            "CASE "
+            f"WHEN LOCATE('://', {url_column}) > 0 THEN "
+            f"SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING({url_column}, LOCATE('://', {url_column}) + 3), '/', 1), ':', 1) "
+            "ELSE "
+            f"SUBSTRING_INDEX(SUBSTRING_INDEX({url_column}, '/', 1), ':', 1) "
+            "END))"
+        )
+
+    @staticmethod
+    def _not_cached_reason_sql(
+        *,
+        method_column: str = "method",
+        result_column: str = "result_code",
+        status_column: str = "http_status",
+    ) -> str:
+        return _not_cached_reason_sql(
+            method_column=method_column,
+            result_column=result_column,
+            status_column=status_column,
+        )
+
+    @staticmethod
+    def _av_status(summary: str, details: str) -> str:
+        haystack = f"{summary} {details}".lower()
+        if any(token in haystack for token in ("found", "eicar", "malware", "virus", "infect", "trojan", "blocked", "deny")):
+            return "finding"
+        if any(token in haystack for token in ("clean", "allow", "passed")):
+            return "clean"
+        return "activity"
+
+    @staticmethod
+    def _av_status_meta(status: str) -> Dict[str, str]:
+        normalized = (status or "activity").strip().lower()
+        if normalized == "finding":
+            return {"label": "Potential finding", "tone": "danger"}
+        if normalized == "clean":
+            return {"label": "Clean / allowed", "tone": "ok"}
+        return {"label": "General AV activity", "tone": "ghost"}
+
+    @staticmethod
+    def _av_finding_sql() -> str:
+        haystack = "LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, '')))"
+        return (
+            f"({haystack} LIKE '%%found%%' OR {haystack} LIKE '%%eicar%%' OR {haystack} LIKE '%%malware%%' "
+            f"OR {haystack} LIKE '%%virus%%' OR {haystack} LIKE '%%infect%%' OR {haystack} LIKE '%%trojan%%' "
+            f"OR {haystack} LIKE '%%blocked%%' OR {haystack} LIKE '%%deny%%')"
+        )
+
+    def summary(self, *, since: int) -> Dict[str, Any]:
+        proxy_id = get_proxy_id()
+        hit_sql = self._hit_sql("result_code")
+        tx_sql = self._request_identity_sql("id", "master_xaction")
+
+        with self._connect() as conn:
+            requests_row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS request_records,
+                    COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS cache_hits,
+                    COUNT(DISTINCT client_ip) AS clients,
+                    COUNT(DISTINCT domain) AS destinations,
+                    COUNT(DISTINCT {tx_sql}) AS transactions
+                FROM diagnostic_requests
+                WHERE proxy_id = %s AND ts >= %s AND {self._present_sql('domain')}
+                """,
+                (proxy_id, int(since)),
+            ).fetchone()
+            icap_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS icap_events,
+                    COALESCE(SUM(CASE WHEN service_family = 'av' THEN 1 ELSE 0 END), 0) AS av_icap_events,
+                    COALESCE(SUM(CASE WHEN service_family = 'adblock' THEN 1 ELSE 0 END), 0) AS adblock_icap_events
+                FROM diagnostic_icap_events
+                WHERE proxy_id = %s AND ts >= %s
+                """,
+                (proxy_id, int(since)),
+            ).fetchone()
+
+        request_records = int(requests_row[0] or 0) if requests_row else 0
+        cache_hits = int(requests_row[1] or 0) if requests_row else 0
+        return {
+            "request_records": request_records,
+            "cache_hits": cache_hits,
+            "cache_misses": max(0, request_records - cache_hits),
+            "cache_hit_pct": _pct(cache_hits, request_records),
+            "clients": int(requests_row[2] or 0) if requests_row else 0,
+            "destinations": int(requests_row[3] or 0) if requests_row else 0,
+            "transactions": int(requests_row[4] or 0) if requests_row else 0,
+            "icap_events": int(icap_row[0] or 0) if icap_row else 0,
+            "av_icap_events": int(icap_row[1] or 0) if icap_row else 0,
+            "adblock_icap_events": int(icap_row[2] or 0) if icap_row else 0,
+        }
+
+    def top_destinations(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        sort: str = "requests",
+        total_requests: int | None = None,
+    ) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(200, int(limit)))
+        search_value = (search or "").strip().lower()
+        hit_sql = self._hit_sql("r.result_code")
+        tx_sql = self._request_identity_sql("r.id", "r.master_xaction")
+        request_where = ["r.proxy_id = %s", "r.ts >= %s", self._present_sql("r.domain")]
+        request_params: List[Any] = [proxy_id, int(since)]
+        icap_where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
+        icap_params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            request_where.append("LOWER(r.domain) LIKE %s ESCAPE '\\\\'")
+            request_params.append(like)
+            icap_where.append("LOWER(domain) LIKE %s ESCAPE '\\\\'")
+            icap_params.append(like)
+
+        request_where_sql = "WHERE " + " AND ".join(request_where)
+        icap_where_sql = "WHERE " + " AND ".join(icap_where)
+
+        if sort == "recent":
+            order_by = "req.last_seen DESC, req.requests DESC"
+        elif sort == "cache":
+            order_by = "req.cache_pct DESC, req.requests DESC, req.last_seen DESC"
+        elif sort == "clients":
+            order_by = "req.clients DESC, req.requests DESC, req.last_seen DESC"
+        else:
+            order_by = "req.requests DESC, req.last_seen DESC"
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    req.domain,
+                    req.requests,
+                    req.hit_requests,
+                    req.clients,
+                    req.transactions,
+                    req.last_seen,
+                    req.cache_pct,
+                    COALESCE(icap.av_icap_events, 0) AS av_icap_events,
+                    COALESCE(icap.adblock_icap_events, 0) AS adblock_icap_events
+                FROM (
+                    SELECT
+                        r.domain AS domain,
+                        COUNT(*) AS requests,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,
+                        COUNT(DISTINCT r.client_ip) AS clients,
+                        COUNT(DISTINCT {tx_sql}) AS transactions,
+                        MAX(r.ts) AS last_seen,
+                        ROUND(
+                            CASE WHEN COUNT(*) > 0
+                                THEN (100.0 * COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) / COUNT(*))
+                                ELSE 0 END,
+                            1
+                        ) AS cache_pct
+                    FROM diagnostic_requests r
+                    {request_where_sql}
+                    GROUP BY r.domain
+                ) req
+                LEFT JOIN (
+                    SELECT
+                        domain,
+                        COALESCE(SUM(CASE WHEN service_family = 'av' THEN 1 ELSE 0 END), 0) AS av_icap_events,
+                        COALESCE(SUM(CASE WHEN service_family = 'adblock' THEN 1 ELSE 0 END), 0) AS adblock_icap_events
+                    FROM diagnostic_icap_events
+                    {icap_where_sql}
+                    GROUP BY domain
+                ) icap ON icap.domain = req.domain
+                ORDER BY {order_by}
+                LIMIT %s
+                """,
+                tuple(request_params + icap_params + [lim]),
+            ).fetchall()
+
+        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get("request_records") or 0))
+        return [
+            {
+                "domain": str(row[0] or ""),
+                "requests": int(row[1] or 0),
+                "hit_requests": int(row[2] or 0),
+                "clients": int(row[3] or 0),
+                "transactions": int(row[4] or 0),
+                "last_seen": int(row[5] or 0),
+                "cache_pct": float(row[6] or 0.0),
+                "av_icap_events": int(row[7] or 0),
+                "adblock_icap_events": int(row[8] or 0),
+                "pct": _pct(int(row[1] or 0), total_requests),
+            }
+            for row in rows
+        ]
+
+    def top_clients(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        sort: str = "requests",
+        resolve_hostnames: bool = True,
+        total_requests: int | None = None,
+    ) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(200, int(limit)))
+        search_value = (search or "").strip().lower()
+        hit_sql = self._hit_sql("r.result_code")
+        tx_sql = self._request_identity_sql("r.id", "r.master_xaction")
+        request_where = ["r.proxy_id = %s", "r.ts >= %s", self._present_sql("r.domain")]
+        request_params: List[Any] = [proxy_id, int(since)]
+        icap_where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
+        icap_params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            request_where.append("LOWER(r.client_ip) LIKE %s ESCAPE '\\\\'")
+            request_params.append(like)
+            icap_where.append("LOWER(client_ip) LIKE %s ESCAPE '\\\\'")
+            icap_params.append(like)
+
+        request_where_sql = "WHERE " + " AND ".join(request_where)
+        icap_where_sql = "WHERE " + " AND ".join(icap_where)
+
+        if sort == "recent":
+            order_by = "req.last_seen DESC, req.requests DESC"
+        elif sort == "cache":
+            order_by = "req.cache_pct DESC, req.requests DESC, req.last_seen DESC"
+        elif sort == "destinations":
+            order_by = "req.destinations DESC, req.requests DESC, req.last_seen DESC"
+        else:
+            order_by = "req.requests DESC, req.last_seen DESC"
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    req.client_ip,
+                    req.requests,
+                    req.hit_requests,
+                    req.destinations,
+                    req.transactions,
+                    req.last_seen,
+                    req.cache_pct,
+                    COALESCE(icap.av_icap_events, 0) AS av_icap_events,
+                    COALESCE(icap.adblock_icap_events, 0) AS adblock_icap_events
+                FROM (
+                    SELECT
+                        r.client_ip AS client_ip,
+                        COUNT(*) AS requests,
+                        COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,
+                        COUNT(DISTINCT r.domain) AS destinations,
+                        COUNT(DISTINCT {tx_sql}) AS transactions,
+                        MAX(r.ts) AS last_seen,
+                        ROUND(
+                            CASE WHEN COUNT(*) > 0
+                                THEN (100.0 * COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) / COUNT(*))
+                                ELSE 0 END,
+                            1
+                        ) AS cache_pct
+                    FROM diagnostic_requests r
+                    {request_where_sql}
+                    GROUP BY r.client_ip
+                ) req
+                LEFT JOIN (
+                    SELECT
+                        client_ip,
+                        COALESCE(SUM(CASE WHEN service_family = 'av' THEN 1 ELSE 0 END), 0) AS av_icap_events,
+                        COALESCE(SUM(CASE WHEN service_family = 'adblock' THEN 1 ELSE 0 END), 0) AS adblock_icap_events
+                    FROM diagnostic_icap_events
+                    {icap_where_sql}
+                    GROUP BY client_ip
+                ) icap ON icap.client_ip = req.client_ip
+                ORDER BY {order_by}
+                LIMIT %s
+                """,
+                tuple(request_params + icap_params + [lim]),
+            ).fetchall()
+
+        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get("request_records") or 0))
+        out = [
+            {
+                "ip": str(row[0] or ""),
+                "requests": int(row[1] or 0),
+                "hit_requests": int(row[2] or 0),
+                "destinations": int(row[3] or 0),
+                "transactions": int(row[4] or 0),
+                "last_seen": int(row[5] or 0),
+                "cache_pct": float(row[6] or 0.0),
+                "av_icap_events": int(row[7] or 0),
+                "adblock_icap_events": int(row[8] or 0),
+                "pct": _pct(int(row[1] or 0), total_requests),
+                "hostname": "",
+                "hostname_source": "",
+                "hostname_status": "disabled",
+            }
+            for row in rows
+        ]
+        if resolve_hostnames and out:
+            cache = get_client_identity_cache()
+            resolved = cache.resolve_many(row["ip"] for row in out)
+            for row in out:
+                info = resolved.get(row["ip"], {"hostname": "", "hostname_source": "", "hostname_status": "unresolved"})
+                row.update(info)
+        return out
+
+    def top_cache_reasons(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        sort: str = "requests",
+    ) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(200, int(limit)))
+        search_value = (search or "").strip().lower()
+        hit_sql = self._hit_sql("result_code")
+        reason_sql = self._not_cached_reason_sql()
+        where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain"), f"NOT {hit_sql}"]
+        params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append(
+                "(" + " OR ".join([
+                    "LOWER(domain) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(client_ip) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(url) LIKE %s ESCAPE '\\\\'",
+                ]) + ")"
+            )
+            params.extend([like, like, like])
+        where_sql = "WHERE " + " AND ".join(where)
+
+        if sort == "recent":
+            order_by = "last_seen DESC, requests DESC"
+        elif sort == "domains":
+            order_by = "domains DESC, requests DESC, last_seen DESC"
+        elif sort == "clients":
+            order_by = "clients DESC, requests DESC, last_seen DESC"
+        else:
+            order_by = "requests DESC, last_seen DESC"
+
+        with self._connect() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) FROM diagnostic_requests {where_sql}",
+                tuple(params),
+            ).fetchone()
+            rows = conn.execute(
+                f"""
+                SELECT
+                    {reason_sql} AS reason,
+                    COUNT(*) AS requests,
+                    COUNT(DISTINCT domain) AS domains,
+                    COUNT(DISTINCT client_ip) AS clients,
+                    MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                {where_sql}
+                GROUP BY reason
+                ORDER BY {order_by}
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+
+        total_requests = int(total_row[0] or 0) if total_row else 0
+        return [
+            {
+                "reason": str(row[0] or ""),
+                "requests": int(row[1] or 0),
+                "domains": int(row[2] or 0),
+                "clients": int(row[3] or 0),
+                "last_seen": int(row[4] or 0),
+                "pct": _pct(int(row[1] or 0), total_requests),
+            }
+            for row in rows
+        ]
+
+    def ssl_overview(self, *, since: int, search: str = "", limit: int = 50) -> Dict[str, Any]:
+        store = get_ssl_errors_store()
+        try:
+            store.init_db()
+        except Exception:
+            pass
+        raw_rows = store.list_recent(since=since, search=search, limit=max(10, min(500, int(limit))))
+        presented = present_ssl_error_rows(raw_rows)
+        category_counts: Counter[str] = Counter()
+        for row in presented["rows"]:
+            category_counts[str(row.get("category_label") or row.get("category") or "Other")] += int(row.get("count") or 0)
+        return {
+            "summary": presented["summary"],
+            "rows": presented["rows"],
+            "top_domains": present_ssl_top_domains(store.top_domains(since=since, search=search, limit=10), limit=10),
+            "exclusion_candidates": present_ssl_exclusion_candidates(store.suggest_exclusion_candidates(since=since, search=search, limit=10)),
+            "top_categories": _badge_rows(category_counts, limit=6),
+            "hints": presented["hints"],
+        }
+
+    def security_overview(self, *, since: int, search: str = "", limit: int = 50) -> Dict[str, Any]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(100, int(limit)))
+        search_value = (search or "").strip().lower()
+        diagnostic_store = get_diagnostic_store()
+        get_adblock_store().init_db()
+        get_webfilter_store().init_db()
+
+        av_where = ["proxy_id = %s", "ts >= %s", "service_family = 'av'"]
+        av_params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            av_where.append(
+                "(" + " OR ".join([
+                    "LOWER(domain) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(url) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(client_ip) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(adapt_summary) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(adapt_details) LIKE %s ESCAPE '\\\\'",
+                ]) + ")"
+            )
+            av_params.extend([like, like, like, like, like])
+        av_where_sql = "WHERE " + " AND ".join(av_where)
+        av_finding_sql = self._av_finding_sql()
+
+        adblock_where = ["proxy_id = %s", "ts >= %s"]
+        adblock_params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            adblock_where.append("(LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\')")
+            adblock_params.extend([like, like])
+        adblock_where_sql = "WHERE " + " AND ".join(adblock_where)
+
+        webfilter_where = ["proxy_id = %s", "ts >= %s"]
+        webfilter_params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            webfilter_where.append(
+                "(" + " OR ".join([
+                    "LOWER(url) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(src_ip) LIKE %s ESCAPE '\\\\'",
+                    "LOWER(category) LIKE %s ESCAPE '\\\\'",
+                ]) + ")"
+            )
+            webfilter_params.extend([like, like, like])
+        webfilter_where_sql = "WHERE " + " AND ".join(webfilter_where)
+
+        with self._connect() as conn:
+            av_summary_row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS events,
+                    COALESCE(SUM(CASE WHEN {av_finding_sql} THEN 1 ELSE 0 END), 0) AS findings,
+                    MAX(ts) AS last_seen
+                FROM diagnostic_icap_events
+                {av_where_sql}
+                """,
+                tuple(av_params),
+            ).fetchone()
+            adblock_summary_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, MAX(ts) AS last_seen
+                FROM adblock_events
+                {adblock_where_sql}
+                """,
+                tuple(adblock_params),
+            ).fetchone()
+            webfilter_summary_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, COUNT(DISTINCT category) AS categories, MAX(ts) AS last_seen
+                FROM webfilter_blocked_log
+                {webfilter_where_sql}
+                """,
+                tuple(webfilter_params),
+            ).fetchone()
+            top_adblock_domains_rows = conn.execute(
+                f"""
+                SELECT {self._url_host_sql('url')} AS domain, COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, MAX(ts) AS last_seen
+                FROM adblock_events
+                {adblock_where_sql}
+                GROUP BY domain
+                HAVING domain <> ''
+                ORDER BY blocks DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(adblock_params + [min(lim, 10)]),
+            ).fetchall()
+            top_webfilter_category_rows = conn.execute(
+                f"""
+                SELECT category, COUNT(*) AS blocks, MAX(ts) AS last_seen
+                FROM webfilter_blocked_log
+                {webfilter_where_sql}
+                GROUP BY category
+                ORDER BY blocks DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(webfilter_params + [min(lim, 10)]),
+            ).fetchall()
+            top_webfilter_domain_rows = conn.execute(
+                f"""
+                SELECT {self._url_host_sql('url')} AS domain, COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, MAX(ts) AS last_seen
+                FROM webfilter_blocked_log
+                {webfilter_where_sql}
+                GROUP BY domain
+                HAVING domain <> ''
+                ORDER BY blocks DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(webfilter_params + [min(lim, 10)]),
+            ).fetchall()
+            adblock_recent_rows = conn.execute(
+                f"""
+                SELECT ts, src_ip, method, url, http_status
+                FROM adblock_events
+                {adblock_where_sql}
+                ORDER BY ts DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(adblock_params + [min(max(lim * 2, 20), 100)]),
+            ).fetchall()
+            webfilter_recent_rows = conn.execute(
+                f"""
+                SELECT ts, src_ip, url, category
+                FROM webfilter_blocked_log
+                {webfilter_where_sql}
+                ORDER BY ts DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(webfilter_params + [min(max(lim * 2, 20), 100)]),
+            ).fetchall()
+
+        av_raw = diagnostic_store.list_recent_icap(
+            since=since,
+            search=search_value,
+            service='av',
+            limit=max(lim, 20),
+        )
+        av_enriched: List[Dict[str, Any]] = []
+        av_target_counter: Counter[str] = Counter()
+        for row in av_raw:
+            event = dict(row)
+            status = self._av_status(str(event.get('adapt_summary') or ''), str(event.get('adapt_details') or ''))
+            meta = self._av_status_meta(status)
+            event['av_status'] = status
+            event['av_status_label'] = meta['label']
+            event['av_status_tone'] = meta['tone']
+            if status == 'finding':
+                av_target_counter[str(event.get('target_display') or event.get('domain') or '-')] += 1
+            av_enriched.append(event)
+        av_enriched.sort(
+            key=lambda row: (
+                0 if row.get('av_status') == 'finding' else (1 if row.get('av_status') == 'activity' else 2),
+                -int(row.get('ts') or 0),
+            )
+        )
+
+        adblock_rows = [
+            {
+                'ts': int(row[0] or 0),
+                'src_ip': str(row[1] or ''),
+                'method': str(row[2] or ''),
+                'url': str(row[3] or ''),
+                'domain': _extract_domain(row[3]),
+                'http_status': int(row[4] or 0),
+                'result': 'BLOCKED',
+            }
+            for row in adblock_recent_rows
+        ]
+        webfilter_rows = [
+            {
+                'ts': int(row[0] or 0),
+                'src_ip': str(row[1] or ''),
+                'url': str(row[2] or ''),
+                'domain': _extract_domain(row[2]),
+                'category': str(row[3] or ''),
+                'result': 'BLOCKED',
+            }
+            for row in webfilter_recent_rows
+        ]
+
+        return {
+            'summary': {
+                'av_events': int(av_summary_row[0] or 0) if av_summary_row else 0,
+                'potential_findings': int(av_summary_row[1] or 0) if av_summary_row else 0,
+                'av_last_seen': int(av_summary_row[2] or 0) if av_summary_row else 0,
+                'adblock_blocks': int(adblock_summary_row[0] or 0) if adblock_summary_row else 0,
+                'adblock_clients': int(adblock_summary_row[1] or 0) if adblock_summary_row else 0,
+                'adblock_last_seen': int(adblock_summary_row[2] or 0) if adblock_summary_row else 0,
+                'webfilter_blocks': int(webfilter_summary_row[0] or 0) if webfilter_summary_row else 0,
+                'webfilter_clients': int(webfilter_summary_row[1] or 0) if webfilter_summary_row else 0,
+                'webfilter_categories': int(webfilter_summary_row[2] or 0) if webfilter_summary_row else 0,
+                'webfilter_last_seen': int(webfilter_summary_row[3] or 0) if webfilter_summary_row else 0,
+                'combined_blocks': (int(adblock_summary_row[0] or 0) if adblock_summary_row else 0) + (int(webfilter_summary_row[0] or 0) if webfilter_summary_row else 0),
+            },
+            'av_rows': present_icap_events(av_enriched, limit=lim),
+            'av_top_targets': _badge_rows(av_target_counter, limit=6),
+            'adblock_rows': adblock_rows[:lim],
+            'adblock_top_domains': [
+                {
+                    'domain': str(row[0] or ''),
+                    'blocks': int(row[1] or 0),
+                    'clients': int(row[2] or 0),
+                    'last_seen': int(row[3] or 0),
+                }
+                for row in top_adblock_domains_rows
+            ],
+            'webfilter_rows': webfilter_rows[:lim],
+            'webfilter_top_categories': [
+                {
+                    'category': str(row[0] or ''),
+                    'blocks': int(row[1] or 0),
+                    'last_seen': int(row[2] or 0),
+                }
+                for row in top_webfilter_category_rows
+            ],
+            'webfilter_top_domains': [
+                {
+                    'domain': str(row[0] or ''),
+                    'blocks': int(row[1] or 0),
+                    'clients': int(row[2] or 0),
+                    'last_seen': int(row[3] or 0),
+                }
+                for row in top_webfilter_domain_rows
+            ],
+            'notes': [
+                'AV findings are best-effort string matches over the AV ICAP trace stream. If the scanner logs only generic allow/clean messages, suspicious hits may not appear here.',
+                'Adblock and web-filter rows come from explicit block logs, so they are stronger evidence of enforcement than ICAP activity counts alone.',
+            ],
+        }
+
+    def performance_overview(self, *, since: int, limit: int = 10, summary: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        diagnostic_store = get_diagnostic_store()
+        lim = max(3, min(20, int(limit)))
+        summary_payload = present_observability_summary(diagnostic_summary=summary or diagnostic_store.activity_summary(since=since), ssl_summary={})
+        return {
+            'summary': summary_payload,
+            'slow_requests': present_transaction_rows(diagnostic_store.slowest_requests(since=since, limit=lim), icap_limit=0),
+            'slow_icap_events': present_icap_events(diagnostic_store.slowest_icap_events(since=since, limit=lim), limit=lim),
+            'top_user_agents': present_top_value_rows(diagnostic_store.top_request_dimension('user_agent', since=since, limit=8), max_label=72),
+            'top_bump_modes': present_top_value_rows(diagnostic_store.top_request_dimension('bump_mode', since=since, limit=8), max_label=40),
+            'top_tls_server_versions': present_top_value_rows(diagnostic_store.top_request_dimension('tls_server_version', since=since, limit=8), max_label=40),
+            'top_policy_tags': present_top_tag_rows(diagnostic_store.top_policy_tags(since=since, limit=10), max_label=64),
+            'av_icap_summary': diagnostic_store.icap_summary(since=since, service='av'),
+            'adblock_icap_summary': diagnostic_store.icap_summary(since=since, service='adblock'),
+        }
+
+    def overview_bundle(
+        self,
+        *,
+        since: int,
+        search: str = '',
+        limit: int = 6,
+        resolve_hostnames: bool = False,
+        summary: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        lim = max(3, min(10, int(limit)))
+        summary_payload = summary or self.summary(since=since)
+        total_requests = int(summary_payload.get('request_records') or 0)
+        return {
+            'summary': summary_payload,
+            'destinations': self.top_destinations(since=since, search=search, limit=lim, sort='requests', total_requests=total_requests),
+            'clients': self.top_clients(since=since, search=search, limit=lim, sort='requests', resolve_hostnames=resolve_hostnames, total_requests=total_requests),
+            'cache_reasons': self.top_cache_reasons(since=since, search=search, limit=lim, sort='requests'),
+            'ssl': self.ssl_overview(since=since, search=search, limit=lim),
+            'security': self.security_overview(since=since, search=search, limit=lim),
+            'performance': self.performance_overview(since=since, limit=lim, summary=summary_payload),
+        }
+
+
+_store: ObservabilityQueries | None = None
+
+
+def get_observability_queries() -> ObservabilityQueries:
+    global _store
+    if _store is None:
+        _store = ObservabilityQueries()
+    return _store
