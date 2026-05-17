@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 import re
@@ -196,6 +197,7 @@ def error_page_directory() -> Path:
     return Path(__file__).resolve().parents[2] / "squid" / "error_pages" / "en"
 
 
+@lru_cache(maxsize=128)
 def read_template(name: str) -> str:
     info = get_error_page(name)
     if info is None:

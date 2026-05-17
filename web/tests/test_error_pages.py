@@ -72,3 +72,24 @@ def test_admin_error_pages_route_lists_and_previews_templates(monkeypatch, tmp_p
     assert "%U" not in preview_body
 
     assert client.get("/error-pages/preview/ERR_NOT_REAL").status_code == 404
+
+
+def test_read_template_is_cached_within_process(monkeypatch) -> None:
+    from services import error_pages
+
+    error_pages.read_template.cache_clear()
+
+    calls: list[str] = []
+    original = Path.read_text
+
+    def fake_read_text(self, *args, **kwargs):
+        calls.append(self.name)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    first = error_pages.read_template("ERR_DNS_FAIL")
+    second = error_pages.read_template("ERR_DNS_FAIL")
+
+    assert first == second
+    assert calls.count("ERR_DNS_FAIL") == 1
