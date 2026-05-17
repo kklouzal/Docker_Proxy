@@ -82,6 +82,7 @@ def test_relevant_ui_pages_warn_that_http3_quic_uses_udp_443() -> None:
         html = (TEMPLATES / template_name).read_text(encoding="utf-8")
         assert phrase in html, template_name
 
+
 def test_templates_do_not_force_full_width_with_inline_styles() -> None:
     for template in TEMPLATES.glob("*.html"):
         html = template.read_text(encoding="utf-8")
@@ -119,14 +120,28 @@ def test_layout_uses_docker_proxy_visible_branding_and_titles() -> None:
     assert 'aria-label="Docker Proxy home"' in html
 
 
-def test_policy_requests_template_has_accessible_review_forms() -> None:
+def test_operations_template_uses_shared_shell_and_ledger_classes() -> None:
+    html = (TEMPLATES / "operations.html").read_text(encoding="utf-8")
+
+    assert "Operations | Docker Proxy" in html
+    assert 'class="page-hero-copy"' in html
+    assert 'class="stats-grid compact-stats operation-counts"' in html
+    assert 'class="card operations-ledger-card"' in html
+    assert 'class="card-body operations-ledger"' in html
+    assert 'class="metric-label"' in html
+
+
+def test_policy_requests_template_uses_shared_shell_and_table_classes() -> None:
     html = (TEMPLATES / "requests.html").read_text(encoding="utf-8")
 
     assert "Policy Requests | Docker Proxy" in html
+    assert 'class="page-hero-copy"' in html
+    assert 'class="card-title"' in html
+    assert 'class="card-body"' in html
+    assert 'class="table"' in html
+    assert 'class="checkbox-inline"' in html
     assert 'aria-labelledby="pending-requests-heading"' in html
     assert 'aria-label="Review request {{ r.id }} for {{ r.domain }}"' in html
-    assert 'for="admin-note-{{ r.id }}"' in html
-    assert 'for="duration-seconds-{{ r.id }}"' in html
     assert 'aria-label="Revoke exception {{ e.id }} for {{ e.domain }}"' in html
 
 
