@@ -32,6 +32,7 @@ RESOLUTIONS: List[Resolution] = [
     Resolution("1mo", "ts_1mo", 60 * 60 * 24 * 30),
     Resolution("1y", "ts_1y", 60 * 60 * 24 * 365),
 ]
+RESOLUTION_BY_NAME = {resolution.name: resolution for resolution in RESOLUTIONS}
 
 
 def _get_metric(stats: Dict[str, Any], path: str) -> Optional[float]:
@@ -249,9 +250,7 @@ class TimeSeriesStore:
         return out
 
     def query(self, resolution: str, since: int, limit: int = 500) -> List[Dict[str, Any]]:
-        res = next((r for r in RESOLUTIONS if r.name == resolution), None)
-        if not res:
-            res = RESOLUTIONS[0]
+        res = RESOLUTION_BY_NAME.get(resolution) or RESOLUTIONS[0]
 
         lim = max(10, min(2000, int(limit)))
         proxy_id = get_proxy_id()

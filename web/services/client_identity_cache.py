@@ -87,15 +87,7 @@ class ClientIdentityCache:
             self._cache[ip] = entry
         return entry
 
-    def resolve(self, ip: object) -> Dict[str, str]:
-        normalized = self._normalize_ip(ip)
-        if not normalized:
-            return {
-                "hostname": "",
-                "hostname_source": "",
-                "hostname_status": "invalid",
-            }
-
+    def _resolve_normalized(self, normalized: str) -> Dict[str, str]:
         cached = self._get_cached(normalized)
         if cached is not None:
             return {
@@ -113,13 +105,23 @@ class ClientIdentityCache:
             "hostname_status": entry.status,
         }
 
+    def resolve(self, ip: object) -> Dict[str, str]:
+        normalized = self._normalize_ip(ip)
+        if not normalized:
+            return {
+                "hostname": "",
+                "hostname_source": "",
+                "hostname_status": "invalid",
+            }
+        return self._resolve_normalized(normalized)
+
     def resolve_many(self, ips: Iterable[object]) -> Dict[str, Dict[str, str]]:
         resolved: Dict[str, Dict[str, str]] = {}
         for ip in ips:
             normalized = self._normalize_ip(ip)
             if not normalized or normalized in resolved:
                 continue
-            resolved[normalized] = self.resolve(normalized)
+            resolved[normalized] = self._resolve_normalized(normalized)
         return resolved
 
 
