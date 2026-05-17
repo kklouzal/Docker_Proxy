@@ -151,10 +151,12 @@ def _split_tsv(line: str) -> list[str]:
     s = (line or "").strip("\r\n")
     if not s:
         return []
-    if "\\t" in s and "\t" not in s:
-        s = s.replace("\\t", "\t")
+    if "\t" in s and "	" not in s:
+        s = s.replace("\t", "	")
+    if '"' not in s:
+        return [item.strip() for item in s.split("	")]
     try:
-        row = next(csv.reader(io.StringIO(s), delimiter="\t", quotechar='"'))
+        row = next(csv.reader(io.StringIO(s), delimiter="	", quotechar='"'))
     except Exception:
         return []
     return [item.strip() for item in row]
