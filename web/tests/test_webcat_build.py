@@ -234,10 +234,33 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
     class _Conn:
         def __init__(self):
             self.sql: list[str] = []
+            self.commits = 0
 
         def execute(self, sql: str, params=()):
             self.sql.append(sql)
+
+            class _Result:
+                def __init__(self, statement: str):
+                    self.statement = statement
+
+                def fetchone(self):
+                    if "COUNT(*) FROM `webcat_domains_stage_678_12345`" in self.statement:
+                        return (1,)
+                    if "COUNT(*) FROM `webcat_pairs_stage_678_12345`" in self.statement:
+                        return (2,)
+                    return (0,)
+
+                def fetchall(self):
+                    return []
+
+            return _Result(sql)
+
+        def executemany(self, sql: str, seq):
+            self.sql.append(sql)
             return None
+
+        def commit(self):
+            self.commits += 1
 
         def __enter__(self):
             return self
@@ -261,4 +284,59 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
     assert "DELETE FROM webcat_domains" not in joined
     assert "CREATE TABLE `webcat_domains_stage_678_12345` LIKE `webcat_domains`" in joined
     assert "RENAME TABLE" in joined
+    assert "webcat_pairs_stage_678_12345" in joined
     assert "`webcat_domains_stage_678_12345` TO `webcat_domains`" in joined
+    assert conn.commits >= 1
+
+
+def test_build_db_drops_stale_stage_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+
+    class _Conn:
+        def __init__(self):
+            self.sql: list[str] = []
+
+        def execute(self, sql: str, params=()):
+            self.sql.append(sql)
+
+            class _Result:
+                def fetchone(self):
+                    return (1,)
+
+                def fetchall(self):
+                    if "information_schema.TABLES" in sql:
+                        return [
+                            ("webcat_domains_stage_111_1000",),
+                            ("webcat_pairs_stage_111_1000",),
+                            ("webcat_domains_stage_222_999999",),
+                            ("webcat_domains",),
+                        ]
+                    return []
+
+            return _Result()
+
+        def executemany(self, sql: str, seq):
+            self.sql.append(sql)
+            return None
+
+        def commit(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    conn = _Conn()
+    monkeypatch.setattr(webcat_build, "_connect", lambda: conn)
+    monkeypatch.setattr(webcat_build, "_now", lambda: 2000)
+    monkeypatch.setattr(webcat_build.os, "getpid", lambda: 333)
+    monkeypatch.setenv("WEBCAT_STALE_STAGE_TTL_SECONDS", "500")
+
+    webcat_build._build_db([("example.com", "adult")], source="unit-test")
+
+    joined = "\n".join(conn.sql)
+    assert "DROP TABLE IF EXISTS `webcat_domains_stage_111_1000`" in joined
+    assert "DROP TABLE IF EXISTS `webcat_pairs_stage_111_1000`" in joined
+    assert "webcat_domains_stage_222_999999" not in joined
