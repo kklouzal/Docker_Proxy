@@ -2,10 +2,10 @@
 {% block title %}Policy Requests | Docker Proxy{% endblock %}
 {% block content %}
 <section class="page-hero">
-  <div class="page-hero-copy">
-    <span class="page-eyebrow">Policy workflow</span>
-    <h1 class="page-title">Policy exception requests</h1>
-    <p class="page-subtitle">Review block-page submissions across all registered proxy containers. Webfilter approvals create a client-IP + domain exception.</p>
+  <div>
+    <p class="eyebrow">Policy workflow</p>
+    <h1>Policy exception requests</h1>
+    <p class="muted">Review block-page submissions across all registered proxy containers. Webfilter approvals create a client-IP + domain exception.</p>
   </div>
 </section>
 
@@ -13,100 +13,86 @@
 {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
 
 <section class="card" aria-labelledby="pending-requests-heading">
-  <div class="card-header">
-    <h2 id="pending-requests-heading" class="card-title">Pending requests</h2>
-    <span class="badge">{{ pending_requests|length }} row{{ '' if pending_requests|length == 1 else 's' }}</span>
-  </div>
-  <div class="card-body">
-    {% if pending_requests %}
-    <div class="table-wrap"><table class="table">
-      <thead><tr><th scope="col">Time</th><th scope="col">Proxy</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Type</th><th scope="col">Note</th><th scope="col">Action</th></tr></thead>
-      <tbody>
-      {% for r in pending_requests %}
-      <tr>
-        <td>{{ fmt_ts(r.created_ts) }}</td>
-        <td>{{ r.proxy_id }}</td>
-        <td><code>{{ r.client_ip }}</code></td>
-        <td><code>{{ r.domain }}</code><br><small>{{ r.request_url }}</small></td>
-        <td>{{ r.block_type }}{% if r.category %}<br><small>{{ r.category }}</small>{% endif %}</td>
-        <td>{{ r.user_note }}</td>
-        <td>
-          <form method="post" class="stack-sm" aria-label="Review request {{ r.id }} for {{ r.domain }}">
-            {{ csrf_field() }}
-            <input type="hidden" name="request_id" value="{{ r.id }}">
-            <label for="admin-note-{{ r.id }}" class="small">Admin note</label>
-            <textarea id="admin-note-{{ r.id }}" name="admin_note" rows="2" placeholder="Admin note"></textarea>
-            <label for="duration-seconds-{{ r.id }}" class="small">Approval duration</label>
-            <select id="duration-seconds-{{ r.id }}" name="duration_seconds">
-              <option value="3600">1 hour</option>
-              <option value="86400" selected>1 day</option>
-              <option value="604800">7 days</option>
-              <option value="2592000">30 days</option>
-            </select>
-            <label class="checkbox-inline"><input type="checkbox" name="duration_mode" value="indefinite"> Indefinite</label>
-            <div class="button-row">
-              <button class="btn" name="action" value="approve">Approve</button>
-              <button class="btn ghost" name="action" value="reject">Reject</button>
-            </div>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-      </tbody>
-    </table></div>
-    {% else %}<p>No pending requests.</p>{% endif %}
-  </div>
+  <h2 id="pending-requests-heading">Pending requests</h2>
+  {% if pending_requests %}
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Time</th><th scope="col">Proxy</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Type</th><th scope="col">Note</th><th scope="col">Action</th></tr></thead>
+    <tbody>
+    {% for r in pending_requests %}
+    <tr>
+      <td>{{ fmt_ts(r.created_ts) }}</td>
+      <td>{{ r.proxy_id }}</td>
+      <td><code>{{ r.client_ip }}</code></td>
+      <td><code>{{ r.domain }}</code><br><small>{{ r.request_url }}</small></td>
+      <td>{{ r.block_type }}{% if r.category %}<br><small>{{ r.category }}</small>{% endif %}</td>
+      <td>{{ r.user_note }}</td>
+      <td>
+        <form method="post" class="stack-form" aria-label="Review request {{ r.id }} for {{ r.domain }}">
+          {{ csrf_field() }}
+          <input type="hidden" name="request_id" value="{{ r.id }}">
+          <label for="admin-note-{{ r.id }}" class="small">Admin note</label>
+          <textarea id="admin-note-{{ r.id }}" name="admin_note" rows="2" placeholder="Admin note"></textarea>
+          <label for="duration-seconds-{{ r.id }}" class="small">Approval duration</label>
+          <select id="duration-seconds-{{ r.id }}" name="duration_seconds">
+            <option value="3600">1 hour</option>
+            <option value="86400" selected>1 day</option>
+            <option value="604800">7 days</option>
+            <option value="2592000">30 days</option>
+          </select>
+          <label><input type="checkbox" name="duration_mode" value="indefinite"> Indefinite</label>
+          <div class="button-row">
+            <button class="btn" name="action" value="approve">Approve</button>
+            <button class="btn ghost" name="action" value="reject">Reject</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p>No pending requests.</p>{% endif %}
 </section>
 
 <section class="card" aria-labelledby="exceptions-heading">
-  <div class="card-header">
-    <h2 id="exceptions-heading" class="card-title">Exceptions</h2>
-    <span class="badge">{{ exceptions|length }} row{{ '' if exceptions|length == 1 else 's' }}</span>
-  </div>
-  <div class="card-body">
-    {% if exceptions %}
-    <div class="table-wrap"><table class="table">
-      <thead><tr><th scope="col">Status</th><th scope="col">Proxy</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Expires</th><th scope="col">Note</th><th scope="col">Action</th></tr></thead>
-      <tbody>
-      {% for e in exceptions %}
-      <tr>
-        <td>{{ e.status }}</td>
-        <td>{{ e.proxy_id }}</td>
-        <td><code>{{ e.client_ip }}</code></td>
-        <td><code>{{ e.domain }}</code></td>
-        <td>{% if e.expires_ts %}{{ fmt_ts(e.expires_ts) }}{% else %}Indefinite{% endif %}</td>
-        <td>{{ e.admin_note }}</td>
-        <td>
-          {% if e.status == 'active' %}
-          <form method="post" class="stack-sm" aria-label="Revoke exception {{ e.id }} for {{ e.domain }}">
-            {{ csrf_field() }}
-            <input type="hidden" name="exception_id" value="{{ e.id }}">
-            <label for="revocation-note-{{ e.id }}" class="small">Revocation note</label>
-            <input id="revocation-note-{{ e.id }}" name="admin_note" placeholder="Revocation note">
-            <button class="btn ghost" name="action" value="revoke">Revoke</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-      </tbody>
-    </table></div>
-    {% else %}<p>No exceptions recorded.</p>{% endif %}
-  </div>
+  <h2 id="exceptions-heading">Exceptions</h2>
+  {% if exceptions %}
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Status</th><th scope="col">Proxy</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Expires</th><th scope="col">Note</th><th scope="col">Action</th></tr></thead>
+    <tbody>
+    {% for e in exceptions %}
+    <tr>
+      <td>{{ e.status }}</td>
+      <td>{{ e.proxy_id }}</td>
+      <td><code>{{ e.client_ip }}</code></td>
+      <td><code>{{ e.domain }}</code></td>
+      <td>{% if e.expires_ts %}{{ fmt_ts(e.expires_ts) }}{% else %}Indefinite{% endif %}</td>
+      <td>{{ e.admin_note }}</td>
+      <td>
+        {% if e.status == 'active' %}
+        <form method="post" class="stack-form" aria-label="Revoke exception {{ e.id }} for {{ e.domain }}">
+          {{ csrf_field() }}
+          <input type="hidden" name="exception_id" value="{{ e.id }}">
+          <label for="revocation-note-{{ e.id }}" class="small">Revocation note</label>
+          <input id="revocation-note-{{ e.id }}" name="admin_note" placeholder="Revocation note">
+          <button class="btn ghost" name="action" value="revoke">Revoke</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p>No exceptions recorded.</p>{% endif %}
 </section>
 
 <section class="card" aria-labelledby="recent-requests-heading">
-  <div class="card-header">
-    <h2 id="recent-requests-heading" class="card-title">Recent requests</h2>
-  </div>
-  <div class="card-body">
-    {% if recent_requests %}
-    <ul>
-      {% for r in recent_requests[:50] %}
-      <li><strong>{{ r.status }}</strong> · {{ r.proxy_id }} · <code>{{ r.client_ip }}</code> · <code>{{ r.domain }}</code> · {{ fmt_ts(r.created_ts) }}</li>
-      {% endfor %}
-    </ul>
-    {% else %}<p>No requests recorded.</p>{% endif %}
-  </div>
+  <h2 id="recent-requests-heading">Recent requests</h2>
+  {% if recent_requests %}
+  <ul>
+    {% for r in recent_requests[:50] %}
+    <li><strong>{{ r.status }}</strong> · {{ r.proxy_id }} · <code>{{ r.client_ip }}</code> · <code>{{ r.domain }}</code> · {{ fmt_ts(r.created_ts) }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>No requests recorded.</p>{% endif %}
 </section>
 {% endblock %}
