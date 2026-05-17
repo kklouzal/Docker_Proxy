@@ -190,6 +190,7 @@ def get_error_page(name: str) -> ErrorPageInfo | None:
     return _INFO.get(str(name or "").strip().upper())
 
 
+@lru_cache(maxsize=1)
 def error_page_directory() -> Path:
     runtime = Path("/squid/error_pages/en")
     if runtime.exists():
