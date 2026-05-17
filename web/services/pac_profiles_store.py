@@ -93,28 +93,38 @@ class PacProfilesStore:
                 "SELECT id, name, client_cidr, created_ts FROM pac_profiles WHERE proxy_id=%s ORDER BY id ASC",
                 (proxy_id,),
             ).fetchall()
+            if not profiles:
+                return []
+
+            profile_ids = [int(p["id"]) for p in profiles]
+            placeholders = ",".join(["%s"] * len(profile_ids))
+
+            domains_by_profile: dict[int, List[str]] = {pid: [] for pid in profile_ids}
+            domain_rows = conn.execute(
+                f"SELECT profile_id, domain FROM pac_direct_domains WHERE profile_id IN ({placeholders}) ORDER BY profile_id ASC, domain ASC",
+                tuple(profile_ids),
+            ).fetchall()
+            for row in domain_rows:
+                domains_by_profile.setdefault(int(row["profile_id"]), []).append(str(row["domain"]))
+
+            nets_by_profile: dict[int, List[str]] = {pid: [] for pid in profile_ids}
+            net_rows = conn.execute(
+                f"SELECT profile_id, cidr FROM pac_direct_dst_nets WHERE profile_id IN ({placeholders}) ORDER BY profile_id ASC, cidr ASC",
+                tuple(profile_ids),
+            ).fetchall()
+            for row in net_rows:
+                nets_by_profile.setdefault(int(row["profile_id"]), []).append(str(row["cidr"]))
+
             res: List[PacProfile] = []
             for p in profiles:
                 pid = int(p["id"])
-                domains = [
-                    str(r[0])
-                    for r in conn.execute(
-                        "SELECT domain FROM pac_direct_domains WHERE profile_id=%s ORDER BY domain ASC", (pid,)
-                    ).fetchall()
-                ]
-                nets = [
-                    str(r[0])
-                    for r in conn.execute(
-                        "SELECT cidr FROM pac_direct_dst_nets WHERE profile_id=%s ORDER BY cidr ASC", (pid,)
-                    ).fetchall()
-                ]
                 res.append(
                     PacProfile(
                         id=pid,
                         name=str(p["name"]),
                         client_cidr=str(p["client_cidr"] or ""),
-                        direct_domains=domains,
-                        direct_dst_nets=nets,
+                        direct_domains=domains_by_profile.get(pid, []),
+                        direct_dst_nets=nets_by_profile.get(pid, []),
                         created_ts=int(p["created_ts"] or 0),
                     )
                 )
@@ -261,3 +271,4 @@ def get_pac_profiles_store() -> PacProfilesStore:
         if _store is None:
             _store = PacProfilesStore()
         return _store
+

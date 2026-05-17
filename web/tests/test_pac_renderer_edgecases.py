@@ -246,7 +246,8 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
 
     assert store.calls == 1
     assert [item.relative_path for item in state.files if item.relative_path.endswith(".pac")] == [
+        "fallback.pac",
         "profile-1.pac",
         "profile-2.pac",
-        "fallback.pac",
     ]
+

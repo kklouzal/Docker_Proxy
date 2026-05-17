@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+def _add_web_path() -> None:
+    web_root = Path(__file__).resolve().parents[1]
+    if str(web_root) not in sys.path:
+        sys.path.insert(0, str(web_root))
+
+
+class _FakeResult:
+    def __init__(self, rows: list[dict[str, object]]):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self):
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def execute(self, sql: str, params: tuple[object, ...] = ()):
+        self.calls.append((sql, params))
+        if sql.startswith("SELECT id, name, client_cidr, created_ts FROM pac_profiles"):
+            return _FakeResult(
+                [
+                    {"id": 11, "name": "alpha", "client_cidr": "10.0.0.0/24", "created_ts": 1},
+                    {"id": 12, "name": "beta", "client_cidr": "", "created_ts": 2},
+                ]
+            )
+        if sql.startswith("SELECT profile_id, domain FROM pac_direct_domains"):
+            return _FakeResult(
+                [
+                    {"profile_id": 11, "domain": "a.example"},
+                    {"profile_id": 11, "domain": "b.example"},
+                    {"profile_id": 12, "domain": "catch.example"},
+                ]
+            )
+        if sql.startswith("SELECT profile_id, cidr FROM pac_direct_dst_nets"):
+            return _FakeResult(
+                [
+                    {"profile_id": 11, "cidr": "10.0.0.0/8"},
+                    {"profile_id": 12, "cidr": "192.168.1.0/24"},
+                ]
+            )
+        return _FakeResult([])
+
+
+class _FakeStore:
+    def __init__(self, conn: _FakeConn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_list_profiles_batches_child_queries(monkeypatch) -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    conn = _FakeConn()
+    store = mod.PacProfilesStore()
+
+    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
+    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
+    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+
+    profiles = store.list_profiles()
+
+    assert [p.id for p in profiles] == [11, 12]
+    assert profiles[0].direct_domains == ["a.example", "b.example"]
+    assert profiles[0].direct_dst_nets == ["10.0.0.0/8"]
+    assert profiles[1].direct_domains == ["catch.example"]
+    assert profiles[1].direct_dst_nets == ["192.168.1.0/24"]
+    assert len(conn.calls) == 3
+    assert conn.calls[0][0].startswith("SELECT id, name, client_cidr, created_ts FROM pac_profiles")
+    assert "profile_id IN" in conn.calls[1][0]
+    assert "profile_id IN" in conn.calls[2][0]
