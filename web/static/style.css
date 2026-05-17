@@ -1621,4 +1621,101 @@ pre{
   }
 }
 
+
+.config-field-card{
+  display:grid;
+  gap:1rem;
+}
+
+.config-field-group{
+  display:grid;
+  gap:.5rem;
+}
+
+.config-field-group-heading,
+.config-safe-section-heading,
+.section-header-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:1rem;
+  flex-wrap:wrap;
+}
+
+.config-safe-section,
+.config-overview-card,
+.surface-panel{
+  display:grid;
+  gap:1rem;
+}
+
+.checkbox-row{
+  display:flex;
+  align-items:flex-start;
+  gap:.75rem;
+  flex-wrap:wrap;
+}
+
+.checkbox-inline{
+  display:inline-flex;
+  align-items:center;
+  gap:.5rem;
+}
+
+.checkbox-inline input{
+  margin:0;
+}
+
+.metric-label{
+  font-size:.82rem;
+  font-weight:600;
+  color:var(--muted-2);
+}
+
+.operation-count-card{
+  gap:.35rem;
+}
+
+.operations-ledger-card .card-body{
+  display:grid;
+  gap:1rem;
+}
+
+.operations-ledger{
+  display:grid;
+  gap:0;
+}
+
+.operation-main{
+  min-width:0;
+  display:grid;
+  gap:.45rem;
+  flex:1;
+}
+
+.operation-title{
+  display:flex;
+  align-items:center;
+  gap:.6rem;
+  flex-wrap:wrap;
+}
+
+.operation-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  min-width:12rem;
+}
+
+@media (max-width: 899px){
+  .operation-row{
+    flex-direction:column;
+  }
+
+  .operation-actions{
+    min-width:0;
+    justify-content:flex-start;
+  }
+}
+
 .toast-region{position:fixed;right:1rem;bottom:1rem;z-index:10000;display:grid;gap:.5rem;max-width:26rem}.operation-toast{opacity:0;transform:translateY(8px);transition:opacity .18s,transform .18s;padding:.75rem 1rem;border-radius:.75rem;background:#172033;color:#fff;box-shadow:0 12px 30px rgba(0,0,0,.28)}.operation-toast.visible{opacity:1;transform:translateY(0)}.operation-toast.applied{background:#14532d}.operation-toast.failed{background:#7f1d1d}.operation-toast.applying{background:#1d4ed8}.is-submitting{opacity:.72}.operation-counts{margin-bottom:1rem}.operation-row{display:flex;justify-content:space-between;gap:1rem;padding:1rem 0;border-top:1px solid var(--border-color,#263244)}.operation-row:first-child{border-top:0}.operation-title{display:flex;gap:.6rem;align-items:center}.status-badge{display:inline-flex;border-radius:999px;padding:.18rem .55rem;font-size:.78rem;font-weight:700;text-transform:uppercase;background:#334155;color:#e2e8f0}.status-badge.pending{background:#78350f}.status-badge.applying{background:#1d4ed8}.status-badge.applied{background:#166534}.status-badge.failed{background:#991b1b}.operation-actions{display:flex;align-items:center}
