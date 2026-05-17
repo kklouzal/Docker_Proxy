@@ -157,42 +157,42 @@ class ProxyRegistry:
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS proxy_instances (
-                    proxy_id VARCHAR(64) PRIMARY KEY,
-                    display_name VARCHAR(255) NOT NULL,
-                    hostname VARCHAR(255) NOT NULL DEFAULT '',
-                    management_url VARCHAR(512) NOT NULL DEFAULT '',
-                    public_host VARCHAR(255) NOT NULL DEFAULT '',
-                    public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',
-                    public_pac_port INT NOT NULL DEFAULT 80,
-                    public_http_proxy_port INT NOT NULL DEFAULT 3128,
-                    status VARCHAR(32) NOT NULL DEFAULT 'unknown',
-                    last_heartbeat BIGINT NOT NULL DEFAULT 0,
-                    last_apply_ts BIGINT NOT NULL DEFAULT 0,
-                    last_apply_ok TINYINT(1) NOT NULL DEFAULT 0,
-                    current_config_sha CHAR(64) NOT NULL DEFAULT '',
-                    detail TEXT,
-                    created_ts BIGINT NOT NULL,
-                    updated_ts BIGINT NOT NULL,
-                    KEY idx_proxy_instances_status (status, last_heartbeat),
-                    KEY idx_proxy_instances_updated (updated_ts)
+                        proxy_id VARCHAR(64) PRIMARY KEY,
+                        display_name VARCHAR(255) NOT NULL,
+                        hostname VARCHAR(255) NOT NULL DEFAULT '',
+                        management_url VARCHAR(512) NOT NULL DEFAULT '',
+                        public_host VARCHAR(255) NOT NULL DEFAULT '',
+                        public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',
+                        public_pac_port INT NOT NULL DEFAULT 80,
+                        public_http_proxy_port INT NOT NULL DEFAULT 3128,
+                        status VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                        last_heartbeat BIGINT NOT NULL DEFAULT 0,
+                        last_apply_ts BIGINT NOT NULL DEFAULT 0,
+                        last_apply_ok TINYINT(1) NOT NULL DEFAULT 0,
+                        current_config_sha CHAR(64) NOT NULL DEFAULT '',
+                        detail TEXT,
+                        created_ts BIGINT NOT NULL,
+                        updated_ts BIGINT NOT NULL,
+                        KEY idx_proxy_instances_status (status, last_heartbeat),
+                        KEY idx_proxy_instances_updated (updated_ts)
+                    )
+                    """
                 )
-                """
-            )
                 columns = self._existing_columns(conn, "proxy_instances")
                 required_columns = {
-                "public_host": "ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url",
-                "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
-                "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
-                "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
-            }
+                    "public_host": "ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url",
+                    "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
+                    "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
+                    "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
+                }
                 for column_name, ddl in required_columns.items():
                     if column_name not in columns:
                         conn.execute(ddl)
-                # Explicit destructive cleanup for removed SOCKS support.
                 for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
                     if column_name in columns:
                         conn.execute(f"ALTER TABLE proxy_instances DROP COLUMN {column_name}")
                 conn.execute("DROP TABLE IF EXISTS socks_events")
+                self._columns_cache.pop("proxy_instances", None)
                 self._columns_cache["proxy_instances"] = self._existing_columns(conn, "proxy_instances")
             self._schema_ready = True
 
