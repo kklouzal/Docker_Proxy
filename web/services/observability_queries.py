@@ -247,7 +247,7 @@ class ObservabilityQueries:
                 tuple(request_params + icap_params + [lim]),
             ).fetchall()
 
-        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get("request_records") or 0))
+        if total_requests is None:\n            total_requests = sum(int(row[1] or 0) for row in rows)\n        total_requests = int(total_requests or 0)
         return [
             {
                 "domain": str(row[0] or ""),
@@ -348,7 +348,7 @@ class ObservabilityQueries:
                 tuple(request_params + icap_params + [lim]),
             ).fetchall()
 
-        total_requests = int(total_requests if total_requests is not None else (self.summary(since=since).get("request_records") or 0))
+        if total_requests is None:\n            total_requests = sum(int(row[1] or 0) for row in rows)\n        total_requests = int(total_requests or 0)
         out = [
             {
                 "ip": str(row[0] or ""),
