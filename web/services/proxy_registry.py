@@ -121,10 +121,20 @@ class ProxyInstance:
 
 
 class ProxyRegistry:
+    _SELECT_COLUMNS = "proxy_id, display_name, hostname, management_url, public_host, public_pac_scheme, public_pac_port, public_http_proxy_port, status, last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha, detail, created_ts, updated_ts"
+
+    def __init__(self) -> None:
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
+        self._columns_cache: dict[str, set[str]] = {}
+
     def _connect(self):
         return connect()
 
     def _existing_columns(self, conn, table_name: str) -> set[str]:
+        cached = self._columns_cache.get(table_name)
+        if cached is not None:
+            return set(cached)
         rows = conn.execute(
             """
             SELECT column_name AS column_name
@@ -133,13 +143,20 @@ class ProxyRegistry:
             """,
             (table_name,),
         ).fetchall()
-        return {str(row["column_name"] or "") for row in rows}
+        columns = {str(row["column_name"] or "") for row in rows}
+        self._columns_cache[table_name] = set(columns)
+        return columns
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS proxy_instances (
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_instances (
                     proxy_id VARCHAR(64) PRIMARY KEY,
                     display_name VARCHAR(255) NOT NULL,
                     hostname VARCHAR(255) NOT NULL DEFAULT '',
@@ -161,21 +178,23 @@ class ProxyRegistry:
                 )
                 """
             )
-            columns = self._existing_columns(conn, "proxy_instances")
-            required_columns = {
+                columns = self._existing_columns(conn, "proxy_instances")
+                required_columns = {
                 "public_host": "ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url",
                 "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
                 "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
                 "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
             }
-            for column_name, ddl in required_columns.items():
-                if column_name not in columns:
-                    conn.execute(ddl)
-            # Explicit destructive cleanup for removed SOCKS support.
-            for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
-                if column_name in columns:
-                    conn.execute(f"ALTER TABLE proxy_instances DROP COLUMN {column_name}")
-            conn.execute("DROP TABLE IF EXISTS socks_events")
+                for column_name, ddl in required_columns.items():
+                    if column_name not in columns:
+                        conn.execute(ddl)
+                # Explicit destructive cleanup for removed SOCKS support.
+                for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
+                    if column_name in columns:
+                        conn.execute(f"ALTER TABLE proxy_instances DROP COLUMN {column_name}")
+                conn.execute("DROP TABLE IF EXISTS socks_events")
+                self._columns_cache["proxy_instances"] = self._existing_columns(conn, "proxy_instances")
+            self._schema_ready = True
 
     def _row_to_instance(self, row: object | None) -> Optional[ProxyInstance]:
         if not row:
@@ -218,7 +237,7 @@ class ProxyRegistry:
         now = int(time.time())
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                 (proxy_key,),
             ).fetchone()
             if row is None:
@@ -252,10 +271,24 @@ class ProxyRegistry:
                         now,
                     ),
                 )
-                row = conn.execute(
-                    "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
-                    (proxy_key,),
-                ).fetchone()
+                row = {
+                    "proxy_id": proxy_key,
+                    "display_name": (display_name or proxy_key).strip() or proxy_key,
+                    "hostname": (hostname or "").strip(),
+                    "management_url": (management_url or "").strip(),
+                    "public_host": (public_host or "").strip(),
+                    "public_pac_scheme": _normalize_public_scheme(public_pac_scheme),
+                    "public_pac_port": _coerce_port(public_pac_port, 80),
+                    "public_http_proxy_port": _coerce_port(public_http_proxy_port, 3128),
+                    "status": (status or "unknown").strip() or "unknown",
+                    "last_heartbeat": 0,
+                    "last_apply_ts": 0,
+                    "last_apply_ok": 0,
+                    "current_config_sha": "",
+                    "detail": (detail or "").strip(),
+                    "created_ts": now,
+                    "updated_ts": now,
+                }
             else:
                 next_display = (display_name or row["display_name"] or proxy_key).strip() or proxy_key
                 next_hostname = (hostname or row["hostname"] or "").strip()
@@ -297,10 +330,24 @@ class ProxyRegistry:
                         proxy_key,
                     ),
                 )
-                row = conn.execute(
-                    "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
-                    (proxy_key,),
-                ).fetchone()
+                row = {
+                    "proxy_id": proxy_key,
+                    "display_name": next_display,
+                    "hostname": next_hostname,
+                    "management_url": next_url,
+                    "public_host": next_public_host,
+                    "public_pac_scheme": next_public_pac_scheme,
+                    "public_pac_port": next_public_pac_port,
+                    "public_http_proxy_port": next_public_http_proxy_port,
+                    "status": next_status,
+                    "last_heartbeat": int(row["last_heartbeat"] or 0),
+                    "last_apply_ts": int(row["last_apply_ts"] or 0),
+                    "last_apply_ok": int(row["last_apply_ok"] or 0),
+                    "current_config_sha": str(row["current_config_sha"] or ""),
+                    "detail": next_detail,
+                    "created_ts": int(row["created_ts"] or 0),
+                    "updated_ts": now,
+                }
         instance = self._row_to_instance(row)
         assert instance is not None
         return instance
@@ -314,7 +361,7 @@ class ProxyRegistry:
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                 (proxy_key,),
             ).fetchone()
         return self._row_to_instance(row)
@@ -323,7 +370,7 @@ class ProxyRegistry:
         self.init_db()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM proxy_instances ORDER BY display_name ASC, proxy_id ASC"
+                f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances ORDER BY display_name ASC, proxy_id ASC"
             ).fetchall()
         instances = [self._row_to_instance(row) for row in rows]
         return [instance for instance in instances if instance is not None]
