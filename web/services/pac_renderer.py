@@ -276,20 +276,27 @@ def _render_pac(
     return "\n".join(lines) + "\n"
 
 
-def _render_profile_pac(profile: PacProfile, target: ProxyPacTarget | None = None) -> str:
-    sslfilter_rules = get_sslfilter_store().list_all()
+def _pac_include_private_nets() -> bool:
+    return bool(getattr(get_sslfilter_store().list_all(), "exclude_private_nets", False))
+
+
+def _render_profile_pac(
+    profile: PacProfile,
+    target: ProxyPacTarget | None = None,
+    *,
+    include_private: bool | None = None,
+) -> str:
     resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
         resolved_target.proxy_chain,
         proxy_host=resolved_target.proxy_host_token,
         direct_domains=list(getattr(profile, "direct_domains", []) or []),
         direct_dst_nets=list(getattr(profile, "direct_dst_nets", []) or []),
-        include_private=bool(getattr(sslfilter_rules, "exclude_private_nets", False)),
+        include_private=_pac_include_private_nets() if include_private is None else bool(include_private),
     )
 
 
-def _render_fallback_pac(target: ProxyPacTarget | None = None) -> str:
-    sslfilter_rules = get_sslfilter_store().list_all()
+def _render_fallback_pac(target: ProxyPacTarget | None = None, *, include_private: bool | None = None) -> str:
     resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
         resolved_target.proxy_chain,
@@ -299,7 +306,7 @@ def _render_fallback_pac(target: ProxyPacTarget | None = None) -> str:
         # private/local destination option should generate DIRECT routing.
         direct_domains=[],
         direct_dst_nets=[],
-        include_private=bool(getattr(sslfilter_rules, "exclude_private_nets", False)),
+        include_private=_pac_include_private_nets() if include_private is None else bool(include_private),
     )
 
 
@@ -347,13 +354,14 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
     token = set_proxy_id(normalized_proxy_id)
     try:
         target = resolve_proxy_pac_target(normalized_proxy_id)
-        profiles = get_pac_profiles_store().list_profiles()
+        sorted_profiles = sorted(list(get_pac_profiles_store().list_profiles()), key=_profile_sort_key)
+        include_private = _pac_include_private_nets()
         pac_files = {
-            f"profile-{int(profile.id)}.pac": _render_profile_pac(profile, target)
-            for profile in sorted(list(profiles), key=_profile_sort_key)
+            f"profile-{int(profile.id)}.pac": _render_profile_pac(profile, target, include_private=include_private)
+            for profile in sorted_profiles
         }
         fallback_file = "fallback.pac"
-        pac_files[fallback_file] = _render_fallback_pac(target)
+        pac_files[fallback_file] = _render_fallback_pac(target, include_private=include_private)
 
         manifest = {
             "proxy_id": normalized_proxy_id,
@@ -365,7 +373,7 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
             "public_http_proxy_port": target.http_proxy_port,
             "uses_request_host_fallback": target.uses_request_host_fallback,
             "proxy_chain": target.proxy_chain_display,
-            "profiles": _manifest_profiles(profiles),
+            "profiles": _manifest_profiles(sorted_profiles),
             "fallback_file": fallback_file,
             "state_sha256": "",
         }

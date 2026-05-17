@@ -199,3 +199,54 @@ def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(m
     assert "intranet.example" in rendered
     assert "isInNet(ip, '10.20.0.0', '255.255.0.0')" in rendered
     assert "isInNet(ip, '192.168.0.0', '255.255.0.0')" in rendered
+
+
+def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
+    _add_web_to_path()
+    import services.pac_renderer as pac_renderer  # type: ignore
+    from services.pac_profiles_store import PacProfile  # type: ignore
+
+    class _CountingSslfilterStore:
+        calls = 0
+
+        def list_all(self):
+            self.calls += 1
+            return type("SslFilterRules", (), {"exclude_private_nets": True})()
+
+    class _FakePacProfilesStore:
+        def list_profiles(self):
+            return [
+                PacProfile(id=2, name="Second", client_cidr="", direct_domains=[], direct_dst_nets=[], created_ts=0),
+                PacProfile(
+                    id=1,
+                    name="First",
+                    client_cidr="10.0.0.0/8",
+                    direct_domains=[],
+                    direct_dst_nets=[],
+                    created_ts=0,
+                ),
+            ]
+
+    store = _CountingSslfilterStore()
+    monkeypatch.setattr(pac_renderer, "get_sslfilter_store", lambda: store)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", lambda: _FakePacProfilesStore())
+    monkeypatch.setattr(
+        pac_renderer,
+        "resolve_proxy_pac_target",
+        lambda _proxy_id=None: pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+        ),
+    )
+
+    state = pac_renderer.build_proxy_pac_state("default")
+
+    assert store.calls == 1
+    assert [item.relative_path for item in state.files if item.relative_path.endswith(".pac")] == [
+        "profile-1.pac",
+        "profile-2.pac",
+        "fallback.pac",
+    ]
