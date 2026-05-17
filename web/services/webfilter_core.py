@@ -172,6 +172,8 @@ class WebFilterStoreBase:
         self.squid_include_path = squid_include_path
         self.whitelist_path = whitelist_path
         self.last_webcat_snapshot_status: tuple[bool, str] = (True, "")
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
 
     def _connect(self):
         return connect()
@@ -188,24 +190,30 @@ class WebFilterStoreBase:
         return self.TABLE_MAP[logical_name]
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            settings_table = self._table("settings")
-            meta_table = self._table("meta")
-            whitelist_table = self._table("whitelist")
-            conn.execute(
-                f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', k VARCHAR(64) NOT NULL, v LONGTEXT NOT NULL, PRIMARY KEY(proxy_id, k))"
-            )
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
-            conn.execute(
-                f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern), KEY idx_{whitelist_table}_proxy_ts (proxy_id, added_ts))"
-            )
-            SafeBrowsingStore.init_schema(conn)
-            for key, value in _DEFAULTS.items():
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                settings_table = self._table("settings")
+                meta_table = self._table("meta")
+                whitelist_table = self._table("whitelist")
                 conn.execute(
-                    f"INSERT IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(%s,%s,%s)",
-                    (self._settings_scope_for_key(key), key, value),
+                    f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', k VARCHAR(64) NOT NULL, v LONGTEXT NOT NULL, PRIMARY KEY(proxy_id, k))"
                 )
-            self._init_extra_schema(conn)
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern), KEY idx_{whitelist_table}_proxy_ts (proxy_id, added_ts))"
+                )
+                SafeBrowsingStore.init_schema(conn)
+                for key, value in _DEFAULTS.items():
+                    conn.execute(
+                        f"INSERT IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(%s,%s,%s)",
+                        (self._settings_scope_for_key(key), key, value),
+                    )
+                self._init_extra_schema(conn)
+            self._schema_ready = True
 
     def _init_extra_schema(self, conn) -> None:
         return None
@@ -290,19 +298,43 @@ class WebFilterStoreBase:
         )
 
     def _get_settings(self, conn) -> WebFilterSettings:
-        enabled = self._get(conn, "enabled", "0") == "1"
-        source_url = self._get(conn, "source_url", "")
-        source_provider = self._get(conn, "source_provider", "auto") or "auto"
+        settings_table = self._table("settings")
+        proxy_scope = get_proxy_id()
+        rows = conn.execute(
+            f"SELECT proxy_id, k, v FROM {settings_table} WHERE proxy_id IN (%s, %s)",
+            (proxy_scope, _GLOBAL_SCOPE),
+        ).fetchall()
+        scoped_values: dict[str, str] = {}
+        global_values: dict[str, str] = {}
+        for row in rows:
+            key = str(row[1] or "")
+            value = str(row[2]) if row[2] is not None else ""
+            if str(row[0] or "") == _GLOBAL_SCOPE:
+                global_values[key] = value
+            else:
+                scoped_values[key] = value
+
+        def _value(key: str, default: str = "") -> str:
+            if (key or "").strip() in _GLOBAL_SETTINGS_KEYS:
+                return global_values.get(key, default)
+            return scoped_values.get(key, default)
+
+        enabled = _value("enabled", "0") == "1"
+        source_url = _value("source_url", "")
+        source_provider = _value("source_provider", "auto") or "auto"
         if source_provider not in {"auto", "ut1", "category-dir", "csv"}:
             source_provider = "auto"
-        blocked_raw = self._get(conn, "blocked_categories", "")
+        blocked_raw = _value("blocked_categories", "")
         blocked = [item.strip() for item in blocked_raw.replace("\n", ",").split(",") if item.strip()]
         whitelist = self._get_whitelist_patterns(conn)
-        last_success = int(self._get(conn, "last_success", "0") or 0)
-        last_attempt = int(self._get(conn, "last_attempt", "0") or 0)
-        last_error = self._get(conn, "last_error", "")
-        next_run_ts = int(self._get(conn, "next_run_ts", "0") or 0)
-        safe_browsing = SafeBrowsingStore.settings_from_webfilter(conn, self._get_global_setting_conn)
+        last_success = int(_value("last_success", "0") or 0)
+        last_attempt = int(_value("last_attempt", "0") or 0)
+        last_error = _value("last_error", "")
+        next_run_ts = int(_value("next_run_ts", "0") or 0)
+        safe_browsing = SafeBrowsingStore.settings_from_webfilter(
+            conn,
+            lambda _conn, key, default="": global_values.get(key, default),
+        )
         return WebFilterSettings(
             enabled=enabled,
             source_url=source_url,
