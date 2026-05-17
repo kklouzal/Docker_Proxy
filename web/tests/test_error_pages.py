@@ -93,3 +93,28 @@ def test_read_template_is_cached_within_process(monkeypatch) -> None:
 
     assert first == second
     assert calls.count("ERR_DNS_FAIL") == 1
+
+
+def test_template_tokens_and_preview_are_cached(monkeypatch) -> None:
+    from services import error_pages
+
+    error_pages.template_tokens.cache_clear()
+    error_pages.render_preview.cache_clear()
+
+    read_calls: list[str] = []
+    original_read_template = error_pages.read_template
+
+    def fake_read_template(name: str) -> str:
+        read_calls.append(name)
+        return original_read_template(name)
+
+    monkeypatch.setattr(error_pages, "read_template", fake_read_template)
+
+    tokens_1 = error_pages.template_tokens("A %U B %T")
+    tokens_2 = error_pages.template_tokens("A %U B %T")
+    preview_1 = error_pages.render_preview("ERR_DNS_FAIL")
+    preview_2 = error_pages.render_preview("ERR_DNS_FAIL")
+
+    assert tokens_1 == tokens_2 == ("%T", "%U")
+    assert preview_1 == preview_2
+    assert read_calls == ["ERR_DNS_FAIL"]

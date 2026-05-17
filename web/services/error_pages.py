@@ -205,15 +205,18 @@ def read_template(name: str) -> str:
     return (error_page_directory() / info.name).read_text(encoding="utf-8")
 
 
-def template_tokens(text: str) -> list[str]:
-    return sorted(set(_TOKEN_RE.findall(text or "")))
+@lru_cache(maxsize=128)
+def template_tokens(text: str) -> tuple[str, ...]:
+    return tuple(sorted(set(_TOKEN_RE.findall(text or ""))))
 
 
+@lru_cache(maxsize=2)
 def missing_template_names() -> list[str]:
     base = error_page_directory()
     return [name for name in SQUID_ERROR_TEMPLATE_NAMES if not (base / name).is_file()]
 
 
+@lru_cache(maxsize=128)
 def render_preview(name: str) -> str:
     info = get_error_page(name)
     if info is None:
