@@ -73,10 +73,13 @@ def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Opti
     if "\t" in s or "\\t" in s:
         if "\\t" in s and "\t" not in s:
             s = s.replace("\\t", "\t")
-        try:
-            row = next(csv.reader(io.StringIO(s), delimiter="\t", quotechar='"'))
-        except Exception:
-            row = []
+        if '"' not in s:
+            row = s.split("\t")
+        else:
+            try:
+                row = next(csv.reader(io.StringIO(s), delimiter="\t", quotechar='"'))
+            except Exception:
+                row = []
         if len(row) < 7:
             return None
 

@@ -818,6 +818,10 @@ def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
     runtime._current_certificate_bundle_sha = lambda: "cert-sha"
     runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
     runtime._current_pac_state_sha = lambda: "pac-sha"
+    runtime._current_policy_sha = lambda: "policy-sha"
+    runtime._read_text_file = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("collect_health should use _current_policy_sha() instead of reading policy files")
+    )
     runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(policy_sha256="policy-sha", files=())
     runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(state_sha256="desired-pac-sha")
 
@@ -825,6 +829,7 @@ def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
 
     assert result["ok"] is True
     assert result["status"] == "healthy"
+    assert result["current_policy_sha"] == "policy-sha"
     assert result["health_elapsed_seconds"] >= 0
     assert runtime._health_cache_value is result
 

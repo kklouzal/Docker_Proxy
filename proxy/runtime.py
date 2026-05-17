@@ -1404,12 +1404,7 @@ class ProxyRuntime:
             try:
                 desired_policy = self.policy_state_builder(self.proxy_id)
                 desired_policy_sha = desired_policy.policy_sha256
-                current_policy_sha = calculate_policy_sha(
-                    tuple(
-                        MaterializedPolicyFile(path=item.path, content=self._read_text_file(item.path))
-                        for item in desired_policy.files
-                    )
-                )
+                current_policy_sha = self._current_policy_sha()
             except Exception as exc:
                 state_errors.append(f"policy: {public_error_message(exc, default='Failed to inspect desired proxy policy state.')}")
                 log_exception_throttled(
