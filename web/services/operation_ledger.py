@@ -183,7 +183,7 @@ class OperationLedger:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT ${self._SELECT_COLUMNS} FROM proxy_operations
+                SELECT id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts FROM proxy_operations
                 WHERE proxy_id=%s AND (updated_ts>%s OR (updated_ts=%s AND id>%s))
                 ORDER BY updated_ts ASC, id ASC LIMIT %s
                 """,
