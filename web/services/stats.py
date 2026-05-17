@@ -241,14 +241,17 @@ def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access-obse
             if not s:
                 continue
 
-            # New structured TSV format. Squid may emit "\\t" literally.
-            if "\t" in s or "\\t" in s:
-                if "\\t" in s and "\t" not in s:
-                    s = s.replace("\\t", "\t")
-                try:
-                    row = next(csv.reader(io.StringIO(s), delimiter="\t", quotechar='"'))
-                except Exception:
-                    continue
+            # New structured TSV format. Squid may emit "\t" literally.
+            if "	" in s or "\t" in s:
+                if "\t" in s and "	" not in s:
+                    s = s.replace("\t", "	")
+                if '"' not in s:
+                    row = s.split("	")
+                else:
+                    try:
+                        row = next(csv.reader(io.StringIO(s), delimiter="	", quotechar='"'))
+                    except Exception:
+                        continue
                 if len(row) < 7:
                     continue
                 result = row[5]
