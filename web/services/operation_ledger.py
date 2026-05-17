@@ -60,14 +60,25 @@ class ProxyOperation:
 
 
 class OperationLedger:
+    _SELECT_COLUMNS = "id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts"
+
+    def __init__(self) -> None:
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
+
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS proxy_operations (
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_operations (
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
                     proxy_id VARCHAR(64) NOT NULL,
                     status VARCHAR(32) NOT NULL DEFAULT 'pending',
@@ -88,9 +99,10 @@ class OperationLedger:
                     KEY idx_proxy_operations_proxy_status (proxy_id, status, created_ts),
                     KEY idx_proxy_operations_proxy_updated (proxy_id, updated_ts),
                     KEY idx_proxy_operations_status_updated (status, updated_ts)
+                    )
+                    """
                 )
-                """
-            )
+            self._schema_ready = True
 
     def _row_to_operation(self, row: object | None) -> Optional[ProxyOperation]:
         if not row:
@@ -127,9 +139,25 @@ class OperationLedger:
                 """,
                 (proxy_key, (operation_type or "sync")[:64], (subject or "")[:255], (summary or "")[:512], (target_kind or "")[:64], str(target_ref or "")[:255], (rollback_kind or "")[:64], str(rollback_ref or "")[:255], (request_hash or "")[:64], (detail or "")[:4000], (created_by or "")[:255], now, now),
             )
-            row = conn.execute("SELECT * FROM proxy_operations WHERE id=%s LIMIT 1", (int(cur.lastrowid or 0),)).fetchone()
-        op = self._row_to_operation(row)
-        assert op is not None
+        op = ProxyOperation(
+            operation_id=int(cur.lastrowid or 0),
+            proxy_id=proxy_key,
+            status="pending",
+            operation_type=(operation_type or "sync")[:64],
+            subject=(subject or "")[:255],
+            summary=(summary or "")[:512],
+            target_kind=(target_kind or "")[:64],
+            target_ref=str(target_ref or "")[:255],
+            rollback_kind=(rollback_kind or "")[:64],
+            rollback_ref=str(rollback_ref or "")[:255],
+            request_hash=(request_hash or "")[:64],
+            detail=(detail or "")[:4000],
+            created_by=(created_by or "")[:255],
+            created_ts=now,
+            started_ts=0,
+            completed_ts=0,
+            updated_ts=now,
+        )
         return op
 
     def list_operations(self, proxy_id: object | None, *, limit: int = 100, statuses: list[str] | None = None) -> list[ProxyOperation]:
@@ -145,7 +173,7 @@ class OperationLedger:
                 params.extend(filtered)
         params.append(limit)
         with self._connect() as conn:
-            rows = conn.execute(f"SELECT * FROM proxy_operations WHERE {where} ORDER BY updated_ts DESC, id DESC LIMIT %s", tuple(params)).fetchall()
+            rows = conn.execute(f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE {where} ORDER BY updated_ts DESC, id DESC LIMIT %s", tuple(params)).fetchall()
         return [op for op in (self._row_to_operation(row) for row in rows) if op is not None]
 
     def list_recent_since(self, proxy_id: object | None, *, after_updated_ts: int = 0, after_id: int = 0, limit: int = 100) -> list[ProxyOperation]:
@@ -155,7 +183,7 @@ class OperationLedger:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM proxy_operations
+                SELECT ${self._SELECT_COLUMNS} FROM proxy_operations
                 WHERE proxy_id=%s AND (updated_ts>%s OR (updated_ts=%s AND id>%s))
                 ORDER BY updated_ts ASC, id ASC LIMIT %s
                 """,
@@ -166,7 +194,7 @@ class OperationLedger:
     def get_operation(self, operation_id: object) -> Optional[ProxyOperation]:
         self.init_db()
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM proxy_operations WHERE id=%s LIMIT 1", (int(operation_id or 0),)).fetchone()
+            row = conn.execute(f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1", (int(operation_id or 0),)).fetchone()
         return self._row_to_operation(row)
 
     def counts_by_status(self, proxy_id: object | None) -> dict[str, int]:
@@ -229,7 +257,7 @@ class OperationLedger:
                 tuple([now, now, proxy_key] + ids),
             )
             claimed_rows = conn.execute(
-                f"SELECT * FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
+                f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
                 tuple([proxy_key] + ids),
             ).fetchall()
         return [op for op in (self._row_to_operation(row) for row in claimed_rows) if op is not None]
@@ -242,7 +270,8 @@ class OperationLedger:
         completed = now if status in TERMINAL_STATUSES else 0
         with self._connect() as conn:
             conn.execute("UPDATE proxy_operations SET status=%s, detail=%s, completed_ts=%s, updated_ts=%s WHERE id=%s", (status, (detail or "")[:4000], completed, now, int(operation_id or 0)))
-        return self.get_operation(operation_id)
+            row = conn.execute(f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1", (int(operation_id or 0),)).fetchone()
+        return self._row_to_operation(row)
 
     def mark_many(self, operations: list[ProxyOperation], *, status: str, detail: str = "") -> None:
         for op in operations:
