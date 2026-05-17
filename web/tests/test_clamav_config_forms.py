@@ -97,6 +97,10 @@ def test_squid_controller_materializes_clamav_runtime_files(tmp_path, monkeypatc
     virus_path = tmp_path / "virus_scan.conf"
     monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(icap_path))
     monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(virus_path))
+    from services.squid_core import _cached_icap_include_path, _cached_virus_scan_config_path
+
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
 
     config = apply_clamav_options_to_config(
         "workers 1\nadaptation_access av_resp_set allow icap_av_scanable\n",
@@ -114,3 +118,4 @@ def test_squid_controller_materializes_clamav_runtime_files(tmp_path, monkeypatc
     assert "virus_scan.SendPercentData 99" in virus_conf
     assert "virus_scan.StartSendPercentDataAfter 1K" in virus_conf
     assert "virus_scan.MaxObjectSize 64M" in virus_conf
+

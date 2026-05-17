@@ -12,6 +12,7 @@ from subprocess import TimeoutExpired, run
 from typing import Any, Callable, Optional, Tuple
 
 import logging
+from functools import lru_cache
 
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
@@ -19,6 +20,15 @@ from services.clamav_config_forms import clamav_fail_open, extract_clamav_option
 
 
 logger = logging.getLogger(__name__)
+
+@lru_cache(maxsize=1)
+def _cached_icap_include_path() -> Path:
+    return Path((os.environ.get("SQUID_ICAP_INCLUDE_PATH") or "/etc/squid/conf.d/20-icap.conf").strip() or "/etc/squid/conf.d/20-icap.conf")
+
+@lru_cache(maxsize=1)
+def _cached_virus_scan_config_path() -> Path:
+    return Path((os.environ.get("VIRUS_SCAN_CONFIG_PATH") or "/etc/virus_scan.conf").strip() or "/etc/virus_scan.conf")
+
 CommandRunner = Callable[..., Any]
 
 
@@ -199,10 +209,10 @@ class SquidController:
         return text if text.endswith("\n") else text + "\n"
 
     def _icap_include_path(self) -> Path:
-        return Path((os.environ.get("SQUID_ICAP_INCLUDE_PATH") or "/etc/squid/conf.d/20-icap.conf").strip() or "/etc/squid/conf.d/20-icap.conf")
+        return _cached_icap_include_path()
 
     def _virus_scan_config_path(self) -> Path:
-        return Path((os.environ.get("VIRUS_SCAN_CONFIG_PATH") or "/etc/virus_scan.conf").strip() or "/etc/virus_scan.conf")
+        return _cached_virus_scan_config_path()
 
     def _snapshot_runtime_file(self, path: Path) -> str | None:
         try:
@@ -1041,3 +1051,4 @@ class SquidController:
             with open(self.squid_conf_path, "r", encoding="utf-8") as handle:
                 return handle.read()
         return ""
+

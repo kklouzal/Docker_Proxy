@@ -552,6 +552,10 @@ def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeo
 
     monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(tmp_path / "20-icap.conf"))
     monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(tmp_path / "virus_scan.conf"))
+    from services.squid_core import _cached_icap_include_path, _cached_virus_scan_config_path
+
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
     controller = SquidController(str(squid_conf), cmd_run=fake_run)
     controller.persisted_squid_conf_path = str(persisted_conf)
     monkeypatch.setattr(controller, "_wait_for_http_listener_absent", lambda *, timeout: True)
@@ -1066,3 +1070,4 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
         ("claim", ("edge-a", 100, None)),
         ("mark", ([op], "applied", "runtime reconciled")),
     ]
+
