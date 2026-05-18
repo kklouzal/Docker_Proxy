@@ -435,6 +435,35 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
                     dst.write(chunk)
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _webcat_db_is_current(*, source_sha256: str) -> bool:
+    if not source_sha256:
+        return False
+    try:
+        with _connect() as conn:
+            row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("source_sha256",)).fetchone()
+            if not row or str(row[0] or "") != source_sha256:
+                return False
+            built_row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",)).fetchone()
+            if not built_row or int((built_row[0] if built_row else 0) or 0) <= 0:
+                return False
+            conn.execute("SELECT COUNT(*) FROM webcat_domains").fetchone()
+            conn.execute("SELECT COUNT(*) FROM webcat_categories").fetchone()
+            return True
+    except Exception:
+        return False
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         value = int((os.environ.get(name) or str(default)).strip() or str(default))
@@ -570,6 +599,7 @@ def _build_db(
     *,
     source: str,
     aliases: Optional[Dict[str, str]] = None,
+    source_sha256: str = "",
 ) -> Tuple[int, int]:
     suffix = f"{os.getpid()}_{_now()}"
     stages = {
@@ -647,6 +677,7 @@ def _build_db(
 
             _upsert_meta_table(conn, stages["webcat_meta"], "built_ts", str(_now()))
             _upsert_meta_table(conn, stages["webcat_meta"], "source", source)
+            _upsert_meta_table(conn, stages["webcat_meta"], "source_sha256", source_sha256)
             _upsert_meta_table(conn, stages["webcat_meta"], "domains", str(domains_built))
             _upsert_meta_table(conn, stages["webcat_meta"], "pairs", str(unique_pairs))
             _upsert_meta_table(conn, stages["webcat_meta"], "source_pairs", str(len(pairs)))
@@ -867,6 +898,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[webcat] no source specified (set --source-path or --source-url); skipping", file=sys.stderr)
         return 0
 
+    downloaded = False
     if source_url:
         dl_dir = Path(args.download_to)
         dl_dir.mkdir(parents=True, exist_ok=True)
@@ -887,15 +919,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dest = dl_dir / name
         print(f"[webcat] checking {source_url} -> {dest}", file=sys.stderr)
         downloaded, source_path = _download_if_changed(source_url, dest)
-        if not downloaded:
-            print(f"[webcat] upstream unchanged; keeping cached feed at {dest}", file=sys.stderr)
-            return 0
     else:
         source_path = Path(source_path_s)
 
     if not source_path.exists():
         print(f"[webcat] source not found: {source_path}", file=sys.stderr)
         return 2
+
+    source_sha256 = ""
+    if source_path.is_file():
+        source_sha256 = _file_sha256(source_path)
+
+    if source_url and not downloaded and _webcat_db_is_current(source_sha256=source_sha256):
+        print(f"[webcat] upstream unchanged and webcat DB is current; keeping cached feed at {source_path}", file=sys.stderr)
+        return 0
+    if source_url and not downloaded:
+        print(f"[webcat] upstream unchanged; rebuilding from cached feed at {source_path}", file=sys.stderr)
 
     print(f"[webcat] collecting categories from {source_path}", file=sys.stderr)
     try:
@@ -907,7 +946,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[webcat] no domain/category pairs found (format mismatch?)", file=sys.stderr)
         return 3
 
-    domains, total_pairs = _build_db(pairs, source=source_label, aliases=aliases)
+    domains, total_pairs = _build_db(pairs, source=source_label, aliases=aliases, source_sha256=source_sha256)
     print(f"[webcat] updated MySQL webcat tables: {domains} domains, {total_pairs} pairs", file=sys.stderr)
     return 0
 
