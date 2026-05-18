@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import socket
-
 import pytest
 
 from .live_test_helpers import (
@@ -13,6 +11,7 @@ from .live_test_helpers import (
     wait_for_config_apply,
     wait_for_proxy_management_payload,
     wait_for_proxy_fixture_response,
+    wait_for_tcp_listener,
 )
 
 
@@ -100,8 +99,7 @@ def test_live_squid_config_can_enable_http_intercept_listener(admin_client: Live
         assert "http_port 0.0.0.0:3129 intercept" in config_text
 
         for port in (3128, 3129):
-            with socket.create_connection(("proxy", port), timeout=3.0):
-                pass
+            wait_for_tcp_listener("proxy", port)
 
         payload = wait_for_proxy_management_payload()
         listener_details = payload.get("listener_details") or []

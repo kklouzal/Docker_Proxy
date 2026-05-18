@@ -260,6 +260,29 @@ def _wait_for_value(
     raise AssertionError(f"Timed out waiting for {description}.{detail}") from last_error
 
 
+def _tcp_listener_accepts(host: str, port: int, *, timeout_seconds: float = 3.0) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout_seconds):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_tcp_listener(
+    host: str,
+    port: int,
+    *,
+    timeout_seconds: float | None = None,
+    connect_timeout_seconds: float = 3.0,
+) -> None:
+    _wait_for_value(
+        lambda: _tcp_listener_accepts(host, port, timeout_seconds=connect_timeout_seconds),
+        accept=bool,
+        description=f"TCP listener {host}:{port}",
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def wait_for_json_url(
     url: str,
     *,
