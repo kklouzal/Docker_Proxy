@@ -214,6 +214,60 @@ def test_download_rejects_redirect_to_internal_host(monkeypatch: pytest.MonkeyPa
     with pytest.raises(ValueError, match="internal/localhost"):
         webcat_build._open_download_url("https://public.example/feed.csv", timeout=1)
 
+def test_download_if_changed_uses_conditional_headers_and_skips_on_304(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+
+    seen_headers = []
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            seen_headers.append(dict(req.header_items()))
+            raise webcat_build.urllib.error.HTTPError(req.full_url, 304, "Not Modified", {}, None)
+
+    monkeypatch.setattr(webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener())
+    monkeypatch.setattr(webcat_build, "_now", lambda: 456)
+
+    with tempfile.TemporaryDirectory(prefix="webcat_conditional_") as td:
+        dest = Path(td) / "feed.tar.gz"
+        dest.write_bytes(b"cached")
+        webcat_build._save_download_metadata(dest, {
+            "url": "https://public.example/feed.tar.gz",
+            "etag": "etag-1",
+            "last_modified": "Mon, 01 Jan 2024 00:00:00 GMT",
+        })
+
+        downloaded, source_path = webcat_build._download_if_changed("https://public.example/feed.tar.gz", dest)
+
+        assert downloaded is False
+        assert source_path == dest
+        assert dest.read_bytes() == b"cached"
+        assert seen_headers
+        sent = {k.lower(): v for k, v in seen_headers[0].items()}
+        assert sent["if-none-match"] == "etag-1"
+        assert sent["if-modified-since"] == "Mon, 01 Jan 2024 00:00:00 GMT"
+        metadata = webcat_build._load_download_metadata(dest)
+        assert metadata["url"] == "https://public.example/feed.tar.gz"
+        assert metadata["checked_ts"] == "456"
+
+
+def test_main_skips_rebuild_when_upstream_not_modified(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_main_") as td:
+        cached = Path(td) / "webcat_feed.tar.gz"
+        cached.write_bytes(b"cached")
+
+        monkeypatch.setattr(webcat_build, "_download_if_changed", lambda *_args, **_kwargs: (False, cached))
+        monkeypatch.setattr(webcat_build, "_collect", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("_collect should not run")))
+        monkeypatch.setattr(webcat_build, "_build_db", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("_build_db should not run")))
+
+        rc = webcat_build.main([
+            "--source-url", "https://public.example/feed.tar.gz",
+            "--download-to", td,
+        ])
+
+        assert rc == 0
+
 
 def test_webcat_domain_normalization_is_shared_and_idna() -> None:
     webcat_build = _import_webcat_build()
