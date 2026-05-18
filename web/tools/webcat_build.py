@@ -193,12 +193,15 @@ def _validate_download_url(url: str):
     return u
 
 
-def _open_download_url(url: str, *, timeout: int, max_redirects: int = 5):
+def _open_download_url(url: str, *, timeout: int, max_redirects: int = 5, headers: Optional[Dict[str, str]] = None):
     current = url
     opener = urllib.request.build_opener(_NoRedirectHandler)
+    request_headers = {"User-Agent": "squid-flask-proxy-webcat/1.0"}
+    if headers:
+        request_headers.update({str(k): str(v) for k, v in headers.items() if k and v})
     for _ in range(max_redirects + 1):
         _validate_download_url(current)
-        req = urllib.request.Request(current, headers={"User-Agent": "squid-flask-proxy-webcat/1.0"})
+        req = urllib.request.Request(current, headers=request_headers)
         try:
             return opener.open(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
@@ -210,6 +213,26 @@ def _open_download_url(url: str, *, timeout: int, max_redirects: int = 5):
             current = urljoin(current, location)
             _validate_download_url(current)
     raise ValueError(f"Download exceeded redirect limit ({max_redirects}).")
+
+
+def _metadata_path(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".metadata.json")
+
+
+def _load_download_metadata(dest: Path) -> Dict[str, str]:
+    try:
+        raw = json.loads(_metadata_path(dest).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): str(value) for key, value in raw.items() if value is not None}
+
+
+def _save_download_metadata(dest: Path, metadata: Dict[str, str]) -> None:
+    meta_path = _metadata_path(dest)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
@@ -244,6 +267,82 @@ def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
                 f.write(chunk)
 
     tmp.replace(dest)
+
+
+def _download_if_changed(url: str, dest: Path, *, timeout: int = 60) -> Tuple[bool, Path]:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _validate_download_url(url)
+
+    metadata = _load_download_metadata(dest)
+    headers: Dict[str, str] = {}
+    if metadata.get("url") == url:
+        etag = (metadata.get("etag") or "").strip()
+        last_modified = (metadata.get("last_modified") or "").strip()
+        if etag:
+            headers["If-None-Match"] = etag
+        if last_modified:
+            headers["If-Modified-Since"] = last_modified
+
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    max_bytes = int(os.environ.get("WEBCAT_MAX_DOWNLOAD_BYTES", str(512 * 1024 * 1024)))
+    if max_bytes <= 0:
+        max_bytes = 512 * 1024 * 1024
+
+    try:
+        total = 0
+        with _open_download_url(url, timeout=timeout, headers=headers) as r:
+            cl = r.headers.get("Content-Length")
+            if cl is not None:
+                try:
+                    content_length = int(cl)
+                except (TypeError, ValueError):
+                    content_length = None
+                if content_length is not None and content_length > max_bytes:
+                    raise ValueError(f"Download too large (Content-Length={cl}).")
+
+            with open(tmp, "wb") as f:
+                while True:
+                    chunk = r.read(512 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"Download exceeded limit ({max_bytes} bytes).")
+                    f.write(chunk)
+
+            response_url = ""
+            try:
+                response_url = str(r.geturl() or "")
+            except Exception:
+                response_url = ""
+
+            new_metadata = {
+                "url": url,
+                "final_url": response_url or url,
+                "etag": str(r.headers.get("ETag") or "").strip(),
+                "last_modified": str(r.headers.get("Last-Modified") or "").strip(),
+                "downloaded_ts": str(_now()),
+                "checked_ts": str(_now()),
+            }
+
+        tmp.replace(dest)
+        _save_download_metadata(dest, new_metadata)
+        return True, dest
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            if not dest.exists():
+                raise ValueError("Upstream reported not modified, but no cached feed is available.")
+            metadata["url"] = url
+            metadata["checked_ts"] = str(_now())
+            _save_download_metadata(dest, metadata)
+            return False, dest
+        raise
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
 
 
 def _extract_zip(zip_path: Path, out_dir: Path) -> None:
@@ -786,9 +885,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     name += ext
                     break
         dest = dl_dir / name
-        print(f"[webcat] downloading {source_url} -> {dest}", file=sys.stderr)
-        _download(source_url, dest)
-        source_path = dest
+        print(f"[webcat] checking {source_url} -> {dest}", file=sys.stderr)
+        downloaded, source_path = _download_if_changed(source_url, dest)
+        if not downloaded:
+            print(f"[webcat] upstream unchanged; keeping cached feed at {dest}", file=sys.stderr)
+            return 0
     else:
         source_path = Path(source_path_s)
 
