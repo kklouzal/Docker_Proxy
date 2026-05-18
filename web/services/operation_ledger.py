@@ -257,7 +257,7 @@ class OperationLedger:
                 tuple([now, now, proxy_key] + ids),
             )
             claimed_rows = conn.execute(
-                f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
+                f"SELECT * FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
                 tuple([proxy_key] + ids),
             ).fetchall()
         return [op for op in (self._row_to_operation(row) for row in claimed_rows) if op is not None]
