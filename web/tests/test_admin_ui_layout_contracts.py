@@ -104,6 +104,16 @@ def test_pac_nav_has_server_rendered_active_state() -> None:
     assert "request.endpoint == 'pac_builder'" in html
 
 
+def test_tools_nav_links_to_winhttp_registry_builder() -> None:
+    html = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
+    page = (TEMPLATES / "winhttp_registry.html").read_text(encoding="utf-8")
+
+    assert "request.endpoint in ['winhttp_registry_builder']" in html
+    assert "url_for('winhttp_registry_builder')" in html
+    assert "Microsoft does not publish a formal byte-for-byte registry binary serialization" in page
+    assert "advproxy JSON" in page
+
+
 def test_proxy_management_lives_in_context_strip_not_top_nav() -> None:
     html = (TEMPLATES / "layout.html").read_text(encoding="utf-8")
 

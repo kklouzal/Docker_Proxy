@@ -494,6 +494,24 @@
     return String(control.value || '');
   };
 
+  const bindCopyTargets = (container) => {
+    container.querySelectorAll('[data-copy-target]').forEach((button) => {
+      if (!(button instanceof HTMLButtonElement) || button.dataset.spaBound === '1') return;
+      button.dataset.spaBound = '1';
+      button.addEventListener('click', async () => {
+        const selector = button.getAttribute('data-copy-target') || '';
+        if (!selector) return;
+        const source = container.querySelector(selector) || document.querySelector(selector);
+        if (!(source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement || source instanceof HTMLElement)) return;
+        const text = source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement
+          ? source.value
+          : (source.textContent || '');
+        const ok = await copyTextToClipboard(text);
+        setTransientButtonLabel(button, ok ? 'Copied' : 'Copy failed');
+      });
+    });
+  };
+
   const enhanceConfigPage = (container) => {
     const configPage = container.querySelector('[data-config-page="true"]');
     if (!configPage) {
@@ -504,21 +522,7 @@
     const getTargetsForForm = (attrName, formId) => Array.from(configPage.querySelectorAll(`[${attrName}]`))
       .filter((element) => element.getAttribute(attrName) === formId);
 
-    configPage.querySelectorAll('[data-copy-target]').forEach((button) => {
-      if (!(button instanceof HTMLButtonElement) || button.dataset.spaBound === '1') return;
-      button.dataset.spaBound = '1';
-      button.addEventListener('click', async () => {
-        const selector = button.getAttribute('data-copy-target') || '';
-        if (!selector) return;
-        const source = configPage.querySelector(selector) || document.querySelector(selector);
-        if (!(source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement || source instanceof HTMLElement)) return;
-        const text = source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement
-          ? source.value
-          : (source.textContent || '');
-        const ok = await copyTextToClipboard(text);
-        setTransientButtonLabel(button, ok ? 'Copied' : 'Copy failed');
-      });
-    });
+    bindCopyTargets(configPage);
 
     const forms = Array.from(configPage.querySelectorAll('form[data-config-form]')).filter((form) => form instanceof HTMLFormElement);
     if (!forms.length) {
@@ -926,6 +930,7 @@
       heading.setAttribute('tabindex', '-1');
     }
 
+    bindCopyTargets(container);
     enhanceConfigPage(container);
 
     // Squid Config: "Reload from running config" button.

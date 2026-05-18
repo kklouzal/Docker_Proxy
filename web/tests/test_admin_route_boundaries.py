@@ -65,6 +65,7 @@ class RecordingProxyClient:
         "/clamav",
         "/squid/config",
         "/pac",
+        "/tools/winhttp-registry",
         "/requests",
         "/api/timeseries",
         "/certs",
@@ -201,6 +202,47 @@ def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
     assert response.json["resolution"] == "1m"
     assert isinstance(response.json["points"], list)
     assert "Content-Security-Policy" not in response.headers
+
+
+def test_winhttp_registry_builder_renders_and_generates_static_binary(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/tools/winhttp-registry",
+        data={
+            "csrf_token": csrf_token(client, "/tools/winhttp-registry"),
+            "action": "generate",
+            "proxy_host": "192.168.5.45",
+            "proxy_port": "3128",
+            "destination_schemes": ["http"],
+            "bypass_list": "localhost\n<local>",
+        },
+    )
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "28000000000000000300000016000000687474703d3139322e3136382e352e34353a33313238" in text
+    assert "netsh winhttp set advproxy" in text
+
+
+def test_winhttp_registry_builder_normalizes_exported_reg_binary(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/tools/winhttp-registry",
+        data={
+            "csrf_token": csrf_token(client, "/tools/winhttp-registry"),
+            "action": "normalize_reg",
+            "reg_input": '"WinHttpSettings"=hex:28,00,00,00,00,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00',
+        },
+    )
+
+    assert response.status_code == 200
+    assert "2800000000000000030000000000000000000000" in response.get_data(as_text=True)
 
 
 def test_proxy_id_query_is_normalized_and_bound_to_session(monkeypatch, tmp_path) -> None:

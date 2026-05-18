@@ -53,6 +53,12 @@
                         </div>
                     </div>
 
+                    <div class="nav-dropdown">
+                        <button class="nav-trigger {{ 'active' if request.endpoint in ['winhttp_registry_builder'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Tools</button>
+                        <div class="nav-menu">
+                            <a class="{{ 'active' if request.endpoint == 'winhttp_registry_builder' else '' }}" href="{{ url_for('winhttp_registry_builder') }}">WinHTTP GPO Registry</a>
+                        </div>
+                    </div>
 
                     <a class="nav-pill {{ 'active' if request.endpoint == 'pac_builder' else '' }}" href="{{ url_for('pac_builder') }}">PAC</a>
                     <a class="nav-pill {{ 'active' if request.endpoint == 'administration' else '' }}" href="{{ url_for('administration') }}">Administration</a>

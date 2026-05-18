@@ -1,0 +1,291 @@
+{% extends "layout.html" %}
+
+{% block title %}Windows WinHTTP GPO Registry Builder | Docker Proxy{% endblock %}
+
+{% block content %}
+<section class="card section-shell">
+  <div class="page-heading">
+    <div class="page-hero-copy">
+      <span class="page-eyebrow">Windows deployment</span>
+      <h1 class="page-title">WinHTTP GPO Registry Builder</h1>
+      <p class="page-subtitle">Generate Microsoft-documented netsh winhttp command payloads and the basic static WinHttpSettings REG_BINARY used by current GPO registry deployments.</p>
+      <div class="hero-badges">
+        <span class="badge">machine/user advproxy</span>
+        <span class="badge">static registry binary</span>
+        <span class="badge">.reg normalizer</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="card section-shell">
+  <div class="banner warn">
+    <span class="badge warn">Contract boundary</span>
+    <div class="banner-copy">
+      <span class="small">Microsoft documents the netsh winhttp command surface, advproxy JSON keys, and WINHTTP_PROXY_INFO fields. Microsoft does not publish a formal byte-for-byte registry binary serialization for every WinHTTP mode, so REG_BINARY generation here is limited to the observed basic static named-proxy value.</span>
+    </div>
+  </div>
+</section>
+
+{% if error %}
+  <div class="banner error"><span class="badge danger">Error</span><div class="banner-copy"><span class="small">{{ error }}</span></div></div>
+{% endif %}
+
+<form class="form" method="post" action="{{ url_for('winhttp_registry_builder') }}">
+  {{ csrf_field() }}
+  <input type="hidden" name="action" value="generate" />
+
+  <div class="grid">
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">Proxy configuration</h2>
+        <span class="badge">static mapping</span>
+      </div>
+      <div class="card-body content-stack">
+        <div class="row-2">
+          <div>
+            <label for="proxy_host">Proxy host/IP</label>
+            <input id="proxy_host" name="proxy_host" type="text" value="{{ form.proxy_host }}" placeholder="192.168.5.45" />
+          </div>
+          <div>
+            <label for="proxy_port">Proxy port</label>
+            <input id="proxy_port" name="proxy_port" type="number" min="1" max="65535" value="{{ form.proxy_port }}" placeholder="3128" />
+          </div>
+        </div>
+
+        <div>
+          <label>Apply this proxy to destination schemes</label>
+          <div class="checkbox-grid">
+            {% for scheme, label in [('http', 'HTTP URLs'), ('https', 'HTTPS URLs'), ('ftp', 'FTP URLs'), ('socks', 'SOCKS mapping')] %}
+              <label class="checkbox-inline">
+                <input type="checkbox" name="destination_schemes" value="{{ scheme }}" {% if scheme in form.destination_schemes %}checked{% endif %} />
+                <span>{{ label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+          <div class="surface-note small">An HTTP proxy can still carry HTTPS destination traffic through CONNECT. Select both HTTP and HTTPS for normal web traffic.</div>
+        </div>
+
+        <label class="checkbox-inline">
+          <input type="checkbox" name="use_custom_proxy_map" {% if form.use_custom_proxy_map %}checked{% endif %} />
+          <span>Advanced: custom proxy map string</span>
+        </label>
+        <div>
+          <label for="custom_proxy_map">Custom proxy map</label>
+          <input id="custom_proxy_map" name="custom_proxy_map" type="text" value="{{ form.custom_proxy_map }}" placeholder="http=192.168.5.45:3128;https=192.168.5.45:3128" />
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">Bypass and advanced settings</h2>
+        <span class="badge">advproxy</span>
+      </div>
+      <div class="card-body content-stack">
+        <div>
+          <label for="bypass_list">Bypass list</label>
+          <textarea id="bypass_list" name="bypass_list" rows="8" placeholder="localhost&#10;127.0.0.1&#10;192.168.*&#10;10.*&#10;*.example.local">{{ form.bypass_list }}</textarea>
+          <div class="surface-note small">Entries may be one per line or semicolon-separated. Commas are rejected because .reg binary values already use comma-separated bytes.</div>
+        </div>
+        <label class="checkbox-inline">
+          <input type="checkbox" name="include_local_bypass" {% if form.include_local_bypass %}checked{% endif %} />
+          <span>Add &lt;local&gt; bypass entry</span>
+        </label>
+        <div>
+          <label for="autoconfig_url">Autoconfig/PAC URL</label>
+          <input id="autoconfig_url" name="autoconfig_url" type="url" value="{{ form.autoconfig_url }}" placeholder="http://proxy.example.lan/proxy.pac" />
+        </div>
+        <label class="checkbox-inline">
+          <input type="checkbox" name="autodetect" {% if form.autodetect %}checked{% endif %} />
+          <span>Enable AutoDetect/WPAD in advproxy JSON</span>
+        </label>
+        <div>
+          <label for="advproxy_scope">advproxy setting scope</label>
+          <select id="advproxy_scope" name="advproxy_scope">
+            <option value="machine" {% if form.advproxy_scope != 'user' %}selected{% endif %}>machine</option>
+            <option value="user" {% if form.advproxy_scope == 'user' %}selected{% endif %}>user</option>
+          </select>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Tracing command</h2>
+      <span class="badge">documented netsh</span>
+    </div>
+    <div class="card-body">
+      <div class="grid">
+        <div>
+          <label for="tracing_state">State</label>
+          <select id="tracing_state" name="tracing_state">
+            <option value="disabled" {% if form.tracing_state != 'enabled' %}selected{% endif %}>disabled</option>
+            <option value="enabled" {% if form.tracing_state == 'enabled' %}selected{% endif %}>enabled</option>
+          </select>
+        </div>
+        <div>
+          <label for="tracing_output">Output</label>
+          <select id="tracing_output" name="tracing_output">
+            <option value="" {% if not form.tracing_output %}selected{% endif %}>default</option>
+            {% for value in ['file', 'debugger', 'both'] %}
+              <option value="{{ value }}" {% if form.tracing_output == value %}selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="tracing_level">Level</label>
+          <select id="tracing_level" name="tracing_level">
+            <option value="" {% if not form.tracing_level %}selected{% endif %}>default</option>
+            <option value="default" {% if form.tracing_level == 'default' %}selected{% endif %}>default</option>
+            <option value="verbose" {% if form.tracing_level == 'verbose' %}selected{% endif %}>verbose</option>
+          </select>
+        </div>
+        <div>
+          <label for="tracing_format">Format</label>
+          <select id="tracing_format" name="tracing_format">
+            <option value="" {% if not form.tracing_format %}selected{% endif %}>default</option>
+            <option value="ansi" {% if form.tracing_format == 'ansi' %}selected{% endif %}>ansi</option>
+            <option value="hex" {% if form.tracing_format == 'hex' %}selected{% endif %}>hex</option>
+          </select>
+        </div>
+      </div>
+      <div class="row-2">
+        <div>
+          <label for="trace_file_prefix">Trace file prefix</label>
+          <input id="trace_file_prefix" name="trace_file_prefix" type="text" value="{{ form.trace_file_prefix }}" placeholder="C:\Temp\winhttp" />
+        </div>
+        <div>
+          <label for="max_trace_file_size">Max trace file size</label>
+          <input id="max_trace_file_size" name="max_trace_file_size" type="number" min="1" value="{{ form.max_trace_file_size }}" placeholder="default" />
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button class="btn primary" type="submit">Generate WinHTTP outputs</button>
+  </div>
+</form>
+
+{% if output %}
+  {% if output.warnings %}
+    <div class="banner warn">
+      <span class="badge warn">Warnings</span>
+      <div class="banner-copy">
+        {% for warning in output.warnings %}
+          <div class="small">{{ warning }}</div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Decoded preview</h2>
+      <span class="badge">sanity check</span>
+    </div>
+    <div class="card-body">
+      <div class="summary-grid">
+        <div class="stat compact-stat"><div class="stat-k">Registry path</div><div class="stat-v text-break">HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections</div></div>
+        <div class="stat compact-stat"><div class="stat-k">Value</div><div class="stat-v">WinHttpSettings</div></div>
+        <div class="stat compact-stat"><div class="stat-k">Access type</div><div class="stat-v">Named proxy</div></div>
+      </div>
+      <div class="surface-note mono text-break">{{ output.proxy_string }}</div>
+      <div class="surface-note mono text-break">{{ output.bypass_string or '(empty bypass list)' }}</div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">Basic REG_BINARY hex</h2>
+        <button class="btn ghost" type="button" data-copy-target="#winhttp-normalized-hex" {% if not output.static_registry_available %}disabled{% endif %}>Copy</button>
+      </div>
+      <div class="card-body">
+        {% if output.static_registry_available %}
+          <textarea id="winhttp-normalized-hex" rows="8" readonly>{{ output.normalized_hex }}</textarea>
+        {% else %}
+          <div class="surface-note small">Static REG_BINARY output is intentionally disabled when PAC URL or AutoDetect is enabled. Use the advproxy JSON/commands below for those documented settings.</div>
+          <textarea id="winhttp-normalized-hex" rows="4" readonly></textarea>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">.reg output</h2>
+        <button class="btn ghost" type="button" data-copy-target="#winhttp-reg-file" {% if not output.static_registry_available %}disabled{% endif %}>Copy</button>
+      </div>
+      <div class="card-body">
+        {% if output.static_registry_available %}
+          <textarea id="winhttp-reg-file" rows="8" readonly>{{ output.reg_file }}</textarea>
+        {% else %}
+          <textarea id="winhttp-reg-file" rows="4" readonly></textarea>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">advproxy JSON</h2>
+        <button class="btn ghost" type="button" data-copy-target="#winhttp-advproxy-json">Copy</button>
+      </div>
+      <div class="card-body">
+        <textarea id="winhttp-advproxy-json" rows="9" readonly>{{ output.advproxy_json }}</textarea>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">netsh commands</h2>
+        <button class="btn ghost" type="button" data-copy-target="#winhttp-command-list">Copy</button>
+      </div>
+      <div class="card-body">
+        <textarea id="winhttp-command-list" rows="12" readonly>{{ output.advproxy_command }}
+{{ output.advproxy_settings_file_command }}
+{{ output.legacy_set_proxy_command }}
+{{ output.show_advproxy_command }}
+{{ output.show_proxy_command }}
+{{ output.reset_proxy_command }}
+{{ output.import_ie_command }}
+{{ output.tracing_command }}
+{{ output.show_tracing_command }}
+{{ output.reset_tracing_command }}
+{{ output.flush_logbuffer_command }}</textarea>
+      </div>
+    </section>
+  </div>
+{% endif %}
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Existing .reg normalizer</h2>
+    <span class="badge">cleanup</span>
+  </div>
+  <div class="card-body content-stack">
+    <form class="form" method="post" action="{{ url_for('winhttp_registry_builder') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="normalize_reg" />
+      <textarea id="reg_input" name="reg_input" rows="8" placeholder="Paste an exported WinHttpSettings .reg value here">{{ form.reg_input }}</textarea>
+      <div class="actions">
+        <button class="btn primary" type="submit">Normalize WinHttpSettings</button>
+      </div>
+    </form>
+    {% if normalized_reg_hex %}
+      <div class="card-subheader">
+        <h3 class="card-title">Normalized hex</h3>
+        <button class="btn ghost" type="button" data-copy-target="#normalized-reg-output">Copy</button>
+      </div>
+      <textarea id="normalized-reg-output" rows="6" readonly>{{ normalized_reg_hex }}</textarea>
+      {% if decoded_reg %}
+        <div class="surface-note small">Decoded proxy: <span class="mono">{{ decoded_reg.proxy_string }}</span></div>
+        <div class="surface-note small">Decoded bypass: <span class="mono">{{ decoded_reg.bypass_string or '(empty)' }}</span></div>
+      {% endif %}
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

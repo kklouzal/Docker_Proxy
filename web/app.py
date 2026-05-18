@@ -22,6 +22,12 @@ from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilt
 from services.pac_profiles_store import get_pac_profiles_store as _default_get_pac_profiles_store
 from services.pac_renderer import resolve_proxy_pac_target
 from services.proxy_client import ProxyClientError, get_proxy_client as _default_get_proxy_client
+from services.winhttp_registry_builder import (
+    WinHttpBuilderError,
+    build_contract_output,
+    decode_basic_winhttp_settings_hex,
+    normalize_reg_binary_export,
+)
 from services.operation_ledger import get_operation_ledger
 from services.proxy_sync import request_proxy_reconcile
 from services.proxy_context import get_default_proxy_id, get_proxy_id, normalize_proxy_id, reset_proxy_id, set_proxy_id
@@ -2771,6 +2777,89 @@ def pac_builder():
         pac_warning=pac_warning,
         pac_target=pac_target,
         chain_settings=chain_settings,
+    )
+
+
+def _default_winhttp_registry_form() -> Dict[str, Any]:
+    return {
+        "proxy_host": "",
+        "proxy_port": "3128",
+        "destination_schemes": ["http", "https"],
+        "bypass_list": "",
+        "include_local_bypass": True,
+        "use_custom_proxy_map": False,
+        "custom_proxy_map": "",
+        "autoconfig_url": "",
+        "autodetect": False,
+        "advproxy_scope": "machine",
+        "tracing_state": "disabled",
+        "tracing_output": "",
+        "trace_file_prefix": "",
+        "tracing_level": "",
+        "tracing_format": "",
+        "max_trace_file_size": "",
+        "reg_input": "",
+    }
+
+
+def _winhttp_form_from_request() -> Dict[str, Any]:
+    form = _default_winhttp_registry_form()
+    form.update(
+        {
+            "proxy_host": request.form.get("proxy_host", ""),
+            "proxy_port": request.form.get("proxy_port", "3128"),
+            "destination_schemes": request.form.getlist("destination_schemes"),
+            "bypass_list": request.form.get("bypass_list", ""),
+            "include_local_bypass": request.form.get("include_local_bypass") == "on",
+            "use_custom_proxy_map": request.form.get("use_custom_proxy_map") == "on",
+            "custom_proxy_map": request.form.get("custom_proxy_map", ""),
+            "autoconfig_url": request.form.get("autoconfig_url", ""),
+            "autodetect": request.form.get("autodetect") == "on",
+            "advproxy_scope": request.form.get("advproxy_scope", "machine"),
+            "tracing_state": request.form.get("tracing_state", "disabled"),
+            "tracing_output": request.form.get("tracing_output", ""),
+            "trace_file_prefix": request.form.get("trace_file_prefix", ""),
+            "tracing_level": request.form.get("tracing_level", ""),
+            "tracing_format": request.form.get("tracing_format", ""),
+            "max_trace_file_size": request.form.get("max_trace_file_size", ""),
+            "reg_input": request.form.get("reg_input", ""),
+        }
+    )
+    return form
+
+
+@app.route('/tools/winhttp-registry', methods=['GET', 'POST'])
+def winhttp_registry_builder():
+    form = _default_winhttp_registry_form()
+    output = None
+    normalized_reg_hex = ""
+    decoded_reg = None
+    error = ""
+    action = ""
+
+    if request.method == 'POST':
+        action = request.form.get("action", "generate")
+        form = _winhttp_form_from_request()
+        try:
+            if action == "normalize_reg":
+                normalized_reg_hex = normalize_reg_binary_export(form.get("reg_input") or "")
+                try:
+                    decoded_reg = decode_basic_winhttp_settings_hex(normalized_reg_hex)
+                except WinHttpBuilderError:
+                    decoded_reg = None
+            else:
+                output = build_contract_output(form)
+        except WinHttpBuilderError as exc:
+            error = str(exc)
+
+    return render_template(
+        'winhttp_registry.html',
+        form=form,
+        output=output,
+        normalized_reg_hex=normalized_reg_hex,
+        decoded_reg=decoded_reg,
+        error=error,
+        action=action,
     )
 
 @app.route('/api/timeseries', methods=['GET'])
