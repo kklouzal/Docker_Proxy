@@ -110,7 +110,7 @@ def _ascii_from_bytes(bytes_: list[int]) -> str:
 
 
 def normalize_bypass_list(value: str | Iterable[str] | None, *, include_local: bool) -> str:
-    raw_items = list(value) if isinstance(value, (list, tuple)) else re.split(r"[\r\n;]+", str(value or ""))
+    raw_items = list(value) if isinstance(value, (list, tuple)) else re.split(r"[\r\n;\s]+", str(value or ""))
     seen: set[str] = set()
     normalized: list[str] = []
     for item in raw_items:
@@ -267,8 +267,31 @@ def generate_reg_file_from_hex(hex_value: str, *, bytes_per_line: int = 25) -> s
 
 
 def normalize_reg_binary_export(value: str) -> str:
-    match = re.search(r'"WinHttpSettings"\s*=\s*hex:([\s\S]*)', value or "", flags=re.IGNORECASE)
-    body = match.group(1) if match else value
+    text = value or ""
+    chunks: list[str] = []
+    collecting = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not collecting:
+            match = re.match(r'"WinHttpSettings"\s*=\s*hex:(.*)$', line, flags=re.IGNORECASE)
+            if not match:
+                continue
+            collecting = True
+            body = match.group(1)
+        else:
+            if line.startswith("[") or re.match(r'"[^"]+"\s*=', line):
+                break
+            body = line
+
+        continued = body.rstrip().endswith("\\")
+        if continued:
+            body = body.rstrip()[:-1]
+        chunks.append(body)
+        if not continued:
+            break
+
+    body = "".join(chunks) if chunks else text
     clean = normalize_hex_only(body)
     if len(clean) % 2:
         raise WinHttpBuilderError("Normalized WinHttpSettings hex has an odd number of characters.")

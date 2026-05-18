@@ -56,7 +56,7 @@ def test_default_static_output_maps_http_and_https_destinations() -> None:
 def test_bypass_list_normalizes_lines_semicolons_dedupes_and_local() -> None:
     assert (
         normalize_bypass_list(
-            "localhost\n127.0.0.1;LOCALHOST\n*.example.local",
+            "localhost 127.0.0.1;LOCALHOST\n*.example.local",
             include_local=True,
         )
         == "localhost;127.0.0.1;*.example.local;<local>"
@@ -66,6 +66,14 @@ def test_bypass_list_normalizes_lines_semicolons_dedupes_and_local() -> None:
 def test_reg_export_normalizer_strips_export_formatting() -> None:
     original = generate_basic_winhttp_binary("http=192.168.5.45:3128", "<local>")
     exported = generate_reg_file_from_hex(original)
+
+    assert normalize_reg_binary_export(exported) == original
+
+
+def test_reg_export_normalizer_stops_before_following_values() -> None:
+    original = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+    exported = generate_reg_file_from_hex(original)
+    exported += '"OtherValue"=hex:ff,ff,ff,ff\n'
 
     assert normalize_reg_binary_export(exported) == original
 

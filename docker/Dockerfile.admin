@@ -69,6 +69,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/ui_support.py \
 	web/services/webfilter_core.py \
 	web/services/webfilter_store.py \
+	web/services/winhttp_registry_builder.py \
 	/app/services/
 COPY web/static /app/static
 COPY web/templates /app/templates

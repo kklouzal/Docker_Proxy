@@ -87,6 +87,7 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
         "web/services/squidctl.py",
         "web/services/webfilter_core.py",
         "web/services/webfilter_store.py",
+        "web/services/winhttp_registry_builder.py",
         "web/tools/adblock_compile.py",
         "web/tools/webcat_acl.py",
         "web/tools/webcat_build.py",
