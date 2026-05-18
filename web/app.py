@@ -1524,6 +1524,30 @@ def _handle_sslfilter_post(store: Any):
 def _handle_pac_builder_post(store: Any):
     action = _form_action()
     try:
+        if action == 'add_backup_proxy':
+            ok, err, _ = store.add_backup_proxy(
+                proxy_host=request.form.get('backup_proxy_host') or '',
+                proxy_port=request.form.get('backup_proxy_port') or '',
+            )
+            if not ok:
+                return _redirect_to('pac_builder', error='1', msg=err)
+            return _redirect_after_pac_refresh('pac_builder', ok='1')
+
+        if action == 'remove_backup_proxy':
+            store.delete_backup_proxy(int(request.form.get('backup_proxy_id') or '0'))
+            return _redirect_after_pac_refresh('pac_builder', ok='1')
+
+        if action == 'move_backup_proxy':
+            store.move_backup_proxy(
+                int(request.form.get('backup_proxy_id') or '0'),
+                request.form.get('direction') or '',
+            )
+            return _redirect_after_pac_refresh('pac_builder', ok='1')
+
+        if action == 'toggle_direct':
+            store.set_direct_enabled(request.form.get('direct_enabled') == 'on')
+            return _redirect_after_pac_refresh('pac_builder', ok='1')
+
         if action == 'create':
             ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
             if not ok:
@@ -2736,7 +2760,18 @@ def pac_builder():
         profiles = []
 
     pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
-    return render_template('pac.html', profiles=profiles, pac_url=pac_url, pac_warning=pac_warning, pac_target=pac_target)
+    try:
+        chain_settings = store.list_proxy_chain_settings()
+    except Exception:
+        chain_settings = None
+    return render_template(
+        'pac.html',
+        profiles=profiles,
+        pac_url=pac_url,
+        pac_warning=pac_warning,
+        pac_target=pac_target,
+        chain_settings=chain_settings,
+    )
 
 @app.route('/api/timeseries', methods=['GET'])
 def api_timeseries():

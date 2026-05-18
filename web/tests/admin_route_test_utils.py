@@ -533,10 +533,52 @@ class FakeSslfilterStore:
 class FakePacProfilesStore:
     def __init__(self) -> None:
         self.profiles: dict[int, Any] = {}
+        self.backup_proxies: list[Any] = []
         self.next_id = 1
+        self.next_backup_id = 1
+        self.direct_enabled = True
 
     def list_profiles(self) -> list[Any]:
         return list(self.profiles.values())
+
+    def list_proxy_chain_settings(self) -> Any:
+        return SimpleNamespace(backup_proxies=list(self.backup_proxies), direct_enabled=self.direct_enabled)
+
+    def add_backup_proxy(self, *, proxy_host: str, proxy_port: object | None = None) -> tuple[bool, str, int | None]:
+        host = (proxy_host or "").strip()
+        if not host:
+            return False, "Proxy host is required.", None
+        try:
+            port = int(str(proxy_port or "3128").strip() or "3128")
+        except Exception:
+            return False, "Invalid proxy port.", None
+        bid = self.next_backup_id
+        self.next_backup_id += 1
+        self.backup_proxies.append(
+            SimpleNamespace(id=bid, proxy_host=host, proxy_port=port, position=len(self.backup_proxies) + 1, created_ts=0)
+        )
+        return True, "", bid
+
+    def delete_backup_proxy(self, backup_proxy_id: int) -> None:
+        self.backup_proxies = [item for item in self.backup_proxies if item.id != int(backup_proxy_id)]
+        for idx, item in enumerate(self.backup_proxies, start=1):
+            item.position = idx
+
+    def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> None:
+        bid = int(backup_proxy_id)
+        ids = [item.id for item in self.backup_proxies]
+        if bid not in ids:
+            return
+        index = ids.index(bid)
+        if direction == "up" and index > 0:
+            self.backup_proxies[index - 1], self.backup_proxies[index] = self.backup_proxies[index], self.backup_proxies[index - 1]
+        elif direction == "down" and index < len(self.backup_proxies) - 1:
+            self.backup_proxies[index + 1], self.backup_proxies[index] = self.backup_proxies[index], self.backup_proxies[index + 1]
+        for idx, item in enumerate(self.backup_proxies, start=1):
+            item.position = idx
+
+    def set_direct_enabled(self, enabled: bool) -> None:
+        self.direct_enabled = bool(enabled)
 
     def upsert_profile(self, *, profile_id: int | None, name: str, client_cidr: str, direct_domains_text: str, direct_dst_nets_text: str) -> tuple[bool, str, int | None]:
         if client_cidr and "/" not in client_cidr:

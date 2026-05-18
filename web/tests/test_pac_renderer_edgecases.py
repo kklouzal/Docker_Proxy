@@ -64,6 +64,25 @@ def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
     assert "3129" not in target.proxy_chain
 
 
+def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> None:
+    _add_web_to_path()
+    import services.pac_renderer as pac_renderer  # type: ignore
+
+    target = pac_renderer.ProxyPacTarget(
+        proxy_id="default",
+        public_host="proxy.example",
+        pac_scheme="http",
+        pac_port=80,
+        http_proxy_port=3128,
+        backup_proxies=(("backup-a.example", 3128), ("2001:db8::20", 8080)),
+        direct_enabled=False,
+    )
+
+    assert target.proxy_chain == "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080"
+    assert target.proxy_chain_display == "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080"
+    assert "return 'PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080';" in pac_renderer._render_fallback_pac(target, include_private=False)
+
+
 def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
     _add_web_to_path()
     import services.pac_renderer as pac_renderer  # type: ignore
@@ -227,20 +246,32 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
                 ),
             ]
 
+        def list_proxy_chain_settings(self):
+            return type(
+                "PacProxyChainSettings",
+                (),
+                {
+                    "backup_proxies": [type("PacBackupProxy", (), {"proxy_host": "backup.example", "proxy_port": 8080})()],
+                    "direct_enabled": False,
+                },
+            )()
+
     store = _CountingSslfilterStore()
     monkeypatch.setattr(pac_renderer, "get_sslfilter_store", lambda: store)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", lambda: _FakePacProfilesStore())
     monkeypatch.setattr(
         pac_renderer,
         "resolve_proxy_pac_target",
-        lambda _proxy_id=None: pac_renderer.ProxyPacTarget(
-            proxy_id="default",
-            public_host="proxy.example",
-            pac_scheme="http",
-            pac_port=80,
-            http_proxy_port=3128,
-        ),
-    )
+            lambda _proxy_id=None: pac_renderer.ProxyPacTarget(
+                proxy_id="default",
+                public_host="proxy.example",
+                pac_scheme="http",
+                pac_port=80,
+                http_proxy_port=3128,
+                backup_proxies=(("backup.example", 8080),),
+                direct_enabled=False,
+            ),
+        )
 
     state = pac_renderer.build_proxy_pac_state("default")
 
@@ -250,4 +281,7 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
         "profile-1.pac",
         "profile-2.pac",
     ]
+    manifest = json.loads(next(item.content for item in state.files if item.relative_path == "manifest.json"))
+    assert manifest["proxy_chain"] == "PROXY proxy.example:3128; PROXY backup.example:8080"
+    assert manifest["direct_enabled"] is False
 

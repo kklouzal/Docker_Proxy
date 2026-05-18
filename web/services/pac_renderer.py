@@ -89,6 +89,8 @@ class ProxyPacTarget:
     pac_scheme: str
     pac_port: int
     http_proxy_port: int
+    backup_proxies: tuple[tuple[str, int], ...] = ()
+    direct_enabled: bool = True
 
     @property
     def uses_request_host_fallback(self) -> bool:
@@ -106,12 +108,25 @@ class ProxyPacTarget:
 
     @property
     def proxy_chain(self) -> str:
-        return f"PROXY {self.proxy_host_token}:{self.http_proxy_port}; DIRECT"
+        return self._build_proxy_chain(display=False)
 
     @property
     def proxy_chain_display(self) -> str:
-        host = self.public_host or "<request-host>"
-        return f"PROXY {host}:{self.http_proxy_port}; DIRECT"
+        return self._build_proxy_chain(display=True)
+
+    def _build_proxy_chain(self, *, display: bool) -> str:
+        host = self.public_host or "<request-host>" if display else self.proxy_host_token
+        entries = [f"PROXY {host}:{self.http_proxy_port}"]
+        for backup_host, backup_port in self.backup_proxies:
+            rendered_host = str(backup_host or "").strip()
+            if not rendered_host:
+                continue
+            if not display or ":" in rendered_host:
+                rendered_host = format_proxy_host(rendered_host)
+            entries.append(f"PROXY {rendered_host}:{int(backup_port)}")
+        if self.direct_enabled:
+            entries.append("DIRECT")
+        return "; ".join(entries)
 
 
 @dataclass(frozen=True)
@@ -178,12 +193,26 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         else os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
         _coerce_port(os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"), 3128),
     )
+    backup_proxies: tuple[tuple[str, int], ...] = ()
+    direct_enabled = True
+    try:
+        chain_settings = get_pac_profiles_store().list_proxy_chain_settings()
+        backup_proxies = tuple(
+            (str(getattr(item, "proxy_host", "") or ""), _coerce_port(getattr(item, "proxy_port", None), 3128))
+            for item in list(getattr(chain_settings, "backup_proxies", []) or [])
+        )
+        direct_enabled = bool(getattr(chain_settings, "direct_enabled", True))
+    except Exception:
+        backup_proxies = ()
+        direct_enabled = True
     return ProxyPacTarget(
         proxy_id=normalized_proxy_id,
         public_host=public_host,
         pac_scheme=pac_scheme,
         pac_port=pac_port,
         http_proxy_port=http_proxy_port,
+        backup_proxies=backup_proxies,
+        direct_enabled=direct_enabled,
     )
 
 
@@ -373,6 +402,11 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
             "public_http_proxy_port": target.http_proxy_port,
             "uses_request_host_fallback": target.uses_request_host_fallback,
             "proxy_chain": target.proxy_chain_display,
+            "backup_proxies": [
+                {"proxy_host": host, "proxy_port": port}
+                for host, port in target.backup_proxies
+            ],
+            "direct_enabled": target.direct_enabled,
             "profiles": _manifest_profiles(sorted_profiles),
             "fallback_file": fallback_file,
             "state_sha256": "",

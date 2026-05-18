@@ -49,14 +49,14 @@
       </div>
       <div class="stat compact-stat">
         <div class="stat-k">Proxy chain</div>
-        <div class="stat-v">HTTP → DIRECT</div>
+        <div class="stat-v">{{ 1 + (chain_settings.backup_proxies|length if chain_settings else 0) }} proxy{{ '' if (chain_settings and chain_settings.backup_proxies|length == 0) else 'ies' }}</div>
       </div>
       <div class="stat compact-stat">
         <div class="stat-k">Fallback mode</div>
         <div class="stat-v">{{ 'Profile-based' if profiles|length else 'Private/local only' }}</div>
       </div>
     </div>
-    <div class="surface-note small">PAC profiles now choose <em>who</em> gets which DIRECT rules. The selected proxy&apos;s own advertised listeners define the proxy chain returned to clients.</div>
+    <div class="surface-note small">PAC profiles choose <em>who</em> gets which DIRECT rules. The ordered proxy chain below defines what clients try for normal internet traffic.</div>
     <div class="surface-note small">PAC and explicit HTTP proxy settings cover the proxy's TCP path for HTTP and HTTPS CONNECT. They do not proxy HTTP/3/QUIC over UDP/443; block or reject UDP/443 at the network edge for clients that must not bypass the proxy.</div>
   </div>
 </section>
@@ -84,6 +84,88 @@
 
   <section class="card">
     <div class="card-header">
+      <h2 class="card-title">Fallback proxy chain</h2>
+      <span class="badge">ordered backups</span>
+    </div>
+    <div class="card-body">
+      <div class="surface-note small">Clients receive the selected proxy first, then these backup proxies in order{% if chain_settings and chain_settings.direct_enabled %}, then <span class="mono">DIRECT</span>{% endif %}.</div>
+
+      <form class="form" method="post" action="{{ url_for('pac_builder') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="add_backup_proxy" />
+        <div class="row-2">
+          <div>
+            <label for="backup_proxy_host">Backup proxy host</label>
+            <input id="backup_proxy_host" name="backup_proxy_host" type="text" placeholder="proxy-backup.example.lan" />
+          </div>
+          <div>
+            <label for="backup_proxy_port">Port</label>
+            <input id="backup_proxy_port" name="backup_proxy_port" type="number" min="1" max="65535" value="3128" />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="submit">Add backup</button>
+        </div>
+      </form>
+
+      {% if chain_settings and chain_settings.backup_proxies %}
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Order</th><th>Proxy</th><th class="num">Actions</th></tr></thead>
+            <tbody>
+              {% for backup in chain_settings.backup_proxies %}
+                <tr>
+                  <td class="num">{{ loop.index }}</td>
+                  <td class="mono">{{ backup.proxy_host }}:{{ backup.proxy_port }}</td>
+                  <td class="num">
+                    <div class="table-action-stack">
+                      <form method="post" action="{{ url_for('pac_builder') }}">
+                        {{ csrf_field() }}
+                        <input type="hidden" name="action" value="move_backup_proxy" />
+                        <input type="hidden" name="backup_proxy_id" value="{{ backup.id }}" />
+                        <input type="hidden" name="direction" value="up" />
+                        <button class="btn" type="submit" {% if loop.first %}disabled{% endif %}>Up</button>
+                      </form>
+                      <form method="post" action="{{ url_for('pac_builder') }}">
+                        {{ csrf_field() }}
+                        <input type="hidden" name="action" value="move_backup_proxy" />
+                        <input type="hidden" name="backup_proxy_id" value="{{ backup.id }}" />
+                        <input type="hidden" name="direction" value="down" />
+                        <button class="btn" type="submit" {% if loop.last %}disabled{% endif %}>Down</button>
+                      </form>
+                      <form method="post" action="{{ url_for('pac_builder') }}">
+                        {{ csrf_field() }}
+                        <input type="hidden" name="action" value="remove_backup_proxy" />
+                        <input type="hidden" name="backup_proxy_id" value="{{ backup.id }}" />
+                        <button class="btn" type="submit">Remove</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="surface-note small">No backup proxies are configured. Clients try only the selected proxy{% if chain_settings is none or chain_settings.direct_enabled %}, then <span class="mono">DIRECT</span>{% endif %}.</div>
+      {% endif %}
+
+      <form class="form" method="post" action="{{ url_for('pac_builder') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="action" value="toggle_direct" />
+        <label class="checkbox-inline">
+          <input type="checkbox" name="direct_enabled" value="on" {% if chain_settings is none or chain_settings.direct_enabled %}checked{% endif %} />
+          Append DIRECT fallback
+        </label>
+        <div class="actions">
+          <button class="btn" type="submit">Save DIRECT fallback</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
       <h2 class="card-title">Create PAC profile</h2>
       <span class="badge">CIDR → DIRECT rules</span>
     </div>
@@ -104,7 +186,7 @@
           </div>
         </div>
 
-        <div class="surface-note small">The proxy chain returned by this proxy is fixed at <span class="mono">{{ pac_target.proxy_chain_display }}</span>. PAC profiles on this page only add DIRECT rules and client matching.</div>
+        <div class="surface-note small">PAC profiles add DIRECT exceptions and client matching. Normal traffic uses <span class="mono">{{ pac_target.proxy_chain_display }}</span>.</div>
 
         <div class="row-2">
           <div>
@@ -161,7 +243,7 @@
                 </div>
               </div>
 
-              <div class="surface-note small">Clients matching this profile receive the selected proxy chain <span class="mono">{{ pac_target.proxy_chain_display }}</span>, plus the DIRECT rules below.</div>
+              <div class="surface-note small">Clients matching this profile receive <span class="mono">{{ pac_target.proxy_chain_display }}</span>, plus the DIRECT rules below.</div>
 
               <div class="row-2">
                 <div>

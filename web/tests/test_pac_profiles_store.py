@@ -17,6 +17,9 @@ class _FakeResult:
     def fetchall(self):
         return self._rows
 
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
 
 class _FakeConn:
     def __init__(self):
@@ -46,6 +49,15 @@ class _FakeConn:
                     {"profile_id": 12, "cidr": "192.168.1.0/24"},
                 ]
             )
+        if "FROM pac_backup_proxies" in sql and sql.lstrip().startswith("SELECT id"):
+            return _FakeResult(
+                [
+                    {"id": 21, "proxy_host": "backup-a.example", "proxy_port": 3128, "position": 1, "created_ts": 1},
+                    {"id": 22, "proxy_host": "backup-b.example", "proxy_port": 8080, "position": 2, "created_ts": 2},
+                ]
+            )
+        if sql.startswith("SELECT direct_enabled FROM pac_proxy_chain_settings"):
+            return _FakeResult([{"direct_enabled": 0}])
         return _FakeResult([])
 
 
@@ -82,3 +94,30 @@ def test_list_profiles_batches_child_queries(monkeypatch) -> None:
     assert conn.calls[0][0].startswith("SELECT id, name, client_cidr, created_ts FROM pac_profiles")
     assert "profile_id IN" in conn.calls[1][0]
     assert "profile_id IN" in conn.calls[2][0]
+
+
+def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(monkeypatch) -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    conn = _FakeConn()
+    store = mod.PacProfilesStore()
+
+    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
+    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
+    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+
+    settings = store.list_proxy_chain_settings()
+
+    assert [item.proxy_host for item in settings.backup_proxies] == ["backup-a.example", "backup-b.example"]
+    assert [item.proxy_port for item in settings.backup_proxies] == [3128, 8080]
+    assert settings.direct_enabled is False
+
+
+def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    assert mod._normalize_proxy_host_port("http://Backup.Example:8080/proxy.pac", "") == ("backup.example", 8080, "")
+    assert mod._normalize_proxy_host_port("[2001:db8::10]:3129", None) == ("2001:db8::10", 3129, "")
+    assert mod._normalize_proxy_host_port("backup.example", "") == ("backup.example", 3128, "")

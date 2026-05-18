@@ -132,3 +132,47 @@ def test_pac_builder_bad_ids_and_xss_like_names_are_handled(monkeypatch, tmp_pat
     params = _params(bad_id.location)
     assert params["error"] == ["1"]
     assert params["msg"]
+
+
+def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
+    store = FakePacProfilesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, pac_profiles_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "add_backup_proxy",
+            "backup_proxy_host": "backup-a.example",
+            "backup_proxy_port": "3128",
+        },
+    ):
+        added_a = loaded.module._handle_pac_builder_post(store)
+    assert _params(added_a.location)["ok"] == ["1"]
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "add_backup_proxy",
+            "backup_proxy_host": "backup-b.example",
+            "backup_proxy_port": "8080",
+        },
+    ):
+        added_b = loaded.module._handle_pac_builder_post(store)
+    assert _params(added_b.location)["ok"] == ["1"]
+    assert [item.proxy_host for item in store.backup_proxies] == ["backup-a.example", "backup-b.example"]
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={"action": "move_backup_proxy", "backup_proxy_id": str(store.backup_proxies[1].id), "direction": "up"},
+    ):
+        moved = loaded.module._handle_pac_builder_post(store)
+    assert _params(moved.location)["ok"] == ["1"]
+    assert [item.proxy_host for item in store.backup_proxies] == ["backup-b.example", "backup-a.example"]
+
+    with loaded.module.app.test_request_context("/pac", method="POST", data={"action": "toggle_direct"}):
+        toggled = loaded.module._handle_pac_builder_post(store)
+    assert _params(toggled.location)["ok"] == ["1"]
+    assert store.direct_enabled is False

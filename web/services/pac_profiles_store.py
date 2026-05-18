@@ -4,6 +4,7 @@ import threading
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
 from typing import List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from services.db import connect
 from services.proxy_context import get_proxy_id
@@ -18,6 +19,21 @@ class PacProfile:
     direct_domains: List[str]
     direct_dst_nets: List[str]
     created_ts: int
+
+
+@dataclass(frozen=True)
+class PacBackupProxy:
+    id: int
+    proxy_host: str
+    proxy_port: int
+    position: int
+    created_ts: int
+
+
+@dataclass(frozen=True)
+class PacProxyChainSettings:
+    backup_proxies: List[PacBackupProxy]
+    direct_enabled: bool
 
 
 def _normalize_domain(domain: str) -> Tuple[Optional[str], str]:
@@ -44,6 +60,46 @@ def _normalize_v4_cidr(cidr: str) -> Tuple[Optional[str], str]:
     if net.version != 4:
         return None, "Only IPv4 CIDR is supported in PAC rules."
     return str(net), ""
+
+
+def _normalize_proxy_host_port(proxy_host: str, proxy_port: object | None) -> Tuple[Optional[str], Optional[int], str]:
+    host = (proxy_host or "").strip()
+    raw_port = "" if proxy_port is None else str(proxy_port or "").strip()
+    if not host:
+        return None, None, "Proxy host is required."
+
+    parsed_port = raw_port
+    if "://" in host:
+        try:
+            parsed = urlsplit(host)
+            host = parsed.hostname or ""
+            if not parsed_port and parsed.port:
+                parsed_port = str(parsed.port)
+        except Exception:
+            return None, None, "Invalid proxy host."
+    elif host.startswith("[") and "]" in host:
+        end = host.find("]")
+        suffix = host[end + 1 :].strip()
+        host = host[1:end]
+        if suffix.startswith(":") and suffix[1:].isdigit() and not parsed_port:
+            parsed_port = suffix[1:]
+    elif host.count(":") == 1:
+        candidate_host, candidate_port = host.rsplit(":", 1)
+        if candidate_port.isdigit() and not parsed_port:
+            host = candidate_host
+            parsed_port = candidate_port
+
+    host = host.strip().strip("[]").lower()
+    if not host or any(ch.isspace() for ch in host) or "/" in host:
+        return None, None, "Invalid proxy host."
+
+    try:
+        port = int(parsed_port or "3128")
+    except Exception:
+        return None, None, "Invalid proxy port."
+    if port < 1 or port > 65535:
+        return None, None, "Proxy port must be between 1 and 65535."
+    return host, port, ""
 
 
 class PacProfilesStore:
@@ -80,6 +136,28 @@ class PacProfilesStore:
                     profile_id BIGINT NOT NULL,
                     cidr VARCHAR(64) NOT NULL,
                     PRIMARY KEY(profile_id, cidr)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pac_backup_proxies (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                    proxy_host VARCHAR(255) NOT NULL,
+                    proxy_port INT NOT NULL DEFAULT 3128,
+                    position INT NOT NULL DEFAULT 0,
+                    created_ts BIGINT NOT NULL,
+                    KEY idx_pac_backup_proxies_proxy_position (proxy_id, position, id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pac_proxy_chain_settings (
+                    proxy_id VARCHAR(64) PRIMARY KEY,
+                    direct_enabled TINYINT(1) NOT NULL DEFAULT 1,
+                    updated_ts BIGINT NOT NULL
                 )
                 """
             )
@@ -129,6 +207,109 @@ class PacProfilesStore:
                     )
                 )
             return res
+
+    def list_proxy_chain_settings(self) -> PacProxyChainSettings:
+        self.init_db()
+        proxy_id = get_proxy_id()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, proxy_host, proxy_port, position, created_ts
+                FROM pac_backup_proxies
+                WHERE proxy_id=%s
+                ORDER BY position ASC, id ASC
+                """,
+                (proxy_id,),
+            ).fetchall()
+            setting = conn.execute(
+                "SELECT direct_enabled FROM pac_proxy_chain_settings WHERE proxy_id=%s LIMIT 1",
+                (proxy_id,),
+            ).fetchone()
+
+        backups = [
+            PacBackupProxy(
+                id=int(row["id"]),
+                proxy_host=str(row["proxy_host"] or ""),
+                proxy_port=int(row["proxy_port"] or 3128),
+                position=int(row["position"] or 0),
+                created_ts=int(row["created_ts"] or 0),
+            )
+            for row in rows
+        ]
+        direct_enabled = True if setting is None else bool(int(setting["direct_enabled"] or 0))
+        return PacProxyChainSettings(backup_proxies=backups, direct_enabled=direct_enabled)
+
+    def add_backup_proxy(self, *, proxy_host: str, proxy_port: object | None = None) -> Tuple[bool, str, Optional[int]]:
+        self.init_db()
+        host, port, err = _normalize_proxy_host_port(proxy_host, proxy_port)
+        if host is None or port is None:
+            return False, err, None
+
+        proxy_id = get_proxy_id()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(position), 0) AS max_position FROM pac_backup_proxies WHERE proxy_id=%s",
+                (proxy_id,),
+            ).fetchone()
+            position = int(row["max_position"] or 0) + 1 if row else 1
+            cur = conn.execute(
+                """
+                INSERT INTO pac_backup_proxies(proxy_id, proxy_host, proxy_port, position, created_ts)
+                VALUES(%s,%s,%s,%s,%s)
+                """,
+                (proxy_id, host, port, position, _now()),
+            )
+            return True, "", int(cur.lastrowid)
+
+    def _resequence_backup_proxies(self, conn, proxy_id: str) -> List[int]:
+        rows = conn.execute(
+            "SELECT id FROM pac_backup_proxies WHERE proxy_id=%s ORDER BY position ASC, id ASC",
+            (proxy_id,),
+        ).fetchall()
+        ordered_ids = [int(row["id"]) for row in rows]
+        for idx, proxy_id_value in enumerate(ordered_ids, start=1):
+            conn.execute("UPDATE pac_backup_proxies SET position=%s WHERE id=%s", (idx, proxy_id_value))
+        return ordered_ids
+
+    def delete_backup_proxy(self, backup_proxy_id: int) -> None:
+        self.init_db()
+        proxy_id = get_proxy_id()
+        bid = int(backup_proxy_id)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM pac_backup_proxies WHERE id=%s AND proxy_id=%s", (bid, proxy_id))
+            self._resequence_backup_proxies(conn, proxy_id)
+
+    def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> None:
+        self.init_db()
+        proxy_id = get_proxy_id()
+        bid = int(backup_proxy_id)
+        normalized_direction = (direction or "").strip().lower()
+        with self._connect() as conn:
+            ordered_ids = self._resequence_backup_proxies(conn, proxy_id)
+            if bid not in ordered_ids:
+                return
+            index = ordered_ids.index(bid)
+            if normalized_direction == "up" and index > 0:
+                ordered_ids[index - 1], ordered_ids[index] = ordered_ids[index], ordered_ids[index - 1]
+            elif normalized_direction == "down" and index < len(ordered_ids) - 1:
+                ordered_ids[index + 1], ordered_ids[index] = ordered_ids[index], ordered_ids[index + 1]
+            else:
+                return
+            for idx, proxy_id_value in enumerate(ordered_ids, start=1):
+                conn.execute("UPDATE pac_backup_proxies SET position=%s WHERE id=%s", (idx, proxy_id_value))
+
+    def set_direct_enabled(self, enabled: bool) -> None:
+        self.init_db()
+        proxy_id = get_proxy_id()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pac_proxy_chain_settings(proxy_id, direct_enabled, updated_ts)
+                VALUES(%s,%s,%s)
+                ON DUPLICATE KEY UPDATE direct_enabled=VALUES(direct_enabled), updated_ts=VALUES(updated_ts)
+                """,
+                (proxy_id, 1 if enabled else 0, _now()),
+            )
 
     def upsert_profile(
         self,
@@ -271,4 +452,3 @@ def get_pac_profiles_store() -> PacProfilesStore:
         if _store is None:
             _store = PacProfilesStore()
         return _store
-
