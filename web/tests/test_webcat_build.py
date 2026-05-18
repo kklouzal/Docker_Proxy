@@ -250,7 +250,7 @@ def test_download_if_changed_uses_conditional_headers_and_skips_on_304(monkeypat
         assert metadata["checked_ts"] == "456"
 
 
-def test_main_skips_rebuild_when_upstream_not_modified(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_skips_rebuild_when_upstream_not_modified_and_db_current(monkeypatch: pytest.MonkeyPatch) -> None:
     webcat_build = _import_webcat_build()
 
     with tempfile.TemporaryDirectory(prefix="webcat_main_") as td:
@@ -258,6 +258,7 @@ def test_main_skips_rebuild_when_upstream_not_modified(monkeypatch: pytest.Monke
         cached.write_bytes(b"cached")
 
         monkeypatch.setattr(webcat_build, "_download_if_changed", lambda *_args, **_kwargs: (False, cached))
+        monkeypatch.setattr(webcat_build, "_webcat_db_is_current", lambda **_kwargs: True)
         monkeypatch.setattr(webcat_build, "_collect", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("_collect should not run")))
         monkeypatch.setattr(webcat_build, "_build_db", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("_build_db should not run")))
 
@@ -267,6 +268,44 @@ def test_main_skips_rebuild_when_upstream_not_modified(monkeypatch: pytest.Monke
         ])
 
         assert rc == 0
+
+
+def test_main_rebuilds_from_cached_feed_when_upstream_not_modified_but_db_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+    webcat_build = _import_webcat_build()
+    calls = {}
+
+    with tempfile.TemporaryDirectory(prefix="webcat_main_") as td:
+        cached = Path(td) / "webcat_feed.tar.gz"
+        cached.write_bytes(b"cached")
+
+        monkeypatch.setattr(webcat_build, "_download_if_changed", lambda *_args, **_kwargs: (False, cached))
+        monkeypatch.setattr(webcat_build, "_webcat_db_is_current", lambda **_kwargs: False)
+
+        def fake_collect(source_path, provider="auto"):
+            calls["collect"] = (source_path, provider)
+            return [("example.com", "adult")], "tar:cached", {}
+
+        def fake_build_db(pairs, *, source, aliases=None, source_sha256=""):
+            calls["build_db"] = {
+                "pairs": pairs,
+                "source": source,
+                "aliases": aliases,
+                "source_sha256": source_sha256,
+            }
+            return 1, 1
+
+        monkeypatch.setattr(webcat_build, "_collect", fake_collect)
+        monkeypatch.setattr(webcat_build, "_build_db", fake_build_db)
+
+        rc = webcat_build.main([
+            "--source-url", "https://public.example/feed.tar.gz",
+            "--download-to", td,
+        ])
+
+        assert rc == 0
+        assert calls["collect"][0] == cached
+        assert calls["build_db"]["source"] == "tar:cached"
+        assert calls["build_db"]["source_sha256"] == webcat_build._file_sha256(cached)
 
 
 def test_webcat_domain_normalization_is_shared_and_idna() -> None:
