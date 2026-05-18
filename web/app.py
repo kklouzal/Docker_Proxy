@@ -1850,7 +1850,7 @@ def observability():
             )
         elif pane == 'security':
             pane_payload = _cached_observability_result(
-                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit),
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, limit),
                 lambda: queries.security_overview(
                     since=since_ts,
                     search=search,
@@ -1867,7 +1867,7 @@ def observability():
                 pane_payload.update(performance_payload)
         else:
             pane_payload = _cached_observability_result(
-                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit, sort),
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, limit, sort),
                 lambda: {
                     'rows': queries.top_destinations(
                         since=since_ts,
