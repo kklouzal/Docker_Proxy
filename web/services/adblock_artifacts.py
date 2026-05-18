@@ -358,6 +358,7 @@ class AdblockArtifactStore:
         enabled_statuses = [status for status in statuses if status.enabled]
         previous = self.get_active_artifact()
         any_downloaded = False
+        download_pending = False
 
         if bool(settings.get("enabled")) and enabled_statuses:
             now_ts = _now()
@@ -367,7 +368,10 @@ class AdblockArtifactStore:
                 if not needs_download:
                     continue
                 force_download = bool(refresh_lists or not os.path.exists(list_path))
-                any_downloaded = bool(store.update_one(status.key, force=force_download)) or any_downloaded
+                downloaded_now = bool(store.update_one(status.key, force=force_download))
+                any_downloaded = downloaded_now or any_downloaded
+                if not downloaded_now:
+                    download_pending = True
 
         try:
             with tempfile.TemporaryDirectory(prefix="adblock-build-") as out_dir:
@@ -397,6 +401,7 @@ class AdblockArtifactStore:
                 "revision": None,
                 "changed": False,
                 "downloaded": any_downloaded,
+                "download_pending": download_pending,
             }
 
         changed = previous is None or previous.revision_id != revision.revision_id or previous.artifact_sha256 != revision.artifact_sha256
@@ -409,6 +414,7 @@ class AdblockArtifactStore:
             "revision": revision,
             "changed": changed,
             "downloaded": any_downloaded,
+            "download_pending": download_pending,
         }
 
     def start_background(self) -> None:
@@ -444,7 +450,7 @@ class AdblockArtifactStore:
                 needs_build = refresh_requested or active is None or (active is not None and active.settings_version != settings_version) or due_download
                 if needs_build:
                     result = self.build_active_artifact(refresh_lists=refresh_requested, created_by="system", source_kind="background")
-                    if not bool(result.get("ok")):
+                    if not bool(result.get("ok")) or bool(result.get("download_pending")):
                         sleep_seconds = error_seconds
                     else:
                         try:
