@@ -23,7 +23,8 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from services.db import connect  # noqa: E402
+from dataclasses import replace
+from services.db import connect, resolve_database_config  # noqa: E402
 from services.domain_normalization import looks_like_domain as _looks_like_host, normalize_domain as _norm_domain  # noqa: E402
 from services.runtime_helpers import now_ts as _now  # noqa: E402
 
@@ -335,8 +336,23 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
                     dst.write(chunk)
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int((os.environ.get(name) or str(default)).strip() or str(default))
+    except Exception:
+        value = int(default)
+    return max(1, value)
+
+
 def _connect():
-    return connect()
+    cfg = resolve_database_config()
+    cfg = replace(
+        cfg,
+        connect_timeout=max(cfg.connect_timeout, _env_int("WEBCAT_MYSQL_CONNECT_TIMEOUT", 30)),
+        read_timeout=max(cfg.read_timeout, _env_int("WEBCAT_MYSQL_READ_TIMEOUT", 300)),
+        write_timeout=max(cfg.write_timeout, _env_int("WEBCAT_MYSQL_WRITE_TIMEOUT", 300)),
+    )
+    return connect(config=cfg)
 
 
 def _init_db(conn) -> None:
@@ -462,7 +478,6 @@ def _build_db(
         "webcat_categories": f"webcat_categories_stage_{suffix}",
         "webcat_aliases": f"webcat_aliases_stage_{suffix}",
         "webcat_meta": f"webcat_meta_stage_{suffix}",
-        "webcat_pairs": f"webcat_pairs_stage_{suffix}",
     }
     old_tables = {name: f"{name}_old_{suffix}" for name in ("webcat_domains", "webcat_categories", "webcat_aliases", "webcat_meta")}
 
@@ -472,68 +487,55 @@ def _build_db(
         batch_size = 10000
     batch_size = max(500, min(20000, batch_size))
 
-    pair_insert_sql = f"INSERT IGNORE INTO {_quote_table_name(stages['webcat_pairs'])}(domain,category) VALUES(%s,%s)"
+    domain_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_domains'])}(domain, categories) VALUES(%s,%s)"
+    category_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_categories'])}(category, domains) VALUES(%s,%s)"
     alias_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_aliases'])}(alias,canonical) VALUES(%s,%s) ON DUPLICATE KEY UPDATE canonical=VALUES(canonical)"
 
-    domains_built = 0
+    domain_categories: dict[str, set[str]] = {}
+    for d, c in pairs:
+        domain = _norm_domain(d)
+        category = _norm_category(c)
+        if not domain or not category:
+            continue
+        cats = domain_categories.setdefault(domain, set())
+        cats.add(category)
+
+    category_counts: dict[str, int] = {}
+    domain_rows: list[tuple[str, str]] = []
+    unique_pairs = 0
+    for domain in sorted(domain_categories):
+        categories = sorted(domain_categories[domain])
+        if not categories:
+            continue
+        domain_rows.append((domain, "|".join(categories)))
+        for category in categories:
+            category_counts[category] = category_counts.get(category, 0) + 1
+            unique_pairs += 1
+    category_rows = [(category, count) for category, count in sorted(category_counts.items())]
+
+    print(f"[webcat] preparing {len(domain_rows)} domains / {unique_pairs} unique domain-category pairs for database")
+
+    domains_built = len(domain_rows)
     with _connect() as conn:
         try:
             _init_db(conn)
             _cleanup_stale_build_tables(conn, current_suffix=suffix)
             _drop_tables(conn, list(stages.values()) + list(old_tables.values()))
-            for live, stage in {k: v for k, v in stages.items() if k != "webcat_pairs"}.items():
+            for live, stage in stages.items():
                 conn.execute(f"CREATE TABLE {_quote_table_name(stage)} LIKE {_quote_table_name(live)}")
-            conn.execute(
-                f"""
-                CREATE TABLE {_quote_table_name(stages['webcat_pairs'])} (
-                    domain VARCHAR(255) NOT NULL,
-                    category VARCHAR(128) NOT NULL,
-                    PRIMARY KEY(domain, category),
-                    KEY category_domain_idx(category, domain)
-                )
-                """
-            )
             _commit_if_supported(conn)
 
-            batches_since_commit = 0
-            for start in range(0, len(pairs), batch_size):
-                batch: list[tuple[str, str]] = []
-                for d, c in pairs[start : start + batch_size]:
-                    domain = _norm_domain(d)
-                    if not domain or not c:
-                        continue
-                    batch.append((domain, c))
-                if batch:
-                    conn.executemany(pair_insert_sql, batch)
-                    batches_since_commit += 1
-                    if batches_since_commit >= 10:
-                        _commit_if_supported(conn)
-                        batches_since_commit = 0
-            _commit_if_supported(conn)
+            if domain_rows:
+                print(f"[webcat] writing {len(domain_rows)} aggregated domains to staging")
+                for start_idx in range(0, len(domain_rows), batch_size):
+                    conn.executemany(domain_insert_sql, domain_rows[start_idx : start_idx + batch_size])
+                _commit_if_supported(conn)
 
-            try:
-                conn.execute("SET SESSION group_concat_max_len=16384")
-            except Exception:
-                pass
-
-            conn.execute(
-                f"""
-                INSERT INTO {_quote_table_name(stages['webcat_domains'])}(domain, categories)
-                SELECT domain, GROUP_CONCAT(category ORDER BY category SEPARATOR '|')
-                FROM {_quote_table_name(stages['webcat_pairs'])}
-                GROUP BY domain
-                """
-            )
-            _commit_if_supported(conn)
-            conn.execute(
-                f"""
-                INSERT INTO {_quote_table_name(stages['webcat_categories'])}(category, domains)
-                SELECT category, COUNT(*)
-                FROM {_quote_table_name(stages['webcat_pairs'])}
-                GROUP BY category
-                """
-            )
-            _commit_if_supported(conn)
+            if category_rows:
+                print(f"[webcat] writing {len(category_rows)} category counts to staging")
+                for start_idx in range(0, len(category_rows), batch_size):
+                    conn.executemany(category_insert_sql, category_rows[start_idx : start_idx + batch_size])
+                _commit_if_supported(conn)
 
             alias_rows: list[tuple[str, str]] = []
             if aliases:
@@ -542,13 +544,7 @@ def _build_db(
                         alias_rows.append((alias, canonical))
                 if alias_rows:
                     conn.executemany(alias_insert_sql, alias_rows)
-
-            domains_built = int(conn.execute(
-                f"SELECT COUNT(*) FROM {_quote_table_name(stages['webcat_domains'])}"
-            ).fetchone()[0])
-            unique_pairs = int(conn.execute(
-                f"SELECT COUNT(*) FROM {_quote_table_name(stages['webcat_pairs'])}"
-            ).fetchone()[0])
+                    _commit_if_supported(conn)
 
             _upsert_meta_table(conn, stages["webcat_meta"], "built_ts", str(_now()))
             _upsert_meta_table(conn, stages["webcat_meta"], "source", source)
@@ -557,15 +553,15 @@ def _build_db(
             _upsert_meta_table(conn, stages["webcat_meta"], "source_pairs", str(len(pairs)))
             _upsert_meta_table(conn, stages["webcat_meta"], "aliases", str(len(alias_rows)))
             rename_parts: list[str] = []
-            for live, stage in {k: v for k, v in stages.items() if k != "webcat_pairs"}.items():
+            for live, stage in stages.items():
                 rename_parts.append(f"{_quote_table_name(live)} TO {_quote_table_name(old_tables[live])}")
                 rename_parts.append(f"{_quote_table_name(stage)} TO {_quote_table_name(live)}")
             conn.execute("RENAME TABLE " + ", ".join(rename_parts))
-            _drop_tables(conn, [stages["webcat_pairs"], *old_tables.values()])
+            _drop_tables(conn, list(old_tables.values()))
         except Exception:
             _drop_tables(conn, list(stages.values()) + list(old_tables.values()))
             raise
-    return domains_built, len(pairs)
+    return domains_built, unique_pairs
 
 def _collect(source_path: Path, *, provider: str = "auto") -> Tuple[List[Tuple[str, str]], str, Dict[str, str]]:
     provider = (provider or "auto").strip().lower()

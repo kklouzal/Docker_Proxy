@@ -480,8 +480,8 @@ def resolve_database_config() -> DatabaseConfig:
     )
 
 
-def connect() -> CompatConnection:
-    cfg = resolve_database_config()
+def connect(config: DatabaseConfig | None = None) -> CompatConnection:
+    cfg = config or resolve_database_config()
     _ensure_mysql_database(cfg)
     native = _checkout_connection(cfg)
     return CompatConnection(native, cfg=cfg)

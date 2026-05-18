@@ -244,10 +244,6 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
                     self.statement = statement
 
                 def fetchone(self):
-                    if "COUNT(*) FROM `webcat_domains_stage_678_12345`" in self.statement:
-                        return (1,)
-                    if "COUNT(*) FROM `webcat_pairs_stage_678_12345`" in self.statement:
-                        return (2,)
                     return (0,)
 
                 def fetchall(self):
@@ -284,7 +280,9 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
     assert "DELETE FROM webcat_domains" not in joined
     assert "CREATE TABLE `webcat_domains_stage_678_12345` LIKE `webcat_domains`" in joined
     assert "RENAME TABLE" in joined
-    assert "webcat_pairs_stage_678_12345" in joined
+    assert "webcat_pairs_stage_678_12345" not in joined
+    assert "INSERT INTO `webcat_domains_stage_678_12345`(domain, categories) VALUES(%s,%s)" in joined
+    assert "INSERT INTO `webcat_categories_stage_678_12345`(category, domains) VALUES(%s,%s)" in joined
     assert "`webcat_domains_stage_678_12345` TO `webcat_domains`" in joined
     assert conn.commits >= 1
 
