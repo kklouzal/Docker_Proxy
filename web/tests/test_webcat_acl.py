@@ -78,6 +78,54 @@ def test_webcat_acl_refreshes_stale_disk_snapshot_before_negative_lookup(tmp_pat
 
     assert fresh_db.lookup_categories("traffic-fixture") == {"adult"}
 
+
+def test_webcat_acl_refreshes_snapshot_lock_while_building(tmp_path, monkeypatch):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "webcat-acl-lock-refresh")
+
+    from tools import webcat_acl  # type: ignore
+
+    snapshot_dir = tmp_path / "snapshot"
+    monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(snapshot_dir))
+    db = webcat_acl._Db()
+
+    class FakeCursor:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchmany(self, _size):
+            self.calls += 1
+            if self.calls == 1:
+                return [("a.example", "adult")] * 2
+            if self.calls == 2:
+                return [("b.example", "adult")] * 2
+            return []
+
+        def close(self):
+            return None
+
+    class FakeNative:
+        def cursor(self):
+            return FakeCursor()
+
+    class FakeConn:
+        native = FakeNative()
+
+        def close(self):
+            return None
+
+    refresh_calls = []
+    monkeypatch.setattr(db, "_connect", lambda: FakeConn())
+    monkeypatch.setattr(db, "_load_remote_built_ts", lambda: 123)
+    monkeypatch.setattr(db, "_refresh_snapshot_lock", lambda fd: refresh_calls.append(fd))
+
+    assert db._build_snapshot_from_db(expected_built_ts=123) is True
+    assert len(refresh_calls) >= 2
+    assert all(fd is not None for fd in refresh_calls)
+
 def test_webcat_acl_normalizes_explicit_proxy_uri_host():
     _add_web_to_path()
 

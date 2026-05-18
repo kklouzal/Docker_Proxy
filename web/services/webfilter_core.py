@@ -529,7 +529,8 @@ class WebFilterStoreBase:
         if "webcat_acl.py" in state.include_text:
             snapshot_status = self._publish_webcat_snapshot_for_helper()
         else:
-            snapshot_status = (True, "Web category snapshot not required for current webfilter policy.")
+            self.last_webcat_snapshot_status = (True, "Web category snapshot not needed for current policy.")
+            snapshot_status = None
         if snapshot_status is not None:
             self.last_webcat_snapshot_status = snapshot_status
         write_managed_text_files(

@@ -163,6 +163,16 @@ class _Db:
         except Exception:
             pass
 
+    def _refresh_snapshot_lock(self, fd: Optional[int]) -> None:
+        if fd is None:
+            return
+        try:
+            # Keep the lock's mtime fresh so long-running snapshot builds are
+            # never mistaken for stale locks and re-entered by another helper.
+            os.utime(self._snapshot_lock_path, None)
+        except Exception:
+            pass
+
     def _swap_local_snapshot(self, conn: sqlite3.Connection, *, built_ts: int, mtime_ns: int) -> None:
         old_conn: sqlite3.Connection | None = None
         previous_built_ts = 0
@@ -281,6 +291,7 @@ class _Db:
                         continue
                     local_db.executemany("INSERT OR REPLACE INTO domains(domain, categories) VALUES(?, ?)", batch)
                     row_count += len(batch)
+                    self._refresh_snapshot_lock(lock_fd)
             finally:
                 try:
                     cur.close()
