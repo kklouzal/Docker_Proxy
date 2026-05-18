@@ -1787,7 +1787,7 @@ def observability():
 
     try:
         summary = _cached_observability_result(
-            _observability_result_cache_key('observability', 'summary', get_proxy_id(), since_ts),
+            _observability_result_cache_key('observability', 'summary', get_proxy_id(), window_i),
             lambda: queries.summary(since=since_ts),
         )
         total_requests = int(summary.get('request_records') or 0)
@@ -1804,7 +1804,7 @@ def observability():
         pane_payload: Dict[str, Any]
         if pane == 'overview':
             pane_payload = _cached_observability_result(
-                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, min(limit, 10), int(resolve_hostnames)),
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, min(limit, 10), int(resolve_hostnames)),
                 lambda: queries.overview_bundle(
                     since=since_ts,
                     search=search,
@@ -1815,7 +1815,7 @@ def observability():
             )
         elif pane == 'clients':
             pane_payload = _cached_observability_result(
-                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit, sort, int(resolve_hostnames)),
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, limit, sort, int(resolve_hostnames)),
                 lambda: {
                     'rows': queries.top_clients(
                         since=since_ts,
@@ -1829,7 +1829,7 @@ def observability():
             )
         elif pane == 'cache':
             pane_payload = _cached_observability_result(
-                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit, sort),
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, limit, sort),
                 lambda: {
                     'rows': queries.top_cache_reasons(
                         since=since_ts,
@@ -1841,7 +1841,7 @@ def observability():
             )
         elif pane == 'ssl':
             pane_payload = _cached_observability_result(
-                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, search, limit),
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, limit),
                 lambda: queries.ssl_overview(
                     since=since_ts,
                     search=search,
@@ -1859,7 +1859,7 @@ def observability():
             )
         elif pane == 'performance':
             performance_payload = _cached_observability_result(
-                _observability_result_cache_key('observability', pane, get_proxy_id(), since_ts, limit),
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, limit),
                 lambda: queries.performance_overview(since=since_ts, limit=limit, summary=summary),
             )
             pane_payload = _empty_observability_payload(pane, summary=summary)
