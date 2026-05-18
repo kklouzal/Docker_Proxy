@@ -22,6 +22,7 @@ def _request_line(
     duration_ms: int = 25,
     bytes_sent: int = 0,
     master_xaction: str = "",
+    bump_mode: str = "bump",
 ) -> str:
     fields = [
         str(ts),
@@ -33,7 +34,7 @@ def _request_line(
         str(bytes_sent),
         master_xaction,
         "DIRECT",
-        "bump",
+        bump_mode,
         "",
         "TLSv1.3",
         "TLS_AES_256_GCM_SHA384",
@@ -370,7 +371,7 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
     assert performance_payload["top_user_agents"][0]["label"] == "pytest/1.0"
 
     overview = queries.overview_bundle(since=2800, limit=5, resolve_hostnames=False)
-    assert overview["summary"]["request_records"] == 2
+    assert overview["summary"]["request_records"] == 3
     assert overview["ssl"]["summary"]["total_events"] == 5
     assert overview["security"]["summary"]["combined_blocks"] == 2
 
@@ -433,7 +434,7 @@ def test_observability_performance_overview_reuses_precomputed_summary(tmp_path,
         def slowest_icap_events(self, **_kwargs):
             return []
 
-        def top_request_dimension(self, **_kwargs):
+        def top_request_dimension(self, _dimension, **_kwargs):
             return []
 
         def top_policy_tags(self, **_kwargs):
@@ -452,8 +453,120 @@ def test_observability_performance_overview_reuses_precomputed_summary(tmp_path,
     payload = queries.performance_overview(
         since=2800,
         limit=5,
-        summary={"request_records": 1, "cache_hits": 1, "cache_misses": 0, "cache_hit_pct": 100.0, "clients": 1, "destinations": 1, "transactions": 1, "icap_events": 0, "av_icap_events": 0, "adblock_icap_events": 0},
+        summary={"requests": 1, "cache_hits": 1, "cache_misses": 0, "cache_hit_pct": 100.0, "clients": 1, "destinations": 1, "transactions": 1, "icap_events": 0, "av_icap_events": 0, "adblock_icap_events": 0},
     )
 
     assert fake_store.activity_summary_calls == 0
-    assert payload["summary"]["request_records"] == 1
+    assert payload["summary"]["requests"] == 1
+
+
+def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(tmp_path, monkeypatch):
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-reporting-overview")
+
+    from services.adblock_store import AdblockStore  # type: ignore
+    from services.audit_store import AuditStore  # type: ignore
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+    from services.webfilter_store import WebFilterStore  # type: ignore
+    import services.observability_queries as observability_queries  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    ssl_store = SslErrorsStore()
+    ssl_store.init_db()
+    adblock_store = AdblockStore(lists_dir=str(tmp_path / "adblock-lists-reporting"))
+    adblock_store.init_db()
+    webfilter_store = WebFilterStore()
+    webfilter_store.init_db()
+    audit_store = AuditStore()
+    audit_store.init_db()
+
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=4100,
+            client_ip="192.0.2.80",
+            method="GET",
+            url="https://files.example/iso",
+            result_code="TCP_HIT/200",
+            bytes_sent=4096,
+            master_xaction="tx-report-1",
+        ),
+    )
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=4110,
+            client_ip="192.0.2.80",
+            method="CONNECT",
+            url="updates.example:443",
+            result_code="TCP_TUNNEL/200",
+            bytes_sent=2048,
+            master_xaction="tx-report-2",
+            bump_mode="splice",
+        ),
+    )
+    _insert_icap(
+        diag_store,
+        _icap_line(
+            ts=4120,
+            master_xaction="tx-malware-1",
+            client_ip="192.0.2.80",
+            method="GET",
+            url="https://phishing.example/payload",
+            icap_time_ms=15,
+            adapt_summary="virus_scan RESPMOD Malware FOUND",
+            adapt_details="phishing payload blocked",
+        ),
+    )
+
+    with webfilter_store._connect() as conn:
+        conn.execute(
+            "INSERT INTO webfilter_blocked_log(proxy_id, ts, src_ip, url, category) VALUES(%s,%s,%s,%s,%s)",
+            ("default", 4130, "192.0.2.80", "https://games.example/play", "games"),
+        )
+    with ssl_store._connect() as conn:
+        row_key = ssl_store._row_key("default", "updates.example", "HANDSHAKE", "bump handshake failed")
+        conn.execute(
+            """
+            INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (row_key, "default", "updates.example", "HANDSHAKE", "bump handshake failed", 3, 4105, 4115, "CONNECT updates.example:443"),
+        )
+    audit_store.record(kind="config_apply_manual", ok=True, remote_addr="127.0.0.1", detail="applied reporting test config")
+
+    monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: diag_store)
+    monkeypatch.setattr(observability_queries, "get_ssl_errors_store", lambda: ssl_store)
+    monkeypatch.setattr(observability_queries, "get_adblock_store", lambda: adblock_store)
+    monkeypatch.setattr(observability_queries, "get_webfilter_store", lambda: webfilter_store)
+
+    queries = observability_queries.ObservabilityQueries()
+    queries.save_report_schedule(
+        name="Daily accountability digest",
+        cadence="daily",
+        recipients="ops@example.com",
+        pane="reports",
+        report_format="jsonl",
+        privacy=True,
+        window_seconds=86400,
+    )
+    payload = queries.reporting_overview(since=4000, limit=10, resolve_hostnames=False, privacy=True)
+
+    assert payload["cache_savings"]["estimated_saved_bytes"] == 4096
+    assert payload["top_users"][0]["client_label"].startswith("user-")
+    assert payload["top_users"][0]["client_label"] != "192.0.2.80"
+    assert payload["top_users"][0]["client_ip"] == ""
+    assert payload["top_blocked_categories"][0]["category"] == "games"
+    assert payload["top_malware_attempts"][0]["domain"] == "phishing.example"
+    assert payload["top_malware_attempts"][0]["client_label"].startswith("user-")
+    assert payload["top_malware_attempts"][0]["client_ip"] == ""
+    assert payload["top_ssl_bump_failures"][0]["domain"] == "updates.example"
+    assert payload["top_spliced_destinations"][0]["domain"] == "updates.example"
+    assert payload["per_group"][0]["group"].startswith("group-")
+    assert payload["audit"]["summary"]["events"] >= 1
+    assert payload["schedules"][0]["name"] == "Daily accountability digest"
+    assert any(row["name"] == "Prometheus" and row["status"] == "ready" for row in payload["export_contracts"])
+    assert any(row["name"] == "SIEM/syslog" and row["status"] == "ready" for row in payload["export_contracts"])
+    assert any(row["name"] == "Scheduled email" and row["status"] == "configured" for row in payload["export_contracts"])

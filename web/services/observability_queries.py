@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import time
 from collections import Counter
 from typing import Any, Dict, List
 
@@ -43,6 +45,20 @@ def _badge_rows(counter: Counter[str], *, limit: int = 8) -> List[Dict[str, Any]
             }
         )
     return rows
+
+
+def _pseudonymize(value: object, *, namespace: str = "client") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    digest = hashlib.sha256(f"{get_proxy_id()}:{namespace}:{raw}".encode("utf-8", errors="replace")).hexdigest()
+    return f"{namespace}-{digest[:10]}"
+
+
+def _next_schedule_run_ts(cadence: str, now: int | None = None) -> int:
+    base = int(now if now is not None else time.time())
+    interval = 7 * 24 * 3600 if str(cadence or "").lower() == "weekly" else 24 * 3600
+    return base + interval
 
 
 class ObservabilityQueries:
@@ -714,6 +730,482 @@ class ObservabilityQueries:
             'top_policy_tags': present_top_tag_rows(diagnostic_store.top_policy_tags(since=since, limit=10), max_label=64),
             'av_icap_summary': diagnostic_store.icap_summary(since=since, service='av'),
             'adblock_icap_summary': diagnostic_store.icap_summary(since=since, service='adblock'),
+        }
+
+    def cache_savings(self, *, since: int, search: str = "") -> Dict[str, Any]:
+        proxy_id = get_proxy_id()
+        search_value = (search or "").strip().lower()
+        hit_sql = self._hit_sql("result_code")
+        where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
+        params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append(
+                "(" + " OR ".join([
+                    "LOWER(domain) LIKE %s ESCAPE '\\'",
+                    "LOWER(client_ip) LIKE %s ESCAPE '\\'",
+                    "LOWER(url) LIKE %s ESCAPE '\\'",
+                ]) + ")"
+            )
+            params.extend([like, like, like])
+        where_sql = "WHERE " + " AND ".join(where)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS requests,
+                    COALESCE(SUM(bytes), 0) AS total_bytes,
+                    COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,
+                    COALESCE(SUM(CASE WHEN {hit_sql} THEN bytes ELSE 0 END), 0) AS hit_bytes,
+                    COALESCE(SUM(CASE WHEN NOT {hit_sql} THEN bytes ELSE 0 END), 0) AS miss_bytes
+                FROM diagnostic_requests
+                {where_sql}
+                """,
+                tuple(params),
+            ).fetchone()
+        total_bytes = int(row[1] or 0) if row else 0
+        hit_bytes = int(row[3] or 0) if row else 0
+        return {
+            "requests": int(row[0] or 0) if row else 0,
+            "total_bytes": total_bytes,
+            "hit_requests": int(row[2] or 0) if row else 0,
+            "hit_bytes": hit_bytes,
+            "miss_bytes": int(row[4] or 0) if row else 0,
+            "estimated_saved_bytes": hit_bytes,
+            "byte_hit_pct": _pct(hit_bytes, total_bytes),
+        }
+
+    def top_users_by_bandwidth(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        resolve_hostnames: bool = True,
+        privacy: bool = False,
+    ) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(200, int(limit)))
+        search_value = (search or "").strip().lower()
+        hit_sql = self._hit_sql("result_code")
+        tx_sql = self._request_identity_sql("id", "master_xaction")
+        where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
+        params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append("(LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\')")
+            params.extend([like, like, like])
+        where_sql = "WHERE " + " AND ".join(where)
+        with self._connect() as conn:
+            total_row = conn.execute(f"SELECT COALESCE(SUM(bytes), 0) FROM diagnostic_requests {where_sql}", tuple(params)).fetchone()
+            rows = conn.execute(
+                f"""
+                SELECT
+                    client_ip,
+                    COUNT(*) AS requests,
+                    COUNT(DISTINCT domain) AS destinations,
+                    COUNT(DISTINCT {tx_sql}) AS transactions,
+                    COALESCE(SUM(bytes), 0) AS bytes_total,
+                    COALESCE(SUM(CASE WHEN {hit_sql} THEN bytes ELSE 0 END), 0) AS cache_hit_bytes,
+                    COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS cache_hits,
+                    MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                {where_sql}
+                GROUP BY client_ip
+                ORDER BY bytes_total DESC, requests DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+        total_bytes = int(total_row[0] or 0) if total_row else 0
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            ip = str(row[0] or "")
+            out.append(
+                {
+                    "client_ip": "" if privacy else ip,
+                    "client_label": _pseudonymize(ip, namespace="user") if privacy else ip,
+                    "requests": int(row[1] or 0),
+                    "destinations": int(row[2] or 0),
+                    "transactions": int(row[3] or 0),
+                    "bytes": int(row[4] or 0),
+                    "cache_hit_bytes": int(row[5] or 0),
+                    "cache_hits": int(row[6] or 0),
+                    "last_seen": int(row[7] or 0),
+                    "pct_bytes": _pct(int(row[4] or 0), total_bytes),
+                    "hostname": "",
+                    "hostname_source": "",
+                    "hostname_status": "disabled",
+                }
+            )
+        if resolve_hostnames and out and not privacy:
+            cache = get_client_identity_cache()
+            resolved = cache.resolve_many(row["client_ip"] for row in out)
+            for row in out:
+                row.update(resolved.get(row["client_ip"], {"hostname": "", "hostname_source": "", "hostname_status": "unresolved"}))
+        return out
+
+    def top_spliced_destinations(self, *, since: int, search: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(200, int(limit)))
+        search_value = (search or "").strip().lower()
+        where = [
+            "proxy_id = %s",
+            "ts >= %s",
+            self._present_sql("domain"),
+            "LOWER(COALESCE(bump_mode, '')) LIKE '%%splice%%'",
+        ]
+        params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append("(LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\')")
+            params.extend([like, like, like])
+        where_sql = "WHERE " + " AND ".join(where)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS requests, COUNT(DISTINCT client_ip) AS clients, COALESCE(SUM(bytes), 0) AS bytes_total, MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                {where_sql}
+                GROUP BY domain
+                ORDER BY requests DESC, bytes_total DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+        return [
+            {
+                "domain": str(row[0] or ""),
+                "requests": int(row[1] or 0),
+                "clients": int(row[2] or 0),
+                "bytes": int(row[3] or 0),
+                "last_seen": int(row[4] or 0),
+            }
+            for row in rows
+        ]
+
+    def top_malware_attempts(self, *, since: int, search: str = "", limit: int = 50, privacy: bool = False) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(200, int(limit)))
+        search_value = (search or "").strip().lower()
+        where = ["proxy_id = %s", "ts >= %s", "service_family = 'av'", self._av_finding_sql()]
+        params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append("(LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\')")
+            params.extend([like, like, like, like])
+        where_sql = "WHERE " + " AND ".join(where)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT domain, client_ip, COUNT(*) AS attempts, MAX(ts) AS last_seen, MAX(adapt_summary) AS sample
+                FROM diagnostic_icap_events
+                {where_sql}
+                GROUP BY domain, client_ip
+                ORDER BY attempts DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+        return [
+            {
+                "domain": str(row[0] or ""),
+                "client_ip": "" if privacy else str(row[1] or ""),
+                "client_label": _pseudonymize(row[1], namespace="user") if privacy else str(row[1] or ""),
+                "attempts": int(row[2] or 0),
+                "last_seen": int(row[3] or 0),
+                "sample": str(row[4] or ""),
+            }
+            for row in rows
+        ]
+
+    def _ensure_report_schedule_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS observability_report_schedules (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                    enabled TINYINT(1) NOT NULL DEFAULT 1,
+                    name VARCHAR(120) NOT NULL,
+                    cadence VARCHAR(16) NOT NULL,
+                    recipients VARCHAR(512) NOT NULL,
+                    pane VARCHAR(32) NOT NULL,
+                    report_format VARCHAR(16) NOT NULL,
+                    privacy TINYINT(1) NOT NULL DEFAULT 1,
+                    window_seconds INT NOT NULL,
+                    created_ts BIGINT NOT NULL,
+                    updated_ts BIGINT NOT NULL,
+                    next_run_ts BIGINT NOT NULL DEFAULT 0,
+                    last_run_ts BIGINT NOT NULL DEFAULT 0,
+                    last_status VARCHAR(64) NOT NULL DEFAULT '',
+                    KEY idx_obs_report_schedules_proxy_next (proxy_id, enabled, next_run_ts),
+                    KEY idx_obs_report_schedules_proxy_updated (proxy_id, updated_ts)
+                )
+                """
+            )
+
+    def report_schedules(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+        self._ensure_report_schedule_db()
+        proxy_id = get_proxy_id()
+        lim = max(1, min(100, int(limit or 20)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, enabled, name, cadence, recipients, pane, report_format, privacy,
+                       window_seconds, next_run_ts, last_run_ts, last_status, updated_ts
+                FROM observability_report_schedules
+                WHERE proxy_id = %s
+                ORDER BY enabled DESC, next_run_ts ASC, updated_ts DESC
+                LIMIT %s
+                """,
+                (proxy_id, lim),
+            ).fetchall()
+        return [
+            {
+                "id": int(row[0] or 0),
+                "enabled": bool(row[1]),
+                "name": str(row[2] or ""),
+                "cadence": str(row[3] or "daily"),
+                "recipients": str(row[4] or ""),
+                "pane": str(row[5] or "reports"),
+                "report_format": str(row[6] or "csv"),
+                "privacy": bool(row[7]),
+                "window_seconds": int(row[8] or 86400),
+                "next_run_ts": int(row[9] or 0),
+                "last_run_ts": int(row[10] or 0),
+                "last_status": str(row[11] or ""),
+                "updated_ts": int(row[12] or 0),
+            }
+            for row in rows
+        ]
+
+    def save_report_schedule(
+        self,
+        *,
+        name: str,
+        cadence: str,
+        recipients: str,
+        pane: str = "reports",
+        report_format: str = "csv",
+        privacy: bool = True,
+        window_seconds: int = 86400,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        self._ensure_report_schedule_db()
+        now = int(time.time())
+        cadence_s = str(cadence or "daily").strip().lower()
+        if cadence_s not in {"daily", "weekly"}:
+            cadence_s = "daily"
+        pane_s = str(pane or "reports").strip().lower()
+        if pane_s not in {"reports", "overview", "destinations", "clients", "cache", "ssl", "security", "performance"}:
+            pane_s = "reports"
+        fmt_s = str(report_format or "csv").strip().lower()
+        if fmt_s not in {"csv", "json", "jsonl"}:
+            fmt_s = "csv"
+        window_i = max(300, min(7 * 24 * 3600, int(window_seconds or 86400)))
+        name_s = str(name or "").strip()[:120] or f"{cadence_s.title()} observability report"
+        recipients_s = str(recipients or "").strip()[:512]
+        if not recipients_s:
+            raise ValueError("At least one report recipient is required.")
+        proxy_id = get_proxy_id()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO observability_report_schedules(
+                    proxy_id, enabled, name, cadence, recipients, pane, report_format, privacy,
+                    window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status
+                )
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'configured')
+                """,
+                (
+                    proxy_id,
+                    1 if enabled else 0,
+                    name_s,
+                    cadence_s,
+                    recipients_s,
+                    pane_s,
+                    fmt_s,
+                    1 if privacy else 0,
+                    window_i,
+                    now,
+                    now,
+                    _next_schedule_run_ts(cadence_s, now),
+                ),
+            )
+        return self.report_schedules(limit=1)[0]
+
+    def audit_activity(self, *, since: int, limit: int = 20) -> Dict[str, Any]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(100, int(limit or 20)))
+        try:
+            with self._connect() as conn:
+                summary = conn.execute(
+                    """
+                    SELECT COUNT(*) AS events,
+                           COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) AS failed_events,
+                           MAX(ts) AS last_seen
+                    FROM audit_events
+                    WHERE proxy_id = %s AND ts >= %s
+                    """,
+                    (proxy_id, int(since)),
+                ).fetchone()
+                kinds = conn.execute(
+                    """
+                    SELECT kind, COUNT(*) AS events, MAX(ts) AS last_seen
+                    FROM audit_events
+                    WHERE proxy_id = %s AND ts >= %s
+                    GROUP BY kind
+                    ORDER BY events DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    (proxy_id, int(since), lim),
+                ).fetchall()
+                recent = conn.execute(
+                    """
+                    SELECT ts, kind, ok, remote_addr, detail
+                    FROM audit_events
+                    WHERE proxy_id = %s AND ts >= %s
+                    ORDER BY ts DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (proxy_id, int(since), lim),
+                ).fetchall()
+        except Exception:
+            return {"summary": {"events": 0, "failed_events": 0, "last_seen": 0}, "top_kinds": [], "recent": []}
+        return {
+            "summary": {
+                "events": int(summary[0] or 0) if summary else 0,
+                "failed_events": int(summary[1] or 0) if summary else 0,
+                "last_seen": int(summary[2] or 0) if summary else 0,
+            },
+            "top_kinds": [
+                {"kind": str(row[0] or ""), "events": int(row[1] or 0), "last_seen": int(row[2] or 0)}
+                for row in kinds
+            ],
+            "recent": [
+                {
+                    "ts": int(row[0] or 0),
+                    "kind": str(row[1] or ""),
+                    "ok": bool(row[2]),
+                    "remote_addr": str(row[3] or ""),
+                    "detail": str(row[4] or ""),
+                }
+                for row in recent
+            ],
+        }
+
+    def time_series_health(self) -> Dict[str, Any]:
+        proxy_id = get_proxy_id()
+        out: Dict[str, Any] = {"tables": [], "latest_ts": 0, "rollup_points": 0}
+        for table in ("ts_1m", "ts_1h", "ts_1d"):
+            try:
+                with self._connect() as conn:
+                    row = conn.execute(
+                        f"SELECT COUNT(*) AS points, MAX(ts) AS latest_ts FROM {table} WHERE proxy_id = %s",
+                        (proxy_id,),
+                    ).fetchone()
+            except Exception:
+                out["tables"].append({"table": table, "points": 0, "latest_ts": 0, "status": "missing"})
+                continue
+            points = int(row[0] or 0) if row else 0
+            latest = int(row[1] or 0) if row else 0
+            out["tables"].append({"table": table, "points": points, "latest_ts": latest, "status": "ready"})
+            out["rollup_points"] += points
+            out["latest_ts"] = max(int(out["latest_ts"] or 0), latest)
+        return out
+
+    def top_client_groups(self, *, since: int, search: str = "", limit: int = 50, privacy: bool = False) -> List[Dict[str, Any]]:
+        proxy_id = get_proxy_id()
+        lim = max(5, min(200, int(limit)))
+        search_value = (search or "").strip().lower()
+        hit_sql = self._hit_sql("result_code")
+        group_sql = (
+            "CASE "
+            "WHEN client_ip LIKE '%%.%%.%%.%%' THEN CONCAT(SUBSTRING_INDEX(client_ip, '.', 3), '.0/24') "
+            "ELSE client_ip END"
+        )
+        where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
+        params: List[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append("(LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\')")
+            params.extend([like, like, like])
+        where_sql = "WHERE " + " AND ".join(where)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    {group_sql} AS group_key,
+                    COUNT(*) AS requests,
+                    COUNT(DISTINCT client_ip) AS clients,
+                    COUNT(DISTINCT domain) AS destinations,
+                    COALESCE(SUM(bytes), 0) AS bytes_total,
+                    COALESCE(SUM(CASE WHEN {hit_sql} THEN bytes ELSE 0 END), 0) AS cache_hit_bytes,
+                    MAX(ts) AS last_seen
+                FROM diagnostic_requests
+                {where_sql}
+                GROUP BY group_key
+                ORDER BY bytes_total DESC, requests DESC, last_seen DESC
+                LIMIT %s
+                """,
+                tuple(params + [lim]),
+            ).fetchall()
+        return [
+            {
+                "group": _pseudonymize(row[0], namespace="group") if privacy else str(row[0] or ""),
+                "requests": int(row[1] or 0),
+                "clients": int(row[2] or 0),
+                "destinations": int(row[3] or 0),
+                "bytes": int(row[4] or 0),
+                "cache_hit_bytes": int(row[5] or 0),
+                "last_seen": int(row[6] or 0),
+                "group_source": "client_subnet",
+            }
+            for row in rows
+        ]
+
+    def reporting_overview(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        resolve_hostnames: bool = True,
+        privacy: bool = False,
+        summary: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        lim = max(5, min(200, int(limit)))
+        security = self.security_overview(since=since, search=search, limit=min(lim, 50))
+        ssl_payload = self.ssl_overview(since=since, search=search, limit=min(lim, 50))
+        schedules = self.report_schedules(limit=10)
+        return {
+            "summary": summary or self.summary(since=since),
+            "cache_savings": self.cache_savings(since=since, search=search),
+            "top_users": self.top_users_by_bandwidth(
+                since=since,
+                search=search,
+                limit=lim,
+                resolve_hostnames=resolve_hostnames,
+                privacy=privacy,
+            ),
+            "top_blocked_categories": security.get("webfilter_top_categories", []),
+            "top_malware_attempts": self.top_malware_attempts(since=since, search=search, limit=lim, privacy=privacy),
+            "top_ssl_bump_failures": ssl_payload.get("rows", [])[:lim],
+            "top_spliced_destinations": self.top_spliced_destinations(since=since, search=search, limit=lim),
+            "per_group": self.top_client_groups(since=since, search=search, limit=lim, privacy=privacy),
+            "security": security,
+            "audit": self.audit_activity(since=since, limit=min(lim, 20)),
+            "time_series": self.time_series_health(),
+            "schedules": schedules,
+            "export_contracts": [
+                {"name": "CSV", "status": "ready", "endpoint": "/observability/export?pane=reports"},
+                {"name": "JSON", "status": "ready", "endpoint": "/observability/export?pane=reports&format=json"},
+                {"name": "Prometheus", "status": "ready", "endpoint": "/observability/metrics"},
+                {"name": "SIEM/syslog", "status": "ready", "endpoint": "/observability/export?pane=security&format=jsonl"},
+                {"name": "Scheduled email", "status": "configured" if schedules else "ready", "endpoint": "/observability/report-schedules"},
+            ],
+            "privacy": {"enabled": bool(privacy), "mode": "pseudonymized" if privacy else "raw"},
         }
 
     def overview_bundle(

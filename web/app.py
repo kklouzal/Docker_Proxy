@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import hashlib
 import inspect
+import json
 from flask import Flask, Response, g, render_template, request, redirect, url_for, jsonify, abort, session
 from services.squidctl import SquidController
 from services.cert_manager import generate_self_signed_ca_bundle, install_pfx_as_ca, materialize_certificate_bundle, parse_pfx_bundle
@@ -113,6 +115,7 @@ _OBSERVABILITY_PANES = (
     'ssl',
     'security',
     'performance',
+    'reports',
 )
 _OBSERVABILITY_SORT_DEFAULTS = {
     'overview': 'requests',
@@ -122,6 +125,7 @@ _OBSERVABILITY_SORT_DEFAULTS = {
     'ssl': 'recent',
     'security': 'recent',
     'performance': 'recent',
+    'reports': 'bandwidth',
 }
 _OBSERVABILITY_SORT_OPTIONS = {
     'overview': ('requests',),
@@ -131,6 +135,7 @@ _OBSERVABILITY_SORT_OPTIONS = {
     'ssl': ('recent',),
     'security': ('recent',),
     'performance': ('recent',),
+    'reports': ('bandwidth',),
 }
 _OBSERVABILITY_OVERVIEW_EXPORT_METRICS = (
     'request_records',
@@ -173,6 +178,7 @@ _OBSERVABILITY_EMPTY_EXPORT_HEADERS = {
     'ssl': ['domain', 'category', 'category_label', 'reason', 'count', 'first_seen', 'last_seen'],
     'security': ['source', 'timestamp', 'client', 'target', 'detail', 'status'],
     'performance': ['type', 'timestamp', 'subject', 'metric', 'detail'],
+    'reports': ['section', 'subject', 'requests_or_events', 'clients', 'destinations', 'bytes', 'cache_saved_bytes', 'last_seen', 'detail'],
 }
 
 
@@ -360,8 +366,7 @@ def _prune_observability_result_cache() -> None:
 
 
 def _observability_result_cache_key(*parts: Any, bucket_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS) -> tuple[Any, ...]:
-    bucket = max(1.0, float(bucket_seconds))
-    return tuple(parts) + (int(time.time() // bucket),)
+    return tuple(parts)
 
 
 def _cached_observability_result(cache_key: tuple[Any, ...], builder: Any, *, ttl_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS) -> Any:
@@ -542,6 +547,24 @@ def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
     return app.response_class(buf.getvalue(), mimetype='text/csv; charset=utf-8')
 
 
+def _json_response(payload: Any):
+    return app.response_class(json.dumps(payload, sort_keys=True, separators=(',', ':')), mimetype='application/json; charset=utf-8')
+
+
+def _jsonl_response(rows: Iterable[Dict[str, Any]]):
+    body = ''.join(json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n' for row in rows)
+    return app.response_class(body, mimetype='application/x-ndjson; charset=utf-8')
+
+
+def _observability_export_response(headers: Sequence[str], rows: Iterable[Sequence[object]], export_format: str):
+    materialized = [list(row) for row in rows]
+    if export_format == 'json':
+        return _json_response([dict(zip(headers, row)) for row in materialized])
+    if export_format == 'jsonl':
+        return _jsonl_response(dict(zip(headers, row)) for row in materialized)
+    return _csv_response(headers, materialized)
+
+
 def _observability_pane_from_request() -> str:
     return _normalize_choice(request.args.get('pane') or 'overview', _OBSERVABILITY_PANES, 'overview')
 
@@ -554,6 +577,23 @@ def _observability_sort_from_request(pane: str) -> str:
 def _observability_resolve_hostnames_from_request() -> bool:
     resolve_values = request.args.getlist('resolve_hostnames')
     return True if not resolve_values else any((value or '').strip() == '1' for value in resolve_values)
+
+
+def _observability_privacy_from_request() -> bool:
+    values = request.args.getlist('privacy')
+    return any((value or '').strip().lower() in {'1', 'true', 'yes', 'on', 'pseudonymized'} for value in values)
+
+
+def _observability_export_format_from_request() -> str:
+    return _normalize_choice(request.args.get('format') or 'csv', ('csv', 'json', 'jsonl'), 'csv')
+
+
+def _observability_pseudonym(value: object, *, namespace: str = 'user') -> str:
+    raw = str(value or '').strip()
+    if not raw:
+        return ''
+    digest = hashlib.sha256(f"{get_proxy_id()}:{namespace}:{raw}".encode('utf-8', errors='replace')).hexdigest()
+    return f"{namespace}-{digest[:10]}"
 
 
 def _empty_observability_summary() -> Dict[str, Any]:
@@ -636,18 +676,35 @@ def _empty_observability_payload(pane: str, *, summary: Dict[str, Any] | None = 
         return security_payload
     if pane == 'performance':
         return performance_payload
+    if pane == 'reports':
+        return {
+            'summary': base_summary,
+            'cache_savings': {'estimated_saved_bytes': 0, 'byte_hit_pct': 0.0},
+            'top_users': [],
+            'top_blocked_categories': [],
+            'top_malware_attempts': [],
+            'top_ssl_bump_failures': [],
+            'top_spliced_destinations': [],
+            'per_group': [],
+            'security': security_payload,
+            'audit': {'summary': {'events': 0, 'failed_events': 0, 'last_seen': 0}, 'top_kinds': [], 'recent': []},
+            'time_series': {'tables': [], 'latest_ts': 0, 'rollup_points': 0},
+            'schedules': [],
+            'export_contracts': [],
+            'privacy': {'enabled': False, 'mode': 'raw'},
+        }
     return {'rows': []}
 
 
-def _empty_observability_export_response(pane: str):
+def _empty_observability_export_response(pane: str, export_format: str = 'csv'):
     headers = _OBSERVABILITY_EMPTY_EXPORT_HEADERS.get(
         pane,
         _OBSERVABILITY_EMPTY_EXPORT_HEADERS['destinations'],
     )
     if pane == 'overview':
         rows = ([metric, 0] for metric in _OBSERVABILITY_OVERVIEW_EXPORT_METRICS)
-        return _csv_response(headers, rows)
-    return _csv_response(headers, [])
+        return _observability_export_response(headers, rows, export_format)
+    return _observability_export_response(headers, [], export_format)
 
 
 def _redirect_after_policy_refresh(endpoint: str, store: Any, *, force: bool = True, **params):
@@ -1813,6 +1870,7 @@ def observability():
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
+    privacy = _observability_privacy_from_request()
     total_requests = 0
 
     try:
@@ -1895,6 +1953,18 @@ def observability():
             pane_payload = _empty_observability_payload(pane, summary=summary)
             if isinstance(performance_payload, dict):
                 pane_payload.update(performance_payload)
+        elif pane == 'reports':
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, limit, int(resolve_hostnames), int(privacy)),
+                lambda: queries.reporting_overview(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                    resolve_hostnames=resolve_hostnames,
+                    privacy=privacy,
+                    summary=summary,
+                ),
+            )
         else:
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key('observability', pane, get_proxy_id(), window_i, search, limit, sort),
@@ -1926,6 +1996,7 @@ def observability():
         window_label=_window_label(window_i),
         search=search,
         resolve_hostnames=resolve_hostnames,
+        privacy=privacy,
         summary=summary,
         pane_payload=pane_payload,
     )
@@ -1957,6 +2028,51 @@ def observability_clear_logs():
         return _redirect_to('observability', pane='overview', clear_error='1')
 
 
+@app.route('/observability/report-schedules', methods=['POST'])
+def observability_report_schedules():
+    queries = get_observability_queries()
+    pane = _normalize_choice(request.form.get('pane'), _OBSERVABILITY_PANES, 'reports')
+    cadence = _normalize_choice(request.form.get('cadence'), ('daily', 'weekly'), 'daily')
+    report_format = _normalize_choice(request.form.get('format'), ('csv', 'json', 'jsonl'), 'csv')
+    privacy = str(request.form.get('privacy') or '1').strip().lower() in {'1', 'true', 'yes', 'on'}
+    enabled = str(request.form.get('enabled') or '1').strip().lower() in {'1', 'true', 'yes', 'on'}
+    window_i = _bounded_int(request.form.get('window'), default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=7 * 24 * 3600)
+    name = (request.form.get('name') or '').strip()
+    recipients = (request.form.get('recipients') or '').strip()
+    try:
+        schedule = queries.save_report_schedule(
+            name=name,
+            cadence=cadence,
+            recipients=recipients,
+            pane=pane,
+            report_format=report_format,
+            privacy=privacy,
+            window_seconds=window_i,
+            enabled=enabled,
+        )
+        _OBSERVABILITY_RESULT_CACHE.clear()
+        detail = f"scheduled {cadence} {pane} observability report to {recipients[:160]}"
+        _record_audit_event('observability_report_schedule_save', ok=True, detail=detail)
+        return _redirect_to(
+            'observability',
+            pane='reports',
+            window=window_i,
+            privacy=_query_flag(privacy),
+            schedule_saved='1',
+            schedule_id=schedule.get('id', ''),
+        )
+    except Exception as exc:
+        detail = public_error_message(exc)
+        _record_audit_event('observability_report_schedule_save', ok=False, detail=detail)
+        return _redirect_to(
+            'observability',
+            pane='reports',
+            window=window_i,
+            privacy=_query_flag(privacy),
+            schedule_error='1',
+        )
+
+
 @app.route('/observability/export', methods=['GET'])
 def observability_export():
     queries = get_observability_queries()
@@ -1967,10 +2083,12 @@ def observability_export():
     since_ts = int(time.time()) - window_i
     search = (request.args.get('q') or '').strip().lower()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
+    privacy = _observability_privacy_from_request()
+    export_format = _observability_export_format_from_request()
     summary_data: Dict[str, Any] | None = None
     total_requests = 0
     try:
-        if pane in ('overview', 'clients', 'destinations', 'performance'):
+        if pane in ('overview', 'clients', 'destinations', 'performance', 'reports'):
             summary_data = _cached_observability_result(
                 _observability_result_cache_key('observability', 'summary', get_proxy_id(), since_ts),
                 lambda: queries.summary(since=since_ts),
@@ -2001,7 +2119,63 @@ def observability_export():
                     'adblock_icap_events',
                 )
             )
-            return _csv_response(headers, data_rows)
+            return _observability_export_response(headers, data_rows, export_format)
+
+        if pane == 'reports':
+            payload = queries.reporting_overview(
+                since=since_ts,
+                search=search,
+                limit=limit,
+                resolve_hostnames=resolve_hostnames,
+                privacy=privacy,
+                summary=summary_data or {},
+            )
+            if export_format == 'json':
+                return _json_response(payload)
+            if export_format == 'jsonl':
+                rows = []
+                for row in payload.get('top_users', []):
+                    rows.append({'section': 'top_users', **row})
+                for row in payload.get('top_blocked_categories', []):
+                    rows.append({'section': 'top_blocked_categories', **row})
+                for row in payload.get('top_malware_attempts', []):
+                    rows.append({'section': 'top_malware_attempts', **row})
+                for row in payload.get('top_ssl_bump_failures', []):
+                    rows.append({'section': 'top_ssl_bump_failures', **row})
+                for row in payload.get('top_spliced_destinations', []):
+                    rows.append({'section': 'top_spliced_destinations', **row})
+                for row in payload.get('per_group', []):
+                    rows.append({'section': 'per_group', **row})
+                for row in (payload.get('audit') or {}).get('recent', []):
+                    rows.append({'section': 'audit_recent', **row})
+                return _jsonl_response(rows)
+            headers = _OBSERVABILITY_EMPTY_EXPORT_HEADERS['reports']
+            rows = []
+            for row in payload.get('top_users', []):
+                rows.append([
+                    'top_users',
+                    row.get('client_label') or row.get('client_ip', ''),
+                    row.get('requests', 0),
+                    '',
+                    row.get('destinations', 0),
+                    row.get('bytes', 0),
+                    row.get('cache_hit_bytes', 0),
+                    row.get('last_seen', 0),
+                    row.get('hostname', ''),
+                ])
+            for row in payload.get('top_blocked_categories', []):
+                rows.append(['top_blocked_categories', row.get('category', ''), row.get('blocks', 0), '', '', '', '', row.get('last_seen', 0), 'webfilter'])
+            for row in payload.get('top_malware_attempts', []):
+                rows.append(['top_malware_attempts', row.get('domain', ''), row.get('attempts', 0), row.get('client_label', ''), '', '', '', row.get('last_seen', 0), row.get('sample', '')])
+            for row in payload.get('top_ssl_bump_failures', []):
+                rows.append(['top_ssl_bump_failures', row.get('domain', ''), row.get('count', 0), '', '', '', '', row.get('last_seen', 0), row.get('reason', '')])
+            for row in payload.get('top_spliced_destinations', []):
+                rows.append(['top_spliced_destinations', row.get('domain', ''), row.get('requests', 0), row.get('clients', 0), '', row.get('bytes', 0), '', row.get('last_seen', 0), 'splice'])
+            for row in payload.get('per_group', []):
+                rows.append(['per_group', row.get('group', ''), row.get('requests', 0), row.get('clients', 0), row.get('destinations', 0), row.get('bytes', 0), row.get('cache_hit_bytes', 0), row.get('last_seen', 0), row.get('group_source', '')])
+            for row in (payload.get('audit') or {}).get('recent', []):
+                rows.append(['audit_recent', row.get('kind', ''), 1, '', '', '', '', row.get('ts', 0), row.get('detail', '')])
+            return _observability_export_response(headers, rows, export_format)
 
         if pane == 'clients':
             rows = queries.top_clients(
@@ -2015,8 +2189,8 @@ def observability_export():
             headers = ['client_ip', 'hostname', 'requests', 'percent_of_total', 'destinations', 'transactions', 'cache_hit_pct', 'av_icap_events', 'adblock_icap_events', 'last_seen']
             data_rows = (
                 [
-                    row.get('ip', ''),
-                    row.get('hostname', ''),
+                    _observability_pseudonym(row.get('ip', ''), namespace='user') if privacy else row.get('ip', ''),
+                    '' if privacy else row.get('hostname', ''),
                     row.get('requests', 0),
                     row.get('pct', 0.0),
                     row.get('destinations', 0),
@@ -2028,7 +2202,7 @@ def observability_export():
                 ]
                 for row in rows
             )
-            return _csv_response(headers, data_rows)
+            return _observability_export_response(headers, data_rows, export_format)
 
         if pane == 'cache':
             rows = queries.top_cache_reasons(
@@ -2049,7 +2223,7 @@ def observability_export():
                 ]
                 for row in rows
             )
-            return _csv_response(headers, data_rows)
+            return _observability_export_response(headers, data_rows, export_format)
 
         if pane == 'ssl':
             payload = queries.ssl_overview(since=since_ts, search=search, limit=limit)
@@ -2067,7 +2241,7 @@ def observability_export():
                 ]
                 for row in rows
             )
-            return _csv_response(headers, data_rows)
+            return _observability_export_response(headers, data_rows, export_format)
 
         if pane == 'security':
             payload = queries.security_overview(since=since_ts, search=search, limit=limit)
@@ -2077,7 +2251,7 @@ def observability_export():
                 rows.append([
                     'av',
                     row.get('ts', 0),
-                    row.get('client_ip', ''),
+                    _observability_pseudonym(row.get('client_ip', ''), namespace='user') if privacy else row.get('client_ip', ''),
                     row.get('target_display', ''),
                     row.get('adapt_summary', ''),
                     row.get('av_status_label', ''),
@@ -2086,7 +2260,7 @@ def observability_export():
                 rows.append([
                     'adblock',
                     row.get('ts', 0),
-                    row.get('src_ip', ''),
+                    _observability_pseudonym(row.get('src_ip', ''), namespace='user') if privacy else row.get('src_ip', ''),
                     row.get('url', ''),
                     f"HTTP {row.get('http_status', 0)}",
                     row.get('result', ''),
@@ -2095,12 +2269,12 @@ def observability_export():
                 rows.append([
                     'webfilter',
                     row.get('ts', 0),
-                    row.get('src_ip', ''),
+                    _observability_pseudonym(row.get('src_ip', ''), namespace='user') if privacy else row.get('src_ip', ''),
                     row.get('url', ''),
                     row.get('category', ''),
                     row.get('result', ''),
                 ])
-            return _csv_response(headers, rows)
+            return _observability_export_response(headers, rows, export_format)
 
         if pane == 'performance':
             payload = queries.performance_overview(since=since_ts, limit=limit, summary=summary_data or {})
@@ -2122,7 +2296,7 @@ def observability_export():
                     row.get('icap_time_ms', 0),
                     row.get('adapt_summary', ''),
                 ])
-            return _csv_response(headers, rows)
+            return _observability_export_response(headers, rows, export_format)
 
         rows = queries.top_destinations(
             since=since_ts,
@@ -2146,7 +2320,7 @@ def observability_export():
             ]
             for row in rows
         )
-        return _csv_response(headers, data_rows)
+        return _observability_export_response(headers, data_rows, export_format)
     except Exception:
         log_exception_throttled(
             app.logger,
@@ -2154,7 +2328,44 @@ def observability_export():
             interval_seconds=30.0,
             message='Failed to export observability pane; returning empty CSV',
         )
-        return _empty_observability_export_response(pane)
+        return _empty_observability_export_response(pane, export_format)
+
+
+@app.route('/observability/metrics', methods=['GET'])
+def observability_metrics():
+    queries = get_observability_queries()
+    window_i = _query_int_arg('window', default=OBSERVABILITY_DEFAULT_WINDOW, minimum=300, maximum=7 * 24 * 3600)
+    since_ts = int(time.time()) - window_i
+    try:
+        summary = queries.summary(since=since_ts)
+        cache = queries.cache_savings(since=since_ts)
+        security = queries.security_overview(since=since_ts, limit=10)
+        lines = [
+            '# HELP docker_proxy_observability_requests Requests observed in the selected window.',
+            '# TYPE docker_proxy_observability_requests gauge',
+            f'docker_proxy_observability_requests{{proxy_id="{get_proxy_id()}"}} {int(summary.get("request_records") or 0)}',
+            '# HELP docker_proxy_observability_cache_hit_ratio Cache hit percentage in the selected window.',
+            '# TYPE docker_proxy_observability_cache_hit_ratio gauge',
+            f'docker_proxy_observability_cache_hit_ratio{{proxy_id="{get_proxy_id()}"}} {float(summary.get("cache_hit_pct") or 0.0)}',
+            '# HELP docker_proxy_observability_cache_saved_bytes Estimated cache-served response bytes in the selected window.',
+            '# TYPE docker_proxy_observability_cache_saved_bytes gauge',
+            f'docker_proxy_observability_cache_saved_bytes{{proxy_id="{get_proxy_id()}"}} {int(cache.get("estimated_saved_bytes") or 0)}',
+            '# HELP docker_proxy_observability_security_blocks Enforcement block events in the selected window.',
+            '# TYPE docker_proxy_observability_security_blocks gauge',
+            f'docker_proxy_observability_security_blocks{{proxy_id="{get_proxy_id()}"}} {int((security.get("summary") or {}).get("combined_blocks") or 0)}',
+            '# HELP docker_proxy_observability_malware_attempts Potential AV findings in the selected window.',
+            '# TYPE docker_proxy_observability_malware_attempts gauge',
+            f'docker_proxy_observability_malware_attempts{{proxy_id="{get_proxy_id()}"}} {int((security.get("summary") or {}).get("potential_findings") or 0)}',
+        ]
+        return app.response_class('\n'.join(lines) + '\n', mimetype='text/plain; version=0.0.4; charset=utf-8')
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            'web.app.observability.metrics',
+            interval_seconds=30.0,
+            message='Failed to build observability Prometheus metrics',
+        )
+        return app.response_class('', mimetype='text/plain; version=0.0.4; charset=utf-8', status=503)
 
 
 

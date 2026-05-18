@@ -371,7 +371,10 @@ class DiagnosticStore:
                         KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
                         KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
                         KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
-                        KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts)
+                        KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts),
+                        KEY idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes),
+                        KEY idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts),
+                        KEY idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)
                     )
                     """
                 )
@@ -404,10 +407,49 @@ class DiagnosticStore:
                         KEY idx_diagnostic_icap_proxy_ts (proxy_id, ts, id),
                         KEY idx_diagnostic_icap_proxy_tx (proxy_id, master_xaction, ts),
                         KEY idx_diagnostic_icap_proxy_domain (proxy_id, domain, ts),
-                        KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts)
+                        KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts),
+                        KEY idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)
                     )
                     """
                 )
+                for table, index_name, ddl in (
+                    (
+                        "diagnostic_requests",
+                        "idx_diagnostic_requests_proxy_client_bytes",
+                        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes)",
+                    ),
+                    (
+                        "diagnostic_requests",
+                        "idx_diagnostic_requests_proxy_bump_domain",
+                        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts)",
+                    ),
+                    (
+                        "diagnostic_requests",
+                        "idx_diagnostic_requests_proxy_result_ts",
+                        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)",
+                    ),
+                    (
+                        "diagnostic_icap_events",
+                        "idx_diagnostic_icap_proxy_client_service",
+                        "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)",
+                    ),
+                ):
+                    try:
+                        exists = conn.execute(
+                            """
+                            SELECT 1
+                            FROM information_schema.statistics
+                            WHERE table_schema = DATABASE()
+                              AND table_name = %s
+                              AND index_name = %s
+                            LIMIT 1
+                            """,
+                            (table, index_name),
+                        ).fetchone()
+                        if not exists:
+                            conn.execute(ddl)
+                    except DATABASE_ERRORS:
+                        logger.warning("Failed to ensure diagnostic reporting index %s on %s", index_name, table)
             self._db_initialized = True
 
     def prune_old_entries(self, *, retention_days: int = 0) -> None:

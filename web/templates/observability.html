@@ -8,9 +8,9 @@
 <section class="card section-shell">
   <div class="page-heading">
     <div class="page-hero-copy">
-      <span class="page-eyebrow">Operator pane of glass</span>
+      <span class="page-eyebrow">Reporting and accountability</span>
       <h1 class="page-title">Observability</h1>
-      <p class="page-subtitle">A cohesive view over structured MySQL request records for {{ active_proxy.display_name }}, organized by the question an administrator is actually trying to answer.</p>
+      <p class="page-subtitle">A cohesive reporting view over structured MySQL request records for {{ active_proxy.display_name }}, organized by the question an administrator is actually trying to answer.</p>
       <div class="hero-badges">
         <span class="badge">{{ summary.request_records }} request records</span>
         <span class="badge">{{ summary.transactions }} traced transactions</span>
@@ -18,11 +18,12 @@
       </div>
     </div>
     <div class="page-actions">
+      <a class="btn ghost" href="{{ url_for('observability', pane='reports', window=window, q=search, privacy=('1' if privacy else '0')) }}">Reports pane</a>
       <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window, q=search) }}">Security pane</a>
       <a class="btn ghost" href="{{ url_for('observability', pane='performance', window=window) }}">Performance pane</a>
       <a class="btn ghost" href="{{ url_for('clamav', window=window) }}">ClamAV controls</a>
-      <a class="btn ghost" href="{{ url_for('webfilter', tab='categories') }}">Web filtering controls</a>
-      <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0')) }}">Export CSV</a>
+      <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0'), privacy=('1' if privacy else '0')) }}">Export CSV</a>
+      <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0'), privacy=('1' if privacy else '0'), format='json') }}">Export JSON</a>
       {% if pane == 'overview' %}
       <form class="inline-form" method="post" action="{{ url_for('observability_clear_logs') }}" onsubmit="return confirm('Clear stored MySQL observability logs for every proxy? This cannot be undone.');">
         {{ csrf_field() }}
@@ -35,7 +36,7 @@
 
 <section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'Every number and quick action in this observability hub is scoped to ' ~ active_proxy.display_name ~ ' only, except Clear Logs.') %}
-<div>Use the pane tabs below to reorganize the same request facts by destination, client, cache, SSL incidents, security enforcement, or performance.</div>
+<div>Use the pane tabs below to reorganize the same request facts by report, destination, client, cache, SSL incident, security enforcement, or performance lens.</div>
 {% endcall %}
 {% if pane == 'overview' %}
   {% if request.args.get('logs_cleared') == '1' %}
@@ -44,6 +45,12 @@
   <div class="surface-note small">Clear Logs failed. Stored MySQL observability history was left unchanged; check Admin UI logs for the database error.</div>
   {% else %}
   <div class="surface-note small">Clear Logs is a fleet-wide database maintenance action. It wipes stored MySQL request, SSL, security, web-filter, ad-block, and performance log history for every proxy without changing proxy configuration or policy settings.</div>
+  {% endif %}
+{% elif pane == 'reports' %}
+  {% if request.args.get('schedule_saved') == '1' %}
+  <div class="surface-note small">Scheduled report saved. It will use the selected lens, export format, window, and privacy mode.</div>
+  {% elif request.args.get('schedule_error') == '1' %}
+  <div class="surface-note small">Scheduled report was not saved. A recipient is required and the database must be reachable.</div>
   {% endif %}
 {% endif %}
 </section>
@@ -56,6 +63,7 @@
   <a class="btn {{ 'primary' if pane == 'ssl' else 'ghost' }}" href="{{ url_for('observability', pane='ssl', window=window, limit=limit, q=search) }}">SSL</a>
   <a class="btn {{ 'primary' if pane == 'security' else 'ghost' }}" href="{{ url_for('observability', pane='security', window=window, limit=limit, q=search) }}">Security</a>
   <a class="btn {{ 'primary' if pane == 'performance' else 'ghost' }}" href="{{ url_for('observability', pane='performance', window=window, limit=limit) }}">Performance</a>
+  <a class="btn {{ 'primary' if pane == 'reports' else 'ghost' }}" href="{{ url_for('observability', pane='reports', window=window, limit=limit, q=search, resolve_hostnames=('1' if resolve_hostnames else '0'), privacy=('1' if privacy else '0')) }}">Reports</a>
 </div>
 
 <section class="card">
@@ -108,7 +116,7 @@
       </div>
       {% endif %}
 
-      {% if pane in ['destinations', 'clients', 'cache', 'overview', 'ssl', 'security'] %}
+      {% if pane in ['destinations', 'clients', 'cache', 'overview', 'ssl', 'security', 'reports'] %}
       <div class="row-2">
         {% if pane in ['destinations', 'clients', 'cache'] %}
         <div>
@@ -123,7 +131,7 @@
       </div>
       {% endif %}
 
-      {% if pane == 'clients' or pane == 'overview' %}
+      {% if pane == 'clients' or pane == 'overview' or pane == 'reports' %}
       <div>
         <input type="hidden" name="resolve_hostnames" value="0" />
         <label class="checkbox-inline">
@@ -134,10 +142,56 @@
       </div>
       {% endif %}
 
+      {% if pane == 'reports' %}
+      <div>
+        <input type="hidden" name="privacy" value="0" />
+        <label class="checkbox-inline">
+          <input type="checkbox" name="privacy" value="1" {% if privacy %}checked{% endif %} />
+          Pseudonymize users and groups in reports
+        </label>
+        <div class="small">Privacy mode keeps correlation stable inside this proxy while hiding raw client identifiers in UI and exports.</div>
+      </div>
+      {% endif %}
+
       <div class="actions">
         <button class="btn primary" type="submit">Apply</button>
         <a class="btn ghost" href="{{ url_for('observability', pane=pane) }}">Reset</a>
       </div>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Generate report</h2>
+    <span class="badge">current lens</span>
+  </div>
+  <div class="card-body">
+    <form class="form" method="get" action="{{ url_for('observability_export') }}">
+      <input type="hidden" name="pane" value="{{ pane }}" />
+      <input type="hidden" name="sort" value="{{ sort }}" />
+      <input type="hidden" name="window" value="{{ window }}" />
+      <input type="hidden" name="limit" value="{{ limit }}" />
+      <input type="hidden" name="q" value="{{ search }}" />
+      <input type="hidden" name="resolve_hostnames" value="{{ '1' if resolve_hostnames else '0' }}" />
+      <div class="row-2">
+        <div>
+          <label for="report_format">File format</label>
+          <select id="report_format" name="format">
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+            <option value="jsonl">JSON Lines / SIEM</option>
+          </select>
+        </div>
+        <div>
+          <label for="report_privacy">Identity mode</label>
+          <select id="report_privacy" name="privacy">
+            <option value="0" {{ 'selected' if not privacy else '' }}>Raw identities</option>
+            <option value="1" {{ 'selected' if privacy else '' }}>Pseudonymized</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions"><button class="btn primary" type="submit">Generate report</button></div>
     </form>
   </div>
 </section>
@@ -490,6 +544,206 @@
       </tbody>
     </table></div>
     {% if not payload.webfilter_rows %}<div class="surface-note small">No web-filter blocks matched this window.</div>{% endif %}
+  </div>
+</section>
+
+{% elif pane == 'reports' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Reporting overview</h2><span class="badge">{{ payload.privacy.mode }}</span></div>
+  <div class="card-body">
+    <div class="stats-grid">
+      <div class="stat compact-stat"><div class="stat-k">Top-user bytes</div><div class="stat-v">{{ payload.top_users[0].bytes if payload.top_users else 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Cache savings</div><div class="stat-v">{{ payload.cache_savings.estimated_saved_bytes }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Blocked categories</div><div class="stat-v">{{ payload.top_blocked_categories|length }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Malware/phishing attempts</div><div class="stat-v">{{ payload.top_malware_attempts|length }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Audit events</div><div class="stat-v">{{ payload.audit.summary.events if payload.audit else 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Rollup points</div><div class="stat-v">{{ payload.time_series.rollup_points if payload.time_series else 0 }}</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="split-grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Scheduled delivery</h2><span class="badge">{{ payload.schedules|length }} saved</span></div>
+    <div class="card-body content-stack">
+      <form class="form" method="post" action="{{ url_for('observability_report_schedules') }}">
+        {{ csrf_field() }}
+        <input type="hidden" name="pane" value="reports" />
+        <input type="hidden" name="window" value="{{ window }}" />
+        <div class="row-2">
+          <div>
+            <label for="schedule_name">Report name</label>
+            <input id="schedule_name" name="name" type="text" value="{{ window_label }} reporting digest" />
+          </div>
+          <div>
+            <label for="schedule_recipients">Recipients</label>
+            <input id="schedule_recipients" name="recipients" type="text" placeholder="ops@example.com, admin@example.com" />
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label for="schedule_cadence">Cadence</label>
+            <select id="schedule_cadence" name="cadence">
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </div>
+          <div>
+            <label for="schedule_format">Format</label>
+            <select id="schedule_format" name="format">
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+              <option value="jsonl">JSON Lines / SIEM</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <input type="hidden" name="privacy" value="0" />
+          <label class="checkbox-inline"><input type="checkbox" name="privacy" value="1" checked /> Pseudonymize scheduled report identities</label>
+        </div>
+        <div class="actions"><button class="btn primary" type="submit">Save schedule</button></div>
+      </form>
+    </div>
+  </section>
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Saved schedules</h2><span class="badge">daily / weekly</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Name</th><th>Cadence</th><th>Format</th><th class="num">Next run</th></tr></thead>
+        <tbody>
+        {% for row in payload.schedules %}
+          <tr><td><div class="stack-sm"><span>{{ row.name }}</span><span class="small">{{ row.recipients }}</span></div></td><td>{{ row.cadence }}</td><td>{{ row.report_format }}{% if row.privacy %} · private{% endif %}</td><td class="num"><span class="small">{{ fmt_ts(row.next_run_ts) }}</span></td></tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">No scheduled reports are configured yet.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+</div>
+
+<div class="split-grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Top users by bandwidth</h2><span class="badge">{{ payload.top_users|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>User</th><th class="num">Bytes</th><th class="num">Requests</th><th class="num">Destinations</th><th class="num">Cache saved</th><th class="num">Last seen</th></tr></thead>
+        <tbody>
+        {% for row in payload.top_users %}
+          <tr><td><div class="stack-sm"><span class="mono">{{ row.client_label }}</span>{% if row.hostname %}<span class="small">{{ row.hostname }}</span>{% endif %}</div></td><td class="num">{{ row.bytes }}</td><td class="num">{{ row.requests }}</td><td class="num">{{ row.destinations }}</td><td class="num">{{ row.cache_hit_bytes }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>
+        {% else %}
+          <tr><td colspan="6" class="muted">No user bandwidth rows in this window.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Per-group report</h2><span class="badge">{{ payload.per_group|length }} groups</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Group</th><th class="num">Clients</th><th class="num">Requests</th><th class="num">Bytes</th><th class="num">Cache saved</th></tr></thead>
+        <tbody>
+        {% for row in payload.per_group %}
+          <tr><td class="mono">{{ row.group }}</td><td class="num">{{ row.clients }}</td><td class="num">{{ row.requests }}</td><td class="num">{{ row.bytes }}</td><td class="num">{{ row.cache_hit_bytes }}</td></tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">No group rows in this window.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+</div>
+
+<div class="split-grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">Top blocked categories</h2><span class="badge">web filtering</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Category</th><th class="num">Blocks</th><th class="num">Last seen</th></tr></thead>
+        <tbody>
+        {% for row in payload.top_blocked_categories %}
+          <tr><td><span class="badge danger">{{ row.category }}</span></td><td class="num">{{ row.blocks }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>
+        {% else %}
+          <tr><td colspan="3" class="muted">No blocked categories in this window.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Malware/phishing attempts</h2><span class="badge">AV findings</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Target</th><th>User</th><th class="num">Attempts</th><th class="num">Last seen</th></tr></thead>
+        <tbody>
+        {% for row in payload.top_malware_attempts %}
+          <tr><td class="mono">{{ row.domain or '-' }}</td><td class="mono">{{ row.client_label }}</td><td class="num">{{ row.attempts }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">No AV findings in this window.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+</div>
+
+<div class="split-grid">
+  <section class="card split-left">
+    <div class="card-header"><h2 class="card-title">SSL-bump failures</h2><span class="badge">{{ payload.top_ssl_bump_failures|length }} rows</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Domain</th><th>Reason</th><th class="num">Events</th><th class="num">Last seen</th></tr></thead>
+        <tbody>
+        {% for row in payload.top_ssl_bump_failures %}
+          <tr><td class="mono">{{ row.domain or '-' }}</td><td>{{ row.category_label or row.reason }}</td><td class="num">{{ row.count }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">No SSL-bump failure buckets in this window.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+  <section class="card split-right">
+    <div class="card-header"><h2 class="card-title">Top spliced destinations</h2><span class="badge">TLS pass-through</span></div>
+    <div class="card-body">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Domain</th><th class="num">Requests</th><th class="num">Clients</th><th class="num">Bytes</th></tr></thead>
+        <tbody>
+        {% for row in payload.top_spliced_destinations %}
+          <tr><td class="mono">{{ row.domain }}</td><td class="num">{{ row.requests }}</td><td class="num">{{ row.clients }}</td><td class="num">{{ row.bytes }}</td></tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">No spliced destinations in this window.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Audit, exports, and integrations</h2><span class="badge">ready surfaces</span></div>
+  <div class="card-body">
+    <div class="split-grid">
+      <div class="split-left">
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Surface</th><th>Status</th><th>Endpoint</th></tr></thead>
+          <tbody>{% for row in payload.export_contracts %}<tr><td>{{ row.name }}</td><td><span class="badge">{{ row.status }}</span></td><td class="mono">{{ row.endpoint }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+      </div>
+      <div class="split-right">
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Audit kind</th><th class="num">Events</th><th class="num">Last seen</th></tr></thead>
+          <tbody>
+          {% for row in payload.audit.top_kinds %}
+            <tr><td>{{ row.kind }}</td><td class="num">{{ row.events }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>
+          {% else %}
+            <tr><td colspan="3" class="muted">No audit events matched this window.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table></div>
+      </div>
+    </div>
   </div>
 </section>
 

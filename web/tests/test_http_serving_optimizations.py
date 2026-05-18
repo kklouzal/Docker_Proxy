@@ -5,7 +5,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from .admin_route_test_utils import load_admin_app, login_client
+from .admin_route_test_utils import csrf_token, load_admin_app, login_client
 
 
 class ExplodingRegistry:
@@ -45,6 +45,7 @@ class CountingObservabilityQueries:
     def __init__(self) -> None:
         self.summary_calls = 0
         self.performance_calls = 0
+        self.reporting_calls = 0
 
     def summary(self, **_kwargs):
         self.summary_calls += 1
@@ -53,6 +54,48 @@ class CountingObservabilityQueries:
     def performance_overview(self, **_kwargs):
         self.performance_calls += 1
         return {"slow_requests": [], "slow_icap_events": []}
+
+    def reporting_overview(self, **_kwargs):
+        self.reporting_calls += 1
+        return {
+            "summary": {},
+            "cache_savings": {"estimated_saved_bytes": 0, "byte_hit_pct": 0.0},
+            "top_users": [],
+            "top_blocked_categories": [],
+            "top_malware_attempts": [],
+            "top_ssl_bump_failures": [],
+            "top_spliced_destinations": [],
+            "per_group": [],
+            "security": {"summary": {}},
+            "audit": {"summary": {"events": 0, "failed_events": 0, "last_seen": 0}, "top_kinds": [], "recent": []},
+            "time_series": {"tables": [], "latest_ts": 0, "rollup_points": 0},
+            "schedules": [],
+            "export_contracts": [{"name": "JSON", "status": "ready", "endpoint": "/observability/export?pane=reports&format=json"}],
+            "privacy": {"enabled": True, "mode": "pseudonymized"},
+        }
+
+    def save_report_schedule(self, **kwargs):
+        return {
+            "id": 7,
+            "enabled": True,
+            "name": kwargs.get("name") or "Daily observability report",
+            "cadence": kwargs.get("cadence") or "daily",
+            "recipients": kwargs.get("recipients") or "ops@example.com",
+            "pane": kwargs.get("pane") or "reports",
+            "report_format": kwargs.get("report_format") or "csv",
+            "privacy": bool(kwargs.get("privacy")),
+            "window_seconds": int(kwargs.get("window_seconds") or 86400),
+            "next_run_ts": 123456,
+            "last_run_ts": 0,
+            "last_status": "configured",
+            "updated_ts": 123400,
+        }
+
+    def cache_savings(self, **_kwargs):
+        return {"estimated_saved_bytes": 0}
+
+    def security_overview(self, **_kwargs):
+        return {"summary": {"combined_blocks": 0, "potential_findings": 0}}
 
 
 def _add_repo_paths() -> None:
@@ -117,6 +160,53 @@ def test_observability_route_reuses_short_ttl_cache(monkeypatch, tmp_path) -> No
     assert second.status_code == 200
     assert queries.summary_calls == 1
     assert queries.performance_calls == 1
+
+
+def test_observability_reports_pane_json_export_and_metrics_routes_render(monkeypatch, tmp_path) -> None:
+    queries = CountingObservabilityQueries()
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/observability?pane=reports&window=3600&privacy=1")
+    export = client.get("/observability/export?pane=reports&window=3600&privacy=1&format=json")
+    metrics = client.get("/observability/metrics?window=3600")
+
+    assert page.status_code == 200
+    assert b"Top users by bandwidth" in page.data
+    assert b"Generate report" in page.data
+    assert b"Scheduled delivery" in page.data
+    assert export.status_code == 200
+    assert export.headers.get("Content-Type", "").startswith("application/json")
+    assert b'"mode":"pseudonymized"' in export.data
+    assert metrics.status_code == 200
+    assert b"docker_proxy_observability_requests" in metrics.data
+
+
+def test_observability_report_schedule_post_records_configuration(monkeypatch, tmp_path) -> None:
+    queries = CountingObservabilityQueries()
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    token = csrf_token(client, "/observability?pane=reports")
+    response = client.post(
+        "/observability/report-schedules",
+        data={
+            "csrf_token": token,
+            "name": "Daily accountability digest",
+            "recipients": "ops@example.com",
+            "cadence": "daily",
+            "format": "jsonl",
+            "privacy": "1",
+            "window": "86400",
+            "pane": "reports",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "schedule_saved=1" in response.headers["Location"]
 
 
 def test_spa_document_fetches_are_not_browser_cached(monkeypatch, tmp_path) -> None:
