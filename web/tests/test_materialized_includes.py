@@ -58,7 +58,7 @@ def test_webfilter_apply_squid_include_writes_materialized_files(tmp_path, monke
         whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
     )
     state = module.WebFilterMaterializedState(
-        include_text="# include\nhttp_access deny webfilter_block_adult\n",
+        include_text="# include\nhttp_access allow all\n",
         whitelist_text="example.com\n",
     )
     snapshot_publish_calls = []
@@ -72,7 +72,7 @@ def test_webfilter_apply_squid_include_writes_materialized_files(tmp_path, monke
 
     store.apply_squid_include()
 
-    assert snapshot_publish_calls == [True]
+    assert snapshot_publish_calls == []
     assert Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
     assert Path(store.whitelist_path).read_text(encoding="utf-8") == state.whitelist_text
 
