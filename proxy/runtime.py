@@ -854,9 +854,23 @@ class ProxyRuntime:
         except Exception as exc:
             return False, public_error_message(exc, default="Failed to publish local web category snapshot.")
 
+    @staticmethod
+    def _policy_requires_webcat_snapshot(desired: Any) -> bool:
+        for item in getattr(desired, "files", ()) or ():
+            path = str(getattr(item, "path", "") or "")
+            if not path.endswith("30-webfilter.conf"):
+                continue
+            content = str(getattr(item, "content", "") or "")
+            if "webcat_acl.py" in content:
+                return True
+        return False
+
     def sync_policy_state(self, *, force: bool = False) -> Dict[str, Any]:
-        snapshot_ok, snapshot_detail = self._publish_webcat_snapshot_for_policy_sync()
         desired = self.policy_state_builder(self.proxy_id)
+        if self._policy_requires_webcat_snapshot(desired):
+            snapshot_ok, snapshot_detail = self._publish_webcat_snapshot_for_policy_sync()
+        else:
+            snapshot_ok, snapshot_detail = True, "Web category snapshot not required for current policy."
         current_sha = self._current_policy_sha()
         if not force and desired.policy_sha256 == current_sha:
             return {
