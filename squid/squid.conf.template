@@ -194,7 +194,6 @@ via on
 strip_query_terms on
 request_header_max_size 64 KB
 reply_header_max_size 64 KB
-request_body_max_size 0 MB
 client_request_buffer_max_size 512 KB
 relaxed_header_parser on
 uri_whitespace strip
@@ -244,14 +243,9 @@ acl icap_partial_response http_status 206
 adaptation_access adblock_req_set allow icap_adblockable
 adaptation_access adblock_req_set deny all
 
-# Antivirus scanning (RESPMOD): ClamAV
-# Byte-range / partial-content downloads are poor AV scan candidates and are
-# common for update managers. Let them stream instead of repeatedly adapting
-# partial chunks that ClamAV cannot evaluate as complete objects.
-adaptation_access av_resp_set deny icap_range_request
-adaptation_access av_resp_set deny icap_partial_response
-adaptation_access av_resp_set allow icap_av_scanable
-adaptation_access av_resp_set deny all
+# Antivirus scanning policy is materialized into /etc/squid/conf.d/20-icap.conf
+# so upload/download coverage, file blocking, size limits, and fail-open/closed
+# semantics stay aligned with the ClamAV admin policy.
 
 # Error handling
 error_directory /usr/share/squid/errors/en

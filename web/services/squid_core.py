@@ -16,7 +16,7 @@ from functools import lru_cache
 
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
-from services.clamav_config_forms import clamav_fail_open, extract_clamav_options, render_virus_scan_config
+from services.clamav_config_forms import clamav_fail_open, extract_clamav_options, render_file_security_policy_config, render_virus_scan_config
 
 
 logger = logging.getLogger(__name__)
@@ -186,7 +186,8 @@ class SquidController:
         if not text:
             return ""
 
-        text = re.sub(r"^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$\n?", "", text, flags=re.M)
+        text = re.sub(r"^\s*access_log\s+(?:stdio:)?/var/log/squid/access\.log\b.*$", "", text, flags=re.M)
+        text = re.sub(r"^\s*(?:request|reply)_body_max_size\b.*$", "", text, flags=re.M)
         text = self._replace_or_append_directive(text, r"^\s*logformat\s+liveui\s+.*$", self._LIVEUI_LOGFORMAT)
         text = self._replace_or_append_directive(text, r"^\s*logformat\s+diagnostic\s+.*$", self._DIAGNOSTIC_LOGFORMAT)
         text = self._replace_or_append_directive(text, r"^\s*logformat\s+icapobserve\s+.*$", self._ICAP_OBSERVE_LOGFORMAT)
@@ -264,6 +265,7 @@ class SquidController:
 
         clamav_options = extract_clamav_options(config_text or "")
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
+        file_security_policy = render_file_security_policy_config(clamav_options).strip()
         # Version the Squid ICAP service name with the active artifact while
         # keeping the c-icap service URI stable. Squid tracks ICAP service health
         # and persistent connections by service object; changing the local service
@@ -278,8 +280,10 @@ class SquidController:
         regex_block_path = os.path.join(adblock_dir, "regex_block_squid.txt")
         lines = [
             f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
+            f"icap_service av_req reqmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             f"adaptation_service_set adblock_req_set {adblock_service_name}",
+            "adaptation_service_set av_req_set av_req",
             "adaptation_service_set av_resp_set av_resp",
             "adaptation_access adblock_req_set allow all",
             f"acl adblock_regex_allow url_regex -i \"{regex_allow_path}\"",
@@ -287,6 +291,8 @@ class SquidController:
             "deny_info ERR_ACCESS_DENIED adblock_regex_block",
             "http_access deny adblock_regex_block !adblock_regex_allow",
         ]
+        if file_security_policy:
+            lines.extend(["", file_security_policy])
         return "\n".join(lines) + "\n"
 
     def _generate_icap_include(self, workers: int, config_text: str | None = None) -> None:
@@ -298,6 +304,21 @@ class SquidController:
         try:
             normalized = self.normalize_config_text(config_text or "")
             options = extract_clamav_options(normalized)
+            policy_mode = "bypassed" if clamav_fail_open(options) else "blocked"
+            logger.info(
+                "ClamAV file policy applied: preset=%s fail-%s scan_downloads=%s scan_uploads=%s risky_extensions=%s archive_block=%s nested_archives=%s quarantine_metadata=%s size_caps=%s/%s",
+                options.get("file_security_preset"),
+                "open" if clamav_fail_open(options) else "closed",
+                options.get("file_security_scan_downloads"),
+                options.get("file_security_scan_uploads"),
+                options.get("file_security_block_risky_extensions"),
+                options.get("file_security_block_archives"),
+                options.get("file_security_block_nested_archives"),
+                options.get("file_security_quarantine_metadata"),
+                options.get("file_security_max_upload_size"),
+                options.get("file_security_max_download_size"),
+            )
+            logger.info("AV unavailable, %s due to policy", policy_mode)
             virus_path = self._virus_scan_config_path()
             icap_path = self._icap_include_path()
             changed = []
@@ -1051,4 +1072,3 @@ class SquidController:
             with open(self.squid_conf_path, "r", encoding="utf-8") as handle:
                 return handle.read()
         return ""
-

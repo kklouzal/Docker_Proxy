@@ -148,6 +148,32 @@ def test_clamav_settings_route_persists_validated_runtime_controls(monkeypatch, 
     assert "# virus_scan_default_engine: clamd" in config_text
 
 
+def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(monkeypatch, tmp_path) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(
+        client,
+        "/clamav/settings",
+        {
+            "file_security_preset": "strict",
+            "clamav_fail_mode": "closed",
+        },
+        csrf_path="/clamav",
+    )
+    _assert_redirect_success(response)
+
+    response = _post(client, "/clamav/toggle", {"action": "disable"}, csrf_path="/clamav")
+    _assert_redirect_success(response)
+
+    config_text = str(loaded.config_revisions.created[-1]["config_text"])
+    assert "# file_security_scan_downloads: off" in config_text
+    assert "# file_security_scan_uploads: off" in config_text
+    assert "# file_security_block_risky_extensions: on" in config_text
+    assert "# file_security_block_archives: on" in config_text
+    assert "# file_security_block_nested_archives: on" in config_text
+    assert "# file_security_block_executable_content: on" in config_text
+
+
 @pytest.mark.parametrize(
     ("path", "data"),
     [

@@ -61,6 +61,10 @@ def test_clamav_page_explains_configurable_failure_behavior() -> None:
     assert "bypass=off" in html
     assert "virus_scan.PassOnError on" in html
     assert "PassOnError off" in html
+    assert "Upload and download scanning are independently configurable" in html
+    assert "GET and HEAD response coverage" in html
+    assert "POST, PUT, and PATCH request coverage" in html
+    assert "Compact baseline for file policy behavior" in html
 
 
 def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:

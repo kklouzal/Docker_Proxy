@@ -2725,40 +2725,16 @@ def clamav_test_icap():
     )
 
 
-_CLAMAV_ALLOW_RE = re.compile(r"^(\s*)(#\s*)?(adaptation_access\s+av_resp_set\s+allow\b.*)$", re.I | re.M)
-_CLAMAV_DENY_RE = re.compile(r"^\s*(#\s*)?adaptation_access\s+av_resp_set\s+deny\s+all\s*$", re.I | re.M)
-
-
 def _is_clamav_enabled(cfg_text: str) -> bool:
-    m = _CLAMAV_ALLOW_RE.search(cfg_text or "")
-    if not m:
-        return False
-    comment_prefix = (m.group(2) or "").strip()
-    return comment_prefix == ""
+    options = extract_clamav_options(cfg_text or "")
+    return bool(options.get("file_security_scan_downloads") or options.get("file_security_scan_uploads"))
 
 
 def _set_clamav_enabled(cfg_text: str, enabled: bool) -> str:
-    text = cfg_text or ""
-
-    def repl(m: re.Match) -> str:
-        indent = m.group(1) or ""
-        rule = m.group(3) or ""
-        if enabled:
-            return indent + rule
-        return indent + "# " + rule
-
-    if _CLAMAV_ALLOW_RE.search(text):
-        return _CLAMAV_ALLOW_RE.sub(repl, text, count=1)
-
-    if enabled:
-        allow_line = "adaptation_access av_resp_set allow icap_av_scanable"
-        deny_match = _CLAMAV_DENY_RE.search(text)
-        if deny_match:
-            insert_at = deny_match.start()
-            return text[:insert_at] + allow_line + "\n" + text[insert_at:]
-        return text.rstrip() + "\n" + allow_line + "\n"
-
-    return text
+    options = extract_clamav_options(cfg_text or "")
+    options["file_security_scan_downloads"] = bool(enabled)
+    options["file_security_scan_uploads"] = bool(enabled)
+    return apply_clamav_options_to_config(cfg_text or "", options)
 
 
 @app.route('/clamav/toggle', methods=['POST'])

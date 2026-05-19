@@ -21,7 +21,7 @@ def test_live_monitoring_pages_link_back_to_observability(admin_client: LiveStac
     assert "Open security pane" in clamav_response.text
     assert "AV c-icap service" in clamav_response.text
     assert "Clamd backend" in clamav_response.text
-    assert "Enable changes the Squid adaptation rule only" in clamav_response.text
+    assert "Enable changes the upload and download AV policy only" in clamav_response.text
 
     for path in ("/adblock?window=3600", "/webfilter", "/sslfilter"):
         response = admin_client.admin_request(path)

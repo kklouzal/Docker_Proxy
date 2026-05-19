@@ -20,9 +20,6 @@ from .live_test_helpers import (
 pytestmark = pytest.mark.live
 
 
-_CLAMAV_ALLOW_RE = re.compile(r"^(\s*)(#\s*)?(adaptation_access\s+av_resp_set\s+allow\b.*)$", re.I | re.M)
-
-
 def _config_store():
     from services.config_revisions import get_config_revisions  # type: ignore
 
@@ -35,10 +32,10 @@ def _append_marker(config_text: str, marker: str) -> str:
 
 
 def _clamav_enabled(config_text: str) -> bool:
-    match = _CLAMAV_ALLOW_RE.search(config_text or "")
-    if not match:
-        return False
-    return not bool((match.group(2) or "").strip())
+    from services.clamav_config_forms import extract_clamav_options  # type: ignore
+
+    options = extract_clamav_options(config_text or "")
+    return bool(options.get("file_security_scan_downloads") or options.get("file_security_scan_uploads"))
 
 
 @pytest.fixture
@@ -147,7 +144,7 @@ def test_live_clamav_page_uses_selected_remote_proxy_health(multi_proxy_admin: L
     assert local_response.status == 200
     assert "clamav.edge-2.internal:3311" in remote_response.text
     assert "127.0.0.1:24001" in remote_response.text
-    assert "Enable changes the Squid adaptation rule only" in remote_response.text
+    assert "Enable changes the upload and download AV policy only" in remote_response.text
     assert "clamav.edge-2.internal:3311" not in local_response.text
 
 

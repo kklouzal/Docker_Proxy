@@ -882,10 +882,26 @@ EOF
     # Duplicating multiple `icap_service` entries pointing at the same URI (same local c-icap instance)
     # triggers Squid warnings about duplicate URIs and provides no scaling benefit.
     echo "icap_service adblock_req reqmod_precache icap://127.0.0.1:${CICAP_PORT}/adblockreq bypass=on"
+    echo "icap_service av_req reqmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
     echo "icap_service av_resp respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
     echo "adaptation_service_set adblock_req_set adblock_req"
+    echo "adaptation_service_set av_req_set av_req"
     echo "adaptation_service_set av_resp_set av_resp"
     echo "adaptation_access adblock_req_set allow all"
+    echo "request_body_max_size 0 MB"
+    echo "reply_body_max_size 0 MB"
+    echo "acl file_security_upload_methods method POST PUT PATCH"
+    echo "acl file_security_download_methods method GET HEAD"
+    echo "acl file_security_risky_path urlpath_regex -i \\.((?:exe|dll|msi|bat|cmd|com|scr|ps1|vbs|js|jar|apk))(?:$|[?#])"
+    echo "acl file_security_executable_path urlpath_regex -i \\.((?:exe|dll|msi|com|scr|jar|apk))(?:$|[?#])"
+    echo "acl file_security_executable_mime req_header Content-Type -i (?:application/x-msdownload|application/x-msdos-program|application/x-ms-installer)"
+    echo "adaptation_access av_req_set allow file_security_upload_methods"
+    echo "adaptation_access av_req_set deny all"
+    echo "adaptation_access av_resp_set allow file_security_download_methods"
+    echo "adaptation_access av_resp_set deny all"
+    echo "http_access deny file_security_risky_path"
+    echo "http_access deny file_security_executable_path"
+    echo "http_access deny file_security_executable_mime file_security_upload_methods"
 } > /etc/squid/conf.d/20-icap.conf
 
 # Normalize known distro path differences without overwriting user config
