@@ -111,7 +111,9 @@ class ProxyPacTarget:
         if not self.public_host:
             return ""
         return _build_pac_url(
-            scheme=self.pac_scheme, host=self.public_host, port=self.pac_port,
+            scheme=self.pac_scheme,
+            host=self.public_host,
+            port=self.pac_port,
         )
 
     @property
@@ -366,7 +368,9 @@ def _render_profile_pac(
 
 
 def _render_fallback_pac(
-    target: ProxyPacTarget | None = None, *, include_private: bool | None = None,
+    target: ProxyPacTarget | None = None,
+    *,
+    include_private: bool | None = None,
 ) -> str:
     resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
@@ -429,18 +433,22 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
     try:
         target = resolve_proxy_pac_target(normalized_proxy_id)
         sorted_profiles = sorted(
-            get_pac_profiles_store().list_profiles(), key=_profile_sort_key,
+            get_pac_profiles_store().list_profiles(),
+            key=_profile_sort_key,
         )
         include_private = _pac_include_private_nets()
         pac_files = {
             f"profile-{int(profile.id)}.pac": _render_profile_pac(
-                profile, target, include_private=include_private,
+                profile,
+                target,
+                include_private=include_private,
             )
             for profile in sorted_profiles
         }
         fallback_file = "fallback.pac"
         pac_files[fallback_file] = _render_fallback_pac(
-            target, include_private=include_private,
+            target,
+            include_private=include_private,
         )
 
         manifest = {
@@ -469,7 +477,8 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
         ]
         files_for_hash.append(
             RenderedPacFile(
-                relative_path=PAC_MANIFEST_FILENAME, content=manifest_text_for_hash,
+                relative_path=PAC_MANIFEST_FILENAME,
+                content=manifest_text_for_hash,
             ),
         )
         state_sha256 = calculate_pac_state_sha(files_for_hash)
@@ -484,10 +493,12 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
         files.extend(
             (
                 RenderedPacFile(
-                    relative_path=PAC_MANIFEST_FILENAME, content=manifest_text,
+                    relative_path=PAC_MANIFEST_FILENAME,
+                    content=manifest_text,
                 ),
                 RenderedPacFile(
-                    relative_path=PAC_STATE_SHA_FILENAME, content=state_sha256 + "\n",
+                    relative_path=PAC_STATE_SHA_FILENAME,
+                    content=state_sha256 + "\n",
                 ),
             ),
         )
@@ -592,7 +603,8 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
 
 def substitute_request_host(content: str, request_host: str) -> str:
     return str(content or "").replace(
-        PAC_HOST_PLACEHOLDER, format_proxy_host(request_host),
+        PAC_HOST_PLACEHOLDER,
+        format_proxy_host(request_host),
     )
 
 
@@ -609,10 +621,12 @@ def render_proxy_pac_for_request(
     except Exception:
         manifest = {}
     selected = select_manifest_file(
-        manifest if isinstance(manifest, dict) else {}, requester_ip,
+        manifest if isinstance(manifest, dict) else {},
+        requester_ip,
     )
     pac = file_map.get(selected) or file_map.get(
-        str(manifest.get("fallback_file") or "fallback.pac"), "",
+        str(manifest.get("fallback_file") or "fallback.pac"),
+        "",
     )
     if not pac:
         pac = build_emergency_pac(resolve_proxy_pac_target(proxy_id))

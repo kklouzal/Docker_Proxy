@@ -42,7 +42,10 @@ def normalize_hostish(value: object | None) -> str:
 
 
 def extract_domain(
-    value: object | None, *, host: object | None = "", sni: object | None = "",
+    value: object | None,
+    *,
+    host: object | None = "",
+    sni: object | None = "",
 ) -> str:
     for candidate in (sni, host):
         normalized = normalize_hostish(candidate)
@@ -65,7 +68,9 @@ def extract_domain(
 
 
 def not_cached_reason(
-    method: object | None, result_code: object | None, http_status: object | None = None,
+    method: object | None,
+    result_code: object | None,
+    http_status: object | None = None,
 ) -> str:
     m = str(method or "").strip().upper()
     rc = str(result_code or "").strip().upper()

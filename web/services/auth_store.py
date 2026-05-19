@@ -141,9 +141,9 @@ class AuthStore:
                     "INSERT INTO users(username, password_hash, created_ts, updated_ts) VALUES (%s,%s,%s,%s)",
                     (u, pw_hash, now, now),
                 )
-            except INTEGRITY_ERRORS:
+            except INTEGRITY_ERRORS as exc:
                 msg = "User already exists."
-                raise ValueError(msg)
+                raise ValueError(msg) from exc
 
     def set_password(self, username: str, new_password: str) -> None:
         self.ensure_schema()

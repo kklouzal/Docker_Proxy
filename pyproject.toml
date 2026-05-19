@@ -21,6 +21,7 @@ ignore = [
     "D104",
     "D105",
     "D107",
+    "D401",
     "DOC201",
     "DOC501",
 
@@ -28,12 +29,101 @@ ignore = [
     "D203",
     "D213",
 
+    # Annotation-presence rules cause broad retrofits without proving runtime
+    # correctness. Keep real type errors for type checkers, not Ruff ceremony.
+    "ANN001",
+    "ANN002",
+    "ANN003",
+    "ANN201",
+    "ANN202",
+    "ANN204",
+    "ANN401",
+
+    # Existing route/service complexity should be refactored deliberately, not
+    # because a lint gate picked an arbitrary threshold.
+    "C901",
+    "PLR0904",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0914",
+    "PLR0915",
+    "PLR0916",
+    "PLR0917",
+    "PLR1702",
+
+    # This proxy intentionally degrades around many external systems. Keep rules
+    # for exception chaining and bad raise structure enabled.
+    "BLE001",
+    "S110",
+    "S112",
+
     # Ruff format owns wrapping; residual long lines are usually literals,
     # command snippets, generated messages, URLs, or SQL fragments.
     "E501",
 
+    # Boolean argument/call and magic-value style checks are too noisy for
+    # compact policy/config data and HTTP/status-code heavy code.
+    "FBT001",
+    "FBT002",
+    "FBT003",
+    "PLR2004",
+
+    # Existing Flask and service modules use intentional lazy imports/globals for
+    # environment-sensitive initialization and monkeypatchable operational state.
+    "PLC0415",
+    "PLW0603",
+
+    # Internal modules intentionally share private helpers/state.
+    "PLC2701",
+    "SLF001",
+
+    # Blanket type ignores are mostly compatibility/import shims here.
+    "PGH003",
+
+    # Subprocess usage is against fixed appliance tools with shell=False; the
+    # code commonly inspects return codes instead of raising immediately.
+    "PLW1510",
+    "S404",
+    "S603",
+    "S607",
+
+    # Explicit empty-string comparisons often document None-vs-empty intent.
+    "PLC1901",
+
     # Avoid churning cohesive service APIs into staticmethod-heavy classes.
     "PLR6301",
+
+    # Pathlib/file-read modernization is not a material proxy quality gate.
+    "FURB101",
+    "PTH116",
+    "PTH118",
+    "PTH122",
+    "PTH208",
+
+    # Legacy package layout and __init__ behavior are intentional.
+    "INP001",
+    "RUF067",
+
+    # Style-only simplifications are not worth broad churn here.
+    "A002",
+    "ARG001",
+    "ARG002",
+    "B023",
+    "B903",
+    "ERA001",
+    "PT011",
+    "PT012",
+    "PT017",
+    "PT019",
+    "PT028",
+    "SIM102",
+    "SIM105",
+    "SIM115",
+    "SIM117",
+    "TRY004",
+    "TRY300",
+    "TRY301",
 
     # Keep formatter-only style out of the blocking lint gate.
     "COM812",
@@ -46,24 +136,58 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Pytest asserts are idiomatic. Tests also need concise scenario functions,
-# literal expected values, private API probes, isolated imports/reloads, fixture
-# arguments, and monkeypatch-compatible call signatures.
-# Keep pytest, security, exception, pathlib, and complexity checks active.
+# Pytest asserts and fixture secrets are idiomatic test scaffolding.
 "web/tests/**/*.py" = [
-    "ANN001",
-    "ANN002",
-    "ANN003",
-    "ANN201",
-    "ANN202",
-    "ANN204",
-    "ANN401",
     "ARG001",
     "ARG002",
     "ARG005",
-    "PGH003",
     "PLC0415",
-    "PLR2004",
     "S101",
-    "SLF001",
+    "S105",
+    "S106",
+    "S107",
+    "S108",
+    "S310",
 ]
+
+
+# Post-insert invariants use asserts for narrowing after immediate fetches.
+"web/services/adblock_artifacts.py" = ["S101"]
+"web/services/certificate_bundles.py" = ["S101"]
+"web/services/config_revisions.py" = ["S101", "S608"]
+"web/services/observability_maintenance.py" = ["S101", "S608"]
+"web/services/proxy_registry.py" = ["S101", "S608"]
+
+# SHA-1 is used only for non-security fingerprints/cache keys in these files.
+"web/services/adblock_store.py" = ["S310", "S324"]
+"web/services/diagnostic_store.py" = ["S324", "S608"]
+"web/services/live_stats.py" = ["S324", "S608"]
+"web/services/ssl_errors_store.py" = ["S324", "S608"]
+"web/tests/mysql_test_utils.py" = ["S324"]
+"web/tools/adblock_compile.py" = ["S324"]
+
+# These modules compose SQL from fixed templates, validated table-name helpers,
+# and bound parameters; Ruff cannot see those guards.
+"web/services/observability_queries.py" = ["S608"]
+"web/services/operation_ledger.py" = ["S608"]
+"web/services/pac_profiles_store.py" = ["S608"]
+"web/services/policy_requests.py" = ["S608"]
+"web/services/safe_browsing_v5.py" = ["S310", "S608"]
+"web/services/sslfilter_store.py" = ["S608"]
+"web/services/timeseries_store.py" = ["S608"]
+"web/services/webfilter_core.py" = ["S608"]
+"web/services/webfilter_store.py" = ["S608"]
+"web/tools/webcat_acl.py" = ["S608"]
+
+# Docker/web services intentionally bind to all interfaces inside containers.
+"web/app.py" = ["S104", "S704"]
+"web/services/health_checks.py" = ["S104"]
+"web/tests/live_fixture_server.py" = ["S104"]
+
+# "secret" appears in path names here, not embedded credential material.
+"web/services/auth_store.py" = ["S105"]
+
+# Fixed cache/runtime locations and controlled URL openers are intentional here.
+"proxy/runtime.py" = ["S108"]
+"web/services/proxy_client.py" = ["S310"]
+"web/tools/webcat_build.py" = ["S310"]

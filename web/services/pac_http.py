@@ -119,7 +119,8 @@ class LocalPacCache:
                 continue
             try:
                 files[rel_path] = file_path.read_text(
-                    encoding="utf-8", errors="replace",
+                    encoding="utf-8",
+                    errors="replace",
                 )
             except Exception:
                 continue
@@ -162,10 +163,14 @@ def get_pac_cache(pac_dir: str | None = None) -> LocalPacCache:
 
 
 def resolve_pac_bytes(
-    *, client_ip: str, request_host: str, pac_dir: str | None = None,
+    *,
+    client_ip: str,
+    request_host: str,
+    pac_dir: str | None = None,
 ) -> bytes:
     data = get_pac_cache(pac_dir).resolve(
-        client_ip=client_ip, request_host=request_host,
+        client_ip=client_ip,
+        request_host=request_host,
     )
     if data is not None:
         return data

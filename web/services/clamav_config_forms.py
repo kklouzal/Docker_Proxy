@@ -132,11 +132,22 @@ def _choice(value: str, label: str) -> UiChoiceSpec:
 
 
 def _field(
-    key: str, group: str, label: str, directive: str, input_type: str, **kwargs: Any,
+    key: str,
+    group: str,
+    label: str,
+    directive: str,
+    input_type: str,
+    **kwargs: Any,
 ) -> ClamavFieldSpec:
     choices = tuple(kwargs.pop("choices", ()))
     return ClamavFieldSpec(
-        key, group, label, directive, input_type, choices=choices, **kwargs,
+        key,
+        group,
+        label,
+        directive,
+        input_type,
+        choices=choices,
+        **kwargs,
     )
 
 
@@ -458,7 +469,7 @@ def _clean_token_list(value: Any, default: str, *, lower: bool = True) -> str:
         token = item.strip().lstrip(".")
         if not token:
             continue
-        token = token.lower() if lower else token.lower()
+        token = token.lower()
         if _TOKEN_RE.match(token):
             tokens.append(token)
     if not tokens:
@@ -720,7 +731,8 @@ def extract_clamav_options(config_text: str | None) -> dict[str, Any]:
 
 
 def read_clamav_options_from_form(
-    form: FormMap, current: Mapping[str, Any] | None = None,
+    form: FormMap,
+    current: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     current_values = normalize_clamav_options(current)
     values = dict(current_values)
@@ -763,7 +775,8 @@ def render_clamav_settings_block(options: Mapping[str, Any] | None = None) -> st
 
 
 def apply_clamav_options_to_config(
-    config_text: str, options: Mapping[str, Any] | None = None,
+    config_text: str,
+    options: Mapping[str, Any] | None = None,
 ) -> str:
     text = _BLOCK_RE.sub("", config_text or "").rstrip() + "\n"
     block = render_clamav_settings_block(options)

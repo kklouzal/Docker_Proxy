@@ -269,7 +269,10 @@ class OperationLedger:
         return counts
 
     def requeue_stale_applying(
-        self, proxy_id: object | None, *, older_than_seconds: int = 600,
+        self,
+        proxy_id: object | None,
+        *,
+        older_than_seconds: int = 600,
     ) -> int:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
@@ -334,7 +337,11 @@ class OperationLedger:
         ]
 
     def mark_status(
-        self, operation_id: object, *, status: str, detail: str = "",
+        self,
+        operation_id: object,
+        *,
+        status: str,
+        detail: str = "",
     ) -> ProxyOperation | None:
         if status not in OPERATION_STATUSES:
             msg = f"Unsupported operation status: {status}"
@@ -354,7 +361,11 @@ class OperationLedger:
         return self._row_to_operation(row)
 
     def mark_many(
-        self, operations: list[ProxyOperation], *, status: str, detail: str = "",
+        self,
+        operations: list[ProxyOperation],
+        *,
+        status: str,
+        detail: str = "",
     ) -> None:
         for op in operations:
             self.mark_status(op.operation_id, status=status, detail=detail)

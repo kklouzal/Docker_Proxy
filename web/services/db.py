@@ -99,7 +99,9 @@ class CompatConnection:
         return CompatResult(cur)
 
     def executemany(
-        self, sql: str, seq_of_params: Iterable[Sequence[Any]],
+        self,
+        sql: str,
+        seq_of_params: Iterable[Sequence[Any]],
     ) -> CompatResult:
         if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
@@ -168,12 +170,17 @@ _mysql_ready = False
 _mysql_ready_lock = threading.Lock()
 _pool_condition = threading.Condition()
 _pooled_connections: dict[
-    tuple[str, int, str, str, str, str, int, int, int], _PoolState,
+    tuple[str, int, str, str, str, str, int, int, int],
+    _PoolState,
 ] = {}
 
 
 def _env_int(
-    name: str, default: int, *, minimum: int | None = None, maximum: int | None = None,
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
 ) -> int:
     try:
         value = int((os.environ.get(name) or str(default)).strip() or str(default))
@@ -264,10 +271,16 @@ def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
     statements: list[tuple[str, tuple[Any, ...]]] = []
     lock_wait_timeout = _env_int("MYSQL_LOCK_WAIT_TIMEOUT", 10, minimum=1, maximum=300)
     innodb_lock_wait_timeout = _env_int(
-        "MYSQL_INNODB_LOCK_WAIT_TIMEOUT", lock_wait_timeout, minimum=1, maximum=300,
+        "MYSQL_INNODB_LOCK_WAIT_TIMEOUT",
+        lock_wait_timeout,
+        minimum=1,
+        maximum=300,
     )
     wait_timeout = _env_int(
-        "MYSQL_SESSION_WAIT_TIMEOUT", 300, minimum=30, maximum=86400,
+        "MYSQL_SESSION_WAIT_TIMEOUT",
+        300,
+        minimum=30,
+        maximum=86400,
     )
     isolation = (
         (os.environ.get("MYSQL_TRANSACTION_ISOLATION") or "READ COMMITTED")
@@ -329,7 +342,8 @@ def _pool_key(
 def _pool_maxsize() -> int:
     try:
         return max(
-            0, min(16, int((os.environ.get("DB_POOL_SIZE") or "1").strip() or "1")),
+            0,
+            min(16, int((os.environ.get("DB_POOL_SIZE") or "1").strip() or "1")),
         )
     except Exception:
         return 1
@@ -342,7 +356,8 @@ def _pool_max_idle_seconds() -> float:
             min(
                 300.0,
                 float(
-                    (os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "30").strip() or "30",
+                    (os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "30").strip()
+                    or "30",
                 ),
             ),
         )

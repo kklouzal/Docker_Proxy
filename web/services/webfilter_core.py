@@ -4,6 +4,7 @@ import hashlib
 import threading
 import time
 from dataclasses import dataclass
+from typing import ClassVar
 
 from services.db import connect, table_exists
 from services.domain_normalization import (
@@ -183,7 +184,7 @@ def _whitelist_match(domain: str, patterns: list[str]) -> str:
 
 
 class WebFilterStoreBase:
-    TABLE_MAP: dict[str, str] = {
+    TABLE_MAP: ClassVar[dict[str, str]] = {
         "settings": "webfilter_settings",
         "meta": "webfilter_meta",
         "whitelist": "webfilter_whitelist",

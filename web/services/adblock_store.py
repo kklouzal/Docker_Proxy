@@ -572,7 +572,8 @@ class AdblockStore:
             conn.execute("DELETE FROM adblock_events WHERE ts < %s", (int(cutoff),))
             # Daily rollup rows are small, but keep them aligned with the same retention.
             conn.execute(
-                "DELETE FROM adblock_counts WHERE day < %s", (int(cutoff_day),),
+                "DELETE FROM adblock_counts WHERE day < %s",
+                (int(cutoff_day),),
             )
 
     def list_recent_block_events(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -755,7 +756,8 @@ class AdblockStore:
             ]
             if rows:
                 conn.executemany(
-                    "UPDATE adblock_lists SET enabled=%s WHERE `key`=%s", rows,
+                    "UPDATE adblock_lists SET enabled=%s WHERE `key`=%s",
+                    rows,
                 )
             self._bump_version(conn)
 
@@ -841,7 +843,10 @@ class AdblockStore:
         return (now_ts - status.last_success) >= int(self.update_interval_seconds)
 
     def download_list(
-        self, key: str, url: str, timeout_seconds: int = 25,
+        self,
+        key: str,
+        url: str,
+        timeout_seconds: int = 25,
     ) -> tuple[bool, str, int, int]:
         """Returns (ok, err, bytes, rules)."""
         path = self.list_path(key)
@@ -866,7 +871,8 @@ class AdblockStore:
                 max_bytes = 64 * 1024 * 1024
 
             req = urllib.request.Request(
-                url, headers={"User-Agent": "squid-flask-proxy/icap-adblock"},
+                url,
+                headers={"User-Agent": "squid-flask-proxy/icap-adblock"},
             )
             list_dir = pathlib.Path(path).parent
             if list_dir:
@@ -953,7 +959,8 @@ class AdblockStore:
             if not self.should_update(status, now_ts, force):
                 return False
             conn.execute(
-                "UPDATE adblock_lists SET last_attempt=%s WHERE `key`=%s", (now_ts, key),
+                "UPDATE adblock_lists SET last_attempt=%s WHERE `key`=%s",
+                (now_ts, key),
             )
 
         ok, err, b, rules = self.download_list(key, status.url)
@@ -1002,7 +1009,8 @@ class AdblockStore:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT k, v FROM adblock_cache_stats WHERE proxy_id=%s", (proxy_id,),
+                "SELECT k, v FROM adblock_cache_stats WHERE proxy_id=%s",
+                (proxy_id,),
             ).fetchall()
             meta_rows = conn.execute(
                 "SELECT k, v FROM adblock_proxy_meta WHERE proxy_id=%s AND k IN ('cache_current_size','cache_last_flush','cache_flush_requested')",
@@ -1036,13 +1044,16 @@ def get_adblock_store() -> AdblockStore:
         if _store is None:
             _store = AdblockStore(
                 lists_dir=os.environ.get(
-                    "ADBLOCK_LISTS_DIR", "/var/lib/squid-flask-proxy/adblock/lists",
+                    "ADBLOCK_LISTS_DIR",
+                    "/var/lib/squid-flask-proxy/adblock/lists",
                 ),
                 update_interval_seconds=_env_int(
-                    "ADBLOCK_UPDATE_INTERVAL", 6 * 60 * 60,
+                    "ADBLOCK_UPDATE_INTERVAL",
+                    6 * 60 * 60,
                 ),
                 cicap_access_log_path=os.environ.get(
-                    "CICAP_ACCESS_LOG", "/var/log/cicap-access.log",
+                    "CICAP_ACCESS_LOG",
+                    "/var/log/cicap-access.log",
                 ),
                 blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
             )

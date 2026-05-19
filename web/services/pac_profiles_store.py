@@ -61,7 +61,8 @@ def _normalize_v4_cidr(cidr: str) -> tuple[str | None, str]:
 
 
 def _normalize_proxy_host_port(
-    proxy_host: str, proxy_port: object | None,
+    proxy_host: str,
+    proxy_port: object | None,
 ) -> tuple[str | None, int | None, str]:
     host = (proxy_host or "").strip()
     raw_port = "" if proxy_port is None else str(proxy_port or "").strip()
@@ -243,11 +244,15 @@ class PacProfilesStore:
             True if setting is None else bool(int(setting["direct_enabled"] or 0))
         )
         return PacProxyChainSettings(
-            backup_proxies=backups, direct_enabled=direct_enabled,
+            backup_proxies=backups,
+            direct_enabled=direct_enabled,
         )
 
     def add_backup_proxy(
-        self, *, proxy_host: str, proxy_port: object | None = None,
+        self,
+        *,
+        proxy_host: str,
+        proxy_port: object | None = None,
     ) -> tuple[bool, str, int | None]:
         self.init_db()
         host, port, err = _normalize_proxy_host_port(proxy_host, proxy_port)
@@ -398,10 +403,12 @@ class PacProfilesStore:
 
                 # Clear old rules.
                 conn.execute(
-                    "DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,),
+                    "DELETE FROM pac_direct_domains WHERE profile_id=%s",
+                    (pid,),
                 )
                 conn.execute(
-                    "DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,),
+                    "DELETE FROM pac_direct_dst_nets WHERE profile_id=%s",
+                    (pid,),
                 )
 
             for d in domains:
@@ -431,7 +438,8 @@ class PacProfilesStore:
             conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
             conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
             conn.execute(
-                "DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s", (pid, proxy_id),
+                "DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s",
+                (pid, proxy_id),
             )
 
     def match_profile_for_client_ip(self, client_ip: str) -> PacProfile | None:

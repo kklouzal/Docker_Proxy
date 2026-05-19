@@ -49,13 +49,22 @@ class _Db:
         self._conn = None
         self._last_open_attempt = 0
         self._cache_max_entries = _env_int(
-            "WEBFILTER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000,
+            "WEBFILTER_CACHE_ENTRIES",
+            200000,
+            minimum=1000,
+            maximum=1000000,
         )
         self._cache_ttl = _env_float(
-            "WEBFILTER_CACHE_TTL_SECONDS", 3600.0, minimum=5.0, maximum=86400.0,
+            "WEBFILTER_CACHE_TTL_SECONDS",
+            3600.0,
+            minimum=5.0,
+            maximum=86400.0,
         )
         self._cache_negative_ttl = _env_float(
-            "WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS", 1.0, minimum=0.1, maximum=3600.0,
+            "WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS",
+            1.0,
+            minimum=0.1,
+            maximum=3600.0,
         )
         self._cache: OrderedDict[str, tuple[float, tuple[str, ...]]] = OrderedDict()
         self._snapshot_dir = Path(
@@ -68,10 +77,14 @@ class _Db:
         self._snapshot_path = self._snapshot_dir / "webcat.sqlite"
         self._snapshot_lock_path = self._snapshot_dir / ".webcat.sqlite.lock"
         self._snapshot_refresh_seconds = _env_float(
-            "WEBFILTER_SNAPSHOT_REFRESH_SECONDS", 30.0, minimum=5.0, maximum=3600.0,
+            "WEBFILTER_SNAPSHOT_REFRESH_SECONDS",
+            30.0,
+            minimum=5.0,
+            maximum=3600.0,
         )
         self._snapshot_lock_stale_seconds = max(
-            60.0, self._snapshot_refresh_seconds * 4.0,
+            60.0,
+            self._snapshot_refresh_seconds * 4.0,
         )
         self._snapshot_started = False
         self._snapshot_start_lock = threading.Lock()
@@ -140,7 +153,9 @@ class _Db:
         except Exception:
             pass
         thread = threading.Thread(
-            target=self._snapshot_loop, name="webcat-snapshot-refresh", daemon=True,
+            target=self._snapshot_loop,
+            name="webcat-snapshot-refresh",
+            daemon=True,
         )
         thread.start()
 
@@ -193,7 +208,11 @@ class _Db:
             pass
 
     def _swap_local_snapshot(
-        self, conn: sqlite3.Connection, *, built_ts: int, mtime_ns: int,
+        self,
+        conn: sqlite3.Connection,
+        *,
+        built_ts: int,
+        mtime_ns: int,
     ) -> None:
         old_conn: sqlite3.Connection | None = None
         previous_built_ts = 0
@@ -247,7 +266,9 @@ class _Db:
             return False
 
         self._swap_local_snapshot(
-            conn, built_ts=built_ts, mtime_ns=int(stat.st_mtime_ns),
+            conn,
+            built_ts=built_ts,
+            mtime_ns=int(stat.st_mtime_ns),
         )
         return True
 
@@ -257,7 +278,8 @@ class _Db:
             return 0
         try:
             row = conn.execute(
-                "SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",),
+                "SELECT v FROM webcat_meta WHERE k=%s",
+                ("built_ts",),
             ).fetchone()
             return (
                 int(str(row[0]).strip())
@@ -336,10 +358,12 @@ class _Db:
                     cur.close()
 
             local_db.execute(
-                "INSERT INTO meta(k, v) VALUES('built_ts', ?)", (str(built_ts),),
+                "INSERT INTO meta(k, v) VALUES('built_ts', ?)",
+                (str(built_ts),),
             )
             local_db.execute(
-                "INSERT INTO meta(k, v) VALUES('row_count', ?)", (str(row_count),),
+                "INSERT INTO meta(k, v) VALUES('row_count', ?)",
+                (str(row_count),),
             )
             local_db.commit()
             local_db.close()
@@ -405,7 +429,8 @@ class _Db:
                 return None
             for candidate in _parent_domains(normalized):
                 row = conn.execute(
-                    "SELECT categories FROM domains WHERE domain = ?", (candidate,),
+                    "SELECT categories FROM domains WHERE domain = ?",
+                    (candidate,),
                 ).fetchone()
                 if row and row[0]:
                     return {c for c in str(row[0]).split("|") if c}
@@ -463,14 +488,23 @@ class _BlockedLogDb:
         self._last_open_attempt = 0
         self._inserts = 0
         self._batch_size = _env_int(
-            "WEBFILTER_LOG_BATCH_SIZE", 128, minimum=1, maximum=2000,
+            "WEBFILTER_LOG_BATCH_SIZE",
+            128,
+            minimum=1,
+            maximum=2000,
         )
         self._flush_interval = _env_float(
-            "WEBFILTER_LOG_FLUSH_INTERVAL_SECONDS", 1.0, minimum=0.1, maximum=10.0,
+            "WEBFILTER_LOG_FLUSH_INTERVAL_SECONDS",
+            1.0,
+            minimum=0.1,
+            maximum=10.0,
         )
         self._queue: queue.Queue[tuple[int, str, str, str, str]] = queue.Queue(
             maxsize=_env_int(
-                "WEBFILTER_LOG_QUEUE_SIZE", 10000, minimum=100, maximum=100000,
+                "WEBFILTER_LOG_QUEUE_SIZE",
+                10000,
+                minimum=100,
+                maximum=100000,
             ),
         )
         self._writer_started = False
@@ -521,7 +555,9 @@ class _BlockedLogDb:
                 return
             self._writer_started = True
             t = threading.Thread(
-                target=self._run, name="webfilter-blocked-log-writer", daemon=True,
+                target=self._run,
+                name="webfilter-blocked-log-writer",
+                daemon=True,
             )
             t.start()
 

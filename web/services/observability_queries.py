@@ -74,7 +74,8 @@ class ObservabilityQueries:
 
     @staticmethod
     def _request_identity_sql(
-        id_column: str = "id", master_xaction_column: str = "master_xaction",
+        id_column: str = "id",
+        master_xaction_column: str = "master_xaction",
     ) -> str:
         return (
             "CASE "
@@ -447,8 +448,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             where.append(
                 "("
-                 "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\'"
-                 ")",
+                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\'"
+                ")",
             )
             params.extend([like, like, like])
         where_sql = "WHERE " + " AND ".join(where)
@@ -498,13 +499,19 @@ class ObservabilityQueries:
         ]
 
     def ssl_overview(
-        self, *, since: int, search: str = "", limit: int = 50,
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
     ) -> dict[str, Any]:
         store = get_ssl_errors_store()
         with contextlib.suppress(Exception):
             store.init_db()
         raw_rows = store.list_recent(
-            since=since, search=search, limit=max(10, min(500, int(limit))),
+            since=since,
+            search=search,
+            limit=max(10, min(500, int(limit))),
         )
         presented = present_ssl_error_rows(raw_rows)
         category_counts: Counter[str] = Counter()
@@ -516,17 +523,24 @@ class ObservabilityQueries:
             "summary": presented["summary"],
             "rows": presented["rows"],
             "top_domains": present_ssl_top_domains(
-                store.top_domains(since=since, search=search, limit=10), limit=10,
+                store.top_domains(since=since, search=search, limit=10),
+                limit=10,
             ),
             "exclusion_candidates": present_ssl_exclusion_candidates(
-                store.suggest_exclusion_candidates(since=since, search=search, limit=10),
+                store.suggest_exclusion_candidates(
+                    since=since, search=search, limit=10
+                ),
             ),
             "top_categories": _badge_rows(category_counts, limit=6),
             "hints": presented["hints"],
         }
 
     def security_overview(
-        self, *, since: int, search: str = "", limit: int = 50,
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
     ) -> dict[str, Any]:
         proxy_id = get_proxy_id()
         lim = max(5, min(100, int(limit)))
@@ -541,8 +555,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             av_where.append(
                 "("
-                 "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
-                 ")",
+                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
+                ")",
             )
             av_params.extend([like, like, like, like, like])
         av_where_sql = "WHERE " + " AND ".join(av_where)
@@ -564,8 +578,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             webfilter_where.append(
                 "("
-                 "LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\' OR LOWER(category) LIKE %s ESCAPE '\\\\'"
-                 ")",
+                "LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\' OR LOWER(category) LIKE %s ESCAPE '\\\\'"
+                ")",
             )
             webfilter_params.extend([like, like, like])
         webfilter_where_sql = "WHERE " + " AND ".join(webfilter_where)
@@ -780,7 +794,11 @@ class ObservabilityQueries:
         }
 
     def performance_overview(
-        self, *, since: int, limit: int = 10, summary: dict[str, Any] | None = None,
+        self,
+        *,
+        since: int,
+        limit: int = 10,
+        summary: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         diagnostic_store = get_diagnostic_store()
         lim = max(3, min(20, int(limit)))
@@ -792,35 +810,45 @@ class ObservabilityQueries:
         return {
             "summary": summary_payload,
             "slow_requests": present_transaction_rows(
-                diagnostic_store.slowest_requests(since=since, limit=lim), icap_limit=0,
+                diagnostic_store.slowest_requests(since=since, limit=lim),
+                icap_limit=0,
             ),
             "slow_icap_events": present_icap_events(
-                diagnostic_store.slowest_icap_events(since=since, limit=lim), limit=lim,
+                diagnostic_store.slowest_icap_events(since=since, limit=lim),
+                limit=lim,
             ),
             "top_user_agents": present_top_value_rows(
                 diagnostic_store.top_request_dimension(
-                    "user_agent", since=since, limit=8,
+                    "user_agent",
+                    since=since,
+                    limit=8,
                 ),
                 max_label=72,
             ),
             "top_bump_modes": present_top_value_rows(
                 diagnostic_store.top_request_dimension(
-                    "bump_mode", since=since, limit=8,
+                    "bump_mode",
+                    since=since,
+                    limit=8,
                 ),
                 max_label=40,
             ),
             "top_tls_server_versions": present_top_value_rows(
                 diagnostic_store.top_request_dimension(
-                    "tls_server_version", since=since, limit=8,
+                    "tls_server_version",
+                    since=since,
+                    limit=8,
                 ),
                 max_label=40,
             ),
             "top_policy_tags": present_top_tag_rows(
-                diagnostic_store.top_policy_tags(since=since, limit=10), max_label=64,
+                diagnostic_store.top_policy_tags(since=since, limit=10),
+                max_label=64,
             ),
             "av_icap_summary": diagnostic_store.icap_summary(since=since, service="av"),
             "adblock_icap_summary": diagnostic_store.icap_summary(
-                since=since, service="adblock",
+                since=since,
+                service="adblock",
             ),
         }
 
@@ -834,8 +862,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             where.append(
                 "("
-                 "LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\'"
-                 ")",
+                "LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\'"
+                ")",
             )
             params.extend([like, like, like])
         where_sql = "WHERE " + " AND ".join(where)
@@ -952,7 +980,11 @@ class ObservabilityQueries:
         return out
 
     def top_spliced_destinations(
-        self, *, since: int, search: str = "", limit: int = 50,
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
     ) -> list[dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
@@ -995,7 +1027,12 @@ class ObservabilityQueries:
         ]
 
     def top_malware_attempts(
-        self, *, since: int, search: str = "", limit: int = 50, privacy: bool = False,
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        privacy: bool = False,
     ) -> list[dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
@@ -1266,7 +1303,12 @@ class ObservabilityQueries:
         return out
 
     def top_client_groups(
-        self, *, since: int, search: str = "", limit: int = 50, privacy: bool = False,
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        privacy: bool = False,
     ) -> list[dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
@@ -1333,7 +1375,9 @@ class ObservabilityQueries:
     ) -> dict[str, Any]:
         lim = max(5, min(200, int(limit)))
         security = self.security_overview(
-            since=since, search=search, limit=min(lim, 50),
+            since=since,
+            search=search,
+            limit=min(lim, 50),
         )
         ssl_payload = self.ssl_overview(since=since, search=search, limit=min(lim, 50))
         schedules = self.report_schedules(limit=10)
@@ -1349,14 +1393,22 @@ class ObservabilityQueries:
             ),
             "top_blocked_categories": security.get("webfilter_top_categories", []),
             "top_malware_attempts": self.top_malware_attempts(
-                since=since, search=search, limit=lim, privacy=privacy,
+                since=since,
+                search=search,
+                limit=lim,
+                privacy=privacy,
             ),
             "top_ssl_bump_failures": ssl_payload.get("rows", [])[:lim],
             "top_spliced_destinations": self.top_spliced_destinations(
-                since=since, search=search, limit=lim,
+                since=since,
+                search=search,
+                limit=lim,
             ),
             "per_group": self.top_client_groups(
-                since=since, search=search, limit=lim, privacy=privacy,
+                since=since,
+                search=search,
+                limit=lim,
+                privacy=privacy,
             ),
             "security": security,
             "audit": self.audit_activity(since=since, limit=min(lim, 20)),
@@ -1425,12 +1477,17 @@ class ObservabilityQueries:
                 total_requests=total_requests,
             ),
             "cache_reasons": self.top_cache_reasons(
-                since=since, search=search, limit=lim, sort="requests",
+                since=since,
+                search=search,
+                limit=lim,
+                sort="requests",
             ),
             "ssl": self.ssl_overview(since=since, search=search, limit=lim),
             "security": self.security_overview(since=since, search=search, limit=lim),
             "performance": self.performance_overview(
-                since=since, limit=lim, summary=summary_payload,
+                since=since,
+                limit=lim,
+                summary=summary_payload,
             ),
         }
 

@@ -212,7 +212,8 @@ class TimeSeriesStore:
         if aligned_y > 0:
             self._with_missing_table_retry(
                 lambda: self._delete_old_year_points(
-                    proxy_id=proxy_id, aligned_y=aligned_y,
+                    proxy_id=proxy_id,
+                    aligned_y=aligned_y,
                 ),
             )
 
@@ -264,7 +265,10 @@ class TimeSeriesStore:
         return out
 
     def query(
-        self, resolution: str, since: int, limit: int = 500,
+        self,
+        resolution: str,
+        since: int,
+        limit: int = 500,
     ) -> list[dict[str, Any]]:
         res = RESOLUTION_BY_NAME.get(resolution) or RESOLUTIONS[0]
 

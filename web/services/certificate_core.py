@@ -92,7 +92,11 @@ def _split_cert_chain(cert_text: str) -> tuple[str, str]:
 
 def _run_checked(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
-        args, capture_output=True, text=True, check=True, timeout=timeout,
+        args,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=timeout,
     )
 
 
@@ -112,7 +116,9 @@ def _extract_certificate_metadata(cert_pem: str) -> tuple[str, str, str]:
     tmp_cert_path = ""
     try:
         with tempfile.NamedTemporaryFile(
-            "w", delete=False, encoding="utf-8",
+            "w",
+            delete=False,
+            encoding="utf-8",
         ) as tmp_cert:
             tmp_cert.write(_normalize_pem_text(cert_pem))
             tmp_cert_path = tmp_cert.name
@@ -216,12 +222,18 @@ def materialize_certificate_bundle(
     tmp_pfx_path = ""
     try:
         with tempfile.NamedTemporaryFile(
-            "w", delete=False, dir=ca_dir, encoding="utf-8",
+            "w",
+            delete=False,
+            dir=ca_dir,
+            encoding="utf-8",
         ) as cert_file:
             cert_file.write(bundle.fullchain_pem or bundle.cert_pem)
             tmp_cert_path = cert_file.name
         with tempfile.NamedTemporaryFile(
-            "w", delete=False, dir=ca_dir, encoding="utf-8",
+            "w",
+            delete=False,
+            dir=ca_dir,
+            encoding="utf-8",
         ) as key_file:
             key_file.write(bundle.key_pem)
             tmp_key_path = key_file.name
@@ -233,7 +245,9 @@ def materialize_certificate_bundle(
         )
         if pfx_bytes is not None:
             with tempfile.NamedTemporaryFile(
-                "wb", delete=False, dir=ca_dir,
+                "wb",
+                delete=False,
+                dir=ca_dir,
             ) as pfx_file:
                 pfx_file.write(pfx_bytes)
                 tmp_pfx_path = pfx_file.name

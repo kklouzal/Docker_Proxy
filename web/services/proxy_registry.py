@@ -82,10 +82,12 @@ def resolve_local_proxy_public_fields() -> dict[str, object]:
     )
     default_pac_port = 443 if public_pac_scheme == "https" else 80
     public_pac_port = _coerce_port(
-        os.environ.get("PROXY_PUBLIC_PAC_PORT"), url_port or default_pac_port,
+        os.environ.get("PROXY_PUBLIC_PAC_PORT"),
+        url_port or default_pac_port,
     )
     public_http_proxy_port = _coerce_port(
-        os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"), 3128,
+        os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
+        3128,
     )
     return {
         "public_host": public_host,
@@ -96,7 +98,8 @@ def resolve_local_proxy_public_fields() -> dict[str, object]:
 
 
 def resolve_local_proxy_management_url(
-    proxy_id: object | None, public_host: object | None = None,
+    proxy_id: object | None,
+    public_host: object | None = None,
 ) -> str:
     explicit_url = (os.environ.get("PROXY_MANAGEMENT_URL") or "").strip()
     if explicit_url:
@@ -211,7 +214,8 @@ class ProxyRegistry:
                 conn.execute("DROP TABLE IF EXISTS socks_events")
                 self._columns_cache.pop("proxy_instances", None)
                 self._columns_cache["proxy_instances"] = self._existing_columns(
-                    conn, "proxy_instances",
+                    conn,
+                    "proxy_instances",
                 )
             self._schema_ready = True
 
@@ -299,7 +303,8 @@ class ProxyRegistry:
                     "public_pac_scheme": _normalize_public_scheme(public_pac_scheme),
                     "public_pac_port": _coerce_port(public_pac_port, 80),
                     "public_http_proxy_port": _coerce_port(
-                        public_http_proxy_port, 3128,
+                        public_http_proxy_port,
+                        3128,
                     ),
                     "status": (status or "unknown").strip() or "unknown",
                     "last_heartbeat": 0,
@@ -388,7 +393,8 @@ class ProxyRegistry:
     def ensure_default_proxy(self) -> ProxyInstance:
         default_id = get_default_proxy_id()
         return self.ensure_proxy(
-            default_id, display_name=os.environ.get("DEFAULT_PROXY_NAME") or default_id,
+            default_id,
+            display_name=os.environ.get("DEFAULT_PROXY_NAME") or default_id,
         )
 
     def get_proxy(self, proxy_id: object | None) -> ProxyInstance | None:
@@ -535,7 +541,8 @@ class ProxyRegistry:
         hostname = (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip()
         public_fields = resolve_local_proxy_public_fields()
         management_url = resolve_local_proxy_management_url(
-            proxy_id, public_fields.get("public_host"),
+            proxy_id,
+            public_fields.get("public_host"),
         )
         existing = self.get_proxy(proxy_id)
         return self.ensure_proxy(

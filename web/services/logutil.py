@@ -18,7 +18,11 @@ def should_log(key: str, *, interval_seconds: float) -> bool:
 
 
 def log_exception_throttled(
-    logger, key: str, *args, interval_seconds: float, message: str,
+    logger,
+    key: str,
+    *args,
+    interval_seconds: float,
+    message: str,
 ) -> None:
     """Log exceptions at most once per interval per key.
 
@@ -27,7 +31,7 @@ def log_exception_throttled(
     """
     try:
         if should_log(key, interval_seconds=interval_seconds):
-            logger.error(message, *args)
+            logger.exception(message, *args)  # noqa: LOG004
     except Exception:
         # Never let logging break the worker loop.
         pass

@@ -74,7 +74,8 @@ def has_listen_socket(path: str, port: int) -> bool:
 
 def check_local_listener(service_name: str, host: str, port: int) -> dict[str, Any]:
     if has_listen_socket("/proc/net/tcp", port) or has_listen_socket(
-        "/proc/net/tcp6", port,
+        "/proc/net/tcp6",
+        port,
     ):
         return {"ok": True, "detail": f"{service_name} listening on {host}:{port}"}
     return {"ok": False, "detail": f"{service_name} is not listening on {host}:{port}"}
@@ -151,7 +152,8 @@ def resolve_host_port(
 
 
 def _resolve_clamd_target(
-    host: str | None = None, port: int | None = None,
+    host: str | None = None,
+    port: int | None = None,
 ) -> tuple[str, int]:
     resolved_host = (
         host or os.environ.get("CLAMD_HOST") or "127.0.0.1"
@@ -187,7 +189,8 @@ def check_clamd(
     resolved_host, resolved_port = _resolve_clamd_target(host=host, port=port)
     try:
         with socket.create_connection(
-            (resolved_host, resolved_port), timeout=timeout,
+            (resolved_host, resolved_port),
+            timeout=timeout,
         ) as sock:
             sock.settimeout(timeout)
             sock.sendall(b"PING\n")
@@ -219,7 +222,8 @@ def test_clamd_eicar(
     resolved_host, resolved_port = _resolve_clamd_target(host=host, port=port)
     try:
         with socket.create_connection(
-            (resolved_host, resolved_port), timeout=timeout,
+            (resolved_host, resolved_port),
+            timeout=timeout,
         ) as sock:
             sock.settimeout(timeout)
             sock.sendall(b"zINSTREAM\0")
@@ -300,7 +304,8 @@ def send_sample_respmod_to(
 
 
 def build_clamav_health(
-    clamd_health: dict[str, Any], av_icap_health: dict[str, Any],
+    clamd_health: dict[str, Any],
+    av_icap_health: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "ok": bool(clamd_health.get("ok")) and bool(av_icap_health.get("ok")),

@@ -44,7 +44,8 @@ _TLS_ERROR_SIGNATURE = re.compile(
     re.IGNORECASE,
 )
 _MASTER_XACTION_PATTERN = re.compile(
-    r"\bcurrent\s+master\s+transaction:\s*master?([A-Za-z0-9_.:-]+)\b", re.IGNORECASE,
+    r"\bcurrent\s+master\s+transaction:\s*master?([A-Za-z0-9_.:-]+)\b",
+    re.IGNORECASE,
 )
 
 # Best-effort extraction of a destination domain from cache.log lines.
@@ -215,11 +216,19 @@ class SslErrorsStore:
 
     def _row_key(self, proxy_id: str, domain: str, category: str, reason: str) -> str:
         return hashlib.sha1(
-            f"{proxy_id}|{domain}|{category}|{reason}".encode("utf-8", errors="replace"),
+            f"{proxy_id}|{domain}|{category}|{reason}".encode(
+                "utf-8", errors="replace"
+            ),
         ).hexdigest()
 
     def _update_sample(
-        self, conn, domain: str, category: str, reason: str, ts: int, sample: str,
+        self,
+        conn,
+        domain: str,
+        category: str,
+        reason: str,
+        ts: int,
+        sample: str,
     ) -> None:
         proxy_id = get_proxy_id()
         row_key = self._row_key(proxy_id, domain, category, reason)
@@ -247,7 +256,10 @@ class SslErrorsStore:
             return 20
 
     def _lookup_domain_for_master_xaction(
-        self, conn, master_xaction: str, ts: int,
+        self,
+        conn,
+        master_xaction: str,
+        ts: int,
     ) -> str:
         tx = (master_xaction or "").strip()
         if not tx:
@@ -285,7 +297,11 @@ class SslErrorsStore:
         return ""
 
     def _enrich_domain_from_context(
-        self, conn, domain: str, ts: int, sample: str,
+        self,
+        conn,
+        domain: str,
+        ts: int,
+        sample: str,
     ) -> str:
         current = _normalize_hostish(domain or "")
         if current:
@@ -338,7 +354,10 @@ class SslErrorsStore:
                 return True
             if not str(pending.get("domain") or ""):
                 pending["domain"] = self._enrich_domain_from_context(
-                    conn, "", int(pending.get("ts") or _now()), combined,
+                    conn,
+                    "",
+                    int(pending.get("ts") or _now()),
+                    combined,
                 )
             return self._flush_pending_error(conn)
 
@@ -461,7 +480,11 @@ class SslErrorsStore:
             return 50_000
 
     def _delete_in_chunks(
-        self, where_sql: str, params: tuple[Any, ...], *, log_key: str,
+        self,
+        where_sql: str,
+        params: tuple[Any, ...],
+        *,
+        log_key: str,
     ) -> int:
         chunk_size = self._cleanup_chunk_size()
         max_rows = self._cleanup_max_rows()
@@ -480,7 +503,8 @@ class SslErrorsStore:
             if deleted < limit:
                 break
         if total >= max_rows and should_log(
-            log_key + ".truncated", interval_seconds=300.0,
+            log_key + ".truncated",
+            interval_seconds=300.0,
         ):
             logger.warning(
                 "SSL errors cleanup reached max_rows=%s; remaining rows will be cleaned up later.",
@@ -497,7 +521,8 @@ class SslErrorsStore:
             self._cleanup_known_false_positives()
         except DATABASE_ERRORS:
             if should_log(
-                "ssl_errors_store.cleanup.false_positives", interval_seconds=300.0,
+                "ssl_errors_store.cleanup.false_positives",
+                interval_seconds=300.0,
             ):
                 logger.warning(
                     "SSL errors false-positive cleanup skipped because the database is busy/unavailable.",
@@ -521,11 +546,19 @@ class SslErrorsStore:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
         self._delete_in_chunks(
-            "last_seen < %s", (int(cutoff),), log_key="ssl_errors_store.prune",
+            "last_seen < %s",
+            (int(cutoff),),
+            log_key="ssl_errors_store.prune",
         )
 
     def _upsert(
-        self, conn, domain: str, category: str, reason: str, ts: int, sample: str,
+        self,
+        conn,
+        domain: str,
+        category: str,
+        reason: str,
+        ts: int,
+        sample: str,
     ) -> None:
         proxy_id = get_proxy_id()
         domain = self._enrich_domain_from_context(conn, domain, ts, sample)
@@ -599,7 +632,11 @@ class SslErrorsStore:
             self._flush_pending_error(conn)
 
     def list_recent(
-        self, *, since: int | None = None, search: str = "", limit: int = 200,
+        self,
+        *,
+        since: int | None = None,
+        search: str = "",
+        limit: int = 200,
     ) -> list[SslErrorRow]:
         self.init_db()
         where = ["proxy_id = %s"]
@@ -631,7 +668,11 @@ class SslErrorsStore:
         ]
 
     def top_domains(
-        self, *, since: int | None = None, search: str = "", limit: int = 20,
+        self,
+        *,
+        since: int | None = None,
+        search: str = "",
+        limit: int = 20,
     ) -> list[dict[str, Any]]:
         self.init_db()
         where = ["proxy_id = %s"]
@@ -730,19 +771,30 @@ class SslErrorsStore:
                 return
             self._started = True
             t = threading.Thread(
-                target=self._tail_loop, name="ssl-errors-tailer", daemon=True,
+                target=self._tail_loop,
+                name="ssl-errors-tailer",
+                daemon=True,
             )
             t.start()
 
     def _tail_loop(self) -> None:
         commit_batch = _env_int(
-            "SSL_ERRORS_COMMIT_BATCH", 200, minimum=25, maximum=5000,
+            "SSL_ERRORS_COMMIT_BATCH",
+            200,
+            minimum=25,
+            maximum=5000,
         )
         commit_interval = _env_float(
-            "SSL_ERRORS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0,
+            "SSL_ERRORS_COMMIT_INTERVAL_SECONDS",
+            2.0,
+            minimum=0.25,
+            maximum=10.0,
         )
         poll_interval = _env_float(
-            "SSL_ERRORS_POLL_INTERVAL_SECONDS", 0.75, minimum=0.1, maximum=5.0,
+            "SSL_ERRORS_POLL_INTERVAL_SECONDS",
+            0.75,
+            minimum=0.1,
+            maximum=5.0,
         )
 
         path = self.cache_log_path

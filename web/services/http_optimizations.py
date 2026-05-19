@@ -125,6 +125,8 @@ def install_http_optimizations(
 
         if compression_enabled:
             response = _compress_response(
-                response, min_size=compress_min_size, compresslevel=compresslevel,
+                response,
+                min_size=compress_min_size,
+                compresslevel=compresslevel,
             )
         return response

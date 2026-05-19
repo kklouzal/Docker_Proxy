@@ -101,7 +101,8 @@ class ProxyClient:
                     "detail": self._safe_error_detail(raw, status_code=int(exc.code)),
                 }
             detail = data.get("detail") or self._safe_error_detail(
-                raw, status_code=int(exc.code),
+                raw,
+                status_code=int(exc.code),
             )
             msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
             raise ProxyClientError(msg) from exc
@@ -109,11 +110,6 @@ class ProxyClient:
             reason = str(exc.reason) or str(exc)
             msg = f"Proxy management request failed: {reason} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
             raise ProxyClientError(msg) from exc
-        except TimeoutError as exc:
-            msg = f"Proxy management request timed out after {timeout:.1f}s (proxy={normalize_proxy_id(proxy_id)}, url={url}). Check that the proxy runtime is reachable from the Admin UI container."
-            raise ProxyClientError(
-                msg,
-            ) from exc
         except TimeoutError as exc:
             msg = f"Proxy management request timed out after {timeout:.1f}s (proxy={normalize_proxy_id(proxy_id)}, url={url}). Check that the proxy runtime is reachable from the Admin UI container."
             raise ProxyClientError(
@@ -139,7 +135,10 @@ class ProxyClient:
         ).data
 
     def get_clamav_health(
-        self, proxy_id: object | None, *, timeout_seconds: float = 5.0,
+        self,
+        proxy_id: object | None,
+        *,
+        timeout_seconds: float = 5.0,
     ) -> dict[str, Any]:
         return self._request(
             proxy_id,
@@ -198,7 +197,10 @@ class ProxyClient:
         ).data
 
     def clear_proxy_cache(
-        self, proxy_id: object | None, *, timeout_seconds: float = 60.0,
+        self,
+        proxy_id: object | None,
+        *,
+        timeout_seconds: float = 60.0,
     ) -> dict[str, Any]:
         return self._request(
             proxy_id,
@@ -209,7 +211,10 @@ class ProxyClient:
         ).data
 
     def test_clamav_eicar(
-        self, proxy_id: object | None, *, timeout_seconds: float = 10.0,
+        self,
+        proxy_id: object | None,
+        *,
+        timeout_seconds: float = 10.0,
     ) -> dict[str, Any]:
         return self._request(
             proxy_id,
@@ -220,7 +225,10 @@ class ProxyClient:
         ).data
 
     def test_clamav_icap(
-        self, proxy_id: object | None, *, timeout_seconds: float = 10.0,
+        self,
+        proxy_id: object | None,
+        *,
+        timeout_seconds: float = 10.0,
     ) -> dict[str, Any]:
         return self._request(
             proxy_id,

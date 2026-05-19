@@ -152,7 +152,8 @@ class AdblockArtifactStore:
         )
 
     def _row_to_application(
-        self, row: object | None,
+        self,
+        row: object | None,
     ) -> AdblockArtifactApplication | None:
         if not row:
             return None
@@ -335,7 +336,8 @@ class AdblockArtifactStore:
         return application
 
     def latest_apply(
-        self, proxy_id: object | None,
+        self,
+        proxy_id: object | None,
     ) -> AdblockArtifactApplication | None:
         self.init_db()
         from services.proxy_context import normalize_proxy_id
@@ -417,7 +419,8 @@ class AdblockArtifactStore:
             return {
                 "ok": False,
                 "detail": public_error_message(
-                    exc, default="Adblock artifact build failed.",
+                    exc,
+                    default="Adblock artifact build failed.",
                 ),
                 "revision": None,
                 "changed": False,
@@ -449,7 +452,9 @@ class AdblockArtifactStore:
             self._started = True
             self.init_db()
             thread = threading.Thread(
-                target=self._loop, name="adblock-artifact-builder", daemon=True,
+                target=self._loop,
+                name="adblock-artifact-builder",
+                daemon=True,
             )
             thread.start()
 
@@ -459,7 +464,10 @@ class AdblockArtifactStore:
         )
         error_seconds = float(
             _env_int(
-                "ADBLOCK_BUILDER_ERROR_BACKOFF_SECONDS", 30, minimum=5, maximum=300,
+                "ADBLOCK_BUILDER_ERROR_BACKOFF_SECONDS",
+                30,
+                minimum=5,
+                maximum=300,
             ),
         )
         from services.adblock_store import get_adblock_store
@@ -523,7 +531,9 @@ def _compile_current_lists(*, lists_dir: str, out_dir: str) -> None:
     from tools import adblock_compile  # type: ignore
 
     rc = int(
-        adblock_compile.main(["--lists-dir", str(lists_dir), "--out-dir", str(out_dir)]),
+        adblock_compile.main(
+            ["--lists-dir", str(lists_dir), "--out-dir", str(out_dir)]
+        ),
     )
     if rc != 0:
         msg = f"adblock_compile failed with exit code {rc}"
@@ -564,7 +574,8 @@ def _write_empty_output(out_dir: str) -> None:
         },
     }
     (root / "report.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -719,7 +730,8 @@ def _restart_local_adblock_service() -> tuple[bool, str]:
         )
     except Exception as exc:
         return False, public_error_message(
-            exc, default="Failed to restart cicap_adblock.",
+            exc,
+            default="Failed to restart cicap_adblock.",
         )
 
     stdout = (proc.stdout or b"").decode("utf-8", errors="replace").strip()

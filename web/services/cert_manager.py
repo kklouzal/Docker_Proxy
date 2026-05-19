@@ -91,7 +91,10 @@ def generate_self_signed_ca_bundle(
 
 
 def parse_pfx_bundle(
-    pfx_bytes: bytes, password: str = "", *, run_checked=None,
+    pfx_bytes: bytes,
+    password: str = "",
+    *,
+    run_checked=None,
 ) -> PfxInstallResult:
     if not pfx_bytes:
         return PfxInstallResult(ok=False, message="Empty PFX upload.")
@@ -157,13 +160,16 @@ def parse_pfx_bundle(
             )
 
             leaf_text = pathlib.Path(leaf_path).read_text(
-                encoding="utf-8", errors="ignore",
+                encoding="utf-8",
+                errors="ignore",
             )
             chain_text = pathlib.Path(chain_path).read_text(
-                encoding="utf-8", errors="ignore",
+                encoding="utf-8",
+                errors="ignore",
             )
             key_text = pathlib.Path(key_path).read_text(
-                encoding="utf-8", errors="ignore",
+                encoding="utf-8",
+                errors="ignore",
             )
 
             leaf_cert = _first_pem_block(leaf_text, "CERTIFICATE")
@@ -187,12 +193,16 @@ def parse_pfx_bundle(
                 raise PfxInstallError(msg)
 
             with tempfile.NamedTemporaryFile(
-                "w", delete=False, encoding="utf-8",
+                "w",
+                delete=False,
+                encoding="utf-8",
             ) as tmp_leaf:
                 tmp_leaf.write(leaf_cert)
                 tmp_leaf_path = tmp_leaf.name
             with tempfile.NamedTemporaryFile(
-                "w", delete=False, encoding="utf-8",
+                "w",
+                delete=False,
+                encoding="utf-8",
             ) as tmp_key:
                 tmp_key.write(private_key)
                 tmp_key_path = tmp_key.name
@@ -223,17 +233,21 @@ def parse_pfx_bundle(
                 original_pfx_bytes=bytes(pfx_bytes),
             )
             return PfxInstallResult(
-                ok=True, message="PFX parsed successfully.", bundle=bundle,
+                ok=True,
+                message="PFX parsed successfully.",
+                bundle=bundle,
             )
     except FileNotFoundError:
         return PfxInstallResult(
-            ok=False, message="openssl not found in container; cannot import PFX.",
+            ok=False,
+            message="openssl not found in container; cannot import PFX.",
         )
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
         if stderr:
             return PfxInstallResult(
-                ok=False, message=f"OpenSSL failed: {clean_text(stderr, max_len=300)}",
+                ok=False,
+                message=f"OpenSSL failed: {clean_text(stderr, max_len=300)}",
             )
         return PfxInstallResult(ok=False, message="OpenSSL failed to parse PFX.")
     except PfxInstallError as exc:
@@ -243,13 +257,18 @@ def parse_pfx_bundle(
         return PfxInstallResult(
             ok=False,
             message=public_error_message(
-                exc, default="PFX import failed. Check server logs for details.",
+                exc,
+                default="PFX import failed. Check server logs for details.",
             ),
         )
 
 
 def install_pfx_as_ca(
-    ca_dir: str, pfx_bytes: bytes, password: str = "", *, run_checked=None,
+    ca_dir: str,
+    pfx_bytes: bytes,
+    password: str = "",
+    *,
+    run_checked=None,
 ) -> PfxInstallResult:
     pathlib.Path(ca_dir).mkdir(exist_ok=True, parents=True)
     result = parse_pfx_bundle(pfx_bytes, password=password, run_checked=run_checked)
@@ -272,7 +291,8 @@ def install_pfx_as_ca(
         return PfxInstallResult(
             ok=False,
             message=public_error_message(
-                exc, default="PFX import failed. Check server logs for details.",
+                exc,
+                default="PFX import failed. Check server logs for details.",
             ),
         )
 

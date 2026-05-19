@@ -107,10 +107,16 @@ def start_agent() -> None:
         )
 
         heartbeat_interval = _env_float(
-            "PROXY_HEARTBEAT_INTERVAL_SECONDS", 90.0, minimum=1.0, maximum=3600.0,
+            "PROXY_HEARTBEAT_INTERVAL_SECONDS",
+            90.0,
+            minimum=1.0,
+            maximum=3600.0,
         )
         sync_interval = _env_float(
-            "PROXY_SYNC_INTERVAL_SECONDS", 30.0, minimum=1.0, maximum=3600.0,
+            "PROXY_SYNC_INTERVAL_SECONDS",
+            30.0,
+            minimum=1.0,
+            maximum=3600.0,
         )
 
         threading.Thread(

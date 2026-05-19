@@ -196,7 +196,8 @@ def canonicalize_url(value: str) -> str:
         return ""
     path = _canonical_path(parsed.path or "/")
     query = _escape_safe_browsing_component(
-        _recursive_unquote(parsed.query or ""), safe="=&?/:;+,$-_.!~*'()@",
+        _recursive_unquote(parsed.query or ""),
+        safe="=&?/:;+,$-_.!~*'()@",
     )
     # Safe Browsing expression generation discards scheme, credentials, and port;
     # the canonical URL keeps only host/path/query for stable hashing input.
@@ -372,7 +373,8 @@ def _enforceable_threat(details: object, fallback: str = "") -> str:
 
 def _threat_type_for_list(name: str) -> str:
     return SAFE_BROWSING_LISTS.get(
-        (name or "").strip(), (name or "UNKNOWN").strip() or "UNKNOWN",
+        (name or "").strip(),
+        (name or "UNKNOWN").strip() or "UNKNOWN",
     )
 
 
@@ -468,7 +470,9 @@ class SafeBrowsingStore:
             api_key=get_setting(conn, "safe_browsing_api_key", ""),
             lists=SafeBrowsingStore.normalize_lists(
                 get_setting(
-                    conn, "safe_browsing_lists", ",".join(DEFAULT_SAFE_BROWSING_LISTS),
+                    conn,
+                    "safe_browsing_lists",
+                    ",".join(DEFAULT_SAFE_BROWSING_LISTS),
                 ),
             ),
             last_success=int(get_setting(conn, "safe_browsing_last_success", "0") or 0),
@@ -478,11 +482,16 @@ class SafeBrowsingStore:
         )
 
     def _request_json(
-        self, path: str, api_key: str, params: list[tuple[str, str]], timeout: int = 30,
+        self,
+        path: str,
+        api_key: str,
+        params: list[tuple[str, str]],
+        timeout: int = 30,
     ) -> dict[str, object]:
         query = urllib.parse.urlencode([*params, ("key", api_key)], doseq=True)
         req = urllib.request.Request(
-            f"{_API_BASE}{path}?{query}", headers={"Accept": "application/json"},
+            f"{_API_BASE}{path}?{query}",
+            headers={"Accept": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read(
@@ -521,14 +530,18 @@ class SafeBrowsingStore:
                 ]
                 params.extend(("version", version) for version in versions.values())
                 response = self._request_json(
-                    "/hashLists:batchGet", settings.api_key, params, timeout=120,
+                    "/hashLists:batchGet",
+                    settings.api_key,
+                    params,
+                    timeout=120,
                 )
                 for item in response.get("hashLists", []) or []:
                     if not isinstance(item, dict):
                         continue
                     self._apply_hash_list(conn, item)
                     wait = parse_duration_seconds(
-                        item.get("minimumWaitDuration"), default=24 * 60 * 60,
+                        item.get("minimumWaitDuration"),
+                        default=24 * 60 * 60,
                     )
                     if wait > 0:
                         min_wait = min(min_wait, wait)
@@ -537,7 +550,9 @@ class SafeBrowsingStore:
             return (
                 False,
                 public_error_message(
-                    exc, default="Google Safe Browsing list update failed.", max_len=500,
+                    exc,
+                    default="Google Safe Browsing list update failed.",
+                    max_len=500,
                 ),
                 1800,
             )
@@ -605,7 +620,9 @@ class SafeBrowsingStore:
                 last_attempt=settings.last_attempt,
                 last_error=settings.last_error
                 or public_error_message(
-                    exc, default="Safe Browsing status unavailable.", max_len=300,
+                    exc,
+                    default="Safe Browsing status unavailable.",
+                    max_len=300,
                 ),
                 next_run_ts=settings.next_run_ts,
             )
@@ -649,13 +666,15 @@ class SafeBrowsingStore:
             # post-update checksum disagrees. Drop local state/version for this
             # list so the next scheduler pass requests a complete replacement.
             conn.execute(
-                "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,),
+                "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s",
+                (name,),
             )
             conn.execute("DELETE FROM safe_browsing_hash_lists WHERE name=%s", (name,))
             msg = f"Google Safe Browsing checksum mismatch for {name}; full refresh required"
             raise ValueError(msg)
         conn.execute(
-            "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,),
+            "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s",
+            (name,),
         )
         if merged:
             conn.executemany(
@@ -672,14 +691,17 @@ class SafeBrowsingStore:
         )
 
     def search_hashes(
-        self, api_key: str, prefixes: Sequence[bytes],
+        self,
+        api_key: str,
+        prefixes: Sequence[bytes],
     ) -> tuple[list[dict[str, object]], int]:
         if not api_key or not prefixes:
             return [], 0
         params = [("hashPrefixes", _urlsafe_b64(prefix)) for prefix in prefixes[:30]]
         response = self._request_json("/hashes:search", api_key, params, timeout=8)
         return list(response.get("fullHashes", []) or []), parse_duration_seconds(
-            response.get("cacheDuration"), default=300,
+            response.get("cacheDuration"),
+            default=300,
         )
 
     def start_background(self, get_settings, set_status) -> None:
@@ -715,7 +737,10 @@ class SafeBrowsingStore:
 
 class SafeBrowsingLocalChecker:
     def __init__(
-        self, *, api_key: str = "", cache_max_entries: int | None = None,
+        self,
+        *,
+        api_key: str = "",
+        cache_max_entries: int | None = None,
     ) -> None:
         self.api_key = api_key
         self._conn = None
@@ -723,7 +748,10 @@ class SafeBrowsingLocalChecker:
         self._prefix_cache: dict[bytes, tuple[float, tuple[str, ...]]] = {}
         self._verdict_cache: dict[str, tuple[float, SafeBrowsingVerdict]] = {}
         self._cache_max = cache_max_entries or _env_int(
-            "SAFE_BROWSING_HELPER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000,
+            "SAFE_BROWSING_HELPER_CACHE_ENTRIES",
+            200000,
+            minimum=1000,
+            maximum=1000000,
         )
 
     def _connect(self):
@@ -771,7 +799,9 @@ class SafeBrowsingLocalChecker:
         return lists
 
     def _cache_lookup(
-        self, prefix: bytes, full_hashes: set[bytes],
+        self,
+        prefix: bytes,
+        full_hashes: set[bytes],
     ) -> SafeBrowsingVerdict | None:
         now = _now()
         try:
@@ -781,7 +811,8 @@ class SafeBrowsingLocalChecker:
                 (now,),
             )
             conn.execute(
-                "DELETE FROM safe_browsing_negative_cache WHERE expires_ts < %s", (now,),
+                "DELETE FROM safe_browsing_negative_cache WHERE expires_ts < %s",
+                (now,),
             )
             rows = conn.execute(
                 "SELECT full_hash, threat_type, list_name FROM safe_browsing_full_hash_cache WHERE prefix=%s AND expires_ts >= %s",
@@ -802,14 +833,19 @@ class SafeBrowsingLocalChecker:
             ).fetchone()
             if neg:
                 return SafeBrowsingVerdict(
-                    "safe", cache_hit=True, reason="cached negative full-hash response",
+                    "safe",
+                    cache_hit=True,
+                    reason="cached negative full-hash response",
                 )
         except Exception:
             return None
         return None
 
     def _cache_search_response(
-        self, prefix: bytes, response: Sequence[dict[str, object]], cache_duration: int,
+        self,
+        prefix: bytes,
+        response: Sequence[dict[str, object]],
+        cache_duration: int,
     ) -> None:
         expires = _now() + max(60, min(24 * 60 * 60, int(cache_duration or 300)))
         try:
@@ -858,13 +894,15 @@ class SafeBrowsingLocalChecker:
                 api_key = self._api_key_from_settings()
                 if not api_key:
                     verdict = SafeBrowsingVerdict(
-                        "safe", reason="api key unavailable for full-hash confirmation",
+                        "safe",
+                        reason="api key unavailable for full-hash confirmation",
                     )
                 else:
                     response, duration = self._store.search_hashes(api_key, [prefix])
                     self._cache_search_response(prefix, response, duration)
                     verdict = SafeBrowsingVerdict(
-                        "safe", reason="full hash not returned",
+                        "safe",
+                        reason="full hash not returned",
                     )
                     for item in response:
                         returned = _decode_b64(item.get("fullHash"))

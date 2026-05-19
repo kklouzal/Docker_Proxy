@@ -31,7 +31,10 @@ def _is_db_locked(exc: BaseException) -> bool:
 
 
 def _run_with_db_lock_retry(
-    fn, *, attempts: int = 8, base_sleep_seconds: float = 0.5,
+    fn,
+    *,
+    attempts: int = 8,
+    base_sleep_seconds: float = 0.5,
 ) -> None:
     """Run `fn` with exponential backoff on transient database lock errors."""
     last_exc: BaseException | None = None
@@ -70,7 +73,9 @@ def _run_once(*, retention_days: int) -> None:
 
 
 def start_housekeeping(
-    *, retention_days: int = 30, interval_seconds: int = 24 * 60 * 60,
+    *,
+    retention_days: int = 30,
+    interval_seconds: int = 24 * 60 * 60,
 ) -> None:
     """Start daily database housekeeping.
 

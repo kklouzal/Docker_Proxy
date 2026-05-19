@@ -237,7 +237,7 @@ def _open_download_url(
             location = exc.headers.get("Location") if exc.headers is not None else None
             if not location:
                 msg = "Download redirect response did not include a Location header."
-                raise ValueError(msg)
+                raise ValueError(msg) from exc
             current = urljoin(current, location)
             _validate_download_url(current)
     msg = f"Download exceeded redirect limit ({max_redirects})."
@@ -301,7 +301,10 @@ def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
 
 
 def _download_if_changed(
-    url: str, dest: Path, *, timeout: int = 60,
+    url: str,
+    dest: Path,
+    *,
+    timeout: int = 60,
 ) -> tuple[bool, Path]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     _validate_download_url(url)
@@ -367,7 +370,7 @@ def _download_if_changed(
         if exc.code == 304:
             if not dest.exists():
                 msg = "Upstream reported not modified, but no cached feed is available."
-                raise ValueError(msg)
+                raise ValueError(msg) from exc
             metadata["url"] = url
             metadata["checked_ts"] = str(_now())
             _save_download_metadata(dest, metadata)
@@ -499,12 +502,14 @@ def _webcat_db_is_current(*, source_sha256: str) -> bool:
     try:
         with _connect() as conn:
             row = conn.execute(
-                "SELECT v FROM webcat_meta WHERE k=%s", ("source_sha256",),
+                "SELECT v FROM webcat_meta WHERE k=%s",
+                ("source_sha256",),
             ).fetchone()
             if not row or str(row[0] or "") != source_sha256:
                 return False
             built_row = conn.execute(
-                "SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",),
+                "SELECT v FROM webcat_meta WHERE k=%s",
+                ("built_ts",),
             ).fetchone()
             if not built_row or int((built_row[0] if built_row else 0) or 0) <= 0:
                 return False
@@ -528,11 +533,13 @@ def _connect():
     cfg = replace(
         cfg,
         connect_timeout=max(
-            cfg.connect_timeout, _env_int("WEBCAT_MYSQL_CONNECT_TIMEOUT", 30),
+            cfg.connect_timeout,
+            _env_int("WEBCAT_MYSQL_CONNECT_TIMEOUT", 30),
         ),
         read_timeout=max(cfg.read_timeout, _env_int("WEBCAT_MYSQL_READ_TIMEOUT", 300)),
         write_timeout=max(
-            cfg.write_timeout, _env_int("WEBCAT_MYSQL_WRITE_TIMEOUT", 300),
+            cfg.write_timeout,
+            _env_int("WEBCAT_MYSQL_WRITE_TIMEOUT", 300),
         ),
     )
     return connect(config=cfg)
@@ -755,17 +762,29 @@ def _build_db(
             _upsert_meta_table(conn, stages["webcat_meta"], "built_ts", str(_now()))
             _upsert_meta_table(conn, stages["webcat_meta"], "source", source)
             _upsert_meta_table(
-                conn, stages["webcat_meta"], "source_sha256", source_sha256,
+                conn,
+                stages["webcat_meta"],
+                "source_sha256",
+                source_sha256,
             )
             _upsert_meta_table(
-                conn, stages["webcat_meta"], "domains", str(domains_built),
+                conn,
+                stages["webcat_meta"],
+                "domains",
+                str(domains_built),
             )
             _upsert_meta_table(conn, stages["webcat_meta"], "pairs", str(unique_pairs))
             _upsert_meta_table(
-                conn, stages["webcat_meta"], "source_pairs", str(len(pairs)),
+                conn,
+                stages["webcat_meta"],
+                "source_pairs",
+                str(len(pairs)),
             )
             _upsert_meta_table(
-                conn, stages["webcat_meta"], "aliases", str(len(alias_rows)),
+                conn,
+                stages["webcat_meta"],
+                "aliases",
+                str(len(alias_rows)),
             )
             rename_parts: list[str] = []
             for live, stage in stages.items():
@@ -784,7 +803,9 @@ def _build_db(
 
 
 def _collect(
-    source_path: Path, *, provider: str = "auto",
+    source_path: Path,
+    *,
+    provider: str = "auto",
 ) -> tuple[list[tuple[str, str]], str, dict[str, str]]:
     provider = (provider or "auto").strip().lower()
     if provider not in {"auto", "ut1", "category-dir", "csv"}:
@@ -907,7 +928,8 @@ def _collect_from_ut1_blacklists_dedup(
         sum2 = 0
         for d in domains:
             h = hashlib.blake2b(
-                d.encode("utf-8", errors="ignore"), digest_size=16,
+                d.encode("utf-8", errors="ignore"),
+                digest_size=16,
             ).digest()
             a = int.from_bytes(h[0:8], "little", signed=False)
             b = int.from_bytes(h[8:16], "little", signed=False)
@@ -992,10 +1014,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Download/compile a domain->category DB for Squid (UT1/OWC-style sources).",
     )
     ap.add_argument(
-        "--source-url", default="", help="Optional URL to download (zip or csv)",
+        "--source-url",
+        default="",
+        help="Optional URL to download (zip or csv)",
     )
     ap.add_argument(
-        "--source-path", default="", help="Optional local path (dir, zip, csv)",
+        "--source-path",
+        default="",
+        help="Optional local path (dir, zip, csv)",
     )
     ap.add_argument(
         "--download-to",
@@ -1063,7 +1089,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 3
 
     _domains, _total_pairs = _build_db(
-        pairs, source=source_label, aliases=aliases, source_sha256=source_sha256,
+        pairs,
+        source=source_label,
+        aliases=aliases,
+        source_sha256=source_sha256,
     )
     return 0
 

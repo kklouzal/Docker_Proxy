@@ -77,7 +77,11 @@ class SquidController:
         tmp_path = ""
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", delete=False, dir=directory, prefix=".tmp-",
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=directory,
+                prefix=".tmp-",
             ) as handle:
                 tmp_path = handle.name
                 handle.write(content)
@@ -92,11 +96,15 @@ class SquidController:
         if persisted_dir:
             Path(persisted_dir).mkdir(exist_ok=True, parents=True)
         self._atomic_write_file(
-            self.persisted_squid_conf_path, self.normalize_config_text(config_text),
+            self.persisted_squid_conf_path,
+            self.normalize_config_text(config_text),
         )
 
     def restore_last_known_good_config(
-        self, *, reason: str = "", fallback_config: str = "",
+        self,
+        *,
+        reason: str = "",
+        fallback_config: str = "",
     ) -> tuple[bool, str]:
         """Restore the last successfully-applied Squid config and restart Squid.
 
@@ -177,7 +185,10 @@ class SquidController:
         return True, "\n".join(part for part in detail_parts if part).strip()
 
     def _replace_or_append_directive(
-        self, text: str, pattern: str, replacement: str,
+        self,
+        text: str,
+        pattern: str,
+        replacement: str,
     ) -> str:
         regex = re.compile(pattern, re.MULTILINE)
         if regex.search(text):
@@ -234,16 +245,25 @@ class SquidController:
             flags=re.MULTILINE,
         )
         text = re.sub(
-            r"^\s*(?:request|reply)_body_max_size\b.*$", "", text, flags=re.MULTILINE,
+            r"^\s*(?:request|reply)_body_max_size\b.*$",
+            "",
+            text,
+            flags=re.MULTILINE,
         )
         text = self._replace_or_append_directive(
-            text, r"^\s*logformat\s+liveui\s+.*$", self._LIVEUI_LOGFORMAT,
+            text,
+            r"^\s*logformat\s+liveui\s+.*$",
+            self._LIVEUI_LOGFORMAT,
         )
         text = self._replace_or_append_directive(
-            text, r"^\s*logformat\s+diagnostic\s+.*$", self._DIAGNOSTIC_LOGFORMAT,
+            text,
+            r"^\s*logformat\s+diagnostic\s+.*$",
+            self._DIAGNOSTIC_LOGFORMAT,
         )
         text = self._replace_or_append_directive(
-            text, r"^\s*logformat\s+icapobserve\s+.*$", self._ICAP_OBSERVE_LOGFORMAT,
+            text,
+            r"^\s*logformat\s+icapobserve\s+.*$",
+            self._ICAP_OBSERVE_LOGFORMAT,
         )
         text = self._replace_or_append_directive(
             text,
@@ -261,11 +281,14 @@ class SquidController:
             "icap_log stdio:/var/log/squid/icap.log icapobserve",
         )
         text = self._replace_or_append_directive(
-            text, r"^\s*cache_store_log\s+.*$", "cache_store_log none",
+            text,
+            r"^\s*cache_store_log\s+.*$",
+            "cache_store_log none",
         )
         text = self._ensure_icap_include_if_needed(text)
         text = self._ensure_line_before_first_http_access(
-            text, "include /etc/squid/conf.d/30-webfilter.conf",
+            text,
+            "include /etc/squid/conf.d/30-webfilter.conf",
         )
 
         note_requirements = (
@@ -369,7 +392,9 @@ class SquidController:
         return "\n".join(lines) + "\n"
 
     def _generate_icap_include(
-        self, workers: int, config_text: str | None = None,
+        self,
+        workers: int,
+        config_text: str | None = None,
     ) -> None:
         out_path = self._icap_include_path()
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -434,11 +459,14 @@ class SquidController:
         except Exception as exc:
             logger.exception("supervisorctl reread/update failed")
             return False, public_error_message(
-                exc, default="supervisorctl failed. Check server logs for details.",
+                exc,
+                default="supervisorctl failed. Check server logs for details.",
             )
 
     def apply_icap_scaling(
-        self, workers: int, config_text: str | None = None,
+        self,
+        workers: int,
+        config_text: str | None = None,
     ) -> tuple[bool, str]:
         try:
             self._generate_icap_include(workers, config_text)
@@ -524,7 +552,8 @@ class SquidController:
         return (out_text or err_text).strip()
 
     def _http_listener_details(
-        self, config_text: str | None = None,
+        self,
+        config_text: str | None = None,
     ) -> tuple[dict[str, object], ...]:
         text = config_text if config_text is not None else self.get_current_config()
         listeners: list[dict[str, object]] = []
@@ -618,7 +647,8 @@ class SquidController:
         for table_path in ("/proc/net/tcp", "/proc/net/tcp6"):
             try:
                 with Path(table_path).open(
-                    encoding="utf-8", errors="replace",
+                    encoding="utf-8",
+                    errors="replace",
                 ) as handle:
                     next(handle, None)
                     for line in handle:
@@ -705,7 +735,9 @@ class SquidController:
             return False
 
     def _terminate_orphaned_http_listener_processes(
-        self, *, timeout: float = 8.0,
+        self,
+        *,
+        timeout: float = 8.0,
     ) -> str:
         ports = self._http_listener_ports()
         inodes = self._listening_socket_inodes_for_ports(ports)
@@ -743,7 +775,7 @@ class SquidController:
     def _remove_stale_squid_pidfile(self) -> str:
         pid_path = "/var/run/squid.pid"
         try:
-            if not Path(pid_path).exists():
+            if not os.path.exists(pid_path):  # noqa: PTH110
                 return ""
             raw = Path(pid_path).read_text(encoding="utf-8", errors="replace").strip()
             pid = int(raw or "0")
@@ -759,7 +791,7 @@ class SquidController:
                         return ""
                 except Exception:
                     return ""
-            Path(pid_path).unlink()
+            os.unlink(pid_path)  # noqa: PTH108
             return f"Removed stale Squid PID file {pid_path}."
         except Exception as exc:
             return f"Failed to remove stale Squid PID file: {exc}"
@@ -812,7 +844,10 @@ class SquidController:
             return False
 
     def _accept_running_squid_restart(
-        self, detail_parts: list[str], *, timeout: float = 20.0,
+        self,
+        detail_parts: list[str],
+        *,
+        timeout: float = 20.0,
     ) -> tuple[bool, str] | None:
         """Accept supervisor auto-restart races only after Squid is serving again."""
         if self._supervisor_program_running("squid") and self._wait_for_http_listener(
@@ -844,7 +879,9 @@ class SquidController:
             )
             try:
                 shutdown = self._run(
-                    ["squid", "-k", "shutdown"], capture_output=True, timeout=12,
+                    ["squid", "-k", "shutdown"],
+                    capture_output=True,
+                    timeout=12,
                 )
                 detail_parts.append(
                     self._decode_completed(shutdown) or "squid shutdown requested",
@@ -882,7 +919,9 @@ class SquidController:
             )
             try:
                 shutdown = self._run(
-                    ["squid", "-k", "shutdown"], capture_output=True, timeout=12,
+                    ["squid", "-k", "shutdown"],
+                    capture_output=True,
+                    timeout=12,
                 )
                 detail_parts.append(
                     self._decode_completed(shutdown)
@@ -909,7 +948,8 @@ class SquidController:
             start_detail_lower = start_detail.lower()
             if start.returncode != 0 and "already started" not in start_detail_lower:
                 accepted = self._accept_running_squid_restart(
-                    detail_parts, timeout=20.0,
+                    detail_parts,
+                    timeout=20.0,
                 )
                 if accepted is not None:
                     return accepted
@@ -923,7 +963,9 @@ class SquidController:
                         ).strip()
                     try:
                         shutdown = self._run(
-                            ["squid", "-k", "shutdown"], capture_output=True, timeout=12,
+                            ["squid", "-k", "shutdown"],
+                            capture_output=True,
+                            timeout=12,
                         )
                         detail_parts.append(
                             self._decode_completed(shutdown)
@@ -982,7 +1024,9 @@ class SquidController:
 
         try:
             proc = self._run(
-                ["squid", "-f", self.squid_conf_path], capture_output=True, timeout=20,
+                ["squid", "-f", self.squid_conf_path],
+                capture_output=True,
+                timeout=20,
             )
             detail_parts.append(self._decode_completed(proc) or "squid start requested")
             if proc.returncode == 0 and self._wait_for_http_listener(timeout=45.0):
@@ -1147,7 +1191,8 @@ class SquidController:
                     Path(backup_path).replace(self.squid_conf_path)
                 self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
                 self._restore_runtime_file_snapshot(
-                    virus_scan_config_path, old_virus_scan_config,
+                    virus_scan_config_path,
+                    old_virus_scan_config,
                 )
                 _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                     reason=runtime_details
@@ -1160,17 +1205,20 @@ class SquidController:
 
             if workers_changed:
                 ok_scale, scale_details = self.apply_icap_scaling(
-                    new_workers or 1, config_text=normalized_config,
+                    new_workers or 1,
+                    config_text=normalized_config,
                 )
                 if not ok_scale:
                     if Path(backup_path).exists():
                         Path(backup_path).replace(self.squid_conf_path)
                     try:
                         self._restore_runtime_file_snapshot(
-                            icap_include_path, old_icap_include,
+                            icap_include_path,
+                            old_icap_include,
                         )
                         self._restore_runtime_file_snapshot(
-                            virus_scan_config_path, old_virus_scan_config,
+                            virus_scan_config_path,
+                            old_virus_scan_config,
                         )
                     except Exception:
                         log_exception_throttled(
@@ -1182,7 +1230,8 @@ class SquidController:
                     try:
                         if old_icap_supervisor is not None:
                             Path("/etc/supervisor.d/icap.conf").write_text(
-                                old_icap_supervisor, encoding="utf-8",
+                                old_icap_supervisor,
+                                encoding="utf-8",
                             )
                     except Exception:
                         log_exception_throttled(
@@ -1206,10 +1255,12 @@ class SquidController:
                         Path(backup_path).replace(self.squid_conf_path)
                         try:
                             self._restore_runtime_file_snapshot(
-                                icap_include_path, old_icap_include,
+                                icap_include_path,
+                                old_icap_include,
                             )
                             self._restore_runtime_file_snapshot(
-                                virus_scan_config_path, old_virus_scan_config,
+                                virus_scan_config_path,
+                                old_virus_scan_config,
                             )
                         except Exception:
                             log_exception_throttled(
@@ -1221,7 +1272,8 @@ class SquidController:
                         try:
                             if old_icap_supervisor is not None:
                                 Path("/etc/supervisor.d/icap.conf").write_text(
-                                    old_icap_supervisor, encoding="utf-8",
+                                    old_icap_supervisor,
+                                    encoding="utf-8",
                                 )
                         except Exception:
                             log_exception_throttled(
@@ -1264,10 +1316,12 @@ class SquidController:
                     if Path(backup_path).exists():
                         Path(backup_path).replace(self.squid_conf_path)
                     self._restore_runtime_file_snapshot(
-                        icap_include_path, old_icap_include,
+                        icap_include_path,
+                        old_icap_include,
                     )
                     self._restore_runtime_file_snapshot(
-                        virus_scan_config_path, old_virus_scan_config,
+                        virus_scan_config_path,
+                        old_virus_scan_config,
                     )
                     _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                         reason=restart_details
@@ -1295,14 +1349,17 @@ class SquidController:
                 ).strip()
 
             reconfigure = self._run(
-                ["squid", "-k", "reconfigure"], capture_output=True, timeout=15,
+                ["squid", "-k", "reconfigure"],
+                capture_output=True,
+                timeout=15,
             )
             if reconfigure.returncode != 0:
                 if Path(backup_path).exists():
                     Path(backup_path).replace(self.squid_conf_path)
                 self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
                 self._restore_runtime_file_snapshot(
-                    virus_scan_config_path, old_virus_scan_config,
+                    virus_scan_config_path,
+                    old_virus_scan_config,
                 )
                 failure_detail = (
                     self._decode_completed(reconfigure) or "Squid reconfigure failed."
@@ -1322,10 +1379,12 @@ class SquidController:
                     if Path(backup_path).exists():
                         Path(backup_path).replace(self.squid_conf_path)
                     self._restore_runtime_file_snapshot(
-                        icap_include_path, old_icap_include,
+                        icap_include_path,
+                        old_icap_include,
                     )
                     self._restore_runtime_file_snapshot(
-                        virus_scan_config_path, old_virus_scan_config,
+                        virus_scan_config_path,
+                        old_virus_scan_config,
                     )
                     _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                         reason=restart_details
@@ -1374,7 +1433,9 @@ class SquidController:
     def reload_squid(self):
         try:
             proc = self._run(
-                ["squid", "-k", "reconfigure"], capture_output=True, timeout=15,
+                ["squid", "-k", "reconfigure"],
+                capture_output=True,
+                timeout=15,
             )
             stdout = proc.stdout or b""
             stderr = proc.stderr or b""
@@ -1383,7 +1444,8 @@ class SquidController:
                     stdout,
                     stderr
                     or f"Squid reconfigure exited with status {proc.returncode}.".encode(
-                        "utf-8", errors="replace",
+                        "utf-8",
+                        errors="replace",
                     ),
                 )
             if stderr:

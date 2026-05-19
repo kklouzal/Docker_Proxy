@@ -172,7 +172,9 @@ def _tunable_optional(key: str) -> OptionResolver:
 
 
 def _tunable_choice_or_default(
-    key: str, allowed: Iterable[str], default: str,
+    key: str,
+    allowed: Iterable[str],
+    default: str,
 ) -> OptionResolver:
     allowed_values = tuple(allowed)
 
@@ -312,7 +314,8 @@ def _resolve_sslcrtd_children_queue_size(tunables: TunableMap, max_workers: int)
 
 
 def _resolve_sslcrtd_program_cache_size_mb(
-    tunables: TunableMap, _max_workers: int,
+    tunables: TunableMap,
+    _max_workers: int,
 ) -> int:
     value = tunables.get("sslcrtd_program_cache_size_mb")
     if value is not None:
@@ -366,7 +369,8 @@ def _resolve_https_intercept_enabled(tunables: TunableMap, _max_workers: int) ->
 
 
 def _resolve_https_intercept_splice_only(
-    tunables: TunableMap, _max_workers: int,
+    tunables: TunableMap,
+    _max_workers: int,
 ) -> bool:
     return bool(tunables.get("https_intercept_splice_only"))
 
@@ -378,7 +382,8 @@ def _resolve_https_intercept_port(tunables: TunableMap, max_workers: int) -> int
 
 
 def _resolve_shared_transient_entries_limit(
-    tunables: TunableMap, max_workers: int,
+    tunables: TunableMap,
+    max_workers: int,
 ) -> int:
     value = tunables.get("shared_transient_entries_limit")
     if value is not None:
@@ -398,7 +403,9 @@ def _coerce_current_int(current: Any, default: int = 0) -> int:
 
 
 def _posted_int_reader(
-    field: str, *, clamp: Callable[[int, int], int] | None = None,
+    field: str,
+    *,
+    clamp: Callable[[int, int], int] | None = None,
 ) -> FieldReader:
     def reader(form: FormMap, current: Any, max_workers: int) -> tuple[bool, Any]:
         raw = form.get(field)
@@ -482,7 +489,10 @@ def _posted_multiline_reader(field: str) -> FieldReader:
 
 
 def _posted_choice_reader(
-    field: str, *, allowed: Iterable[str], default: str,
+    field: str,
+    *,
+    allowed: Iterable[str],
+    default: str,
 ) -> FieldReader:
     allowed_values = tuple(allowed)
 
@@ -581,7 +591,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "select",
         _tunable_choice_or_default("cache_dir_type", ("rock", "ufs"), "rock"),
         _posted_choice_reader(
-            "cache_dir_type", allowed=("rock", "ufs"), default="rock",
+            "cache_dir_type",
+            allowed=("rock", "ufs"),
+            default="rock",
         ),
         help_text="Rock is the only SMP-aware disk store documented by Squid 7.x.",
         choices=CACHE_DIR_TYPE_CHOICES,
@@ -682,7 +694,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "store_dir_select_algorithm",
         "select",
         _tunable_choice_or_default(
-            "store_dir_select_algorithm", ("least-load", "round-robin"), "least-load",
+            "store_dir_select_algorithm",
+            ("least-load", "round-robin"),
+            "least-load",
         ),
         _posted_choice_reader(
             "store_dir_select_algorithm",
@@ -796,10 +810,14 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "memory_cache_mode",
         "select",
         _tunable_choice_or_default(
-            "memory_cache_mode", ("always", "disk", "network"), "always",
+            "memory_cache_mode",
+            ("always", "disk", "network"),
+            "always",
         ),
         _posted_choice_reader(
-            "memory_cache_mode", allowed=("always", "disk", "network"), default="always",
+            "memory_cache_mode",
+            allowed=("always", "disk", "network"),
+            default="always",
         ),
         choices=MEMORY_CACHE_MODE_CHOICES,
         help_text="Keep the most useful recently fetched objects in memory.",
@@ -1055,7 +1073,8 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "cache / send_hit / store_miss",
         "textarea",
         _tunable_or_default_if_none(
-            "cache_policy_rules_text", DEFAULT_CACHE_POLICY_RULES,
+            "cache_policy_rules_text",
+            DEFAULT_CACHE_POLICY_RULES,
         ),
         _posted_multiline_reader("cache_policy_rules_text"),
         rows=14,
@@ -1542,7 +1561,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "on_unsupported_protocol",
         "select",
         _tunable_choice_or_default(
-            "on_unsupported_protocol_action", ("respond", "tunnel"), "respond",
+            "on_unsupported_protocol_action",
+            ("respond", "tunnel"),
+            "respond",
         ),
         _posted_choice_reader(
             "on_unsupported_protocol_action",
@@ -1887,7 +1908,8 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "tls_outgoing_options",
         "text",
         _tunable_or_default_if_none(
-            "tls_outgoing_options_line", "min-version=1.2 options=NO_SSLv3",
+            "tls_outgoing_options_line",
+            "min-version=1.2 options=NO_SSLv3",
         ),
         _posted_text_reader("tls_outgoing_options_line"),
         help_text="Origin-facing TLS baseline. Clear to use Squid's own default.",
@@ -1937,7 +1959,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "sslproxy_cert_sign_hash",
         "select",
         _tunable_choice_or_default(
-            "sslproxy_cert_sign_hash", ("sha256", "sha512", "sha1", "md5"), "sha256",
+            "sslproxy_cert_sign_hash",
+            ("sha256", "sha512", "sha1", "md5"),
+            "sha256",
         ),
         _posted_choice_reader(
             "sslproxy_cert_sign_hash",
@@ -2394,10 +2418,14 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "relaxed_header_parser",
         "select",
         _tunable_choice_or_default(
-            "relaxed_header_parser_mode", ("on", "warn", "off"), "on",
+            "relaxed_header_parser_mode",
+            ("on", "warn", "off"),
+            "on",
         ),
         _posted_choice_reader(
-            "relaxed_header_parser_mode", allowed=("on", "warn", "off"), default="on",
+            "relaxed_header_parser_mode",
+            allowed=("on", "warn", "off"),
+            default="on",
         ),
         choices=RELAXED_HEADER_PARSER_CHOICES,
         help_text="On by default; set to warn to surface malformed traffic without rejecting it.",
@@ -2410,7 +2438,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "uri_whitespace",
         "select",
         _tunable_choice_or_default(
-            "uri_whitespace_mode", ("strip", "deny", "allow", "encode", "chop"), "strip",
+            "uri_whitespace_mode",
+            ("strip", "deny", "allow", "encode", "chop"),
+            "strip",
         ),
         _posted_choice_reader(
             "uri_whitespace_mode",
@@ -3166,7 +3196,8 @@ def normalize_safe_form_kind(form_kind: object | None) -> str:
 def _normalize_template_options(options: OptionMap) -> OptionMap:
     explicit_port = _clamp_port(options.get("explicit_proxy_port"), 3128)
     intercept_port = _clamp_port(
-        options.get("intercept_port"), _default_intercept_port(explicit_port),
+        options.get("intercept_port"),
+        _default_intercept_port(explicit_port),
     )
     if intercept_port == explicit_port:
         intercept_port = _default_intercept_port(explicit_port)
@@ -3176,7 +3207,8 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
     options["intercept_port"] = intercept_port
     options["intercept_enabled_on"] = bool(options.get("intercept_enabled_on", False))
     https_intercept_port = _clamp_port(
-        options.get("https_intercept_port"), 3130 if explicit_port != 3130 else 3131,
+        options.get("https_intercept_port"),
+        3130 if explicit_port != 3130 else 3131,
     )
     used_ports = {
         explicit_port,

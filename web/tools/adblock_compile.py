@@ -451,7 +451,9 @@ def _compile_and_extract_all(
                 }
                 parsed["exception"] = bool(is_cosmetic_exception)
                 parsed["id"] = _rule_id(
-                    list_key, s, exception=bool(is_cosmetic_exception),
+                    list_key,
+                    s,
+                    exception=bool(is_cosmetic_exception),
                 )
                 parsed["list_key"] = list_key
                 parsed["raw"] = s
@@ -737,31 +739,39 @@ def main(argv: list[str] | None = None) -> int:
 
     network_no_options_jsonl_path = os.path.join(out_dir, "network_no_options.jsonl")
     network_with_options_jsonl_path = os.path.join(
-        out_dir, "network_with_options.jsonl",
+        out_dir,
+        "network_with_options.jsonl",
     )
     network_option_domain_jsonl_path = os.path.join(
-        out_dir, "network_option_domain.jsonl",
+        out_dir,
+        "network_option_domain.jsonl",
     )
     network_option_third_party_jsonl_path = os.path.join(
-        out_dir, "network_option_third_party.jsonl",
+        out_dir,
+        "network_option_third_party.jsonl",
     )
     network_option_type_jsonl_path = os.path.join(out_dir, "network_option_type.jsonl")
     network_option_misc_jsonl_path = os.path.join(out_dir, "network_option_misc.jsonl")
 
     network_kind_domain_only_jsonl_path = os.path.join(
-        out_dir, "network_kind_domain_only.jsonl",
+        out_dir,
+        "network_kind_domain_only.jsonl",
     )
     network_kind_host_anchored_jsonl_path = os.path.join(
-        out_dir, "network_kind_host_anchored.jsonl",
+        out_dir,
+        "network_kind_host_anchored.jsonl",
     )
     network_kind_left_anchored_jsonl_path = os.path.join(
-        out_dir, "network_kind_left_anchored.jsonl",
+        out_dir,
+        "network_kind_left_anchored.jsonl",
     )
     network_kind_substring_jsonl_path = os.path.join(
-        out_dir, "network_kind_substring.jsonl",
+        out_dir,
+        "network_kind_substring.jsonl",
     )
     network_kind_wildcard_jsonl_path = os.path.join(
-        out_dir, "network_kind_wildcard.jsonl",
+        out_dir,
+        "network_kind_wildcard.jsonl",
     )
     network_kind_regex_jsonl_path = os.path.join(out_dir, "network_kind_regex.jsonl")
 
@@ -780,21 +790,25 @@ def main(argv: list[str] | None = None) -> int:
 
     cosmetic_elemhide_jsonl_path = os.path.join(out_dir, "cosmetic_elemhide.jsonl")
     cosmetic_elemhide_exception_jsonl_path = os.path.join(
-        out_dir, "cosmetic_elemhide_exception.jsonl",
+        out_dir,
+        "cosmetic_elemhide_exception.jsonl",
     )
     cosmetic_extended_css_jsonl_path = os.path.join(
-        out_dir, "cosmetic_extended_css.jsonl",
+        out_dir,
+        "cosmetic_extended_css.jsonl",
     )
     cosmetic_scriptlet_jsonl_path = os.path.join(out_dir, "cosmetic_scriptlet.jsonl")
     cosmetic_scriptlet_exception_jsonl_path = os.path.join(
-        out_dir, "cosmetic_scriptlet_exception.jsonl",
+        out_dir,
+        "cosmetic_scriptlet_exception.jsonl",
     )
 
     cosmetic_scoped_jsonl_path = os.path.join(out_dir, "cosmetic_scoped.jsonl")
     cosmetic_global_jsonl_path = os.path.join(out_dir, "cosmetic_global.jsonl")
     cosmetic_exception_jsonl_path = os.path.join(out_dir, "cosmetic_exception.jsonl")
     cosmetic_non_exception_jsonl_path = os.path.join(
-        out_dir, "cosmetic_non_exception.jsonl",
+        out_dir,
+        "cosmetic_non_exception.jsonl",
     )
 
     agg = _Aggregate(
@@ -823,74 +837,102 @@ def main(argv: list[str] | None = None) -> int:
         )
         net_no_opts_f = stack.enter_context(
             pathlib.Path(network_no_options_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_with_opts_f = stack.enter_context(
             pathlib.Path(network_with_options_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_opt_domain_f = stack.enter_context(
             pathlib.Path(network_option_domain_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_opt_third_party_f = stack.enter_context(
             pathlib.Path(network_option_third_party_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_opt_type_f = stack.enter_context(
             pathlib.Path(network_option_type_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_opt_misc_f = stack.enter_context(
             pathlib.Path(network_option_misc_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
 
         net_kind_domain_only_f = stack.enter_context(
             pathlib.Path(network_kind_domain_only_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_kind_host_anchored_f = stack.enter_context(
             pathlib.Path(network_kind_host_anchored_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_kind_left_anchored_f = stack.enter_context(
             pathlib.Path(network_kind_left_anchored_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_kind_substring_f = stack.enter_context(
             pathlib.Path(network_kind_substring_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_kind_wildcard_f = stack.enter_context(
             pathlib.Path(network_kind_wildcard_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_kind_regex_f = stack.enter_context(
             pathlib.Path(network_kind_regex_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
 
         net_block_f = stack.enter_context(
             pathlib.Path(network_block_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         net_exception_f = stack.enter_context(
             pathlib.Path(network_exception_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
 
@@ -909,48 +951,66 @@ def main(argv: list[str] | None = None) -> int:
 
         cos_elemhide_f = stack.enter_context(
             pathlib.Path(cosmetic_elemhide_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         cos_elemhide_exception_f = stack.enter_context(
             pathlib.Path(cosmetic_elemhide_exception_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         cos_extended_css_f = stack.enter_context(
             pathlib.Path(cosmetic_extended_css_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         cos_scriptlet_f = stack.enter_context(
             pathlib.Path(cosmetic_scriptlet_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         cos_scriptlet_exception_f = stack.enter_context(
             pathlib.Path(cosmetic_scriptlet_exception_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
 
         cos_scoped_f = stack.enter_context(
             pathlib.Path(cosmetic_scoped_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         cos_global_f = stack.enter_context(
             pathlib.Path(cosmetic_global_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         cos_exception_f = stack.enter_context(
             pathlib.Path(cosmetic_exception_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
         cos_non_exception_f = stack.enter_context(
             pathlib.Path(cosmetic_non_exception_jsonl_path).open(
-                "w", encoding="utf-8", newline="\n",
+                "w",
+                encoding="utf-8",
+                newline="\n",
             ),
         )
 
@@ -994,7 +1054,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             per_list_counts[key] = _compile_and_extract_all(
-                lines=lines, list_key=key, agg=agg, writers=writers,
+                lines=lines,
+                list_key=key,
+                agg=agg,
+                writers=writers,
             )
 
     # Preserve current c-icap buckets.
@@ -1020,12 +1083,14 @@ def main(argv: list[str] | None = None) -> int:
         "breakdowns": {
             "network_by_pattern_kind": dict(
                 sorted(
-                    agg.network_rules_by_kind.items(), key=lambda kv: (-kv[1], kv[0]),
+                    agg.network_rules_by_kind.items(),
+                    key=lambda kv: (-kv[1], kv[0]),
                 ),
             ),
             "cosmetic_by_marker": dict(
                 sorted(
-                    agg.cosmetic_rules_by_marker.items(), key=lambda kv: (-kv[1], kv[0]),
+                    agg.cosmetic_rules_by_marker.items(),
+                    key=lambda kv: (-kv[1], kv[0]),
                 ),
             ),
             "option_key_counts": dict(
@@ -1044,63 +1109,81 @@ def main(argv: list[str] | None = None) -> int:
             "network_rules_jsonl": network_jsonl_path,
             "cosmetic_rules_jsonl": cosmetic_jsonl_path,
             "network_no_options_jsonl": os.path.join(
-                out_dir, "network_no_options.jsonl",
+                out_dir,
+                "network_no_options.jsonl",
             ),
             "network_with_options_jsonl": os.path.join(
-                out_dir, "network_with_options.jsonl",
+                out_dir,
+                "network_with_options.jsonl",
             ),
             "network_option_domain_jsonl": os.path.join(
-                out_dir, "network_option_domain.jsonl",
+                out_dir,
+                "network_option_domain.jsonl",
             ),
             "network_option_third_party_jsonl": os.path.join(
-                out_dir, "network_option_third_party.jsonl",
+                out_dir,
+                "network_option_third_party.jsonl",
             ),
             "network_option_type_jsonl": os.path.join(
-                out_dir, "network_option_type.jsonl",
+                out_dir,
+                "network_option_type.jsonl",
             ),
             "network_option_misc_jsonl": os.path.join(
-                out_dir, "network_option_misc.jsonl",
+                out_dir,
+                "network_option_misc.jsonl",
             ),
             "network_kind_domain_only_jsonl": os.path.join(
-                out_dir, "network_kind_domain_only.jsonl",
+                out_dir,
+                "network_kind_domain_only.jsonl",
             ),
             "network_kind_host_anchored_jsonl": os.path.join(
-                out_dir, "network_kind_host_anchored.jsonl",
+                out_dir,
+                "network_kind_host_anchored.jsonl",
             ),
             "network_kind_left_anchored_jsonl": os.path.join(
-                out_dir, "network_kind_left_anchored.jsonl",
+                out_dir,
+                "network_kind_left_anchored.jsonl",
             ),
             "network_kind_substring_jsonl": os.path.join(
-                out_dir, "network_kind_substring.jsonl",
+                out_dir,
+                "network_kind_substring.jsonl",
             ),
             "network_kind_wildcard_jsonl": os.path.join(
-                out_dir, "network_kind_wildcard.jsonl",
+                out_dir,
+                "network_kind_wildcard.jsonl",
             ),
             "network_kind_regex_jsonl": os.path.join(
-                out_dir, "network_kind_regex.jsonl",
+                out_dir,
+                "network_kind_regex.jsonl",
             ),
             "network_block_jsonl": os.path.join(out_dir, "network_block.jsonl"),
             "network_exception_jsonl": os.path.join(out_dir, "network_exception.jsonl"),
             "cosmetic_elemhide_jsonl": os.path.join(out_dir, "cosmetic_elemhide.jsonl"),
             "cosmetic_elemhide_exception_jsonl": os.path.join(
-                out_dir, "cosmetic_elemhide_exception.jsonl",
+                out_dir,
+                "cosmetic_elemhide_exception.jsonl",
             ),
             "cosmetic_extended_css_jsonl": os.path.join(
-                out_dir, "cosmetic_extended_css.jsonl",
+                out_dir,
+                "cosmetic_extended_css.jsonl",
             ),
             "cosmetic_scriptlet_jsonl": os.path.join(
-                out_dir, "cosmetic_scriptlet.jsonl",
+                out_dir,
+                "cosmetic_scriptlet.jsonl",
             ),
             "cosmetic_scriptlet_exception_jsonl": os.path.join(
-                out_dir, "cosmetic_scriptlet_exception.jsonl",
+                out_dir,
+                "cosmetic_scriptlet_exception.jsonl",
             ),
             "cosmetic_scoped_jsonl": os.path.join(out_dir, "cosmetic_scoped.jsonl"),
             "cosmetic_global_jsonl": os.path.join(out_dir, "cosmetic_global.jsonl"),
             "cosmetic_exception_jsonl": os.path.join(
-                out_dir, "cosmetic_exception.jsonl",
+                out_dir,
+                "cosmetic_exception.jsonl",
             ),
             "cosmetic_non_exception_jsonl": os.path.join(
-                out_dir, "cosmetic_non_exception.jsonl",
+                out_dir,
+                "cosmetic_non_exception.jsonl",
             ),
             "network_type": {
                 "pos": {
@@ -1119,7 +1202,8 @@ def main(argv: list[str] | None = None) -> int:
         },
     }
     with pathlib.Path(os.path.join(out_dir, "report.json")).open(
-        "w", encoding="utf-8",
+        "w",
+        encoding="utf-8",
     ) as f:
         json.dump(report, f, indent=2, sort_keys=True)
         f.write("\n")

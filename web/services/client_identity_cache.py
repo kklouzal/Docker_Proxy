@@ -36,7 +36,8 @@ class ClientIdentityCache:
         self.success_ttl_seconds = max(30.0, float(success_ttl_seconds or 3600.0))
         self.failure_ttl_seconds = max(10.0, float(failure_ttl_seconds or 300.0))
         self.lookup_timeout_seconds = max(
-            0.05, min(5.0, float(lookup_timeout_seconds or 0.35)),
+            0.05,
+            min(5.0, float(lookup_timeout_seconds or 0.35)),
         )
         self.max_entries = max(64, int(max_entries or 1024))
         self._cache: dict[str, _CacheEntry] = {}
@@ -79,7 +80,13 @@ class ClientIdentityCache:
             return cached
 
     def _store(
-        self, ip: str, *, hostname: str, source: str, status: str, ttl_seconds: float,
+        self,
+        ip: str,
+        *,
+        hostname: str,
+        source: str,
+        status: str,
+        ttl_seconds: float,
     ) -> _CacheEntry:
         entry = _CacheEntry(
             hostname=hostname,
@@ -90,7 +97,8 @@ class ClientIdentityCache:
         with self._lock:
             if len(self._cache) >= self.max_entries:
                 oldest_key = min(
-                    self._cache.items(), key=lambda item: item[1].expires_at,
+                    self._cache.items(),
+                    key=lambda item: item[1].expires_at,
                 )[0]
                 self._cache.pop(oldest_key, None)
             self._cache[ip] = entry
@@ -108,7 +116,11 @@ class ClientIdentityCache:
         hostname, source, status = self._lookup_hostname(normalized)
         ttl = self.success_ttl_seconds if hostname else self.failure_ttl_seconds
         entry = self._store(
-            normalized, hostname=hostname, source=source, status=status, ttl_seconds=ttl,
+            normalized,
+            hostname=hostname,
+            source=source,
+            status=status,
+            ttl_seconds=ttl,
         )
         return {
             "hostname": entry.hostname,
@@ -166,7 +178,10 @@ def get_client_identity_cache() -> ClientIdentityCache:
                     maximum=5.0,
                 ),
                 max_entries=_env_int(
-                    "OBS_CLIENT_HOSTNAME_CACHE_MAX", 1024, minimum=64, maximum=8192,
+                    "OBS_CLIENT_HOSTNAME_CACHE_MAX",
+                    1024,
+                    minimum=64,
+                    maximum=8192,
                 ),
             )
         return _cache

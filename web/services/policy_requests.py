@@ -273,12 +273,16 @@ class PolicyRequestStore:
                 ),
             )
             row = c.execute(
-                self._rsql("WHERE id=%s"), (int(r.lastrowid or 0),),
+                self._rsql("WHERE id=%s"),
+                (int(r.lastrowid or 0),),
             ).fetchone()
         return _req(row)
 
     def list_requests(
-        self, *, statuses: list[str] | None = None, limit: int = 200,
+        self,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 200,
     ) -> list[PolicyRequest]:
         self.init_db()
         limit = max(1, min(int(limit), 1000))
@@ -294,12 +298,16 @@ class PolicyRequestStore:
                 ).fetchall()
             else:
                 rows = c.execute(
-                    self._rsql("ORDER BY created_ts DESC,id DESC LIMIT %s"), (limit,),
+                    self._rsql("ORDER BY created_ts DESC,id DESC LIMIT %s"),
+                    (limit,),
                 ).fetchall()
         return [_req(x) for x in rows]
 
     def list_exceptions(
-        self, *, include_inactive: bool = True, limit: int = 200,
+        self,
+        *,
+        include_inactive: bool = True,
+        limit: int = 200,
     ) -> list[PolicyException]:
         self.init_db()
         limit = max(1, min(int(limit), 1000))
@@ -388,7 +396,11 @@ class PolicyRequestStore:
             )
 
     def revoke_exception(
-        self, exception_id: int, *, revoked_by: object = "", admin_note: object = "",
+        self,
+        exception_id: int,
+        *,
+        revoked_by: object = "",
+        admin_note: object = "",
     ) -> None:
         self.init_db()
         now = now_ts()

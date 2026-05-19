@@ -26,7 +26,7 @@ from flask import (
     session,
     url_for,
 )
-from markupsafe import Markup
+from markupsafe import Markup, escape
 from services.adblock_artifacts import get_adblock_artifacts
 from services.adblock_store import get_adblock_store as _default_get_adblock_store
 from services.audit_store import get_audit_store as _default_get_audit_store
@@ -158,10 +158,16 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
 
 
 _PROXY_HEALTH_TTL_SECONDS = _env_float(
-    "PROXY_HEALTH_UI_CACHE_TTL_SECONDS", 10.0, minimum=0.0, maximum=120.0,
+    "PROXY_HEALTH_UI_CACHE_TTL_SECONDS",
+    10.0,
+    minimum=0.0,
+    maximum=120.0,
 )
 _PROXY_OBSERVABILITY_TTL_SECONDS = _env_float(
-    "PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS", 15.0, minimum=0.0, maximum=300.0,
+    "PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS",
+    15.0,
+    minimum=0.0,
+    maximum=300.0,
 )
 _OBSERVABILITY_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, int]]] = {}
 _OBSERVABILITY_RESULT_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
@@ -175,7 +181,10 @@ def _proxy_health_timeout_seconds() -> float:
 
 def _proxy_clamav_health_timeout_seconds() -> float:
     return _env_float(
-        "PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS", 5.0, minimum=0.5, maximum=30.0,
+        "PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS",
+        5.0,
+        minimum=0.5,
+        maximum=30.0,
     )
 
 
@@ -444,19 +453,22 @@ def _cached_proxy_health(
             return dict(payload)
     try:
         payload = get_proxy_client().get_health(
-            proxy_id, timeout_seconds=timeout_seconds,
+            proxy_id,
+            timeout_seconds=timeout_seconds,
         )
     except ProxyClientError as exc:
         if cached is not None:
             stale_payload = dict(cached[1])
             stale_payload.setdefault(
-                "detail", "using recent cached health after refresh failure",
+                "detail",
+                "using recent cached health after refresh failure",
             )
             stale_payload["_stale"] = True
             return stale_payload
         proxy = get_proxy_registry().get_proxy(proxy_id)
         payload = build_unavailable_runtime_health(
-            str(exc), proxy_status=proxy.status if proxy else "offline",
+            str(exc),
+            proxy_status=proxy.status if proxy else "offline",
         )
         payload["_unavailable_cached"] = True
         _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
@@ -474,7 +486,8 @@ def _prune_observability_result_cache() -> None:
 
 
 def _observability_result_cache_key(
-    *parts: Any, bucket_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS,
+    *parts: Any,
+    bucket_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS,
 ) -> tuple[Any, ...]:
     return tuple(parts)
 
@@ -597,7 +610,11 @@ def _redirect_with_message(endpoint: str, *, ok: bool, msg: str, **params):
 
 
 def _redirect_config(
-    tab: str, *, ok: bool = False, error: bool = False, subtab: str | None = None,
+    tab: str,
+    *,
+    ok: bool = False,
+    error: bool = False,
+    subtab: str | None = None,
 ):
     return _redirect_to(
         "squid_config",
@@ -629,7 +646,9 @@ def _record_audit_event(
 
 
 def _normalize_choice(
-    value: str | None, allowed: tuple[str, ...] | list[str] | set[str], default: str,
+    value: str | None,
+    allowed: tuple[str, ...] | list[str] | set[str],
+    default: str,
 ) -> str:
     candidate = (value or "").strip().lower()
     return candidate if candidate in allowed else default
@@ -667,10 +686,17 @@ def _bounded_int(
 
 
 def _query_int_arg(
-    name: str, *, default: int, minimum: int | None = None, maximum: int | None = None,
+    name: str,
+    *,
+    default: int,
+    minimum: int | None = None,
+    maximum: int | None = None,
 ) -> int:
     return _bounded_int(
-        request.args.get(name), default=default, minimum=minimum, maximum=maximum,
+        request.args.get(name),
+        default=default,
+        minimum=minimum,
+        maximum=maximum,
     )
 
 
@@ -698,7 +724,9 @@ def _jsonl_response(rows: Iterable[dict[str, Any]]):
 
 
 def _observability_export_response(
-    headers: Sequence[str], rows: Iterable[Sequence[object]], export_format: str,
+    headers: Sequence[str],
+    rows: Iterable[Sequence[object]],
+    export_format: str,
 ):
     materialized = [list(row) for row in rows]
     if export_format == "json":
@@ -714,14 +742,18 @@ def _observability_export_response(
 
 def _observability_pane_from_request() -> str:
     return _normalize_choice(
-        request.args.get("pane") or "overview", _OBSERVABILITY_PANES, "overview",
+        request.args.get("pane") or "overview",
+        _OBSERVABILITY_PANES,
+        "overview",
     )
 
 
 def _observability_sort_from_request(pane: str) -> str:
     default = _OBSERVABILITY_SORT_DEFAULTS[pane]
     return _normalize_choice(
-        request.args.get("sort") or default, _OBSERVABILITY_SORT_OPTIONS[pane], default,
+        request.args.get("sort") or default,
+        _OBSERVABILITY_SORT_OPTIONS[pane],
+        default,
     )
 
 
@@ -744,7 +776,9 @@ def _observability_privacy_from_request() -> bool:
 
 def _observability_export_format_from_request() -> str:
     return _normalize_choice(
-        request.args.get("format") or "csv", ("csv", "json", "jsonl"), "csv",
+        request.args.get("format") or "csv",
+        ("csv", "json", "jsonl"),
+        "csv",
     )
 
 
@@ -774,7 +808,9 @@ def _empty_observability_summary() -> dict[str, Any]:
 
 
 def _empty_observability_payload(
-    pane: str, *, summary: dict[str, Any] | None = None,
+    pane: str,
+    *,
+    summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_summary = dict(summary or _empty_observability_summary())
     ssl_payload = {
@@ -876,7 +912,11 @@ def _empty_observability_export_response(pane: str, export_format: str = "csv"):
 
 
 def _redirect_after_policy_refresh(
-    endpoint: str, store: Any, *, force: bool = True, **params,
+    endpoint: str,
+    store: Any,
+    *,
+    force: bool = True,
+    **params,
 ):
     _best_effort_refresh_managed_policy(store, force=force)
     return _redirect_to(endpoint, **params)
@@ -1011,7 +1051,8 @@ def _security_headers(resp):
     resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     resp.headers.setdefault(
-        "Permissions-Policy", "geolocation=(), microphone=(), camera=()",
+        "Permissions-Policy",
+        "geolocation=(), microphone=(), camera=()",
     )
     try:
         if (resp.mimetype or "").lower().startswith("text/html"):
@@ -1029,7 +1070,9 @@ def _inject_csrf():
     token = _ensure_csrf_token()
 
     def csrf_field() -> Markup:
-        return Markup(f'<input type="hidden" name="csrf_token" value="{token}">')
+        return Markup(
+            f'<input type="hidden" name="csrf_token" value="{escape(token)}">'
+        )
 
     return {
         "csrf_token": token,
@@ -1152,7 +1195,9 @@ def login():
         # Log failed login attempt for security auditing
         _record_audit_event("login_failed", ok=False, detail=f"user={username}")
         return render_template(
-            "login.html", error="Invalid username or password.", next=next_url,
+            "login.html",
+            error="Invalid username or password.",
+            next=next_url,
         )
 
     if _is_logged_in():
@@ -1188,7 +1233,7 @@ def _datetimeformat(ts: object) -> str:
         i = int(ts)  # type: ignore[arg-type]
         if i <= 0:
             return ""
-        return datetime.fromtimestamp(i).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromtimestamp(i, UTC).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return ""
 
@@ -1211,7 +1256,7 @@ if not _disable_background:
 def inject_now():
     def fmt_ts(ts: int) -> str:
         try:
-            return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
+            return datetime.fromtimestamp(int(ts), UTC).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return ""
 
@@ -1228,7 +1273,8 @@ def _build_observability_snapshot(
     window_i: int = OBSERVABILITY_DEFAULT_WINDOW,
 ) -> tuple[dict[str, int], str]:
     since_ts = int(time.time()) - max(
-        300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW),
+        300,
+        int(window_i or OBSERVABILITY_DEFAULT_WINDOW),
     )
 
     def _build_snapshot() -> dict[str, int]:
@@ -1240,18 +1286,23 @@ def _build_observability_snapshot(
             diagnostic_summary = {}
         try:
             ssl_rows = get_ssl_errors_store().list_recent(
-                since=since_ts, search="", limit=100,
+                since=since_ts,
+                search="",
+                limit=100,
             )
             ssl_summary = _present_ssl_error_rows(ssl_rows).get("summary", {})
         except Exception:
             ssl_summary = {}
         return _present_observability_summary(
-            diagnostic_summary=diagnostic_summary, ssl_summary=ssl_summary,
+            diagnostic_summary=diagnostic_summary,
+            ssl_summary=ssl_summary,
         )
 
     summary = _cached_observability_result(
         _observability_result_cache_key(
-            "observability-snapshot", get_proxy_id(), since_ts,
+            "observability-snapshot",
+            get_proxy_id(),
+            since_ts,
         ),
         _build_snapshot,
     )
@@ -1259,7 +1310,8 @@ def _build_observability_snapshot(
 
 
 def _cached_observability_summary(
-    proxy_id: str, window_i: int = OBSERVABILITY_DEFAULT_WINDOW,
+    proxy_id: str,
+    window_i: int = OBSERVABILITY_DEFAULT_WINDOW,
 ) -> dict[str, int]:
     window_i = max(300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW))
     key = (str(proxy_id or ""), window_i)
@@ -1275,7 +1327,10 @@ def _cached_observability_summary(
 
 
 def _correlate_request_for_icap_events(
-    diagnostic_store: Any, icap_events: list[dict[str, Any]], *, icap_limit: int = 0,
+    diagnostic_store: Any,
+    icap_events: list[dict[str, Any]],
+    *,
+    icap_limit: int = 0,
 ) -> list[dict[str, Any]]:
     txs = [str(event.get("master_xaction") or "").strip() for event in icap_events]
     if hasattr(diagnostic_store, "batch_find_requests_by_master_xactions"):
@@ -1298,7 +1353,8 @@ def _correlate_request_for_icap_events(
         request_event["related_icap"] = []
         request_event["correlation_kind"] = "master_xaction"
         event["correlated_request"] = _present_transaction_rows(
-            [request_event], icap_limit=icap_limit,
+            [request_event],
+            icap_limit=icap_limit,
         )[0]
     return icap_events
 
@@ -1323,7 +1379,8 @@ def _correlate_policy_events(
                 service=service,
             )
             row["correlated_candidates"] = _present_transaction_rows(
-                candidates, icap_limit=3,
+                candidates,
+                icap_limit=3,
             )
         except Exception:
             row["correlated_candidates"] = []
@@ -1343,7 +1400,10 @@ def _current_managed_config() -> str:
     fallback = squid_controller.get_current_config() or ""
     if fallback.strip():
         revisions.ensure_active_revision(
-            get_proxy_id(), fallback, created_by="system", source_kind="bootstrap",
+            get_proxy_id(),
+            fallback,
+            created_by="system",
+            source_kind="bootstrap",
         )
     return fallback
 
@@ -1374,7 +1434,9 @@ def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
 
 
 def _publish_config_for_current_mode(
-    config_text: str, *, source_kind: str,
+    config_text: str,
+    *,
+    source_kind: str,
 ) -> tuple[bool, str]:
     config_text = squid_controller.normalize_config_text(config_text)
     proxy_id = get_proxy_id()
@@ -1487,7 +1549,10 @@ def _trigger_proxy_cache_clear() -> tuple[bool, str]:
 
 
 def _record_local_certificate_apply(
-    bundle, *, original_filename: str = "", already_materialized: bool = False,
+    bundle,
+    *,
+    original_filename: str = "",
+    already_materialized: bool = False,
 ) -> tuple[bool, str]:
     bundle_store = get_certificate_bundles()
     revision = bundle_store.create_revision(
@@ -1510,7 +1575,8 @@ def _record_local_certificate_apply(
             ok = False
             detail_parts.append(
                 public_error_message(
-                    exc, default="Failed to install certificate bundle locally.",
+                    exc,
+                    default="Failed to install certificate bundle locally.",
                 ),
             )
     if ok:
@@ -1542,11 +1608,14 @@ def _record_local_certificate_apply(
 
 
 def _publish_certificate_bundle_remote(
-    bundle, *, original_filename: str = "",
+    bundle,
+    *,
+    original_filename: str = "",
 ) -> tuple[bool, str]:
     if not _uses_remote_proxy_runtime():
         return _record_local_certificate_apply(
-            bundle, original_filename=original_filename,
+            bundle,
+            original_filename=original_filename,
         )
 
     bundle_store = get_certificate_bundles()
@@ -1729,7 +1798,10 @@ def _handle_webfilter_post(store: Any, tab: str):
         )
         store.set_settings(**set_settings_kwargs)
         return _redirect_after_policy_refresh(
-            "webfilter", store, force=True, tab="categories",
+            "webfilter",
+            store,
+            force=True,
+            tab="categories",
         )
 
     if action == "whitelist_add":
@@ -1737,10 +1809,18 @@ def _handle_webfilter_post(store: Any, tab: str):
         ok, err, _pat = store.add_whitelist(entry)
         if not ok:
             return _redirect_after_policy_refresh(
-                "webfilter", store, force=True, tab="whitelist", wl_err=(err or "1"),
+                "webfilter",
+                store,
+                force=True,
+                tab="whitelist",
+                wl_err=(err or "1"),
             )
         return _redirect_after_policy_refresh(
-            "webfilter", store, force=True, tab="whitelist", wl_ok="1",
+            "webfilter",
+            store,
+            force=True,
+            tab="whitelist",
+            wl_ok="1",
         )
 
     if action == "whitelist_remove":
@@ -1748,7 +1828,10 @@ def _handle_webfilter_post(store: Any, tab: str):
         with contextlib.suppress(Exception):
             store.remove_whitelist(pat)
         return _redirect_after_policy_refresh(
-            "webfilter", store, force=True, tab="whitelist",
+            "webfilter",
+            store,
+            force=True,
+            tab="whitelist",
         )
 
     return _redirect_to("webfilter", tab=tab)
@@ -1760,7 +1843,10 @@ def _sslfilter_policy_from_form() -> str:
 
 def _sslfilter_redirect(**params: Any):
     return _redirect_after_policy_refresh(
-        "sslfilter", get_sslfilter_store(), force=True, **params,
+        "sslfilter",
+        get_sslfilter_store(),
+        force=True,
+        **params,
     )
 
 
@@ -1804,12 +1890,15 @@ def _handle_sslfilter_post(store: Any):
         if err:
             return _sslfilter_redirect(err=err)
         return _sslfilter_redirect(
-            compatibility_added=added, compatibility_attempted=attempted,
+            compatibility_added=added,
+            compatibility_attempted=attempted,
         )
 
     if action == "add":
         ok, err, canonical = _add_sslfilter_src(
-            store, "nobump", request.form.get("cidr") or "",
+            store,
+            "nobump",
+            request.form.get("cidr") or "",
         )
         if not ok:
             return _sslfilter_redirect(err=err or "Invalid CIDR.")
@@ -1947,7 +2036,9 @@ def _handle_administration_post(store: Any, current_user: str):
             new_password = request.form.get("new_password") or ""
             store.set_password(username, new_password)
             return _redirect_with_message(
-                "administration", ok=True, msg="Password updated.",
+                "administration",
+                ok=True,
+                msg="Password updated.",
             )
 
         if action == "delete_user":
@@ -1964,18 +2055,24 @@ def _handle_administration_post(store: Any, current_user: str):
             users = store.list_users()
             if len(users) <= 1:
                 return _redirect_with_message(
-                    "administration", ok=False, msg="Cannot remove the last user.",
+                    "administration",
+                    ok=False,
+                    msg="Cannot remove the last user.",
                 )
             store.delete_user(username)
             return _redirect_with_message(
-                "administration", ok=True, msg="User removed.",
+                "administration",
+                ok=True,
+                msg="User removed.",
             )
 
         return _redirect_with_message("administration", ok=False, msg="Unknown action.")
     except Exception as e:
         app.logger.exception("Administration action failed")
         return _redirect_with_message(
-            "administration", ok=False, msg=public_error_message(e),
+            "administration",
+            ok=False,
+            msg=public_error_message(e),
         )
 
 
@@ -1983,12 +2080,14 @@ def _handle_administration_post(store: Any, current_user: str):
 def index():
     proxy_id = get_proxy_id()
     observability = _cached_observability_summary(
-        proxy_id, OBSERVABILITY_DEFAULT_WINDOW,
+        proxy_id,
+        OBSERVABILITY_DEFAULT_WINDOW,
     )
     observability_window_label = _window_label(OBSERVABILITY_DEFAULT_WINDOW)
     try:
         health = _cached_proxy_health(
-            proxy_id, timeout_seconds=_proxy_health_timeout_seconds(),
+            proxy_id,
+            timeout_seconds=_proxy_health_timeout_seconds(),
         )
     except ProxyClientError as exc:
         proxy = get_proxy_registry().get_proxy(proxy_id)
@@ -2086,11 +2185,13 @@ def proxies():
     if active_proxy_id in live_health:
         try:
             live_health[active_proxy_id] = _cached_proxy_health(
-                active_proxy_id, timeout_seconds=_proxy_health_timeout_seconds(),
+                active_proxy_id,
+                timeout_seconds=_proxy_health_timeout_seconds(),
             )
         except ProxyClientError as exc:
             active_proxy = next(
-                (proxy for proxy in proxies if proxy.proxy_id == active_proxy_id), None,
+                (proxy for proxy in proxies if proxy.proxy_id == active_proxy_id),
+                None,
             )
             live_health[active_proxy_id] = {
                 "ok": False,
@@ -2103,7 +2204,8 @@ def proxies():
     if active_proxy_id:
         try:
             observability_by_proxy[active_proxy_id] = _cached_observability_summary(
-                active_proxy_id, OBSERVABILITY_DEFAULT_WINDOW,
+                active_proxy_id,
+                OBSERVABILITY_DEFAULT_WINDOW,
             )
         except Exception:
             observability_by_proxy[active_proxy_id] = _present_observability_summary()
@@ -2126,7 +2228,9 @@ def operations_status():
         operations = []
         operation_counts = {"pending": 0, "applying": 0, "applied": 0, "failed": 0}
     return render_template(
-        "operations.html", operations=operations, operation_counts=operation_counts,
+        "operations.html",
+        operations=operations,
+        operation_counts=operation_counts,
     )
 
 
@@ -2143,7 +2247,10 @@ def api_operations():
     try:
         if after_ts or after_id:
             operations = ledger.list_recent_since(
-                proxy_id, after_updated_ts=after_ts, after_id=after_id, limit=100,
+                proxy_id,
+                after_updated_ts=after_ts,
+                after_id=after_id,
+                limit=100,
             )
         else:
             operations = ledger.list_operations(proxy_id, limit=100)
@@ -2227,7 +2334,10 @@ def observability():
     try:
         summary = _cached_observability_result(
             _observability_result_cache_key(
-                "observability", "summary", get_proxy_id(), window_i,
+                "observability",
+                "summary",
+                get_proxy_id(),
+                window_i,
             ),
             lambda: queries.summary(since=since_ts),
         )
@@ -2287,7 +2397,13 @@ def observability():
         elif pane == "cache":
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key(
-                    "observability", pane, get_proxy_id(), window_i, search, limit, sort,
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                    sort,
                 ),
                 lambda: {
                     "rows": queries.top_cache_reasons(
@@ -2301,7 +2417,12 @@ def observability():
         elif pane == "ssl":
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key(
-                    "observability", pane, get_proxy_id(), window_i, search, limit,
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
                 ),
                 lambda: queries.ssl_overview(
                     since=since_ts,
@@ -2312,7 +2433,12 @@ def observability():
         elif pane == "security":
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key(
-                    "observability", pane, get_proxy_id(), window_i, search, limit,
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
                 ),
                 lambda: queries.security_overview(
                     since=since_ts,
@@ -2323,10 +2449,16 @@ def observability():
         elif pane == "performance":
             performance_payload = _cached_observability_result(
                 _observability_result_cache_key(
-                    "observability", pane, get_proxy_id(), window_i, limit,
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    limit,
                 ),
                 lambda: queries.performance_overview(
-                    since=since_ts, limit=limit, summary=summary,
+                    since=since_ts,
+                    limit=limit,
+                    summary=summary,
                 ),
             )
             pane_payload = _empty_observability_payload(pane, summary=summary)
@@ -2356,7 +2488,13 @@ def observability():
         else:
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key(
-                    "observability", pane, get_proxy_id(), window_i, search, limit, sort,
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                    sort,
                 ),
                 lambda: {
                     "rows": queries.top_destinations(
@@ -2442,10 +2580,14 @@ def observability_report_schedules():
     queries = get_observability_queries()
     pane = _normalize_choice(request.form.get("pane"), _OBSERVABILITY_PANES, "reports")
     cadence = _normalize_choice(
-        request.form.get("cadence"), ("daily", "weekly"), "daily",
+        request.form.get("cadence"),
+        ("daily", "weekly"),
+        "daily",
     )
     report_format = _normalize_choice(
-        request.form.get("format"), ("csv", "json", "jsonl"), "csv",
+        request.form.get("format"),
+        ("csv", "json", "jsonl"),
+        "csv",
     )
     privacy = str(request.form.get("privacy") or "1").strip().lower() in {
         "1",
@@ -2483,7 +2625,9 @@ def observability_report_schedules():
             f"scheduled {cadence} {pane} observability report to {recipients[:160]}"
         )
         _record_audit_event(
-            "observability_report_schedule_save", ok=True, detail=detail,
+            "observability_report_schedule_save",
+            ok=True,
+            detail=detail,
         )
         return _redirect_to(
             "observability",
@@ -2496,7 +2640,9 @@ def observability_report_schedules():
     except Exception as exc:
         detail = public_error_message(exc)
         _record_audit_event(
-            "observability_report_schedule_save", ok=False, detail=detail,
+            "observability_report_schedule_save",
+            ok=False,
+            detail=detail,
         )
         return _redirect_to(
             "observability",
@@ -2529,7 +2675,10 @@ def observability_export():
         if pane in {"overview", "clients", "destinations", "performance", "reports"}:
             summary_data = _cached_observability_result(
                 _observability_result_cache_key(
-                    "observability", "summary", get_proxy_id(), since_ts,
+                    "observability",
+                    "summary",
+                    get_proxy_id(),
+                    since_ts,
                 ),
                 lambda: queries.summary(since=since_ts),
             )
@@ -2800,7 +2949,9 @@ def observability_export():
 
         if pane == "security":
             payload = queries.security_overview(
-                since=since_ts, search=search, limit=limit,
+                since=since_ts,
+                search=search,
+                limit=limit,
             )
             headers = ["source", "timestamp", "client", "target", "detail", "status"]
             rows = []
@@ -2810,7 +2961,8 @@ def observability_export():
                         "av",
                         row.get("ts", 0),
                         _observability_pseudonym(
-                            row.get("client_ip", ""), namespace="user",
+                            row.get("client_ip", ""),
+                            namespace="user",
                         )
                         if privacy
                         else row.get("client_ip", ""),
@@ -2825,7 +2977,8 @@ def observability_export():
                         "adblock",
                         row.get("ts", 0),
                         _observability_pseudonym(
-                            row.get("src_ip", ""), namespace="user",
+                            row.get("src_ip", ""),
+                            namespace="user",
                         )
                         if privacy
                         else row.get("src_ip", ""),
@@ -2840,7 +2993,8 @@ def observability_export():
                         "webfilter",
                         row.get("ts", 0),
                         _observability_pseudonym(
-                            row.get("src_ip", ""), namespace="user",
+                            row.get("src_ip", ""),
+                            namespace="user",
                         )
                         if privacy
                         else row.get("src_ip", ""),
@@ -2853,7 +3007,9 @@ def observability_export():
 
         if pane == "performance":
             payload = queries.performance_overview(
-                since=since_ts, limit=limit, summary=summary_data or {},
+                since=since_ts,
+                limit=limit,
+                summary=summary_data or {},
             )
             headers = ["type", "timestamp", "subject", "metric", "detail"]
             rows = []
@@ -2954,7 +3110,8 @@ def observability_metrics():
             f'docker_proxy_observability_malware_attempts{{proxy_id="{get_proxy_id()}"}} {int((security.get("summary") or {}).get("potential_findings") or 0)}',
         ]
         return app.response_class(
-            "\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4; charset=utf-8",
+            "\n".join(lines) + "\n",
+            mimetype="text/plain; version=0.0.4; charset=utf-8",
         )
     except Exception:
         log_exception_throttled(
@@ -2964,7 +3121,9 @@ def observability_metrics():
             message="Failed to build observability Prometheus metrics",
         )
         return app.response_class(
-            "", mimetype="text/plain; version=0.0.4; charset=utf-8", status=503,
+            "",
+            mimetype="text/plain; version=0.0.4; charset=utf-8",
+            status=503,
         )
 
 
@@ -3040,7 +3199,11 @@ def ssl_errors_exclude():
         with contextlib.suppress(Exception):
             get_sslfilter_store().add_domain("nobump", domain)
         return _redirect_after_policy_refresh(
-            "observability", get_sslfilter_store(), force=True, pane="ssl", q=domain,
+            "observability",
+            get_sslfilter_store(),
+            force=True,
+            pane="ssl",
+            q=domain,
         )
     return _redirect_to("observability", pane="ssl", q=domain)
 
@@ -3092,7 +3255,10 @@ def adblock():
 
     interval = store.get_update_interval_seconds()
     window_i = _query_int_arg(
-        "window", default=3600, minimum=300, maximum=7 * 24 * 3600,
+        "window",
+        default=3600,
+        minimum=300,
+        maximum=7 * 24 * 3600,
     )
     since_ts = int(time.time()) - window_i
     now_ts = int(time.time())
@@ -3121,7 +3287,8 @@ def adblock():
 
     try:
         adblock_icap_summary = get_diagnostic_store().icap_summary(
-            since=since_ts, service="adblock",
+            since=since_ts,
+            service="adblock",
         )
     except Exception:
         adblock_icap_summary = {
@@ -3171,7 +3338,10 @@ def webfilter():
     selected = set(settings.blocked_categories)
     whitelist_rows = store.list_whitelist()
     window_i = _query_int_arg(
-        "window", default=3600, minimum=300, maximum=7 * 24 * 3600,
+        "window",
+        default=3600,
+        minimum=300,
+        maximum=7 * 24 * 3600,
     )
     return render_template(
         "webfilter.html",
@@ -3247,7 +3417,8 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
             return dict(payload)
     try:
         payload = get_proxy_client().get_clamav_health(
-            proxy_id, timeout_seconds=timeout_seconds,
+            proxy_id,
+            timeout_seconds=timeout_seconds,
         )
     except AttributeError:
         return _cached_proxy_health(proxy_id, timeout_seconds=timeout_seconds)
@@ -3255,13 +3426,15 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
         if cached is not None:
             stale_payload = dict(cached[1])
             stale_payload.setdefault(
-                "detail", "using recent cached ClamAV health after refresh failure",
+                "detail",
+                "using recent cached ClamAV health after refresh failure",
             )
             stale_payload["_stale"] = True
             return stale_payload
         proxy = get_proxy_registry().get_proxy(proxy_id)
         payload = build_unavailable_runtime_health(
-            str(exc), proxy_status=proxy.status if proxy else "offline",
+            str(exc),
+            proxy_status=proxy.status if proxy else "offline",
         )
         payload["_unavailable_cached"] = True
         _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
@@ -3312,7 +3485,10 @@ def clamav():
     cfg = _current_managed_config()
     clamav_enabled = _is_clamav_enabled(cfg)
     window_i = _query_int_arg(
-        "window", default=3600, minimum=300, maximum=7 * 24 * 3600,
+        "window",
+        default=3600,
+        minimum=300,
+        maximum=7 * 24 * 3600,
     )
     since_ts = int(time.time()) - window_i
     proxy_id = get_proxy_id()
@@ -3325,7 +3501,8 @@ def clamav():
 
     try:
         clamav_icap_summary = get_diagnostic_store().icap_summary(
-            since=since_ts, service="av",
+            since=since_ts,
+            service="av",
         )
     except Exception:
         clamav_icap_summary = {
@@ -3362,14 +3539,19 @@ def clamav():
 def clamav_settings():
     current = _current_managed_config()
     options = read_clamav_options_from_form(
-        request.form, extract_clamav_options(current),
+        request.form,
+        extract_clamav_options(current),
     )
     new_cfg = apply_clamav_options_to_config(current, options)
     ok, details = _publish_config_for_current_mode(
-        new_cfg, source_kind="clamav-settings",
+        new_cfg,
+        source_kind="clamav-settings",
     )
     _record_audit_event(
-        "clamav_settings_apply", ok=ok, detail=(details or ""), config_text=new_cfg,
+        "clamav_settings_apply",
+        ok=ok,
+        detail=(details or ""),
+        config_text=new_cfg,
     )
     return _redirect_to(
         "clamav",
@@ -3466,7 +3648,8 @@ def squid_config():
             )
         else:
             ok, details = _publish_config_for_current_mode(
-                config_text, source_kind="manual",
+                config_text,
+                source_kind="manual",
             )
             _record_audit_event(
                 "config_apply_manual",
@@ -3532,7 +3715,9 @@ def squid_config():
     }
     config_text = posted_config if posted_config is not None else current_config
     subtab = _normalize_choice(
-        request.args.get("subtab") or "safe", ("safe", "overrides"), "safe",
+        request.args.get("subtab") or "safe",
+        ("safe", "overrides"),
+        "safe",
     )
     return render_template(
         "squid_config.html",
@@ -3579,7 +3764,9 @@ def apply_all_saved_config():
         )
     except Exception as exc:
         _record_audit_event(
-            "config_apply_all_saved", ok=False, detail=public_error_message(exc),
+            "config_apply_all_saved",
+            ok=False,
+            detail=public_error_message(exc),
         )
         return _redirect_to("squid_config", tab="config", apply_all_ok="0")
 
@@ -3847,7 +4034,9 @@ def upload_certificate_pfx():
         10 * 1024 * 1024
     ):
         return _redirect_with_message(
-            "certs", ok=False, msg="Upload too large (max 10MB).",
+            "certs",
+            ok=False,
+            msg="Upload too large (max 10MB).",
         )
 
     # Read with a hard cap even if Content-Length is missing or incorrect.
@@ -3862,7 +4051,9 @@ def upload_certificate_pfx():
             buf.extend(chunk)
             if len(buf) > max_pfx_bytes:
                 return _redirect_with_message(
-                    "certs", ok=False, msg="Upload too large (max 10MB).",
+                    "certs",
+                    ok=False,
+                    msg="Upload too large (max 10MB).",
                 )
     except Exception:
         return _redirect_with_message("certs", ok=False, msg="Failed to read upload.")
@@ -3907,7 +4098,8 @@ def upload_certificate_pfx():
         app.logger.exception("PFX upload failed")
         ok = False
         detail = public_error_message(
-            exc, default="Failed to process uploaded PFX bundle.",
+            exc,
+            default="Failed to process uploaded PFX bundle.",
         )
 
     _record_audit_event("ca_upload_pfx", ok=ok, detail=detail)
@@ -3924,7 +4116,8 @@ def download_certificate(filename: str):
     if bundle is None:
         abort(404)
     response = app.response_class(
-        bundle.fullchain_pem, mimetype="application/x-pem-file",
+        bundle.fullchain_pem,
+        mimetype="application/x-pem-file",
     )
     response.headers["Content-Disposition"] = "attachment; filename=squid-proxy-ca.crt"
     return response

@@ -32,7 +32,10 @@ class SquidController(_CoreSquidController):
     _CPU_AFFINITY_RE = re.compile(r"^[A-Za-z0-9_,= ]+$")
 
     def __init__(
-        self, squid_conf_path: str = "/etc/squid/squid.conf", *, cmd_run=None,
+        self,
+        squid_conf_path: str = "/etc/squid/squid.conf",
+        *,
+        cmd_run=None,
     ) -> None:
         super().__init__(
             squid_conf_path=squid_conf_path,
@@ -66,7 +69,9 @@ class SquidController(_CoreSquidController):
         return clean
 
     def _validate_hosts_file_path(
-        self, value: str, field_name: str = "hosts_file",
+        self,
+        value: str,
+        field_name: str = "hosts_file",
     ) -> str:
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
@@ -83,7 +88,9 @@ class SquidController(_CoreSquidController):
         return clean
 
     def _validate_append_domain(
-        self, value: str, field_name: str = "append_domain",
+        self,
+        value: str,
+        field_name: str = "append_domain",
     ) -> str:
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
@@ -94,7 +101,9 @@ class SquidController(_CoreSquidController):
         return clean
 
     def _validate_dns_nameservers(
-        self, value: str, field_name: str = "dns_nameservers",
+        self,
+        value: str,
+        field_name: str = "dns_nameservers",
     ) -> str:
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
@@ -113,7 +122,10 @@ class SquidController(_CoreSquidController):
         return clean
 
     def _validate_choice(
-        self, value: str, allowed: tuple[str, ...], field_name: str,
+        self,
+        value: str,
+        allowed: tuple[str, ...],
+        field_name: str,
     ) -> str:
         clean = self._sanitize_single_line(value, field_name).lower()
         if clean not in allowed:
@@ -122,7 +134,9 @@ class SquidController(_CoreSquidController):
         return clean
 
     def _validate_cpu_affinity_map(
-        self, value: str, field_name: str = "cpu_affinity_map",
+        self,
+        value: str,
+        field_name: str = "cpu_affinity_map",
     ) -> str:
         clean = self._sanitize_single_line(value, field_name)
         if not clean:
@@ -217,7 +231,8 @@ class SquidController(_CoreSquidController):
 
         def append_block(lines: list[str], block_name: str, content: str) -> None:
             rendered = self._render_managed_subblock(
-                block_name, self._normalize_multiline_text(content),
+                block_name,
+                self._normalize_multiline_text(content),
             )
             lines.extend(rendered.splitlines())
 
@@ -230,7 +245,9 @@ class SquidController(_CoreSquidController):
         cache_dir_ufs_l1 = int_value("cache_dir_ufs_l1", 16, minimum=1)
         cache_dir_ufs_l2 = int_value("cache_dir_ufs_l2", 256, minimum=1)
         cache_dir_rock_slot_size_kb = int_value(
-            "cache_dir_rock_slot_size_kb", 32, minimum=4,
+            "cache_dir_rock_slot_size_kb",
+            32,
+            minimum=4,
         )
         cache_dir_rock_swap_timeout_ms = optional_int_value(
             "cache_dir_rock_swap_timeout_ms",
@@ -247,7 +264,9 @@ class SquidController(_CoreSquidController):
         cache_mem_mb = int_value("cache_mem_mb", 256, minimum=16)
         maximum_object_size_mb = int_value("maximum_object_size_mb", 128, minimum=1)
         maximum_object_size_in_memory_kb = int_value(
-            "maximum_object_size_in_memory_kb", 2048, minimum=0,
+            "maximum_object_size_in_memory_kb",
+            2048,
+            minimum=0,
         )
         minimum_object_size_kb = int_value("minimum_object_size_kb", 0, minimum=0)
         memory_cache_mode = self._validate_choice(
@@ -272,7 +291,9 @@ class SquidController(_CoreSquidController):
             memory_replacement_policy = "heap GDSF"
 
         shared_transient_entries_limit = int_value(
-            "shared_transient_entries_limit", 16384, minimum=0,
+            "shared_transient_entries_limit",
+            16384,
+            minimum=0,
         )
         cache_swap_low = int_value("cache_swap_low", 90, minimum=0, maximum=100)
         cache_swap_high = int_value("cache_swap_high", 95, minimum=0, maximum=100)
@@ -317,7 +338,9 @@ class SquidController(_CoreSquidController):
         quick_abort_pct = int_value("quick_abort_pct", 95, minimum=0, maximum=100)
         negative_ttl_seconds = int_value("negative_ttl_seconds", 0, minimum=0)
         minimum_expiry_time_seconds = int_value(
-            "minimum_expiry_time_seconds", 60, minimum=0,
+            "minimum_expiry_time_seconds",
+            60,
+            minimum=0,
         )
         max_stale_seconds = int_value("max_stale_seconds", 7 * 24 * 3600, minimum=0)
         refresh_all_ims_on = bool_value("refresh_all_ims_on", False)
@@ -329,10 +352,12 @@ class SquidController(_CoreSquidController):
         )
 
         client_persistent_connections_on = bool_value(
-            "client_persistent_connections_on", True,
+            "client_persistent_connections_on",
+            True,
         )
         server_persistent_connections_on = bool_value(
-            "server_persistent_connections_on", True,
+            "server_persistent_connections_on",
+            True,
         )
         buffered_logs_on = bool_value("buffered_logs_on", False)
         log_mime_hdrs_on = bool_value("log_mime_hdrs_on", False)
@@ -341,7 +366,8 @@ class SquidController(_CoreSquidController):
             options.get("stats_collection_rules_text") or "",
         )
         tls_key_log_path = self._validate_single_line_value(
-            str(options.get("tls_key_log_path") or ""), "tls_key_log",
+            str(options.get("tls_key_log_path") or ""),
+            "tls_key_log",
         )
 
         memory_pools_on = bool_value("memory_pools_on", True)
@@ -357,7 +383,9 @@ class SquidController(_CoreSquidController):
         shared_memory_locking_on = bool_value("shared_memory_locking_on", False)
         max_open_disk_fds = int_value("max_open_disk_fds", 0, minimum=0)
         hopeless_kid_revival_delay_seconds = int_value(
-            "hopeless_kid_revival_delay_seconds", 3600, minimum=1,
+            "hopeless_kid_revival_delay_seconds",
+            3600,
+            minimum=1,
         )
         high_response_time_warning_ms = optional_int_value(
             "high_response_time_warning_ms",
@@ -380,14 +408,19 @@ class SquidController(_CoreSquidController):
         max_filedescriptors = int_value("max_filedescriptors", 65535, minimum=0)
 
         client_idle_pconn_timeout_seconds = int_value(
-            "client_idle_pconn_timeout_seconds", 120, minimum=0,
+            "client_idle_pconn_timeout_seconds",
+            120,
+            minimum=0,
         )
         server_idle_pconn_timeout_seconds = int_value(
-            "server_idle_pconn_timeout_seconds", 60, minimum=0,
+            "server_idle_pconn_timeout_seconds",
+            60,
+            minimum=0,
         )
         pconn_lifetime_seconds = int_value("pconn_lifetime_seconds", 0, minimum=0)
         persistent_connection_after_error_on = bool_value(
-            "persistent_connection_after_error_on", True,
+            "persistent_connection_after_error_on",
+            True,
         )
         detect_broken_pconn_on = bool_value("detect_broken_pconn_on", False)
         half_closed_clients_on = bool_value("half_closed_clients_on", False)
@@ -395,12 +428,15 @@ class SquidController(_CoreSquidController):
         forward_max_tries = int_value("forward_max_tries", 25, minimum=1)
         retry_on_error_on = bool_value("retry_on_error_on", False)
         client_lifetime_seconds = int_value(
-            "client_lifetime_seconds", 24 * 3600, minimum=0,
+            "client_lifetime_seconds",
+            24 * 3600,
+            minimum=0,
         )
         client_ip_max_connections = optional_int_value("client_ip_max_connections")
         tcp_recv_bufsize_kb = optional_int_value("tcp_recv_bufsize_kb")
         accept_filter_value = self._validate_single_line_value(
-            str(options.get("accept_filter_value") or ""), "accept_filter",
+            str(options.get("accept_filter_value") or ""),
+            "accept_filter",
         )
         server_pconn_for_nonretriable_rules_text = self._normalize_multiline_text(
             options.get("server_pconn_for_nonretriable_rules_text") or "",
@@ -413,7 +449,9 @@ class SquidController(_CoreSquidController):
             "on_unsupported_protocol_action",
         )
         happy_eyeballs_connect_timeout_ms = int_value(
-            "happy_eyeballs_connect_timeout_ms", 250, minimum=0,
+            "happy_eyeballs_connect_timeout_ms",
+            250,
+            minimum=0,
         )
         happy_eyeballs_connect_gap_ms = optional_int_value(
             "happy_eyeballs_connect_gap_ms",
@@ -424,25 +462,34 @@ class SquidController(_CoreSquidController):
 
         connect_timeout_seconds = int_value("connect_timeout_seconds", 60, minimum=0)
         peer_connect_timeout_seconds = int_value(
-            "peer_connect_timeout_seconds", 30, minimum=0,
+            "peer_connect_timeout_seconds",
+            30,
+            minimum=0,
         )
         request_start_timeout_seconds = int_value(
-            "request_start_timeout_seconds", 300, minimum=0,
+            "request_start_timeout_seconds",
+            300,
+            minimum=0,
         )
         request_timeout_seconds = int_value("request_timeout_seconds", 300, minimum=0)
         read_timeout_seconds = int_value("read_timeout_seconds", 900, minimum=0)
         forward_timeout_seconds = int_value("forward_timeout_seconds", 240, minimum=0)
         write_timeout_seconds = int_value("write_timeout_seconds", 900, minimum=0)
         shutdown_lifetime_seconds = int_value(
-            "shutdown_lifetime_seconds", 30, minimum=0,
+            "shutdown_lifetime_seconds",
+            30,
+            minimum=0,
         )
 
         dns_timeout_seconds = int_value("dns_timeout_seconds", 30, minimum=0)
         dns_retransmit_interval_seconds = int_value(
-            "dns_retransmit_interval_seconds", 5, minimum=0,
+            "dns_retransmit_interval_seconds",
+            5,
+            minimum=0,
         )
         dns_packet_max_raw = self._validate_single_line_value(
-            str(options.get("dns_packet_max") or ""), "dns_packet_max",
+            str(options.get("dns_packet_max") or ""),
+            "dns_packet_max",
         )
         dns_nameservers = self._validate_dns_nameservers(
             str(options.get("dns_nameservers") or ""),
@@ -461,12 +508,15 @@ class SquidController(_CoreSquidController):
         dns_defnames_on = bool_value("dns_defnames_on", False)
         dns_multicast_local_on = bool_value("dns_multicast_local_on", False)
         ignore_unknown_nameservers_on = bool_value(
-            "ignore_unknown_nameservers_on", True,
+            "ignore_unknown_nameservers_on",
+            True,
         )
         check_hostnames_on = bool_value("check_hostnames_on", False)
         allow_underscore_on = bool_value("allow_underscore_on", True)
         positive_dns_ttl_seconds = int_value(
-            "positive_dns_ttl_seconds", 6 * 3600, minimum=1,
+            "positive_dns_ttl_seconds",
+            6 * 3600,
+            minimum=1,
         )
         negative_dns_ttl_seconds = int_value("negative_dns_ttl_seconds", 60, minimum=1)
         ipcache_size = int_value("ipcache_size", 8192, minimum=0)
@@ -475,15 +525,21 @@ class SquidController(_CoreSquidController):
         fqdncache_size = int_value("fqdncache_size", 8192, minimum=0)
 
         sslcrtd_program_cache_size_mb = int_value(
-            "sslcrtd_program_cache_size_mb", 16, minimum=1,
+            "sslcrtd_program_cache_size_mb",
+            16,
+            minimum=1,
         )
         sslcrtd_children = int_value("sslcrtd_children", 4, minimum=1, maximum=32)
         sslcrtd_children_startup = int_value(
-            "sslcrtd_children_startup", min(sslcrtd_children, 2), minimum=0,
+            "sslcrtd_children_startup",
+            min(sslcrtd_children, 2),
+            minimum=0,
         )
         sslcrtd_children_idle = int_value("sslcrtd_children_idle", 1, minimum=1)
         sslcrtd_children_queue_size = int_value(
-            "sslcrtd_children_queue_size", max(32, sslcrtd_children * 8), minimum=1,
+            "sslcrtd_children_queue_size",
+            max(32, sslcrtd_children * 8),
+            minimum=1,
         )
         tls_outgoing_options_line = (
             self._validate_single_line_value(
@@ -496,10 +552,14 @@ class SquidController(_CoreSquidController):
             or "min-version=1.2 options=NO_SSLv3"
         )
         sslproxy_session_ttl_seconds = int_value(
-            "sslproxy_session_ttl_seconds", 600, minimum=0,
+            "sslproxy_session_ttl_seconds",
+            600,
+            minimum=0,
         )
         sslproxy_session_cache_size_mb = int_value(
-            "sslproxy_session_cache_size_mb", 32, minimum=0,
+            "sslproxy_session_cache_size_mb",
+            32,
+            minimum=0,
         )
         sslproxy_foreign_intermediate_certs = self._validate_single_line_value(
             str(options.get("sslproxy_foreign_intermediate_certs") or ""),
@@ -536,29 +596,41 @@ class SquidController(_CoreSquidController):
             or "X-Client-Username"
         )
         icap_client_username_encode_on = bool_value(
-            "icap_client_username_encode_on", False,
+            "icap_client_username_encode_on",
+            False,
         )
         icap_persistent_connections_on = bool_value(
-            "icap_persistent_connections_on", True,
+            "icap_persistent_connections_on",
+            True,
         )
         icap_preview_enable_on = bool_value("icap_preview_enable_on", True)
         icap_preview_size_kb = int_value("icap_preview_size_kb", 128, minimum=0)
         icap_default_options_ttl_seconds = int_value(
-            "icap_default_options_ttl_seconds", 300, minimum=0,
+            "icap_default_options_ttl_seconds",
+            300,
+            minimum=0,
         )
         icap_connect_timeout_seconds = int_value(
-            "icap_connect_timeout_seconds", 15, minimum=0,
+            "icap_connect_timeout_seconds",
+            15,
+            minimum=0,
         )
         icap_io_timeout_seconds = int_value("icap_io_timeout_seconds", 300, minimum=0)
         icap_service_failure_limit = int_value("icap_service_failure_limit", 10)
         icap_service_failure_limit_window_seconds = int_value(
-            "icap_service_failure_limit_window_seconds", 30, minimum=0,
+            "icap_service_failure_limit_window_seconds",
+            30,
+            minimum=0,
         )
         icap_service_revival_delay_seconds = int_value(
-            "icap_service_revival_delay_seconds", 60, minimum=0,
+            "icap_service_revival_delay_seconds",
+            60,
+            minimum=0,
         )
         adaptation_service_iteration_limit = int_value(
-            "adaptation_service_iteration_limit", 16, minimum=1,
+            "adaptation_service_iteration_limit",
+            16,
+            minimum=1,
         )
         force_request_body_continuation_rules_text = self._normalize_multiline_text(
             options.get("force_request_body_continuation_rules_text") or "",
@@ -583,17 +655,22 @@ class SquidController(_CoreSquidController):
             "follow_x_forwarded_for",
         )
         client_netmask_value = self._validate_single_line_value(
-            str(options.get("client_netmask_value") or ""), "client_netmask",
+            str(options.get("client_netmask_value") or ""),
+            "client_netmask",
         )
         strip_query_terms_on = bool_value("strip_query_terms_on", True)
 
         request_header_max_size_kb = int_value(
-            "request_header_max_size_kb", 64, minimum=1,
+            "request_header_max_size_kb",
+            64,
+            minimum=1,
         )
         reply_header_max_size_kb = int_value("reply_header_max_size_kb", 64, minimum=1)
         request_body_max_size_mb = int_value("request_body_max_size_mb", 0, minimum=0)
         client_request_buffer_max_size_kb = int_value(
-            "client_request_buffer_max_size_kb", 512, minimum=0,
+            "client_request_buffer_max_size_kb",
+            512,
+            minimum=0,
         )
         relaxed_header_parser_mode = self._validate_choice(
             str(options.get("relaxed_header_parser_mode") or "on"),
@@ -612,7 +689,8 @@ class SquidController(_CoreSquidController):
         )
 
         visible_hostname = self._validate_hostname(
-            str(options.get("visible_hostname") or ""), "visible_hostname",
+            str(options.get("visible_hostname") or ""),
+            "visible_hostname",
         )
         cache_mgr_email = (
             self._validate_single_line_value(
@@ -622,7 +700,8 @@ class SquidController(_CoreSquidController):
             or "proxy-admin@example.invalid"
         )
         httpd_suppress_version_string_on = bool_value(
-            "httpd_suppress_version_string_on", False,
+            "httpd_suppress_version_string_on",
+            False,
         )
         vary_ignore_expire_on = bool_value("vary_ignore_expire_on", False)
 
@@ -688,7 +767,9 @@ class SquidController(_CoreSquidController):
         )
 
         append_section(
-            lines, "Cache settings", "Disk layout, memory sizing, and cache heuristics.",
+            lines,
+            "Cache settings",
+            "Disk layout, memory sizing, and cache heuristics.",
         )
         lines.extend(
             (
@@ -709,7 +790,9 @@ class SquidController(_CoreSquidController):
             ),
         )
         append_block(
-            lines, "COLLAPSED_FORWARDING_ACCESS", collapsed_forwarding_access_rules_text,
+            lines,
+            "COLLAPSED_FORWARDING_ACCESS",
+            collapsed_forwarding_access_rules_text,
         )
         lines.extend(
             (
@@ -1008,12 +1091,17 @@ class SquidController(_CoreSquidController):
         return text.rstrip() + "\n" + new_line + "\n"
 
     def _replace_http_port_option(
-        self, text: str, option_name: str, option_value: str,
+        self,
+        text: str,
+        option_name: str,
+        option_value: str,
     ) -> str:
         pattern = re.compile(rf"({re.escape(option_name)}=)(\S+)", re.IGNORECASE)
         if pattern.search(text):
             return pattern.sub(
-                lambda match: f"{match.group(1)}{option_value}", text, count=1,
+                lambda match: f"{match.group(1)}{option_value}",
+                text,
+                count=1,
             )
         return text
 
@@ -1111,7 +1199,9 @@ class SquidController(_CoreSquidController):
         }
 
     def _render_explicit_http_port(
-        self, port: int, dynamic_cert_mem_cache_size_mb: int,
+        self,
+        port: int,
+        dynamic_cert_mem_cache_size_mb: int,
     ) -> list[str]:
         return [
             f"http_port 0.0.0.0:{self._coerce_port(port, 3128)} ssl-bump \\",
@@ -1130,7 +1220,9 @@ class SquidController(_CoreSquidController):
         ]
 
     def _render_https_intercept_port_block(
-        self, port: int, dynamic_cert_mem_cache_size_mb: int,
+        self,
+        port: int,
+        dynamic_cert_mem_cache_size_mb: int,
     ) -> list[str]:
         return [
             "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER",
@@ -1145,16 +1237,21 @@ class SquidController(_CoreSquidController):
         ]
 
     def _render_http_port_listeners(
-        self, text: str, options: dict[str, Any], dynamic_cert_mem_cache_size_mb: int,
+        self,
+        text: str,
+        options: dict[str, Any],
+        dynamic_cert_mem_cache_size_mb: int,
     ) -> str:
         explicit_port = self._coerce_port(options.get("explicit_proxy_port"), 3128)
         intercept_enabled = bool(options.get("intercept_enabled_on"))
         intercept_port = self._coerce_port(
-            options.get("intercept_port"), self._default_intercept_port(explicit_port),
+            options.get("intercept_port"),
+            self._default_intercept_port(explicit_port),
         )
         https_intercept_enabled = bool(options.get("https_intercept_enabled_on"))
         https_intercept_port = self._coerce_port(
-            options.get("https_intercept_port"), 3130 if explicit_port != 3130 else 3131,
+            options.get("https_intercept_port"),
+            3130 if explicit_port != 3130 else 3131,
         )
         if intercept_port == explicit_port:
             intercept_port = self._default_intercept_port(explicit_port)
@@ -1202,7 +1299,8 @@ class SquidController(_CoreSquidController):
                 ):
                     rendered_lines.extend(
                         self._render_explicit_http_port(
-                            explicit_port, dynamic_cert_mem_cache_size_mb,
+                            explicit_port,
+                            dynamic_cert_mem_cache_size_mb,
                         ),
                     )
                     if intercept_enabled:
@@ -1212,7 +1310,8 @@ class SquidController(_CoreSquidController):
                     if https_intercept_enabled:
                         rendered_lines.extend(
                             self._render_https_intercept_port_block(
-                                https_intercept_port, dynamic_cert_mem_cache_size_mb,
+                                https_intercept_port,
+                                dynamic_cert_mem_cache_size_mb,
                             ),
                         )
                     replaced_explicit = True
@@ -1222,14 +1321,16 @@ class SquidController(_CoreSquidController):
 
         if not replaced_explicit:
             prefix = self._render_explicit_http_port(
-                explicit_port, dynamic_cert_mem_cache_size_mb,
+                explicit_port,
+                dynamic_cert_mem_cache_size_mb,
             )
             if intercept_enabled:
                 prefix.extend(self._render_intercept_http_port_block(intercept_port))
             if https_intercept_enabled:
                 prefix.extend(
                     self._render_https_intercept_port_block(
-                        https_intercept_port, dynamic_cert_mem_cache_size_mb,
+                        https_intercept_port,
+                        dynamic_cert_mem_cache_size_mb,
                     ),
                 )
             rendered_lines = [*prefix, "", *rendered_lines]
@@ -1248,7 +1349,9 @@ class SquidController(_CoreSquidController):
 
         def find_int_or_none(key: str) -> Any | None:
             match = re.search(
-                rf"^\s*{re.escape(key)}\s+(\S+)\s*$", text, re.MULTILINE | re.IGNORECASE,
+                rf"^\s*{re.escape(key)}\s+(\S+)\s*$",
+                text,
+                re.MULTILINE | re.IGNORECASE,
             )
             if not match:
                 return None
@@ -1272,7 +1375,9 @@ class SquidController(_CoreSquidController):
 
         def find_choice_token(key: str, allowed: tuple[str, ...]) -> str | None:
             match = re.search(
-                rf"^\s*{re.escape(key)}\s+(\S+)\s*$", text, re.MULTILINE | re.IGNORECASE,
+                rf"^\s*{re.escape(key)}\s+(\S+)\s*$",
+                text,
+                re.MULTILINE | re.IGNORECASE,
             )
             if not match:
                 return None
@@ -1281,7 +1386,9 @@ class SquidController(_CoreSquidController):
 
         def find_time_seconds(key: str) -> int | None:
             match = re.search(
-                rf"^\s*{re.escape(key)}\s+(\d+)\s*([a-zA-Z]+)?\s*$", text, re.MULTILINE,
+                rf"^\s*{re.escape(key)}\s+(\d+)\s*([a-zA-Z]+)?\s*$",
+                text,
+                re.MULTILINE,
             )
             if not match:
                 return None
@@ -1327,7 +1434,9 @@ class SquidController(_CoreSquidController):
 
         def find_str(key: str) -> str | None:
             match = re.search(
-                rf"^\s*{re.escape(key)}\s+(.+?)\s*$", text, re.MULTILINE | re.IGNORECASE,
+                rf"^\s*{re.escape(key)}\s+(.+?)\s*$",
+                text,
+                re.MULTILINE | re.IGNORECASE,
             )
             return match.group(1).strip() if match else None
 
@@ -1436,7 +1545,9 @@ class SquidController(_CoreSquidController):
 
         def find_pipeline_prefetch_bool() -> bool | None:
             match = re.search(
-                r"^\s*pipeline_prefetch\s+(\S+)\s*$", text, re.MULTILINE | re.IGNORECASE,
+                r"^\s*pipeline_prefetch\s+(\S+)\s*$",
+                text,
+                re.MULTILINE | re.IGNORECASE,
             )
             if not match:
                 return None
@@ -1452,7 +1563,9 @@ class SquidController(_CoreSquidController):
 
         def find_pipeline_prefetch_count() -> int | None:
             match = re.search(
-                r"^\s*pipeline_prefetch\s+(\S+)\s*$", text, re.MULTILINE | re.IGNORECASE,
+                r"^\s*pipeline_prefetch\s+(\S+)\s*$",
+                text,
+                re.MULTILINE | re.IGNORECASE,
             )
             if not match:
                 return None
@@ -1593,7 +1706,9 @@ class SquidController(_CoreSquidController):
             return result
 
         def find_block_or_lines(
-            block_name: str, *, prefixes: tuple[str, ...] = (),
+            block_name: str,
+            *,
+            prefixes: tuple[str, ...] = (),
         ) -> str | None:
             block = self._extract_managed_subblock(text, block_name)
             if block is not None:
@@ -1638,7 +1753,8 @@ class SquidController(_CoreSquidController):
                 "cache_dir_rock_max_swap_rate",
             ),
             "store_dir_select_algorithm": find_choice_token(
-                "store_dir_select_algorithm", ("least-load", "round-robin"),
+                "store_dir_select_algorithm",
+                ("least-load", "round-robin"),
             ),
             "cache_mem_mb": find_int(r"^\s*cache_mem\s+(\d+)\s*MB\s*$"),
             "maximum_object_size_mb": find_int(
@@ -1795,13 +1911,16 @@ class SquidController(_CoreSquidController):
             "ssl_unclean_shutdown": find_on_off("ssl_unclean_shutdown"),
             "additional_ssl_rules_text": find_block_or_lines("CUSTOM_SSL_RULES"),
             "sslproxy_cert_error_rules_text": find_block_or_lines(
-                "SSLPROXY_CERT_ERROR", prefixes=("sslproxy_cert_error ",),
+                "SSLPROXY_CERT_ERROR",
+                prefixes=("sslproxy_cert_error ",),
             ),
             "sslproxy_cert_sign_rules_text": find_block_or_lines(
-                "SSLPROXY_CERT_SIGN", prefixes=("sslproxy_cert_sign ",),
+                "SSLPROXY_CERT_SIGN",
+                prefixes=("sslproxy_cert_sign ",),
             ),
             "sslproxy_cert_adapt_rules_text": find_block_or_lines(
-                "SSLPROXY_CERT_ADAPT", prefixes=("sslproxy_cert_adapt ",),
+                "SSLPROXY_CERT_ADAPT",
+                prefixes=("sslproxy_cert_adapt ",),
             ),
             "icap_enable": find_on_off("icap_enable"),
             "icap_206_enable": find_on_off("icap_206_enable"),
@@ -1854,7 +1973,8 @@ class SquidController(_CoreSquidController):
                 prefixes=("force_request_body_continuation ",),
             ),
             "icap_retry_rules_text": find_block_or_lines(
-                "ICAP_RETRY", prefixes=("icap_retry ",),
+                "ICAP_RETRY",
+                prefixes=("icap_retry ",),
             ),
             "icap_retry_limit": find_int(r"^\s*icap_retry_limit\s+(\d+)\s*$"),
             "forwarded_for_value": find_str("forwarded_for"),
@@ -1867,10 +1987,12 @@ class SquidController(_CoreSquidController):
                 "client_request_buffer_max_size",
             ),
             "relaxed_header_parser_mode": find_choice_token(
-                "relaxed_header_parser", ("on", "warn", "off"),
+                "relaxed_header_parser",
+                ("on", "warn", "off"),
             ),
             "uri_whitespace_mode": find_choice_token(
-                "uri_whitespace", ("strip", "deny", "allow", "encode", "chop"),
+                "uri_whitespace",
+                ("strip", "deny", "allow", "encode", "chop"),
             ),
             "http_upgrade_request_protocols_rules_text": find_block_or_lines(
                 "HTTP_UPGRADE_REQUEST_PROTOCOLS",
@@ -1904,12 +2026,14 @@ class SquidController(_CoreSquidController):
             "client_netmask_value": find_str("client_netmask"),
             "strip_query_terms": find_on_off("strip_query_terms"),
             "stats_collection_rules_text": find_block_or_lines(
-                "STATS_COLLECTION", prefixes=("stats_collection ",),
+                "STATS_COLLECTION",
+                prefixes=("stats_collection ",),
             ),
             "tls_key_log_path": find_str("tls_key_log"),
             "cache_policy_rules_text": find_block_or_lines("CACHE_POLICY"),
             "refresh_patterns_text": find_block_or_lines(
-                "REFRESH_PATTERNS", prefixes=("refresh_pattern ",),
+                "REFRESH_PATTERNS",
+                prefixes=("refresh_pattern ",),
             ),
         }
 
@@ -2120,13 +2244,16 @@ class SquidController(_CoreSquidController):
         )
 
     def get_cache_override_options(
-        self, config_text: str | None = None,
+        self,
+        config_text: str | None = None,
     ) -> dict[str, bool]:
         text = config_text if config_text is not None else self.get_current_config()
 
         def find_bool(name: str) -> bool:
             match = re.search(
-                rf"^\s*#\s*{re.escape(name)}\s*=\s*([01])\s*$", text or "", re.MULTILINE,
+                rf"^\s*#\s*{re.escape(name)}\s*=\s*([01])\s*$",
+                text or "",
+                re.MULTILINE,
             )
             return bool(match and match.group(1) == "1")
 
@@ -2183,7 +2310,9 @@ class SquidController(_CoreSquidController):
         )
 
     def apply_cache_overrides(
-        self, config_text: str, overrides: dict[str, bool],
+        self,
+        config_text: str,
+        overrides: dict[str, bool],
     ) -> str:
         values = overrides or {}
         override_flag_map = (
@@ -2294,7 +2423,9 @@ class SquidController(_CoreSquidController):
             dynamic_cert_mem_cache_size_mb = 128
 
         rendered = self._render_http_port_listeners(
-            template_text, options, dynamic_cert_mem_cache_size_mb,
+            template_text,
+            options,
+            dynamic_cert_mem_cache_size_mb,
         )
         managed_block = self._render_managed_settings(options)
         return self._replace_managed_settings_block(rendered, managed_block)
@@ -2320,7 +2451,9 @@ class SquidController(_CoreSquidController):
 
         try:
             proc = self._run(
-                ["squid", "-f", self.squid_conf_path], capture_output=True, timeout=12,
+                ["squid", "-f", self.squid_conf_path],
+                capture_output=True,
+                timeout=12,
             )
             return proc.stdout or b"", proc.stderr or b""
         except FileNotFoundError:
@@ -2331,7 +2464,9 @@ class SquidController(_CoreSquidController):
     def stop_squid(self):
         try:
             proc = self._run(
-                ["squid", "-k", "shutdown"], capture_output=True, timeout=12,
+                ["squid", "-k", "shutdown"],
+                capture_output=True,
+                timeout=12,
             )
             return proc.stdout or b"", proc.stderr or b""
         except FileNotFoundError:

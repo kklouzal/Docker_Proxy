@@ -187,11 +187,17 @@ def get_loadavg() -> dict[str, float] | None:
 
 
 def _run(
-    cmd: list[str], timeout: float = 2.0, env: dict[str, str] | None = None,
+    cmd: list[str],
+    timeout: float = 2.0,
+    env: dict[str, str] | None = None,
 ) -> str | None:
     try:
         p = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
         )
         if p.returncode != 0:
             return None
@@ -201,7 +207,9 @@ def _run(
 
 
 def get_squid_mgr_text(
-    section: str, host: str = "127.0.0.1", port: int = 3128,
+    section: str,
+    host: str = "127.0.0.1",
+    port: int = 3128,
 ) -> str | None:
     # Opt-in: cachemgr polling can be surprisingly expensive and has been observed
     # to trigger forwarding-loop warnings and Squid instability in some setups.
@@ -236,12 +244,14 @@ def get_squid_mgr_text(
     safe_env["no_proxy"] = merged
 
     return _run(
-        ["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"], env=safe_env,
+        ["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"],
+        env=safe_env,
     )
 
 
 def parse_access_log_hit_rate(
-    access_log_path: str = "/var/log/squid/access-observe.log", max_lines: int = 5000,
+    access_log_path: str = "/var/log/squid/access-observe.log",
+    max_lines: int = 5000,
 ) -> dict[str, float | None]:
     # Best-effort rolling hit rate from recent structured access log lines.
     # Squid default log format typically contains:
@@ -347,7 +357,8 @@ def get_stats() -> dict[str, Any]:
     # The UI and sampler don't need sub-second freshness, so we cache them.
     dir_size_ttl = max(5, int(os.environ.get("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "60")))
     disk_usage_ttl = max(
-        2, int(os.environ.get("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "15")),
+        2,
+        int(os.environ.get("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "15")),
     )
     hit_rate_ttl = max(1, int(os.environ.get("STATS_CACHE_HIT_RATE_TTL_SECONDS", "5")))
     cpu_ttl = max(1, int(os.environ.get("STATS_CACHE_CPU_TTL_SECONDS", "2")))

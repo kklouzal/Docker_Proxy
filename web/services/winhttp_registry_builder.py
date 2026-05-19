@@ -119,7 +119,9 @@ def _ascii_from_bytes(bytes_: list[int]) -> str:
 
 
 def normalize_bypass_list(
-    value: str | Iterable[str] | None, *, include_local: bool,
+    value: str | Iterable[str] | None,
+    *,
+    include_local: bool,
 ) -> str:
     raw_items = (
         list(value)
@@ -305,7 +307,9 @@ def normalize_reg_binary_export(value: str) -> str:
         line = raw_line.strip()
         if not collecting:
             match = re.match(
-                r'"WinHttpSettings"\s*=\s*hex:(.*)$', line, flags=re.IGNORECASE,
+                r'"WinHttpSettings"\s*=\s*hex:(.*)$',
+                line,
+                flags=re.IGNORECASE,
             )
             if not match:
                 continue
@@ -350,7 +354,9 @@ def build_advproxy_settings_json(
 
 
 def build_advproxy_command(
-    *, scope: Literal["machine", "user"], settings_json: str,
+    *,
+    scope: Literal["machine", "user"],
+    settings_json: str,
 ) -> str:
     chosen_scope = scope if scope in ADVPROXY_SCOPES else "machine"
     escaped = settings_json.replace('"', r"\"")
@@ -513,13 +519,15 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
         reg_file=reg_file,
         decoded=decoded,
         legacy_set_proxy_command=build_legacy_set_proxy_command(
-            proxy_string, bypass_string,
+            proxy_string,
+            bypass_string,
         )
         if proxy_string
         else "netsh winhttp reset proxy",
         advproxy_json=advproxy_json_pretty,
         advproxy_command=build_advproxy_command(
-            scope=scope, settings_json=advproxy_json_compact,
+            scope=scope,
+            settings_json=advproxy_json_compact,
         ),
         advproxy_settings_file_json=advproxy_json_pretty,
         advproxy_settings_file_command=f"netsh winhttp set advproxy setting-scope={scope} settings-file=winhttp-proxy-settings.json",

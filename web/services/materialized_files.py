@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import pathlib
 import tempfile
 
@@ -14,7 +15,11 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
             directory = pathlib.Path(path).parent or "."
             pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
             handle = tempfile.NamedTemporaryFile(
-                "w", encoding="utf-8", delete=False, dir=directory, prefix=".managed-",
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=directory,
+                prefix=".managed-",
             )
             temp_path = handle.name
             temp_paths.append(temp_path)
@@ -32,7 +37,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                 backups[path] = (False, b"")
 
         for (path, _content), temp_path in zip(files, temp_paths, strict=False):
-            pathlib.Path(temp_path).replace(path)
+            os.replace(temp_path, path)  # noqa: PTH105
             replaced_paths.append(path)
     except Exception:
         for path in reversed(replaced_paths):

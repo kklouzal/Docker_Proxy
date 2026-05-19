@@ -47,7 +47,10 @@ def _resolve_host_port_override(
 
 
 def unavailable_service(
-    detail: str, *, target: str = "unavailable", service: str = "",
+    detail: str,
+    *,
+    target: str = "unavailable",
+    service: str = "",
 ) -> dict[str, Any]:
     status: dict[str, Any] = {
         "ok": False,
@@ -62,11 +65,16 @@ def unavailable_service(
 
 
 def normalize_service_health(
-    result: Any, *, default_target: str = "unavailable", service: str = "",
+    result: Any,
+    *,
+    default_target: str = "unavailable",
+    service: str = "",
 ) -> dict[str, Any]:
     if not isinstance(result, dict):
         return unavailable_service(
-            "unavailable", target=default_target, service=service,
+            "unavailable",
+            target=default_target,
+            service=service,
         )
     detail = str(result.get("detail") or "unavailable")
     host = str(result.get("host") or "")
@@ -91,7 +99,9 @@ def normalize_service_health(
 
 
 def build_unavailable_runtime_health(
-    detail: str, *, proxy_status: str = "offline",
+    detail: str,
+    *,
+    proxy_status: str = "offline",
 ) -> dict[str, Any]:
     icap = unavailable_service(detail)
     av_icap = unavailable_service(detail, service="/avrespmod")
@@ -267,10 +277,12 @@ def build_local_clamav_view(
     clamd_timeout: float = 0.8,
 ) -> dict[str, dict[str, Any]]:
     clamd_health = check_clamd_health(
-        timeout=clamd_timeout, error_formatter=error_formatter,
+        timeout=clamd_timeout,
+        error_formatter=error_formatter,
     )
     av_icap_health = check_av_icap_health(
-        timeout=icap_timeout, error_formatter=error_formatter,
+        timeout=icap_timeout,
+        error_formatter=error_formatter,
     )
     return {
         "health": build_clamav_health(clamd_health, av_icap_health),
@@ -331,7 +343,8 @@ def build_local_runtime_services(
     )
     return {
         "icap": check_adblock_icap_health(
-            timeout=icap_timeout, error_formatter=error_formatter,
+            timeout=icap_timeout,
+            error_formatter=error_formatter,
         ),
         "av_icap": clamav_view["av_icap_health"],
         "clamd": clamav_view["clamd_health"],

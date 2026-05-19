@@ -163,7 +163,10 @@ class ConfigRevisionStore:
         return self._row_to_revision(row)
 
     def get_revision(
-        self, revision_id: object, *, proxy_id: object | None = None,
+        self,
+        revision_id: object,
+        *,
+        proxy_id: object | None = None,
     ) -> ConfigRevision | None:
         self.init_db()
         params: tuple[object, ...]
@@ -175,12 +178,14 @@ class ConfigRevisionStore:
             params = (int(revision_id or 0), normalize_proxy_id(proxy_id))
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT * FROM proxy_config_revisions WHERE {where} LIMIT 1", params,
+                f"SELECT * FROM proxy_config_revisions WHERE {where} LIMIT 1",
+                params,
             ).fetchone()
         return self._row_to_revision(row)
 
     def get_active_revision_metadata(
-        self, proxy_id: object | None,
+        self,
+        proxy_id: object | None,
     ) -> ConfigRevisionMetadata | None:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)

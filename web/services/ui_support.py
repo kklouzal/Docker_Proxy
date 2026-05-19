@@ -73,10 +73,12 @@ _CONNECTION_CONTEXT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _INLINE_ENDPOINT_PATTERN = re.compile(
-    r"\blocal=(?P<local>\S+).*?\bremote=(?P<remote>\S+)", re.IGNORECASE,
+    r"\blocal=(?P<local>\S+).*?\bremote=(?P<remote>\S+)",
+    re.IGNORECASE,
 )
 _MASTER_TRANSACTION_PATTERN = re.compile(
-    r"\bcurrent master transaction:\s*(?P<tx>\S+)", re.IGNORECASE,
+    r"\bcurrent master transaction:\s*(?P<tx>\S+)",
+    re.IGNORECASE,
 )
 
 _OPENSSL_TLS_LIB_ERR_TEXT: dict[str, str] = {
@@ -327,16 +329,20 @@ def _correlation_meta(kind: str, *, time_delta_seconds: object = 0) -> dict[str,
 
 
 def present_icap_events(
-    rows: Sequence[dict[str, Any]], *, limit: int = 10,
+    rows: Sequence[dict[str, Any]],
+    *,
+    limit: int = 10,
 ) -> list[dict[str, Any]]:
     presented: list[dict[str, Any]] = []
     for row in rows[: max(1, limit)]:
         event = dict(row)
         event["adapt_summary_short"] = _truncate_text(
-            event.get("adapt_summary"), max_len=160,
+            event.get("adapt_summary"),
+            max_len=160,
         )
         event["adapt_details_short"] = _truncate_text(
-            event.get("adapt_details"), max_len=200,
+            event.get("adapt_details"),
+            max_len=200,
         )
         event["header_details"] = _build_header_details(event)
         event["tls_details"] = _build_tls_details(event)
@@ -352,7 +358,9 @@ def present_icap_events(
 
 
 def present_transaction_rows(
-    rows: Sequence[dict[str, Any]], *, icap_limit: int = 5,
+    rows: Sequence[dict[str, Any]],
+    *,
+    icap_limit: int = 5,
 ) -> list[dict[str, Any]]:
     presented: list[dict[str, Any]] = []
     for row in rows:
@@ -375,7 +383,8 @@ def present_transaction_rows(
         if hierarchy:
             event["result_summary"] = f"{event['result_summary']} · {hierarchy}"
         related_icap = present_icap_events(
-            list(event.get("related_icap") or []), limit=icap_limit,
+            list(event.get("related_icap") or []),
+            limit=icap_limit,
         )
         event["related_icap"] = related_icap
         event["correlation"] = _correlation_meta(
@@ -407,7 +416,10 @@ def present_observability_summary(
 
 
 def present_top_value_rows(
-    rows: Sequence[dict[str, Any]], *, key: str = "value", max_label: int = 64,
+    rows: Sequence[dict[str, Any]],
+    *,
+    key: str = "value",
+    max_label: int = 64,
 ) -> list[dict[str, Any]]:
     presented: list[dict[str, Any]] = []
     for row in rows:
@@ -426,7 +438,9 @@ def present_top_value_rows(
 
 
 def present_top_tag_rows(
-    rows: Sequence[dict[str, Any]], *, max_label: int = 72,
+    rows: Sequence[dict[str, Any]],
+    *,
+    max_label: int = 72,
 ) -> list[dict[str, Any]]:
     presented: list[dict[str, Any]] = []
     for row in rows:
@@ -467,7 +481,9 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> dict[str, Any]:
         last_seen = int(getattr(row, "last_seen", 0) or 0)
         meta = ssl_error_category_meta(category)
         display_reason = _display_reason(
-            category=category, reason=raw_reason, sample=sample,
+            category=category,
+            reason=raw_reason,
+            sample=sample,
         )
 
         total_events += count
@@ -495,7 +511,9 @@ def present_ssl_error_rows(rows: Sequence[Any]) -> dict[str, Any]:
                 "last_seen": last_seen,
                 "sample": sample,
                 "diagnostics": _build_ssl_diagnostics(
-                    category=category, reason=display_reason, sample=sample,
+                    category=category,
+                    reason=display_reason,
+                    sample=sample,
                 ),
             },
         )
@@ -601,7 +619,9 @@ def present_ssl_exclusion_candidates(
 
 
 def present_ssl_top_domains(
-    rows: Sequence[dict[str, Any]], *, limit: int = 15,
+    rows: Sequence[dict[str, Any]],
+    *,
+    limit: int = 15,
 ) -> list[dict[str, Any]]:
     presented: list[dict[str, Any]] = []
     for row in rows:

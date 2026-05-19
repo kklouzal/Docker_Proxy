@@ -172,12 +172,18 @@ def _log_recoverable_db_or_unexpected(
             )
         return
     log_exception_throttled(
-        logger, key, interval_seconds=interval_seconds, message=unexpected_message,
+        logger,
+        key,
+        interval_seconds=interval_seconds,
+        message=unexpected_message,
     )
 
 
 def build_local_runtime_services(
-    *, error_formatter=str, icap_timeout: float = 0.8, tcp_timeout: float = 0.75,
+    *,
+    error_formatter=str,
+    icap_timeout: float = 0.8,
+    tcp_timeout: float = 0.75,
 ) -> dict[str, dict[str, Any]]:
     # Keep management health bounded by the slowest local probe instead of the
     # sum of every ICAP/ClamAV timeout. The Admin UI calls this endpoint with a
@@ -199,7 +205,8 @@ def build_local_runtime_services(
     }
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(
-        max_workers=len(checks), thread_name_prefix="proxy-health",
+        max_workers=len(checks),
+        thread_name_prefix="proxy-health",
     ) as executor:
         futures = {
             name: executor.submit(_call_health_check, func, **kwargs)
@@ -238,7 +245,8 @@ def _listener_mode_summary(listeners: object) -> str:
             )
             mode = str(
                 getattr(item, "get", lambda _key, _default=None: _default)(
-                    "mode", "explicit",
+                    "mode",
+                    "explicit",
                 )
                 or "explicit",
             )
@@ -351,7 +359,11 @@ class ProxyRuntime:
         tmp_path = ""
         try:
             handle = tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", delete=False, dir=directory, prefix=".tmp-",
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=directory,
+                prefix=".tmp-",
             )
             tmp_path = handle.name
             handle.write(content)
@@ -373,7 +385,8 @@ class ProxyRuntime:
         desired = self.policy_state_builder(self.proxy_id)
         current_files = tuple(
             MaterializedPolicyFile(
-                path=item.path, content=self._read_text_file(item.path),
+                path=item.path,
+                content=self._read_text_file(item.path),
             )
             for item in desired.files
         )
@@ -390,7 +403,10 @@ class ProxyRuntime:
         return read_materialized_pac_state_sha(self.pac_render_dir)
 
     def _supervisor_program_status(
-        self, program_name: str, *, timeout_seconds: int = 10,
+        self,
+        program_name: str,
+        *,
+        timeout_seconds: int = 10,
     ) -> tuple[bool, str]:
         try:
             status = subprocess.run(
@@ -406,7 +422,8 @@ class ProxyRuntime:
             )
         except Exception as exc:
             return False, public_error_message(
-                exc, default=f"Failed to inspect {program_name} supervisor status.",
+                exc,
+                default=f"Failed to inspect {program_name} supervisor status.",
             )
         detail = (
             _decode_completed(status).strip() or f"{program_name} status unavailable."
@@ -432,7 +449,8 @@ class ProxyRuntime:
             output = _decode_completed(status).strip()
         except Exception as exc:
             detail = public_error_message(
-                exc, default="Failed to inspect supervisor status.",
+                exc,
+                default="Failed to inspect supervisor status.",
             )
             return {
                 "ok": False,
@@ -469,7 +487,11 @@ class ProxyRuntime:
         }
 
     def test_control_supervisor_program(
-        self, program_name: str, *, action: str, timeout_seconds: int = 30,
+        self,
+        program_name: str,
+        *,
+        action: str,
+        timeout_seconds: int = 30,
     ) -> dict[str, Any]:
         """Test-mode-only supervisor control for live recovery tests.
 
@@ -491,7 +513,8 @@ class ProxyRuntime:
             }
         if requested_action == "status":
             ok, detail = self._supervisor_program_status(
-                program, timeout_seconds=timeout_seconds,
+                program,
+                timeout_seconds=timeout_seconds,
             )
             return {
                 "ok": ok,
@@ -505,7 +528,9 @@ class ProxyRuntime:
                 ok, detail = self.controller.restart_squid()
             else:
                 ok, detail = self._restart_supervisor_program(
-                    program, timeout_seconds=timeout_seconds, stop_on_failure=False,
+                    program,
+                    timeout_seconds=timeout_seconds,
+                    stop_on_failure=False,
                 )
             return {
                 "ok": ok,
@@ -541,7 +566,8 @@ class ProxyRuntime:
                 "program": program,
                 "action": requested_action,
                 "detail": public_error_message(
-                    exc, default=f"Failed to {requested_action} {program}.",
+                    exc,
+                    default=f"Failed to {requested_action} {program}.",
                 ),
             }
         detail = (
@@ -551,7 +577,8 @@ class ProxyRuntime:
         ok = proc.returncode == 0
         if requested_action == "start" and ok:
             status_ok, status_detail = self._supervisor_program_status(
-                program, timeout_seconds=timeout_seconds,
+                program,
+                timeout_seconds=timeout_seconds,
             )
             ok = status_ok
             if status_detail:
@@ -579,7 +606,10 @@ class ProxyRuntime:
             )
 
     def _wait_for_supervisor_program_stopped(
-        self, program_name: str, *, timeout_seconds: float = 30.0,
+        self,
+        program_name: str,
+        *,
+        timeout_seconds: float = 30.0,
     ) -> tuple[bool, str]:
         deadline = time.time() + max(1.0, float(timeout_seconds))
         last_detail = ""
@@ -612,7 +642,8 @@ class ProxyRuntime:
                     return True, last_detail
             except Exception as exc:
                 last_detail = public_error_message(
-                    exc, default=f"Failed to check {program_name} supervisor status.",
+                    exc,
+                    default=f"Failed to check {program_name} supervisor status.",
                 )
             time.sleep(0.5)
         return False, last_detail or f"Timed out waiting for {program_name} to stop."
@@ -642,13 +673,15 @@ class ProxyRuntime:
             details.append(stop_detail)
 
         stopped_ok, stopped_detail = self._wait_for_supervisor_program_stopped(
-            program_name, timeout_seconds=timeout_seconds,
+            program_name,
+            timeout_seconds=timeout_seconds,
         )
         if stopped_detail and stopped_detail not in details:
             details.append(stopped_detail)
         if not stopped_ok:
             status_ok, status_detail = self._supervisor_program_status(
-                program_name, timeout_seconds=timeout_seconds,
+                program_name,
+                timeout_seconds=timeout_seconds,
             )
             if status_detail and status_detail not in details:
                 details.append(status_detail)
@@ -679,7 +712,8 @@ class ProxyRuntime:
             except Exception as exc:
                 details.append(
                     public_error_message(
-                        exc, default=f"Failed to start {program_name}.",
+                        exc,
+                        default=f"Failed to start {program_name}.",
                     ),
                 )
                 continue
@@ -693,7 +727,8 @@ class ProxyRuntime:
             # post-start supervisor status check to avoid accepting restart loops.
             time.sleep(1.0)
             status_ok, status_detail = self._supervisor_program_status(
-                program_name, timeout_seconds=timeout_seconds,
+                program_name,
+                timeout_seconds=timeout_seconds,
             )
             if status_detail:
                 details.append(status_detail)
@@ -728,7 +763,8 @@ class ProxyRuntime:
         if self.services.adblock_service_restarter is not None:
             return self.services.adblock_service_restarter()
         ok, detail = self._restart_supervisor_program(
-            "cicap_adblock", stop_on_failure=True,
+            "cicap_adblock",
+            stop_on_failure=True,
         )
         if not ok:
             return ok, detail
@@ -767,7 +803,8 @@ class ProxyRuntime:
         if pathlib.Path(self.adblock_compiled_dir).is_dir():
             shutil.rmtree(self.adblock_compiled_dir, ignore_errors=True)
         pathlib.Path(pathlib.Path(self.adblock_compiled_dir).parent or ".").mkdir(
-            exist_ok=True, parents=True,
+            exist_ok=True,
+            parents=True,
         )
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
@@ -801,7 +838,8 @@ class ProxyRuntime:
             content = self._read_cicap_regex_table_as_squid(name)
             try:
                 current = pathlib.Path(target).read_text(
-                    encoding="utf-8", errors="replace",
+                    encoding="utf-8",
+                    errors="replace",
                 )
             except FileNotFoundError:
                 current = None
@@ -829,7 +867,8 @@ class ProxyRuntime:
             return (
                 False,
                 public_error_message(
-                    exc, default="Failed to inspect Squid config before policy reload.",
+                    exc,
+                    default="Failed to inspect Squid config before policy reload.",
                 ),
                 False,
             )
@@ -864,11 +903,14 @@ class ProxyRuntime:
         # the active config while keeping the listener stable.
         try:
             proc = self.controller._run(
-                ["squid", "-k", "reconfigure"], capture_output=True, timeout=15,
+                ["squid", "-k", "reconfigure"],
+                capture_output=True,
+                timeout=15,
             )
         except Exception as exc:
             return False, public_error_message(
-                exc, default="Squid reconfigure failed for policy update.",
+                exc,
+                default="Squid reconfigure failed for policy update.",
             )
         detail = _decode_completed(proc).strip()
         ok = int(getattr(proc, "returncode", 1) or 0) == 0
@@ -939,7 +981,10 @@ class ProxyRuntime:
         current_sha = self._current_config_sha()
         with suppress(Exception):
             self.registry.mark_apply_result(
-                self.proxy_id, ok=ok, detail=detail, current_config_sha=current_sha,
+                self.proxy_id,
+                ok=ok,
+                detail=detail,
+                current_config_sha=current_sha,
             )
         return {
             "ok": bool(ok),
@@ -951,7 +996,9 @@ class ProxyRuntime:
         }
 
     def self_heal_config_if_needed(
-        self, *, reason: str = "health check",
+        self,
+        *,
+        reason: str = "health check",
     ) -> dict[str, Any]:
         try:
             stdout, stderr = self.controller.get_status()
@@ -982,10 +1029,13 @@ class ProxyRuntime:
         return self.rollback_last_known_good_config(reason=detail_reason)
 
     def self_heal_runtime_services_if_needed(
-        self, *, reason: str = "health check",
+        self,
+        *,
+        reason: str = "health check",
     ) -> dict[str, Any]:
         status_ok, status_detail = self._supervisor_program_status(
-            "cicap_adblock", timeout_seconds=5,
+            "cicap_adblock",
+            timeout_seconds=5,
         )
         icap_health = _check_icap_adblock(timeout=0.8, error_formatter=str)
         if status_ok and bool(icap_health.get("ok")):
@@ -1059,7 +1109,9 @@ class ProxyRuntime:
             details.append(f"supervisorctl stop squid failed: {exc}")
             try:
                 fallback = subprocess.run(
-                    ["squid", "-k", "shutdown"], capture_output=True, timeout=10,
+                    ["squid", "-k", "shutdown"],
+                    capture_output=True,
+                    timeout=10,
                 )
                 decoded = _decode_completed(fallback)
                 if decoded:
@@ -1081,7 +1133,10 @@ class ProxyRuntime:
                 env = os.environ.copy()
                 env["SSL_DB_DIR"] = ssl_db_dir
                 initialized = subprocess.run(
-                    ["sh", init_script], capture_output=True, timeout=90, env=env,
+                    ["sh", init_script],
+                    capture_output=True,
+                    timeout=90,
+                    env=env,
                 )
             except Exception as exc:
                 details.append(f"Failed to run {init_script}: {exc}")
@@ -1173,7 +1228,8 @@ class ProxyRuntime:
             )
         except Exception as exc:
             return False, public_error_message(
-                exc, default="Failed to publish local web category snapshot.",
+                exc,
+                default="Failed to publish local web category snapshot.",
             )
 
     @staticmethod
@@ -1228,7 +1284,8 @@ class ProxyRuntime:
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
                 "detail": public_error_message(
-                    exc, default="Failed to materialize policy state.",
+                    exc,
+                    default="Failed to materialize policy state.",
                 ),
             }
 
@@ -1347,7 +1404,8 @@ class ProxyRuntime:
                 squid_regex_changed = self._ensure_squid_adblock_regex_files()
             except Exception as exc:
                 detail = public_error_message(
-                    exc, default="Failed to materialize adblock artifact.",
+                    exc,
+                    default="Failed to materialize adblock artifact.",
                 )
                 with suppress(Exception):
                     shutil.rmtree(snapshot_root, ignore_errors=True)
@@ -1394,7 +1452,8 @@ class ProxyRuntime:
             except Exception as exc:
                 rollback_detail_parts.append(
                     public_error_message(
-                        exc, default="Failed to restore previous adblock artifact.",
+                        exc,
+                        default="Failed to restore previous adblock artifact.",
                     ),
                 )
             finally:
@@ -1475,7 +1534,8 @@ class ProxyRuntime:
                 "changed": False,
                 "state_sha256": desired.state_sha256,
                 "detail": public_error_message(
-                    exc, default="Failed to materialize PAC state.",
+                    exc,
+                    default="Failed to materialize PAC state.",
                 ),
             }
 
@@ -1560,7 +1620,8 @@ class ProxyRuntime:
             )
         except Exception as exc:
             detail = public_error_message(
-                exc, default="Failed to materialize certificate bundle.",
+                exc,
+                default="Failed to materialize certificate bundle.",
             )
             applied = self.certificate_bundles.record_apply_result(
                 self.proxy_id,
@@ -1665,7 +1726,9 @@ class ProxyRuntime:
         except Exception:
             probe_timeout = 1.5
         services = self.runtime_services_builder(
-            error_formatter=str, icap_timeout=probe_timeout, tcp_timeout=probe_timeout,
+            error_formatter=str,
+            icap_timeout=probe_timeout,
+            tcp_timeout=probe_timeout,
         )
         clamd = services.get("clamd") or {
             "ok": False,
@@ -1801,7 +1864,9 @@ class ProxyRuntime:
             proxy_ok = not bool(stderr)
             stats = self.stats_provider()
             services = self.runtime_services_builder(
-                error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75,
+                error_formatter=str,
+                icap_timeout=0.8,
+                tcp_timeout=0.75,
             )
             services["supervisor"] = self._supervisor_programs_health()
             try:
@@ -1943,7 +2008,8 @@ class ProxyRuntime:
             status=str(health.get("status") or "unknown"),
             hostname=(os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip(),
             management_url=resolve_local_proxy_management_url(
-                self.proxy_id, public_fields.get("public_host"),
+                self.proxy_id,
+                public_fields.get("public_host"),
             ),
             public_host=str(public_fields.get("public_host") or ""),
             public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
@@ -1957,7 +2023,10 @@ class ProxyRuntime:
         return health
 
     def sync_from_db(
-        self, *, force: bool = False, operation_id: int | None = None,
+        self,
+        *,
+        force: bool = False,
+        operation_id: int | None = None,
     ) -> dict[str, Any]:
         with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
             claimed_operations = []
@@ -1966,7 +2035,9 @@ class ProxyRuntime:
                 ledger = get_operation_ledger()
                 ledger.requeue_stale_applying(self.proxy_id)
                 claimed_operations = ledger.claim_pending(
-                    self.proxy_id, limit=100, operation_id=operation_id,
+                    self.proxy_id,
+                    limit=100,
+                    operation_id=operation_id,
                 )
             except Exception:
                 claimed_operations = []
@@ -1977,7 +2048,9 @@ class ProxyRuntime:
                 if ledger is not None and claimed_operations:
                     with suppress(Exception):
                         ledger.mark_many(
-                            claimed_operations, status="failed", detail=str(exc)[:4000],
+                            claimed_operations,
+                            status="failed",
+                            detail=str(exc)[:4000],
                         )
                 raise
             if ledger is not None and claimed_operations:
@@ -2072,7 +2145,9 @@ class ProxyRuntime:
         clamav_runtime_changed = False
         controller = getattr(self, "controller", None)
         set_adblock_icap_revision_token = getattr(
-            controller, "set_adblock_icap_revision_token", None,
+            controller,
+            "set_adblock_icap_revision_token",
+            None,
         )
         if callable(set_adblock_icap_revision_token):
             set_adblock_icap_revision_token(
@@ -2083,7 +2158,9 @@ class ProxyRuntime:
                 )[:16],
             )
         materialize_clamav_runtime_files = getattr(
-            controller, "materialize_clamav_runtime_files", None,
+            controller,
+            "materialize_clamav_runtime_files",
+            None,
         )
         if callable(materialize_clamav_runtime_files):
             current_config_reader = getattr(controller, "get_current_config", None)
@@ -2094,7 +2171,8 @@ class ProxyRuntime:
                 current_config_text or "",
             )
             clamav_runtime_changed = bool(
-                ok_clamav_runtime and "updated" in (clamav_runtime_detail or "").lower(),
+                ok_clamav_runtime
+                and "updated" in (clamav_runtime_detail or "").lower(),
             )
             if str(clamav_runtime_detail or "").strip() and clamav_runtime_changed:
                 detail_parts.append(str(clamav_runtime_detail or "").strip())
@@ -2139,7 +2217,10 @@ class ProxyRuntime:
                 or "Failed to normalize Squid config for policy reload."
             )
             self.registry.mark_apply_result(
-                self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha,
+                self.proxy_id,
+                ok=False,
+                detail=detail,
+                current_config_sha=current_sha,
             )
             return {
                 "ok": False,
@@ -2212,7 +2293,10 @@ class ProxyRuntime:
                 "keeping the last-known-good running config until a new revision is activated or forced sync is requested."
             )
             self.registry.mark_apply_result(
-                self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha,
+                self.proxy_id,
+                ok=False,
+                detail=detail,
+                current_config_sha=current_sha,
             )
             return {
                 "ok": False,
@@ -2274,7 +2358,10 @@ class ProxyRuntime:
         if revision is None:
             detail = "Active config revision metadata was present, but the full config text could not be loaded."
             self.registry.mark_apply_result(
-                self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha,
+                self.proxy_id,
+                ok=False,
+                detail=detail,
+                current_config_sha=current_sha,
             )
             return {
                 "ok": False,
@@ -2320,7 +2407,10 @@ class ProxyRuntime:
         )
         new_sha = normalized_revision_sha if ok else current_sha
         self.registry.mark_apply_result(
-            self.proxy_id, ok=ok, detail=detail, current_config_sha=new_sha,
+            self.proxy_id,
+            ok=ok,
+            detail=detail,
+            current_config_sha=new_sha,
         )
         return {
             "ok": ok,

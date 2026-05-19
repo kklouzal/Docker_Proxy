@@ -228,11 +228,19 @@ class LiveStatsStore:
         self._accumulate_aggregate(batch["domains"], domain, ts, size_bytes, hit)
         self._accumulate_aggregate(batch["clients"], ip, ts, size_bytes, hit)
         self._accumulate_aggregate(
-            batch["client_domains"], (ip, domain), ts, size_bytes, hit,
+            batch["client_domains"],
+            (ip, domain),
+            ts,
+            size_bytes,
+            hit,
         )
         if not hit:
             self._accumulate_nocache(
-                batch["client_domain_nocache"], ip, domain, reason, ts,
+                batch["client_domain_nocache"],
+                ip,
+                domain,
+                reason,
+                ts,
             )
         return True
 
@@ -346,7 +354,8 @@ class LiveStatsStore:
                     (
                         hashlib.sha1(
                             f"{proxy_id}|{ip}|{domain}|{reason}".encode(
-                                "utf-8", errors="replace",
+                                "utf-8",
+                                errors="replace",
                             ),
                         ).hexdigest(),
                         proxy_id,
@@ -499,7 +508,13 @@ class LiveStatsStore:
         )
 
     def _upsert_client_domain(
-        self, conn, ip: str, domain: str, ts: int, size_bytes: int, is_hit: bool,
+        self,
+        conn,
+        ip: str,
+        domain: str,
+        ts: int,
+        size_bytes: int,
+        is_hit: bool,
     ) -> None:
         table_name = self._table(conn, "client_domains")
         hit = 1 if is_hit else 0
@@ -521,7 +536,12 @@ class LiveStatsStore:
         )
 
     def _upsert_client_domain_nocache(
-        self, conn, ip: str, domain: str, ts: int, reason: str,
+        self,
+        conn,
+        ip: str,
+        domain: str,
+        ts: int,
+        reason: str,
     ) -> None:
         table_name = self._table(conn, "client_domain_nocache")
         r = (reason or "").strip()
@@ -586,7 +606,9 @@ class LiveStatsStore:
             self.init_db()
 
             t = threading.Thread(
-                target=self._tail_loop, name="live-stats-tailer", daemon=True,
+                target=self._tail_loop,
+                name="live-stats-tailer",
+                daemon=True,
             )
             t.start()
             self._started = True
@@ -596,13 +618,22 @@ class LiveStatsStore:
         self.seed_from_recent_log()
 
         commit_batch = _env_int(
-            "LIVE_STATS_COMMIT_BATCH", 250, minimum=25, maximum=5000,
+            "LIVE_STATS_COMMIT_BATCH",
+            250,
+            minimum=25,
+            maximum=5000,
         )
         commit_interval = _env_float(
-            "LIVE_STATS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0,
+            "LIVE_STATS_COMMIT_INTERVAL_SECONDS",
+            2.0,
+            minimum=0.25,
+            maximum=10.0,
         )
         poll_interval = _env_float(
-            "LIVE_STATS_POLL_INTERVAL_SECONDS", 0.5, minimum=0.1, maximum=5.0,
+            "LIVE_STATS_POLL_INTERVAL_SECONDS",
+            0.5,
+            minimum=0.1,
+            maximum=5.0,
         )
 
         # Tail new lines.
@@ -1189,7 +1220,8 @@ class LiveStatsStore:
             """
             with self._connect() as conn:
                 rows = conn.execute(
-                    sql, (get_proxy_id(), ip, int(since), lim),
+                    sql,
+                    (get_proxy_id(), ip, int(since), lim),
                 ).fetchall()
 
             out: list[dict[str, Any]] = [
@@ -1249,16 +1281,29 @@ class LiveStatsStore:
         return out
 
     def export_rows(
-        self, mode: str, *, since: int | None = None, search: str = "", limit: int = 500,
+        self,
+        mode: str,
+        *,
+        since: int | None = None,
+        search: str = "",
+        limit: int = 500,
     ) -> list[dict[str, Any]]:
         mode_s = (mode or "domains").strip().lower()
         lim = max(10, min(1000, int(limit)))
         if mode_s == "clients":
             return self.list_clients(
-                sort="recent", order="desc", limit=lim, since=since, search=search,
+                sort="recent",
+                order="desc",
+                limit=lim,
+                since=since,
+                search=search,
             )
         return self.list_domains(
-            sort="recent", order="desc", limit=lim, since=since, search=search,
+            sort="recent",
+            order="desc",
+            limit=lim,
+            since=since,
+            search=search,
         )
 
     def list_domain_not_cached_reasons(
@@ -1437,7 +1482,8 @@ def get_store() -> LiveStatsStore:
         if _store is None:
             _store = LiveStatsStore(
                 access_log_path=os.environ.get(
-                    "SQUID_DIAGNOSTIC_ACCESS_LOG", "/var/log/squid/access-observe.log",
+                    "SQUID_DIAGNOSTIC_ACCESS_LOG",
+                    "/var/log/squid/access-observe.log",
                 ),
             )
         return _store
