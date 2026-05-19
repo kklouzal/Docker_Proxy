@@ -481,7 +481,7 @@ def test_apply_cache_overrides_applies_all_current_squid_override_flags_and_meta
 
     config = (
         "refresh_pattern ^ftp: 1440 20% 10080 ignore-auth\nrefresh_pattern -i (/cgi-bin/|\\?) 0 0% 0 ignore-private\nrefresh_pattern . 0 20% 4320 ignore-no-cache"
-        + "\n"
+         "\n"
     )
     overrides = dict.fromkeys(CACHE_OVERRIDE_FIELDS, True)
 

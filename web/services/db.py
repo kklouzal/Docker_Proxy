@@ -6,11 +6,10 @@ import threading
 import time
 from collections import UserDict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import unquote, urlparse
 
 import pymysql  # type: ignore
-from typing_extensions import Self
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

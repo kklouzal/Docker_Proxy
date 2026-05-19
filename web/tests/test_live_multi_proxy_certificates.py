@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography import x509
@@ -35,7 +35,7 @@ def _build_test_pfx(password: bytes) -> bytes:
             x509.NameAttribute(NameOID.COMMON_NAME, "Live Uploaded Proxy CA"),
         ],
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)

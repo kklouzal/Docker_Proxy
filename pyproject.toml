@@ -28,6 +28,26 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Pytest asserts are the idiomatic assertion mechanism; keep all other useful
-# test lint families enabled.
-"web/tests/**/*.py" = ["S101"]
+# Pytest asserts are idiomatic. Tests also need concise scenario functions,
+# literal expected values, private API probes, and isolated imports/reloads.
+# Keep bug, security, exception, pathlib, noqa, and complexity checks active.
+"web/tests/**/*.py" = [
+    "ANN001",
+    "ANN002",
+    "ANN003",
+    "ANN201",
+    "ANN202",
+    "ANN204",
+    "ANN401",
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D107",
+    "PLC0415",
+    "PLR2004",
+    "S101",
+    "SLF001",
+]

@@ -131,7 +131,7 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
 
     store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     store.init_db()
-    with store._connect() as conn:  # noqa: SLF001 - targeted regression setup for cross-store log enrichment
+    with store._connect() as conn:
         conn.execute(
             """
             CREATE TABLE diagnostic_requests (

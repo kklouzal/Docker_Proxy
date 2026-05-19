@@ -964,8 +964,8 @@ class DiagnosticStore:
             like = f"%{_escape_like(search.strip().lower())}%"
             where.append(
                 "("
-                + "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\'"
-                + ")",
+                 "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\'"
+                 ")",
             )
             params.extend([like] * 7)
         where_sql = "WHERE " + " AND ".join(where)
@@ -1030,8 +1030,8 @@ class DiagnosticStore:
             like = f"%{_escape_like(search.strip().lower())}%"
             where.append(
                 "("
-                + "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
-                + ")",
+                 "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
+                 ")",
             )
             params.extend([like] * 8)
         where_sql = "WHERE " + " AND ".join(where)

@@ -10,7 +10,7 @@ import shutil
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -1217,7 +1217,7 @@ def inject_now():
 
     return {
         # Use timezone-aware UTC to avoid deprecation warnings.
-        "current_year": datetime.now(timezone.utc).year,
+        "current_year": datetime.now(UTC).year,
         "asset_version": _asset_version,
         "fmt_ts": fmt_ts,
         "observability_default_window": OBSERVABILITY_DEFAULT_WINDOW,

@@ -447,8 +447,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             where.append(
                 "("
-                + "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\'"
-                + ")",
+                 "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\'"
+                 ")",
             )
             params.extend([like, like, like])
         where_sql = "WHERE " + " AND ".join(where)
@@ -541,8 +541,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             av_where.append(
                 "("
-                + "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
-                + ")",
+                 "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
+                 ")",
             )
             av_params.extend([like, like, like, like, like])
         av_where_sql = "WHERE " + " AND ".join(av_where)
@@ -564,8 +564,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             webfilter_where.append(
                 "("
-                + "LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\' OR LOWER(category) LIKE %s ESCAPE '\\\\'"
-                + ")",
+                 "LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\' OR LOWER(category) LIKE %s ESCAPE '\\\\'"
+                 ")",
             )
             webfilter_params.extend([like, like, like])
         webfilter_where_sql = "WHERE " + " AND ".join(webfilter_where)
@@ -834,8 +834,8 @@ class ObservabilityQueries:
             like = f"%{_escape_like(search_value)}%"
             where.append(
                 "("
-                + "LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\'"
-                + ")",
+                 "LOWER(domain) LIKE %s ESCAPE '\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\' OR LOWER(url) LIKE %s ESCAPE '\\'"
+                 ")",
             )
             params.extend([like, like, like])
         where_sql = "WHERE " + " AND ".join(where)

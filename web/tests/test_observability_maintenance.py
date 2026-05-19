@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from typing import Self
+
 from services import observability_maintenance as maintenance
-from typing_extensions import Self
 
 
 class FakeResult:
