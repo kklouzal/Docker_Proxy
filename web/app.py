@@ -68,7 +68,6 @@ from services.ui_support import (
     window_label as _window_label,
 )
 
-import re
 import secrets
 import csv
 import io
@@ -1085,12 +1084,21 @@ def _cached_observability_summary(proxy_id: str, window_i: int = OBSERVABILITY_D
 
 
 def _correlate_request_for_icap_events(diagnostic_store: Any, icap_events: List[Dict[str, Any]], *, icap_limit: int = 0) -> List[Dict[str, Any]]:
+    txs = [str(event.get('master_xaction') or '').strip() for event in icap_events]
+    if hasattr(diagnostic_store, 'batch_find_requests_by_master_xactions'):
+        request_rows = diagnostic_store.batch_find_requests_by_master_xactions(txs)
+    else:
+        request_rows = {
+            tx: diagnostic_store.find_request_by_master_xaction(tx)
+            for tx in dict.fromkeys(txs)
+            if tx
+        }
     for event in icap_events:
         event['correlated_request'] = None
         tx = str(event.get('master_xaction') or '').strip()
         if not tx:
             continue
-        request_row = diagnostic_store.find_request_by_master_xaction(tx)
+        request_row = request_rows.get(tx)
         if request_row is None:
             continue
         request_event = dict(request_row)
@@ -1871,14 +1879,12 @@ def observability():
     search = (request.args.get('q') or '').strip().lower()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
     privacy = _observability_privacy_from_request()
-    total_requests = 0
 
     try:
         summary = _cached_observability_result(
             _observability_result_cache_key('observability', 'summary', get_proxy_id(), window_i),
             lambda: queries.summary(since=since_ts),
         )
-        total_requests = int(summary.get('request_records') or 0)
     except Exception:
         log_exception_throttled(
             app.logger,
@@ -2086,7 +2092,6 @@ def observability_export():
     privacy = _observability_privacy_from_request()
     export_format = _observability_export_format_from_request()
     summary_data: Dict[str, Any] | None = None
-    total_requests = 0
     try:
         if pane in ('overview', 'clients', 'destinations', 'performance', 'reports'):
             summary_data = _cached_observability_result(
