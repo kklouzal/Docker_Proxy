@@ -13,9 +13,27 @@ ignore = [
     # Ownership/legal boilerplate is not a useful proxy quality gate.
     "CPY001",
 
+    # Enforce behavior and maintainability, not boilerplate documentation churn.
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D107",
+    "DOC201",
+    "DOC501",
+
     # Duplicate pydocstyle opinions; keep the compatible counterparts enabled.
     "D203",
     "D213",
+
+    # Ruff format owns wrapping; residual long lines are usually literals,
+    # command snippets, generated messages, URLs, or SQL fragments.
+    "E501",
+
+    # Avoid churning cohesive service APIs into staticmethod-heavy classes.
+    "PLR6301",
 
     # Keep formatter-only style out of the blocking lint gate.
     "COM812",
@@ -39,13 +57,6 @@ ignore = [
     "ANN202",
     "ANN204",
     "ANN401",
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D105",
-    "D107",
     "PLC0415",
     "PLR2004",
     "S101",
