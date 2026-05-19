@@ -52,10 +52,8 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     assert "virus_scan.PassOnError on" in rendered
 
     policy = render_file_security_policy_config()
-    assert "request_body_max_size 0" in policy
-    assert "reply_body_max_size 0" in policy
-    assert "request_body_max_size 0 MB" not in policy
-    assert "reply_body_max_size 0 MB" not in policy
+    assert "request_body_max_size" not in policy
+    assert "reply_body_max_size" not in policy
     assert "adaptation_access av_req_set allow file_security_upload_methods" in policy
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
     assert "adaptation_access av_resp_set deny file_security_partial_response" in policy

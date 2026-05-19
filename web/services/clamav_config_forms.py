@@ -505,10 +505,10 @@ def _render_squid_size(size_text: str) -> str:
     text = str(size_text or "0").strip().upper()
     match = re.fullmatch(r"(\d+)([KMG])?", text)
     if not match:
-        return "0"
+        return ""
     amount, unit = match.groups()
     if int(amount) == 0:
-        return "0"
+        return ""
     units = {"": "MB", "K": "KB", "M": "MB", "G": "GB"}
     return f"{amount} {units[unit or '']}"
 
@@ -540,11 +540,13 @@ def render_file_security_policy_config(options: Mapping[str, Any] | None = None)
     exec_exts = _split_policy_tokens(opts["file_security_executable_extensions"])
     blocked_mimes = _split_mime_tokens(opts["file_security_blocked_mime_types"])
 
-    lines = [
-        "# Squid-side file security policy generated from the ClamAV page.",
-        f"request_body_max_size {_render_squid_size(opts['file_security_max_upload_size'])}",
-        f"reply_body_max_size {_render_squid_size(opts['file_security_max_download_size'])}",
-    ]
+    lines = ["# Squid-side file security policy generated from the ClamAV page."]
+    upload_limit = _render_squid_size(opts["file_security_max_upload_size"])
+    if upload_limit:
+        lines.append(f"request_body_max_size {upload_limit}")
+    download_limit = _render_squid_size(opts["file_security_max_download_size"])
+    if download_limit:
+        lines.append(f"reply_body_max_size {download_limit}")
     lines.extend(
         (
             "acl file_security_upload_methods method POST PUT PATCH",
