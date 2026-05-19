@@ -47,10 +47,8 @@ jobs:
       - name: Run Ruff lint
         run: >-
           python -m ruff check
-          --select E,F,I,UP,COM
-          --ignore E501,COM812
           --output-format=github
-          proxy web/app.py web/services web/tools web/wsgi.py
+          .
 
   deterministic-tests:
     runs-on: ubuntu-latest

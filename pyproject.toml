@@ -1,0 +1,33 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = [
+    ".venv",
+    ".ruff_cache",
+]
+
+[tool.ruff.lint]
+preview = true
+select = ["ALL"]
+ignore = [
+    # Ownership/legal boilerplate is not a useful proxy quality gate.
+    "CPY001",
+
+    # Duplicate pydocstyle opinions; keep the compatible counterparts enabled.
+    "D203",
+    "D213",
+
+    # Keep formatter-only style out of the blocking lint gate.
+    "COM812",
+    "ISC001",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "Q004",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Pytest asserts are the idiomatic assertion mechanism; keep all other useful
+# test lint families enabled.
+"web/tests/**/*.py" = ["S101"]
