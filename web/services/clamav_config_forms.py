@@ -228,8 +228,10 @@ def _render_squid_size(size_text: str) -> str:
     text = str(size_text or '0').strip().upper()
     match = re.fullmatch(r'(\d+)([KMG])?', text)
     if not match:
-        return '0 MB'
+        return '0'
     amount, unit = match.groups()
+    if int(amount) == 0:
+        return '0'
     units = {'': 'MB', 'K': 'KB', 'M': 'MB', 'G': 'GB'}
     return f"{amount} {units[unit or '']}"
 
