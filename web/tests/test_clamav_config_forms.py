@@ -62,7 +62,9 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     assert (
         "adaptation_access av_resp_set allow file_security_download_methods" in policy
     )
-    assert "acl file_security_risky_path urlpath_regex -i" in policy
+    assert "acl file_security_risky_path urlpath_regex -i \\.(exe|dll" in policy
+    assert "($|[?#])" in policy
+    assert "?:" not in policy
 
 
 def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
@@ -114,7 +116,18 @@ def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
     assert "request_body_max_size 32 MB" in policy
     assert "reply_body_max_size 64 MB" in policy
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
-    assert "acl file_security_risky_path urlpath_regex -i" in policy
+    assert (
+        "acl file_security_risky_path urlpath_regex -i \\.(exe|dll|js)($|[?#])"
+        in policy
+    )
+    assert (
+        "acl file_security_archive_path urlpath_regex -i \\.(zip|7z)($|[?#])" in policy
+    )
+    assert (
+        "acl file_security_executable_path urlpath_regex -i \\.(exe|dll|msi)($|[?#])"
+        in policy
+    )
+    assert "?:" not in policy
     assert (
         "http_access deny file_security_executable_mime file_security_upload_methods"
         in policy
@@ -253,6 +266,9 @@ def test_squid_controller_materializes_clamav_runtime_files(
     )
     assert "request_body_max_size 64 MB" in include_text
     assert "reply_body_max_size 128 MB" in include_text
+    assert "acl file_security_risky_path urlpath_regex -i \\.(exe|dll" in include_text
+    assert "($|[?#])" in include_text
+    assert "?:" not in include_text
     assert "http_access deny file_security_risky_path" in include_text
     assert (
         "http_access deny file_security_executable_mime file_security_upload_methods"

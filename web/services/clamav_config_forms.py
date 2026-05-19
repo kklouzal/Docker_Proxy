@@ -516,7 +516,7 @@ def _render_squid_size(size_text: str) -> str:
 def _render_regex_tokens(tokens: tuple[str, ...]) -> str:
     if not tokens:
         return ""
-    return "(?:" + "|".join(re.escape(token) for token in tokens) + ")"
+    return "(" + "|".join(re.escape(token) for token in tokens) + ")"
 
 
 def _normalize_preset_name(value: Any) -> str:
@@ -556,15 +556,15 @@ def render_file_security_policy_config(options: Mapping[str, Any] | None = None)
 
     if opts["file_security_block_risky_extensions"] and risky_exts:
         lines.append(
-            f"acl file_security_risky_path urlpath_regex -i \\.{_render_regex_tokens(risky_exts)}(?:$|[?#])",
+            f"acl file_security_risky_path urlpath_regex -i \\.{_render_regex_tokens(risky_exts)}($|[?#])",
         )
     if opts["file_security_block_archives"] and archive_exts:
         lines.append(
-            f"acl file_security_archive_path urlpath_regex -i \\.{_render_regex_tokens(archive_exts)}(?:$|[?#])",
+            f"acl file_security_archive_path urlpath_regex -i \\.{_render_regex_tokens(archive_exts)}($|[?#])",
         )
     if opts["file_security_block_executable_content"] and exec_exts:
         lines.append(
-            f"acl file_security_executable_path urlpath_regex -i \\.{_render_regex_tokens(exec_exts)}(?:$|[?#])",
+            f"acl file_security_executable_path urlpath_regex -i \\.{_render_regex_tokens(exec_exts)}($|[?#])",
         )
     if opts["file_security_block_executable_content"] and blocked_mimes:
         lines.append(
