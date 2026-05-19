@@ -12,7 +12,7 @@ def _add_web_to_path() -> None:
 
 def test_normalize_proxy_id_sanitizes_defaults_and_truncates() -> None:
     _add_web_to_path()
-    import services.proxy_context as proxy_context  # type: ignore
+    from services import proxy_context  # type: ignore
 
     assert proxy_context.normalize_proxy_id(None) == "default"
     assert proxy_context.normalize_proxy_id("  edge-2  ") == "edge-2"
@@ -23,7 +23,7 @@ def test_normalize_proxy_id_sanitizes_defaults_and_truncates() -> None:
 
 def test_get_default_proxy_id_env_precedence_and_context_reset(monkeypatch) -> None:
     _add_web_to_path()
-    import services.proxy_context as proxy_context  # type: ignore
+    from services import proxy_context  # type: ignore
 
     monkeypatch.setenv("DEFAULT_PROXY_ID", "default-env")
     monkeypatch.setenv("PROXY_INSTANCE_ID", "instance-env")

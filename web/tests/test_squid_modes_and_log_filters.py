@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 from pathlib import Path
 
@@ -6,15 +6,17 @@ from .mysql_test_utils import configure_test_mysql_env
 
 
 def _add_web_to_path() -> None:
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    repo_dir = os.path.abspath(os.path.join(web_dir, ".."))
+    web_dir = Path(os.path.join(Path(__file__).parent, "..")).resolve()
+    repo_dir = Path(os.path.join(web_dir, "..")).resolve()
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
     if repo_dir not in sys.path:
         sys.path.insert(0, repo_dir)
 
 
-def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(tmp_path):
+def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-seed")
 
@@ -22,12 +24,7 @@ def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(tmp_pa
 
     cache_log = tmp_path / "cache.log"
     cache_log.write_text(
-        "\n".join(
-            [
-                "2026/04/18 04:04:09 kid1| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)",
-                "2026/04/18 04:04:40 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
-            ]
-        ),
+        "2026/04/18 04:04:09 kid1| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)\n2026/04/18 04:04:40 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
         encoding="utf-8",
     )
 
@@ -42,7 +39,7 @@ def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(tmp_pa
     assert rows[0]["count"] == 1
 
 
-def test_ssl_errors_store_ignores_startup_noise(tmp_path):
+def test_ssl_errors_store_ignores_startup_noise(tmp_path) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors")
 
@@ -50,9 +47,15 @@ def test_ssl_errors_store_ignores_startup_noise(tmp_path):
 
     store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     store.init_db()
-    store.ingest_line("2026/04/18 04:04:09| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)")
-    store.ingest_line("2026/04/18 04:04:39| helperOpenServers: Starting 5/12 'ssl_crtd' processes")
-    store.ingest_line("2026/04/18 04:04:40| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line(
+        "2026/04/18 04:04:09| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)"
+    )
+    store.ingest_line(
+        "2026/04/18 04:04:39| helperOpenServers: Starting 5/12 'ssl_crtd' processes"
+    )
+    store.ingest_line(
+        "2026/04/18 04:04:40| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    )
 
     rows = store.list_errors(limit=10)
 
@@ -61,7 +64,9 @@ def test_ssl_errors_store_ignores_startup_noise(tmp_path):
     assert "SQUID_TLS_ERR_ACCEPT" in rows[0]["reason"]
 
 
-def test_ssl_errors_store_merges_followup_connection_context_without_double_count(tmp_path):
+def test_ssl_errors_store_merges_followup_connection_context_without_double_count(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-context")
 
@@ -69,8 +74,12 @@ def test_ssl_errors_store_merges_followup_connection_context_without_double_coun
 
     store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     store.init_db()
-    store.ingest_line("2026/04/18 04:04:40| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
-    store.ingest_line("    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1")
+    store.ingest_line(
+        "2026/04/18 04:04:40| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    )
+    store.ingest_line(
+        "    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1"
+    )
 
     rows = store.list_errors(limit=10)
 
@@ -80,7 +89,9 @@ def test_ssl_errors_store_merges_followup_connection_context_without_double_coun
     assert "remote=192.0.2.10:54432" in rows[0]["sample"]
 
 
-def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_bucket(tmp_path):
+def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_bucket(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-block")
 
@@ -89,8 +100,12 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
     store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     store.init_db()
     store.ingest_line("2026/04/21 23:37:04 kid1| ERROR: Cannot accept a TLS connection")
-    store.ingest_line("2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
-    store.ingest_line("    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1")
+    store.ingest_line(
+        "2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    )
+    store.ingest_line(
+        "    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1"
+    )
 
     rows = store.list_errors(limit=10)
 
@@ -99,11 +114,16 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
     assert rows[0]["reason"] == "SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
     assert rows[0]["count"] == 1
     assert "Cannot accept a TLS connection" in rows[0]["sample"]
-    assert "error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1" in rows[0]["sample"]
+    assert (
+        "error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+        in rows[0]["sample"]
+    )
     assert "connection: conn23" in rows[0]["sample"]
 
 
-def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(tmp_path):
+def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-master-context")
 
@@ -125,17 +145,19 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(tmp_pat
                 master_xaction VARCHAR(128) NOT NULL,
                 KEY idx_diag_proxy_master_ts (proxy_id, master_xaction, ts)
             )
-            """
+            """,
         )
         conn.execute(
             """
             INSERT INTO diagnostic_requests(proxy_id, ts, domain, sni, host, url, master_xaction)
             VALUES('default', UNIX_TIMESTAMP('2026-04-21 23:37:04'), 'gateway.discord.gg', 'gateway.discord.gg', 'gateway.discord.gg:443', 'gateway.discord.gg:443', '55')
-            """
+            """,
         )
 
     store.ingest_line("2026/04/21 23:37:04 kid1| ERROR: Cannot accept a TLS connection")
-    store.ingest_line("2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line(
+        "2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    )
     store.ingest_line("    current master transaction: master55")
 
     rows = store.list_errors(limit=10)
@@ -146,7 +168,9 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(tmp_pat
     assert "current master transaction: master55" in rows[0]["sample"]
 
 
-def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(tmp_path):
+def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-search")
 
@@ -154,7 +178,9 @@ def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(tmp_path
 
     store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     store.init_db()
-    store.ingest_line("2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1 CONNECT tls.example:443")
+    store.ingest_line(
+        "2026/04/21 23:37:04 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1 CONNECT tls.example:443"
+    )
 
     recent = store.list_recent(search="tls.example", limit=10)
     top = store.top_domains(search="tls.example", limit=10)
@@ -164,7 +190,9 @@ def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(tmp_path
     assert top[0]["domain"] == "tls.example"
 
 
-def test_render_icap_include_uses_single_endpoint_services_without_identity_rewrite(monkeypatch):
+def test_render_icap_include_uses_single_endpoint_services_without_identity_rewrite(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -185,7 +213,7 @@ def test_render_icap_include_uses_single_endpoint_services_without_identity_rewr
     assert "Accept-Encoding identity" not in out
 
 
-def test_repo_template_includes_cache_first_defaults():
+def test_repo_template_includes_cache_first_defaults() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     text = (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8")
 
@@ -218,8 +246,14 @@ def test_repo_template_includes_cache_first_defaults():
     assert "icap_206_enable on" in text
     assert "acl icap_range_request req_header Range .+" in text
     assert "acl icap_partial_response http_status 206" in text
-    assert "Antivirus scanning policy is materialized into /etc/squid/conf.d/20-icap.conf" in text
-    assert "upload/download coverage, file blocking, size limits, and fail-open/closed" in text
+    assert (
+        "Antivirus scanning policy is materialized into /etc/squid/conf.d/20-icap.conf"
+        in text
+    )
+    assert (
+        "upload/download coverage, file blocking, size limits, and fail-open/closed"
+        in text
+    )
     assert "adaptation_send_client_ip on" in text
     assert "adaptation_send_username off" in text
     assert "icap_client_username_header X-Client-Username" in text
@@ -234,7 +268,9 @@ def test_repo_template_includes_cache_first_defaults():
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
 
 
-def test_squid_controller_normalize_config_text_adds_default_observability_lines():
+def test_squid_controller_normalize_config_text_adds_default_observability_lines() -> (
+    None
+):
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -250,7 +286,7 @@ access_log stdio:/var/log/squid/access.log liveui
 cache_log stdio:/var/log/squid/cache.log
 cache_store_log none
 http_access allow all
-""".strip()
+""".strip(),
     )
 
     assert "logformat diagnostic" in text
@@ -259,14 +295,18 @@ http_access allow all
     assert "/var/log/squid/access.log" not in text
     assert "include /etc/squid/conf.d/20-icap.conf" in text
     assert "include /etc/squid/conf.d/30-webfilter.conf" in text
-    assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index("http_access allow all")
+    assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index(
+        "http_access allow all"
+    )
     assert "icap_log stdio:/var/log/squid/icap.log icapobserve" in text
     assert "note ssl_exception steam steam_sites" in text
     assert "note cache_bypass auth has_auth" in text
     assert "note cache_bypass cookie has_cookie" in text
 
 
-def test_squid_controller_normalize_config_text_repositions_legacy_webfilter_include():
+def test_squid_controller_normalize_config_text_repositions_legacy_webfilter_include() -> (
+    None
+):
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -276,14 +316,18 @@ def test_squid_controller_normalize_config_text_repositions_legacy_webfilter_inc
         """
 http_access allow all
 include /etc/squid/conf.d/30-webfilter.conf
-""".strip()
+""".strip(),
     )
 
     assert text.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
-    assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index("http_access allow all")
+    assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index(
+        "http_access allow all"
+    )
 
 
-def test_squid_controller_normalize_config_text_migrates_legacy_inline_icap_services_to_include():
+def test_squid_controller_normalize_config_text_migrates_legacy_inline_icap_services_to_include() -> (
+    None
+):
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -294,7 +338,7 @@ def test_squid_controller_normalize_config_text_migrates_legacy_inline_icap_serv
 icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on
 adaptation_access adblock_req_set allow all
 http_access allow all
-""".strip()
+""".strip(),
     )
 
     assert "include /etc/squid/conf.d/20-icap.conf" in text
@@ -302,7 +346,7 @@ http_access allow all
     assert "adaptation_access adblock_req_set allow all" not in text
 
 
-def test_squid_controller_parses_new_perf_tunables():
+def test_squid_controller_parses_new_perf_tunables() -> None:
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -351,7 +395,7 @@ icap_retry_limit 2
 shared_memory_locking on
 cpu_affinity_map process_numbers=1,2 cores=1,3
 max_open_disk_fds 512
-""".strip()
+""".strip(),
     )
 
     assert options["cache_dir_type"] == "rock"
@@ -398,7 +442,10 @@ max_open_disk_fds 512
     assert options["icap_service_failure_limit_window_seconds"] == 45
     assert options["icap_service_revival_delay_seconds"] == 90
     assert options["adaptation_service_iteration_limit"] == 8
-    assert options["force_request_body_continuation_rules_text"] == "force_request_body_continuation allow all"
+    assert (
+        options["force_request_body_continuation_rules_text"]
+        == "force_request_body_continuation allow all"
+    )
     assert options["icap_retry_rules_text"] == "icap_retry allow all"
     assert options["icap_retry_limit"] == 2
     assert options["shared_memory_locking"] is True
@@ -406,14 +453,17 @@ max_open_disk_fds 512
     assert options["max_open_disk_fds"] == 512
 
 
-def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
+def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path) -> None:
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
     repo_root = Path(__file__).resolve().parents[2]
     template_path = tmp_path / "squid.conf.template"
-    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+    template_path.write_text(
+        (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
     ctl.squid_conf_template_path = str(template_path)
@@ -465,7 +515,7 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
             "max_open_disk_fds": 512,
             "cache_miss_revalidate_on": False,
             "icap_preview_enable_on": True,
-        }
+        },
     )
 
     assert "# BEGIN SQUID-UI MANAGED SETTINGS" in rendered
@@ -516,7 +566,9 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path):
     assert "cache_log stdio:/var/log/squid/cache.log" in rendered
 
 
-def test_squid_controller_generate_config_adds_optional_intercept_listener(tmp_path):
+def test_squid_controller_generate_config_adds_optional_intercept_listener(
+    tmp_path,
+) -> None:
     _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
@@ -524,7 +576,10 @@ def test_squid_controller_generate_config_adds_optional_intercept_listener(tmp_p
 
     repo_root = Path(__file__).resolve().parents[2]
     template_path = tmp_path / "squid.conf.template"
-    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+    template_path.write_text(
+        (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
     ctl.squid_conf_template_path = str(template_path)
@@ -545,7 +600,9 @@ def test_squid_controller_generate_config_adds_optional_intercept_listener(tmp_p
     assert "SOCKS" not in rendered
 
 
-def test_squid_controller_generate_config_adds_optional_https_intercept_listener(tmp_path):
+def test_squid_controller_generate_config_adds_optional_https_intercept_listener(
+    tmp_path,
+) -> None:
     _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
@@ -553,7 +610,10 @@ def test_squid_controller_generate_config_adds_optional_https_intercept_listener
 
     repo_root = Path(__file__).resolve().parents[2]
     template_path = tmp_path / "squid.conf.template"
-    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+    template_path.write_text(
+        (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
     ctl.squid_conf_template_path = str(template_path)
@@ -580,11 +640,16 @@ def test_squid_controller_generate_config_adds_optional_https_intercept_listener
     assert "dynamic_cert_mem_cache_size=256MB" in rendered
     assert "acl https_intercept_listener myportname https_intercept" in rendered
     assert "ssl_bump splice https_intercept_listener" in rendered
-    assert rendered.index("ssl_bump peek step1") < rendered.index("ssl_bump splice https_intercept_listener") < rendered.index("ssl_bump stare step2")
+    assert (
+        rendered.index("ssl_bump peek step1")
+        < rendered.index("ssl_bump splice https_intercept_listener")
+        < rendered.index("ssl_bump stare step2")
+    )
 
 
-
-def test_squid_controller_https_intercept_listener_does_not_splice_by_default(tmp_path):
+def test_squid_controller_https_intercept_listener_does_not_splice_by_default(
+    tmp_path,
+) -> None:
     _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
@@ -592,7 +657,10 @@ def test_squid_controller_https_intercept_listener_does_not_splice_by_default(tm
 
     repo_root = Path(__file__).resolve().parents[2]
     template_path = tmp_path / "squid.conf.template"
-    template_path.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+    template_path.write_text(
+        (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
     ctl.squid_conf_template_path = str(template_path)
@@ -611,7 +679,7 @@ def test_squid_controller_https_intercept_listener_does_not_splice_by_default(tm
     assert "ssl_bump splice https_intercept_listener" not in rendered
 
 
-def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):
+def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-candidates")
 
@@ -619,9 +687,15 @@ def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):
 
     store = SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     store.init_db()
-    store.ingest_line("2026/04/18 04:04:40| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
-    store.ingest_line("2026/04/18 04:04:41| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
-    store.ingest_line("2026/04/18 04:04:42| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1")
+    store.ingest_line(
+        "2026/04/18 04:04:40| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    )
+    store.ingest_line(
+        "2026/04/18 04:04:41| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    )
+    store.ingest_line(
+        "2026/04/18 04:04:42| CONNECT gateway.discord.gg:443 error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    )
 
     candidates = store.suggest_exclusion_candidates(min_events=3)
 
@@ -630,14 +704,17 @@ def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path):
     assert candidates[0]["total"] >= 3
     assert "TLS_CLIENT_ACCEPT" in candidates[0]["categories"]
 
-    searched_candidates = store.suggest_exclusion_candidates(search="discord", min_events=3)
+    searched_candidates = store.suggest_exclusion_candidates(
+        search="discord", min_events=3
+    )
 
     assert searched_candidates
     assert searched_candidates[0]["domain"] == "gateway.discord.gg"
 
 
-
-def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards(tmp_path):
+def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "sslfilter-domain-dedupe")
 
@@ -649,15 +726,33 @@ def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards
         nocache_src_list_path=str(tmp_path / "nocache-src.txt"),
     )
     store.init_db()
-    for domain in ["example.com", "*.example.com", "api.example.net", "api.example.net"]:
+    for domain in [
+        "example.com",
+        "*.example.com",
+        "api.example.net",
+        "api.example.net",
+    ]:
         assert store.add_domain("nobump", domain)[0] is True
-    for domain in ["cache.example", "*.cache.example", "cdn.example.net", "cdn.example.net"]:
+    for domain in [
+        "cache.example",
+        "*.cache.example",
+        "cdn.example.net",
+        "cdn.example.net",
+    ]:
         assert store.add_domain("nocache", domain)[0] is True
 
     rendered = store.render_materialized_state().include_text
 
-    ssl_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl sslfilter_nobump_domains ssl::server_name"))
-    cache_acl_line = next(line for line in rendered.splitlines() if line.startswith("acl sslfilter_nocache_domains dstdomain"))
+    ssl_acl_line = next(
+        line
+        for line in rendered.splitlines()
+        if line.startswith("acl sslfilter_nobump_domains ssl::server_name")
+    )
+    cache_acl_line = next(
+        line
+        for line in rendered.splitlines()
+        if line.startswith("acl sslfilter_nocache_domains dstdomain")
+    )
     ssl_values = ssl_acl_line.split()[3:]
     cache_values = cache_acl_line.split()[3:]
     assert ".example.com" in ssl_values
@@ -666,14 +761,29 @@ def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards
     assert ".cache.example" in cache_values
     assert "cache.example" not in cache_values
     assert cache_values.count("cdn.example.net") == 1
-    assert "note ssl_exception sslfilter_nobump_domain sslfilter_nobump_domains" in rendered
-    assert "note cache_bypass sslfilter_nocache_domain sslfilter_nocache_domains" in rendered
-    assert "note ssl_exception sslfilter_nobump_domains sslfilter_nobump_domain" not in rendered
-    assert "note cache_bypass sslfilter_nocache_domains sslfilter_nocache_domain" not in rendered
+    assert (
+        "note ssl_exception sslfilter_nobump_domain sslfilter_nobump_domains"
+        in rendered
+    )
+    assert (
+        "note cache_bypass sslfilter_nocache_domain sslfilter_nocache_domains"
+        in rendered
+    )
+    assert (
+        "note ssl_exception sslfilter_nobump_domains sslfilter_nobump_domain"
+        not in rendered
+    )
+    assert (
+        "note cache_bypass sslfilter_nocache_domains sslfilter_nocache_domain"
+        not in rendered
+    )
     assert "ssl_bump splice sslfilter_nobump_domains" in rendered
     assert "cache deny sslfilter_nocache_domains" in rendered
 
-def test_compatibility_presets_include_source_backed_collaboration_sslfilter_domains(tmp_path):
+
+def test_compatibility_presets_include_source_backed_collaboration_sslfilter_domains(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "compatibility-presets")
 
@@ -703,7 +813,10 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert "ims-na1.adobelogin.com" in presets["adobe-cloud"].domains
     assert "updates.cdn-apple.com" in presets["apple-cloud"].domains
     assert "*.push.apple.com" in presets["apple-cloud"].domains
-    assert "copilot-proxy.githubusercontent.com" in presets["developer-collaboration"].domains
+    assert (
+        "copilot-proxy.githubusercontent.com"
+        in presets["developer-collaboration"].domains
+    )
     assert "wss-primary.slack.com" in presets["developer-collaboration"].domains
     assert "*.atl-paas.net" in presets["developer-collaboration"].domains
     assert "*.okta.com" in presets["identity-mfa"].domains
@@ -715,7 +828,8 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert added > 200
     assert error == ""
 
-def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path):
+
+def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path) -> None:
     _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
@@ -723,20 +837,29 @@ def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path):
 
     repo_root = Path(__file__).resolve().parents[2]
     template = tmp_path / "squid.conf.template"
-    template.write_text((repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"), encoding="utf-8")
+    template.write_text(
+        (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     controller = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
     controller.squid_conf_template_path = str(template)
 
-    rendered = controller.generate_config_from_template(build_template_options({}, max_workers=4))
+    rendered = controller.generate_config_from_template(
+        build_template_options({}, max_workers=4)
+    )
 
     assert "acl step2 at_step SslBump2" in rendered
     assert "acl step3 at_step SslBump3" in rendered
-    assert rendered.index("ssl_bump peek step1") < rendered.index("ssl_bump stare step2") < rendered.index("ssl_bump bump step3")
+    assert (
+        rendered.index("ssl_bump peek step1")
+        < rendered.index("ssl_bump stare step2")
+        < rendered.index("ssl_bump bump step3")
+    )
     assert "ssl_bump bump all" not in rendered
     assert "steam_sites" not in rendered
 
 
-def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path):
+def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "webfilter-helper-version")
 
@@ -751,23 +874,28 @@ def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path):
     store.set_settings(enabled=True, source_url="", blocked_categories=["adult"])
 
     with connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS webcat_meta (k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
-        conn.execute("INSERT INTO webcat_meta(k,v) VALUES('built_ts','100') ON DUPLICATE KEY UPDATE v=VALUES(v)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS webcat_meta (k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO webcat_meta(k,v) VALUES('built_ts','100') ON DUPLICATE KEY UPDATE v=VALUES(v)"
+        )
 
     first = store.render_materialized_state().include_text
     assert "external_acl_type webcat_" in first
     assert "acl webfilter_block_adult external webcat_" in first
 
     with connect() as conn:
-        conn.execute("INSERT INTO webcat_meta(k,v) VALUES('built_ts','200') ON DUPLICATE KEY UPDATE v=VALUES(v)")
+        conn.execute(
+            "INSERT INTO webcat_meta(k,v) VALUES('built_ts','200') ON DUPLICATE KEY UPDATE v=VALUES(v)"
+        )
 
     second = store.render_materialized_state().include_text
     assert second != first
     assert "acl webfilter_block_adult external webcat_" in second
 
 
-
-def test_adblock_req_regex_tables_keep_c_icap_domain_and_legacy_regex_tables():
+def test_adblock_req_regex_tables_keep_c_icap_domain_and_legacy_regex_tables() -> None:
     config = Path("docker/adblock_req.conf").read_text(encoding="utf-8")
 
     assert "url_check.LookupTableDB adblock_allow domain hash:" in config
@@ -777,55 +905,57 @@ def test_adblock_req_regex_tables_keep_c_icap_domain_and_legacy_regex_tables():
     assert " full_url regex:" not in config
 
 
-def test_proxy_runtime_derives_squid_url_regex_tables_from_c_icap_regex_files(tmp_path):
+def test_proxy_runtime_derives_squid_url_regex_tables_from_c_icap_regex_files(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     from proxy.runtime import ProxyRuntime  # type: ignore
 
     compiled = tmp_path / "compiled"
     compiled.mkdir()
-    (compiled / "regex_allow.txt").write_text("/.*allow_token[.]js.*/\n# comment\n\n", encoding="utf-8")
-    (compiled / "regex_block.txt").write_text("/.*block_token[.]js.*/\nraw_legacy_regex\n", encoding="utf-8")
+    (compiled / "regex_allow.txt").write_text(
+        "/.*allow_token[.]js.*/\n# comment\n\n", encoding="utf-8"
+    )
+    (compiled / "regex_block.txt").write_text(
+        "/.*block_token[.]js.*/\nraw_legacy_regex\n", encoding="utf-8"
+    )
 
     runtime = ProxyRuntime.__new__(ProxyRuntime)
     runtime.adblock_compiled_dir = str(compiled)
 
     assert runtime._ensure_squid_adblock_regex_files() is True
-    assert (compiled / "regex_allow_squid.txt").read_text(encoding="utf-8") == ".*allow_token[.]js.*\n"
-    assert (compiled / "regex_block_squid.txt").read_text(encoding="utf-8") == ".*block_token[.]js.*\nraw_legacy_regex\n"
+    assert (compiled / "regex_allow_squid.txt").read_text(
+        encoding="utf-8"
+    ) == ".*allow_token[.]js.*\n"
+    assert (compiled / "regex_block_squid.txt").read_text(
+        encoding="utf-8"
+    ) == ".*block_token[.]js.*\nraw_legacy_regex\n"
     assert runtime._ensure_squid_adblock_regex_files() is False
 
 
-def test_repo_template_orders_generated_policy_includes_before_enforcement_hooks():
+def test_repo_template_orders_generated_policy_includes_before_enforcement_hooks() -> (
+    None
+):
     template = Path("squid/squid.conf.template").read_text(encoding="utf-8")
 
     assert template.count("include /etc/squid/conf.d/20-icap.conf") == 1
     assert template.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
-    assert template.index("include /etc/squid/conf.d/20-icap.conf") < template.index("adaptation_access adblock_req_set allow icap_adblockable")
-    assert template.index("include /etc/squid/conf.d/30-webfilter.conf") < template.index("http_access allow all")
+    assert template.index("include /etc/squid/conf.d/20-icap.conf") < template.index(
+        "adaptation_access adblock_req_set allow icap_adblockable"
+    )
+    assert template.index(
+        "include /etc/squid/conf.d/30-webfilter.conf"
+    ) < template.index("http_access allow all")
 
 
-def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_includes():
+def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_includes() -> (
+    None
+):
     _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
-    legacy = "\n".join(
-        [
-            "http_port 3128",
-            "icap_service adblock_req_old reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on",
-            "icap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod bypass=on",
-            "adaptation_service_set adblock_req_set adblock_req_old",
-            "adaptation_service_set av_resp_set av_resp",
-            "adaptation_access adblock_req_set allow all",
-            "adaptation_access adblock_req_set allow icap_adblockable",
-            "adaptation_access adblock_req_set deny all",
-            "http_access allow manager localhost",
-            "http_access deny manager",
-            "http_access allow all",
-            "include /etc/squid/conf.d/30-webfilter.conf",
-            "",
-        ]
-    )
+    legacy = "http_port 3128\nicap_service adblock_req_old reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on\nicap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod bypass=on\nadaptation_service_set adblock_req_set adblock_req_old\nadaptation_service_set av_resp_set av_resp\nadaptation_access adblock_req_set allow all\nadaptation_access adblock_req_set allow icap_adblockable\nadaptation_access adblock_req_set deny all\nhttp_access allow manager localhost\nhttp_access deny manager\nhttp_access allow all\ninclude /etc/squid/conf.d/30-webfilter.conf\n"
 
     normalized = controller.normalize_config_text(legacy)
 
@@ -834,25 +964,40 @@ def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_incl
     assert "icap_service adblock_req_old" not in normalized
     assert "adaptation_service_set adblock_req_set adblock_req_old" not in normalized
     assert "adaptation_access adblock_req_set allow all" not in normalized
-    assert normalized.index("include /etc/squid/conf.d/20-icap.conf") < normalized.index("adaptation_access adblock_req_set allow icap_adblockable")
-    assert normalized.index("include /etc/squid/conf.d/30-webfilter.conf") < normalized.index("http_access allow manager localhost")
-    assert normalized.index("include /etc/squid/conf.d/30-webfilter.conf") < normalized.index("http_access allow all")
+    assert normalized.index(
+        "include /etc/squid/conf.d/20-icap.conf"
+    ) < normalized.index("adaptation_access adblock_req_set allow icap_adblockable")
+    assert normalized.index(
+        "include /etc/squid/conf.d/30-webfilter.conf"
+    ) < normalized.index("http_access allow manager localhost")
+    assert normalized.index(
+        "include /etc/squid/conf.d/30-webfilter.conf"
+    ) < normalized.index("http_access allow all")
 
 
-def test_squid_icap_include_versions_adblock_service_name_not_uri():
+def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
     _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
     controller._adblock_icap_revision_token = ""
     unversioned = controller._render_icap_include("")
-    assert "icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on" in unversioned
+    assert (
+        "icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on"
+        in unversioned
+    )
     assert "adaptation_service_set adblock_req_set adblock_req" in unversioned
 
     controller.set_adblock_icap_revision_token("abc123:unsafe value")
     versioned = controller._render_icap_include("")
-    assert "icap_service adblock_req_abc123unsafevalue reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on" in versioned
-    assert "adaptation_service_set adblock_req_set adblock_req_abc123unsafevalue" in versioned
+    assert (
+        "icap_service adblock_req_abc123unsafevalue reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on"
+        in versioned
+    )
+    assert (
+        "adaptation_service_set adblock_req_set adblock_req_abc123unsafevalue"
+        in versioned
+    )
     assert "adblockreq?rev=" not in versioned
     assert "acl adblock_regex_allow url_regex -i" in versioned
     assert "acl adblock_regex_block url_regex -i" in versioned

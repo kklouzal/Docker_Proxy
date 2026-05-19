@@ -10,38 +10,49 @@ from .live_test_helpers import (
     wait_for_proxy_fixture_response,
 )
 
-
 pytestmark = pytest.mark.live
 
 
 def _generate_proxy_traffic(client: LiveStackClient) -> str:
     token = unique_token("live_observability")
 
-    first = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=180.0, request_timeout_seconds=10.0)
+    first = wait_for_proxy_fixture_response(
+        client, f"/traffic/{token}", timeout_seconds=180.0, request_timeout_seconds=10.0
+    )
     assert first.status == 200
 
-    second = wait_for_proxy_fixture_response(client, f"/traffic/{token}", timeout_seconds=180.0, request_timeout_seconds=10.0)
+    second = wait_for_proxy_fixture_response(
+        client, f"/traffic/{token}", timeout_seconds=180.0, request_timeout_seconds=10.0
+    )
     assert second.status == 200
 
     post_response = wait_for_proxy_fixture_response(
         client,
         f"/traffic/{token}",
         method="POST",
-        data=f"token={token}".encode("utf-8"),
+        data=f"token={token}".encode(),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout_seconds=180.0,
         request_timeout_seconds=10.0,
     )
     assert post_response.status == 200
 
-    slow_response = wait_for_proxy_fixture_response(client, f"/slow/{token}?delay_ms=900", needle=token, timeout_seconds=180.0, request_timeout_seconds=10.0)
+    slow_response = wait_for_proxy_fixture_response(
+        client,
+        f"/slow/{token}?delay_ms=900",
+        needle=token,
+        timeout_seconds=180.0,
+        request_timeout_seconds=10.0,
+    )
     assert slow_response.status == 200
     assert token in slow_response.text
 
     return token
 
 
-def test_live_observability_overview_destinations_and_clients_reflect_real_proxy_traffic(admin_client: LiveStackClient) -> None:
+def test_live_observability_overview_destinations_and_clients_reflect_real_proxy_traffic(
+    admin_client: LiveStackClient,
+) -> None:
     _generate_proxy_traffic(admin_client)
     client_ip = live_client_ip()
 
@@ -68,7 +79,9 @@ def test_live_observability_overview_destinations_and_clients_reflect_real_proxy
     assert "Requests by client IP" in clients.text
 
 
-def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(admin_client: LiveStackClient) -> None:
+def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(
+    admin_client: LiveStackClient,
+) -> None:
     _generate_proxy_traffic(admin_client)
 
     cache_page = wait_for_admin_contains(
@@ -87,18 +100,32 @@ def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(ad
     assert "Slowest requests" in performance_page.text
     assert "Traffic facets" in performance_page.text
 
-    cache_export = admin_client.admin_request("/observability/export?pane=cache&window=3600")
+    cache_export = admin_client.admin_request(
+        "/observability/export?pane=cache&window=3600"
+    )
     assert cache_export.status == 200
-    assert "reason;requests;percent_of_misses;domains;clients;last_seen" in cache_export.text
+    assert (
+        "reason;requests;percent_of_misses;domains;clients;last_seen"
+        in cache_export.text
+    )
 
-    destination_export = admin_client.admin_request("/observability/export?pane=destinations&window=3600&q=traffic-fixture")
+    destination_export = admin_client.admin_request(
+        "/observability/export?pane=destinations&window=3600&q=traffic-fixture"
+    )
     assert destination_export.status == 200
-    assert "domain;requests;percent_of_total;clients;transactions;cache_hit_pct;av_icap_events;adblock_icap_events;last_seen" in destination_export.text
+    assert (
+        "domain;requests;percent_of_total;clients;transactions;cache_hit_pct;av_icap_events;adblock_icap_events;last_seen"
+        in destination_export.text
+    )
     assert "traffic-fixture" in destination_export.text
 
 
-def test_live_observability_security_pane_renders_real_sections(admin_client: LiveStackClient) -> None:
-    response = admin_client.admin_request("/observability?pane=security&window=3600&limit=25")
+def test_live_observability_security_pane_renders_real_sections(
+    admin_client: LiveStackClient,
+) -> None:
+    response = admin_client.admin_request(
+        "/observability?pane=security&window=3600&limit=25"
+    )
     assert response.status == 200
     body = response.text
     assert "Security and enforcement overview" in body

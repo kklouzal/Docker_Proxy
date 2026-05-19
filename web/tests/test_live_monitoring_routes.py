@@ -4,11 +4,12 @@ import pytest
 
 from .live_test_helpers import LiveStackClient, query_params, unique_domain
 
-
 pytestmark = pytest.mark.live
 
 
-def test_live_monitoring_pages_link_back_to_observability(admin_client: LiveStackClient) -> None:
+def test_live_monitoring_pages_link_back_to_observability(
+    admin_client: LiveStackClient,
+) -> None:
     index_response = admin_client.admin_request("/")
     assert index_response.status == 200
     assert "Observability" in index_response.text
@@ -21,7 +22,9 @@ def test_live_monitoring_pages_link_back_to_observability(admin_client: LiveStac
     assert "Open security pane" in clamav_response.text
     assert "AV c-icap service" in clamav_response.text
     assert "Clamd backend" in clamav_response.text
-    assert "Enable changes the upload and download AV policy only" in clamav_response.text
+    assert (
+        "Enable changes the upload and download AV policy only" in clamav_response.text
+    )
 
     for path in ("/adblock?window=3600", "/webfilter", "/sslfilter"):
         response = admin_client.admin_request(path)
@@ -30,7 +33,9 @@ def test_live_monitoring_pages_link_back_to_observability(admin_client: LiveStac
         assert "Observability" in body or "SSL incidents" in body
 
 
-def test_live_monitoring_redirects_and_admin_actions_follow_real_routes(admin_client: LiveStackClient) -> None:
+def test_live_monitoring_redirects_and_admin_actions_follow_real_routes(
+    admin_client: LiveStackClient,
+) -> None:
     ssl_redirect = admin_client.admin_request("/ssl-errors?window=3600&q=Example.COM")
     assert ssl_redirect.status == 200
     ssl_qs = query_params(ssl_redirect.url)
@@ -38,16 +43,22 @@ def test_live_monitoring_redirects_and_admin_actions_follow_real_routes(admin_cl
     assert ssl_qs.get("window") == ["3600"]
     assert ssl_qs.get("q") == ["example.com"]
 
-    reload_response = admin_client.admin_post_form("/reload", {}, csrf_path="/", timeout_seconds=90.0)
+    reload_response = admin_client.admin_post_form(
+        "/reload", {}, csrf_path="/", timeout_seconds=90.0
+    )
     assert reload_response.status == 200
     assert "Status" in reload_response.text
 
-    cache_clear_response = admin_client.admin_post_form("/cache/clear", {}, csrf_path="/", timeout_seconds=90.0)
+    cache_clear_response = admin_client.admin_post_form(
+        "/cache/clear", {}, csrf_path="/", timeout_seconds=90.0
+    )
     assert cache_clear_response.status == 200
     assert "Status" in cache_clear_response.text
 
 
-def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(admin_client: LiveStackClient) -> None:
+def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(
+    admin_client: LiveStackClient,
+) -> None:
     ssl_domain = unique_domain("ssl-exclude")
     ssl_exclude_response = admin_client.admin_post_form(
         "/ssl-errors/exclude",
@@ -83,7 +94,9 @@ def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(
     assert bulk_domain_a in sslfilter_page.text
     assert bulk_domain_b in sslfilter_page.text
 
-    webfilter_test = admin_client.admin_post_json("/webfilter/test", {"domain": "example.com"})
+    webfilter_test = admin_client.admin_post_json(
+        "/webfilter/test", {"domain": "example.com"}
+    )
     assert webfilter_test.status == 200
     payload = webfilter_test.json()
     assert payload["ok"] is True

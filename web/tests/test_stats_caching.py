@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import time
+from typing import NoReturn
 
-import services.stats as stats
+from services import stats
 
 
 def _reset_cpu_cache() -> None:
@@ -18,14 +19,14 @@ def _reset_hit_rate_cache() -> None:
     stats._CACHE_HIT_RATE_SOURCE_VALUE = ""
 
 
-def test_get_stats_caches_cpu(monkeypatch):
+def test_get_stats_caches_cpu(monkeypatch) -> None:
     # Make TTL long enough that a second call should reuse cached values.
     monkeypatch.setenv("STATS_CACHE_CPU_TTL_SECONDS", "60")
     _reset_cpu_cache()
 
     calls = {"cpu": 0, "load": 0}
 
-    def fake_cpu(sample_seconds: float = 0.15):
+    def fake_cpu(sample_seconds: float = 0.15) -> float:
         calls["cpu"] += 1
         return 12.34
 
@@ -45,7 +46,7 @@ def test_get_stats_caches_cpu(monkeypatch):
     assert calls["load"] == 1
 
 
-def test_get_stats_cpu_cache_expires(monkeypatch):
+def test_get_stats_cpu_cache_expires(monkeypatch) -> None:
     monkeypatch.setenv("STATS_CACHE_CPU_TTL_SECONDS", "1")
     _reset_cpu_cache()
 
@@ -66,7 +67,7 @@ def test_get_stats_cpu_cache_expires(monkeypatch):
     assert calls["cpu"] >= 2
 
 
-def test_cachemgr_is_opt_in(monkeypatch):
+def test_cachemgr_is_opt_in(monkeypatch) -> None:
     _reset_hit_rate_cache()
 
     # Even if squidclient exists, we should not call it unless STATS_USE_CACHEMGR is enabled.
@@ -76,16 +77,17 @@ def test_cachemgr_is_opt_in(monkeypatch):
 
     called = {"run": 0}
 
-    def fake_run(*args, **kwargs):
+    def fake_run(*args, **kwargs) -> NoReturn:
         called["run"] += 1
-        raise AssertionError("subprocess.run should not be called when STATS_USE_CACHEMGR is disabled")
+        msg = "subprocess.run should not be called when STATS_USE_CACHEMGR is disabled"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(stats.subprocess, "run", fake_run)
     assert stats.get_squid_mgr_text("info") is None
     assert called["run"] == 0
 
 
-def test_cachemgr_sanitizes_proxy_env(monkeypatch):
+def test_cachemgr_sanitizes_proxy_env(monkeypatch) -> None:
     _reset_hit_rate_cache()
     monkeypatch.setenv("STATS_USE_CACHEMGR", "1")
     monkeypatch.setattr(stats.shutil, "which", lambda name: "/usr/bin/squidclient")

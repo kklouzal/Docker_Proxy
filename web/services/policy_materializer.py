@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING
 
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
-from services.webfilter_core import get_proxy_webfilter_store
 from services.sslfilter_store import get_sslfilter_store
+from services.webfilter_core import get_proxy_webfilter_store
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 
 @dataclass(frozen=True)
@@ -22,9 +25,14 @@ class ProxyPolicyState:
     files: tuple[MaterializedPolicyFile, ...]
 
 
-def calculate_policy_sha(files: Sequence[MaterializedPolicyFile] | Iterable[MaterializedPolicyFile]) -> str:
+def calculate_policy_sha(
+    files: Sequence[MaterializedPolicyFile] | Iterable[MaterializedPolicyFile],
+) -> str:
     items = sorted(
-        [MaterializedPolicyFile(path=str(f.path), content=str(f.content or "")) for f in files],
+        [
+            MaterializedPolicyFile(path=str(f.path), content=str(f.content or ""))
+            for f in files
+        ],
         key=lambda item: item.path,
     )
     digest = hashlib.sha256()
@@ -46,11 +54,26 @@ def build_proxy_policy_state(proxy_id: object | None = None) -> ProxyPolicyState
         sslfilter_state = sslfilter_store.render_materialized_state()
 
         files = (
-            MaterializedPolicyFile(path=sslfilter_store.squid_include_path, content=sslfilter_state.include_text),
-            MaterializedPolicyFile(path=sslfilter_store.nobump_list_path, content=sslfilter_state.nobump_src_list_text),
-            MaterializedPolicyFile(path=sslfilter_store.nocache_src_list_path, content=sslfilter_state.nocache_src_list_text),
-            MaterializedPolicyFile(path=webfilter_store.squid_include_path, content=webfilter_state.include_text),
-            MaterializedPolicyFile(path=webfilter_store.whitelist_path, content=webfilter_state.whitelist_text),
+            MaterializedPolicyFile(
+                path=sslfilter_store.squid_include_path,
+                content=sslfilter_state.include_text,
+            ),
+            MaterializedPolicyFile(
+                path=sslfilter_store.nobump_list_path,
+                content=sslfilter_state.nobump_src_list_text,
+            ),
+            MaterializedPolicyFile(
+                path=sslfilter_store.nocache_src_list_path,
+                content=sslfilter_state.nocache_src_list_text,
+            ),
+            MaterializedPolicyFile(
+                path=webfilter_store.squid_include_path,
+                content=webfilter_state.include_text,
+            ),
+            MaterializedPolicyFile(
+                path=webfilter_store.whitelist_path,
+                content=webfilter_state.whitelist_text,
+            ),
         )
         return ProxyPolicyState(
             proxy_id=normalized_proxy_id,

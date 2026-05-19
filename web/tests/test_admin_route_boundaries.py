@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import pytest
 
-from .admin_route_test_utils import FakeRegistry, csrf_token, load_admin_app, login_client
+from .admin_route_test_utils import (
+    FakeRegistry,
+    csrf_token,
+    load_admin_app,
+    login_client,
+)
 
 
 class RecordingProxyClient:
     def __init__(self) -> None:
         self.health_calls: list[tuple[str, float | None]] = []
 
-    def get_health(self, proxy_id: object, *_, timeout_seconds: float | None = None, **__) -> dict[str, object]:
+    def get_health(
+        self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
+    ) -> dict[str, object]:
         self.health_calls.append((str(proxy_id), timeout_seconds))
         return {
             "ok": True,
@@ -26,13 +33,21 @@ class RecordingProxyClient:
     def validate_config(self, proxy_id: object, config_text: str) -> dict[str, object]:
         return {"ok": True, "detail": "valid", "proxy_id": str(proxy_id)}
 
-    def sync_proxy(self, proxy_id: object, *, force: bool = False, timeout_seconds: float | None = None) -> dict[str, object]:
+    def sync_proxy(
+        self,
+        proxy_id: object,
+        *,
+        force: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
         return {"ok": True, "detail": "sync requested"}
 
     def clear_proxy_cache(self, proxy_id: object) -> dict[str, object]:
         return {"ok": True, "detail": "cache cleared"}
 
-    def get_clamav_health(self, proxy_id: object, *_, timeout_seconds: float | None = None, **__) -> dict[str, object]:
+    def get_clamav_health(
+        self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
+    ) -> dict[str, object]:
         self.health_calls.append((f"clamav:{proxy_id}", timeout_seconds))
         return {
             "ok": True,
@@ -73,7 +88,9 @@ class RecordingProxyClient:
         "/administration",
     ],
 )
-def test_protected_get_routes_redirect_to_login(monkeypatch, tmp_path, path: str) -> None:
+def test_protected_get_routes_redirect_to_login(
+    monkeypatch, tmp_path, path: str
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     response = client.get(path, follow_redirects=False)
@@ -128,7 +145,9 @@ def test_index_reuses_short_lived_proxy_health_cache(monkeypatch, tmp_path) -> N
 def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> None:
     proxy_client = RecordingProxyClient()
     registry = FakeRegistry(["default", "edge-2"])
-    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client, registry=registry)
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, proxy_client=proxy_client, registry=registry
+    )
     client = loaded.module.app.test_client()
     login_client(client)
 
@@ -149,7 +168,9 @@ def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
     assert "Content-Security-Policy" not in response.headers
 
 
-def test_network_config_apply_can_publish_intercept_listener(monkeypatch, tmp_path) -> None:
+def test_network_config_apply_can_publish_intercept_listener(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -178,7 +199,9 @@ def test_network_config_apply_can_publish_intercept_listener(monkeypatch, tmp_pa
     assert "PROXY" not in config_text
 
 
-def test_fleet_page_shows_explicit_and_intercept_listeners(monkeypatch, tmp_path) -> None:
+def test_fleet_page_shows_explicit_and_intercept_listeners(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -204,7 +227,9 @@ def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
     assert "Content-Security-Policy" not in response.headers
 
 
-def test_winhttp_registry_builder_renders_and_generates_static_binary(monkeypatch, tmp_path) -> None:
+def test_winhttp_registry_builder_renders_and_generates_static_binary(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -223,11 +248,16 @@ def test_winhttp_registry_builder_renders_and_generates_static_binary(monkeypatc
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert "28000000000000000300000016000000687474703d3139322e3136382e352e34353a33313238" in text
+    assert (
+        "28000000000000000300000016000000687474703d3139322e3136382e352e34353a33313238"
+        in text
+    )
     assert "netsh winhttp set advproxy" in text
 
 
-def test_winhttp_registry_builder_normalizes_exported_reg_binary(monkeypatch, tmp_path) -> None:
+def test_winhttp_registry_builder_normalizes_exported_reg_binary(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -245,7 +275,9 @@ def test_winhttp_registry_builder_normalizes_exported_reg_binary(monkeypatch, tm
     assert "2800000000000000030000000000000000000000" in response.get_data(as_text=True)
 
 
-def test_proxy_id_query_is_normalized_and_bound_to_session(monkeypatch, tmp_path) -> None:
+def test_proxy_id_query_is_normalized_and_bound_to_session(
+    monkeypatch, tmp_path
+) -> None:
     registry = FakeRegistry(["default", "bad-value"])
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
     client = loaded.module.app.test_client()
@@ -301,7 +333,11 @@ def test_post_routes_accept_header_csrf_for_json(monkeypatch, tmp_path) -> None:
     client = loaded.module.app.test_client()
     login_client(client)
     token = csrf_token(client, "/")
-    response = client.post("/webfilter/test", json={"domain": "Example.COM"}, headers={"X-CSRF-Token": token})
+    response = client.post(
+        "/webfilter/test",
+        json={"domain": "Example.COM"},
+        headers={"X-CSRF-Token": token},
+    )
     assert response.status_code == 200
     assert response.json["ok"] is True
     assert response.json["domain"] == "example.com"
@@ -321,7 +357,9 @@ def test_sslfilter_page_exposes_apply_verify_action(monkeypatch, tmp_path) -> No
     assert "HTTP/3/QUIC uses UDP/443" in text
 
 
-def test_pac_page_warns_that_quic_does_not_use_the_http_proxy(monkeypatch, tmp_path) -> None:
+def test_pac_page_warns_that_quic_does_not_use_the_http_proxy(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -333,7 +371,10 @@ def test_pac_page_warns_that_quic_does_not_use_the_http_proxy(monkeypatch, tmp_p
     assert "HTTP/3/QUIC over UDP/443" in text
     assert "block or reject UDP/443" in text
 
-def test_sslfilter_apply_verify_forces_selected_proxy_sync(monkeypatch, tmp_path) -> None:
+
+def test_sslfilter_apply_verify_forces_selected_proxy_sync(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -352,10 +393,15 @@ def test_sslfilter_apply_verify_forces_selected_proxy_sync(monkeypatch, tmp_path
     assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert "Proxy reconciliation queued" in text
-    assert any(record["kind"] == "sslfilter_apply_policy" and record["ok"] for record in loaded.audit_store.records)
+    assert any(
+        record["kind"] == "sslfilter_apply_policy" and record["ok"]
+        for record in loaded.audit_store.records
+    )
 
 
-def test_main_config_page_exposes_rebuild_apply_all_action(monkeypatch, tmp_path) -> None:
+def test_main_config_page_exposes_rebuild_apply_all_action(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -369,7 +415,9 @@ def test_main_config_page_exposes_rebuild_apply_all_action(monkeypatch, tmp_path
     assert 'action="/squid/config/apply-all' in text
 
 
-def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(monkeypatch, tmp_path) -> None:
+def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -390,7 +438,10 @@ def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(monk
     assert loaded.config_revisions.created[-1]["proxy_id"] == "default"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
     assert "Saved settings were rebuilt, verified, and applied" in text
-    assert any(record["kind"] == "config_apply_all_saved" and record["ok"] for record in loaded.audit_store.records)
+    assert any(
+        record["kind"] == "config_apply_all_saved" and record["ok"]
+        for record in loaded.audit_store.records
+    )
 
 
 def test_sslfilter_apply_verify_targets_selected_proxy(monkeypatch, tmp_path) -> None:
@@ -412,7 +463,10 @@ def test_sslfilter_apply_verify_targets_selected_proxy(monkeypatch, tmp_path) ->
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
     assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
-    assert any(record["kind"] == "sslfilter_apply_policy" and record["ok"] for record in loaded.audit_store.records)
+    assert any(
+        record["kind"] == "sslfilter_apply_policy" and record["ok"]
+        for record in loaded.audit_store.records
+    )
 
 
 def test_apply_all_saved_config_targets_selected_proxy(monkeypatch, tmp_path) -> None:
@@ -436,7 +490,10 @@ def test_apply_all_saved_config_targets_selected_proxy(monkeypatch, tmp_path) ->
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert loaded.config_revisions.created[-1]["proxy_id"] == "edge-2"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
-    assert any(record["kind"] == "config_apply_all_saved" and record["ok"] for record in loaded.audit_store.records)
+    assert any(
+        record["kind"] == "config_apply_all_saved" and record["ok"]
+        for record in loaded.audit_store.records
+    )
 
 
 def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) -> None:
@@ -449,7 +506,11 @@ def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) 
             "cleared_tables": 2,
             "deleted_rows": 0,
             "tables": [
-                {"table": "diagnostic_requests", "status": "cleared", "deleted_rows": 30},
+                {
+                    "table": "diagnostic_requests",
+                    "status": "cleared",
+                    "deleted_rows": 30,
+                },
                 {"table": "ssl_errors", "status": "cleared", "deleted_rows": 12},
             ],
         }
@@ -476,7 +537,10 @@ def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) 
     assert "across the fleet" in loaded.audit_store.records[-1]["detail"]
     assert "2 tables" in loaded.audit_store.records[-1]["detail"]
 
-def test_clamav_page_uses_dedicated_clamav_health_endpoint(monkeypatch, tmp_path) -> None:
+
+def test_clamav_page_uses_dedicated_clamav_health_endpoint(
+    monkeypatch, tmp_path
+) -> None:
     proxy_client = RecordingProxyClient()
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
     client = loaded.module.app.test_client()
@@ -488,7 +552,9 @@ def test_clamav_page_uses_dedicated_clamav_health_endpoint(monkeypatch, tmp_path
     assert proxy_client.health_calls == [("clamav:default", 5.0)]
 
 
-def test_fleet_observability_summary_is_not_repeated_per_proxy(monkeypatch, tmp_path) -> None:
+def test_fleet_observability_summary_is_not_repeated_per_proxy(
+    monkeypatch, tmp_path
+) -> None:
     class CountingDiagnosticStore:
         def __init__(self) -> None:
             self.activity_calls = 0
@@ -502,7 +568,9 @@ def test_fleet_observability_summary_is_not_repeated_per_proxy(monkeypatch, tmp_
 
     diagnostic_store = CountingDiagnosticStore()
     registry = FakeRegistry(["default", "edge-2", "edge-3"])
-    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry, diagnostic_store=diagnostic_store)
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, registry=registry, diagnostic_store=diagnostic_store
+    )
     client = loaded.module.app.test_client()
     login_client(client)
 

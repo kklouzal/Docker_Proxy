@@ -10,7 +10,8 @@ from .admin_route_test_utils import csrf_token, load_admin_app, login_client
 
 class ExplodingRegistry:
     def __getattr__(self, name: str):
-        raise AssertionError(f"proxy registry should not be used for this request: {name}")
+        msg = f"proxy registry should not be used for this request: {name}"
+        raise AssertionError(msg)
 
 
 class CountingRegistry:
@@ -67,10 +68,20 @@ class CountingObservabilityQueries:
             "top_spliced_destinations": [],
             "per_group": [],
             "security": {"summary": {}},
-            "audit": {"summary": {"events": 0, "failed_events": 0, "last_seen": 0}, "top_kinds": [], "recent": []},
+            "audit": {
+                "summary": {"events": 0, "failed_events": 0, "last_seen": 0},
+                "top_kinds": [],
+                "recent": [],
+            },
             "time_series": {"tables": [], "latest_ts": 0, "rollup_points": 0},
             "schedules": [],
-            "export_contracts": [{"name": "JSON", "status": "ready", "endpoint": "/observability/export?pane=reports&format=json"}],
+            "export_contracts": [
+                {
+                    "name": "JSON",
+                    "status": "ready",
+                    "endpoint": "/observability/export?pane=reports&format=json",
+                }
+            ],
             "privacy": {"enabled": True, "mode": "pseudonymized"},
         }
 
@@ -107,7 +118,9 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_text)
 
 
-def test_login_and_static_requests_do_not_bind_proxy_context(monkeypatch, tmp_path) -> None:
+def test_login_and_static_requests_do_not_bind_proxy_context(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path, registry=ExplodingRegistry())
     client = loaded.module.app.test_client()
 
@@ -134,7 +147,9 @@ def test_rendered_page_reuses_request_proxy_context(monkeypatch, tmp_path) -> No
     assert registry.resolve_calls == 0
 
 
-def test_admin_html_responses_are_gzip_compressed_when_requested(monkeypatch, tmp_path) -> None:
+def test_admin_html_responses_are_gzip_compressed_when_requested(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -162,14 +177,18 @@ def test_observability_route_reuses_short_ttl_cache(monkeypatch, tmp_path) -> No
     assert queries.performance_calls == 1
 
 
-def test_observability_reports_pane_json_export_and_metrics_routes_render(monkeypatch, tmp_path) -> None:
+def test_observability_reports_pane_json_export_and_metrics_routes_render(
+    monkeypatch, tmp_path
+) -> None:
     queries = CountingObservabilityQueries()
     loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
     client = loaded.module.app.test_client()
     login_client(client)
 
     page = client.get("/observability?pane=reports&window=3600&privacy=1")
-    export = client.get("/observability/export?pane=reports&window=3600&privacy=1&format=json")
+    export = client.get(
+        "/observability/export?pane=reports&window=3600&privacy=1&format=json"
+    )
     metrics = client.get("/observability/metrics?window=3600")
 
     assert page.status_code == 200
@@ -183,7 +202,9 @@ def test_observability_reports_pane_json_export_and_metrics_routes_render(monkey
     assert b"docker_proxy_observability_requests" in metrics.data
 
 
-def test_observability_report_schedule_post_records_configuration(monkeypatch, tmp_path) -> None:
+def test_observability_report_schedule_post_records_configuration(
+    monkeypatch, tmp_path
+) -> None:
     queries = CountingObservabilityQueries()
     loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
     client = loaded.module.app.test_client()
@@ -220,7 +241,9 @@ def test_spa_document_fetches_are_not_browser_cached(monkeypatch, tmp_path) -> N
     assert response.headers.get("Cache-Control") == "no-store, private"
 
 
-def test_normal_admin_gets_revalidate_instead_of_immutable_cache(monkeypatch, tmp_path) -> None:
+def test_normal_admin_gets_revalidate_instead_of_immutable_cache(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -231,7 +254,9 @@ def test_normal_admin_gets_revalidate_instead_of_immutable_cache(monkeypatch, tm
     assert response.headers.get("Cache-Control") == "no-cache"
 
 
-def test_proxy_pac_responses_have_cache_headers_and_conditional_etag(monkeypatch) -> None:
+def test_proxy_pac_responses_have_cache_headers_and_conditional_etag(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
@@ -243,7 +268,9 @@ def test_proxy_pac_responses_have_cache_headers_and_conditional_etag(monkeypatch
 
     first = client.get("/proxy.pac", base_url="http://proxy")
     etag = first.headers.get("ETag")
-    second = client.get("/proxy.pac", base_url="http://proxy", headers={"If-None-Match": etag or ""})
+    second = client.get(
+        "/proxy.pac", base_url="http://proxy", headers={"If-None-Match": etag or ""}
+    )
 
     assert first.status_code == 200
     assert first.headers.get("Cache-Control") == "public, max-age=30"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import os
+import contextlib
+import pathlib
 import tempfile
 
 
@@ -10,9 +11,11 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
     replaced_paths: list[str] = []
     try:
         for path, content in files:
-            directory = os.path.dirname(path) or "."
-            os.makedirs(directory, exist_ok=True)
-            handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=directory, prefix=".managed-")
+            directory = pathlib.Path(path).parent or "."
+            pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
+            handle = tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", delete=False, dir=directory, prefix=".managed-",
+            )
             temp_path = handle.name
             temp_paths.append(temp_path)
             try:
@@ -23,30 +26,27 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
 
         for path, _content in files:
             try:
-                with open(path, "rb") as existing:
+                with pathlib.Path(path).open("rb") as existing:
                     backups[path] = (True, existing.read())
             except FileNotFoundError:
                 backups[path] = (False, b"")
 
-        for (path, _content), temp_path in zip(files, temp_paths):
-            os.replace(temp_path, path)
+        for (path, _content), temp_path in zip(files, temp_paths, strict=False):
+            pathlib.Path(temp_path).replace(path)
             replaced_paths.append(path)
     except Exception:
         for path in reversed(replaced_paths):
             existed, previous = backups.get(path, (False, b""))
             if existed:
-                with open(path, "wb") as restored:
-                    restored.write(previous)
+                pathlib.Path(path).write_bytes(previous)
             else:
-                try:
-                    os.unlink(path)
-                except FileNotFoundError:
-                    pass
+                with contextlib.suppress(FileNotFoundError):
+                    pathlib.Path(path).unlink()
         raise
     finally:
         for temp_path in temp_paths:
             try:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+                if pathlib.Path(temp_path).exists():
+                    pathlib.Path(temp_path).unlink()
             except Exception:
                 pass

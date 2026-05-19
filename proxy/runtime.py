@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
 import hashlib
 import logging
 import os
+import pathlib
 import shutil
 import socket
 import subprocess
@@ -12,9 +11,15 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, replace
+from typing import Any
 
-from services.adblock_artifacts import get_adblock_artifacts, materialize_archive_to_directory, read_materialized_artifact_sha
+from services.adblock_artifacts import (
+    get_adblock_artifacts,
+    materialize_archive_to_directory,
+    read_materialized_artifact_sha,
+)
 from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import CertManager, materialize_certificate_bundle
@@ -26,17 +31,33 @@ from services.health_checks import build_clamav_health
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
 from services.operation_ledger import get_operation_ledger
-from services.policy_materializer import MaterializedPolicyFile, build_proxy_policy_state, calculate_policy_sha
-from services.proxy_health import check_adblock_icap_health as _check_icap_adblock, check_av_icap_health as _check_icap_av, check_clamd_health as _check_clamd, send_sample_av_icap as _shared_send_sample_av_icap, test_eicar as _shared_test_eicar
+from services.pac_renderer import (
+    PAC_RENDER_DIR,
+    build_proxy_pac_state,
+    materialize_proxy_pac_state,
+    read_materialized_pac_state_sha,
+)
+from services.policy_materializer import (
+    MaterializedPolicyFile,
+    build_proxy_policy_state,
+    calculate_policy_sha,
+)
 from services.proxy_context import get_proxy_id
-from services.proxy_registry import get_proxy_registry, resolve_local_proxy_management_url, resolve_local_proxy_public_fields
-from services.pac_renderer import PAC_RENDER_DIR, build_proxy_pac_state, materialize_proxy_pac_state, read_materialized_pac_state_sha
+from services.proxy_health import check_adblock_icap_health as _check_icap_adblock
+from services.proxy_health import check_av_icap_health as _check_icap_av
+from services.proxy_health import check_clamd_health as _check_clamd
+from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
+from services.proxy_health import test_eicar as _shared_test_eicar
+from services.proxy_registry import (
+    get_proxy_registry,
+    resolve_local_proxy_management_url,
+    resolve_local_proxy_public_fields,
+)
 from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.squid_core import SquidController
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
-
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +73,13 @@ def _exclusive_runtime_lock(name: str, thread_lock: threading.RLock):
         handle = None
         fcntl_mod = None
         try:
-            lock_dir = (os.environ.get("PROXY_RUNTIME_LOCK_DIR") or "/tmp").strip() or "/tmp"
-            os.makedirs(lock_dir, exist_ok=True)
-            handle = open(os.path.join(lock_dir, f"docker-proxy-{name}.lock"), "a+", encoding="utf-8")
+            lock_dir = (
+                os.environ.get("PROXY_RUNTIME_LOCK_DIR") or "/tmp"
+            ).strip() or "/tmp"
+            pathlib.Path(lock_dir).mkdir(exist_ok=True, parents=True)
+            handle = pathlib.Path(
+                os.path.join(lock_dir, f"docker-proxy-{name}.lock"),
+            ).open("a+", encoding="utf-8")
             try:
                 import fcntl as fcntl_mod  # type: ignore
 
@@ -69,10 +94,8 @@ def _exclusive_runtime_lock(name: str, thread_lock: threading.RLock):
                         fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_UN)
                 except Exception:
                     pass
-                try:
+                with suppress(Exception):
                     handle.close()
-                except Exception:
-                    pass
 
 
 @dataclass(frozen=True)
@@ -102,7 +125,9 @@ class ProxyRuntimeServices:
 
 
 def build_runtime_services(**overrides: Any) -> ProxyRuntimeServices:
-    certs_dir = (os.environ.get("CERTS_DIR") or "/etc/squid/ssl/certs").strip() or "/etc/squid/ssl/certs"
+    certs_dir = (
+        os.environ.get("CERTS_DIR") or "/etc/squid/ssl/certs"
+    ).strip() or "/etc/squid/ssl/certs"
     services = ProxyRuntimeServices(
         controller=SquidController(),
         registry=get_proxy_registry(),
@@ -130,27 +155,56 @@ def _call_health_check(func, /, **kwargs):
         return func()
 
 
-def _log_recoverable_db_or_unexpected(key: str, *, recoverable_message: str, unexpected_message: str, exc: BaseException, interval_seconds: float = 30.0) -> None:
+def _log_recoverable_db_or_unexpected(
+    key: str,
+    *,
+    recoverable_message: str,
+    unexpected_message: str,
+    exc: BaseException,
+    interval_seconds: float = 30.0,
+) -> None:
     if isinstance(exc, DATABASE_ERRORS):
         if should_log(key, interval_seconds=interval_seconds):
-            logger.warning("%s: %s", recoverable_message, public_error_message(exc, default="Database is unavailable."))
+            logger.warning(
+                "%s: %s",
+                recoverable_message,
+                public_error_message(exc, default="Database is unavailable."),
+            )
         return
-    log_exception_throttled(logger, key, interval_seconds=interval_seconds, message=unexpected_message)
+    log_exception_throttled(
+        logger, key, interval_seconds=interval_seconds, message=unexpected_message,
+    )
 
 
-def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0.8, tcp_timeout: float = 0.75) -> Dict[str, Dict[str, Any]]:
+def build_local_runtime_services(
+    *, error_formatter=str, icap_timeout: float = 0.8, tcp_timeout: float = 0.75,
+) -> dict[str, dict[str, Any]]:
     # Keep management health bounded by the slowest local probe instead of the
     # sum of every ICAP/ClamAV timeout. The Admin UI calls this endpoint with a
     # short timeout on page loads, so sequential checks can create false
     # proxy-management timeouts when one or more optional services are absent.
     checks = {
-        "icap": (_check_icap_adblock, {"timeout": icap_timeout, "error_formatter": error_formatter}),
-        "av_icap": (_check_icap_av, {"timeout": icap_timeout, "error_formatter": error_formatter}),
-        "clamd": (_check_clamd, {"timeout": icap_timeout, "error_formatter": error_formatter}),
+        "icap": (
+            _check_icap_adblock,
+            {"timeout": icap_timeout, "error_formatter": error_formatter},
+        ),
+        "av_icap": (
+            _check_icap_av,
+            {"timeout": icap_timeout, "error_formatter": error_formatter},
+        ),
+        "clamd": (
+            _check_clamd,
+            {"timeout": icap_timeout, "error_formatter": error_formatter},
+        ),
     }
-    results: Dict[str, Dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=len(checks), thread_name_prefix="proxy-health") as executor:
-        futures = {name: executor.submit(_call_health_check, func, **kwargs) for name, (func, kwargs) in checks.items()}
+    results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(
+        max_workers=len(checks), thread_name_prefix="proxy-health",
+    ) as executor:
+        futures = {
+            name: executor.submit(_call_health_check, func, **kwargs)
+            for name, (func, kwargs) in checks.items()
+        }
         for name, future in futures.items():
             try:
                 results[name] = future.result(timeout=max(icap_timeout + 0.5, 1.0))
@@ -161,9 +215,13 @@ def build_local_runtime_services(*, error_formatter=str, icap_timeout: float = 0
                 }
 
     clamd = results.get("clamd") or {"ok": False, "detail": "clamd health unavailable"}
-    av_icap = results.get("av_icap") or {"ok": False, "detail": "c-icap av health unavailable"}
+    av_icap = results.get("av_icap") or {
+        "ok": False,
+        "detail": "c-icap av health unavailable",
+    }
     return {
-        "icap": results.get("icap") or {"ok": False, "detail": "c-icap adblock health unavailable"},
+        "icap": results.get("icap")
+        or {"ok": False, "detail": "c-icap adblock health unavailable"},
         "av_icap": av_icap,
         "clamd": clamd,
         "clamav": build_clamav_health(clamd, av_icap),
@@ -174,13 +232,22 @@ def _listener_mode_summary(listeners: object) -> str:
     try:
         parts = []
         for item in listeners or []:
-            port = int(getattr(item, "get", lambda _key, _default=None: _default)("port", 0) or 0)
-            mode = str(getattr(item, "get", lambda _key, _default=None: _default)("mode", "explicit") or "explicit")
+            port = int(
+                getattr(item, "get", lambda _key, _default=None: _default)("port", 0)
+                or 0,
+            )
+            mode = str(
+                getattr(item, "get", lambda _key, _default=None: _default)(
+                    "mode", "explicit",
+                )
+                or "explicit",
+            )
             if port:
                 parts.append(f"{mode}:{port}")
         return ", ".join(parts)
     except Exception:
         return ""
+
 
 def _decode_completed(proc: Any) -> str:
     stdout_text = _decode_bytes(getattr(proc, "stdout", b""))
@@ -208,19 +275,37 @@ class ProxyRuntime:
         self.runtime_services_builder = self.services.runtime_services_builder
         self.policy_state_builder = self.services.policy_state_builder
         self.pac_state_builder = self.services.pac_state_builder
-        self.ssl_db_dir = (os.environ.get("SSL_DB_DIR") or "/var/lib/ssl_db/store").strip() or "/var/lib/ssl_db/store"
-        self.adblock_compiled_dir = (os.environ.get("ADBLOCK_COMPILED_DIR") or self.adblock_artifacts.compiled_dir).strip() or self.adblock_artifacts.compiled_dir
-        self.pac_render_dir = (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
+        self.ssl_db_dir = (
+            os.environ.get("SSL_DB_DIR") or "/var/lib/ssl_db/store"
+        ).strip() or "/var/lib/ssl_db/store"
+        self.adblock_compiled_dir = (
+            os.environ.get("ADBLOCK_COMPILED_DIR")
+            or self.adblock_artifacts.compiled_dir
+        ).strip() or self.adblock_artifacts.compiled_dir
+        self.pac_render_dir = (
+            os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR
+        ).strip() or PAC_RENDER_DIR
         try:
-            self.health_cache_ttl_seconds = max(0.0, min(120.0, float((os.environ.get("PROXY_HEALTH_CACHE_TTL_SECONDS") or "10.0").strip() or "10.0")))
+            self.health_cache_ttl_seconds = max(
+                0.0,
+                min(
+                    120.0,
+                    float(
+                        (
+                            os.environ.get("PROXY_HEALTH_CACHE_TTL_SECONDS") or "10.0"
+                        ).strip()
+                        or "10.0",
+                    ),
+                ),
+            )
         except Exception:
             self.health_cache_ttl_seconds = 10.0
         self._health_cache_lock = threading.Lock()
         self._health_refresh_lock = threading.Lock()
         self._health_cache_ts = 0.0
-        self._health_cache_value: Dict[str, Any] | None = None
+        self._health_cache_value: dict[str, Any] | None = None
         self._navigation_health_cache_ts = 0.0
-        self._navigation_health_cache_value: Dict[str, Any] | None = None
+        self._navigation_health_cache_value: dict[str, Any] | None = None
 
     @property
     def proxy_id(self) -> str:
@@ -252,7 +337,7 @@ class ProxyRuntime:
 
     def _read_text_file(self, path: str) -> str:
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with pathlib.Path(path).open(encoding="utf-8") as fh:
                 return fh.read()
         except FileNotFoundError:
             return ""
@@ -260,36 +345,36 @@ class ProxyRuntime:
             return ""
 
     def _atomic_write_text(self, path: str, content: str) -> None:
-        directory = os.path.dirname(path) or "."
-        os.makedirs(directory, exist_ok=True)
+        directory = pathlib.Path(path).parent or "."
+        pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
         handle = None
         tmp_path = ""
         try:
-            handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, dir=directory, prefix=".tmp-")
+            handle = tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", delete=False, dir=directory, prefix=".tmp-",
+            )
             tmp_path = handle.name
             handle.write(content)
             handle.flush()
             handle.close()
             handle = None
-            os.replace(tmp_path, path)
+            pathlib.Path(tmp_path).replace(path)
         finally:
             if handle is not None:
-                try:
+                with suppress(Exception):
                     handle.close()
-                except Exception:
-                    pass
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+            if tmp_path and pathlib.Path(tmp_path).exists():
+                with suppress(Exception):
+                    pathlib.Path(tmp_path).unlink()
 
     def _current_policy_sha(self) -> str:
         if self.services.current_policy_sha_reader is not None:
             return str(self.services.current_policy_sha_reader() or "")
         desired = self.policy_state_builder(self.proxy_id)
         current_files = tuple(
-            MaterializedPolicyFile(path=item.path, content=self._read_text_file(item.path))
+            MaterializedPolicyFile(
+                path=item.path, content=self._read_text_file(item.path),
+            )
             for item in desired.files
         )
         return calculate_policy_sha(current_files)
@@ -304,16 +389,28 @@ class ProxyRuntime:
             return str(self.services.current_pac_sha_reader() or "")
         return read_materialized_pac_state_sha(self.pac_render_dir)
 
-    def _supervisor_program_status(self, program_name: str, *, timeout_seconds: int = 10) -> tuple[bool, str]:
+    def _supervisor_program_status(
+        self, program_name: str, *, timeout_seconds: int = 10,
+    ) -> tuple[bool, str]:
         try:
             status = subprocess.run(
-                ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                [
+                    "supervisorctl",
+                    "-c",
+                    "/etc/supervisord.conf",
+                    "status",
+                    program_name,
+                ],
                 capture_output=True,
                 timeout=timeout_seconds,
             )
         except Exception as exc:
-            return False, public_error_message(exc, default=f"Failed to inspect {program_name} supervisor status.")
-        detail = _decode_completed(status).strip() or f"{program_name} status unavailable."
+            return False, public_error_message(
+                exc, default=f"Failed to inspect {program_name} supervisor status.",
+            )
+        detail = (
+            _decode_completed(status).strip() or f"{program_name} status unavailable."
+        )
         for line in detail.splitlines():
             parts = line.split(None, 2)
             if parts and parts[0] == program_name:
@@ -322,7 +419,10 @@ class ProxyRuntime:
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
         programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
-        statuses: dict[str, dict[str, Any]] = {program: {"ok": False, "detail": f"{program} status unavailable."} for program in programs}
+        statuses: dict[str, dict[str, Any]] = {
+            program: {"ok": False, "detail": f"{program} status unavailable."}
+            for program in programs
+        }
         try:
             status = subprocess.run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "status", *programs],
@@ -331,11 +431,15 @@ class ProxyRuntime:
             )
             output = _decode_completed(status).strip()
         except Exception as exc:
-            detail = public_error_message(exc, default="Failed to inspect supervisor status.")
+            detail = public_error_message(
+                exc, default="Failed to inspect supervisor status.",
+            )
             return {
                 "ok": False,
                 "detail": detail,
-                "programs": {program: {"ok": False, "detail": detail} for program in programs},
+                "programs": {
+                    program: {"ok": False, "detail": detail} for program in programs
+                },
             }
 
         for line in output.splitlines():
@@ -345,17 +449,28 @@ class ProxyRuntime:
             program = parts[0]
             if program not in statuses:
                 continue
-            statuses[program] = {"ok": len(parts) > 1 and parts[1] == "RUNNING", "detail": line.strip()}
+            statuses[program] = {
+                "ok": len(parts) > 1 and parts[1] == "RUNNING",
+                "detail": line.strip(),
+            }
 
-        detail_parts = [str(item.get("detail") or "") for item in statuses.values() if not item.get("ok")]
+        detail_parts = [
+            str(item.get("detail") or "")
+            for item in statuses.values()
+            if not item.get("ok")
+        ]
         ok = not detail_parts
         return {
             "ok": ok,
-            "detail": "; ".join(part for part in detail_parts if part) if detail_parts else "supervisor programs running",
+            "detail": "; ".join(part for part in detail_parts if part)
+            if detail_parts
+            else "supervisor programs running",
             "programs": statuses,
         }
 
-    def test_control_supervisor_program(self, program_name: str, *, action: str, timeout_seconds: int = 30) -> Dict[str, Any]:
+    def test_control_supervisor_program(
+        self, program_name: str, *, action: str, timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
         """Test-mode-only supervisor control for live recovery tests.
 
         The management route that calls this method is gated by ENABLE_TEST_MODE
@@ -375,14 +490,30 @@ class ProxyRuntime:
                 "detail": "Program is not allowlisted for test supervisor control.",
             }
         if requested_action == "status":
-            ok, detail = self._supervisor_program_status(program, timeout_seconds=timeout_seconds)
-            return {"ok": ok, "proxy_id": self.proxy_id, "program": program, "action": requested_action, "detail": detail}
+            ok, detail = self._supervisor_program_status(
+                program, timeout_seconds=timeout_seconds,
+            )
+            return {
+                "ok": ok,
+                "proxy_id": self.proxy_id,
+                "program": program,
+                "action": requested_action,
+                "detail": detail,
+            }
         if requested_action == "restart":
             if program == "squid":
                 ok, detail = self.controller.restart_squid()
             else:
-                ok, detail = self._restart_supervisor_program(program, timeout_seconds=timeout_seconds, stop_on_failure=False)
-            return {"ok": ok, "proxy_id": self.proxy_id, "program": program, "action": requested_action, "detail": detail}
+                ok, detail = self._restart_supervisor_program(
+                    program, timeout_seconds=timeout_seconds, stop_on_failure=False,
+                )
+            return {
+                "ok": ok,
+                "proxy_id": self.proxy_id,
+                "program": program,
+                "action": requested_action,
+                "detail": detail,
+            }
         if requested_action not in {"stop", "start"}:
             return {
                 "ok": False,
@@ -393,7 +524,13 @@ class ProxyRuntime:
             }
         try:
             proc = subprocess.run(
-                ["supervisorctl", "-c", "/etc/supervisord.conf", requested_action, program],
+                [
+                    "supervisorctl",
+                    "-c",
+                    "/etc/supervisord.conf",
+                    requested_action,
+                    program,
+                ],
                 capture_output=True,
                 timeout=timeout_seconds,
             )
@@ -403,12 +540,19 @@ class ProxyRuntime:
                 "proxy_id": self.proxy_id,
                 "program": program,
                 "action": requested_action,
-                "detail": public_error_message(exc, default=f"Failed to {requested_action} {program}."),
+                "detail": public_error_message(
+                    exc, default=f"Failed to {requested_action} {program}.",
+                ),
             }
-        detail = _decode_completed(proc).strip() or f"{program} {requested_action} requested."
+        detail = (
+            _decode_completed(proc).strip()
+            or f"{program} {requested_action} requested."
+        )
         ok = proc.returncode == 0
         if requested_action == "start" and ok:
-            status_ok, status_detail = self._supervisor_program_status(program, timeout_seconds=timeout_seconds)
+            status_ok, status_detail = self._supervisor_program_status(
+                program, timeout_seconds=timeout_seconds,
+            )
             ok = status_ok
             if status_detail:
                 detail = f"{detail}\n{status_detail}"
@@ -420,32 +564,66 @@ class ProxyRuntime:
             "detail": detail,
         }
 
-    def _restart_supervisor_program(self, program_name: str, *, timeout_seconds: int = 30, stop_on_failure: bool = False) -> tuple[bool, str]:
+    def _restart_supervisor_program(
+        self,
+        program_name: str,
+        *,
+        timeout_seconds: int = 30,
+        stop_on_failure: bool = False,
+    ) -> tuple[bool, str]:
         with _exclusive_runtime_lock("supervisor", _SUPERVISOR_CONTROL_LOCK):
-            return self._restart_supervisor_program_unlocked(program_name, timeout_seconds=timeout_seconds, stop_on_failure=stop_on_failure)
+            return self._restart_supervisor_program_unlocked(
+                program_name,
+                timeout_seconds=timeout_seconds,
+                stop_on_failure=stop_on_failure,
+            )
 
-    def _wait_for_supervisor_program_stopped(self, program_name: str, *, timeout_seconds: float = 30.0) -> tuple[bool, str]:
+    def _wait_for_supervisor_program_stopped(
+        self, program_name: str, *, timeout_seconds: float = 30.0,
+    ) -> tuple[bool, str]:
         deadline = time.time() + max(1.0, float(timeout_seconds))
         last_detail = ""
         while time.time() < deadline:
             try:
                 proc = subprocess.run(
-                    ["supervisorctl", "-c", "/etc/supervisord.conf", "status", program_name],
+                    [
+                        "supervisorctl",
+                        "-c",
+                        "/etc/supervisord.conf",
+                        "status",
+                        program_name,
+                    ],
                     capture_output=True,
                     timeout=min(8.0, max(1.0, deadline - time.time())),
                 )
                 last_detail = _decode_completed(proc).strip()
                 upper = last_detail.upper()
-                if any(state in upper for state in ("STOPPED", "EXITED", "FATAL", "BACKOFF", "UNKNOWN")):
+                if any(
+                    state in upper
+                    for state in ("STOPPED", "EXITED", "FATAL", "BACKOFF", "UNKNOWN")
+                ):
                     return True, last_detail
-                if proc.returncode != 0 and "RUNNING" not in upper and "STARTING" not in upper and "STOPPING" not in upper:
+                if (
+                    proc.returncode != 0
+                    and "RUNNING" not in upper
+                    and "STARTING" not in upper
+                    and "STOPPING" not in upper
+                ):
                     return True, last_detail
             except Exception as exc:
-                last_detail = public_error_message(exc, default=f"Failed to check {program_name} supervisor status.")
+                last_detail = public_error_message(
+                    exc, default=f"Failed to check {program_name} supervisor status.",
+                )
             time.sleep(0.5)
         return False, last_detail or f"Timed out waiting for {program_name} to stop."
 
-    def _restart_supervisor_program_unlocked(self, program_name: str, *, timeout_seconds: int = 30, stop_on_failure: bool = False) -> tuple[bool, str]:
+    def _restart_supervisor_program_unlocked(
+        self,
+        program_name: str,
+        *,
+        timeout_seconds: int = 30,
+        stop_on_failure: bool = False,
+    ) -> tuple[bool, str]:
         details: list[str] = []
         try:
             stop = subprocess.run(
@@ -454,52 +632,86 @@ class ProxyRuntime:
                 timeout=timeout_seconds,
             )
         except Exception as exc:
-            details.append(public_error_message(exc, default=f"Failed to stop {program_name}."))
+            details.append(
+                public_error_message(exc, default=f"Failed to stop {program_name}."),
+            )
         else:
-            stop_detail = _decode_completed(stop).strip() or f"{program_name} stop requested."
+            stop_detail = (
+                _decode_completed(stop).strip() or f"{program_name} stop requested."
+            )
             details.append(stop_detail)
 
-        stopped_ok, stopped_detail = self._wait_for_supervisor_program_stopped(program_name, timeout_seconds=timeout_seconds)
+        stopped_ok, stopped_detail = self._wait_for_supervisor_program_stopped(
+            program_name, timeout_seconds=timeout_seconds,
+        )
         if stopped_detail and stopped_detail not in details:
             details.append(stopped_detail)
         if not stopped_ok:
-            status_ok, status_detail = self._supervisor_program_status(program_name, timeout_seconds=timeout_seconds)
+            status_ok, status_detail = self._supervisor_program_status(
+                program_name, timeout_seconds=timeout_seconds,
+            )
             if status_detail and status_detail not in details:
                 details.append(status_detail)
             if status_ok:
                 details.append(f"{program_name} was already restarted by supervisor.")
-                return True, "\n".join(part for part in details if part).strip() or f"{program_name} restarted."
-            return False, "\n".join(part for part in details if part).strip() or f"Failed to stop {program_name} before restart."
+                return True, "\n".join(
+                    part for part in details if part
+                ).strip() or f"{program_name} restarted."
+            return False, "\n".join(
+                part for part in details if part
+            ).strip() or f"Failed to stop {program_name} before restart."
 
         for attempt in range(1, 6):
             if attempt > 1:
                 time.sleep(1.0)
             try:
                 start = subprocess.run(
-                    ["supervisorctl", "-c", "/etc/supervisord.conf", "start", program_name],
+                    [
+                        "supervisorctl",
+                        "-c",
+                        "/etc/supervisord.conf",
+                        "start",
+                        program_name,
+                    ],
                     capture_output=True,
                     timeout=timeout_seconds,
                 )
             except Exception as exc:
-                details.append(public_error_message(exc, default=f"Failed to start {program_name}."))
+                details.append(
+                    public_error_message(
+                        exc, default=f"Failed to start {program_name}.",
+                    ),
+                )
                 continue
 
-            start_detail = _decode_completed(start).strip() or f"{program_name} start requested."
+            start_detail = (
+                _decode_completed(start).strip() or f"{program_name} start requested."
+            )
             details.append(start_detail)
 
             # A quick start can still crash immediately afterward. Require a
             # post-start supervisor status check to avoid accepting restart loops.
             time.sleep(1.0)
-            status_ok, status_detail = self._supervisor_program_status(program_name, timeout_seconds=timeout_seconds)
+            status_ok, status_detail = self._supervisor_program_status(
+                program_name, timeout_seconds=timeout_seconds,
+            )
             if status_detail:
                 details.append(status_detail)
             if status_ok:
-                return True, "\n".join(part for part in details if part).strip() or f"{program_name} restarted."
+                return True, "\n".join(
+                    part for part in details if part
+                ).strip() or f"{program_name} restarted."
 
         if stop_on_failure:
             try:
                 stop = subprocess.run(
-                    ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", program_name],
+                    [
+                        "supervisorctl",
+                        "-c",
+                        "/etc/supervisord.conf",
+                        "stop",
+                        program_name,
+                    ],
                     capture_output=True,
                     timeout=timeout_seconds,
                 )
@@ -508,12 +720,16 @@ class ProxyRuntime:
                     details.append(stop_detail)
             except Exception:
                 pass
-        return False, "\n".join(part for part in details if part).strip() or f"Failed to restart {program_name}."
+        return False, "\n".join(
+            part for part in details if part
+        ).strip() or f"Failed to restart {program_name}."
 
     def _restart_adblock_service(self) -> tuple[bool, str]:
         if self.services.adblock_service_restarter is not None:
             return self.services.adblock_service_restarter()
-        ok, detail = self._restart_supervisor_program("cicap_adblock", stop_on_failure=True)
+        ok, detail = self._restart_supervisor_program(
+            "cicap_adblock", stop_on_failure=True,
+        )
         if not ok:
             return ok, detail
         deadline = time.time() + 15.0
@@ -521,26 +737,38 @@ class ProxyRuntime:
         while time.time() < deadline:
             last_health = _check_icap_adblock(timeout=1.0, error_formatter=str)
             if bool(last_health.get("ok")):
-                health_detail = str(last_health.get("detail") or "cicap_adblock ICAP health check passed.")
-                return True, "\n".join(part for part in (detail, health_detail) if str(part or "").strip()).strip()
+                health_detail = str(
+                    last_health.get("detail")
+                    or "cicap_adblock ICAP health check passed.",
+                )
+                return True, "\n".join(
+                    part for part in (detail, health_detail) if str(part or "").strip()
+                ).strip()
             time.sleep(0.5)
-        health_detail = str(last_health.get("detail") or "cicap_adblock ICAP health check did not pass after restart.")
-        return False, "\n".join(part for part in (detail, health_detail) if str(part or "").strip()).strip()
+        health_detail = str(
+            last_health.get("detail")
+            or "cicap_adblock ICAP health check did not pass after restart.",
+        )
+        return False, "\n".join(
+            part for part in (detail, health_detail) if str(part or "").strip()
+        ).strip()
 
     def _snapshot_adblock_compiled_dir(self) -> str:
         snapshot_root = tempfile.mkdtemp(prefix="adblock-compiled-snapshot-")
         snapshot_dir = os.path.join(snapshot_root, "compiled")
-        if os.path.isdir(self.adblock_compiled_dir):
+        if pathlib.Path(self.adblock_compiled_dir).is_dir():
             shutil.copytree(self.adblock_compiled_dir, snapshot_dir, dirs_exist_ok=True)
         else:
-            os.makedirs(snapshot_dir, exist_ok=True)
+            pathlib.Path(snapshot_dir).mkdir(exist_ok=True, parents=True)
         return snapshot_root
 
     def _restore_adblock_compiled_snapshot(self, snapshot_root: str) -> None:
         snapshot_dir = os.path.join(snapshot_root, "compiled")
-        if os.path.isdir(self.adblock_compiled_dir):
+        if pathlib.Path(self.adblock_compiled_dir).is_dir():
             shutil.rmtree(self.adblock_compiled_dir, ignore_errors=True)
-        os.makedirs(os.path.dirname(self.adblock_compiled_dir) or ".", exist_ok=True)
+        pathlib.Path(pathlib.Path(self.adblock_compiled_dir).parent or ".").mkdir(
+            exist_ok=True, parents=True,
+        )
         shutil.copytree(snapshot_dir, self.adblock_compiled_dir, dirs_exist_ok=True)
 
     def _squid_adblock_regex_path(self, name: str) -> str:
@@ -551,7 +779,7 @@ class ProxyRuntime:
         path = os.path.join(self.adblock_compiled_dir, name)
         lines: list[str] = []
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            with pathlib.Path(path).open(encoding="utf-8", errors="replace") as handle:
                 raw_lines = handle.readlines()
         except FileNotFoundError:
             raw_lines = []
@@ -567,21 +795,21 @@ class ProxyRuntime:
 
     def _ensure_squid_adblock_regex_files(self) -> bool:
         changed = False
-        os.makedirs(self.adblock_compiled_dir, exist_ok=True)
+        pathlib.Path(self.adblock_compiled_dir).mkdir(exist_ok=True, parents=True)
         for name in ("regex_allow.txt", "regex_block.txt"):
             target = self._squid_adblock_regex_path(name)
             content = self._read_cicap_regex_table_as_squid(name)
             try:
-                with open(target, "r", encoding="utf-8", errors="replace") as handle:
-                    current = handle.read()
+                current = pathlib.Path(target).read_text(
+                    encoding="utf-8", errors="replace",
+                )
             except FileNotFoundError:
                 current = None
             if current == content:
                 continue
             tmp = f"{target}.tmp"
-            with open(tmp, "w", encoding="utf-8") as handle:
-                handle.write(content)
-            os.replace(tmp, target)
+            pathlib.Path(tmp).write_text(content, encoding="utf-8")
+            pathlib.Path(tmp).replace(target)
             changed = True
         return changed
 
@@ -590,19 +818,41 @@ class ProxyRuntime:
         current_reader = getattr(controller, "get_current_config", None)
         normalizer = getattr(controller, "normalize_config_text", None)
         apply_config = getattr(controller, "apply_config_text", None)
-        if not (callable(current_reader) and callable(normalizer) and callable(apply_config)):
+        if not (
+            callable(current_reader) and callable(normalizer) and callable(apply_config)
+        ):
             return True, "", False
         try:
             current = current_reader() or ""
             normalized = normalizer(current)
         except Exception as exc:
-            return False, public_error_message(exc, default="Failed to inspect Squid config before policy reload."), False
+            return (
+                False,
+                public_error_message(
+                    exc, default="Failed to inspect Squid config before policy reload.",
+                ),
+                False,
+            )
         if normalized == current:
             return True, "", False
         ok, detail = apply_config(normalized)
         if ok:
-            return True, (detail.strip() or "Squid config normalized for generated policy includes."), True
-        return False, (detail.strip() or "Failed to normalize Squid config for generated policy includes."), False
+            return (
+                True,
+                (
+                    detail.strip()
+                    or "Squid config normalized for generated policy includes."
+                ),
+                True,
+            )
+        return (
+            False,
+            (
+                detail.strip()
+                or "Failed to normalize Squid config for generated policy includes."
+            ),
+            False,
+        )
 
     def _reload_for_policy_update(self) -> tuple[bool, str]:
         # Policy materialization changes included ACL files, external ACL inputs,
@@ -613,9 +863,13 @@ class ProxyRuntime:
         # the correct first-line operation for include/ACL changes because it reloads
         # the active config while keeping the listener stable.
         try:
-            proc = self.controller._run(["squid", "-k", "reconfigure"], capture_output=True, timeout=15)
+            proc = self.controller._run(
+                ["squid", "-k", "reconfigure"], capture_output=True, timeout=15,
+            )
         except Exception as exc:
-            return False, public_error_message(exc, default="Squid reconfigure failed for policy update.")
+            return False, public_error_message(
+                exc, default="Squid reconfigure failed for policy update.",
+            )
         detail = _decode_completed(proc).strip()
         ok = int(getattr(proc, "returncode", 1) or 0) == 0
         if ok:
@@ -637,32 +891,56 @@ class ProxyRuntime:
                 time.sleep(0.5)
             else:
                 ok = False
-                icap_detail = str(last_icap.get("detail") or "cicap_adblock ICAP health check did not pass after policy reload.")
-                detail = "\n".join(part for part in (detail, icap_detail) if str(part or "").strip()).strip()
+                icap_detail = str(
+                    last_icap.get("detail")
+                    or "cicap_adblock ICAP health check did not pass after policy reload.",
+                )
+                detail = "\n".join(
+                    part for part in (detail, icap_detail) if str(part or "").strip()
+                ).strip()
         if ok:
             success_detail = "Squid reconfigured for policy update."
             if success_detail not in detail:
-                detail = "\n".join(part for part in (detail, success_detail) if str(part or "").strip()).strip()
-        return bool(ok), detail or ("Squid reconfigured for policy update." if ok else "Squid reconfigure failed for policy update.")
+                detail = "\n".join(
+                    part for part in (detail, success_detail) if str(part or "").strip()
+                ).strip()
+        return bool(ok), detail or (
+            "Squid reconfigured for policy update."
+            if ok
+            else "Squid reconfigure failed for policy update."
+        )
 
-    def validate_config_text(self, config_text: str) -> Dict[str, Any]:
+    def validate_config_text(self, config_text: str) -> dict[str, Any]:
         normalized = self.controller.normalize_config_text(config_text or "")
         ok, detail = self.controller.validate_config_text(normalized)
         return {
             "ok": bool(ok),
             "proxy_id": self.proxy_id,
-            "detail": str(detail or ("Squid config validation succeeded." if ok else "Squid config validation failed.")),
-            "config_sha256": hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest() if normalized else "",
+            "detail": str(
+                detail
+                or (
+                    "Squid config validation succeeded."
+                    if ok
+                    else "Squid config validation failed."
+                ),
+            ),
+            "config_sha256": hashlib.sha256(
+                normalized.encode("utf-8", errors="replace"),
+            ).hexdigest()
+            if normalized
+            else "",
         }
 
-    def rollback_last_known_good_config(self, *, reason: str = "") -> Dict[str, Any]:
+    def rollback_last_known_good_config(self, *, reason: str = "") -> dict[str, Any]:
         self._invalidate_health_cache()
-        ok, detail = self.controller.restore_last_known_good_config(reason=reason or "Rollback requested.")
+        ok, detail = self.controller.restore_last_known_good_config(
+            reason=reason or "Rollback requested.",
+        )
         current_sha = self._current_config_sha()
-        try:
-            self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=current_sha)
-        except Exception:
-            pass
+        with suppress(Exception):
+            self.registry.mark_apply_result(
+                self.proxy_id, ok=ok, detail=detail, current_config_sha=current_sha,
+            )
         return {
             "ok": bool(ok),
             "proxy_id": self.proxy_id,
@@ -672,10 +950,14 @@ class ProxyRuntime:
             "detail": detail,
         }
 
-    def self_heal_config_if_needed(self, *, reason: str = "health check") -> Dict[str, Any]:
+    def self_heal_config_if_needed(
+        self, *, reason: str = "health check",
+    ) -> dict[str, Any]:
         try:
             stdout, stderr = self.controller.get_status()
-            status_detail = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
+            status_detail = (
+                _decode_bytes(stdout) + "\n" + _decode_bytes(stderr)
+            ).strip()
             proxy_ok = not bool(stderr)
         except Exception as exc:
             status_detail = str(exc)
@@ -699,8 +981,12 @@ class ProxyRuntime:
         detail_reason = f"Self-heal triggered by {reason}: {status_detail or 'Squid health check failed.'}"
         return self.rollback_last_known_good_config(reason=detail_reason)
 
-    def self_heal_runtime_services_if_needed(self, *, reason: str = "health check") -> Dict[str, Any]:
-        status_ok, status_detail = self._supervisor_program_status("cicap_adblock", timeout_seconds=5)
+    def self_heal_runtime_services_if_needed(
+        self, *, reason: str = "health check",
+    ) -> dict[str, Any]:
+        status_ok, status_detail = self._supervisor_program_status(
+            "cicap_adblock", timeout_seconds=5,
+        )
         icap_health = _check_icap_adblock(timeout=0.8, error_formatter=str)
         if status_ok and bool(icap_health.get("ok")):
             return {
@@ -735,7 +1021,11 @@ class ProxyRuntime:
             "/usr/libexec/squid/security_file_certgen",
         ]
         for candidate in candidates:
-            if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            if (
+                candidate
+                and pathlib.Path(candidate).exists()
+                and os.access(candidate, os.X_OK)
+            ):
                 return candidate
         return ""
 
@@ -743,8 +1033,17 @@ class ProxyRuntime:
         if self.services.ssl_db_reinitializer is not None:
             return self.services.ssl_db_reinitializer()
         ssl_db_dir = self.ssl_db_dir
-        if not ssl_db_dir.startswith("/") or ssl_db_dir in ("/", "/etc", "/usr", "/var", "/var/lib"):
-            return False, f"Refusing to reinitialize ssl_db at unsafe path: {ssl_db_dir}"
+        if not ssl_db_dir.startswith("/") or ssl_db_dir in {
+            "/",
+            "/etc",
+            "/usr",
+            "/var",
+            "/var/lib",
+        }:
+            return (
+                False,
+                f"Refusing to reinitialize ssl_db at unsafe path: {ssl_db_dir}",
+            )
 
         details: list[str] = []
         try:
@@ -759,27 +1058,31 @@ class ProxyRuntime:
         except Exception as exc:
             details.append(f"supervisorctl stop squid failed: {exc}")
             try:
-                fallback = subprocess.run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
+                fallback = subprocess.run(
+                    ["squid", "-k", "shutdown"], capture_output=True, timeout=10,
+                )
                 decoded = _decode_completed(fallback)
                 if decoded:
                     details.append(decoded)
             except Exception as inner_exc:
                 details.append(f"squid shutdown fallback failed: {inner_exc}")
 
-        parent_dir = os.path.dirname(ssl_db_dir) or "/var/lib/ssl_db"
+        parent_dir = pathlib.Path(ssl_db_dir).parent or "/var/lib/ssl_db"
         try:
             shutil.rmtree(ssl_db_dir, ignore_errors=True)
-            os.makedirs(parent_dir, exist_ok=True)
+            pathlib.Path(parent_dir).mkdir(exist_ok=True, parents=True)
         except Exception as exc:
             details.append(f"Failed to clear ssl_db directory: {exc}")
             return False, "\n".join([part for part in details if part]).strip()
 
         init_script = "/scripts/init_ssl_db.sh"
-        if os.path.exists(init_script):
+        if pathlib.Path(init_script).exists():
             try:
                 env = os.environ.copy()
                 env["SSL_DB_DIR"] = ssl_db_dir
-                initialized = subprocess.run(["sh", init_script], capture_output=True, timeout=90, env=env)
+                initialized = subprocess.run(
+                    ["sh", init_script], capture_output=True, timeout=90, env=env,
+                )
             except Exception as exc:
                 details.append(f"Failed to run {init_script}: {exc}")
                 return False, "\n".join([part for part in details if part]).strip()
@@ -798,22 +1101,31 @@ class ProxyRuntime:
                 return False, "\n".join([part for part in details if part]).strip()
 
             try:
-                initialized = subprocess.run([helper, "-c", "-s", ssl_db_dir, "-M", "16MB"], capture_output=True, timeout=90)
+                initialized = subprocess.run(
+                    [helper, "-c", "-s", ssl_db_dir, "-M", "16MB"],
+                    capture_output=True,
+                    timeout=90,
+                )
             except Exception as exc:
                 details.append(f"Failed to initialize ssl_db: {exc}")
                 return False, "\n".join([part for part in details if part]).strip()
 
             if initialized.returncode != 0:
-                details.append(_decode_completed(initialized) or "ssl_crtd initialization failed")
+                details.append(
+                    _decode_completed(initialized) or "ssl_crtd initialization failed",
+                )
                 return False, "\n".join([part for part in details if part]).strip()
 
-            details.append(_decode_completed(initialized) or f"Reinitialized ssl_db at {ssl_db_dir}.")
+            details.append(
+                _decode_completed(initialized)
+                or f"Reinitialized ssl_db at {ssl_db_dir}.",
+            )
             try:
                 repair = subprocess.run(
                     [
                         "sh",
                         "-lc",
-                        'chmod 700 "$1" 2>/dev/null || true; [ -d "$1/certs" ] && chmod 750 "$1/certs" 2>/dev/null || true; if getent passwd squid >/dev/null 2>&1; then chown -R squid:squid "$(dirname \"$1\")"; fi',
+                        'chmod 700 "$1" 2>/dev/null || true; [ -d "$1/certs" ] && chmod 750 "$1/certs" 2>/dev/null || true; if getent passwd squid >/dev/null 2>&1; then chown -R squid:squid "$(dirname "$1")"; fi',
                         "sh",
                         ssl_db_dir,
                     ],
@@ -821,17 +1133,22 @@ class ProxyRuntime:
                     timeout=20,
                 )
                 if repair.returncode != 0:
-                    details.append(_decode_completed(repair) or "Failed to repair ssl_db ownership and permissions.")
+                    details.append(
+                        _decode_completed(repair)
+                        or "Failed to repair ssl_db ownership and permissions.",
+                    )
                     return False, "\n".join([part for part in details if part]).strip()
             except Exception as exc:
-                details.append(f"Failed to repair ssl_db ownership and permissions: {exc}")
+                details.append(
+                    f"Failed to repair ssl_db ownership and permissions: {exc}",
+                )
                 return False, "\n".join([part for part in details if part]).strip()
 
         try:
-            os.chmod(ssl_db_dir, 0o700)
+            pathlib.Path(ssl_db_dir).chmod(0o700)
             certs_dir = os.path.join(ssl_db_dir, "certs")
-            if os.path.isdir(certs_dir):
-                os.chmod(certs_dir, 0o750)
+            if pathlib.Path(certs_dir).is_dir():
+                pathlib.Path(certs_dir).chmod(0o750)
         except Exception:
             pass
 
@@ -850,9 +1167,14 @@ class ProxyRuntime:
                 return True, "No web category snapshot build is available yet."
             if snapshot_db._build_snapshot_from_db(expected_built_ts=expected_built_ts):
                 return True, "Web category snapshot is current."
-            return False, "Failed to publish local web category snapshot; proxy will use the last usable snapshot if present."
+            return (
+                False,
+                "Failed to publish local web category snapshot; proxy will use the last usable snapshot if present.",
+            )
         except Exception as exc:
-            return False, public_error_message(exc, default="Failed to publish local web category snapshot.")
+            return False, public_error_message(
+                exc, default="Failed to publish local web category snapshot.",
+            )
 
     @staticmethod
     def _policy_requires_webcat_snapshot(desired: Any) -> bool:
@@ -865,12 +1187,17 @@ class ProxyRuntime:
                 return True
         return False
 
-    def sync_policy_state(self, *, force: bool = False) -> Dict[str, Any]:
+    def sync_policy_state(self, *, force: bool = False) -> dict[str, Any]:
         desired = self.policy_state_builder(self.proxy_id)
         if self._policy_requires_webcat_snapshot(desired):
-            snapshot_ok, snapshot_detail = self._publish_webcat_snapshot_for_policy_sync()
+            snapshot_ok, snapshot_detail = (
+                self._publish_webcat_snapshot_for_policy_sync()
+            )
         else:
-            snapshot_ok, snapshot_detail = True, "Web category snapshot not required for current policy."
+            snapshot_ok, snapshot_detail = (
+                True,
+                "Web category snapshot not required for current policy.",
+            )
         current_sha = self._current_policy_sha()
         if not force and desired.policy_sha256 == current_sha:
             return {
@@ -879,7 +1206,9 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "detail": "Proxy is already using the active policy materialization." if snapshot_ok else snapshot_detail,
+                "detail": "Proxy is already using the active policy materialization."
+                if snapshot_ok
+                else snapshot_detail,
                 "degraded": not snapshot_ok,
             }
 
@@ -898,7 +1227,9 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "detail": public_error_message(exc, default="Failed to materialize policy state."),
+                "detail": public_error_message(
+                    exc, default="Failed to materialize policy state.",
+                ),
             }
 
         if not changed_paths:
@@ -908,7 +1239,9 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "detail": "Policy materialization is already current." if snapshot_ok else snapshot_detail,
+                "detail": "Policy materialization is already current."
+                if snapshot_ok
+                else snapshot_detail,
                 "degraded": not snapshot_ok,
             }
 
@@ -918,11 +1251,13 @@ class ProxyRuntime:
             "changed": True,
             "reload_required": True,
             "policy_sha256": desired.policy_sha256,
-            "detail": f"Updated {len(changed_paths)} local policy file(s)." if snapshot_ok else f"Updated {len(changed_paths)} local policy file(s); {snapshot_detail}",
+            "detail": f"Updated {len(changed_paths)} local policy file(s)."
+            if snapshot_ok
+            else f"Updated {len(changed_paths)} local policy file(s); {snapshot_detail}",
             "degraded": not snapshot_ok,
         }
 
-    def sync_adblock_state(self, *, force: bool = False) -> Dict[str, Any]:
+    def sync_adblock_state(self, *, force: bool = False) -> dict[str, Any]:
         revision_meta = self.adblock_artifacts.get_active_artifact_metadata()
         store = self.adblock_store
         store.init_db()
@@ -944,10 +1279,8 @@ class ProxyRuntime:
 
             ok_restart, restart_detail = self._restart_adblock_service()
             if ok_restart:
-                try:
+                with suppress(Exception):
                     store.mark_cache_flushed(size=0)
-                except Exception:
-                    pass
             return {
                 "ok": ok_restart,
                 "proxy_id": self.proxy_id,
@@ -982,7 +1315,12 @@ class ProxyRuntime:
                 "cache_flushed": False,
                 "revision_id": revision_meta.revision_id,
                 "artifact_sha256": revision_meta.artifact_sha256,
-                "detail": "Proxy is already using the active adblock artifact." + (" Squid adblock regex ACL files were refreshed." if squid_regex_changed else ""),
+                "detail": "Proxy is already using the active adblock artifact."
+                + (
+                    " Squid adblock regex ACL files were refreshed."
+                    if squid_regex_changed
+                    else ""
+                ),
             }
 
         revision = self.adblock_artifacts.get_active_artifact()
@@ -1008,11 +1346,11 @@ class ProxyRuntime:
                 )
                 squid_regex_changed = self._ensure_squid_adblock_regex_files()
             except Exception as exc:
-                detail = public_error_message(exc, default="Failed to materialize adblock artifact.")
-                try:
+                detail = public_error_message(
+                    exc, default="Failed to materialize adblock artifact.",
+                )
+                with suppress(Exception):
                     shutil.rmtree(snapshot_root, ignore_errors=True)
-                except Exception:
-                    pass
                 applied = self.adblock_artifacts.record_apply_result(
                     self.proxy_id,
                     revision.revision_id,
@@ -1037,22 +1375,31 @@ class ProxyRuntime:
 
         ok_restart, restart_detail = self._restart_adblock_service()
         if not ok_restart and artifact_changed and snapshot_root:
-            rollback_detail_parts = [restart_detail.strip() or "cicap_adblock failed after adblock artifact materialization."]
+            rollback_detail_parts = [
+                restart_detail.strip()
+                or "cicap_adblock failed after adblock artifact materialization.",
+            ]
             try:
                 self._restore_adblock_compiled_snapshot(snapshot_root)
-                rollback_detail_parts.append("Restored previous adblock compiled artifact.")
+                rollback_detail_parts.append(
+                    "Restored previous adblock compiled artifact.",
+                )
                 rollback_ok, rollback_restart_detail = self._restart_adblock_service()
                 if rollback_restart_detail.strip():
                     rollback_detail_parts.append(rollback_restart_detail.strip())
                 if not rollback_ok:
-                    rollback_detail_parts.append("Previous adblock artifact was restored, but cicap_adblock still did not stay running.")
+                    rollback_detail_parts.append(
+                        "Previous adblock artifact was restored, but cicap_adblock still did not stay running.",
+                    )
             except Exception as exc:
-                rollback_detail_parts.append(public_error_message(exc, default="Failed to restore previous adblock artifact."))
+                rollback_detail_parts.append(
+                    public_error_message(
+                        exc, default="Failed to restore previous adblock artifact.",
+                    ),
+                )
             finally:
-                try:
+                with suppress(Exception):
                     shutil.rmtree(snapshot_root, ignore_errors=True)
-                except Exception:
-                    pass
             detail = "\n".join(part for part in rollback_detail_parts if part).strip()
             applied = self.adblock_artifacts.record_apply_result(
                 self.proxy_id,
@@ -1076,15 +1423,11 @@ class ProxyRuntime:
             }
 
         if artifact_changed and snapshot_root:
-            try:
+            with suppress(Exception):
                 shutil.rmtree(snapshot_root, ignore_errors=True)
-            except Exception:
-                pass
         if ok_restart and flush_requested:
-            try:
+            with suppress(Exception):
                 store.mark_cache_flushed(size=0)
-            except Exception:
-                pass
         detail = restart_detail.strip() or "Adblock artifact applied."
         applied = self.adblock_artifacts.record_apply_result(
             self.proxy_id,
@@ -1094,7 +1437,9 @@ class ProxyRuntime:
             applied_by="proxy",
             artifact_sha256=revision.artifact_sha256,
         )
-        adblock_runtime_changed = bool(artifact_changed or flush_requested or squid_regex_changed)
+        adblock_runtime_changed = bool(
+            artifact_changed or flush_requested or squid_regex_changed,
+        )
         return {
             "ok": ok_restart,
             "proxy_id": self.proxy_id,
@@ -1109,7 +1454,7 @@ class ProxyRuntime:
             "detail": detail,
         }
 
-    def sync_pac_state(self, *, force: bool = False) -> Dict[str, Any]:
+    def sync_pac_state(self, *, force: bool = False) -> dict[str, Any]:
         desired = self.pac_state_builder(self.proxy_id)
         current_sha = self._current_pac_state_sha()
         if not force and desired.state_sha256 == current_sha:
@@ -1129,7 +1474,9 @@ class ProxyRuntime:
                 "proxy_id": self.proxy_id,
                 "changed": False,
                 "state_sha256": desired.state_sha256,
-                "detail": public_error_message(exc, default="Failed to materialize PAC state."),
+                "detail": public_error_message(
+                    exc, default="Failed to materialize PAC state.",
+                ),
             }
 
         return {
@@ -1150,7 +1497,7 @@ class ProxyRuntime:
                 source_kind="bootstrap",
             )
 
-    def sync_certificate_bundle(self, *, force: bool = False) -> Dict[str, Any]:
+    def sync_certificate_bundle(self, *, force: bool = False) -> dict[str, Any]:
         revision_meta = self.certificate_bundles.get_active_bundle_metadata()
         if revision_meta is None:
             return {
@@ -1168,7 +1515,9 @@ class ProxyRuntime:
                 latest_apply = self.certificate_bundles.latest_apply(self.proxy_id)
             except Exception:
                 latest_apply = None
-            if int(getattr(latest_apply, "revision_id", 0) or 0) != int(revision_meta.revision_id or 0):
+            if int(getattr(latest_apply, "revision_id", 0) or 0) != int(
+                revision_meta.revision_id or 0,
+            ):
                 try:
                     applied = self.certificate_bundles.record_apply_result(
                         self.proxy_id,
@@ -1210,7 +1559,9 @@ class ProxyRuntime:
                 original_pfx_bytes=revision.original_pfx_blob,
             )
         except Exception as exc:
-            detail = public_error_message(exc, default="Failed to materialize certificate bundle.")
+            detail = public_error_message(
+                exc, default="Failed to materialize certificate bundle.",
+            )
             applied = self.certificate_bundles.record_apply_result(
                 self.proxy_id,
                 revision.revision_id,
@@ -1253,10 +1604,26 @@ class ProxyRuntime:
         if (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1":
             return
         for key, message, starter in (
-            ("proxy_runtime.background.live_stats", "Failed to start proxy live stats background task", self.live_stats_store.start_background),
-            ("proxy_runtime.background.diagnostic", "Failed to start proxy diagnostic background task", self.diagnostic_store.start_background),
-            ("proxy_runtime.background.timeseries", "Failed to start proxy timeseries background task", lambda: self.timeseries_store.start_background(self.stats_provider)),
-            ("proxy_runtime.background.ssl_errors", "Failed to start proxy SSL errors background task", self.ssl_errors_store.start_background),
+            (
+                "proxy_runtime.background.live_stats",
+                "Failed to start proxy live stats background task",
+                self.live_stats_store.start_background,
+            ),
+            (
+                "proxy_runtime.background.diagnostic",
+                "Failed to start proxy diagnostic background task",
+                self.diagnostic_store.start_background,
+            ),
+            (
+                "proxy_runtime.background.timeseries",
+                "Failed to start proxy timeseries background task",
+                lambda: self.timeseries_store.start_background(self.stats_provider),
+            ),
+            (
+                "proxy_runtime.background.ssl_errors",
+                "Failed to start proxy SSL errors background task",
+                self.ssl_errors_store.start_background,
+            ),
         ):
             try:
                 starter()
@@ -1279,16 +1646,39 @@ class ProxyRuntime:
                 interval_seconds=30.0,
             )
 
-    def collect_clamav_health(self) -> Dict[str, Any]:
+    def collect_clamav_health(self) -> dict[str, Any]:
         started_mono = time.monotonic()
         try:
-            probe_timeout = max(0.2, min(10.0, float((os.environ.get("PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS") or "1.5").strip() or "1.5")))
+            probe_timeout = max(
+                0.2,
+                min(
+                    10.0,
+                    float(
+                        (
+                            os.environ.get("PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS")
+                            or "1.5"
+                        ).strip()
+                        or "1.5",
+                    ),
+                ),
+            )
         except Exception:
             probe_timeout = 1.5
-        services = self.runtime_services_builder(error_formatter=str, icap_timeout=probe_timeout, tcp_timeout=probe_timeout)
-        clamd = services.get("clamd") or {"ok": False, "detail": "clamd health unavailable"}
-        av_icap = services.get("av_icap") or {"ok": False, "detail": "c-icap AV health unavailable"}
-        clamav = services.get("clamav") or {"ok": bool(clamd.get("ok")) and bool(av_icap.get("ok")), "detail": "ClamAV health unavailable"}
+        services = self.runtime_services_builder(
+            error_formatter=str, icap_timeout=probe_timeout, tcp_timeout=probe_timeout,
+        )
+        clamd = services.get("clamd") or {
+            "ok": False,
+            "detail": "clamd health unavailable",
+        }
+        av_icap = services.get("av_icap") or {
+            "ok": False,
+            "detail": "c-icap AV health unavailable",
+        }
+        clamav = services.get("clamav") or {
+            "ok": bool(clamd.get("ok")) and bool(av_icap.get("ok")),
+            "detail": "ClamAV health unavailable",
+        }
         ok = bool(clamav.get("ok"))
         return {
             "ok": ok,
@@ -1305,12 +1695,16 @@ class ProxyRuntime:
             "timestamp": int(time.time()),
         }
 
-    def collect_navigation_health(self, *, force: bool = False) -> Dict[str, Any]:
+    def collect_navigation_health(self, *, force: bool = False) -> dict[str, Any]:
         now_mono = time.monotonic()
         if not force and self.health_cache_ttl_seconds > 0:
             with self._health_cache_lock:
                 cached = self._navigation_health_cache_value
-                if cached is not None and (now_mono - self._navigation_health_cache_ts) < self.health_cache_ttl_seconds:
+                if (
+                    cached is not None
+                    and (now_mono - self._navigation_health_cache_ts)
+                    < self.health_cache_ttl_seconds
+                ):
                     return cached
 
         started_mono = time.monotonic()
@@ -1319,7 +1713,11 @@ class ProxyRuntime:
         proxy_ok = not bool(stderr)
         try:
             listener_details = tuple(self.controller._http_listener_details())
-            listener_ports = tuple(int(item.get("port") or 0) for item in listener_details if int(item.get("port") or 0))
+            listener_ports = tuple(
+                int(item.get("port") or 0)
+                for item in listener_details
+                if int(item.get("port") or 0)
+            )
             listener_ok = bool(self.controller._wait_for_http_listener(timeout=0.5))
         except Exception:
             listener_details = ()
@@ -1329,10 +1727,11 @@ class ProxyRuntime:
             "supervisor": self._supervisor_programs_health(),
             "squid_listeners": {
                 "ok": bool(listener_ok),
-                "detail": _listener_mode_summary(listener_details) or "No Squid http_port listeners detected.",
+                "detail": _listener_mode_summary(listener_details)
+                or "No Squid http_port listeners detected.",
                 "listeners": [dict(item) for item in listener_details],
                 "ports": list(listener_ports),
-            }
+            },
         }
         ok = proxy_ok and all(bool(item.get("ok")) for item in services.values())
         result = {
@@ -1354,16 +1753,22 @@ class ProxyRuntime:
                 self._navigation_health_cache_ts = time.monotonic()
         return result
 
-    def collect_health(self, *, force: bool = False) -> Dict[str, Any]:
+    def collect_health(self, *, force: bool = False) -> dict[str, Any]:
         now_mono = time.monotonic()
-        cached: Dict[str, Any] | None = None
+        cached: dict[str, Any] | None = None
         if not force and self.health_cache_ttl_seconds > 0:
             with self._health_cache_lock:
                 cached = self._health_cache_value
-                if cached is not None and (now_mono - self._health_cache_ts) < self.health_cache_ttl_seconds:
+                if (
+                    cached is not None
+                    and (now_mono - self._health_cache_ts)
+                    < self.health_cache_ttl_seconds
+                ):
                     return cached
 
-        refresh_acquired = self._health_refresh_lock.acquire(blocking=force or cached is None)
+        refresh_acquired = self._health_refresh_lock.acquire(
+            blocking=force or cached is None,
+        )
         if not refresh_acquired:
             # Another request is already doing the expensive health probe. Return
             # the last known result rather than letting Gunicorn threads pile up
@@ -1371,7 +1776,9 @@ class ProxyRuntime:
             # management requests to time out.
             stale = dict(cached or {})
             stale["health_cache_stale"] = True
-            stale["health_cache_detail"] = "Returned stale health while a refresh was already in progress."
+            stale["health_cache_detail"] = (
+                "Returned stale health while a refresh was already in progress."
+            )
             return stale
 
         try:
@@ -1379,19 +1786,31 @@ class ProxyRuntime:
                 now_mono = time.monotonic()
                 with self._health_cache_lock:
                     cached = self._health_cache_value
-                    if cached is not None and (now_mono - self._health_cache_ts) < self.health_cache_ttl_seconds:
+                    if (
+                        cached is not None
+                        and (now_mono - self._health_cache_ts)
+                        < self.health_cache_ttl_seconds
+                    ):
                         return cached
 
             started_mono = time.monotonic()
             stdout, stderr = self.controller.get_status()
-            proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
+            proxy_status = (
+                _decode_bytes(stdout) + "\n" + _decode_bytes(stderr)
+            ).strip()
             proxy_ok = not bool(stderr)
             stats = self.stats_provider()
-            services = self.runtime_services_builder(error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75)
+            services = self.runtime_services_builder(
+                error_formatter=str, icap_timeout=0.8, tcp_timeout=0.75,
+            )
             services["supervisor"] = self._supervisor_programs_health()
             try:
                 listener_details = tuple(self.controller._http_listener_details())
-                listener_ports = tuple(int(item.get("port") or 0) for item in listener_details if int(item.get("port") or 0))
+                listener_ports = tuple(
+                    int(item.get("port") or 0)
+                    for item in listener_details
+                    if int(item.get("port") or 0)
+                )
                 listener_ok = bool(self.controller._wait_for_http_listener(timeout=1.0))
             except Exception:
                 listener_details = ()
@@ -1399,13 +1818,16 @@ class ProxyRuntime:
                 listener_ok = proxy_ok
             services["squid_listeners"] = {
                 "ok": bool(listener_ok),
-                "detail": _listener_mode_summary(listener_details) or "No Squid http_port listeners detected.",
+                "detail": _listener_mode_summary(listener_details)
+                or "No Squid http_port listeners detected.",
                 "listeners": [dict(item) for item in listener_details],
                 "ports": list(listener_ports),
             }
             active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
             active_certificate = self.certificate_bundles.get_active_bundle_metadata()
-            active_adblock_artifact = self.adblock_artifacts.get_active_artifact_metadata()
+            active_adblock_artifact = (
+                self.adblock_artifacts.get_active_artifact_metadata()
+            )
             current_sha = self._current_config_sha()
             current_certificate_sha = self._current_certificate_bundle_sha()
             current_adblock_sha = self._current_adblock_artifact_sha()
@@ -1420,7 +1842,9 @@ class ProxyRuntime:
                 desired_policy_sha = desired_policy.policy_sha256
                 current_policy_sha = self._current_policy_sha()
             except Exception as exc:
-                state_errors.append(f"policy: {public_error_message(exc, default='Failed to inspect desired proxy policy state.')}")
+                state_errors.append(
+                    f"policy: {public_error_message(exc, default='Failed to inspect desired proxy policy state.')}",
+                )
                 log_exception_throttled(
                     logger,
                     "proxy_runtime.collect_health.policy",
@@ -1432,7 +1856,9 @@ class ProxyRuntime:
                 desired_pac = self.pac_state_builder(self.proxy_id)
                 desired_pac_sha = desired_pac.state_sha256
             except Exception as exc:
-                state_errors.append(f"pac: {public_error_message(exc, default='Failed to inspect desired PAC state.')}")
+                state_errors.append(
+                    f"pac: {public_error_message(exc, default='Failed to inspect desired PAC state.')}",
+                )
                 log_exception_throttled(
                     logger,
                     "proxy_runtime.collect_health.pac",
@@ -1440,7 +1866,11 @@ class ProxyRuntime:
                     message="Failed to collect proxy PAC health state",
                 )
 
-            ok = proxy_ok and all(bool(item.get("ok")) for item in services.values()) and not state_errors
+            ok = (
+                proxy_ok
+                and all(bool(item.get("ok")) for item in services.values())
+                and not state_errors
+            )
             result = {
                 "ok": ok,
                 "status": "healthy" if ok else "degraded",
@@ -1450,14 +1880,26 @@ class ProxyRuntime:
                 "listener_details": [dict(item) for item in listener_details],
                 "stats": stats,
                 "services": services,
-                "active_revision_id": active_revision.revision_id if active_revision else None,
-                "active_revision_sha": active_revision.config_sha256 if active_revision else "",
+                "active_revision_id": active_revision.revision_id
+                if active_revision
+                else None,
+                "active_revision_sha": active_revision.config_sha256
+                if active_revision
+                else "",
                 "current_config_sha": current_sha,
-                "active_certificate_revision_id": active_certificate.revision_id if active_certificate else None,
-                "active_certificate_sha": active_certificate.bundle_sha256 if active_certificate else "",
+                "active_certificate_revision_id": active_certificate.revision_id
+                if active_certificate
+                else None,
+                "active_certificate_sha": active_certificate.bundle_sha256
+                if active_certificate
+                else "",
                 "current_certificate_sha": current_certificate_sha,
-                "active_adblock_revision_id": active_adblock_artifact.revision_id if active_adblock_artifact else None,
-                "active_adblock_sha": active_adblock_artifact.artifact_sha256 if active_adblock_artifact else "",
+                "active_adblock_revision_id": active_adblock_artifact.revision_id
+                if active_adblock_artifact
+                else None,
+                "active_adblock_sha": active_adblock_artifact.artifact_sha256
+                if active_adblock_artifact
+                else "",
                 "current_adblock_sha": current_adblock_sha,
                 "desired_policy_sha": desired_policy_sha,
                 "current_policy_sha": current_policy_sha,
@@ -1475,7 +1917,7 @@ class ProxyRuntime:
         finally:
             self._health_refresh_lock.release()
 
-    def heartbeat(self) -> Dict[str, Any]:
+    def heartbeat(self) -> dict[str, Any]:
         try:
             self.self_heal_config_if_needed(reason="heartbeat")
         except Exception:
@@ -1500,24 +1942,32 @@ class ProxyRuntime:
             self.proxy_id,
             status=str(health.get("status") or "unknown"),
             hostname=(os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip(),
-            management_url=resolve_local_proxy_management_url(self.proxy_id, public_fields.get("public_host")),
+            management_url=resolve_local_proxy_management_url(
+                self.proxy_id, public_fields.get("public_host"),
+            ),
             public_host=str(public_fields.get("public_host") or ""),
             public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
             public_pac_port=int(public_fields.get("public_pac_port") or 80),
-            public_http_proxy_port=int(public_fields.get("public_http_proxy_port") or 3128),
+            public_http_proxy_port=int(
+                public_fields.get("public_http_proxy_port") or 3128,
+            ),
             current_config_sha=str(health.get("current_config_sha") or ""),
             detail=str(health.get("proxy_status") or "")[:4000],
         )
         return health
 
-    def sync_from_db(self, *, force: bool = False, operation_id: int | None = None) -> Dict[str, Any]:
+    def sync_from_db(
+        self, *, force: bool = False, operation_id: int | None = None,
+    ) -> dict[str, Any]:
         with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
             claimed_operations = []
             ledger = None
             try:
                 ledger = get_operation_ledger()
                 ledger.requeue_stale_applying(self.proxy_id)
-                claimed_operations = ledger.claim_pending(self.proxy_id, limit=100, operation_id=operation_id)
+                claimed_operations = ledger.claim_pending(
+                    self.proxy_id, limit=100, operation_id=operation_id,
+                )
             except Exception:
                 claimed_operations = []
                 ledger = None
@@ -1525,33 +1975,44 @@ class ProxyRuntime:
                 result = self._sync_from_db_unlocked(force=force)
             except Exception as exc:
                 if ledger is not None and claimed_operations:
-                    try:
-                        ledger.mark_many(claimed_operations, status="failed", detail=str(exc)[:4000])
-                    except Exception:
-                        pass
+                    with suppress(Exception):
+                        ledger.mark_many(
+                            claimed_operations, status="failed", detail=str(exc)[:4000],
+                        )
                 raise
             if ledger is not None and claimed_operations:
-                try:
+                with suppress(Exception):
                     ledger.mark_many(
                         claimed_operations,
                         status="applied" if bool(result.get("ok")) else "failed",
-                        detail=str(result.get("detail") or "Proxy reconciliation completed.")[:4000],
+                        detail=str(
+                            result.get("detail") or "Proxy reconciliation completed.",
+                        )[:4000],
                     )
-                except Exception:
-                    pass
             return result
 
-    def _sync_from_db_unlocked(self, *, force: bool = False) -> Dict[str, Any]:
+    def _sync_from_db_unlocked(self, *, force: bool = False) -> dict[str, Any]:
         self._invalidate_health_cache()
         self.ensure_registered()
         self.bootstrap_revision_if_missing()
         cert_result = self.sync_certificate_bundle(force=force)
         cert_ok = bool(cert_result.get("ok", True))
         cert_changed = bool(cert_result.get("changed", False))
-        detail_parts = [str(cert_result.get("detail") or "").strip()] if str(cert_result.get("detail") or "").strip() else []
+        detail_parts = (
+            [str(cert_result.get("detail") or "").strip()]
+            if str(cert_result.get("detail") or "").strip()
+            else []
+        )
         if not cert_ok:
-            detail = "\n".join(detail_parts).strip() or "Certificate bundle sync failed."
-            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            detail = (
+                "\n".join(detail_parts).strip() or "Certificate bundle sync failed."
+            )
+            self.registry.mark_apply_result(
+                self.proxy_id,
+                ok=False,
+                detail=detail,
+                current_config_sha=self._current_config_sha(),
+            )
             cert_result["detail"] = detail
             return cert_result
 
@@ -1563,7 +2024,12 @@ class ProxyRuntime:
             detail_parts.append(str(policy_result.get("detail") or "").strip())
         if not policy_ok:
             detail = "\n".join(detail_parts).strip() or "Policy materialization failed."
-            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            self.registry.mark_apply_result(
+                self.proxy_id,
+                ok=False,
+                detail=detail,
+                current_config_sha=self._current_config_sha(),
+            )
             policy_result["detail"] = detail
             return policy_result
 
@@ -1573,8 +2039,16 @@ class ProxyRuntime:
         if str(adblock_result.get("detail") or "").strip():
             detail_parts.append(str(adblock_result.get("detail") or "").strip())
         if not adblock_ok:
-            detail = "\n".join(detail_parts).strip() or "Adblock artifact materialization failed."
-            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            detail = (
+                "\n".join(detail_parts).strip()
+                or "Adblock artifact materialization failed."
+            )
+            self.registry.mark_apply_result(
+                self.proxy_id,
+                ok=False,
+                detail=detail,
+                current_config_sha=self._current_config_sha(),
+            )
             adblock_result["detail"] = detail
             return adblock_result
 
@@ -1585,31 +2059,68 @@ class ProxyRuntime:
             detail_parts.append(str(pac_result.get("detail") or "").strip())
         if not pac_ok:
             detail = "\n".join(detail_parts).strip() or "PAC materialization failed."
-            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=self._current_config_sha())
+            self.registry.mark_apply_result(
+                self.proxy_id,
+                ok=False,
+                detail=detail,
+                current_config_sha=self._current_config_sha(),
+            )
             pac_result["detail"] = detail
             return pac_result
 
         current_sha = self._current_config_sha()
         clamav_runtime_changed = False
         controller = getattr(self, "controller", None)
-        set_adblock_icap_revision_token = getattr(controller, "set_adblock_icap_revision_token", None)
+        set_adblock_icap_revision_token = getattr(
+            controller, "set_adblock_icap_revision_token", None,
+        )
         if callable(set_adblock_icap_revision_token):
-            set_adblock_icap_revision_token(str(adblock_result.get("artifact_sha256") or self._current_adblock_artifact_sha() or "")[:16])
-        materialize_clamav_runtime_files = getattr(controller, "materialize_clamav_runtime_files", None)
+            set_adblock_icap_revision_token(
+                str(
+                    adblock_result.get("artifact_sha256")
+                    or self._current_adblock_artifact_sha()
+                    or "",
+                )[:16],
+            )
+        materialize_clamav_runtime_files = getattr(
+            controller, "materialize_clamav_runtime_files", None,
+        )
         if callable(materialize_clamav_runtime_files):
             current_config_reader = getattr(controller, "get_current_config", None)
-            current_config_text = current_config_reader() if callable(current_config_reader) else ""
-            ok_clamav_runtime, clamav_runtime_detail = materialize_clamav_runtime_files(current_config_text or "")
-            clamav_runtime_changed = bool(ok_clamav_runtime and "updated" in (clamav_runtime_detail or "").lower())
+            current_config_text = (
+                current_config_reader() if callable(current_config_reader) else ""
+            )
+            ok_clamav_runtime, clamav_runtime_detail = materialize_clamav_runtime_files(
+                current_config_text or "",
+            )
+            clamav_runtime_changed = bool(
+                ok_clamav_runtime and "updated" in (clamav_runtime_detail or "").lower(),
+            )
             if str(clamav_runtime_detail or "").strip() and clamav_runtime_changed:
                 detail_parts.append(str(clamav_runtime_detail or "").strip())
             if not ok_clamav_runtime:
-                detail = "\n".join(detail_parts + [str(clamav_runtime_detail or "ClamAV runtime file materialization failed.")]).strip()
-                self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+                detail = "\n".join(
+                    [
+                        *detail_parts,
+                        str(
+                            clamav_runtime_detail
+                            or "ClamAV runtime file materialization failed.",
+                        ),
+                    ],
+                ).strip()
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=False,
+                    detail=detail,
+                    current_config_sha=current_sha,
+                )
                 return {
                     "ok": False,
                     "proxy_id": self.proxy_id,
-                    "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                    "changed": cert_changed
+                    or policy_changed
+                    or adblock_changed
+                    or pac_changed,
                     "certificate_changed": cert_changed,
                     "policy_changed": policy_changed,
                     "adblock_changed": adblock_changed,
@@ -1617,16 +2128,26 @@ class ProxyRuntime:
                     "config_changed": False,
                     "detail": detail,
                 }
-        policy_config_ok, policy_config_detail, policy_config_changed = self._ensure_policy_runtime_config()
+        policy_config_ok, policy_config_detail, policy_config_changed = (
+            self._ensure_policy_runtime_config()
+        )
         if policy_config_detail.strip():
             detail_parts.append(policy_config_detail.strip())
         if not policy_config_ok:
-            detail = "\n".join(detail_parts).strip() or "Failed to normalize Squid config for policy reload."
-            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            detail = (
+                "\n".join(detail_parts).strip()
+                or "Failed to normalize Squid config for policy reload."
+            )
+            self.registry.mark_apply_result(
+                self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha,
+            )
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed,
+                "changed": cert_changed
+                or policy_changed
+                or adblock_changed
+                or pac_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1643,11 +2164,19 @@ class ProxyRuntime:
                 reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
-            detail = "\n".join(detail_parts).strip() or "No active config revision is available for this proxy."
+            detail = (
+                "\n".join(detail_parts).strip()
+                or "No active config revision is available for this proxy."
+            )
             result = {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
+                "changed": cert_changed
+                or policy_changed
+                or adblock_changed
+                or pac_changed
+                or clamav_runtime_changed
+                or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1655,8 +2184,15 @@ class ProxyRuntime:
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
-            if (policy_reload_required or adblock_changed or clamav_runtime_changed) and not reload_ok:
-                self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            if (
+                policy_reload_required or adblock_changed or clamav_runtime_changed
+            ) and not reload_ok:
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=False,
+                    detail=detail,
+                    current_config_sha=current_sha,
+                )
             return result
 
         latest_apply = None
@@ -1667,19 +2203,27 @@ class ProxyRuntime:
         if (
             not force
             and latest_apply is not None
-            and int(getattr(latest_apply, "revision_id", 0) or 0) == int(revision_meta.revision_id or 0)
+            and int(getattr(latest_apply, "revision_id", 0) or 0)
+            == int(revision_meta.revision_id or 0)
             and not bool(getattr(latest_apply, "ok", False))
         ):
             detail = (
                 f"Active config revision {revision_meta.revision_id} previously failed on this proxy; "
                 "keeping the last-known-good running config until a new revision is activated or forced sync is requested."
             )
-            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            self.registry.mark_apply_result(
+                self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha,
+            )
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
+                "changed": cert_changed
+                or policy_changed
+                or adblock_changed
+                or pac_changed
+                or clamav_runtime_changed
+                or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1699,13 +2243,25 @@ class ProxyRuntime:
             if detail_parts:
                 detail_parts.append(detail)
                 detail = "\n".join(detail_parts).strip()
-            if (policy_reload_required or adblock_changed or clamav_runtime_changed) and not reload_ok:
-                self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            if (
+                policy_reload_required or adblock_changed or clamav_runtime_changed
+            ) and not reload_ok:
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=False,
+                    detail=detail,
+                    current_config_sha=current_sha,
+                )
             return {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
+                "changed": cert_changed
+                or policy_changed
+                or adblock_changed
+                or pac_changed
+                or clamav_runtime_changed
+                or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1717,11 +2273,18 @@ class ProxyRuntime:
         revision = self.revisions.get_active_revision(self.proxy_id)
         if revision is None:
             detail = "Active config revision metadata was present, but the full config text could not be loaded."
-            self.registry.mark_apply_result(self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha)
+            self.registry.mark_apply_result(
+                self.proxy_id, ok=False, detail=detail, current_config_sha=current_sha,
+            )
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed or policy_changed or adblock_changed or pac_changed or clamav_runtime_changed or policy_config_changed,
+                "changed": cert_changed
+                or policy_changed
+                or adblock_changed
+                or pac_changed
+                or clamav_runtime_changed
+                or policy_config_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -1730,8 +2293,12 @@ class ProxyRuntime:
                 "detail": detail,
             }
 
-        normalized_revision_text = self.controller.normalize_config_text(revision.config_text)
-        normalized_revision_sha = hashlib.sha256(normalized_revision_text.encode("utf-8", errors="replace")).hexdigest()
+        normalized_revision_text = self.controller.normalize_config_text(
+            revision.config_text,
+        )
+        normalized_revision_sha = hashlib.sha256(
+            normalized_revision_text.encode("utf-8", errors="replace"),
+        ).hexdigest()
 
         ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
         if config_detail.strip():
@@ -1741,7 +2308,9 @@ class ProxyRuntime:
             ok = bool(policy_reload_ok)
             if policy_reload_detail.strip():
                 detail_parts.append(policy_reload_detail.strip())
-        detail = "\n".join([part for part in detail_parts if part]).strip() or config_detail
+        detail = (
+            "\n".join([part for part in detail_parts if part]).strip() or config_detail
+        )
         applied = self.revisions.record_apply_result(
             self.proxy_id,
             revision.revision_id,
@@ -1750,7 +2319,9 @@ class ProxyRuntime:
             applied_by="proxy",
         )
         new_sha = normalized_revision_sha if ok else current_sha
-        self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=new_sha)
+        self.registry.mark_apply_result(
+            self.proxy_id, ok=ok, detail=detail, current_config_sha=new_sha,
+        )
         return {
             "ok": ok,
             "proxy_id": self.proxy_id,
@@ -1765,17 +2336,22 @@ class ProxyRuntime:
             "detail": detail,
         }
 
-    def clear_cache(self) -> Dict[str, Any]:
+    def clear_cache(self) -> dict[str, Any]:
         self._invalidate_health_cache()
         ok, detail = self.controller.clear_disk_cache()
-        self.registry.mark_apply_result(self.proxy_id, ok=ok, detail=detail, current_config_sha=self._current_config_sha())
+        self.registry.mark_apply_result(
+            self.proxy_id,
+            ok=ok,
+            detail=detail,
+            current_config_sha=self._current_config_sha(),
+        )
         return {
             "ok": ok,
             "proxy_id": self.proxy_id,
             "detail": detail,
         }
 
-    def test_clamav_eicar(self) -> Dict[str, Any]:
+    def test_clamav_eicar(self) -> dict[str, Any]:
         result = _shared_test_eicar(error_formatter=str)
         return {
             "ok": bool(result.get("ok")),
@@ -1783,7 +2359,7 @@ class ProxyRuntime:
             "detail": str(result.get("detail") or ""),
         }
 
-    def test_clamav_icap(self) -> Dict[str, Any]:
+    def test_clamav_icap(self) -> dict[str, Any]:
         result = _shared_send_sample_av_icap(error_formatter=str)
         return {
             "ok": bool(result.get("ok")),

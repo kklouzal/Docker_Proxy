@@ -1,17 +1,22 @@
-
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 from .mysql_test_utils import ensure_proxy_runtime_import_path
 
 
-def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current(tmp_path, monkeypatch):
+def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current(
+    tmp_path, monkeypatch
+) -> None:
     ensure_proxy_runtime_import_path()
 
+    from services.policy_materializer import (  # type: ignore
+        MaterializedPolicyFile,
+        ProxyPolicyState,
+        calculate_policy_sha,
+    )
+
     from proxy.runtime import ProxyRuntime, ProxyRuntimeServices  # type: ignore
-    from services.policy_materializer import MaterializedPolicyFile, ProxyPolicyState, calculate_policy_sha  # type: ignore
 
     policy_file = MaterializedPolicyFile(
         path=str(tmp_path / "30-webfilter.conf"),
@@ -31,14 +36,20 @@ def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current
         diagnostic_store=SimpleNamespace(),
         timeseries_store=SimpleNamespace(),
         ssl_errors_store=SimpleNamespace(),
-        stats_provider=lambda: {},
-        runtime_services_builder=lambda: {},
-        policy_state_builder=lambda proxy_id: ProxyPolicyState(proxy_id=proxy_id, policy_sha256=policy_sha, files=(policy_file,)),
+        stats_provider=dict,
+        runtime_services_builder=dict,
+        policy_state_builder=lambda proxy_id: ProxyPolicyState(
+            proxy_id=proxy_id, policy_sha256=policy_sha, files=(policy_file,)
+        ),
         pac_state_builder=lambda proxy_id: None,
         current_policy_sha_reader=lambda: policy_sha,
     )
     runtime = ProxyRuntime(services=services)
-    monkeypatch.setattr(runtime, "_publish_webcat_snapshot_for_policy_sync", lambda: (False, "snapshot publish failed"))
+    monkeypatch.setattr(
+        runtime,
+        "_publish_webcat_snapshot_for_policy_sync",
+        lambda: (False, "snapshot publish failed"),
+    )
 
     result = runtime.sync_policy_state()
 
@@ -47,13 +58,24 @@ def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current
     assert result["degraded"] is True
     assert result["detail"] == "snapshot publish failed"
 
-def test_proxy_policy_sync_skips_webcat_snapshot_when_policy_does_not_need_it(tmp_path, monkeypatch):
+
+def test_proxy_policy_sync_skips_webcat_snapshot_when_policy_does_not_need_it(
+    tmp_path, monkeypatch
+) -> None:
     ensure_proxy_runtime_import_path()
 
-    from proxy.runtime import ProxyRuntime, ProxyRuntimeServices  # type: ignore
-    from services.policy_materializer import MaterializedPolicyFile, ProxyPolicyState, calculate_policy_sha  # type: ignore
+    from services.policy_materializer import (  # type: ignore
+        MaterializedPolicyFile,
+        ProxyPolicyState,
+        calculate_policy_sha,
+    )
 
-    policy_file = MaterializedPolicyFile(path=str(tmp_path / "30-webfilter.conf"), content="# webfilter\nhttp_access allow all\n")
+    from proxy.runtime import ProxyRuntime, ProxyRuntimeServices  # type: ignore
+
+    policy_file = MaterializedPolicyFile(
+        path=str(tmp_path / "30-webfilter.conf"),
+        content="# webfilter\nhttp_access allow all\n",
+    )
     policy_sha = calculate_policy_sha((policy_file,))
     snapshot_calls: list[bool] = []
 
@@ -69,14 +91,20 @@ def test_proxy_policy_sync_skips_webcat_snapshot_when_policy_does_not_need_it(tm
         diagnostic_store=SimpleNamespace(),
         timeseries_store=SimpleNamespace(),
         ssl_errors_store=SimpleNamespace(),
-        stats_provider=lambda: {},
-        runtime_services_builder=lambda: {},
-        policy_state_builder=lambda proxy_id: ProxyPolicyState(proxy_id=proxy_id, policy_sha256=policy_sha, files=(policy_file,)),
+        stats_provider=dict,
+        runtime_services_builder=dict,
+        policy_state_builder=lambda proxy_id: ProxyPolicyState(
+            proxy_id=proxy_id, policy_sha256=policy_sha, files=(policy_file,)
+        ),
         pac_state_builder=lambda proxy_id: None,
         current_policy_sha_reader=lambda: policy_sha,
     )
     runtime = ProxyRuntime(services=services)
-    monkeypatch.setattr(runtime, "_publish_webcat_snapshot_for_policy_sync", lambda: snapshot_calls.append(True) or (False, "snapshot publish failed"))
+    monkeypatch.setattr(
+        runtime,
+        "_publish_webcat_snapshot_for_policy_sync",
+        lambda: snapshot_calls.append(True) or (False, "snapshot publish failed"),
+    )
 
     result = runtime.sync_policy_state()
 
@@ -84,4 +112,6 @@ def test_proxy_policy_sync_skips_webcat_snapshot_when_policy_does_not_need_it(tm
     assert result["ok"] is True
     assert result["changed"] is False
     assert result["degraded"] is False
-    assert result["detail"] == "Proxy is already using the active policy materialization."
+    assert (
+        result["detail"] == "Proxy is already using the active policy materialization."
+    )

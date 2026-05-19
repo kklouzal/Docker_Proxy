@@ -11,7 +11,7 @@ def _add_web_path() -> None:
 
 
 class _FakeResult:
-    def __init__(self, rows: list[dict[str, object]]):
+    def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
 
     def fetchall(self):
@@ -22,7 +22,7 @@ class _FakeResult:
 
 
 class _FakeConn:
-    def __init__(self):
+    def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
 
     def execute(self, sql: str, params: tuple[object, ...] = ()):
@@ -30,9 +30,14 @@ class _FakeConn:
         if sql.startswith("SELECT id, name, client_cidr, created_ts FROM pac_profiles"):
             return _FakeResult(
                 [
-                    {"id": 11, "name": "alpha", "client_cidr": "10.0.0.0/24", "created_ts": 1},
+                    {
+                        "id": 11,
+                        "name": "alpha",
+                        "client_cidr": "10.0.0.0/24",
+                        "created_ts": 1,
+                    },
                     {"id": 12, "name": "beta", "client_cidr": "", "created_ts": 2},
-                ]
+                ],
             )
         if sql.startswith("SELECT profile_id, domain FROM pac_direct_domains"):
             return _FakeResult(
@@ -40,21 +45,33 @@ class _FakeConn:
                     {"profile_id": 11, "domain": "a.example"},
                     {"profile_id": 11, "domain": "b.example"},
                     {"profile_id": 12, "domain": "catch.example"},
-                ]
+                ],
             )
         if sql.startswith("SELECT profile_id, cidr FROM pac_direct_dst_nets"):
             return _FakeResult(
                 [
                     {"profile_id": 11, "cidr": "10.0.0.0/8"},
                     {"profile_id": 12, "cidr": "192.168.1.0/24"},
-                ]
+                ],
             )
         if "FROM pac_backup_proxies" in sql and sql.lstrip().startswith("SELECT id"):
             return _FakeResult(
                 [
-                    {"id": 21, "proxy_host": "backup-a.example", "proxy_port": 3128, "position": 1, "created_ts": 1},
-                    {"id": 22, "proxy_host": "backup-b.example", "proxy_port": 8080, "position": 2, "created_ts": 2},
-                ]
+                    {
+                        "id": 21,
+                        "proxy_host": "backup-a.example",
+                        "proxy_port": 3128,
+                        "position": 1,
+                        "created_ts": 1,
+                    },
+                    {
+                        "id": 22,
+                        "proxy_host": "backup-b.example",
+                        "proxy_port": 8080,
+                        "position": 2,
+                        "created_ts": 2,
+                    },
+                ],
             )
         if sql.startswith("SELECT direct_enabled FROM pac_proxy_chain_settings"):
             return _FakeResult([{"direct_enabled": 0}])
@@ -62,7 +79,7 @@ class _FakeConn:
 
 
 class _FakeStore:
-    def __init__(self, conn: _FakeConn):
+    def __init__(self, conn: _FakeConn) -> None:
         self.conn = conn
 
     def __enter__(self):
@@ -91,12 +108,16 @@ def test_list_profiles_batches_child_queries(monkeypatch) -> None:
     assert profiles[1].direct_domains == ["catch.example"]
     assert profiles[1].direct_dst_nets == ["192.168.1.0/24"]
     assert len(conn.calls) == 3
-    assert conn.calls[0][0].startswith("SELECT id, name, client_cidr, created_ts FROM pac_profiles")
+    assert conn.calls[0][0].startswith(
+        "SELECT id, name, client_cidr, created_ts FROM pac_profiles"
+    )
     assert "profile_id IN" in conn.calls[1][0]
     assert "profile_id IN" in conn.calls[2][0]
 
 
-def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(monkeypatch) -> None:
+def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(
+    monkeypatch,
+) -> None:
     _add_web_path()
     import services.pac_profiles_store as mod
 
@@ -109,7 +130,10 @@ def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(monkeypatch
 
     settings = store.list_proxy_chain_settings()
 
-    assert [item.proxy_host for item in settings.backup_proxies] == ["backup-a.example", "backup-b.example"]
+    assert [item.proxy_host for item in settings.backup_proxies] == [
+        "backup-a.example",
+        "backup-b.example",
+    ]
     assert [item.proxy_port for item in settings.backup_proxies] == [3128, 8080]
     assert settings.direct_enabled is False
 
@@ -118,6 +142,16 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
     _add_web_path()
     import services.pac_profiles_store as mod
 
-    assert mod._normalize_proxy_host_port("http://Backup.Example:8080/proxy.pac", "") == ("backup.example", 8080, "")
-    assert mod._normalize_proxy_host_port("[2001:db8::10]:3129", None) == ("2001:db8::10", 3129, "")
-    assert mod._normalize_proxy_host_port("backup.example", "") == ("backup.example", 3128, "")
+    assert mod._normalize_proxy_host_port(
+        "http://Backup.Example:8080/proxy.pac", ""
+    ) == ("backup.example", 8080, "")
+    assert mod._normalize_proxy_host_port("[2001:db8::10]:3129", None) == (
+        "2001:db8::10",
+        3129,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("backup.example", "") == (
+        "backup.example",
+        3128,
+        "",
+    )

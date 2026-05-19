@@ -39,10 +39,16 @@ def _assert_redirect_success(response) -> None:
     assert "error=1" not in location
 
 
-def test_sslfilter_destination_domain_mutation_syncs_managed_policy(monkeypatch, tmp_path) -> None:
+def test_sslfilter_destination_domain_mutation_syncs_managed_policy(
+    monkeypatch, tmp_path
+) -> None:
     loaded, client = _loaded(monkeypatch, tmp_path)
 
-    response = _post(client, "/sslfilter", {"action": "add_domain", "policy": "nobump", "domain": "*.discord.com"})
+    response = _post(
+        client,
+        "/sslfilter",
+        {"action": "add_domain", "policy": "nobump", "domain": "*.discord.com"},
+    )
     _assert_redirect_success(response)
 
     assert loaded.sslfilter_store.no_bump_domains == ["*.discord.com"]
@@ -51,7 +57,11 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(monkeypatch,
     assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
-    response = _post(client, "/sslfilter", {"action": "add_domain", "policy": "nocache", "domain": "cache.example"})
+    response = _post(
+        client,
+        "/sslfilter",
+        {"action": "add_domain", "policy": "nocache", "domain": "cache.example"},
+    )
     _assert_redirect_success(response)
 
     assert loaded.sslfilter_store.no_cache_domains == ["cache.example"]
@@ -61,7 +71,9 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(monkeypatch,
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
-def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(monkeypatch, tmp_path) -> None:
+def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(
+    monkeypatch, tmp_path
+) -> None:
     loaded, client = _loaded(monkeypatch, tmp_path)
 
     response = _post(client, "/ssl-errors/exclude", {"domain": "Blocked.Example"})
@@ -97,10 +109,16 @@ def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(monkeypat
         ),
     ],
 )
-def test_program_controlled_admin_config_mutations_validate_before_sync(monkeypatch, tmp_path, path, data, expected_source_kind) -> None:
+def test_program_controlled_admin_config_mutations_validate_before_sync(
+    monkeypatch, tmp_path, path, data, expected_source_kind
+) -> None:
     loaded, client = _loaded(monkeypatch, tmp_path)
 
-    csrf_path = "/squid/config" if path.startswith("/squid/config/") else ("/clamav" if path == "/clamav/toggle" else path)
+    csrf_path = (
+        "/squid/config"
+        if path.startswith("/squid/config/")
+        else ("/clamav" if path == "/clamav/toggle" else path)
+    )
     response = _post(client, path, data, csrf_path=csrf_path)
 
     _assert_redirect_success(response)
@@ -112,7 +130,9 @@ def test_program_controlled_admin_config_mutations_validate_before_sync(monkeypa
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
-def test_clamav_settings_route_persists_validated_runtime_controls(monkeypatch, tmp_path) -> None:
+def test_clamav_settings_route_persists_validated_runtime_controls(
+    monkeypatch, tmp_path
+) -> None:
     loaded, client = _loaded(monkeypatch, tmp_path)
 
     response = _post(
@@ -148,7 +168,9 @@ def test_clamav_settings_route_persists_validated_runtime_controls(monkeypatch, 
     assert "# virus_scan_default_engine: clamd" in config_text
 
 
-def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(monkeypatch, tmp_path) -> None:
+def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(
+    monkeypatch, tmp_path
+) -> None:
     loaded, client = _loaded(monkeypatch, tmp_path)
 
     response = _post(
@@ -162,7 +184,9 @@ def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(mo
     )
     _assert_redirect_success(response)
 
-    response = _post(client, "/clamav/toggle", {"action": "disable"}, csrf_path="/clamav")
+    response = _post(
+        client, "/clamav/toggle", {"action": "disable"}, csrf_path="/clamav"
+    )
     _assert_redirect_success(response)
 
     config_text = str(loaded.config_revisions.created[-1]["config_text"])
@@ -177,11 +201,21 @@ def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(mo
 @pytest.mark.parametrize(
     ("path", "data"),
     [
-        ("/webfilter", {"action": "save", "enabled": "on", "source_url": "https://example.test/categories.txt", "categories": ["adult"]}),
+        (
+            "/webfilter",
+            {
+                "action": "save",
+                "enabled": "on",
+                "source_url": "https://example.test/categories.txt",
+                "categories": ["adult"],
+            },
+        ),
         ("/webfilter", {"action": "whitelist_add", "whitelist_domain": "discord.com"}),
     ],
 )
-def test_policy_store_mutations_request_sync_without_config_revision_validation(monkeypatch, tmp_path, path, data) -> None:
+def test_policy_store_mutations_request_sync_without_config_revision_validation(
+    monkeypatch, tmp_path, path, data
+) -> None:
     loaded, client = _loaded(monkeypatch, tmp_path)
 
     response = _post(client, path, data)

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from .live_test_helpers import (
@@ -15,7 +13,6 @@ from .live_test_helpers import (
     wait_for_proxy_inventory,
     with_proxy_id,
 )
-
 
 pytestmark = pytest.mark.live
 
@@ -35,7 +32,10 @@ def _clamav_enabled(config_text: str) -> bool:
     from services.clamav_config_forms import extract_clamav_options  # type: ignore
 
     options = extract_clamav_options(config_text or "")
-    return bool(options.get("file_security_scan_downloads") or options.get("file_security_scan_uploads"))
+    return bool(
+        options.get("file_security_scan_downloads")
+        or options.get("file_security_scan_uploads")
+    )
 
 
 @pytest.fixture
@@ -48,7 +48,9 @@ def multi_proxy_admin(admin_client: LiveStackClient) -> LiveStackClient:
     return admin_client
 
 
-def test_live_api_squid_config_reads_selected_remote_proxy_revision(multi_proxy_admin: LiveStackClient) -> None:
+def test_live_api_squid_config_reads_selected_remote_proxy_revision(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
     revisions = _config_store()
     original_remote = active_config_text(LIVE_CONFIG.remote_proxy_id)
     marker = unique_token("live_remote_config")
@@ -60,8 +62,12 @@ def test_live_api_squid_config_reads_selected_remote_proxy_revision(multi_proxy_
         activate=True,
     )
     try:
-        remote_response = multi_proxy_admin.admin_request(with_proxy_id("/api/squid-config", LIVE_CONFIG.remote_proxy_id))
-        local_response = multi_proxy_admin.admin_request(with_proxy_id("/api/squid-config", LIVE_CONFIG.primary_proxy_id))
+        remote_response = multi_proxy_admin.admin_request(
+            with_proxy_id("/api/squid-config", LIVE_CONFIG.remote_proxy_id)
+        )
+        local_response = multi_proxy_admin.admin_request(
+            with_proxy_id("/api/squid-config", LIVE_CONFIG.primary_proxy_id)
+        )
         assert remote_response.status == 200
         assert local_response.status == 200
         assert marker in remote_response.text
@@ -76,7 +82,9 @@ def test_live_api_squid_config_reads_selected_remote_proxy_revision(multi_proxy_
         )
 
 
-def test_live_reload_route_targets_selected_remote_proxy(multi_proxy_admin: LiveStackClient) -> None:
+def test_live_reload_route_targets_selected_remote_proxy(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
     revisions = _config_store()
     original_local = active_config_text(LIVE_CONFIG.primary_proxy_id)
     original_remote = active_config_text(LIVE_CONFIG.remote_proxy_id)
@@ -97,7 +105,9 @@ def test_live_reload_route_targets_selected_remote_proxy(multi_proxy_admin: Live
             timeout_seconds=90.0,
         )
         assert response.status == 200
-        assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+        assert query_params(response.url).get("proxy_id") == [
+            LIVE_CONFIG.remote_proxy_id
+        ]
 
         applied = wait_for_config_apply(
             LIVE_CONFIG.remote_proxy_id,
@@ -130,25 +140,37 @@ def test_live_reload_route_targets_selected_remote_proxy(multi_proxy_admin: Live
         )
 
 
-def test_live_proxies_page_renders_registered_remote_proxy(multi_proxy_admin: LiveStackClient) -> None:
+def test_live_proxies_page_renders_registered_remote_proxy(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
     response = multi_proxy_admin.admin_request("/proxies")
     assert response.status == 200
     assert "Edge 2" in response.text
     assert "Observability (24h)" in response.text
 
 
-def test_live_clamav_page_uses_selected_remote_proxy_health(multi_proxy_admin: LiveStackClient) -> None:
-    remote_response = multi_proxy_admin.admin_request(with_proxy_id("/clamav", LIVE_CONFIG.remote_proxy_id), timeout_seconds=30.0)
-    local_response = multi_proxy_admin.admin_request(with_proxy_id("/clamav", LIVE_CONFIG.primary_proxy_id), timeout_seconds=30.0)
+def test_live_clamav_page_uses_selected_remote_proxy_health(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
+    remote_response = multi_proxy_admin.admin_request(
+        with_proxy_id("/clamav", LIVE_CONFIG.remote_proxy_id), timeout_seconds=30.0
+    )
+    local_response = multi_proxy_admin.admin_request(
+        with_proxy_id("/clamav", LIVE_CONFIG.primary_proxy_id), timeout_seconds=30.0
+    )
     assert remote_response.status == 200
     assert local_response.status == 200
     assert "clamav.edge-2.internal:3311" in remote_response.text
     assert "127.0.0.1:24001" in remote_response.text
-    assert "Enable changes the upload and download AV policy only" in remote_response.text
+    assert (
+        "Enable changes the upload and download AV policy only" in remote_response.text
+    )
     assert "clamav.edge-2.internal:3311" not in local_response.text
 
 
-def test_live_clamav_toggle_publishes_revision_for_selected_remote_proxy(multi_proxy_admin: LiveStackClient) -> None:
+def test_live_clamav_toggle_publishes_revision_for_selected_remote_proxy(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
     revisions = _config_store()
     original_local = active_config_text(LIVE_CONFIG.primary_proxy_id)
     original_remote = active_config_text(LIVE_CONFIG.remote_proxy_id)
@@ -164,14 +186,19 @@ def test_live_clamav_toggle_publishes_revision_for_selected_remote_proxy(multi_p
             timeout_seconds=90.0,
         )
         assert response.status == 200
-        assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+        assert query_params(response.url).get("proxy_id") == [
+            LIVE_CONFIG.remote_proxy_id
+        ]
 
         wait_for_config_apply(
             LIVE_CONFIG.remote_proxy_id,
             after_application_id=getattr(remote_before, "application_id", None),
             timeout_seconds=120.0,
         )
-        assert _clamav_enabled(active_config_text(LIVE_CONFIG.remote_proxy_id)) is expected_enabled
+        assert (
+            _clamav_enabled(active_config_text(LIVE_CONFIG.remote_proxy_id))
+            is expected_enabled
+        )
         assert active_config_text(LIVE_CONFIG.primary_proxy_id) == original_local
     finally:
         restore_revision = revisions.create_revision(

@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import logging
 import os
+import pathlib
 import threading
 import time
-import csv
-import io
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import cache_hit_sql as _cache_hit_sql, env_float as _env_float, env_int as _env_int, escape_like as _escape_like, extract_domain as _extract_domain, not_cached_reason as _not_cached_reason, not_cached_reason_sql as _not_cached_reason_sql, now_ts as _now, present_value_sql as _present_value_sql
-
+from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
+from services.runtime_helpers import env_float as _env_float
+from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import escape_like as _escape_like
+from services.runtime_helpers import extract_domain as _extract_domain
+from services.runtime_helpers import not_cached_reason as _not_cached_reason
+from services.runtime_helpers import not_cached_reason_sql as _not_cached_reason_sql
+from services.runtime_helpers import now_ts as _now
+from services.runtime_helpers import present_value_sql as _present_value_sql
 
 logger = logging.getLogger(__name__)
+
+
 @dataclass
 class Row:
     key: str
@@ -61,7 +71,9 @@ def _is_hit(result_code: str) -> bool:
     return "HIT" in result_code
 
 
-def _parse_access_log_line(line: str) -> Optional[Tuple[int, str, str, int, Optional[str], str]]:
+def _parse_access_log_line(
+    line: str,
+) -> tuple[int, str, str, int, str | None, str] | None:
     # Supported input is the current structured TSV logformat emitted by
     # squid.conf.template.
     s = (line or "").strip("\r\n")
@@ -106,7 +118,7 @@ class LiveStatsStore:
         self,
         access_log_path: str = "/var/log/squid/access-observe.log",
         seed_max_lines: int = 5000,
-    ):
+    ) -> None:
         self.access_log_path = access_log_path
         self.seed_max_lines = seed_max_lines
 
@@ -145,7 +157,7 @@ class LiveStatsStore:
             self._upsert_client_domain_nocache(conn, ip, domain, ts, reason)
         return True
 
-    def _new_batch(self) -> Dict[str, Dict[Any, Any]]:
+    def _new_batch(self) -> dict[str, dict[Any, Any]]:
         return {
             "domains": {},
             "clients": {},
@@ -153,13 +165,13 @@ class LiveStatsStore:
             "client_domain_nocache": {},
         }
 
-    def _clear_batch(self, batch: Dict[str, Dict[Any, Any]]) -> None:
+    def _clear_batch(self, batch: dict[str, dict[Any, Any]]) -> None:
         for bucket in batch.values():
             bucket.clear()
 
     def _accumulate_aggregate(
         self,
-        bucket: Dict[Any, _AggregateAccumulator],
+        bucket: dict[Any, _AggregateAccumulator],
         key: Any,
         ts: int,
         size_bytes: int,
@@ -187,7 +199,7 @@ class LiveStatsStore:
 
     def _accumulate_nocache(
         self,
-        bucket: Dict[Tuple[str, str, str], _NoCacheAccumulator],
+        bucket: dict[tuple[str, str, str], _NoCacheAccumulator],
         ip: str,
         domain: str,
         reason: str,
@@ -203,7 +215,7 @@ class LiveStatsStore:
         entry.first_seen = min(entry.first_seen, ts)
         entry.last_seen = max(entry.last_seen, ts)
 
-    def _accumulate_line(self, batch: Dict[str, Dict[Any, Any]], line: str) -> bool:
+    def _accumulate_line(self, batch: dict[str, dict[Any, Any]], line: str) -> bool:
         parsed = _parse_access_log_line(line)
         if not parsed:
             return False
@@ -215,12 +227,16 @@ class LiveStatsStore:
         reason = _not_cached_reason(method, result_code) if not hit else ""
         self._accumulate_aggregate(batch["domains"], domain, ts, size_bytes, hit)
         self._accumulate_aggregate(batch["clients"], ip, ts, size_bytes, hit)
-        self._accumulate_aggregate(batch["client_domains"], (ip, domain), ts, size_bytes, hit)
+        self._accumulate_aggregate(
+            batch["client_domains"], (ip, domain), ts, size_bytes, hit,
+        )
         if not hit:
-            self._accumulate_nocache(batch["client_domain_nocache"], ip, domain, reason, ts)
+            self._accumulate_nocache(
+                batch["client_domain_nocache"], ip, domain, reason, ts,
+            )
         return True
 
-    def _flush_batch_with_conn(self, conn, batch: Dict[str, Dict[Any, Any]]) -> int:
+    def _flush_batch_with_conn(self, conn, batch: dict[str, dict[Any, Any]]) -> int:
         proxy_id = get_proxy_id()
         flushed = 0
 
@@ -228,7 +244,7 @@ class LiveStatsStore:
         if domains:
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, 'domains')} (proxy_id, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                INSERT INTO {self._table(conn, "domains")} (proxy_id, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     requests = requests + VALUES(requests),
@@ -258,7 +274,7 @@ class LiveStatsStore:
         if clients:
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, 'clients')} (proxy_id, ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                INSERT INTO {self._table(conn, "clients")} (proxy_id, ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     requests = requests + VALUES(requests),
@@ -288,7 +304,7 @@ class LiveStatsStore:
         if client_domains:
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, 'client_domains')} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                INSERT INTO {self._table(conn, "client_domains")} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     requests = requests + VALUES(requests),
@@ -319,7 +335,7 @@ class LiveStatsStore:
         if nocache:
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, 'client_domain_nocache')} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
+                INSERT INTO {self._table(conn, "client_domain_nocache")} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     requests = requests + VALUES(requests),
@@ -328,7 +344,11 @@ class LiveStatsStore:
                 """,
                 [
                     (
-                        hashlib.sha1(f"{proxy_id}|{ip}|{domain}|{reason}".encode("utf-8", errors="replace")).hexdigest(),
+                        hashlib.sha1(
+                            f"{proxy_id}|{ip}|{domain}|{reason}".encode(
+                                "utf-8", errors="replace",
+                            ),
+                        ).hexdigest(),
                         proxy_id,
                         str(ip),
                         str(domain),
@@ -369,7 +389,7 @@ class LiveStatsStore:
                         PRIMARY KEY (proxy_id, domain),
                         KEY idx_{domains_table}_proxy_last_seen (proxy_id, last_seen)
                     )
-                    """
+                    """,
                 )
                 conn.execute(
                     f"""
@@ -385,7 +405,7 @@ class LiveStatsStore:
                         PRIMARY KEY (proxy_id, ip),
                         KEY idx_{clients_table}_proxy_last_seen (proxy_id, last_seen)
                     )
-                    """
+                    """,
                 )
                 conn.execute(
                     f"""
@@ -402,7 +422,7 @@ class LiveStatsStore:
                         PRIMARY KEY (proxy_id, ip, domain),
                         KEY idx_{client_domains_table}_proxy_ip (proxy_id, ip)
                     )
-                    """
+                    """,
                 )
                 conn.execute(
                     f"""
@@ -418,7 +438,7 @@ class LiveStatsStore:
                         KEY idx_{nocache_table}_proxy_ip (proxy_id, ip, last_seen),
                         KEY idx_{nocache_table}_proxy_domain (proxy_id, domain, last_seen)
                     )
-                    """
+                    """,
                 )
             self._db_initialized = True
 
@@ -432,12 +452,33 @@ class LiveStatsStore:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table(conn, 'client_domain_nocache')} WHERE last_seen < %s", (int(cutoff),))
-            conn.execute(f"DELETE FROM {self._table(conn, 'client_domains')} WHERE last_seen < %s", (int(cutoff),))
-            conn.execute(f"DELETE FROM {self._table(conn, 'domains')} WHERE last_seen < %s", (int(cutoff),))
-            conn.execute(f"DELETE FROM {self._table(conn, 'clients')} WHERE last_seen < %s", (int(cutoff),))
+            conn.execute(
+                f"DELETE FROM {self._table(conn, 'client_domain_nocache')} WHERE last_seen < %s",
+                (int(cutoff),),
+            )
+            conn.execute(
+                f"DELETE FROM {self._table(conn, 'client_domains')} WHERE last_seen < %s",
+                (int(cutoff),),
+            )
+            conn.execute(
+                f"DELETE FROM {self._table(conn, 'domains')} WHERE last_seen < %s",
+                (int(cutoff),),
+            )
+            conn.execute(
+                f"DELETE FROM {self._table(conn, 'clients')} WHERE last_seen < %s",
+                (int(cutoff),),
+            )
 
-    def _upsert_agg(self, conn, table: str, key_col: str, key: str, ts: int, size_bytes: int, is_hit: bool) -> None:
+    def _upsert_agg(
+        self,
+        conn,
+        table: str,
+        key_col: str,
+        key: str,
+        ts: int,
+        size_bytes: int,
+        is_hit: bool,
+    ) -> None:
         table_name = self._table(conn, table)
         hit = 1 if is_hit else 0
         hit_bytes = size_bytes if is_hit else 0
@@ -453,11 +494,13 @@ class LiveStatsStore:
                 hit_bytes = hit_bytes + VALUES(hit_bytes),
                 first_seen = LEAST(first_seen, VALUES(first_seen)),
                 last_seen = GREATEST(last_seen, VALUES(last_seen));
-            """ ,
+            """,
             (proxy_id, key, hit, size_bytes, hit_bytes, ts, ts),
         )
 
-    def _upsert_client_domain(self, conn, ip: str, domain: str, ts: int, size_bytes: int, is_hit: bool) -> None:
+    def _upsert_client_domain(
+        self, conn, ip: str, domain: str, ts: int, size_bytes: int, is_hit: bool,
+    ) -> None:
         table_name = self._table(conn, "client_domains")
         hit = 1 if is_hit else 0
         hit_bytes = size_bytes if is_hit else 0
@@ -477,13 +520,17 @@ class LiveStatsStore:
             (proxy_id, ip, domain, hit, size_bytes, hit_bytes, ts, ts),
         )
 
-    def _upsert_client_domain_nocache(self, conn, ip: str, domain: str, ts: int, reason: str) -> None:
+    def _upsert_client_domain_nocache(
+        self, conn, ip: str, domain: str, ts: int, reason: str,
+    ) -> None:
         table_name = self._table(conn, "client_domain_nocache")
         r = (reason or "").strip()
         if not r:
             r = "Not served from cache"
         proxy_id = get_proxy_id()
-        row_key = hashlib.sha1(f"{proxy_id}|{ip}|{domain}|{r}".encode("utf-8", errors="replace")).hexdigest()
+        row_key = hashlib.sha1(
+            f"{proxy_id}|{ip}|{domain}|{r}".encode("utf-8", errors="replace"),
+        ).hexdigest()
         conn.execute(
             f"""
             INSERT INTO {table_name} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
@@ -502,12 +549,12 @@ class LiveStatsStore:
             if self._accumulate_line(batch, line):
                 self._flush_batch_with_conn(conn, batch)
 
-    def _read_last_lines(self, max_lines: int) -> List[str]:
+    def _read_last_lines(self, max_lines: int) -> list[str]:
         path = self.access_log_path
-        if not os.path.exists(path):
+        if not pathlib.Path(path).exists():
             return []
         try:
-            with open(path, "rb") as f:
+            with pathlib.Path(path).open("rb") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
                 read_size = min(size, max_lines * 512)
@@ -538,7 +585,9 @@ class LiveStatsStore:
                 return
             self.init_db()
 
-            t = threading.Thread(target=self._tail_loop, name="live-stats-tailer", daemon=True)
+            t = threading.Thread(
+                target=self._tail_loop, name="live-stats-tailer", daemon=True,
+            )
             t.start()
             self._started = True
 
@@ -546,17 +595,23 @@ class LiveStatsStore:
         # Seed so the page is useful immediately.
         self.seed_from_recent_log()
 
-        commit_batch = _env_int("LIVE_STATS_COMMIT_BATCH", 250, minimum=25, maximum=5000)
-        commit_interval = _env_float("LIVE_STATS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
-        poll_interval = _env_float("LIVE_STATS_POLL_INTERVAL_SECONDS", 0.5, minimum=0.1, maximum=5.0)
+        commit_batch = _env_int(
+            "LIVE_STATS_COMMIT_BATCH", 250, minimum=25, maximum=5000,
+        )
+        commit_interval = _env_float(
+            "LIVE_STATS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0,
+        )
+        poll_interval = _env_float(
+            "LIVE_STATS_POLL_INTERVAL_SECONDS", 0.5, minimum=0.1, maximum=5.0,
+        )
 
         # Tail new lines.
         path = self.access_log_path
-        last_inode: Optional[int] = None
+        last_inode: int | None = None
 
         while True:
             try:
-                if not os.path.exists(path):
+                if not pathlib.Path(path).exists():
                     time.sleep(max(1.0, poll_interval))
                     continue
 
@@ -580,7 +635,7 @@ class LiveStatsStore:
                     pending = 0
                     last_commit = time.time()
 
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
                     # Start at end so we don't reprocess the whole file.
                     f.seek(0, os.SEEK_END)
                     while True:
@@ -597,7 +652,10 @@ class LiveStatsStore:
                                     message="Live stats tailer failed to parse a log line",
                                 )
                             now = time.time()
-                            if pending >= commit_batch or (now - last_commit) >= commit_interval:
+                            if (
+                                pending >= commit_batch
+                                or (now - last_commit) >= commit_interval
+                            ):
                                 try:
                                     flush_pending()
                                 except Exception:
@@ -628,7 +686,7 @@ class LiveStatsStore:
 
                         # Handle copytruncate: inode unchanged but file shrinks.
                         try:
-                            if os.path.getsize(path) < f.tell():
+                            if pathlib.Path(path).stat().st_size < f.tell():
                                 f.seek(0, os.SEEK_SET)
                                 continue
                         except Exception:
@@ -646,7 +704,11 @@ class LiveStatsStore:
                         except OSError:
                             inode2 = None
 
-                        if inode2 is not None and last_inode is not None and inode2 != last_inode:
+                        if (
+                            inode2 is not None
+                            and last_inode is not None
+                            and inode2 != last_inode
+                        ):
                             last_inode = inode2
                             try:
                                 flush_pending()
@@ -669,25 +731,23 @@ class LiveStatsStore:
                 )
                 time.sleep(max(1.0, poll_interval))
 
-    def _query_rows(self, sql: str, params: Tuple[Any, ...]) -> List[Row]:
+    def _query_rows(self, sql: str, params: tuple[Any, ...]) -> list[Row]:
         with self._connect() as conn:
             cur = conn.execute(sql, params)
-            rows = []
-            for r in cur.fetchall():
-                rows.append(
-                    Row(
-                        key=str(r[0]),
-                        requests=int(r[1]),
-                        hit_requests=int(r[2]),
-                        bytes=int(r[3]),
-                        hit_bytes=int(r[4]),
-                        first_seen=int(r[5]),
-                        last_seen=int(r[6]),
-                    )
+            return [
+                Row(
+                    key=str(r[0]),
+                    requests=int(r[1]),
+                    hit_requests=int(r[2]),
+                    bytes=int(r[3]),
+                    hit_bytes=int(r[4]),
+                    first_seen=int(r[5]),
+                    last_seen=int(r[6]),
                 )
-            return rows
+                for r in cur.fetchall()
+            ]
 
-    def _should_use_diagnostic_windows(self, *, since: Optional[int]) -> bool:
+    def _should_use_diagnostic_windows(self, *, since: int | None) -> bool:
         return since is not None
 
     def _diagnostic_domain_present_sql(self, column: str = "domain") -> str:
@@ -709,7 +769,7 @@ class LiveStatsStore:
             status_column=status_column,
         )
 
-    def get_totals(self, *, since: Optional[int] = None) -> Dict[str, int]:
+    def get_totals(self, *, since: int | None = None) -> dict[str, int]:
         if self._should_use_diagnostic_windows(since=since):
             hit_sql = self._diagnostic_hit_sql()
             domain_present_sql = self._diagnostic_domain_present_sql()
@@ -734,13 +794,19 @@ class LiveStatsStore:
             }
 
         where = "WHERE proxy_id = %s"
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where += " AND last_seen >= %s"
             params.append(int(since))
         with self._connect() as conn:
-            d = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'domains')} {where}", tuple(params)).fetchone()
-            c = conn.execute(f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'clients')} {where}", tuple(params)).fetchone()
+            d = conn.execute(
+                f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'domains')} {where}",
+                tuple(params),
+            ).fetchone()
+            c = conn.execute(
+                f"SELECT COALESCE(SUM(requests),0), COALESCE(SUM(hit_requests),0) FROM {self._table(conn, 'clients')} {where}",
+                tuple(params),
+            ).fetchone()
         return {
             "domain_requests": int(d[0]) if d else 0,
             "domain_hit_requests": int(d[1]) if d else 0,
@@ -754,16 +820,16 @@ class LiveStatsStore:
         order: str = "desc",
         limit: int = 100,
         *,
-        since: Optional[int] = None,
+        since: int | None = None,
         search: str = "",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
 
         if self._should_use_diagnostic_windows(since=since):
             hit_sql = self._diagnostic_hit_sql()
             domain_present_sql = self._diagnostic_domain_present_sql()
             where = ["proxy_id = %s", "ts >= %s", domain_present_sql]
-            params: List[Any] = [get_proxy_id(), int(since)]
+            params: list[Any] = [get_proxy_id(), int(since)]
             if search:
                 where.append("LOWER(domain) LIKE %s ESCAPE '\\\\'")
                 params.append(f"%{_escape_like(search)}%")
@@ -797,12 +863,12 @@ class LiveStatsStore:
                     ORDER BY {order_by}
                     LIMIT %s
                     """,
-                    tuple(params + [int(limit)]),
+                    (*params, int(limit)),
                 ).fetchall()
 
             totals = self.get_totals(since=since)
             total = totals["domain_requests"]
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for r in rows:
                 requests = int(r[1] or 0)
                 hit_requests = int(r[2] or 0)
@@ -813,12 +879,12 @@ class LiveStatsStore:
                         "pct": _pct(requests, total),
                         "cache_pct": _pct(hit_requests, requests),
                         "last_seen": int(r[6] or 0),
-                    }
+                    },
                 )
             return out
 
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= %s")
             params.append(int(since))
@@ -837,10 +903,10 @@ class LiveStatsStore:
         else:
             sql = f"SELECT domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {domains_table} {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT %s"
 
-        rows = self._query_rows(sql, tuple(params + [int(limit)]))
+        rows = self._query_rows(sql, (*params, int(limit)))
         totals = self.get_totals(since=since)
         total = totals["domain_requests"]
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             out.append(
                 {
@@ -849,7 +915,7 @@ class LiveStatsStore:
                     "pct": _pct(r.requests, total),
                     "cache_pct": _pct(r.hit_requests, r.requests),
                     "last_seen": r.last_seen,
-                }
+                },
             )
         return out
 
@@ -859,16 +925,16 @@ class LiveStatsStore:
         order: str = "desc",
         limit: int = 100,
         *,
-        since: Optional[int] = None,
+        since: int | None = None,
         search: str = "",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         order_sql = "DESC" if order.lower() != "asc" else "ASC"
 
         if self._should_use_diagnostic_windows(since=since):
             hit_sql = self._diagnostic_hit_sql()
             domain_present_sql = self._diagnostic_domain_present_sql()
             where = ["proxy_id = %s", "ts >= %s", domain_present_sql]
-            params: List[Any] = [get_proxy_id(), int(since)]
+            params: list[Any] = [get_proxy_id(), int(since)]
             if search:
                 where.append("LOWER(client_ip) LIKE %s ESCAPE '\\\\'")
                 params.append(f"%{_escape_like(search)}%")
@@ -902,12 +968,12 @@ class LiveStatsStore:
                     ORDER BY {order_by}
                     LIMIT %s
                     """,
-                    tuple(params + [int(limit)]),
+                    (*params, int(limit)),
                 ).fetchall()
 
             totals = self.get_totals(since=since)
             total = totals["client_requests"]
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for r in rows:
                 requests = int(r[1] or 0)
                 hit_requests = int(r[2] or 0)
@@ -918,12 +984,12 @@ class LiveStatsStore:
                         "pct": _pct(requests, total),
                         "cache_pct": _pct(hit_requests, requests),
                         "last_seen": int(r[6] or 0),
-                    }
+                    },
                 )
             return out
 
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= %s")
             params.append(int(since))
@@ -942,10 +1008,10 @@ class LiveStatsStore:
         else:
             sql = f"SELECT ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen FROM {clients_table} {where_sql} ORDER BY last_seen {order_sql}, requests DESC LIMIT %s"
 
-        rows = self._query_rows(sql, tuple(params + [int(limit)]))
+        rows = self._query_rows(sql, (*params, int(limit)))
         totals = self.get_totals(since=since)
         total = totals["client_requests"]
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             out.append(
                 {
@@ -954,7 +1020,7 @@ class LiveStatsStore:
                     "pct": _pct(r.requests, total),
                     "cache_pct": _pct(r.hit_requests, r.requests),
                     "last_seen": r.last_seen,
-                }
+                },
             )
         return out
 
@@ -964,8 +1030,8 @@ class LiveStatsStore:
         sort: str = "top",
         limit: int = 50,
         *,
-        since: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        since: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not ip:
             return []
 
@@ -974,7 +1040,7 @@ class LiveStatsStore:
             hit_sql = self._diagnostic_hit_sql()
             domain_present_sql = self._diagnostic_domain_present_sql()
             where = ["proxy_id = %s", "client_ip = %s", "ts >= %s", domain_present_sql]
-            params: List[Any] = [proxy_id, ip, int(since)]
+            params: list[Any] = [proxy_id, ip, int(since)]
             where_sql = "WHERE " + " AND ".join(where)
 
             if sort == "recent":
@@ -1009,11 +1075,11 @@ class LiveStatsStore:
                     ORDER BY {order_by}
                     LIMIT %s
                     """,
-                    tuple(params + [int(limit)]),
+                    (*params, int(limit)),
                 ).fetchall()
 
             total = int(total_row[0] or 0) if total_row else 0
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for r in rows:
                 requests = int(r[1] or 0)
                 hit_requests = int(r[2] or 0)
@@ -1024,7 +1090,7 @@ class LiveStatsStore:
                         "pct": _pct(requests, total),
                         "cache_pct": _pct(hit_requests, requests),
                         "last_seen": int(r[6] or 0),
-                    }
+                    },
                 )
             return out
 
@@ -1040,7 +1106,7 @@ class LiveStatsStore:
 
         rows = self._query_rows(sql, (proxy_id, ip, int(limit)))
         total = sum(r.requests for r in rows) or 0
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             out.append(
                 {
@@ -1049,7 +1115,7 @@ class LiveStatsStore:
                     "pct": _pct(r.requests, total),
                     "cache_pct": _pct(r.hit_requests, r.requests),
                     "last_seen": r.last_seen,
-                }
+                },
             )
         return out
 
@@ -1058,8 +1124,8 @@ class LiveStatsStore:
         ip: str,
         limit: int = 50,
         *,
-        since: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        since: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not ip:
             return []
         lim = max(10, min(500, int(limit)))
@@ -1122,20 +1188,21 @@ class LiveStatsStore:
             LIMIT %s
             """
             with self._connect() as conn:
-                rows = conn.execute(sql, (get_proxy_id(), ip, int(since), lim)).fetchall()
+                rows = conn.execute(
+                    sql, (get_proxy_id(), ip, int(since), lim),
+                ).fetchall()
 
-            out: List[Dict[str, Any]] = []
-            for r in rows:
-                out.append(
-                    {
-                        "domain": str(r[0]),
-                        "miss_requests": int(r[1] or 0),
-                        "total_requests": int(r[2] or 0),
-                        "cache_pct": _pct(int(r[3] or 0), int(r[2] or 0)),
-                        "last_seen": int(r[4] or 0),
-                        "reason": str(r[5] or "Not served from cache"),
-                    }
-                )
+            out: list[dict[str, Any]] = [
+                {
+                    "domain": str(r[0]),
+                    "miss_requests": int(r[1] or 0),
+                    "total_requests": int(r[2] or 0),
+                    "cache_pct": _pct(int(r[3] or 0), int(r[2] or 0)),
+                    "last_seen": int(r[4] or 0),
+                    "reason": str(r[5] or "Not served from cache"),
+                }
+                for r in rows
+            ]
             return out
 
         proxy_id = get_proxy_id()
@@ -1167,7 +1234,7 @@ class LiveStatsStore:
         with self._connect() as conn:
             rows = conn.execute(sql, (proxy_id, ip, lim)).fetchall()
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             out.append(
                 {
@@ -1177,24 +1244,30 @@ class LiveStatsStore:
                     "cache_pct": _pct(int(r[3] or 0), int(r[2] or 0)),
                     "last_seen": int(r[4] or 0),
                     "reason": str(r[5] or "Not served from cache"),
-                }
+                },
             )
         return out
 
-    def export_rows(self, mode: str, *, since: Optional[int] = None, search: str = "", limit: int = 500) -> List[Dict[str, Any]]:
+    def export_rows(
+        self, mode: str, *, since: int | None = None, search: str = "", limit: int = 500,
+    ) -> list[dict[str, Any]]:
         mode_s = (mode or "domains").strip().lower()
         lim = max(10, min(1000, int(limit)))
         if mode_s == "clients":
-            return self.list_clients(sort="recent", order="desc", limit=lim, since=since, search=search)
-        return self.list_domains(sort="recent", order="desc", limit=lim, since=since, search=search)
+            return self.list_clients(
+                sort="recent", order="desc", limit=lim, since=since, search=search,
+            )
+        return self.list_domains(
+            sort="recent", order="desc", limit=lim, since=since, search=search,
+        )
 
     def list_domain_not_cached_reasons(
         self,
         domain: str,
         limit: int = 10,
         *,
-        since: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        since: int | None = None,
+    ) -> list[dict[str, Any]]:
         d = (domain or "").strip().lower().lstrip(".")
         if not d:
             return []
@@ -1206,9 +1279,7 @@ class LiveStatsStore:
             reason_sql = self._diagnostic_not_cached_reason_sql()
             domain_present_sql = self._diagnostic_domain_present_sql()
             params = (get_proxy_id(), d, int(since))
-            where_sql = (
-                f"WHERE proxy_id = %s AND domain = %s AND ts >= %s AND {domain_present_sql} AND NOT {hit_sql}"
-            )
+            where_sql = f"WHERE proxy_id = %s AND domain = %s AND ts >= %s AND {domain_present_sql} AND NOT {hit_sql}"
             with self._connect() as conn:
                 total_row = conn.execute(
                     f"SELECT COUNT(*) FROM diagnostic_requests {where_sql}",
@@ -1223,11 +1294,11 @@ class LiveStatsStore:
                     ORDER BY req DESC, last_seen DESC
                     LIMIT %s
                     """,
-                    params + (lim,),
+                    (*params, lim),
                 ).fetchall()
 
             total = int(total_row[0] or 0) if total_row else 0
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for r in rows:
                 req = int(r[1] or 0)
                 out.append(
@@ -1236,7 +1307,7 @@ class LiveStatsStore:
                         "requests": req,
                         "pct": _pct(req, total),
                         "last_seen": int(r[2] or 0),
-                    }
+                    },
                 )
             return out
 
@@ -1261,7 +1332,7 @@ class LiveStatsStore:
                 (proxy_id, d, lim),
             ).fetchall()
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             req = int(r[1] or 0)
             out.append(
@@ -1270,7 +1341,7 @@ class LiveStatsStore:
                     "requests": req,
                     "pct": _pct(req, total),
                     "last_seen": int(r[2] or 0),
-                }
+                },
             )
         return out
 
@@ -1278,8 +1349,8 @@ class LiveStatsStore:
         self,
         limit: int = 50,
         *,
-        since: Optional[int] = None,
-    ) -> Tuple[int, List[Dict[str, Any]]]:
+        since: int | None = None,
+    ) -> tuple[int, list[dict[str, Any]]]:
         lim = max(3, min(200, int(limit)))
 
         if self._should_use_diagnostic_windows(since=since):
@@ -1302,11 +1373,11 @@ class LiveStatsStore:
                     ORDER BY req DESC, last_seen DESC
                     LIMIT %s
                     """,
-                    params + (lim,),
+                    (*params, lim),
                 ).fetchall()
 
             total = int(total_row[0] or 0) if total_row else 0
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for r in rows:
                 req = int(r[1] or 0)
                 out.append(
@@ -1315,14 +1386,17 @@ class LiveStatsStore:
                         "requests": req,
                         "pct": _pct(req, total),
                         "last_seen": int(r[2] or 0),
-                    }
+                    },
                 )
             return total, out
 
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             nocache_table = self._table(conn, "client_domain_nocache")
-            total_row = conn.execute(f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=%s", (proxy_id,)).fetchone()
+            total_row = conn.execute(
+                f"SELECT COALESCE(SUM(requests),0) FROM {nocache_table} WHERE proxy_id=%s",
+                (proxy_id,),
+            ).fetchone()
             total = int(total_row[0] or 0) if total_row else 0
 
             rows = conn.execute(
@@ -1337,7 +1411,7 @@ class LiveStatsStore:
                 (proxy_id, lim),
             ).fetchall()
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             req = int(r[1] or 0)
             out.append(
@@ -1346,12 +1420,12 @@ class LiveStatsStore:
                     "requests": req,
                     "pct": _pct(req, total),
                     "last_seen": int(r[2] or 0),
-                }
+                },
             )
         return total, out
 
 
-_store: Optional[LiveStatsStore] = None
+_store: LiveStatsStore | None = None
 _store_lock = threading.Lock()
 
 
@@ -1362,6 +1436,8 @@ def get_store() -> LiveStatsStore:
     with _store_lock:
         if _store is None:
             _store = LiveStatsStore(
-                access_log_path=os.environ.get("SQUID_DIAGNOSTIC_ACCESS_LOG", "/var/log/squid/access-observe.log"),
+                access_log_path=os.environ.get(
+                    "SQUID_DIAGNOSTIC_ACCESS_LOG", "/var/log/squid/access-observe.log",
+                ),
             )
         return _store

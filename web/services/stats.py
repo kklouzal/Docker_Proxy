@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import os
+import pathlib
 import re
 import shutil
 import subprocess
 import threading
 import time
-import csv
-import io
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 from services.logutil import log_exception_throttled
-
 
 logger = logging.getLogger(__name__)
 
@@ -21,20 +21,20 @@ logger = logging.getLogger(__name__)
 _CACHE_LOCK = threading.Lock()
 _CACHE_DIR_SIZE_INFLIGHT = False
 _CACHE_DIR_SIZE_TS = 0.0
-_CACHE_DIR_SIZE_VALUE: Optional[int] = None
+_CACHE_DIR_SIZE_VALUE: int | None = None
 
 _CACHE_DISK_USAGE_INFLIGHT = False
 _CACHE_DISK_USAGE_TS = 0.0
-_CACHE_DISK_USAGE_VALUE: Optional[DiskUsage] = None
+_CACHE_DISK_USAGE_VALUE: DiskUsage | None = None
 
 _CACHE_HIT_RATE_INFLIGHT = False
 _CACHE_HIT_RATE_TS = 0.0
-_CACHE_HIT_RATE_VALUE: Optional[Dict[str, Optional[float]]] = None
+_CACHE_HIT_RATE_VALUE: dict[str, float | None] | None = None
 _CACHE_HIT_RATE_SOURCE_VALUE: str = ""
 
 _CACHE_CPU_INFLIGHT = False
 _CACHE_CPU_TS = 0.0
-_CACHE_CPU_VALUE: Optional[Dict[str, Any]] = None
+_CACHE_CPU_VALUE: dict[str, Any] | None = None
 
 
 @dataclass
@@ -46,15 +46,15 @@ class DiskUsage:
 
 def _env_flag(name: str, default: str = "0") -> bool:
     v = (os.environ.get(name, default) or "").strip().lower()
-    return v in ("1", "true", "yes", "on")
+    return v in {"1", "true", "yes", "on"}
 
 
 def _read_text(path: str) -> str:
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
         return f.read()
 
 
-def _format_bytes(num_bytes: Optional[int]) -> str:
+def _format_bytes(num_bytes: int | None) -> str:
     if num_bytes is None:
         return "n/a"
     step = 1024.0
@@ -67,13 +67,13 @@ def _format_bytes(num_bytes: Optional[int]) -> str:
     return f"{value:.1f} PiB"
 
 
-def _safe_pct(numer: Optional[float], denom: Optional[float]) -> Optional[float]:
+def _safe_pct(numer: float | None, denom: float | None) -> float | None:
     if numer is None or denom is None or denom == 0:
         return None
     return 100.0 * float(numer) / float(denom)
 
 
-def get_disk_usage(path: str) -> Optional[DiskUsage]:
+def get_disk_usage(path: str) -> DiskUsage | None:
     try:
         du = shutil.disk_usage(path)
         return DiskUsage(total_bytes=du.total, used_bytes=du.used, free_bytes=du.free)
@@ -81,7 +81,7 @@ def get_disk_usage(path: str) -> Optional[DiskUsage]:
         return None
 
 
-def get_directory_size_bytes(path: str) -> Optional[int]:
+def get_directory_size_bytes(path: str) -> int | None:
     try:
         if shutil.which("du"):
             p = subprocess.run(
@@ -102,7 +102,7 @@ def get_directory_size_bytes(path: str) -> Optional[int]:
             for name in files:
                 file_path = os.path.join(root, name)
                 try:
-                    total += os.path.getsize(file_path)
+                    total += pathlib.Path(file_path).stat().st_size
                 except OSError:
                     continue
         return total
@@ -110,13 +110,13 @@ def get_directory_size_bytes(path: str) -> Optional[int]:
         return None
 
 
-def get_meminfo() -> Dict[str, Optional[int]]:
+def get_meminfo() -> dict[str, int | None]:
     # Returns bytes for total/available
-    out: Dict[str, Optional[int]] = {"total": None, "available": None}
+    out: dict[str, int | None] = {"total": None, "available": None}
     try:
         data = _read_text("/proc/meminfo")
-        total_kib = re.search(r"^MemTotal:\s+(\d+)\s+kB", data, re.M)
-        avail_kib = re.search(r"^MemAvailable:\s+(\d+)\s+kB", data, re.M)
+        total_kib = re.search(r"^MemTotal:\s+(\d+)\s+kB", data, re.MULTILINE)
+        avail_kib = re.search(r"^MemAvailable:\s+(\d+)\s+kB", data, re.MULTILINE)
         if total_kib:
             out["total"] = int(total_kib.group(1)) * 1024
         if avail_kib:
@@ -131,10 +131,10 @@ def get_meminfo() -> Dict[str, Optional[int]]:
     return out
 
 
-def get_cpu_utilization_percent(sample_seconds: float = 0.15) -> Optional[float]:
+def get_cpu_utilization_percent(sample_seconds: float = 0.15) -> float | None:
     # Best-effort CPU utilization across all cores using /proc/stat.
     # Returns None if not available.
-    def read() -> Optional[Dict[str, int]]:
+    def read() -> dict[str, int] | None:
         try:
             line = _read_text("/proc/stat").splitlines()[0]
             parts = line.split()
@@ -144,7 +144,18 @@ def get_cpu_utilization_percent(sample_seconds: float = 0.15) -> Optional[float]
             # user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice
             while len(values) < 10:
                 values.append(0)
-            user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice = values[:10]
+            (
+                user,
+                nice,
+                system,
+                idle,
+                iowait,
+                irq,
+                softirq,
+                steal,
+                _guest,
+                _guest_nice,
+            ) = values[:10]
             idle_all = idle + iowait
             non_idle = user + nice + system + irq + softirq + steal
             total = idle_all + non_idle
@@ -167,7 +178,7 @@ def get_cpu_utilization_percent(sample_seconds: float = 0.15) -> Optional[float]
     return (1.0 - (idle_delta / total_delta)) * 100.0
 
 
-def get_loadavg() -> Optional[Dict[str, float]]:
+def get_loadavg() -> dict[str, float] | None:
     try:
         parts = _read_text("/proc/loadavg").split()
         return {"1m": float(parts[0]), "5m": float(parts[1]), "15m": float(parts[2])}
@@ -175,9 +186,13 @@ def get_loadavg() -> Optional[Dict[str, float]]:
         return None
 
 
-def _run(cmd: list[str], timeout: float = 2.0, env: Optional[Dict[str, str]] = None) -> Optional[str]:
+def _run(
+    cmd: list[str], timeout: float = 2.0, env: dict[str, str] | None = None,
+) -> str | None:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        p = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, env=env,
+        )
         if p.returncode != 0:
             return None
         return p.stdout
@@ -185,7 +200,9 @@ def _run(cmd: list[str], timeout: float = 2.0, env: Optional[Dict[str, str]] = N
         return None
 
 
-def get_squid_mgr_text(section: str, host: str = "127.0.0.1", port: int = 3128) -> Optional[str]:
+def get_squid_mgr_text(
+    section: str, host: str = "127.0.0.1", port: int = 3128,
+) -> str | None:
     # Opt-in: cachemgr polling can be surprisingly expensive and has been observed
     # to trigger forwarding-loop warnings and Squid instability in some setups.
     # Default is disabled; enable explicitly if you want cachemgr-based stats.
@@ -198,21 +215,34 @@ def get_squid_mgr_text(section: str, host: str = "127.0.0.1", port: int = 3128) 
 
     # Avoid accidental self-proxying if the container has proxy env vars set.
     safe_env = dict(os.environ)
-    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
+    for k in (
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
         safe_env.pop(k, None)
     existing_no_proxy = safe_env.get("NO_PROXY") or safe_env.get("no_proxy") or ""
     additions = ["127.0.0.1", "localhost", "::1"]
-    merged = ",".join([p for p in (existing_no_proxy.split(",") if existing_no_proxy else []) if p])
+    merged = ",".join(
+        [p for p in (existing_no_proxy.split(",") if existing_no_proxy else []) if p],
+    )
     for a in additions:
         if a not in merged.split(","):
             merged = f"{merged},{a}" if merged else a
     safe_env["NO_PROXY"] = merged
     safe_env["no_proxy"] = merged
 
-    return _run(["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"], env=safe_env)
+    return _run(
+        ["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"], env=safe_env,
+    )
 
 
-def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access-observe.log", max_lines: int = 5000) -> Dict[str, Optional[float]]:
+def parse_access_log_hit_rate(
+    access_log_path: str = "/var/log/squid/access-observe.log", max_lines: int = 5000,
+) -> dict[str, float | None]:
     # Best-effort rolling hit rate from recent structured access log lines.
     # Squid default log format typically contains:
     #   ts elapsed client result_code/status bytes method url ...
@@ -223,11 +253,11 @@ def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access-obse
     total_bytes = 0
 
     try:
-        if not os.path.exists(access_log_path):
+        if not pathlib.Path(access_log_path).exists():
             return {"request_hit_ratio": None, "byte_hit_ratio": None}
 
         # Read last ~max_lines lines without external dependencies.
-        with open(access_log_path, "rb") as f:
+        with pathlib.Path(access_log_path).open("rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
             # Structured diagnostic lines are longer than the old lean access log.
@@ -249,7 +279,9 @@ def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access-obse
                     row = s.split("	")
                 else:
                     try:
-                        row = next(csv.reader(io.StringIO(s), delimiter="	", quotechar='"'))
+                        row = next(
+                            csv.reader(io.StringIO(s), delimiter="	", quotechar='"'),
+                        )
                     except Exception:
                         continue
                 if len(row) < 7:
@@ -279,16 +311,18 @@ def parse_access_log_hit_rate(access_log_path: str = "/var/log/squid/access-obse
 
         return {
             "request_hit_ratio": (hits / total * 100.0) if total else None,
-            "byte_hit_ratio": (hit_bytes / total_bytes * 100.0) if total_bytes else None,
+            "byte_hit_ratio": (hit_bytes / total_bytes * 100.0)
+            if total_bytes
+            else None,
         }
     except Exception:
         return {"request_hit_ratio": None, "byte_hit_ratio": None}
 
 
-def parse_squid_hit_rate(mgr_5min: str) -> Dict[str, Optional[float]]:
+def parse_squid_hit_rate(mgr_5min: str) -> dict[str, float | None]:
     # Best-effort extraction; varies across Squid builds.
     # We'll return request hit ratios if present.
-    out: Dict[str, Optional[float]] = {
+    out: dict[str, float | None] = {
         "request_hit_ratio": None,
         "byte_hit_ratio": None,
     }
@@ -308,11 +342,13 @@ def parse_squid_hit_rate(mgr_5min: str) -> Dict[str, Optional[float]]:
     return out
 
 
-def get_stats() -> Dict[str, Any]:
+def get_stats() -> dict[str, Any]:
     # These values can be expensive to compute (filesystem walks, subprocesses).
     # The UI and sampler don't need sub-second freshness, so we cache them.
     dir_size_ttl = max(5, int(os.environ.get("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "60")))
-    disk_usage_ttl = max(2, int(os.environ.get("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "15")))
+    disk_usage_ttl = max(
+        2, int(os.environ.get("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "15")),
+    )
     hit_rate_ttl = max(1, int(os.environ.get("STATS_CACHE_HIT_RATE_TTL_SECONDS", "5")))
     cpu_ttl = max(1, int(os.environ.get("STATS_CACHE_CPU_TTL_SECONDS", "2")))
 
@@ -329,7 +365,7 @@ def get_stats() -> Dict[str, Any]:
     cache_dir = "/var/spool/squid"
     now_mono = time.monotonic()
 
-    def _maybe_get_disk_usage() -> Optional[DiskUsage]:
+    def _maybe_get_disk_usage() -> DiskUsage | None:
         global _CACHE_DISK_USAGE_INFLIGHT, _CACHE_DISK_USAGE_TS, _CACHE_DISK_USAGE_VALUE
         with _CACHE_LOCK:
             cached = _CACHE_DISK_USAGE_VALUE
@@ -354,7 +390,7 @@ def get_stats() -> Dict[str, Any]:
             with _CACHE_LOCK:
                 _CACHE_DISK_USAGE_INFLIGHT = False
 
-    def _maybe_get_dir_size() -> Optional[int]:
+    def _maybe_get_dir_size() -> int | None:
         global _CACHE_DIR_SIZE_INFLIGHT, _CACHE_DIR_SIZE_TS, _CACHE_DIR_SIZE_VALUE
         with _CACHE_LOCK:
             cached = _CACHE_DIR_SIZE_VALUE
@@ -382,8 +418,12 @@ def get_stats() -> Dict[str, Any]:
     cache_disk = _maybe_get_disk_usage()
     cache_used_dir = _maybe_get_dir_size()
 
-    def _maybe_get_hit_rate() -> tuple[Dict[str, Optional[float]], str, bool]:
-        global _CACHE_HIT_RATE_INFLIGHT, _CACHE_HIT_RATE_TS, _CACHE_HIT_RATE_VALUE, _CACHE_HIT_RATE_SOURCE_VALUE
+    def _maybe_get_hit_rate() -> tuple[dict[str, float | None], str, bool]:
+        global \
+            _CACHE_HIT_RATE_INFLIGHT, \
+            _CACHE_HIT_RATE_TS, \
+            _CACHE_HIT_RATE_VALUE, \
+            _CACHE_HIT_RATE_SOURCE_VALUE
         with _CACHE_LOCK:
             cached = _CACHE_HIT_RATE_VALUE
             cached_source = _CACHE_HIT_RATE_SOURCE_VALUE
@@ -424,7 +464,7 @@ def get_stats() -> Dict[str, Any]:
 
     hit, hit_source, mgr_available = _maybe_get_hit_rate()
 
-    def _maybe_get_cpu() -> Dict[str, Any]:
+    def _maybe_get_cpu() -> dict[str, Any]:
         global _CACHE_CPU_INFLIGHT, _CACHE_CPU_TS, _CACHE_CPU_VALUE
         with _CACHE_LOCK:
             cached = _CACHE_CPU_VALUE
@@ -441,8 +481,10 @@ def get_stats() -> Dict[str, Any]:
             _CACHE_CPU_INFLIGHT = True
 
         try:
-            value: Dict[str, Any] = {
-                "util_percent": get_cpu_utilization_percent(sample_seconds=cpu_sample_seconds),
+            value: dict[str, Any] = {
+                "util_percent": get_cpu_utilization_percent(
+                    sample_seconds=cpu_sample_seconds,
+                ),
                 "loadavg": get_loadavg(),
             }
             with _CACHE_LOCK:
@@ -473,9 +515,15 @@ def get_stats() -> Dict[str, Any]:
             "cache_fs_used_bytes": cache_disk.used_bytes if cache_disk else None,
             "cache_fs_free_bytes": cache_disk.free_bytes if cache_disk else None,
             "cache_dir_size_human": _format_bytes(cache_used_dir),
-            "cache_fs_total_human": _format_bytes(cache_disk.total_bytes if cache_disk else None),
-            "cache_fs_used_human": _format_bytes(cache_disk.used_bytes if cache_disk else None),
-            "cache_fs_free_human": _format_bytes(cache_disk.free_bytes if cache_disk else None),
+            "cache_fs_total_human": _format_bytes(
+                cache_disk.total_bytes if cache_disk else None,
+            ),
+            "cache_fs_used_human": _format_bytes(
+                cache_disk.used_bytes if cache_disk else None,
+            ),
+            "cache_fs_free_human": _format_bytes(
+                cache_disk.free_bytes if cache_disk else None,
+            ),
         },
         "squid": {
             "hit_rate": hit,

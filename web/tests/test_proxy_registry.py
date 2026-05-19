@@ -12,21 +12,39 @@ def _add_web_to_path() -> None:
 
 def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
-    assert proxy_registry._parse_public_pac_url("proxy.example") == ("proxy.example", "http", 80)
-    assert proxy_registry._parse_public_pac_url("https://proxy.example/proxy.pac") == ("proxy.example", "https", 443)
-    assert proxy_registry._parse_public_pac_url("http://proxy.example:8080/proxy.pac") == ("proxy.example", "http", 8080)
+    assert proxy_registry._parse_public_pac_url("proxy.example") == (
+        "proxy.example",
+        "http",
+        80,
+    )
+    assert proxy_registry._parse_public_pac_url("https://proxy.example/proxy.pac") == (
+        "proxy.example",
+        "https",
+        443,
+    )
+    assert proxy_registry._parse_public_pac_url(
+        "http://proxy.example:8080/proxy.pac"
+    ) == ("proxy.example", "http", 8080)
     assert proxy_registry._parse_public_pac_url("") == ("", "http", 80)
-    assert proxy_registry._parse_public_pac_url("ftp://proxy.example:9000/proxy.pac") == ("proxy.example", "http", 9000)
-    assert proxy_registry._parse_public_pac_url("https://proxy.example:not-a-port/proxy.pac") == ("proxy.example", "https", 443)
+    assert proxy_registry._parse_public_pac_url(
+        "ftp://proxy.example:9000/proxy.pac"
+    ) == ("proxy.example", "http", 9000)
+    assert proxy_registry._parse_public_pac_url(
+        "https://proxy.example:not-a-port/proxy.pac"
+    ) == ("proxy.example", "https", 443)
 
 
-def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_url(monkeypatch) -> None:
+def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_url(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
-    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://from-url.example:8443/proxy.pac")
+    monkeypatch.setenv(
+        "PROXY_PUBLIC_PAC_URL", "https://from-url.example:8443/proxy.pac"
+    )
     monkeypatch.setenv("PROXY_PUBLIC_HOST", "explicit.example")
     monkeypatch.setenv("PROXY_PUBLIC_PAC_SCHEME", "http")
     monkeypatch.setenv("PROXY_PUBLIC_PAC_PORT", "8080")
@@ -40,9 +58,11 @@ def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_
     }
 
 
-def test_resolve_local_proxy_public_fields_falls_back_to_public_pac_url_and_port_defaults(monkeypatch) -> None:
+def test_resolve_local_proxy_public_fields_falls_back_to_public_pac_url_and_port_defaults(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
     monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://pac.example/proxy.pac")
     monkeypatch.delenv("PROXY_PUBLIC_HOST", raising=False)
@@ -60,17 +80,20 @@ def test_resolve_local_proxy_public_fields_falls_back_to_public_pac_url_and_port
 
 def test_resolve_local_proxy_management_url_prefers_explicit_url(monkeypatch) -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
     monkeypatch.setenv("PROXY_MANAGEMENT_URL", "http://custom-proxy:9443/root/")
     monkeypatch.setenv("PROXY_MANAGEMENT_HOST", "ignored-host")
 
-    assert proxy_registry.resolve_local_proxy_management_url("Proxy-IT") == "http://custom-proxy:9443/root"
+    assert (
+        proxy_registry.resolve_local_proxy_management_url("Proxy-IT")
+        == "http://custom-proxy:9443/root"
+    )
 
 
 def test_resolve_local_proxy_management_url_derives_from_proxy_id(monkeypatch) -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
     monkeypatch.delenv("PROXY_MANAGEMENT_URL", raising=False)
     monkeypatch.delenv("PROXY_MANAGEMENT_HOST", raising=False)
@@ -78,35 +101,51 @@ def test_resolve_local_proxy_management_url_derives_from_proxy_id(monkeypatch) -
     monkeypatch.delenv("PROXY_MANAGEMENT_SCHEME", raising=False)
     monkeypatch.delenv("PROXY_MANAGEMENT_PORT", raising=False)
 
-    assert proxy_registry.resolve_local_proxy_management_url("Proxy-IT") == "http://proxy-it:5000"
-    assert proxy_registry.resolve_local_proxy_management_url("default") == "http://proxy:5000"
+    assert (
+        proxy_registry.resolve_local_proxy_management_url("Proxy-IT")
+        == "http://proxy-it:5000"
+    )
+    assert (
+        proxy_registry.resolve_local_proxy_management_url("default")
+        == "http://proxy:5000"
+    )
 
 
-def test_resolve_local_proxy_management_url_supports_host_scheme_and_port(monkeypatch) -> None:
+def test_resolve_local_proxy_management_url_supports_host_scheme_and_port(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
     monkeypatch.delenv("PROXY_MANAGEMENT_URL", raising=False)
     monkeypatch.setenv("PROXY_MANAGEMENT_HOST", "edge-mgmt")
     monkeypatch.setenv("PROXY_MANAGEMENT_SCHEME", "https")
     monkeypatch.setenv("PROXY_MANAGEMENT_PORT", "5443")
 
-    assert proxy_registry.resolve_local_proxy_management_url("Proxy-IT") == "https://edge-mgmt:5443"
+    assert (
+        proxy_registry.resolve_local_proxy_management_url("Proxy-IT")
+        == "https://edge-mgmt:5443"
+    )
 
 
-def test_resolve_local_proxy_management_url_uses_public_host_before_proxy_id(monkeypatch) -> None:
+def test_resolve_local_proxy_management_url_uses_public_host_before_proxy_id(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
     monkeypatch.delenv("PROXY_MANAGEMENT_URL", raising=False)
     monkeypatch.delenv("PROXY_MANAGEMENT_HOST", raising=False)
 
-    assert proxy_registry.resolve_local_proxy_management_url("live", "proxy") == "http://proxy:5000"
+    assert (
+        proxy_registry.resolve_local_proxy_management_url("live", "proxy")
+        == "http://proxy:5000"
+    )
 
 
 def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
     _add_web_to_path()
-    import services.proxy_registry as proxy_registry  # type: ignore
+    from services import proxy_registry  # type: ignore
 
     row = {
         "proxy_id": "edge-2",

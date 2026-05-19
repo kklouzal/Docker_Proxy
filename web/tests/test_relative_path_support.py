@@ -1,7 +1,7 @@
 from .mysql_test_utils import configure_test_mysql_env
 
 
-def test_auth_store_allows_relative_secret_paths(tmp_path, monkeypatch):
+def test_auth_store_allows_relative_secret_paths(tmp_path, monkeypatch) -> None:
     # Regression: os.makedirs(os.path.dirname(path)) crashes when path has no directory.
     monkeypatch.chdir(tmp_path)
     configure_test_mysql_env(tmp_path, secret_path="flask_secret.key")
@@ -16,7 +16,9 @@ def test_auth_store_allows_relative_secret_paths(tmp_path, monkeypatch):
     assert (tmp_path / "flask_secret.key").exists()
 
 
-def test_store_initialization_does_not_create_local_db_files(tmp_path, monkeypatch):
+def test_store_initialization_does_not_create_local_db_files(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
 

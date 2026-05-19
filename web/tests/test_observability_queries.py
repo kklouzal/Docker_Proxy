@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 
 from .mysql_test_utils import configure_test_mysql_env
 
 
 def _add_web_to_path() -> None:
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 
@@ -92,12 +93,14 @@ def _insert_icap(diag_store, line: str) -> None:
         assert diag_store._ingest_icap_line_with_conn(conn, line)
 
 
-def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(tmp_path, monkeypatch):
+def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-queries")
 
+    from services import observability_queries  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
-    import services.observability_queries as observability_queries  # type: ignore
 
     diag_store = DiagnosticStore()
     diag_store.init_db()
@@ -206,7 +209,9 @@ def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(tm
                 },
             }
 
-    monkeypatch.setattr(observability_queries, "get_client_identity_cache", lambda: FakeClientCache())
+    monkeypatch.setattr(
+        observability_queries, "get_client_identity_cache", FakeClientCache
+    )
 
     summary = queries.summary(since=1800)
     assert summary == {
@@ -231,7 +236,9 @@ def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(tm
     assert destinations[0]["av_icap_events"] == 1
     assert destinations[0]["adblock_icap_events"] == 0
 
-    clients = queries.top_clients(since=1800, limit=10, sort="requests", resolve_hostnames=True)
+    clients = queries.top_clients(
+        since=1800, limit=10, sort="requests", resolve_hostnames=True
+    )
     assert clients[0]["ip"] == "192.0.2.10"
     assert clients[0]["hostname"] == "workstation.lan"
     assert clients[0]["requests"] == 3
@@ -252,15 +259,17 @@ def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(tm
     assert reasons[1]["requests"] == 1
 
 
-def test_observability_queries_surface_ssl_security_and_performance(tmp_path, monkeypatch):
+def test_observability_queries_surface_ssl_security_and_performance(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-hub")
 
+    from services import observability_queries  # type: ignore
     from services.adblock_store import AdblockStore  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
     from services.webfilter_store import WebFilterStore  # type: ignore
-    import services.observability_queries as observability_queries  # type: ignore
 
     diag_store = DiagnosticStore()
     diag_store.init_db()
@@ -323,13 +332,25 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
     )
 
     with ssl_store._connect() as conn:
-        row_key = ssl_store._row_key("default", "tls.example", "CERT_VERIFY", "certificate verify failed")
+        row_key = ssl_store._row_key(
+            "default", "tls.example", "CERT_VERIFY", "certificate verify failed"
+        )
         conn.execute(
             """
             INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            (row_key, "default", "tls.example", "CERT_VERIFY", "certificate verify failed", 5, 2900, 3005, "CONNECT tls.example:443"),
+            (
+                row_key,
+                "default",
+                "tls.example",
+                "CERT_VERIFY",
+                "certificate verify failed",
+                5,
+                2900,
+                3005,
+                "CONNECT tls.example:443",
+            ),
         )
 
     with adblock_store._connect() as conn:
@@ -338,7 +359,19 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
             INSERT INTO adblock_events(proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts)
             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            ("default", "a" * 40, 3015, "192.0.2.41", "GET", "https://ads.example/banner.js", 403, "HTTP/1.1 403 Forbidden", 204, "blocked", 3015),
+            (
+                "default",
+                "a" * 40,
+                3015,
+                "192.0.2.41",
+                "GET",
+                "https://ads.example/banner.js",
+                403,
+                "HTTP/1.1 403 Forbidden",
+                204,
+                "blocked",
+                3015,
+            ),
         )
 
     with webfilter_store._connect() as conn:
@@ -347,10 +380,18 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
             ("default", 3020, "192.0.2.42", "https://adult.example/video", "adult"),
         )
 
-    monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: diag_store)
-    monkeypatch.setattr(observability_queries, "get_ssl_errors_store", lambda: ssl_store)
-    monkeypatch.setattr(observability_queries, "get_adblock_store", lambda: adblock_store)
-    monkeypatch.setattr(observability_queries, "get_webfilter_store", lambda: webfilter_store)
+    monkeypatch.setattr(
+        observability_queries, "get_diagnostic_store", lambda: diag_store
+    )
+    monkeypatch.setattr(
+        observability_queries, "get_ssl_errors_store", lambda: ssl_store
+    )
+    monkeypatch.setattr(
+        observability_queries, "get_adblock_store", lambda: adblock_store
+    )
+    monkeypatch.setattr(
+        observability_queries, "get_webfilter_store", lambda: webfilter_store
+    )
 
     ssl_payload = queries.ssl_overview(since=2800, limit=10)
     assert ssl_payload["summary"]["bucket_count"] == 1
@@ -367,7 +408,10 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
 
     performance_payload = queries.performance_overview(since=2800, limit=10)
     assert performance_payload["slow_requests"][0]["target_display"] == "ads.example"
-    assert performance_payload["slow_icap_events"][0]["target_display"] == "malware.example"
+    assert (
+        performance_payload["slow_icap_events"][0]["target_display"]
+        == "malware.example"
+    )
     assert performance_payload["top_user_agents"][0]["label"] == "pytest/1.0"
 
     overview = queries.overview_bundle(since=2800, limit=5, resolve_hostnames=False)
@@ -376,11 +420,13 @@ def test_observability_queries_surface_ssl_security_and_performance(tmp_path, mo
     assert overview["security"]["summary"]["combined_blocks"] == 2
 
 
-def test_observability_overview_bundle_reuses_precomputed_summary(tmp_path, monkeypatch):
+def test_observability_overview_bundle_reuses_precomputed_summary(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-queries-summary-reuse")
 
-    import services.observability_queries as observability_queries  # type: ignore
+    from services import observability_queries  # type: ignore
 
     queries = observability_queries.ObservabilityQueries()
     summary_calls = {"count": 0}
@@ -404,21 +450,66 @@ def test_observability_overview_bundle_reuses_precomputed_summary(tmp_path, monk
     monkeypatch.setattr(queries, "top_destinations", lambda **_kwargs: [])
     monkeypatch.setattr(queries, "top_clients", lambda **_kwargs: [])
     monkeypatch.setattr(queries, "top_cache_reasons", lambda **_kwargs: [])
-    monkeypatch.setattr(queries, "ssl_overview", lambda **_kwargs: {"summary": {}, "rows": [], "top_domains": [], "exclusion_candidates": [], "top_categories": [], "hints": []})
-    monkeypatch.setattr(queries, "security_overview", lambda **_kwargs: {"summary": {}, "av_rows": [], "av_top_targets": [], "adblock_rows": [], "adblock_top_domains": [], "webfilter_rows": [], "webfilter_top_categories": [], "webfilter_top_domains": [], "notes": []})
-    monkeypatch.setattr(queries, "performance_overview", lambda **_kwargs: {"summary": {}, "slow_requests": [], "slow_icap_events": [], "top_user_agents": [], "top_bump_modes": [], "top_tls_server_versions": [], "top_policy_tags": [], "av_icap_summary": {}, "adblock_icap_summary": {}})
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {
+            "summary": {},
+            "rows": [],
+            "top_domains": [],
+            "exclusion_candidates": [],
+            "top_categories": [],
+            "hints": [],
+        },
+    )
+    monkeypatch.setattr(
+        queries,
+        "security_overview",
+        lambda **_kwargs: {
+            "summary": {},
+            "av_rows": [],
+            "av_top_targets": [],
+            "adblock_rows": [],
+            "adblock_top_domains": [],
+            "webfilter_rows": [],
+            "webfilter_top_categories": [],
+            "webfilter_top_domains": [],
+            "notes": [],
+        },
+    )
+    monkeypatch.setattr(
+        queries,
+        "performance_overview",
+        lambda **_kwargs: {
+            "summary": {},
+            "slow_requests": [],
+            "slow_icap_events": [],
+            "top_user_agents": [],
+            "top_bump_modes": [],
+            "top_tls_server_versions": [],
+            "top_policy_tags": [],
+            "av_icap_summary": {},
+            "adblock_icap_summary": {},
+        },
+    )
 
-    payload = queries.overview_bundle(since=2800, limit=5, resolve_hostnames=False, summary=_summary())
+    payload = queries.overview_bundle(
+        since=2800, limit=5, resolve_hostnames=False, summary=_summary()
+    )
 
     assert summary_calls["count"] == 1
     assert payload["summary"]["request_records"] == 7
 
 
-def test_observability_performance_overview_reuses_precomputed_summary(tmp_path, monkeypatch):
+def test_observability_performance_overview_reuses_precomputed_summary(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_to_path()
-    configure_test_mysql_env(tmp_path / "observability-queries-performance-summary-reuse")
+    configure_test_mysql_env(
+        tmp_path / "observability-queries-performance-summary-reuse"
+    )
 
-    import services.observability_queries as observability_queries  # type: ignore
+    from services import observability_queries  # type: ignore
 
     class CountingDiagnosticStore:
         def __init__(self) -> None:
@@ -426,7 +517,18 @@ def test_observability_performance_overview_reuses_precomputed_summary(tmp_path,
 
         def activity_summary(self, *, since):
             self.activity_summary_calls += 1
-            return {"request_records": 1, "cache_hits": 1, "cache_misses": 0, "cache_hit_pct": 100.0, "clients": 1, "destinations": 1, "transactions": 1, "icap_events": 0, "av_icap_events": 0, "adblock_icap_events": 0}
+            return {
+                "request_records": 1,
+                "cache_hits": 1,
+                "cache_misses": 0,
+                "cache_hit_pct": 100.0,
+                "clients": 1,
+                "destinations": 1,
+                "transactions": 1,
+                "icap_events": 0,
+                "av_icap_events": 0,
+                "adblock_icap_events": 0,
+            }
 
         def slowest_requests(self, **_kwargs):
             return []
@@ -447,29 +549,44 @@ def test_observability_performance_overview_reuses_precomputed_summary(tmp_path,
             return []
 
     fake_store = CountingDiagnosticStore()
-    monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: fake_store)
+    monkeypatch.setattr(
+        observability_queries, "get_diagnostic_store", lambda: fake_store
+    )
 
     queries = observability_queries.ObservabilityQueries()
     payload = queries.performance_overview(
         since=2800,
         limit=5,
-        summary={"requests": 1, "cache_hits": 1, "cache_misses": 0, "cache_hit_pct": 100.0, "clients": 1, "destinations": 1, "transactions": 1, "icap_events": 0, "av_icap_events": 0, "adblock_icap_events": 0},
+        summary={
+            "requests": 1,
+            "cache_hits": 1,
+            "cache_misses": 0,
+            "cache_hit_pct": 100.0,
+            "clients": 1,
+            "destinations": 1,
+            "transactions": 1,
+            "icap_events": 0,
+            "av_icap_events": 0,
+            "adblock_icap_events": 0,
+        },
     )
 
     assert fake_store.activity_summary_calls == 0
     assert payload["summary"]["requests"] == 1
 
 
-def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(tmp_path, monkeypatch):
+def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-reporting-overview")
 
+    from services import observability_queries  # type: ignore
     from services.adblock_store import AdblockStore  # type: ignore
     from services.audit_store import AuditStore  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
     from services.webfilter_store import WebFilterStore  # type: ignore
-    import services.observability_queries as observability_queries  # type: ignore
 
     diag_store = DiagnosticStore()
     diag_store.init_db()
@@ -527,20 +644,45 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
             ("default", 4130, "192.0.2.80", "https://games.example/play", "games"),
         )
     with ssl_store._connect() as conn:
-        row_key = ssl_store._row_key("default", "updates.example", "HANDSHAKE", "bump handshake failed")
+        row_key = ssl_store._row_key(
+            "default", "updates.example", "HANDSHAKE", "bump handshake failed"
+        )
         conn.execute(
             """
             INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            (row_key, "default", "updates.example", "HANDSHAKE", "bump handshake failed", 3, 4105, 4115, "CONNECT updates.example:443"),
+            (
+                row_key,
+                "default",
+                "updates.example",
+                "HANDSHAKE",
+                "bump handshake failed",
+                3,
+                4105,
+                4115,
+                "CONNECT updates.example:443",
+            ),
         )
-    audit_store.record(kind="config_apply_manual", ok=True, remote_addr="127.0.0.1", detail="applied reporting test config")
+    audit_store.record(
+        kind="config_apply_manual",
+        ok=True,
+        remote_addr="127.0.0.1",
+        detail="applied reporting test config",
+    )
 
-    monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: diag_store)
-    monkeypatch.setattr(observability_queries, "get_ssl_errors_store", lambda: ssl_store)
-    monkeypatch.setattr(observability_queries, "get_adblock_store", lambda: adblock_store)
-    monkeypatch.setattr(observability_queries, "get_webfilter_store", lambda: webfilter_store)
+    monkeypatch.setattr(
+        observability_queries, "get_diagnostic_store", lambda: diag_store
+    )
+    monkeypatch.setattr(
+        observability_queries, "get_ssl_errors_store", lambda: ssl_store
+    )
+    monkeypatch.setattr(
+        observability_queries, "get_adblock_store", lambda: adblock_store
+    )
+    monkeypatch.setattr(
+        observability_queries, "get_webfilter_store", lambda: webfilter_store
+    )
 
     queries = observability_queries.ObservabilityQueries()
     queries.save_report_schedule(
@@ -552,7 +694,9 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
         privacy=True,
         window_seconds=86400,
     )
-    payload = queries.reporting_overview(since=4000, limit=10, resolve_hostnames=False, privacy=True)
+    payload = queries.reporting_overview(
+        since=4000, limit=10, resolve_hostnames=False, privacy=True
+    )
 
     assert payload["cache_savings"]["estimated_saved_bytes"] == 4096
     assert payload["top_users"][0]["client_label"].startswith("user-")
@@ -567,6 +711,15 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
     assert payload["per_group"][0]["group"].startswith("group-")
     assert payload["audit"]["summary"]["events"] >= 1
     assert payload["schedules"][0]["name"] == "Daily accountability digest"
-    assert any(row["name"] == "Prometheus" and row["status"] == "ready" for row in payload["export_contracts"])
-    assert any(row["name"] == "SIEM/syslog" and row["status"] == "ready" for row in payload["export_contracts"])
-    assert any(row["name"] == "Scheduled email" and row["status"] == "configured" for row in payload["export_contracts"])
+    assert any(
+        row["name"] == "Prometheus" and row["status"] == "ready"
+        for row in payload["export_contracts"]
+    )
+    assert any(
+        row["name"] == "SIEM/syslog" and row["status"] == "ready"
+        for row in payload["export_contracts"]
+    )
+    assert any(
+        row["name"] == "Scheduled email" and row["status"] == "configured"
+        for row in payload["export_contracts"]
+    )

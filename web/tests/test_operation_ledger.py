@@ -1,6 +1,7 @@
 from __future__ import annotations
-from pathlib import Path
+
 import sys
+from pathlib import Path
 
 
 def _add_repo_paths() -> None:
@@ -12,7 +13,7 @@ def _add_repo_paths() -> None:
 
 
 class _Result:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None) -> None:
         self._rows = list(rows or [])
         self.rowcount = len(self._rows)
         self.lastrowid = None
@@ -25,7 +26,7 @@ class _Result:
 
 
 class _Connection:
-    def __init__(self):
+    def __init__(self) -> None:
         self.queries = []
         self.committed = False
 
@@ -54,7 +55,7 @@ class _Connection:
                 "updated_ts": 2,
             }
             return _Result(
-                [dict(base, id=7, created_ts=1), dict(base, id=8, created_ts=2)]
+                [dict(base, id=7, created_ts=1), dict(base, id=8, created_ts=2)],
             )
         return _Result()
 

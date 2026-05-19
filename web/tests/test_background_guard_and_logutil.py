@@ -14,41 +14,52 @@ def _add_web_to_path() -> None:
 
 def test_acquire_background_lock_force_skips_filesystem(monkeypatch) -> None:
     _add_web_to_path()
-    import services.background_guard as background_guard  # type: ignore
+    from services import background_guard  # type: ignore
 
     monkeypatch.setenv("BACKGROUND_FORCE", "1")
-    monkeypatch.setattr(background_guard.os, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("open called")))
+    monkeypatch.setattr(
+        background_guard.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("open called")),
+    )
 
     assert background_guard.acquire_background_lock() is True
 
 
-def test_acquire_background_lock_allows_when_lock_directory_cannot_be_created(monkeypatch) -> None:
+def test_acquire_background_lock_allows_when_lock_directory_cannot_be_created(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.background_guard as background_guard  # type: ignore
+    from services import background_guard  # type: ignore
 
     monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
     monkeypatch.setenv("BACKGROUND_LOCK_PATH", "/unwritable/background.lock")
-    monkeypatch.setattr(background_guard.os, "makedirs", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("nope")))
+    monkeypatch.setattr(
+        background_guard.os,
+        "makedirs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("nope")),
+    )
 
     assert background_guard.acquire_background_lock() is True
 
 
 def test_acquire_background_lock_non_posix_allows_and_closes_fd(monkeypatch) -> None:
     _add_web_to_path()
-    import services.background_guard as background_guard  # type: ignore
+    from services import background_guard  # type: ignore
 
     closed: list[int] = []
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
         if name == "fcntl":
-            raise ImportError("no fcntl")
+            msg = "no fcntl"
+            raise ImportError(msg)
         return real_import(name, *args, **kwargs)
 
     monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
     monkeypatch.setenv("BACKGROUND_LOCK_PATH", "background.lock")
     monkeypatch.setattr(background_guard.os, "open", lambda *_args, **_kwargs: 42)
-    monkeypatch.setattr(background_guard.os, "close", lambda fd: closed.append(fd))
+    monkeypatch.setattr(background_guard.os, "close", closed.append)
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
     assert background_guard.acquire_background_lock() is True
@@ -57,7 +68,7 @@ def test_acquire_background_lock_non_posix_allows_and_closes_fd(monkeypatch) -> 
 
 def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
     _add_web_to_path()
-    import services.logutil as logutil  # type: ignore
+    from services import logutil  # type: ignore
 
     logutil._last_log.clear()
     current = {"value": 100.0}
@@ -70,22 +81,40 @@ def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
     assert logutil.should_log("same", interval_seconds=10.0) is True
 
 
-def test_log_exception_throttled_never_raises_and_respects_interval(monkeypatch) -> None:
+def test_log_exception_throttled_never_raises_and_respects_interval(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.logutil as logutil  # type: ignore
+    from services import logutil  # type: ignore
 
     logutil._last_log.clear()
     current = {"value": 200.0}
     calls: list[str] = []
-    logger = SimpleNamespace(exception=lambda message, *args: calls.append(message % args if args else message))
+    logger = SimpleNamespace(
+        exception=lambda message, *args: calls.append(
+            message % args if args else message
+        )
+    )
     monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
 
-    logutil.log_exception_throttled(logger, "key", "one", interval_seconds=10.0, message="failure %s")
-    logutil.log_exception_throttled(logger, "key", "two", interval_seconds=10.0, message="failure %s")
+    logutil.log_exception_throttled(
+        logger, "key", "one", interval_seconds=10.0, message="failure %s"
+    )
+    logutil.log_exception_throttled(
+        logger, "key", "two", interval_seconds=10.0, message="failure %s"
+    )
     current["value"] = 211.0
-    logutil.log_exception_throttled(logger, "key", "three", interval_seconds=10.0, message="failure %s")
+    logutil.log_exception_throttled(
+        logger, "key", "three", interval_seconds=10.0, message="failure %s"
+    )
 
     assert calls == ["failure one", "failure three"]
 
-    bad_logger = SimpleNamespace(exception=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("logger failed")))
-    logutil.log_exception_throttled(bad_logger, "bad", interval_seconds=0.0, message="ignored")
+    bad_logger = SimpleNamespace(
+        exception=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("logger failed")
+        )
+    )
+    logutil.log_exception_throttled(
+        bad_logger, "bad", interval_seconds=0.0, message="ignored"
+    )

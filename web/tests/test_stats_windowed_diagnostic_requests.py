@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 
 from .mysql_test_utils import configure_test_mysql_env
 
 
 def _add_web_to_path() -> None:
-    web_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 
@@ -54,7 +55,9 @@ def _insert_request(diag_store, line: str) -> None:
         assert diag_store._ingest_request_line_with_conn(conn, line)
 
 
-def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_tables(tmp_path):
+def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_tables(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "stats-window")
 
@@ -127,20 +130,26 @@ def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_
         "client_hit_requests": 1,
     }
 
-    domains = live_store.list_domains(sort="top", order="desc", limit=10, since=1800, search="")
+    domains = live_store.list_domains(
+        sort="top", order="desc", limit=10, since=1800, search=""
+    )
     assert [(row["domain"], row["requests"]) for row in domains] == [
         ("fresh.example", 1),
         ("legacy.example", 1),
     ]
 
-    clients = live_store.list_clients(sort="top", order="desc", limit=10, since=1800, search="")
+    clients = live_store.list_clients(
+        sort="top", order="desc", limit=10, since=1800, search=""
+    )
     assert [(row["ip"], row["requests"]) for row in clients] == [
         ("192.0.2.20", 1),
         ("192.0.2.10", 1),
     ]
 
 
-def test_stats_windowed_client_details_and_reasons_use_diagnostic_requests(tmp_path):
+def test_stats_windowed_client_details_and_reasons_use_diagnostic_requests(
+    tmp_path,
+) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "stats-reasons")
 
@@ -158,14 +167,33 @@ def test_stats_windowed_client_details_and_reasons_use_diagnostic_requests(tmp_p
             INSERT INTO live_stats_client_domains (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            ("default", "192.0.2.44", "legacy.example", 7000, 6500, 777777, 700000, 10, 2100),
+            (
+                "default",
+                "192.0.2.44",
+                "legacy.example",
+                7000,
+                6500,
+                777777,
+                700000,
+                10,
+                2100,
+            ),
         )
         conn.execute(
             """
             INSERT INTO live_stats_client_domain_nocache (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            ("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "default", "192.0.2.44", "legacy.example", "Denied by ACL", 7000, 10, 2100),
+            (
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "default",
+                "192.0.2.44",
+                "legacy.example",
+                "Denied by ACL",
+                7000,
+                10,
+                2100,
+            ),
         )
 
     _insert_request(
@@ -229,14 +257,18 @@ def test_stats_windowed_client_details_and_reasons_use_diagnostic_requests(tmp_p
         ),
     )
 
-    client_domains = live_store.list_client_domains(ip="192.0.2.44", sort="top", limit=10, since=1800)
+    client_domains = live_store.list_client_domains(
+        ip="192.0.2.44", sort="top", limit=10, since=1800
+    )
     assert [(row["domain"], row["requests"]) for row in client_domains] == [
         ("alpha.example", 3),
         ("beta.example", 1),
     ]
     assert [round(row["pct"], 1) for row in client_domains] == [75.0, 25.0]
 
-    not_cached = live_store.list_client_not_cached(ip="192.0.2.44", limit=10, since=1800)
+    not_cached = live_store.list_client_not_cached(
+        ip="192.0.2.44", limit=10, since=1800
+    )
     assert not_cached[0]["domain"] == "alpha.example"
     assert not_cached[0]["miss_requests"] == 2
     assert not_cached[0]["total_requests"] == 3
@@ -244,17 +276,21 @@ def test_stats_windowed_client_details_and_reasons_use_diagnostic_requests(tmp_p
     assert not_cached[1]["domain"] == "beta.example"
     assert not_cached[1]["reason"] == "Bypassed (cache deny rule or client no-cache)"
 
-    alpha_reasons = live_store.list_domain_not_cached_reasons(domain="alpha.example", limit=10, since=1800)
+    alpha_reasons = live_store.list_domain_not_cached_reasons(
+        domain="alpha.example", limit=10, since=1800
+    )
     assert alpha_reasons == [
         {
             "reason": "POST method (not cacheable by default)",
             "requests": 2,
             "pct": 100.0,
             "last_seen": 2005,
-        }
+        },
     ]
 
-    global_total, global_reasons = live_store.list_global_not_cached_reasons(limit=10, since=1800)
+    global_total, global_reasons = live_store.list_global_not_cached_reasons(
+        limit=10, since=1800
+    )
     assert global_total == 3
     assert [(row["reason"], row["requests"]) for row in global_reasons] == [
         ("POST method (not cacheable by default)", 2),

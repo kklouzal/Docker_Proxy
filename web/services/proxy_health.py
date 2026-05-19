@@ -3,7 +3,18 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from services.health_checks import ErrorFormatter, annotate_service_target, build_clamav_health, check_clamd, check_icap_service, check_local_listener, is_local_host, resolve_host_port, send_sample_respmod_to, test_clamd_eicar
+from services.health_checks import (
+    ErrorFormatter,
+    annotate_service_target,
+    build_clamav_health,
+    check_clamd,
+    check_icap_service,
+    check_local_listener,
+    is_local_host,
+    resolve_host_port,
+    send_sample_respmod_to,
+    test_clamd_eicar,
+)
 
 
 def _resolve_host_port_override(
@@ -16,17 +27,28 @@ def _resolve_host_port_override(
     default_port: int,
 ) -> tuple[str, int]:
     if host is None and port is None:
-        return resolve_host_port(host_env=host_env, port_env=port_env, default_host=default_host, default_port=default_port)
+        return resolve_host_port(
+            host_env=host_env,
+            port_env=port_env,
+            default_host=default_host,
+            default_port=default_port,
+        )
 
-    resolved_host = (host or os.environ.get(host_env) or default_host).strip() or default_host
+    resolved_host = (
+        host or os.environ.get(host_env) or default_host
+    ).strip() or default_host
     try:
-        resolved_port = int(port if port is not None else (os.environ.get(port_env) or default_port))
+        resolved_port = int(
+            port if port is not None else (os.environ.get(port_env) or default_port),
+        )
     except Exception:
         resolved_port = int(default_port)
     return resolved_host, resolved_port
 
 
-def unavailable_service(detail: str, *, target: str = "unavailable", service: str = "") -> dict[str, Any]:
+def unavailable_service(
+    detail: str, *, target: str = "unavailable", service: str = "",
+) -> dict[str, Any]:
     status: dict[str, Any] = {
         "ok": False,
         "detail": str(detail or "unavailable"),
@@ -39,16 +61,22 @@ def unavailable_service(detail: str, *, target: str = "unavailable", service: st
     return status
 
 
-def normalize_service_health(result: Any, *, default_target: str = "unavailable", service: str = "") -> dict[str, Any]:
+def normalize_service_health(
+    result: Any, *, default_target: str = "unavailable", service: str = "",
+) -> dict[str, Any]:
     if not isinstance(result, dict):
-        return unavailable_service("unavailable", target=default_target, service=service)
+        return unavailable_service(
+            "unavailable", target=default_target, service=service,
+        )
     detail = str(result.get("detail") or "unavailable")
     host = str(result.get("host") or "")
     try:
         port = int(result.get("port") or 0)
     except Exception:
         port = 0
-    target = str(result.get("target") or (f"{host}:{port}" if host and port else default_target))
+    target = str(
+        result.get("target") or (f"{host}:{port}" if host and port else default_target),
+    )
     normalized = {
         "ok": bool(result.get("ok")),
         "detail": detail,
@@ -62,7 +90,9 @@ def normalize_service_health(result: Any, *, default_target: str = "unavailable"
     return normalized
 
 
-def build_unavailable_runtime_health(detail: str, *, proxy_status: str = "offline") -> dict[str, Any]:
+def build_unavailable_runtime_health(
+    detail: str, *, proxy_status: str = "offline",
+) -> dict[str, Any]:
     icap = unavailable_service(detail)
     av_icap = unavailable_service(detail, service="/avrespmod")
     clamd = unavailable_service(detail)
@@ -176,7 +206,12 @@ def check_clamd_health(
         port_env="CLAMD_PORT",
         default_port=3310,
     )
-    result = check_clamd(host=resolved_host, port=resolved_port, timeout=timeout, error_formatter=error_formatter)
+    result = check_clamd(
+        host=resolved_host,
+        port=resolved_port,
+        timeout=timeout,
+        error_formatter=error_formatter,
+    )
     return annotate_service_target(result, host=resolved_host, port=resolved_port)
 
 
@@ -231,8 +266,12 @@ def build_local_clamav_view(
     icap_timeout: float = 0.8,
     clamd_timeout: float = 0.8,
 ) -> dict[str, dict[str, Any]]:
-    clamd_health = check_clamd_health(timeout=clamd_timeout, error_formatter=error_formatter)
-    av_icap_health = check_av_icap_health(timeout=icap_timeout, error_formatter=error_formatter)
+    clamd_health = check_clamd_health(
+        timeout=clamd_timeout, error_formatter=error_formatter,
+    )
+    av_icap_health = check_av_icap_health(
+        timeout=icap_timeout, error_formatter=error_formatter,
+    )
     return {
         "health": build_clamav_health(clamd_health, av_icap_health),
         "clamd_health": clamd_health,
@@ -242,13 +281,18 @@ def build_local_clamav_view(
 
 def build_remote_clamav_view(health_payload: dict[str, Any]) -> dict[str, Any]:
     services = health_payload.get("services") or {}
-    aggregate = services.get("clamav") if isinstance(services.get("clamav"), dict) else {}
+    aggregate = (
+        services.get("clamav") if isinstance(services.get("clamav"), dict) else {}
+    )
     components = aggregate.get("components") if isinstance(aggregate, dict) else {}
     clamd_health = normalize_service_health(
-        services.get("clamd") or (components.get("clamd") if isinstance(components, dict) else None) or aggregate,
+        services.get("clamd")
+        or (components.get("clamd") if isinstance(components, dict) else None)
+        or aggregate,
     )
     av_icap_health = normalize_service_health(
-        services.get("av_icap") or (components.get("av_icap") if isinstance(components, dict) else None),
+        services.get("av_icap")
+        or (components.get("av_icap") if isinstance(components, dict) else None),
         service="/avrespmod",
     )
     health = dict(aggregate) if isinstance(aggregate, dict) else {}
@@ -256,7 +300,10 @@ def build_remote_clamav_view(health_payload: dict[str, Any]) -> dict[str, Any]:
         health = build_clamav_health(clamd_health, av_icap_health)
     else:
         health["ok"] = bool(health.get("ok"))
-        health["detail"] = str(health.get("detail") or build_clamav_health(clamd_health, av_icap_health).get("detail"))
+        health["detail"] = str(
+            health.get("detail")
+            or build_clamav_health(clamd_health, av_icap_health).get("detail"),
+        )
         health["components"] = {
             "clamd": clamd_health,
             "av_icap": av_icap_health,
@@ -265,7 +312,9 @@ def build_remote_clamav_view(health_payload: dict[str, Any]) -> dict[str, Any]:
         "health": health,
         "clamd_health": clamd_health,
         "av_icap_health": av_icap_health,
-        "health_source": str(health_payload.get("proxy_status") or health_payload.get("detail") or ""),
+        "health_source": str(
+            health_payload.get("proxy_status") or health_payload.get("detail") or "",
+        ),
     }
 
 
@@ -275,9 +324,15 @@ def build_local_runtime_services(
     icap_timeout: float = 0.8,
     tcp_timeout: float = 0.75,
 ) -> dict[str, dict[str, Any]]:
-    clamav_view = build_local_clamav_view(error_formatter=error_formatter, icap_timeout=icap_timeout, clamd_timeout=icap_timeout)
+    clamav_view = build_local_clamav_view(
+        error_formatter=error_formatter,
+        icap_timeout=icap_timeout,
+        clamd_timeout=icap_timeout,
+    )
     return {
-        "icap": check_adblock_icap_health(timeout=icap_timeout, error_formatter=error_formatter),
+        "icap": check_adblock_icap_health(
+            timeout=icap_timeout, error_formatter=error_formatter,
+        ),
         "av_icap": clamav_view["av_icap_health"],
         "clamd": clamav_view["clamd_health"],
         "clamav": clamav_view["health"],

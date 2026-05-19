@@ -4,11 +4,12 @@ import pytest
 
 from .live_test_helpers import LiveStackClient, wait_for_proxy_management_payload
 
-
 pytestmark = pytest.mark.live
 
 
-def test_live_admin_health_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_admin_health_endpoint(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     assert live_stack_ready["admin"]["ok"] is True
 
 
@@ -18,7 +19,9 @@ def test_live_admin_login_can_load_proxies_page(admin_client: LiveStackClient) -
     assert "Selected proxy" in response.text or "Fleet" in response.text
 
 
-def test_live_proxy_management_health_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_health_endpoint(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     payload = wait_for_proxy_management_payload()
     assert isinstance(payload.get("ok"), bool)
@@ -28,10 +31,14 @@ def test_live_proxy_management_health_endpoint(live_stack_ready: dict[str, dict[
     assert isinstance(payload.get("services"), dict)
 
 
-def test_live_proxy_force_sync_and_pac_rendering(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_force_sync_and_pac_rendering(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
-    response = client.proxy_management_post_json("/api/manage/sync", {"force": True}, timeout_seconds=90.0)
+    response = client.proxy_management_post_json(
+        "/api/manage/sync", {"force": True}, timeout_seconds=90.0
+    )
     payload = response.json()
     assert payload["ok"] is True
     wait_for_proxy_management_payload()

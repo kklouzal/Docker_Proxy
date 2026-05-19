@@ -1,21 +1,27 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import io
 import ipaddress
 import logging
 import os
+import pathlib
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, extract_domain as _extract_domain, normalize_hostish as _normalize_hostish, now_ts as _now
-
+from services.runtime_helpers import env_float as _env_float
+from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import escape_like as _escape_like
+from services.runtime_helpers import extract_domain as _extract_domain
+from services.runtime_helpers import normalize_hostish as _normalize_hostish
+from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +40,10 @@ def _env_falsey(value: object | None) -> bool:
 
 
 def _running_in_container() -> bool:
-    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+    return (
+        pathlib.Path("/.dockerenv").exists()
+        or pathlib.Path("/run/.containerenv").exists()
+    )
 
 
 def _diagnostic_filter_internal_traffic_enabled() -> bool:
@@ -49,19 +58,28 @@ def _diagnostic_filter_internal_traffic_enabled() -> bool:
 
 def _read_local_link_networks() -> tuple[Any, ...]:
     networks: list[Any] = []
-    try:
-        networks.append(ipaddress.ip_network("127.0.0.0/8"))
-        networks.append(ipaddress.ip_network("::1/128"))
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        networks.extend(
+            (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")),
+        )
     if not _running_in_container():
         return tuple(networks)
     try:
-        lines = open("/proc/net/fib_trie", "r", encoding="utf-8", errors="replace").read().splitlines()
+        lines = (
+            pathlib.Path("/proc/net/fib_trie")
+            .open(encoding="utf-8", errors="replace")
+            .read()
+            .splitlines()
+        )
     except FileNotFoundError:
         return tuple(networks)
     except Exception:
-        log_exception_throttled(logger, "diagnostic_store.local_networks", interval_seconds=300.0, message="Failed to inspect local network routes for diagnostic self-traffic filtering")
+        log_exception_throttled(
+            logger,
+            "diagnostic_store.local_networks",
+            interval_seconds=300.0,
+            message="Failed to inspect local network routes for diagnostic self-traffic filtering",
+        )
         return tuple(networks)
     candidate = ""
     for line in lines:
@@ -70,7 +88,11 @@ def _read_local_link_networks() -> tuple[Any, ...]:
             candidate = match.group(1)
             try:
                 network = ipaddress.ip_network(candidate, strict=False)
-                if network.prefixlen > 0 and network.is_private and network not in networks:
+                if (
+                    network.prefixlen > 0
+                    and network.is_private
+                    and network not in networks
+                ):
                     networks.append(network)
             except Exception:
                 pass
@@ -97,7 +119,7 @@ def _local_link_networks() -> tuple[Any, ...]:
     return networks
 
 
-def _is_internal_diagnostic_row(row: Dict[str, Any]) -> bool:
+def _is_internal_diagnostic_row(row: dict[str, Any]) -> bool:
     if not _diagnostic_filter_internal_traffic_enabled():
         return False
     client_ip = _safe_text(row.get("client_ip"), max_len=64)
@@ -118,7 +140,7 @@ def _is_internal_diagnostic_row(row: Dict[str, Any]) -> bool:
     return False
 
 
-_REQUEST_DIMENSIONS: Dict[str, str] = {
+_REQUEST_DIMENSIONS: dict[str, str] = {
     "client_ip": "client_ip",
     "user_agent": "user_agent",
     "bump_mode": "bump_mode",
@@ -175,7 +197,9 @@ def _event_key(*parts: object) -> str:
     return hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()
 
 
-def _policy_tags(*, exclusion_rule: str, ssl_exception: str, webfilter_allow: str, cache_bypass: str) -> list[str]:
+def _policy_tags(
+    *, exclusion_rule: str, ssl_exception: str, webfilter_allow: str, cache_bypass: str,
+) -> list[str]:
     tags: list[str] = []
     if exclusion_rule:
         tags.append(f"exclude:{exclusion_rule}")
@@ -190,7 +214,9 @@ def _policy_tags(*, exclusion_rule: str, ssl_exception: str, webfilter_allow: st
 
 def _service_family(adapt_summary: str, adapt_details: str) -> str:
     haystack = f"{adapt_summary} {adapt_details}".lower()
-    if any(token in haystack for token in ("avrespmod", "virus_scan", "clamd", "av_resp")):
+    if any(
+        token in haystack for token in ("avrespmod", "virus_scan", "clamd", "av_resp")
+    ):
         return "av"
     if any(token in haystack for token in ("adblockreq", "adblock_req", "adblock")):
         return "adblock"
@@ -205,7 +231,7 @@ def _service_label(family: str) -> str:
     return "Other ICAP"
 
 
-def _request_target_display(row: Dict[str, Any]) -> str:
+def _request_target_display(row: dict[str, Any]) -> str:
     return (
         _safe_text(row.get("domain"), max_len=255)
         or _safe_text(row.get("sni"), max_len=255)
@@ -215,7 +241,7 @@ def _request_target_display(row: Dict[str, Any]) -> str:
     )
 
 
-def _request_tls_summary(row: Dict[str, Any]) -> str:
+def _request_tls_summary(row: dict[str, Any]) -> str:
     parts: list[str] = []
     bump_mode = _safe_text(row.get("bump_mode"), max_len=64)
     if bump_mode:
@@ -236,7 +262,7 @@ def _request_tls_summary(row: Dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
-def _normalize_request_row(row: Any) -> Dict[str, Any]:
+def _normalize_request_row(row: Any) -> dict[str, Any]:
     data = {
         "ts": int(row[0] or 0),
         "duration_ms": int(row[1] or 0),
@@ -274,7 +300,7 @@ def _normalize_request_row(row: Any) -> Dict[str, Any]:
     return data
 
 
-def _normalize_icap_row(row: Any) -> Dict[str, Any]:
+def _normalize_icap_row(row: Any) -> dict[str, Any]:
     data = {
         "ts": int(row[0] or 0),
         "master_xaction": _safe_text(row[1], max_len=128),
@@ -296,7 +322,11 @@ def _normalize_icap_row(row: Any) -> Dict[str, Any]:
     }
     data["service_label"] = _service_label(data["service_family"])
     data["target_display"] = (
-        data["domain"] or data["sni"] or data["host"] or _safe_text(data["url"], max_len=255) or "-"
+        data["domain"]
+        or data["sni"]
+        or data["host"]
+        or _safe_text(data["url"], max_len=255)
+        or "-"
     )
     data["policy_tags"] = _policy_tags(
         exclusion_rule=data["exclusion_rule"],
@@ -314,7 +344,7 @@ class DiagnosticStore:
         icap_log_path: str = "/var/log/squid/icap.log",
         seed_max_lines: int = 5000,
         retention_days: int = 7,
-    ):
+    ) -> None:
         self.access_log_path = access_log_path
         self.icap_log_path = icap_log_path
         self.seed_max_lines = seed_max_lines
@@ -376,7 +406,7 @@ class DiagnosticStore:
                         KEY idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts),
                         KEY idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)
                     )
-                    """
+                    """,
                 )
                 conn.execute(
                     """
@@ -410,7 +440,7 @@ class DiagnosticStore:
                         KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts),
                         KEY idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)
                     )
-                    """
+                    """,
                 )
                 for table, index_name, ddl in (
                     (
@@ -448,8 +478,12 @@ class DiagnosticStore:
                         ).fetchone()
                         if not exists:
                             conn.execute(ddl)
-                    except DATABASE_ERRORS:
-                        logger.warning("Failed to ensure diagnostic reporting index %s on %s", index_name, table)
+                    except Exception:
+                        logger.warning(
+                            "Failed to ensure diagnostic reporting index %s on %s",
+                            index_name,
+                            table,
+                        )
             self._db_initialized = True
 
     def prune_old_entries(self, *, retention_days: int = 0) -> None:
@@ -457,8 +491,12 @@ class DiagnosticStore:
         days = max(1, int(retention_days or self.retention_days))
         cutoff = _now() - (days * 24 * 60 * 60)
         with self._connect() as conn:
-            conn.execute("DELETE FROM diagnostic_icap_events WHERE ts < %s", (int(cutoff),))
-            conn.execute("DELETE FROM diagnostic_requests WHERE ts < %s", (int(cutoff),))
+            conn.execute(
+                "DELETE FROM diagnostic_icap_events WHERE ts < %s", (int(cutoff),),
+            )
+            conn.execute(
+                "DELETE FROM diagnostic_requests WHERE ts < %s", (int(cutoff),),
+            )
 
     def start_background(self) -> None:
         with self._start_lock:
@@ -469,24 +507,34 @@ class DiagnosticStore:
 
             request_thread = threading.Thread(
                 target=self._tail_file_loop,
-                args=(self.access_log_path, self._build_request_insert_params, self._flush_request_rows, "diagnostic-requests-tailer"),
+                args=(
+                    self.access_log_path,
+                    self._build_request_insert_params,
+                    self._flush_request_rows,
+                    "diagnostic-requests-tailer",
+                ),
                 daemon=True,
             )
             request_thread.start()
 
             icap_thread = threading.Thread(
                 target=self._tail_file_loop,
-                args=(self.icap_log_path, self._build_icap_insert_params, self._flush_icap_rows, "diagnostic-icap-tailer"),
+                args=(
+                    self.icap_log_path,
+                    self._build_icap_insert_params,
+                    self._flush_icap_rows,
+                    "diagnostic-icap-tailer",
+                ),
                 daemon=True,
             )
             icap_thread.start()
             self._started = True
 
-    def _read_last_lines(self, path: str, *, max_lines: int) -> List[str]:
-        if not path or not os.path.exists(path):
+    def _read_last_lines(self, path: str, *, max_lines: int) -> list[str]:
+        if not path or not pathlib.Path(path).exists():
             return []
         try:
-            with open(path, "rb") as handle:
+            with pathlib.Path(path).open("rb") as handle:
                 handle.seek(0, os.SEEK_END)
                 size = handle.tell()
                 read_size = min(size, max_lines * 512)
@@ -498,12 +546,26 @@ class DiagnosticStore:
             return []
 
     def seed_from_recent_logs(self) -> None:
-        request_lines = self._read_last_lines(self.access_log_path, max_lines=self.seed_max_lines)
-        icap_lines = self._read_last_lines(self.icap_log_path, max_lines=self.seed_max_lines)
+        request_lines = self._read_last_lines(
+            self.access_log_path, max_lines=self.seed_max_lines,
+        )
+        icap_lines = self._read_last_lines(
+            self.icap_log_path, max_lines=self.seed_max_lines,
+        )
         if not request_lines and not icap_lines:
             return
-        request_rows = [row for row in (self._build_request_insert_params(line) for line in request_lines) if row is not None]
-        icap_rows = [row for row in (self._build_icap_insert_params(line) for line in icap_lines) if row is not None]
+        request_rows = [
+            row
+            for row in (
+                self._build_request_insert_params(line) for line in request_lines
+            )
+            if row is not None
+        ]
+        icap_rows = [
+            row
+            for row in (self._build_icap_insert_params(line) for line in icap_lines)
+            if row is not None
+        ]
         if not request_rows and not icap_rows:
             return
         with self._connect() as conn:
@@ -512,15 +574,23 @@ class DiagnosticStore:
             if icap_rows:
                 self._flush_icap_rows(conn, icap_rows)
 
-    def _tail_file_loop(self, path: str, build_row_fn, flush_rows_fn, loop_name: str) -> None:
-        commit_batch = _env_int("DIAGNOSTIC_COMMIT_BATCH", 150, minimum=25, maximum=5000)
-        commit_interval = _env_float("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
-        poll_interval = _env_float("DIAGNOSTIC_POLL_INTERVAL_SECONDS", 0.5, minimum=0.1, maximum=5.0)
-        last_inode: Optional[int] = None
+    def _tail_file_loop(
+        self, path: str, build_row_fn, flush_rows_fn, loop_name: str,
+    ) -> None:
+        commit_batch = _env_int(
+            "DIAGNOSTIC_COMMIT_BATCH", 150, minimum=25, maximum=5000,
+        )
+        commit_interval = _env_float(
+            "DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0,
+        )
+        poll_interval = _env_float(
+            "DIAGNOSTIC_POLL_INTERVAL_SECONDS", 0.5, minimum=0.1, maximum=5.0,
+        )
+        last_inode: int | None = None
 
         while True:
             try:
-                if not os.path.exists(path):
+                if not pathlib.Path(path).exists():
                     time.sleep(max(1.0, poll_interval))
                     continue
 
@@ -530,7 +600,7 @@ class DiagnosticStore:
                     last_inode = inode
 
                 pending = 0
-                pending_rows: List[tuple[Any, ...]] = []
+                pending_rows: list[tuple[Any, ...]] = []
                 last_commit = time.time()
 
                 def flush_pending() -> None:
@@ -545,7 +615,9 @@ class DiagnosticStore:
                     pending = 0
                     last_commit = time.time()
 
-                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                with pathlib.Path(path).open(
+                    encoding="utf-8", errors="replace",
+                ) as handle:
                     handle.seek(0, os.SEEK_END)
                     while True:
                         line = handle.readline()
@@ -563,7 +635,10 @@ class DiagnosticStore:
                                     message=f"Diagnostic tailer failed to parse a log line in {loop_name}",
                                 )
                             now = time.time()
-                            if pending >= commit_batch or (now - last_commit) >= commit_interval:
+                            if (
+                                pending >= commit_batch
+                                or (now - last_commit) >= commit_interval
+                            ):
                                 try:
                                     flush_pending()
                                 except Exception:
@@ -590,7 +665,7 @@ class DiagnosticStore:
                                 last_commit = now
 
                         try:
-                            if os.path.getsize(path) < handle.tell():
+                            if pathlib.Path(path).stat().st_size < handle.tell():
                                 handle.seek(0, os.SEEK_SET)
                                 continue
                         except Exception:
@@ -605,7 +680,11 @@ class DiagnosticStore:
                             inode_now = getattr(os.stat(path), "st_ino", None)
                         except OSError:
                             inode_now = None
-                        if inode_now is not None and last_inode is not None and inode_now != last_inode:
+                        if (
+                            inode_now is not None
+                            and last_inode is not None
+                            and inode_now != last_inode
+                        ):
                             last_inode = inode_now
                             try:
                                 flush_pending()
@@ -628,7 +707,7 @@ class DiagnosticStore:
                 )
                 time.sleep(max(1.0, poll_interval))
 
-    def _parse_request_log_line(self, line: str) -> Optional[Dict[str, Any]]:
+    def _parse_request_log_line(self, line: str) -> dict[str, Any] | None:
         row = _split_tsv(line)
         if len(row) < 22:
             return None
@@ -686,7 +765,7 @@ class DiagnosticStore:
             "raw": (line or "").strip("\r\n")[:4000],
         }
 
-    def _build_request_insert_params(self, line: str) -> Optional[tuple[Any, ...]]:
+    def _build_request_insert_params(self, line: str) -> tuple[Any, ...] | None:
         row = self._parse_request_log_line(line)
         if not row or _is_internal_diagnostic_row(row):
             return None
@@ -732,7 +811,7 @@ class DiagnosticStore:
             int(_now()),
         )
 
-    def _parse_icap_log_line(self, line: str) -> Optional[Dict[str, Any]]:
+    def _parse_icap_log_line(self, line: str) -> dict[str, Any] | None:
         row = _split_tsv(line)
         if len(row) < 15:
             return None
@@ -776,7 +855,7 @@ class DiagnosticStore:
             "raw": (line or "").strip("\r\n")[:4000],
         }
 
-    def _build_icap_insert_params(self, line: str) -> Optional[tuple[Any, ...]]:
+    def _build_icap_insert_params(self, line: str) -> tuple[Any, ...] | None:
         row = self._parse_icap_log_line(line)
         if not row or _is_internal_diagnostic_row(row):
             return None
@@ -814,7 +893,7 @@ class DiagnosticStore:
             int(_now()),
         )
 
-    def _flush_request_rows(self, conn, rows: List[tuple[Any, ...]]) -> None:
+    def _flush_request_rows(self, conn, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
             return
         conn.executemany(
@@ -829,7 +908,7 @@ class DiagnosticStore:
             rows,
         )
 
-    def _flush_icap_rows(self, conn, rows: List[tuple[Any, ...]]) -> None:
+    def _flush_icap_rows(self, conn, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
             return
         conn.executemany(
@@ -860,15 +939,15 @@ class DiagnosticStore:
     def list_recent_requests(
         self,
         *,
-        since: Optional[int] = None,
+        since: int | None = None,
         search: str = "",
         client_ip: str = "",
         domain: str = "",
         master_xaction: str = "",
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= %s")
             params.append(int(since))
@@ -884,17 +963,9 @@ class DiagnosticStore:
         if search:
             like = f"%{_escape_like(search.strip().lower())}%"
             where.append(
-                "(" + " OR ".join(
-                    [
-                        "LOWER(domain) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(url) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(host) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(sni) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(master_xaction) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(client_ip) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(user_agent) LIKE %s ESCAPE '\\\\'",
-                    ]
-                ) + ")"
+                "("
+                + "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\'"
+                + ")",
             )
             params.extend([like] * 7)
         where_sql = "WHERE " + " AND ".join(where)
@@ -913,11 +984,13 @@ class DiagnosticStore:
                 ORDER BY ts DESC, id DESC
                 LIMIT %s
                 """,
-                tuple(params + [lim]),
+                (*params, lim),
             ).fetchall()
         return [_normalize_request_row(row) for row in rows]
 
-    def find_request_by_master_xaction(self, master_xaction: str) -> Optional[Dict[str, Any]]:
+    def find_request_by_master_xaction(
+        self, master_xaction: str,
+    ) -> dict[str, Any] | None:
         tx = (master_xaction or "").strip()
         if not tx:
             return None
@@ -927,16 +1000,16 @@ class DiagnosticStore:
     def list_recent_icap(
         self,
         *,
-        since: Optional[int] = None,
+        since: int | None = None,
         search: str = "",
         client_ip: str = "",
         domain: str = "",
         master_xaction: str = "",
         service: str = "",
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= %s")
             params.append(int(since))
@@ -956,18 +1029,9 @@ class DiagnosticStore:
         if search:
             like = f"%{_escape_like(search.strip().lower())}%"
             where.append(
-                "(" + " OR ".join(
-                    [
-                        "LOWER(domain) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(url) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(host) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(sni) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(master_xaction) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(client_ip) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(adapt_summary) LIKE %s ESCAPE '\\\\'",
-                        "LOWER(adapt_details) LIKE %s ESCAPE '\\\\'",
-                    ]
-                ) + ")"
+                "("
+                + "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
+                + ")",
             )
             params.extend([like] * 8)
         where_sql = "WHERE " + " AND ".join(where)
@@ -985,18 +1049,18 @@ class DiagnosticStore:
                 ORDER BY ts DESC, id DESC
                 LIMIT %s
                 """,
-                tuple(params + [lim]),
+                (*params, lim),
             ).fetchall()
         return [_normalize_icap_row(row) for row in rows]
 
     def _batch_list_icap_by_master_xactions(
         self,
-        master_xactions: List[str],
+        master_xactions: list[str],
         *,
         service: str = "",
         limit_per_transaction: int = 5,
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        txs: List[str] = []
+    ) -> dict[str, list[dict[str, Any]]]:
+        txs: list[str] = []
         seen: set[str] = set()
         for raw in master_xactions:
             tx = (raw or "").strip()
@@ -1008,7 +1072,7 @@ class DiagnosticStore:
             return {}
 
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         placeholders = ", ".join(["%s"] * len(txs))
         where.append(f"master_xaction IN ({placeholders})")
         params.extend(txs)
@@ -1034,7 +1098,7 @@ class DiagnosticStore:
                 tuple(params),
             ).fetchall()
 
-        grouped: Dict[str, List[Dict[str, Any]]] = {tx: [] for tx in txs}
+        grouped: dict[str, list[dict[str, Any]]] = {tx: [] for tx in txs}
         for row in rows:
             normalized = _normalize_icap_row(row)
             tx = str(normalized.get("master_xaction") or "").strip()
@@ -1049,7 +1113,7 @@ class DiagnosticStore:
     def list_recent_transactions(
         self,
         *,
-        since: Optional[int] = None,
+        since: int | None = None,
         search: str = "",
         client_ip: str = "",
         domain: str = "",
@@ -1057,7 +1121,7 @@ class DiagnosticStore:
         service: str = "",
         limit: int = 50,
         icap_limit_per_transaction: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         rows = self.list_recent_requests(
             since=since,
             search=search,
@@ -1072,14 +1136,22 @@ class DiagnosticStore:
             limit_per_transaction=icap_limit_per_transaction,
         )
 
-        transactions: List[Dict[str, Any]] = []
+        transactions: list[dict[str, Any]] = []
         for row in rows:
-            related_icap = icap_map.get(str(row.get("master_xaction") or "").strip(), [])
+            related_icap = icap_map.get(
+                str(row.get("master_xaction") or "").strip(), [],
+            )
             if (service or "").strip() and not related_icap:
                 continue
             enriched = dict(row)
             enriched["related_icap"] = related_icap
-            enriched["service_families"] = sorted({str(event.get("service_family") or "") for event in related_icap if event.get("service_family")})
+            enriched["service_families"] = sorted(
+                {
+                    str(event.get("service_family") or "")
+                    for event in related_icap
+                    if event.get("service_family")
+                },
+            )
             enriched["icap_event_count"] = len(related_icap)
             transactions.append(enriched)
         return transactions
@@ -1093,7 +1165,7 @@ class DiagnosticStore:
         limit: int = 5,
         service: str = "",
         icap_limit_per_transaction: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         normalized_domain = _normalize_hostish(domain)
         if not normalized_domain:
             return []
@@ -1134,10 +1206,12 @@ class DiagnosticStore:
             limit_per_transaction=icap_limit_per_transaction,
         )
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for row in normalized_rows:
             enriched = dict(row)
-            enriched["related_icap"] = icap_map.get(str(row.get("master_xaction") or "").strip(), [])
+            enriched["related_icap"] = icap_map.get(
+                str(row.get("master_xaction") or "").strip(), [],
+            )
             enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
             enriched["correlation_kind"] = "domain_time"
             out.append(enriched)
@@ -1154,18 +1228,18 @@ class DiagnosticStore:
         limit: int = 5,
         service: str = "",
         icap_limit_per_transaction: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         normalized_domain = _normalize_hostish(domain) or _extract_domain(url)
         center = int(around_ts or _now())
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
 
         where = ["proxy_id = %s", "ts BETWEEN %s AND %s"]
-        params: List[Any] = [get_proxy_id(), center - window_i, center + window_i]
+        params: list[Any] = [get_proxy_id(), center - window_i, center + window_i]
         if client_ip:
             where.append("client_ip = %s")
             params.append(client_ip.strip())
-        like_parts: List[str] = []
+        like_parts: list[str] = []
         if normalized_domain:
             like_parts.append("domain = %s")
             params.append(normalized_domain)
@@ -1194,7 +1268,7 @@ class DiagnosticStore:
                 ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
                 LIMIT %s
                 """,
-                tuple(params + [center, lim]),
+                (*params, center, lim),
             ).fetchall()
 
         normalized_rows = [_normalize_request_row(row) for row in rows]
@@ -1204,10 +1278,12 @@ class DiagnosticStore:
             limit_per_transaction=icap_limit_per_transaction,
         )
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for row in normalized_rows:
             enriched = dict(row)
-            enriched["related_icap"] = icap_map.get(str(row.get("master_xaction") or "").strip(), [])
+            enriched["related_icap"] = icap_map.get(
+                str(row.get("master_xaction") or "").strip(), [],
+            )
             enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
             enriched["correlation_kind"] = "domain_time"
             out.append(enriched)
@@ -1221,7 +1297,7 @@ class DiagnosticStore:
         window_seconds: int = 300,
         service: str = "",
         limit: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         normalized_domain = _normalize_hostish(domain)
         if not normalized_domain:
             return []
@@ -1232,7 +1308,12 @@ class DiagnosticStore:
         normalized_service = (service or "").strip().lower()
 
         where = ["proxy_id = %s", "domain = %s", "ts BETWEEN %s AND %s"]
-        params: List[Any] = [get_proxy_id(), normalized_domain, center - window_i, center + window_i]
+        params: list[Any] = [
+            get_proxy_id(),
+            normalized_domain,
+            center - window_i,
+            center + window_i,
+        ]
         if normalized_service:
             where.append("service_family = %s")
             params.append(normalized_service)
@@ -1250,22 +1331,24 @@ class DiagnosticStore:
                 ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
                 LIMIT %s
                 """,
-                tuple(params + [center, lim]),
+                (*params, center, lim),
             ).fetchall()
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for row in rows:
             normalized = _normalize_icap_row(row)
-            normalized["time_delta_seconds"] = abs(int(normalized.get("ts") or 0) - center)
+            normalized["time_delta_seconds"] = abs(
+                int(normalized.get("ts") or 0) - center,
+            )
             normalized["correlation_kind"] = "domain_time"
             out.append(normalized)
         return out
 
-    def activity_summary(self, *, since: Optional[int] = None) -> Dict[str, int]:
+    def activity_summary(self, *, since: int | None = None) -> dict[str, int]:
         request_where = ["proxy_id = %s"]
-        request_params: List[Any] = [get_proxy_id()]
+        request_params: list[Any] = [get_proxy_id()]
         icap_where = ["proxy_id = %s"]
-        icap_params: List[Any] = [get_proxy_id()]
+        icap_params: list[Any] = [get_proxy_id()]
         if since is not None:
             request_where.append("ts >= %s")
             request_params.append(int(since))
@@ -1306,14 +1389,16 @@ class DiagnosticStore:
             "adblock_icap_events": int(icap_row[2] or 0) if icap_row else 0,
         }
 
-    def top_request_dimension(self, dimension: str, *, since: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+    def top_request_dimension(
+        self, dimension: str, *, since: int | None = None, limit: int = 10,
+    ) -> list[dict[str, Any]]:
         column = _REQUEST_DIMENSIONS.get((dimension or "").strip().lower())
         if not column:
             return []
 
         lim = max(1, min(50, int(limit)))
         where = ["proxy_id = %s", f"COALESCE(NULLIF(TRIM({column}), ''), '') <> ''"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= %s")
             params.append(int(since))
@@ -1329,23 +1414,24 @@ class DiagnosticStore:
                 ORDER BY total DESC, last_seen DESC
                 LIMIT %s
                 """,
-                tuple(params + [lim]),
+                (*params, lim),
             ).fetchall()
 
-        out: List[Dict[str, Any]] = []
-        for row in rows:
-            out.append(
-                {
-                    "value": str(row[0] or ""),
-                    "count": int(row[1] or 0),
-                    "last_seen": int(row[2] or 0),
-                }
-            )
+        out: list[dict[str, Any]] = [
+            {
+                "value": str(row[0] or ""),
+                "count": int(row[1] or 0),
+                "last_seen": int(row[2] or 0),
+            }
+            for row in rows
+        ]
         return out
 
-    def top_policy_tags(self, *, since: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+    def top_policy_tags(
+        self, *, since: int | None = None, limit: int = 10,
+    ) -> list[dict[str, Any]]:
         lim = max(1, min(50, int(limit)))
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         since_sql = ""
         if since is not None:
             since_sql = " AND ts >= %s"
@@ -1375,7 +1461,7 @@ class DiagnosticStore:
         LIMIT %s
         """
 
-        query_params: List[Any] = []
+        query_params: list[Any] = []
         for _ in range(4):
             query_params.extend(params)
         query_params.append(lim)
@@ -1392,14 +1478,16 @@ class DiagnosticStore:
             for row in rows
         ]
 
-    def slowest_requests(self, *, since: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+    def slowest_requests(
+        self, *, since: int | None = None, limit: int = 10,
+    ) -> list[dict[str, Any]]:
         where = [
             "proxy_id = %s",
             "UPPER(COALESCE(method, '')) <> 'CONNECT'",
             "UPPER(COALESCE(result_code, '')) NOT LIKE 'TCP_TUNNEL%%'",
             "UPPER(COALESCE(result_code, '')) NOT LIKE 'TCP_CONNECT%%'",
         ]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= %s")
             params.append(int(since))
@@ -1419,14 +1507,16 @@ class DiagnosticStore:
                 ORDER BY duration_ms DESC, ts DESC, id DESC
                 LIMIT %s
                 """,
-                tuple(params + [lim]),
+                (*params, lim),
             ).fetchall()
 
         return [_normalize_request_row(row) for row in rows]
 
-    def icap_summary(self, *, since: Optional[int] = None, service: str = "") -> Dict[str, int]:
+    def icap_summary(
+        self, *, since: int | None = None, service: str = "",
+    ) -> dict[str, int]:
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= %s")
             params.append(int(since))
@@ -1451,9 +1541,11 @@ class DiagnosticStore:
             "max_icap_time_ms": int(row[2] or 0) if row else 0,
         }
 
-    def slowest_icap_events(self, *, since: Optional[int] = None, service: str = "", limit: int = 10) -> List[Dict[str, Any]]:
+    def slowest_icap_events(
+        self, *, since: int | None = None, service: str = "", limit: int = 10,
+    ) -> list[dict[str, Any]]:
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("ts >= %s")
             params.append(int(since))
@@ -1476,18 +1568,20 @@ class DiagnosticStore:
                 ORDER BY icap_time_ms DESC, ts DESC, id DESC
                 LIMIT %s
                 """,
-                tuple(params + [lim]),
+                (*params, lim),
             ).fetchall()
         return [_normalize_icap_row(row) for row in rows]
 
-    def list_icap_by_master_xaction(self, master_xaction: str, *, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_icap_by_master_xaction(
+        self, master_xaction: str, *, limit: int = 20,
+    ) -> list[dict[str, Any]]:
         tx = (master_xaction or "").strip()
         if not tx:
             return []
         return self.list_recent_icap(master_xaction=tx, limit=limit)
 
 
-_store: Optional[DiagnosticStore] = None
+_store: DiagnosticStore | None = None
 _store_lock = threading.Lock()
 
 
@@ -1498,9 +1592,17 @@ def get_diagnostic_store() -> DiagnosticStore:
     with _store_lock:
         if _store is None:
             _store = DiagnosticStore(
-                access_log_path=os.environ.get("SQUID_DIAGNOSTIC_ACCESS_LOG", "/var/log/squid/access-observe.log"),
-                icap_log_path=os.environ.get("SQUID_DIAGNOSTIC_ICAP_LOG", "/var/log/squid/icap.log"),
-                seed_max_lines=_env_int("DIAGNOSTIC_SEED_MAX_LINES", 5000, minimum=500, maximum=20000),
-                retention_days=_env_int("DIAGNOSTIC_RETENTION_DAYS", 7, minimum=1, maximum=90),
+                access_log_path=os.environ.get(
+                    "SQUID_DIAGNOSTIC_ACCESS_LOG", "/var/log/squid/access-observe.log",
+                ),
+                icap_log_path=os.environ.get(
+                    "SQUID_DIAGNOSTIC_ICAP_LOG", "/var/log/squid/icap.log",
+                ),
+                seed_max_lines=_env_int(
+                    "DIAGNOSTIC_SEED_MAX_LINES", 5000, minimum=500, maximum=20000,
+                ),
+                retention_days=_env_int(
+                    "DIAGNOSTIC_RETENTION_DAYS", 7, minimum=1, maximum=90,
+                ),
             )
         return _store

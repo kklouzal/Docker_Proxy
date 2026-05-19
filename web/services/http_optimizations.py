@@ -6,7 +6,6 @@ from typing import Any
 
 from flask import request
 
-
 _COMPRESSIBLE_MIMETYPES = frozenset(
     {
         "application/javascript",
@@ -19,7 +18,7 @@ _COMPRESSIBLE_MIMETYPES = frozenset(
         "text/javascript",
         "text/plain",
         "text/xml",
-    }
+    },
 )
 
 
@@ -36,7 +35,9 @@ def _bool_env(value: str | None, *, default: bool) -> bool:
 
 def _client_accepts_gzip() -> bool:
     header = request.headers.get("Accept-Encoding", "")
-    return "gzip" in {part.split(";", 1)[0].strip().lower() for part in header.split(",")}
+    return "gzip" in {
+        part.split(";", 1)[0].strip().lower() for part in header.split(",")
+    }
 
 
 def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
@@ -92,9 +93,9 @@ def install_http_optimizations(
     in-memory buffers. It only adds cache headers and opportunistic gzip for
     already-buffered text-like responses.
     """
-
     compression_enabled = _bool_env(
-        os.environ.get("ENABLE_GZIP_RESPONSES") or getattr(app, "config", {}).get("ENABLE_GZIP_RESPONSES"),
+        os.environ.get("ENABLE_GZIP_RESPONSES")
+        or getattr(app, "config", {}).get("ENABLE_GZIP_RESPONSES"),
         default=True,
     )
 
@@ -102,15 +103,28 @@ def install_http_optimizations(
     def _http_optimizations_after_request(response: Any):
         endpoint = request.endpoint or ""
         if endpoint == "static":
-            response.headers["Cache-Control"] = f"public, max-age={int(static_max_age_seconds)}, immutable"
+            response.headers["Cache-Control"] = (
+                f"public, max-age={int(static_max_age_seconds)}, immutable"
+            )
         elif default_dynamic_max_age_seconds <= 0:
-            if request.method == "GET" and (request.headers.get("X-Requested-With") or "").lower() == "spa":
+            if (
+                request.method == "GET"
+                and (request.headers.get("X-Requested-With") or "").lower() == "spa"
+            ):
                 response.headers.setdefault("Cache-Control", "no-store, private")
             else:
-                response.headers.setdefault("Cache-Control", "no-store" if request.method != "GET" else "no-cache")
+                response.headers.setdefault(
+                    "Cache-Control",
+                    "no-store" if request.method != "GET" else "no-cache",
+                )
         else:
-            response.headers.setdefault("Cache-Control", f"private, max-age={int(default_dynamic_max_age_seconds)}")
+            response.headers.setdefault(
+                "Cache-Control",
+                f"private, max-age={int(default_dynamic_max_age_seconds)}",
+            )
 
         if compression_enabled:
-            response = _compress_response(response, min_size=compress_min_size, compresslevel=compresslevel)
+            response = _compress_response(
+                response, min_size=compress_min_size, compresslevel=compresslevel,
+            )
         return response

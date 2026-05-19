@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import http.cookiejar
 import json
 import os
@@ -10,13 +11,19 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
-_CSRF_META_RE = re.compile(r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)', re.IGNORECASE)
-_CSRF_INPUT_RE = re.compile(r'<input[^>]+name=["\']csrf_token["\'][^>]+value=["\']([^"\']+)', re.IGNORECASE)
+_CSRF_META_RE = re.compile(
+    r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)', re.IGNORECASE
+)
+_CSRF_INPUT_RE = re.compile(
+    r'<input[^>]+name=["\']csrf_token["\'][^>]+value=["\']([^"\']+)', re.IGNORECASE
+)
 
 
 def _env_text(name: str, default: str) -> str:
@@ -53,19 +60,40 @@ LIVE_CONFIG = LiveStackConfig(
     primary_proxy_id=_env_text("LIVE_TEST_PRIMARY_PROXY_ID", "live"),
     remote_proxy_id=_env_text("LIVE_TEST_REMOTE_PROXY_ID", "edge-2"),
     admin_url=_env_text("LIVE_TEST_ADMIN_URL", "http://admin-ui:5000").rstrip("/"),
-    proxy_management_url=_env_text("LIVE_TEST_PROXY_MANAGEMENT_URL", "http://proxy:5000").rstrip("/"),
-    remote_proxy_management_url=_env_text("LIVE_TEST_REMOTE_PROXY_MANAGEMENT_URL", "http://proxy-edge-2:5000").rstrip("/"),
-    http_proxy_url=_env_text("LIVE_TEST_HTTP_PROXY_URL", "http://proxy:3128").rstrip("/"),
-    traffic_fixture_url=_env_text("LIVE_TEST_TRAFFIC_FIXTURE_URL", "http://traffic-fixture:8080").rstrip("/"),
+    proxy_management_url=_env_text(
+        "LIVE_TEST_PROXY_MANAGEMENT_URL", "http://proxy:5000"
+    ).rstrip("/"),
+    remote_proxy_management_url=_env_text(
+        "LIVE_TEST_REMOTE_PROXY_MANAGEMENT_URL", "http://proxy-edge-2:5000"
+    ).rstrip("/"),
+    http_proxy_url=_env_text("LIVE_TEST_HTTP_PROXY_URL", "http://proxy:3128").rstrip(
+        "/"
+    ),
+    traffic_fixture_url=_env_text(
+        "LIVE_TEST_TRAFFIC_FIXTURE_URL", "http://traffic-fixture:8080"
+    ).rstrip("/"),
     pac_url=_env_text("LIVE_TEST_PAC_URL", "http://proxy/proxy.pac"),
-    remote_pac_url=_env_text("LIVE_TEST_REMOTE_PAC_URL", "http://proxy-edge-2/proxy.pac"),
-    wpad_url=_env_text("LIVE_TEST_WPAD_URL", urllib.parse.urljoin(_env_text("LIVE_TEST_PAC_URL", "http://proxy/proxy.pac"), "/wpad.dat")),
+    remote_pac_url=_env_text(
+        "LIVE_TEST_REMOTE_PAC_URL", "http://proxy-edge-2/proxy.pac"
+    ),
+    wpad_url=_env_text(
+        "LIVE_TEST_WPAD_URL",
+        urllib.parse.urljoin(
+            _env_text("LIVE_TEST_PAC_URL", "http://proxy/proxy.pac"), "/wpad.dat"
+        ),
+    ),
     proxy_token=_env_text("LIVE_TEST_PROXY_TOKEN", ""),
     username=_env_text("LIVE_TEST_USERNAME", "admin"),
     password=_env_text("LIVE_TEST_PASSWORD", "admin"),
-    wait_timeout_seconds=max(5.0, float(_env_text("LIVE_TEST_WAIT_TIMEOUT_SECONDS", "180"))),
-    request_timeout_seconds=max(1.0, float(_env_text("LIVE_TEST_REQUEST_TIMEOUT_SECONDS", "10"))),
-    poll_interval_seconds=max(0.1, float(_env_text("LIVE_TEST_POLL_INTERVAL_SECONDS", "0.5"))),
+    wait_timeout_seconds=max(
+        5.0, float(_env_text("LIVE_TEST_WAIT_TIMEOUT_SECONDS", "180"))
+    ),
+    request_timeout_seconds=max(
+        1.0, float(_env_text("LIVE_TEST_REQUEST_TIMEOUT_SECONDS", "10"))
+    ),
+    poll_interval_seconds=max(
+        0.1, float(_env_text("LIVE_TEST_POLL_INTERVAL_SECONDS", "0.5"))
+    ),
 )
 
 _READY_CACHE: dict[str, dict[str, Any]] | None = None
@@ -128,7 +156,7 @@ def with_query_params(path_or_url: str, **params: Any) -> str:
             parsed.path,
             urllib.parse.urlencode(query, doseq=True),
             parsed.fragment,
-        )
+        ),
     )
 
 
@@ -139,7 +167,7 @@ def with_proxy_id(path_or_url: str, proxy_id: object | None) -> str:
 def resolve_url(base_url: str, path_or_url: str | None = None) -> str:
     if not path_or_url:
         return base_url
-    if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+    if path_or_url.startswith(("http://", "https://")):
         return path_or_url
     return urllib.parse.urljoin(base_url.rstrip("/") + "/", path_or_url.lstrip("/"))
 
@@ -147,10 +175,12 @@ def resolve_url(base_url: str, path_or_url: str | None = None) -> str:
 def resolve_origin_url(base_url: str, path_or_url: str | None = None) -> str:
     if not path_or_url:
         return base_url
-    if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+    if path_or_url.startswith(("http://", "https://")):
         return path_or_url
     parsed = urllib.parse.urlsplit(base_url)
-    origin = urllib.parse.urlunsplit((parsed.scheme or "http", parsed.netloc, "/", "", ""))
+    origin = urllib.parse.urlunsplit(
+        (parsed.scheme or "http", parsed.netloc, "/", "", "")
+    )
     return urllib.parse.urljoin(origin, path_or_url.lstrip("/"))
 
 
@@ -168,11 +198,21 @@ def extract_csrf_token(html: str) -> str:
         match = pattern.search(html)
         if match:
             return match.group(1)
-    raise AssertionError("Could not locate a CSRF token in the rendered HTML.")
+    msg = "Could not locate a CSRF token in the rendered HTML."
+    raise AssertionError(msg)
 
 
-def _read_response(opener: Any, request: urllib.request.Request, *, timeout_seconds: float | None = None) -> HttpResponse:
-    timeout_value = timeout_seconds if timeout_seconds is not None else LIVE_CONFIG.request_timeout_seconds
+def _read_response(
+    opener: Any,
+    request: urllib.request.Request,
+    *,
+    timeout_seconds: float | None = None,
+) -> HttpResponse:
+    timeout_value = (
+        timeout_seconds
+        if timeout_seconds is not None
+        else LIVE_CONFIG.request_timeout_seconds
+    )
     try:
         with opener.open(request, timeout=timeout_value) as response:
             return HttpResponse(
@@ -193,16 +233,18 @@ def _read_response(opener: Any, request: urllib.request.Request, *, timeout_seco
         if isinstance(reason, TimeoutError):
             method = request.get_method()
             url = getattr(request, "full_url", "") or str(request)
-            raise AssertionError(f"Timed out after {timeout_value:.1f}s while waiting for {method} {url}.") from exc
+            msg = f"Timed out after {timeout_value:.1f}s while waiting for {method} {url}."
+            raise AssertionError(msg) from exc
         raise
     except TimeoutError as exc:
         method = request.get_method()
         url = getattr(request, "full_url", "") or str(request)
-        raise AssertionError(f"Timed out after {timeout_value:.1f}s while waiting for {method} {url}.") from exc
+        msg = f"Timed out after {timeout_value:.1f}s while waiting for {method} {url}."
+        raise AssertionError(msg) from exc
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+    def redirect_request(self, req, fp, code, msg, headers, newurl) -> None:  # type: ignore[no-untyped-def]
         return None
 
 
@@ -226,13 +268,22 @@ def _wait_for_response(
             last_response = response
             if accept(response):
                 return response
-            last_error = AssertionError(f"Unexpected response while waiting for {description}: HTTP {response.status} @ {response.url}")
-        except Exception as exc:  # pragma: no cover - only used during stack convergence failures
+            last_error = AssertionError(
+                f"Unexpected response while waiting for {description}: HTTP {response.status} @ {response.url}"
+            )
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - only used during stack convergence failures
             last_error = exc
         _live_poll_sleep()
 
-    detail = f" Last response was HTTP {last_response.status} @ {last_response.url}." if last_response is not None else ""
-    raise AssertionError(f"Timed out waiting for {description}.{detail}") from last_error
+    detail = (
+        f" Last response was HTTP {last_response.status} @ {last_response.url}."
+        if last_response is not None
+        else ""
+    )
+    msg = f"Timed out waiting for {description}.{detail}"
+    raise AssertionError(msg) from last_error
 
 
 def _wait_for_value(
@@ -251,16 +302,23 @@ def _wait_for_value(
             last_value = value
             if accept(value):
                 return value
-            last_error = AssertionError(f"Unexpected value while waiting for {description}: {value!r}")
-        except Exception as exc:  # pragma: no cover - only used during convergence failures
+            last_error = AssertionError(
+                f"Unexpected value while waiting for {description}: {value!r}"
+            )
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - only used during convergence failures
             last_error = exc
         _live_poll_sleep()
 
     detail = f" Last value was {last_value!r}." if last_value is not None else ""
-    raise AssertionError(f"Timed out waiting for {description}.{detail}") from last_error
+    msg = f"Timed out waiting for {description}.{detail}"
+    raise AssertionError(msg) from last_error
 
 
-def _tcp_listener_accepts(host: str, port: int, *, timeout_seconds: float = 3.0) -> bool:
+def _tcp_listener_accepts(
+    host: str, port: int, *, timeout_seconds: float = 3.0
+) -> bool:
     try:
         with socket.create_connection((host, int(port)), timeout=timeout_seconds):
             return True
@@ -276,7 +334,9 @@ def wait_for_tcp_listener(
     connect_timeout_seconds: float = 3.0,
 ) -> None:
     _wait_for_value(
-        lambda: _tcp_listener_accepts(host, port, timeout_seconds=connect_timeout_seconds),
+        lambda: _tcp_listener_accepts(
+            host, port, timeout_seconds=connect_timeout_seconds
+        ),
         accept=bool,
         description=f"TCP listener {host}:{port}",
         timeout_seconds=timeout_seconds,
@@ -307,7 +367,8 @@ def wait_for_json_url(
     response = _wait_for_response(_request, accept=_accept, description=description)
     payload = response.json()
     if not isinstance(payload, dict):
-        raise AssertionError(f"Expected a JSON object from {url!r}, got {type(payload).__name__}.")
+        msg = f"Expected a JSON object from {url!r}, got {type(payload).__name__}."
+        raise AssertionError(msg)
     return payload
 
 
@@ -320,24 +381,34 @@ def management_auth_headers(*, include_content_type: bool = False) -> dict[str, 
     return headers
 
 
-def wait_for_proxy_management_payload(*, require_ok: bool | None = None, force: bool = False) -> dict[str, Any]:
-    health_path = with_query_params("/api/manage/health", force="1") if force else "/api/manage/health"
+def wait_for_proxy_management_payload(
+    *, require_ok: bool | None = None, force: bool = False
+) -> dict[str, Any]:
+    health_path = (
+        with_query_params("/api/manage/health", force="1")
+        if force
+        else "/api/manage/health"
+    )
     return wait_for_json_url(
         resolve_url(LIVE_CONFIG.proxy_management_url, health_path),
         headers=management_auth_headers(),
         description="proxy management health",
-        accept=lambda payload, _response: payload.get("status") in {"healthy", "degraded"}
+        accept=lambda payload, _response: payload.get("status")
+        in {"healthy", "degraded"}
         and str(payload.get("proxy_id") or "") == LIVE_CONFIG.primary_proxy_id
         and (require_ok is None or bool(payload.get("ok")) is require_ok),
     )
 
 
-def wait_for_remote_proxy_management_payload(*, require_ok: bool | None = None) -> dict[str, Any]:
+def wait_for_remote_proxy_management_payload(
+    *, require_ok: bool | None = None
+) -> dict[str, Any]:
     return wait_for_json_url(
         resolve_url(LIVE_CONFIG.remote_proxy_management_url, "/api/manage/health"),
         headers=management_auth_headers(),
         description="remote proxy management health",
-        accept=lambda payload, _response: payload.get("status") in {"healthy", "degraded"}
+        accept=lambda payload, _response: payload.get("status")
+        in {"healthy", "degraded"}
         and str(payload.get("proxy_id") or "") == LIVE_CONFIG.remote_proxy_id
         and (require_ok is None or bool(payload.get("ok")) is require_ok),
     )
@@ -350,18 +421,29 @@ def ensure_live_stack_ready() -> dict[str, dict[str, Any]]:
     require_live_mode()
     proxy_client = LiveStackClient()
     _READY_CACHE = {
-        "admin": wait_for_json_url(resolve_url(LIVE_CONFIG.admin_url, "/health"), description="admin health"),
-        "proxy_management": wait_for_json_url(resolve_url(LIVE_CONFIG.proxy_management_url, "/health"), description="proxy management health"),
-        "proxy_public": wait_for_json_url(resolve_origin_url(LIVE_CONFIG.pac_url, "/health"), description="proxy public health"),
+        "admin": wait_for_json_url(
+            resolve_url(LIVE_CONFIG.admin_url, "/health"), description="admin health"
+        ),
+        "proxy_management": wait_for_json_url(
+            resolve_url(LIVE_CONFIG.proxy_management_url, "/health"),
+            description="proxy management health",
+        ),
+        "proxy_public": wait_for_json_url(
+            resolve_origin_url(LIVE_CONFIG.pac_url, "/health"),
+            description="proxy public health",
+        ),
         "remote_proxy": wait_for_remote_proxy_management_payload(),
-        "traffic_fixture": wait_for_json_url(resolve_url(LIVE_CONFIG.traffic_fixture_url, "/health"), description="traffic fixture health"),
+        "traffic_fixture": wait_for_json_url(
+            resolve_url(LIVE_CONFIG.traffic_fixture_url, "/health"),
+            description="traffic fixture health",
+        ),
         "http_proxy": wait_for_proxy_fixture_response(proxy_client, "/health").json(),
     }
     return _READY_CACHE
 
 
 def wait_for_proxy_inventory(
-    client: "LiveStackClient",
+    client: LiveStackClient,
     proxy_ids: list[str] | tuple[str, ...],
     *,
     timeout_seconds: float | None = None,
@@ -369,7 +451,8 @@ def wait_for_proxy_inventory(
     wanted = [str(proxy_id).strip() for proxy_id in proxy_ids if str(proxy_id).strip()]
     return _wait_for_response(
         lambda: client.admin_request("/proxies"),
-        accept=lambda response: response.status == 200 and all(proxy_id in response.text for proxy_id in wanted),
+        accept=lambda response: response.status == 200
+        and all(proxy_id in response.text for proxy_id in wanted),
         description=f"proxy inventory containing {wanted!r}",
         timeout_seconds=timeout_seconds,
     )
@@ -416,13 +499,18 @@ def wait_for_config_apply(
     def _accept(application: Any) -> bool:
         if application is None:
             return False
-        if revision_id is not None and int(getattr(application, "revision_id", 0) or 0) != int(revision_id):
+        if revision_id is not None and int(
+            getattr(application, "revision_id", 0) or 0
+        ) != int(revision_id):
             return False
-        if after_application_id is not None and int(getattr(application, "application_id", 0) or 0) <= int(after_application_id):
+        if after_application_id is not None and int(
+            getattr(application, "application_id", 0) or 0
+        ) <= int(after_application_id):
             return False
-        if after_ts is not None and int(getattr(application, "applied_ts", 0) or 0) <= int(after_ts):
-            return False
-        return True
+        return not (
+            after_ts is not None
+            and int(getattr(application, "applied_ts", 0) or 0) <= int(after_ts)
+        )
 
     application = _wait_for_value(
         lambda: latest_config_apply(proxy_id),
@@ -437,7 +525,8 @@ def wait_for_config_apply(
 def registry_proxy(proxy_id: object | None) -> Any:
     proxy = _proxy_registry_store().get_proxy(proxy_id)
     if proxy is None:
-        raise AssertionError(f"Proxy {proxy_id!r} is not registered.")
+        msg = f"Proxy {proxy_id!r} is not registered."
+        raise AssertionError(msg)
     return proxy
 
 
@@ -459,11 +548,14 @@ def wait_for_certificate_apply(
     def _accept(application: Any) -> bool:
         if application is None:
             return False
-        if revision_id is not None and int(getattr(application, "revision_id", 0) or 0) != int(revision_id):
+        if revision_id is not None and int(
+            getattr(application, "revision_id", 0) or 0
+        ) != int(revision_id):
             return False
-        if after_ts is not None and int(getattr(application, "applied_ts", 0) or 0) <= int(after_ts):
-            return False
-        return True
+        return not (
+            after_ts is not None
+            and int(getattr(application, "applied_ts", 0) or 0) <= int(after_ts)
+        )
 
     return _wait_for_value(
         lambda: latest_certificate_apply(proxy_id),
@@ -474,7 +566,7 @@ def wait_for_certificate_apply(
 
 
 def wait_for_admin_contains(
-    client: "LiveStackClient",
+    client: LiveStackClient,
     path_or_url: str,
     needle: str,
     *,
@@ -490,7 +582,7 @@ def wait_for_admin_contains(
 
 
 def wait_for_proxy_fixture_response(
-    client: "LiveStackClient",
+    client: LiveStackClient,
     path_or_url: str | None = None,
     *,
     method: str = "GET",
@@ -501,8 +593,16 @@ def wait_for_proxy_fixture_response(
     needle: str | None = None,
 ) -> HttpResponse:
     resolved_url = resolve_url(LIVE_CONFIG.traffic_fixture_url, path_or_url)
-    total_timeout = timeout_seconds if timeout_seconds is not None else min(LIVE_CONFIG.wait_timeout_seconds, 45.0)
-    per_request_timeout = request_timeout_seconds if request_timeout_seconds is not None else LIVE_CONFIG.request_timeout_seconds
+    total_timeout = (
+        timeout_seconds
+        if timeout_seconds is not None
+        else min(LIVE_CONFIG.wait_timeout_seconds, 45.0)
+    )
+    per_request_timeout = (
+        request_timeout_seconds
+        if request_timeout_seconds is not None
+        else LIVE_CONFIG.request_timeout_seconds
+    )
     return _wait_for_response(
         lambda: client.proxy_fixture_request(
             resolved_url,
@@ -511,7 +611,8 @@ def wait_for_proxy_fixture_response(
             headers=headers,
             timeout_seconds=per_request_timeout,
         ),
-        accept=lambda response: response.status == 200 and (needle is None or needle in response.text),
+        accept=lambda response: response.status == 200
+        and (needle is None or needle in response.text),
         description=f"proxy fixture request {resolved_url!r}",
         timeout_seconds=total_timeout,
     )
@@ -520,7 +621,9 @@ def wait_for_proxy_fixture_response(
 class LiveStackClient:
     def __init__(self) -> None:
         cookie_jar = http.cookiejar.CookieJar()
-        self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+        self._opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cookie_jar)
+        )
         self._no_redirect_opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(cookie_jar),
             _NoRedirectHandler(),
@@ -530,8 +633,8 @@ class LiveStackClient:
                 {
                     "http": LIVE_CONFIG.http_proxy_url,
                     "https": LIVE_CONFIG.http_proxy_url,
-                }
-            )
+                },
+            ),
         )
         self._csrf_token = ""
 
@@ -545,46 +648,81 @@ class LiveStackClient:
         timeout_seconds: float | None = None,
         follow_redirects: bool = True,
     ) -> HttpResponse:
-        request = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+        request = urllib.request.Request(
+            url, data=data, headers=headers or {}, method=method
+        )
         opener = self._opener if follow_redirects else self._no_redirect_opener
         response = _read_response(opener, request, timeout_seconds=timeout_seconds)
-        try:
+        with contextlib.suppress(Exception):
             self._csrf_token = extract_csrf_token(response.text)
-        except Exception:
-            pass
         return response
 
     def admin_request(self, path_or_url: str, **kwargs: Any) -> HttpResponse:
         return self.request(resolve_url(LIVE_CONFIG.admin_url, path_or_url), **kwargs)
 
-    def request_to_base(self, base_url: str, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
+    def request_to_base(
+        self, base_url: str, path_or_url: str | None = None, **kwargs: Any
+    ) -> HttpResponse:
         return self.request(resolve_url(base_url, path_or_url), **kwargs)
 
     def proxy_public_request(self, path_or_url: str, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_origin_url(LIVE_CONFIG.pac_url, path_or_url), **kwargs)
+        return self.request(
+            resolve_origin_url(LIVE_CONFIG.pac_url, path_or_url), **kwargs
+        )
 
-    def remote_proxy_public_request(self, path_or_url: str, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_origin_url(LIVE_CONFIG.remote_pac_url, path_or_url), **kwargs)
+    def remote_proxy_public_request(
+        self, path_or_url: str, **kwargs: Any
+    ) -> HttpResponse:
+        return self.request(
+            resolve_origin_url(LIVE_CONFIG.remote_pac_url, path_or_url), **kwargs
+        )
 
-    def proxy_management_request(self, path_or_url: str, *, auth: bool = True, headers: dict[str, str] | None = None, **kwargs: Any) -> HttpResponse:
+    def proxy_management_request(
+        self,
+        path_or_url: str,
+        *,
+        auth: bool = True,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> HttpResponse:
         merged_headers: dict[str, str] = {}
         if auth:
             merged_headers.update(management_auth_headers())
         if headers:
             merged_headers.update(headers)
-        return self.request(resolve_url(LIVE_CONFIG.proxy_management_url, path_or_url), headers=merged_headers, **kwargs)
+        return self.request(
+            resolve_url(LIVE_CONFIG.proxy_management_url, path_or_url),
+            headers=merged_headers,
+            **kwargs,
+        )
 
-    def pac_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_origin_url(LIVE_CONFIG.pac_url, path_or_url), **kwargs)
+    def pac_request(
+        self, path_or_url: str | None = None, **kwargs: Any
+    ) -> HttpResponse:
+        return self.request(
+            resolve_origin_url(LIVE_CONFIG.pac_url, path_or_url), **kwargs
+        )
 
-    def remote_pac_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_origin_url(LIVE_CONFIG.remote_pac_url, path_or_url), **kwargs)
+    def remote_pac_request(
+        self, path_or_url: str | None = None, **kwargs: Any
+    ) -> HttpResponse:
+        return self.request(
+            resolve_origin_url(LIVE_CONFIG.remote_pac_url, path_or_url), **kwargs
+        )
 
-    def wpad_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_origin_url(LIVE_CONFIG.wpad_url, path_or_url), **kwargs)
+    def wpad_request(
+        self, path_or_url: str | None = None, **kwargs: Any
+    ) -> HttpResponse:
+        return self.request(
+            resolve_origin_url(LIVE_CONFIG.wpad_url, path_or_url), **kwargs
+        )
 
-    def traffic_fixture_request(self, path_or_url: str | None = None, **kwargs: Any) -> HttpResponse:
-        return self.request(resolve_url(LIVE_CONFIG.traffic_fixture_url, path_or_url), **kwargs)
+    def traffic_fixture_request(
+        self, path_or_url: str | None = None, **kwargs: Any
+    ) -> HttpResponse:
+        return self.request(
+            resolve_url(LIVE_CONFIG.traffic_fixture_url, path_or_url), **kwargs
+        )
 
     def proxy_fixture_request(
         self,
@@ -601,14 +739,23 @@ class LiveStackClient:
             headers=headers or {},
             method=method,
         )
-        return _read_response(self._proxy_opener, request, timeout_seconds=timeout_seconds)
+        return _read_response(
+            self._proxy_opener, request, timeout_seconds=timeout_seconds
+        )
 
     def refresh_csrf(self, path: str = "/") -> str:
         response = self.admin_request(path)
         self._csrf_token = extract_csrf_token(response.text)
         return self._csrf_token
 
-    def login(self, username: str | None = None, password: str | None = None, *, next_url: str = "", expect_success: bool = True) -> HttpResponse:
+    def login(
+        self,
+        username: str | None = None,
+        password: str | None = None,
+        *,
+        next_url: str = "",
+        expect_success: bool = True,
+    ) -> HttpResponse:
         login_page = self.admin_request("/login")
         token = extract_csrf_token(login_page.text)
         payload = urllib.parse.urlencode(
@@ -617,7 +764,7 @@ class LiveStackClient:
                 "password": password or LIVE_CONFIG.password,
                 "csrf_token": token,
                 "next": next_url,
-            }
+            },
         ).encode("utf-8")
         response = self.admin_request(
             "/login",
@@ -626,12 +773,16 @@ class LiveStackClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if expect_success:
-            assert response.status == 200, f"Expected successful login flow, got HTTP {response.status} @ {response.url}."
+            assert response.status == 200, (
+                f"Expected successful login flow, got HTTP {response.status} @ {response.url}."
+            )
             assert "Sign-in failed" not in response.text
             if not self._csrf_token:
                 self._csrf_token = token
         else:
-            assert response.status == 200, f"Expected failed login page render, got HTTP {response.status} @ {response.url}."
+            assert response.status == 200, (
+                f"Expected failed login page render, got HTTP {response.status} @ {response.url}."
+            )
             assert "Sign-in failed" in response.text
         return response
 
@@ -651,7 +802,9 @@ class LiveStackClient:
         payload = dict(fields)
         if include_csrf and "csrf_token" not in payload:
             payload["csrf_token"] = self._csrf_token or self.refresh_csrf(csrf_path)
-        encoded = urllib.parse.urlencode({key: "" if value is None else value for key, value in payload.items()}).encode("utf-8")
+        encoded = urllib.parse.urlencode(
+            {key: "" if value is None else value for key, value in payload.items()}
+        ).encode("utf-8")
         return self.admin_request(
             path_or_url,
             method="POST",
@@ -678,19 +831,27 @@ class LiveStackClient:
             payload["csrf_token"] = self._csrf_token or self.refresh_csrf(csrf_path)
 
         for key, value in payload.items():
-            chunks.append(f"--{boundary}\r\n".encode("ascii"))
-            chunks.append(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
-            chunks.append(("" if value is None else str(value)).encode("utf-8"))
-            chunks.append(b"\r\n")
+            chunks.extend(
+                (
+                    f"--{boundary}\r\n".encode("ascii"),
+                    f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
+                    ("" if value is None else str(value)).encode("utf-8"),
+                    b"\r\n",
+                )
+            )
 
         for key, (filename, content, content_type) in files.items():
-            chunks.append(f"--{boundary}\r\n".encode("ascii"))
-            chunks.append(
-                f'Content-Disposition: form-data; name="{key}"; filename="{filename}"\r\n'.encode("utf-8")
+            chunks.extend(
+                (
+                    f"--{boundary}\r\n".encode("ascii"),
+                    f'Content-Disposition: form-data; name="{key}"; filename="{filename}"\r\n'.encode(),
+                    f"Content-Type: {content_type or 'application/octet-stream'}\r\n\r\n".encode(
+                        "ascii"
+                    ),
+                    bytes(content or b""),
+                    b"\r\n",
+                )
             )
-            chunks.append(f"Content-Type: {content_type or 'application/octet-stream'}\r\n\r\n".encode("ascii"))
-            chunks.append(bytes(content or b""))
-            chunks.append(b"\r\n")
 
         chunks.append(f"--{boundary}--\r\n".encode("ascii"))
         body = b"".join(chunks)
@@ -702,12 +863,17 @@ class LiveStackClient:
             timeout_seconds=timeout_seconds,
         )
 
-    def admin_post_json(self, path_or_url: str, payload: dict[str, Any]) -> HttpResponse:
+    def admin_post_json(
+        self, path_or_url: str, payload: dict[str, Any]
+    ) -> HttpResponse:
         return self.admin_request(
             path_or_url,
             method="POST",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-CSRF-Token": self._csrf_token or self.refresh_csrf("/")},
+            headers={
+                "Content-Type": "application/json",
+                "X-CSRF-Token": self._csrf_token or self.refresh_csrf("/"),
+            },
         )
 
     def proxy_management_post_json(
@@ -718,7 +884,11 @@ class LiveStackClient:
         auth: bool = True,
         timeout_seconds: float | None = None,
     ) -> HttpResponse:
-        headers = management_auth_headers(include_content_type=True) if auth else {"Content-Type": "application/json"}
+        headers = (
+            management_auth_headers(include_content_type=True)
+            if auth
+            else {"Content-Type": "application/json"}
+        )
         return self.proxy_management_request(
             path_or_url,
             auth=False,
@@ -728,13 +898,24 @@ class LiveStackClient:
             timeout_seconds=timeout_seconds,
         )
 
-    def remote_proxy_management_request(self, path_or_url: str, *, auth: bool = True, headers: dict[str, str] | None = None, **kwargs: Any) -> HttpResponse:
+    def remote_proxy_management_request(
+        self,
+        path_or_url: str,
+        *,
+        auth: bool = True,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> HttpResponse:
         merged_headers: dict[str, str] = {}
         if auth:
             merged_headers.update(management_auth_headers())
         if headers:
             merged_headers.update(headers)
-        return self.request(resolve_url(LIVE_CONFIG.remote_proxy_management_url, path_or_url), headers=merged_headers, **kwargs)
+        return self.request(
+            resolve_url(LIVE_CONFIG.remote_proxy_management_url, path_or_url),
+            headers=merged_headers,
+            **kwargs,
+        )
 
     def remote_proxy_management_post_json(
         self,
@@ -744,7 +925,11 @@ class LiveStackClient:
         auth: bool = True,
         timeout_seconds: float | None = None,
     ) -> HttpResponse:
-        headers = management_auth_headers(include_content_type=True) if auth else {"Content-Type": "application/json"}
+        headers = (
+            management_auth_headers(include_content_type=True)
+            if auth
+            else {"Content-Type": "application/json"}
+        )
         return self.remote_proxy_management_request(
             path_or_url,
             auth=False,

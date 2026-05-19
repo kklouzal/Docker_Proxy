@@ -20,60 +20,101 @@ class StopLoop(BaseException):
 
 
 def _stop_sleep(_seconds: float) -> None:
-    raise StopLoop()
+    raise StopLoop
 
 
-def test_live_stats_tailer_does_not_open_db_connection_while_idle(monkeypatch, tmp_path) -> None:
+def test_live_stats_tailer_does_not_open_db_connection_while_idle(
+    monkeypatch, tmp_path
+) -> None:
     _add_repo_paths()
-    import services.live_stats as live_stats  # type: ignore
+    from services import live_stats  # type: ignore
 
     log_path = tmp_path / "access.log"
     log_path.write_text("", encoding="utf-8")
     store = live_stats.LiveStatsStore(access_log_path=str(log_path))
     monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
-    monkeypatch.setattr(store, "_connect", lambda: (_ for _ in ()).throw(AssertionError("idle tailer opened a DB connection")))
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("idle tailer opened a DB connection")
+        ),
+    )
     monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
 
 
-def test_diagnostic_tailer_does_not_open_db_connection_while_idle(monkeypatch, tmp_path) -> None:
+def test_diagnostic_tailer_does_not_open_db_connection_while_idle(
+    monkeypatch, tmp_path
+) -> None:
     _add_repo_paths()
-    import services.diagnostic_store as diagnostic_store  # type: ignore
+    from services import diagnostic_store  # type: ignore
 
     log_path = tmp_path / "diagnostic.log"
     log_path.write_text("", encoding="utf-8")
-    store = diagnostic_store.DiagnosticStore(access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log"))
-    monkeypatch.setattr(store, "_connect", lambda: (_ for _ in ()).throw(AssertionError("idle tailer opened a DB connection")))
+    store = diagnostic_store.DiagnosticStore(
+        access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
+    )
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("idle tailer opened a DB connection")
+        ),
+    )
     monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
 
     with pytest.raises(StopLoop):
-        store._tail_file_loop(str(log_path), lambda _line: None, lambda _conn, _rows: None, "test-diagnostic")
+        store._tail_file_loop(
+            str(log_path),
+            lambda _line: None,
+            lambda _conn, _rows: None,
+            "test-diagnostic",
+        )
 
 
-def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(monkeypatch, tmp_path) -> None:
+def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
+    monkeypatch, tmp_path
+) -> None:
     _add_repo_paths()
-    import services.ssl_errors_store as ssl_errors_store  # type: ignore
+    from services import ssl_errors_store  # type: ignore
 
     log_path = tmp_path / "cache.log"
     log_path.write_text("", encoding="utf-8")
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
-    monkeypatch.setattr(store, "_connect", lambda: (_ for _ in ()).throw(AssertionError("idle tailer opened a DB connection")))
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("idle tailer opened a DB connection")
+        ),
+    )
     monkeypatch.setattr(ssl_errors_store.time, "sleep", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
 
 
-def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(monkeypatch, tmp_path) -> None:
+def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
+    monkeypatch, tmp_path
+) -> None:
     _add_repo_paths()
-    import services.adblock_store as adblock_store  # type: ignore
+    from services import adblock_store  # type: ignore
 
-    store = adblock_store.AdblockStore(cicap_access_log_path=str(tmp_path / "missing-cicap.log"))
-    monkeypatch.setattr(store, "_connect", lambda: (_ for _ in ()).throw(AssertionError("missing-log tailer opened a DB connection")))
+    store = adblock_store.AdblockStore(
+        cicap_access_log_path=str(tmp_path / "missing-cicap.log")
+    )
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("missing-log tailer opened a DB connection")
+        ),
+    )
     monkeypatch.setattr(adblock_store.time, "sleep", _stop_sleep)
 
     with pytest.raises(StopLoop):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 
 def _add_repo_paths() -> None:
@@ -30,12 +31,18 @@ def _import_webfilter_core_module():
     return module
 
 
-def test_sslfilter_apply_squid_include_writes_materialized_files(tmp_path, monkeypatch):
+def test_sslfilter_apply_squid_include_writes_materialized_files(
+    tmp_path, monkeypatch
+) -> None:
     module = _import_sslfilter_store_module()
     store = module.SslFilterStore(
-        squid_include_path=str(tmp_path / "etc" / "squid" / "conf.d" / "10-sslfilter.conf"),
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "10-sslfilter.conf"
+        ),
         nobump_list_path=str(tmp_path / "var" / "lib" / "sslfilter_nobump.txt"),
-        nocache_src_list_path=str(tmp_path / "var" / "lib" / "sslfilter_nocache_src.txt"),
+        nocache_src_list_path=str(
+            tmp_path / "var" / "lib" / "sslfilter_nocache_src.txt"
+        ),
     )
     state = module.SslFilterMaterializedState(
         include_text="# include\nssl_bump splice sslfilter_nobump\n",
@@ -46,15 +53,27 @@ def test_sslfilter_apply_squid_include_writes_materialized_files(tmp_path, monke
 
     store.apply_squid_include()
 
-    assert Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
-    assert Path(store.nobump_list_path).read_text(encoding="utf-8") == state.nobump_src_list_text
-    assert Path(store.nocache_src_list_path).read_text(encoding="utf-8") == state.nocache_src_list_text
+    assert (
+        Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
+    )
+    assert (
+        Path(store.nobump_list_path).read_text(encoding="utf-8")
+        == state.nobump_src_list_text
+    )
+    assert (
+        Path(store.nocache_src_list_path).read_text(encoding="utf-8")
+        == state.nocache_src_list_text
+    )
 
 
-def test_webfilter_apply_squid_include_writes_materialized_files(tmp_path, monkeypatch):
+def test_webfilter_apply_squid_include_writes_materialized_files(
+    tmp_path, monkeypatch
+) -> None:
     module = _import_webfilter_core_module()
     store = module.ProxyWebFilterStore(
-        squid_include_path=str(tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"),
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
         whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
     )
     state = module.WebFilterMaterializedState(
@@ -69,24 +88,37 @@ def test_webfilter_apply_squid_include_writes_materialized_files(tmp_path, monke
     )
     snapshot_publish_calls = []
     monkeypatch.setattr(store, "render_materialized_state", lambda: state)
-    monkeypatch.setattr(store, "_publish_webcat_snapshot_for_helper", lambda: snapshot_publish_calls.append(True))
+    monkeypatch.setattr(
+        store,
+        "_publish_webcat_snapshot_for_helper",
+        lambda: snapshot_publish_calls.append(True),
+    )
 
-    def fail_if_settings_loaded():
-        raise AssertionError("apply_squid_include must not require settings/MySQL before writing materialized files")
+    def fail_if_settings_loaded() -> NoReturn:
+        msg = "apply_squid_include must not require settings/MySQL before writing materialized files"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(store, "get_settings", fail_if_settings_loaded)
 
     store.apply_squid_include()
 
     assert snapshot_publish_calls == [True]
-    assert Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
-    assert Path(store.whitelist_path).read_text(encoding="utf-8") == state.whitelist_text
+    assert (
+        Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
+    )
+    assert (
+        Path(store.whitelist_path).read_text(encoding="utf-8") == state.whitelist_text
+    )
 
 
-def test_webfilter_apply_squid_include_skips_snapshot_publish_when_helper_not_rendered(tmp_path, monkeypatch):
+def test_webfilter_apply_squid_include_skips_snapshot_publish_when_helper_not_rendered(
+    tmp_path, monkeypatch
+) -> None:
     module = _import_webfilter_core_module()
     store = module.ProxyWebFilterStore(
-        squid_include_path=str(tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"),
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
         whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
     )
     state = module.WebFilterMaterializedState(
@@ -95,24 +127,38 @@ def test_webfilter_apply_squid_include_skips_snapshot_publish_when_helper_not_re
     )
     snapshot_publish_calls = []
     monkeypatch.setattr(store, "render_materialized_state", lambda: state)
-    monkeypatch.setattr(store, "_publish_webcat_snapshot_for_helper", lambda: snapshot_publish_calls.append(True))
+    monkeypatch.setattr(
+        store,
+        "_publish_webcat_snapshot_for_helper",
+        lambda: snapshot_publish_calls.append(True),
+    )
 
-    def fail_if_settings_loaded():
-        raise AssertionError("apply_squid_include must not require settings/MySQL before writing materialized files")
+    def fail_if_settings_loaded() -> NoReturn:
+        msg = "apply_squid_include must not require settings/MySQL before writing materialized files"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(store, "get_settings", fail_if_settings_loaded)
 
     store.apply_squid_include()
 
     assert snapshot_publish_calls == []
-    assert store.last_webcat_snapshot_status == (True, "Web category snapshot not needed for current policy.")
-    assert Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
-    assert Path(store.whitelist_path).read_text(encoding="utf-8") == state.whitelist_text
+    assert store.last_webcat_snapshot_status == (
+        True,
+        "Web category snapshot not needed for current policy.",
+    )
+    assert (
+        Path(store.squid_include_path).read_text(encoding="utf-8") == state.include_text
+    )
+    assert (
+        Path(store.whitelist_path).read_text(encoding="utf-8") == state.whitelist_text
+    )
 
 
-def test_write_managed_text_files_restores_previous_files_when_late_replace_fails(tmp_path, monkeypatch):
+def test_write_managed_text_files_restores_previous_files_when_late_replace_fails(
+    tmp_path, monkeypatch
+) -> None:
     _add_repo_paths()
-    import services.materialized_files as materialized_files  # type: ignore
+    from services import materialized_files  # type: ignore
 
     first = tmp_path / "first.conf"
     second = tmp_path / "second.conf"
@@ -124,18 +170,23 @@ def test_write_managed_text_files_restores_previous_files_when_late_replace_fail
     def flaky_replace(src, dst):
         replace_calls.append((str(src), str(dst)))
         if str(dst) == str(second):
-            raise OSError("disk full")
+            msg = "disk full"
+            raise OSError(msg)
         return real_replace(src, dst)
 
     monkeypatch.setattr(materialized_files.os, "replace", flaky_replace)
 
     try:
-        materialized_files.write_managed_text_files((str(first), "new first\n"), (str(second), "new second\n"))
+        materialized_files.write_managed_text_files(
+            (str(first), "new first\n"), (str(second), "new second\n")
+        )
     except OSError as exc:
         assert "disk full" in str(exc)
     else:  # pragma: no cover - defensive assertion
-        raise AssertionError("expected second replace failure")
+        msg = "expected second replace failure"
+        raise AssertionError(msg)
 
-    assert replace_calls and replace_calls[-1][1] == str(second)
+    assert replace_calls
+    assert replace_calls[-1][1] == str(second)
     assert first.read_text(encoding="utf-8") == "old first\n"
     assert second.read_text(encoding="utf-8") == "old second\n"

@@ -4,22 +4,23 @@ import base64
 import hashlib
 import ipaddress
 import json
-import os
 import posixpath
 import re
-import sqlite3
 import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import TYPE_CHECKING
 
-from services.db import connect, table_exists
+from services.db import connect
 from services.domain_normalization import normalize_domain as _norm_domain
 from services.errors import public_error_message
-from services.runtime_helpers import env_int as _env_int, now_ts as _now
+from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import now_ts as _now
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 SAFE_BROWSING_LISTS: dict[str, str] = {
     "se-4b": "SOCIAL_ENGINEERING",
@@ -31,18 +32,21 @@ SAFE_BROWSING_LISTS: dict[str, str] = {
 DEFAULT_SAFE_BROWSING_LISTS = ("se-4b", "mw-4b", "uws-4b")
 SAFE_BROWSING_PROVIDER_CATEGORY = "google-safe-browsing"
 _API_BASE = "https://safebrowsing.googleapis.com/v5"
-_VALID_THREAT_TYPES = {"MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"}
+_VALID_THREAT_TYPES = {
+    "MALWARE",
+    "SOCIAL_ENGINEERING",
+    "UNWANTED_SOFTWARE",
+    "POTENTIALLY_HARMFUL_APPLICATION",
+}
 _IGNORED_THREAT_ATTRIBUTES = {"THREAT_ATTRIBUTE_UNSPECIFIED", "CANARY", "FRAME_ONLY"}
 _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
-
 
 
 def parse_duration_seconds(value: object, default: int = 0) -> int:
     text = str(value or "").strip()
     if not text:
         return int(default)
-    if text.endswith("s"):
-        text = text[:-1]
+    text = text.removesuffix("s")
     try:
         return max(0, int(float(text)))
     except Exception:
@@ -185,11 +189,15 @@ def canonicalize_url(value: str) -> str:
         raw = "http://" + raw
     parsed = urllib.parse.urlsplit(raw)
     scheme = (parsed.scheme or "http").lower()
-    host = _normalize_host(parsed.hostname or parsed.netloc.split("@")[ -1].split(":")[0])
+    host = _normalize_host(
+        parsed.hostname or parsed.netloc.split("@")[-1].split(":")[0],
+    )
     if not host:
         return ""
     path = _canonical_path(parsed.path or "/")
-    query = _escape_safe_browsing_component(_recursive_unquote(parsed.query or ""), safe="=&?/:;+,$-_.!~*'()@")
+    query = _escape_safe_browsing_component(
+        _recursive_unquote(parsed.query or ""), safe="=&?/:;+,$-_.!~*'()@",
+    )
     # Safe Browsing expression generation discards scheme, credentials, and port;
     # the canonical URL keeps only host/path/query for stable hashing input.
     return urllib.parse.urlunsplit((scheme, host, path, query, ""))
@@ -218,7 +226,11 @@ def _etld_plus_one_index(parts: list[str]) -> int:
             return max(0, len(parts) - len(sld_parts))
     except Exception:
         pass
-    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES:
+    if (
+        len(parts) >= 3
+        and len(parts[-1]) == 2
+        and parts[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES
+    ):
         return len(parts) - 3
     return len(parts) - 2
 
@@ -277,16 +289,21 @@ def url_expressions(url: str) -> list[str]:
     host = parsed.hostname or ""
     expressions: list[str] = []
     for suffix in _host_suffixes(host):
-        for prefix in _path_prefixes(parsed.path or "/", parsed.query):
-            expressions.append(suffix + prefix)
+        expressions.extend(
+            suffix + prefix
+            for prefix in _path_prefixes(parsed.path or "/", parsed.query)
+        )
     return expressions
 
+
 def expression_hashes(url: str) -> list[bytes]:
-    return [hashlib.sha256(expr.encode("utf-8")).digest() for expr in url_expressions(url)]
+    return [
+        hashlib.sha256(expr.encode("utf-8")).digest() for expr in url_expressions(url)
+    ]
 
 
 class _BitReader:
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes) -> None:
         self.data = data
         self.bit = 0
 
@@ -354,7 +371,9 @@ def _enforceable_threat(details: object, fallback: str = "") -> str:
 
 
 def _threat_type_for_list(name: str) -> str:
-    return SAFE_BROWSING_LISTS.get((name or "").strip(), (name or "UNKNOWN").strip() or "UNKNOWN")
+    return SAFE_BROWSING_LISTS.get(
+        (name or "").strip(), (name or "UNKNOWN").strip() or "UNKNOWN",
+    )
 
 
 @dataclass(frozen=True)
@@ -394,7 +413,7 @@ class SafeBrowsingVerdict:
 
 
 class SafeBrowsingStore:
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._started = False
 
@@ -411,22 +430,22 @@ class SafeBrowsingStore:
             "CREATE TABLE IF NOT EXISTS safe_browsing_hash_lists("
             "name VARCHAR(32) PRIMARY KEY, version VARBINARY(255), threat_type VARCHAR(64) NOT NULL, "
             "last_success BIGINT NOT NULL DEFAULT 0, last_attempt BIGINT NOT NULL DEFAULT 0, "
-            "last_error TEXT, next_run_ts BIGINT NOT NULL DEFAULT 0, prefix_count BIGINT NOT NULL DEFAULT 0)"
+            "last_error TEXT, next_run_ts BIGINT NOT NULL DEFAULT 0, prefix_count BIGINT NOT NULL DEFAULT 0)",
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS safe_browsing_hash_prefixes("
             "list_name VARCHAR(32) NOT NULL, prefix VARBINARY(4) NOT NULL, "
-            "PRIMARY KEY(list_name, prefix), KEY idx_safe_browsing_prefix(prefix))"
+            "PRIMARY KEY(list_name, prefix), KEY idx_safe_browsing_prefix(prefix))",
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS safe_browsing_full_hash_cache("
             "prefix VARBINARY(4) NOT NULL, full_hash VARBINARY(32) NOT NULL, threat_type VARCHAR(64) NOT NULL, "
             "list_name VARCHAR(32) NOT NULL, expires_ts BIGINT NOT NULL, "
-            "PRIMARY KEY(prefix, full_hash), KEY idx_safe_browsing_cache_expiry(expires_ts))"
+            "PRIMARY KEY(prefix, full_hash), KEY idx_safe_browsing_cache_expiry(expires_ts))",
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS safe_browsing_negative_cache("
-            "prefix VARBINARY(4) PRIMARY KEY, expires_ts BIGINT NOT NULL)"
+            "prefix VARBINARY(4) PRIMARY KEY, expires_ts BIGINT NOT NULL)",
         )
 
     @staticmethod
@@ -447,18 +466,33 @@ class SafeBrowsingStore:
         return SafeBrowsingSettings(
             enabled=get_setting(conn, "safe_browsing_enabled", "0") == "1",
             api_key=get_setting(conn, "safe_browsing_api_key", ""),
-            lists=SafeBrowsingStore.normalize_lists(get_setting(conn, "safe_browsing_lists", ",".join(DEFAULT_SAFE_BROWSING_LISTS))),
+            lists=SafeBrowsingStore.normalize_lists(
+                get_setting(
+                    conn, "safe_browsing_lists", ",".join(DEFAULT_SAFE_BROWSING_LISTS),
+                ),
+            ),
             last_success=int(get_setting(conn, "safe_browsing_last_success", "0") or 0),
             last_attempt=int(get_setting(conn, "safe_browsing_last_attempt", "0") or 0),
             last_error=get_setting(conn, "safe_browsing_last_error", ""),
             next_run_ts=int(get_setting(conn, "safe_browsing_next_run_ts", "0") or 0),
         )
 
-    def _request_json(self, path: str, api_key: str, params: list[tuple[str, str]], timeout: int = 30) -> dict[str, object]:
-        query = urllib.parse.urlencode(params + [("key", api_key)], doseq=True)
-        req = urllib.request.Request(f"{_API_BASE}{path}?{query}", headers={"Accept": "application/json"})
+    def _request_json(
+        self, path: str, api_key: str, params: list[tuple[str, str]], timeout: int = 30,
+    ) -> dict[str, object]:
+        query = urllib.parse.urlencode([*params, ("key", api_key)], doseq=True)
+        req = urllib.request.Request(
+            f"{_API_BASE}{path}?{query}", headers={"Accept": "application/json"},
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read(_env_int("SAFE_BROWSING_MAX_RESPONSE_BYTES", 64 * 1024 * 1024, minimum=1024, maximum=256 * 1024 * 1024))
+            data = resp.read(
+                _env_int(
+                    "SAFE_BROWSING_MAX_RESPONSE_BYTES",
+                    64 * 1024 * 1024,
+                    minimum=1024,
+                    maximum=256 * 1024 * 1024,
+                ),
+            )
         return json.loads(data.decode("utf-8")) if data else {}
 
     def update_lists(self, settings: SafeBrowsingSettings) -> tuple[bool, str, int]:
@@ -467,34 +501,46 @@ class SafeBrowsingStore:
         if not settings.api_key:
             return False, "Google Safe Browsing API key is required", 3600
         self.init_db()
-        now = _now()
+        _now()
         min_wait = 24 * 60 * 60
         try:
             with self._connect() as conn:
                 versions: dict[str, str] = {}
                 for name in settings.lists:
-                    row = conn.execute("SELECT version FROM safe_browsing_hash_lists WHERE name=%s", (name,)).fetchone()
+                    row = conn.execute(
+                        "SELECT version FROM safe_browsing_hash_lists WHERE name=%s",
+                        (name,),
+                    ).fetchone()
                     if row and row[0]:
                         version = row[0]
                         if isinstance(version, bytes):
                             version = _urlsafe_b64(version)
                         versions[name] = str(version)
-                params: list[tuple[str, str]] = []
-                for name in settings.lists:
-                    params.append(("names", name))
-                for version in versions.values():
-                    params.append(("version", version))
-                response = self._request_json("/hashLists:batchGet", settings.api_key, params, timeout=120)
+                params: list[tuple[str, str]] = [
+                    ("names", name) for name in settings.lists
+                ]
+                params.extend(("version", version) for version in versions.values())
+                response = self._request_json(
+                    "/hashLists:batchGet", settings.api_key, params, timeout=120,
+                )
                 for item in response.get("hashLists", []) or []:
                     if not isinstance(item, dict):
                         continue
                     self._apply_hash_list(conn, item)
-                    wait = parse_duration_seconds(item.get("minimumWaitDuration"), default=24 * 60 * 60)
+                    wait = parse_duration_seconds(
+                        item.get("minimumWaitDuration"), default=24 * 60 * 60,
+                    )
                     if wait > 0:
                         min_wait = min(min_wait, wait)
                 return True, "", min_wait
         except Exception as exc:
-            return False, public_error_message(exc, default="Google Safe Browsing list update failed.", max_len=500), 1800
+            return (
+                False,
+                public_error_message(
+                    exc, default="Google Safe Browsing list update failed.", max_len=500,
+                ),
+                1800,
+            )
 
     def status(self, settings: SafeBrowsingSettings) -> SafeBrowsingStatus:
         selected = self.normalize_lists(settings.lists)
@@ -504,16 +550,32 @@ class SafeBrowsingStore:
             placeholders = ",".join(["%s"] * len(selected))
             with self._connect() as conn:
                 list_count = int(
-                    conn.execute(f"SELECT COUNT(*) FROM safe_browsing_hash_lists WHERE name IN ({placeholders})", selected).fetchone()[0] or 0
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM safe_browsing_hash_lists WHERE name IN ({placeholders})",
+                        selected,
+                    ).fetchone()[0]
+                    or 0,
                 )
                 prefix_count = int(
-                    conn.execute(f"SELECT COUNT(*) FROM safe_browsing_hash_prefixes WHERE list_name IN ({placeholders})", selected).fetchone()[0] or 0
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM safe_browsing_hash_prefixes WHERE list_name IN ({placeholders})",
+                        selected,
+                    ).fetchone()[0]
+                    or 0,
                 )
                 positive_cache = int(
-                    conn.execute("SELECT COUNT(*) FROM safe_browsing_full_hash_cache WHERE expires_ts >= %s", (now,)).fetchone()[0] or 0
+                    conn.execute(
+                        "SELECT COUNT(*) FROM safe_browsing_full_hash_cache WHERE expires_ts >= %s",
+                        (now,),
+                    ).fetchone()[0]
+                    or 0,
                 )
                 negative_cache = int(
-                    conn.execute("SELECT COUNT(*) FROM safe_browsing_negative_cache WHERE expires_ts >= %s", (now,)).fetchone()[0] or 0
+                    conn.execute(
+                        "SELECT COUNT(*) FROM safe_browsing_negative_cache WHERE expires_ts >= %s",
+                        (now,),
+                    ).fetchone()[0]
+                    or 0,
                 )
             return SafeBrowsingStatus(
                 enabled=settings.enabled,
@@ -541,7 +603,10 @@ class SafeBrowsingStore:
                 negative_cache_entries=0,
                 last_success=settings.last_success,
                 last_attempt=settings.last_attempt,
-                last_error=settings.last_error or public_error_message(exc, default="Safe Browsing status unavailable.", max_len=300),
+                last_error=settings.last_error
+                or public_error_message(
+                    exc, default="Safe Browsing status unavailable.", max_len=300,
+                ),
                 next_run_ts=settings.next_run_ts,
             )
 
@@ -551,27 +616,52 @@ class SafeBrowsingStore:
             return
         self.init_schema(conn)
         partial = bool(item.get("partialUpdate"))
-        current = [bytes(row[0]) for row in conn.execute("SELECT prefix FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix ASC", (name,)).fetchall()]
+        current = [
+            bytes(row[0])
+            for row in conn.execute(
+                "SELECT prefix FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix ASC",
+                (name,),
+            ).fetchall()
+        ]
         if not partial:
             current = []
-        removals = sorted(decode_rice_delta_32(item.get("compressedRemovals") if isinstance(item.get("compressedRemovals"), dict) else None), reverse=True)
+        removals = sorted(
+            decode_rice_delta_32(
+                item.get("compressedRemovals")
+                if isinstance(item.get("compressedRemovals"), dict)
+                else None,
+            ),
+            reverse=True,
+        )
         for index in removals:
             if 0 <= index < len(current):
                 del current[index]
         additions_payload = item.get("additionsFourBytes")
-        additions = _ints_to_prefixes(decode_rice_delta_32(additions_payload if isinstance(additions_payload, dict) else None))
+        additions = _ints_to_prefixes(
+            decode_rice_delta_32(
+                additions_payload if isinstance(additions_payload, dict) else None,
+            ),
+        )
         merged = sorted(set(current).union(additions))
         checksum = _decode_b64(item.get("sha256Checksum"))
         if checksum and _checksum_for_prefixes(merged) != checksum:
             # The v5 local database spec requires a full refresh whenever the
             # post-update checksum disagrees. Drop local state/version for this
             # list so the next scheduler pass requests a complete replacement.
-            conn.execute("DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,))
+            conn.execute(
+                "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,),
+            )
             conn.execute("DELETE FROM safe_browsing_hash_lists WHERE name=%s", (name,))
-            raise ValueError(f"Google Safe Browsing checksum mismatch for {name}; full refresh required")
-        conn.execute("DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,))
+            msg = f"Google Safe Browsing checksum mismatch for {name}; full refresh required"
+            raise ValueError(msg)
+        conn.execute(
+            "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s", (name,),
+        )
         if merged:
-            conn.executemany("INSERT IGNORE INTO safe_browsing_hash_prefixes(list_name, prefix) VALUES(%s,%s)", [(name, p) for p in merged])
+            conn.executemany(
+                "INSERT IGNORE INTO safe_browsing_hash_prefixes(list_name, prefix) VALUES(%s,%s)",
+                [(name, p) for p in merged],
+            )
         version = _decode_b64(item.get("version"))
         now = _now()
         conn.execute(
@@ -581,12 +671,16 @@ class SafeBrowsingStore:
             (name, version, _threat_type_for_list(name), now, now, "", 0, len(merged)),
         )
 
-    def search_hashes(self, api_key: str, prefixes: Sequence[bytes]) -> tuple[list[dict[str, object]], int]:
+    def search_hashes(
+        self, api_key: str, prefixes: Sequence[bytes],
+    ) -> tuple[list[dict[str, object]], int]:
         if not api_key or not prefixes:
             return [], 0
         params = [("hashPrefixes", _urlsafe_b64(prefix)) for prefix in prefixes[:30]]
         response = self._request_json("/hashes:search", api_key, params, timeout=8)
-        return list(response.get("fullHashes", []) or []), parse_duration_seconds(response.get("cacheDuration"), default=300)
+        return list(response.get("fullHashes", []) or []), parse_duration_seconds(
+            response.get("cacheDuration"), default=300,
+        )
 
     def start_background(self, get_settings, set_status) -> None:
         with self._lock:
@@ -594,7 +688,12 @@ class SafeBrowsingStore:
                 return
             self._started = True
             self.init_db()
-            threading.Thread(target=self._loop, args=(get_settings, set_status), name="safe-browsing-updater", daemon=True).start()
+            threading.Thread(
+                target=self._loop,
+                args=(get_settings, set_status),
+                name="safe-browsing-updater",
+                daemon=True,
+            ).start()
 
     def _loop(self, get_settings, set_status) -> None:
         poll = _env_int("SAFE_BROWSING_POLL_SECONDS", 300, minimum=30, maximum=3600)
@@ -602,7 +701,11 @@ class SafeBrowsingStore:
             try:
                 settings = get_settings()
                 now = _now()
-                if settings.enabled and settings.api_key and (settings.next_run_ts <= 0 or now >= settings.next_run_ts):
+                if (
+                    settings.enabled
+                    and settings.api_key
+                    and (settings.next_run_ts <= 0 or now >= settings.next_run_ts)
+                ):
                     ok, err, wait = self.update_lists(settings)
                     set_status(ok, err, now + max(60, int(wait or 1800)))
             except Exception:
@@ -611,13 +714,17 @@ class SafeBrowsingStore:
 
 
 class SafeBrowsingLocalChecker:
-    def __init__(self, *, api_key: str = "", cache_max_entries: int | None = None):
+    def __init__(
+        self, *, api_key: str = "", cache_max_entries: int | None = None,
+    ) -> None:
         self.api_key = api_key
         self._conn = None
         self._store = SafeBrowsingStore()
         self._prefix_cache: dict[bytes, tuple[float, tuple[str, ...]]] = {}
         self._verdict_cache: dict[str, tuple[float, SafeBrowsingVerdict]] = {}
-        self._cache_max = cache_max_entries or _env_int("SAFE_BROWSING_HELPER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000)
+        self._cache_max = cache_max_entries or _env_int(
+            "SAFE_BROWSING_HELPER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000,
+        )
 
     def _connect(self):
         if self._conn is None:
@@ -629,7 +736,14 @@ class SafeBrowsingLocalChecker:
         if self.api_key:
             return self.api_key
         try:
-            row = self._connect().execute("SELECT v FROM webfilter_settings WHERE proxy_id=%s AND k=%s", ("__global__", "safe_browsing_api_key")).fetchone()
+            row = (
+                self._connect()
+                .execute(
+                    "SELECT v FROM webfilter_settings WHERE proxy_id=%s AND k=%s",
+                    ("__global__", "safe_browsing_api_key"),
+                )
+                .fetchone()
+            )
             return str(row[0] or "") if row else ""
         except Exception:
             return ""
@@ -640,7 +754,14 @@ class SafeBrowsingLocalChecker:
         if cached and cached[0] > now_mono:
             return cached[1]
         try:
-            rows = self._connect().execute("SELECT list_name FROM safe_browsing_hash_prefixes WHERE prefix=%s", (prefix,)).fetchall()
+            rows = (
+                self._connect()
+                .execute(
+                    "SELECT list_name FROM safe_browsing_hash_prefixes WHERE prefix=%s",
+                    (prefix,),
+                )
+                .fetchall()
+            )
             lists = tuple(str(row[0]) for row in rows if row and row[0])
         except Exception:
             lists = ()
@@ -649,27 +770,47 @@ class SafeBrowsingLocalChecker:
             self._prefix_cache.clear()
         return lists
 
-    def _cache_lookup(self, prefix: bytes, full_hashes: set[bytes]) -> Optional[SafeBrowsingVerdict]:
+    def _cache_lookup(
+        self, prefix: bytes, full_hashes: set[bytes],
+    ) -> SafeBrowsingVerdict | None:
         now = _now()
         try:
             conn = self._connect()
-            conn.execute("DELETE FROM safe_browsing_full_hash_cache WHERE expires_ts < %s", (now,))
-            conn.execute("DELETE FROM safe_browsing_negative_cache WHERE expires_ts < %s", (now,))
+            conn.execute(
+                "DELETE FROM safe_browsing_full_hash_cache WHERE expires_ts < %s",
+                (now,),
+            )
+            conn.execute(
+                "DELETE FROM safe_browsing_negative_cache WHERE expires_ts < %s", (now,),
+            )
             rows = conn.execute(
                 "SELECT full_hash, threat_type, list_name FROM safe_browsing_full_hash_cache WHERE prefix=%s AND expires_ts >= %s",
                 (prefix, now),
             ).fetchall()
             for row in rows:
                 if bytes(row[0]) in full_hashes:
-                    return SafeBrowsingVerdict("unsafe", str(row[1] or ""), str(row[2] or ""), True, "cached full-hash match")
-            neg = conn.execute("SELECT expires_ts FROM safe_browsing_negative_cache WHERE prefix=%s AND expires_ts >= %s", (prefix, now)).fetchone()
+                    return SafeBrowsingVerdict(
+                        "unsafe",
+                        str(row[1] or ""),
+                        str(row[2] or ""),
+                        True,
+                        "cached full-hash match",
+                    )
+            neg = conn.execute(
+                "SELECT expires_ts FROM safe_browsing_negative_cache WHERE prefix=%s AND expires_ts >= %s",
+                (prefix, now),
+            ).fetchone()
             if neg:
-                return SafeBrowsingVerdict("safe", cache_hit=True, reason="cached negative full-hash response")
+                return SafeBrowsingVerdict(
+                    "safe", cache_hit=True, reason="cached negative full-hash response",
+                )
         except Exception:
             return None
         return None
 
-    def _cache_search_response(self, prefix: bytes, response: Sequence[dict[str, object]], cache_duration: int) -> None:
+    def _cache_search_response(
+        self, prefix: bytes, response: Sequence[dict[str, object]], cache_duration: int,
+    ) -> None:
         expires = _now() + max(60, min(24 * 60 * 60, int(cache_duration or 300)))
         try:
             conn = self._connect()
@@ -716,18 +857,31 @@ class SafeBrowsingLocalChecker:
             else:
                 api_key = self._api_key_from_settings()
                 if not api_key:
-                    verdict = SafeBrowsingVerdict("safe", reason="api key unavailable for full-hash confirmation")
+                    verdict = SafeBrowsingVerdict(
+                        "safe", reason="api key unavailable for full-hash confirmation",
+                    )
                 else:
                     response, duration = self._store.search_hashes(api_key, [prefix])
                     self._cache_search_response(prefix, response, duration)
-                    verdict = SafeBrowsingVerdict("safe", reason="full hash not returned")
+                    verdict = SafeBrowsingVerdict(
+                        "safe", reason="full hash not returned",
+                    )
                     for item in response:
                         returned = _decode_b64(item.get("fullHash"))
                         if returned in full_set:
-                            threat = _enforceable_threat(item.get("fullHashDetails") or [], _threat_type_for_list(local_lists[0]))
+                            threat = _enforceable_threat(
+                                item.get("fullHashDetails") or [],
+                                _threat_type_for_list(local_lists[0]),
+                            )
                             if not threat:
                                 continue
-                            verdict = SafeBrowsingVerdict("unsafe", threat, local_lists[0], False, "confirmed by hashes.search")
+                            verdict = SafeBrowsingVerdict(
+                                "unsafe",
+                                threat,
+                                local_lists[0],
+                                False,
+                                "confirmed by hashes.search",
+                            )
                             break
             self._verdict_cache[canonical] = (time.monotonic() + 300, verdict)
             return verdict

@@ -5,12 +5,12 @@ import re
 
 
 def expose_internal_errors() -> bool:
-    return (os.environ.get("EXPOSE_INTERNAL_ERRORS") or "").strip().lower() in (
+    return (os.environ.get("EXPOSE_INTERNAL_ERRORS") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
-    )
+    }
 
 
 def clean_text(text: str, *, max_len: int = 200) -> str:

@@ -22,13 +22,12 @@ def normalize_domain(value: object) -> str:
         except Exception:
             raw = raw.split("://", 1)[1]
     raw = raw.strip().rstrip(".")
-    if raw.startswith("."):
-        raw = raw[1:]
+    raw = raw.removeprefix(".")
     raw = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     if "@" in raw:
         raw = raw.rsplit("@", 1)[1]
     if raw.startswith("[") and "]" in raw:
-        raw = raw[1:raw.index("]")]
+        raw = raw[1 : raw.index("]")]
     elif ":" in raw and raw.count(":") == 1:
         host, port = raw.rsplit(":", 1)
         if port.isdigit():

@@ -4,8 +4,13 @@ import re
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, query_params, wait_for_proxy_inventory, with_proxy_id
-
+from .live_test_helpers import (
+    LIVE_CONFIG,
+    LiveStackClient,
+    query_params,
+    wait_for_proxy_inventory,
+    with_proxy_id,
+)
 
 pytestmark = pytest.mark.live
 
@@ -20,8 +25,12 @@ def multi_proxy_admin(admin_client: LiveStackClient) -> LiveStackClient:
     return admin_client
 
 
-def test_live_remote_layout_pins_internal_links_and_actions_to_active_proxy(multi_proxy_admin: LiveStackClient) -> None:
-    response = multi_proxy_admin.admin_request(with_proxy_id("/webfilter", LIVE_CONFIG.remote_proxy_id))
+def test_live_remote_layout_pins_internal_links_and_actions_to_active_proxy(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
+    response = multi_proxy_admin.admin_request(
+        with_proxy_id("/webfilter", LIVE_CONFIG.remote_proxy_id)
+    )
     assert response.status == 200
 
     body = response.text
@@ -30,7 +39,7 @@ def test_live_remote_layout_pins_internal_links_and_actions_to_active_proxy(mult
     assert f'href="/observability?proxy_id={LIVE_CONFIG.remote_proxy_id}' in body
     assert f'href="/proxies?proxy_id={LIVE_CONFIG.remote_proxy_id}"' in body
     assert 'id="proxy-id"' in body
-    assert 'Manage proxies' in body
+    assert "Manage proxies" in body
     assert 'class="nav-user"' not in body
     assert re.search(
         rf'action="/webfilter\?(?:tab=categories(?:&amp;|&)proxy_id={re.escape(LIVE_CONFIG.remote_proxy_id)}|proxy_id={re.escape(LIVE_CONFIG.remote_proxy_id)}(?:&amp;|&)tab=categories)"',
@@ -55,12 +64,16 @@ def test_live_remote_scope_notices_render_on_key_pages(
     path: str,
     expected_text: str,
 ) -> None:
-    response = multi_proxy_admin.admin_request(with_proxy_id(path, LIVE_CONFIG.remote_proxy_id))
+    response = multi_proxy_admin.admin_request(
+        with_proxy_id(path, LIVE_CONFIG.remote_proxy_id)
+    )
     assert response.status == 200
     assert expected_text in response.text
 
 
-def test_live_remote_post_redirects_preserve_proxy_id(multi_proxy_admin: LiveStackClient) -> None:
+def test_live_remote_post_redirects_preserve_proxy_id(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
     from services.adblock_store import get_adblock_store  # type: ignore
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
 
@@ -86,7 +99,9 @@ def test_live_remote_post_redirects_preserve_proxy_id(multi_proxy_admin: LiveSta
         )
 
         assert response.status == 200
-        assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
+        assert query_params(response.url).get("proxy_id") == [
+            LIVE_CONFIG.remote_proxy_id
+        ]
     finally:
         token = set_proxy_id(LIVE_CONFIG.remote_proxy_id)
         try:
@@ -105,15 +120,26 @@ def test_live_remote_post_redirects_preserve_proxy_id(multi_proxy_admin: LiveSta
             reset_proxy_id(token)
 
 
-def test_live_remote_pac_page_shows_proxy_pinned_url(multi_proxy_admin: LiveStackClient) -> None:
-    response = multi_proxy_admin.admin_request(with_proxy_id("/pac", LIVE_CONFIG.remote_proxy_id))
+def test_live_remote_pac_page_shows_proxy_pinned_url(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
+    response = multi_proxy_admin.admin_request(
+        with_proxy_id("/pac", LIVE_CONFIG.remote_proxy_id)
+    )
     assert response.status == 200
     assert LIVE_CONFIG.remote_pac_url in response.text
-    assert f"{LIVE_CONFIG.remote_pac_url}?proxy_id={LIVE_CONFIG.remote_proxy_id}" not in response.text
+    assert (
+        f"{LIVE_CONFIG.remote_pac_url}?proxy_id={LIVE_CONFIG.remote_proxy_id}"
+        not in response.text
+    )
 
 
-def test_live_proxies_page_marks_active_proxy_in_current_tab(multi_proxy_admin: LiveStackClient) -> None:
-    response = multi_proxy_admin.admin_request(with_proxy_id("/proxies", LIVE_CONFIG.remote_proxy_id))
+def test_live_proxies_page_marks_active_proxy_in_current_tab(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
+    response = multi_proxy_admin.admin_request(
+        with_proxy_id("/proxies", LIVE_CONFIG.remote_proxy_id)
+    )
     assert response.status == 200
     assert "Active in this tab" in response.text
     assert LIVE_CONFIG.remote_proxy_id in response.text

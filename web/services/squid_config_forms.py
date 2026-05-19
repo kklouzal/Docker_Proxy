@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, MutableMapping
-
+from typing import Any
 
 TunableMap = Mapping[str, Any]
 FormMap = Mapping[str, Any]
@@ -171,7 +171,9 @@ def _tunable_optional(key: str) -> OptionResolver:
     return resolve
 
 
-def _tunable_choice_or_default(key: str, allowed: Iterable[str], default: str) -> OptionResolver:
+def _tunable_choice_or_default(
+    key: str, allowed: Iterable[str], default: str,
+) -> OptionResolver:
     allowed_values = tuple(allowed)
 
     def resolve(tunables: TunableMap, _max_workers: int) -> str:
@@ -195,7 +197,17 @@ def _resolve_workers(tunables: TunableMap, max_workers: int) -> int:
 
 def _range_value_enabled(value: Any) -> bool:
     text = str(value or "").strip().lower()
-    return text not in ("", "0", "0 b", "0 byte", "0 bytes", "0 kb", "0 mb", "off", "false")
+    return text not in {
+        "",
+        "0",
+        "0 b",
+        "0 byte",
+        "0 bytes",
+        "0 kb",
+        "0 mb",
+        "off",
+        "false",
+    }
 
 
 def _normalize_range_offset_limit_value(value: Any, *, default: str = "128 MB") -> str:
@@ -211,7 +223,9 @@ def _normalize_range_offset_limit_value(value: Any, *, default: str = "128 MB") 
 
 def _resolve_range_offset_limit_value(tunables: TunableMap, _max_workers: int) -> str:
     if tunables.get("range_offset_limit_value") is not None:
-        return _normalize_range_offset_limit_value(tunables.get("range_offset_limit_value"))
+        return _normalize_range_offset_limit_value(
+            tunables.get("range_offset_limit_value"),
+        )
     value = tunables.get("range_offset_limit")
     if value is None:
         return "128 MB"
@@ -245,7 +259,7 @@ def _resolve_pipeline_prefetch_count(tunables: TunableMap, _max_workers: int) ->
         return max(0, int(raw))
     except Exception:
         text = str(raw).strip().lower()
-        return 1 if text in ("on", "true", "yes") else 0
+        return 1 if text in {"on", "true", "yes"} else 0
 
 
 def _resolve_pipeline_prefetch_on(tunables: TunableMap, max_workers: int) -> bool:
@@ -297,7 +311,9 @@ def _resolve_sslcrtd_children_queue_size(tunables: TunableMap, max_workers: int)
     return min(256, max(32, children * 8))
 
 
-def _resolve_sslcrtd_program_cache_size_mb(tunables: TunableMap, _max_workers: int) -> int:
+def _resolve_sslcrtd_program_cache_size_mb(
+    tunables: TunableMap, _max_workers: int,
+) -> int:
     value = tunables.get("sslcrtd_program_cache_size_mb")
     if value is not None:
         try:
@@ -349,7 +365,9 @@ def _resolve_https_intercept_enabled(tunables: TunableMap, _max_workers: int) ->
     return bool(tunables.get("https_intercept_enabled"))
 
 
-def _resolve_https_intercept_splice_only(tunables: TunableMap, _max_workers: int) -> bool:
+def _resolve_https_intercept_splice_only(
+    tunables: TunableMap, _max_workers: int,
+) -> bool:
     return bool(tunables.get("https_intercept_splice_only"))
 
 
@@ -358,7 +376,10 @@ def _resolve_https_intercept_port(tunables: TunableMap, max_workers: int) -> int
     default_port = 3130 if explicit_port != 3130 else 3131
     return _clamp_port(tunables.get("https_intercept_port"), default_port)
 
-def _resolve_shared_transient_entries_limit(tunables: TunableMap, max_workers: int) -> int:
+
+def _resolve_shared_transient_entries_limit(
+    tunables: TunableMap, max_workers: int,
+) -> int:
     value = tunables.get("shared_transient_entries_limit")
     if value is not None:
         try:
@@ -376,7 +397,9 @@ def _coerce_current_int(current: Any, default: int = 0) -> int:
         return default
 
 
-def _posted_int_reader(field: str, *, clamp: Callable[[int, int], int] | None = None) -> FieldReader:
+def _posted_int_reader(
+    field: str, *, clamp: Callable[[int, int], int] | None = None,
+) -> FieldReader:
     def reader(form: FormMap, current: Any, max_workers: int) -> tuple[bool, Any]:
         raw = form.get(field)
         if raw is None:
@@ -458,7 +481,9 @@ def _posted_multiline_reader(field: str) -> FieldReader:
     return reader
 
 
-def _posted_choice_reader(field: str, *, allowed: Iterable[str], default: str) -> FieldReader:
+def _posted_choice_reader(
+    field: str, *, allowed: Iterable[str], default: str,
+) -> FieldReader:
     allowed_values = tuple(allowed)
 
     def reader(form: FormMap, current: Any, _max_workers: int) -> tuple[bool, Any]:
@@ -555,7 +580,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "cache_dir",
         "select",
         _tunable_choice_or_default("cache_dir_type", ("rock", "ufs"), "rock"),
-        _posted_choice_reader("cache_dir_type", allowed=("rock", "ufs"), default="rock"),
+        _posted_choice_reader(
+            "cache_dir_type", allowed=("rock", "ufs"), default="rock",
+        ),
         help_text="Rock is the only SMP-aware disk store documented by Squid 7.x.",
         choices=CACHE_DIR_TYPE_CHOICES,
     ),
@@ -654,8 +681,14 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "Store selection algorithm",
         "store_dir_select_algorithm",
         "select",
-        _tunable_choice_or_default("store_dir_select_algorithm", ("least-load", "round-robin"), "least-load"),
-        _posted_choice_reader("store_dir_select_algorithm", allowed=("least-load", "round-robin"), default="least-load"),
+        _tunable_choice_or_default(
+            "store_dir_select_algorithm", ("least-load", "round-robin"), "least-load",
+        ),
+        _posted_choice_reader(
+            "store_dir_select_algorithm",
+            allowed=("least-load", "round-robin"),
+            default="least-load",
+        ),
         choices=STORE_DIR_SELECT_CHOICES,
         help_text="Use round-robin when you intentionally mix unequal cache_dir sizes.",
     ),
@@ -762,8 +795,12 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "Memory cache mode",
         "memory_cache_mode",
         "select",
-        _tunable_choice_or_default("memory_cache_mode", ("always", "disk", "network"), "always"),
-        _posted_choice_reader("memory_cache_mode", allowed=("always", "disk", "network"), default="always"),
+        _tunable_choice_or_default(
+            "memory_cache_mode", ("always", "disk", "network"), "always",
+        ),
+        _posted_choice_reader(
+            "memory_cache_mode", allowed=("always", "disk", "network"), default="always",
+        ),
         choices=MEMORY_CACHE_MODE_CHOICES,
         help_text="Keep the most useful recently fetched objects in memory.",
     ),
@@ -1017,7 +1054,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "Cache policy ACL rules",
         "cache / send_hit / store_miss",
         "textarea",
-        _tunable_or_default_if_none("cache_policy_rules_text", DEFAULT_CACHE_POLICY_RULES),
+        _tunable_or_default_if_none(
+            "cache_policy_rules_text", DEFAULT_CACHE_POLICY_RULES,
+        ),
         _posted_multiline_reader("cache_policy_rules_text"),
         rows=14,
         help_text="Multi-line ACL block for cache, send_hit, and store_miss policy.",
@@ -1502,8 +1541,14 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "on_unsupported_protocol action",
         "on_unsupported_protocol",
         "select",
-        _tunable_choice_or_default("on_unsupported_protocol_action", ("respond", "tunnel"), "respond"),
-        _posted_choice_reader("on_unsupported_protocol_action", allowed=("respond", "tunnel"), default="respond"),
+        _tunable_choice_or_default(
+            "on_unsupported_protocol_action", ("respond", "tunnel"), "respond",
+        ),
+        _posted_choice_reader(
+            "on_unsupported_protocol_action",
+            allowed=("respond", "tunnel"),
+            default="respond",
+        ),
         choices=ON_UNSUPPORTED_PROTOCOL_CHOICES,
         help_text="Global action for strange intercepted traffic. Squid's default is to respond with an error.",
     ),
@@ -1841,7 +1886,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "tls_outgoing_options",
         "tls_outgoing_options",
         "text",
-        _tunable_or_default_if_none("tls_outgoing_options_line", "min-version=1.2 options=NO_SSLv3"),
+        _tunable_or_default_if_none(
+            "tls_outgoing_options_line", "min-version=1.2 options=NO_SSLv3",
+        ),
         _posted_text_reader("tls_outgoing_options_line"),
         help_text="Origin-facing TLS baseline. Clear to use Squid's own default.",
     ),
@@ -1889,8 +1936,14 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "sslproxy_cert_sign_hash",
         "sslproxy_cert_sign_hash",
         "select",
-        _tunable_choice_or_default("sslproxy_cert_sign_hash", ("sha256", "sha512", "sha1", "md5"), "sha256"),
-        _posted_choice_reader("sslproxy_cert_sign_hash", allowed=("sha256", "sha512", "sha1", "md5"), default="sha256"),
+        _tunable_choice_or_default(
+            "sslproxy_cert_sign_hash", ("sha256", "sha512", "sha1", "md5"), "sha256",
+        ),
+        _posted_choice_reader(
+            "sslproxy_cert_sign_hash",
+            allowed=("sha256", "sha512", "sha1", "md5"),
+            default="sha256",
+        ),
         choices=SSL_CERT_SIGN_HASH_CHOICES,
         help_text="Hash used when signing generated MITM certificates.",
     ),
@@ -2340,8 +2393,12 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "relaxed_header_parser",
         "relaxed_header_parser",
         "select",
-        _tunable_choice_or_default("relaxed_header_parser_mode", ("on", "warn", "off"), "on"),
-        _posted_choice_reader("relaxed_header_parser_mode", allowed=("on", "warn", "off"), default="on"),
+        _tunable_choice_or_default(
+            "relaxed_header_parser_mode", ("on", "warn", "off"), "on",
+        ),
+        _posted_choice_reader(
+            "relaxed_header_parser_mode", allowed=("on", "warn", "off"), default="on",
+        ),
         choices=RELAXED_HEADER_PARSER_CHOICES,
         help_text="On by default; set to warn to surface malformed traffic without rejecting it.",
     ),
@@ -2352,8 +2409,14 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "uri_whitespace",
         "uri_whitespace",
         "select",
-        _tunable_choice_or_default("uri_whitespace_mode", ("strip", "deny", "allow", "encode", "chop"), "strip"),
-        _posted_choice_reader("uri_whitespace_mode", allowed=("strip", "deny", "allow", "encode", "chop"), default="strip"),
+        _tunable_choice_or_default(
+            "uri_whitespace_mode", ("strip", "deny", "allow", "encode", "chop"), "strip",
+        ),
+        _posted_choice_reader(
+            "uri_whitespace_mode",
+            allowed=("strip", "deny", "allow", "encode", "chop"),
+            default="strip",
+        ),
         choices=URI_WHITESPACE_CHOICES,
         help_text="Tolerant default keeps generic URIs working while normalizing unsafe whitespace.",
     ),
@@ -2364,7 +2427,10 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "http_upgrade_request_protocols rules",
         "http_upgrade_request_protocols",
         "textarea",
-        _tunable_or_default_if_none("http_upgrade_request_protocols_rules_text", DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES),
+        _tunable_or_default_if_none(
+            "http_upgrade_request_protocols_rules_text",
+            DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
+        ),
         _posted_multiline_reader("http_upgrade_request_protocols_rules_text"),
         rows=6,
         placeholder=DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
@@ -2628,7 +2694,7 @@ FORM_KIND_FIELD_SPECS: dict[str, tuple[ConfigFieldSpec, ...]] = {
 # Keep workers accepted on the caching form path for backward compatibility with
 # older tests and any bookmarked/manual POST workflows, even though the UI now
 # presents it under the Performance section.
-FORM_KIND_FIELD_SPECS["caching"] = FORM_KIND_FIELD_SPECS["caching"] + (FIELD_MAP["workers"],)
+FORM_KIND_FIELD_SPECS["caching"] += (FIELD_MAP["workers"],)
 
 
 CONFIG_UI_SECTIONS: tuple[UiSectionSpec, ...] = (
@@ -2955,7 +3021,11 @@ CONFIG_UI_SECTIONS: tuple[UiSectionSpec, ...] = (
                 key="headers",
                 title="Forwarding headers",
                 description="How Squid emits and trusts client-address metadata.",
-                field_keys=("forwarded_for_value", "via_on", "follow_x_forwarded_for_value"),
+                field_keys=(
+                    "forwarded_for_value",
+                    "via_on",
+                    "follow_x_forwarded_for_value",
+                ),
             ),
             UiGroupSpec(
                 key="logging",
@@ -3048,7 +3118,12 @@ CONFIG_UI_SECTIONS: tuple[UiSectionSpec, ...] = (
                 key="identity",
                 title="Identity and compatibility",
                 description="How Squid names itself, exposes user support contact, and handles some Vary edge cases.",
-                field_keys=("visible_hostname", "cache_mgr_email", "httpd_suppress_version_string_on", "vary_ignore_expire_on"),
+                field_keys=(
+                    "visible_hostname",
+                    "cache_mgr_email",
+                    "httpd_suppress_version_string_on",
+                    "vary_ignore_expire_on",
+                ),
             ),
         ),
     ),
@@ -3090,7 +3165,9 @@ def normalize_safe_form_kind(form_kind: object | None) -> str:
 
 def _normalize_template_options(options: OptionMap) -> OptionMap:
     explicit_port = _clamp_port(options.get("explicit_proxy_port"), 3128)
-    intercept_port = _clamp_port(options.get("intercept_port"), _default_intercept_port(explicit_port))
+    intercept_port = _clamp_port(
+        options.get("intercept_port"), _default_intercept_port(explicit_port),
+    )
     if intercept_port == explicit_port:
         intercept_port = _default_intercept_port(explicit_port)
         if intercept_port == explicit_port:
@@ -3098,15 +3175,27 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
     options["explicit_proxy_port"] = explicit_port
     options["intercept_port"] = intercept_port
     options["intercept_enabled_on"] = bool(options.get("intercept_enabled_on", False))
-    https_intercept_port = _clamp_port(options.get("https_intercept_port"), 3130 if explicit_port != 3130 else 3131)
-    used_ports = {explicit_port, intercept_port if options["intercept_enabled_on"] else None}
+    https_intercept_port = _clamp_port(
+        options.get("https_intercept_port"), 3130 if explicit_port != 3130 else 3131,
+    )
+    used_ports = {
+        explicit_port,
+        intercept_port if options["intercept_enabled_on"] else None,
+    }
     while https_intercept_port in used_ports:
         https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
     options["https_intercept_port"] = https_intercept_port
-    options["https_intercept_enabled_on"] = bool(options.get("https_intercept_enabled_on", False))
-    options["https_intercept_splice_only_on"] = bool(options.get("https_intercept_splice_only_on", False)) and options["https_intercept_enabled_on"]
+    options["https_intercept_enabled_on"] = bool(
+        options.get("https_intercept_enabled_on", False),
+    )
+    options["https_intercept_splice_only_on"] = (
+        bool(options.get("https_intercept_splice_only_on", False))
+        and options["https_intercept_enabled_on"]
+    )
 
-    range_value = _normalize_range_offset_limit_value(options.get("range_offset_limit_value"))
+    range_value = _normalize_range_offset_limit_value(
+        options.get("range_offset_limit_value"),
+    )
     if not bool(options.get("range_cache_on", True)):
         range_value = "0"
     elif not _range_value_enabled(range_value):
@@ -3128,7 +3217,9 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
 
 
 def build_template_options(tunables: TunableMap, *, max_workers: int) -> dict[str, Any]:
-    options = {field.key: field.resolver(tunables, max_workers) for field in CONFIG_FIELDS}
+    options = {
+        field.key: field.resolver(tunables, max_workers) for field in CONFIG_FIELDS
+    }
     return dict(_normalize_template_options(options))
 
 
@@ -3162,6 +3253,9 @@ def parse_cache_override_form(form: FormMap) -> dict[str, bool]:
     overrides: dict[str, bool] = {}
     for field in CACHE_OVERRIDE_FIELDS:
         modern_on = form.get(field) == "on"
-        legacy_on = any(form.get(legacy_field) == "on" for legacy_field in _LEGACY_CACHE_OVERRIDE_FORM_FIELDS.get(field, ()))
+        legacy_on = any(
+            form.get(legacy_field) == "on"
+            for legacy_field in _LEGACY_CACHE_OVERRIDE_FORM_FIELDS.get(field, ())
+        )
         overrides[field] = modern_on or legacy_on
     return overrides

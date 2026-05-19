@@ -1,24 +1,25 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import ipaddress
+import logging
 import os
+import pathlib
 import re
 import threading
 import time
 import urllib.request
-from urllib.parse import urlparse
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-
-import logging
+from typing import Any
+from urllib.parse import urlparse
 
 from services.db import DATABASE_ERRORS, connect
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_int as _env_int, now_ts as _now
-
+from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
 
@@ -29,21 +30,22 @@ def _is_internal_host(hostname: str) -> bool:
     if not h:
         return True
     # Block common localhost patterns
-    if h in ("localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"):
+    if h in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}:
         return True
     # Block loopback and link-local ranges
     try:
         ip = ipaddress.ip_address(h)
         return (
-            ip.is_loopback or ip.is_private or ip.is_reserved
-            or ip.is_link_local or ip.is_multicast
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_reserved
+            or ip.is_link_local
+            or ip.is_multicast
         )
     except ValueError:
         pass
     # Block internal-looking hostnames
-    if h.endswith(".local") or h.endswith(".internal") or h.endswith(".localhost"):
-        return True
-    return False
+    return bool(h.endswith((".local", ".internal", ".localhost")))
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ _DEFAULT_SETTINGS = {
     "cache_ttl": "3600",
     "cache_max": "200000",
 }
+
+
 def _event_key(ts: int, src_ip: str, url: str, http_status: int) -> str:
     raw = f"{int(ts)}|{src_ip}|{url}|{int(http_status)}"
     return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
@@ -84,7 +88,7 @@ class AdblockStore:
         update_interval_seconds: int = 6 * 60 * 60,
         cicap_access_log_path: str = "/var/log/cicap-access.log",
         blocklog_retention_days: int = 30,
-    ):
+    ) -> None:
         self.lists_dir = lists_dir
         self.update_interval_seconds = update_interval_seconds
         self.cicap_access_log_path = cicap_access_log_path
@@ -98,7 +102,7 @@ class AdblockStore:
         return connect()
 
     def init_db(self) -> None:
-        os.makedirs(self.lists_dir, exist_ok=True)
+        pathlib.Path(self.lists_dir).mkdir(exist_ok=True, parents=True)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -112,7 +116,7 @@ class AdblockStore:
                     bytes BIGINT NOT NULL DEFAULT 0,
                     rules BIGINT NOT NULL DEFAULT 0
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -120,7 +124,7 @@ class AdblockStore:
                     k VARCHAR(64) PRIMARY KEY,
                     v TEXT NOT NULL
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -130,7 +134,7 @@ class AdblockStore:
                     v BIGINT NOT NULL
                     , PRIMARY KEY(proxy_id, k)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -138,7 +142,7 @@ class AdblockStore:
                     k VARCHAR(64) PRIMARY KEY,
                     v TEXT NOT NULL
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -149,7 +153,7 @@ class AdblockStore:
                     blocked BIGINT NOT NULL,
                     PRIMARY KEY(proxy_id, day, list_key)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -169,7 +173,7 @@ class AdblockStore:
                     KEY idx_adblock_events_proxy_ts (proxy_id, ts, id),
                     UNIQUE KEY idx_adblock_events_proxy_uniq (proxy_id, event_key)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -179,7 +183,7 @@ class AdblockStore:
                     v TEXT NOT NULL,
                     PRIMARY KEY(proxy_id, k)
                 )
-                """
+                """,
             )
 
             for key, url in _DEFAULT_LISTS.items():
@@ -198,15 +202,25 @@ class AdblockStore:
                     (k, v),
                 )
 
-            conn.execute("INSERT IGNORE INTO adblock_meta(k, v) VALUES('settings_version','1')")
-            conn.execute("INSERT IGNORE INTO adblock_meta(k, v) VALUES('refresh_requested','0')")
+            conn.execute(
+                "INSERT IGNORE INTO adblock_meta(k, v) VALUES('settings_version','1')",
+            )
+            conn.execute(
+                "INSERT IGNORE INTO adblock_meta(k, v) VALUES('refresh_requested','0')",
+            )
             proxy_id = get_proxy_id()
             for k in ("hits", "misses", "evictions"):
                 conn.execute(
                     "INSERT IGNORE INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s,%s,0)",
                     (proxy_id, k),
                 )
-            for key in ("cache_flush_requested", "cache_last_flush", "cache_current_size", "cicap_access_pos", "cicap_access_inode"):
+            for key in (
+                "cache_flush_requested",
+                "cache_last_flush",
+                "cache_current_size",
+                "cicap_access_pos",
+                "cicap_access_inode",
+            ):
                 conn.execute(
                     "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,'0')",
                     (proxy_id, key),
@@ -249,7 +263,7 @@ class AdblockStore:
                             "SELECT COUNT(*) FROM adblock_events WHERE proxy_id=%s",
                             (get_proxy_id(),),
                         ).fetchone()[0]
-                        or 0
+                        or 0,
                     )
                     if n == 0:
                         self._seed_from_recent_log(conn)
@@ -261,7 +275,11 @@ class AdblockStore:
                     message="Adblock blocklog seed failed",
                 )
 
-            t = threading.Thread(target=self._blocklog_tail_loop, name="adblock-cicap-tailer", daemon=True)
+            t = threading.Thread(
+                target=self._blocklog_tail_loop,
+                name="adblock-cicap-tailer",
+                daemon=True,
+            )
             t.start()
             self._blocklog_started = True
 
@@ -275,9 +293,9 @@ class AdblockStore:
                 self._insert_event(conn, row)
         self._prune_events(conn)
 
-    def _read_last_lines(self, path: str, *, max_lines: int) -> List[str]:
+    def _read_last_lines(self, path: str, *, max_lines: int) -> list[str]:
         try:
-            with open(path, "rb") as f:
+            with pathlib.Path(path).open("rb") as f:
                 f.seek(0, os.SEEK_END)
                 end = f.tell()
                 # Read up to ~1MB from the end and split to lines.
@@ -298,7 +316,7 @@ class AdblockStore:
         while True:
             try:
                 path = self.cicap_access_log_path
-                if path and os.path.exists(path):
+                if path and pathlib.Path(path).exists():
                     with self._connect() as conn:
                         self._ingest_new_cicap_lines(conn)
             except DATABASE_ERRORS:
@@ -339,7 +357,7 @@ class AdblockStore:
         except Exception:
             pos = 0
 
-        if inode != 0 and last_inode != 0 and inode != last_inode:
+        if inode != 0 and last_inode not in {0, inode}:
             # Log rotated/recreated.
             pos = 0
         if size < pos:
@@ -348,7 +366,7 @@ class AdblockStore:
 
         # Read incremental bytes from last pos.
         try:
-            with open(path, "rb") as f:
+            with pathlib.Path(path).open("rb") as f:
                 f.seek(pos, os.SEEK_SET)
                 data = f.read()
                 new_pos = f.tell()
@@ -362,10 +380,8 @@ class AdblockStore:
                 self._set_proxy_meta(conn, "cicap_access_pos", str(pos))
                 conn.commit()
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     conn.rollback()
-                except Exception:
-                    pass
             return
 
         created_ts = _now()
@@ -395,7 +411,7 @@ class AdblockStore:
                     int(row.get("icap_status") or 0),
                     str(row.get("raw") or ""),
                     created_ts,
-                )
+                ),
             )
 
         try:
@@ -418,13 +434,11 @@ class AdblockStore:
                     self._last_events_prune_ts = created_ts
             conn.commit()
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 conn.rollback()
-            except Exception:
-                pass
             raise
 
-    def _parse_cicap_access_line(self, line: str) -> Optional[Dict[str, Any]]:
+    def _parse_cicap_access_line(self, line: str) -> dict[str, Any] | None:
         raw = (line or "").strip("\r\n")
         if not raw:
             return None
@@ -473,7 +487,9 @@ class AdblockStore:
         except Exception:
             ts = 0
 
-        src_ip = http_client_ip if http_client_ip and http_client_ip != "-" else remote_ip
+        src_ip = (
+            http_client_ip if http_client_ip and http_client_ip != "-" else remote_ip
+        )
         src_ip = src_ip or "-"
 
         method = "-"
@@ -492,7 +508,9 @@ class AdblockStore:
             http_status = 403
 
         try:
-            icap_status = int(icap_status_s) if (icap_status_s or "").strip().isdigit() else 0
+            icap_status = (
+                int(icap_status_s) if (icap_status_s or "").strip().isdigit() else 0
+            )
         except Exception:
             icap_status = 0
 
@@ -511,7 +529,7 @@ class AdblockStore:
             "raw": raw,
         }
 
-    def _insert_event(self, conn, row: Dict[str, Any]) -> None:
+    def _insert_event(self, conn, row: dict[str, Any]) -> None:
         dedupe_key = _event_key(
             int(row.get("ts") or 0),
             str(row.get("src_ip") or "-"),
@@ -553,9 +571,11 @@ class AdblockStore:
         with self._connect() as conn:
             conn.execute("DELETE FROM adblock_events WHERE ts < %s", (int(cutoff),))
             # Daily rollup rows are small, but keep them aligned with the same retention.
-            conn.execute("DELETE FROM adblock_counts WHERE day < %s", (int(cutoff_day),))
+            conn.execute(
+                "DELETE FROM adblock_counts WHERE day < %s", (int(cutoff_day),),
+            )
 
-    def list_recent_block_events(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_recent_block_events(self, limit: int = 100) -> list[dict[str, Any]]:
         self.init_db()
         try:
             limit_i = int(limit)
@@ -575,21 +595,20 @@ class AdblockStore:
                 (get_proxy_id(), limit_i),
             ).fetchall()
 
-        out: List[Dict[str, Any]] = []
-        for r in rows:
-            out.append(
-                {
-                    "ts": int(r[0] or 0),
-                    "src_ip": str(r[1] or "-"),
-                    "method": str(r[2] or "-"),
-                    "url": str(r[3] or ""),
-                    "result": "BLOCKED",
-                    "status": str(int(r[4] or 0)),
-                }
-            )
+        out: list[dict[str, Any]] = [
+            {
+                "ts": int(r[0] or 0),
+                "src_ip": str(r[1] or "-"),
+                "method": str(r[2] or "-"),
+                "url": str(r[3] or ""),
+                "result": "BLOCKED",
+                "status": str(int(r[4] or 0)),
+            }
+            for r in rows
+        ]
         return out
 
-    def get_settings(self) -> Dict[str, Any]:
+    def get_settings(self) -> dict[str, Any]:
         def as_int(s: str, default: int) -> int:
             try:
                 return int((s or "").strip())
@@ -601,8 +620,14 @@ class AdblockStore:
             m = {str(r[0]): str(r[1]) for r in rows}
 
         enabled = (m.get("enabled") or _DEFAULT_SETTINGS["enabled"]).strip() == "1"
-        cache_ttl = as_int(m.get("cache_ttl") or _DEFAULT_SETTINGS["cache_ttl"], int(_DEFAULT_SETTINGS["cache_ttl"]))
-        cache_max = as_int(m.get("cache_max") or _DEFAULT_SETTINGS["cache_max"], int(_DEFAULT_SETTINGS["cache_max"]))
+        cache_ttl = as_int(
+            m.get("cache_ttl") or _DEFAULT_SETTINGS["cache_ttl"],
+            int(_DEFAULT_SETTINGS["cache_ttl"]),
+        )
+        cache_max = as_int(
+            m.get("cache_max") or _DEFAULT_SETTINGS["cache_max"],
+            int(_DEFAULT_SETTINGS["cache_max"]),
+        )
 
         # Clamp to safe ranges.
         cache_ttl = max(0, min(7 * 24 * 3600, cache_ttl))
@@ -636,7 +661,9 @@ class AdblockStore:
             self._bump_version(conn)
 
     def _bump_version(self, conn) -> None:
-        cur = conn.execute("SELECT v FROM adblock_meta WHERE k='settings_version'").fetchone()
+        cur = conn.execute(
+            "SELECT v FROM adblock_meta WHERE k='settings_version'",
+        ).fetchone()
         try:
             v = int(cur[0]) if cur else 1
         except Exception:
@@ -656,7 +683,7 @@ class AdblockStore:
     def clear_refresh_requested(self) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') ON DUPLICATE KEY UPDATE v=VALUES(v)"
+                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') ON DUPLICATE KEY UPDATE v=VALUES(v)",
             )
 
     def request_cache_flush(self) -> None:
@@ -672,7 +699,9 @@ class AdblockStore:
 
     def get_settings_version(self) -> int:
         with self._connect() as conn:
-            row = conn.execute("SELECT v FROM adblock_meta WHERE k='settings_version'").fetchone()
+            row = conn.execute(
+                "SELECT v FROM adblock_meta WHERE k='settings_version'",
+            ).fetchone()
             try:
                 return int(row[0]) if row else 1
             except Exception:
@@ -680,7 +709,9 @@ class AdblockStore:
 
     def get_refresh_requested(self) -> int:
         with self._connect() as conn:
-            row = conn.execute("SELECT v FROM adblock_meta WHERE k='refresh_requested'").fetchone()
+            row = conn.execute(
+                "SELECT v FROM adblock_meta WHERE k='refresh_requested'",
+            ).fetchone()
             try:
                 return int(row[0]) if row else 0
             except Exception:
@@ -697,10 +728,10 @@ class AdblockStore:
             except Exception:
                 return 0
 
-    def list_statuses(self) -> List[ListStatus]:
+    def list_statuses(self) -> list[ListStatus]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT `key`, url, enabled, last_success, last_attempt, last_error, bytes, rules FROM adblock_lists ORDER BY `key`"
+                "SELECT `key`, url, enabled, last_success, last_attempt, last_error, bytes, rules FROM adblock_lists ORDER BY `key`",
             ).fetchall()
             return [
                 ListStatus(
@@ -716,15 +747,20 @@ class AdblockStore:
                 for r in rows
             ]
 
-    def set_enabled(self, enabled_map: Dict[str, bool]) -> None:
+    def set_enabled(self, enabled_map: dict[str, bool]) -> None:
         with self._connect() as conn:
-            rows = [(1 if enabled else 0, key) for key, enabled in (enabled_map or {}).items()]
+            rows = [
+                (1 if enabled else 0, key)
+                for key, enabled in (enabled_map or {}).items()
+            ]
             if rows:
-                conn.executemany("UPDATE adblock_lists SET enabled=%s WHERE `key`=%s", rows)
+                conn.executemany(
+                    "UPDATE adblock_lists SET enabled=%s WHERE `key`=%s", rows,
+                )
             self._bump_version(conn)
 
     def list_path(self, key: str) -> str:
-        safe = "".join([c for c in (key or "") if c.isalnum() or c in ("-", "_")])
+        safe = "".join([c for c in (key or "") if c.isalnum() or c in {"-", "_"}])
         return os.path.join(self.lists_dir, f"{safe}.txt")
 
     def record_block(self, list_key: str) -> None:
@@ -738,7 +774,7 @@ class AdblockStore:
                 (get_proxy_id(), day, list_key),
             )
 
-    def record_blocks_bulk(self, counts: Dict[str, int]) -> None:
+    def record_blocks_bulk(self, counts: dict[str, int]) -> None:
         """Bulk increment blocked counters.
 
         This is meant for the ICAP hot path: accumulate counts in memory and
@@ -766,13 +802,16 @@ class AdblockStore:
                 rows,
             )
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         now = _now()
         day = int(now // 86400)
         day_ago = day - 1
         proxy_id = get_proxy_id()
         with self._connect() as conn:
-            total = conn.execute("SELECT COALESCE(SUM(blocked),0) FROM adblock_counts WHERE proxy_id=%s", (proxy_id,)).fetchone()[0]
+            total = conn.execute(
+                "SELECT COALESCE(SUM(blocked),0) FROM adblock_counts WHERE proxy_id=%s",
+                (proxy_id,),
+            ).fetchone()[0]
             last_24h = conn.execute(
                 "SELECT COALESCE(SUM(blocked),0) FROM adblock_counts WHERE proxy_id=%s AND day IN (%s,%s)",
                 (proxy_id, day, day_ago),
@@ -801,26 +840,37 @@ class AdblockStore:
             return True
         return (now_ts - status.last_success) >= int(self.update_interval_seconds)
 
-    def download_list(self, key: str, url: str, timeout_seconds: int = 25) -> Tuple[bool, str, int, int]:
+    def download_list(
+        self, key: str, url: str, timeout_seconds: int = 25,
+    ) -> tuple[bool, str, int, int]:
         """Returns (ok, err, bytes, rules)."""
         path = self.list_path(key)
         tmp = path + ".tmp"
         try:
             u = urlparse(url or "")
-            if u.scheme not in ("http", "https"):
+            if u.scheme not in {"http", "https"}:
                 return False, "Only http/https URLs are supported.", 0, 0
             # SSRF protection: block requests to internal/localhost addresses
             if _is_internal_host(u.hostname or ""):
-                return False, "Downloads from internal/localhost addresses are not allowed.", 0, 0
+                return (
+                    False,
+                    "Downloads from internal/localhost addresses are not allowed.",
+                    0,
+                    0,
+                )
 
-            max_bytes = int(os.environ.get("ADBLOCK_MAX_DOWNLOAD_BYTES", str(64 * 1024 * 1024)))
+            max_bytes = int(
+                os.environ.get("ADBLOCK_MAX_DOWNLOAD_BYTES", str(64 * 1024 * 1024)),
+            )
             if max_bytes <= 0:
                 max_bytes = 64 * 1024 * 1024
 
-            req = urllib.request.Request(url, headers={"User-Agent": "squid-flask-proxy/icap-adblock"})
-            list_dir = os.path.dirname(path)
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "squid-flask-proxy/icap-adblock"},
+            )
+            list_dir = pathlib.Path(path).parent
             if list_dir:
-                os.makedirs(list_dir, exist_ok=True)
+                pathlib.Path(list_dir).mkdir(exist_ok=True, parents=True)
 
             total = 0
             with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
@@ -837,22 +887,23 @@ class AdblockStore:
                         message="Failed to parse Content-Length for adblock download",
                     )
 
-                with open(tmp, "wb") as f:
+                with pathlib.Path(tmp).open("wb") as f:
                     while True:
                         chunk = resp.read(256 * 1024)
                         if not chunk:
                             break
                         total += len(chunk)
                         if total > max_bytes:
-                            raise ValueError(f"Download exceeded limit ({max_bytes} bytes).")
+                            msg = f"Download exceeded limit ({max_bytes} bytes)."
+                            raise ValueError(msg)
                         f.write(chunk)
 
-            os.replace(tmp, path)
+            pathlib.Path(tmp).replace(path)
 
             # Rough rule count: ignore comments/blank.
             rules = 0
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as rf:
+                with pathlib.Path(path).open(encoding="utf-8", errors="replace") as rf:
                     for line in rf:
                         s = (line or "").strip()
                         if not s or s.startswith("!"):
@@ -864,12 +915,21 @@ class AdblockStore:
             return True, "", int(total), int(rules)
         except Exception as e:
             try:
-                if os.path.exists(tmp):
-                    os.unlink(tmp)
+                if pathlib.Path(tmp).exists():
+                    pathlib.Path(tmp).unlink()
             except OSError:
                 pass
             logger.exception("Adblock list download failed (key=%s)", key)
-            return False, public_error_message(e, default="Download failed. Check server logs for details.", max_len=400), 0, 0
+            return (
+                False,
+                public_error_message(
+                    e,
+                    default="Download failed. Check server logs for details.",
+                    max_len=400,
+                ),
+                0,
+                0,
+            )
 
     def update_one(self, key: str, force: bool = False) -> bool:
         now_ts = _now()
@@ -892,7 +952,9 @@ class AdblockStore:
             )
             if not self.should_update(status, now_ts, force):
                 return False
-            conn.execute("UPDATE adblock_lists SET last_attempt=%s WHERE `key`=%s", (now_ts, key))
+            conn.execute(
+                "UPDATE adblock_lists SET last_attempt=%s WHERE `key`=%s", (now_ts, key),
+            )
 
         ok, err, b, rules = self.download_list(key, status.url)
         with self._connect() as conn:
@@ -902,11 +964,20 @@ class AdblockStore:
                     (now_ts, int(b), int(rules), key),
                 )
                 return True
-            else:
-                conn.execute("UPDATE adblock_lists SET last_error=%s WHERE `key`=%s", (err[:400], key))
-                return False
+            conn.execute(
+                "UPDATE adblock_lists SET last_error=%s WHERE `key`=%s",
+                (err[:400], key),
+            )
+            return False
 
-    def record_cache_stats(self, *, hits: int = 0, misses: int = 0, evictions: int = 0, size: int | None = None) -> None:
+    def record_cache_stats(
+        self,
+        *,
+        hits: int = 0,
+        misses: int = 0,
+        evictions: int = 0,
+        size: int | None = None,
+    ) -> None:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             if hits:
@@ -927,10 +998,12 @@ class AdblockStore:
             if size is not None:
                 self._set_proxy_meta(conn, "cache_current_size", str(max(0, int(size))))
 
-    def cache_stats(self) -> Dict[str, int]:
+    def cache_stats(self) -> dict[str, int]:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
-            rows = conn.execute("SELECT k, v FROM adblock_cache_stats WHERE proxy_id=%s", (proxy_id,)).fetchall()
+            rows = conn.execute(
+                "SELECT k, v FROM adblock_cache_stats WHERE proxy_id=%s", (proxy_id,),
+            ).fetchall()
             meta_rows = conn.execute(
                 "SELECT k, v FROM adblock_proxy_meta WHERE proxy_id=%s AND k IN ('cache_current_size','cache_last_flush','cache_flush_requested')",
                 (proxy_id,),
@@ -951,7 +1024,7 @@ class AdblockStore:
         return int(self.update_interval_seconds)
 
 
-_store: Optional[AdblockStore] = None
+_store: AdblockStore | None = None
 _store_lock = threading.Lock()
 
 
@@ -962,9 +1035,15 @@ def get_adblock_store() -> AdblockStore:
     with _store_lock:
         if _store is None:
             _store = AdblockStore(
-                lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "/var/lib/squid-flask-proxy/adblock/lists"),
-                update_interval_seconds=_env_int("ADBLOCK_UPDATE_INTERVAL", 6 * 60 * 60),
-                cicap_access_log_path=os.environ.get("CICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
+                lists_dir=os.environ.get(
+                    "ADBLOCK_LISTS_DIR", "/var/lib/squid-flask-proxy/adblock/lists",
+                ),
+                update_interval_seconds=_env_int(
+                    "ADBLOCK_UPDATE_INTERVAL", 6 * 60 * 60,
+                ),
+                cicap_access_log_path=os.environ.get(
+                    "CICAP_ACCESS_LOG", "/var/log/cicap-access.log",
+                ),
                 blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
             )
         return _store

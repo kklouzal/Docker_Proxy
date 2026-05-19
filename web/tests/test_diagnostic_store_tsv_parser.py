@@ -17,15 +17,35 @@ def test_split_tsv_fast_path_accepts_tab_separated_rows() -> None:
     _add_repo_paths()
     from services.diagnostic_store import _split_tsv  # type: ignore
 
-    row = _split_tsv("1710000000	15	10.0.0.5	GET	http://example.com/a	TCP_HIT/200	1234")
+    row = _split_tsv(
+        "1710000000	15	10.0.0.5	GET	http://example.com/a	TCP_HIT/200	1234"
+    )
 
-    assert row == ["1710000000", "15", "10.0.0.5", "GET", "http://example.com/a", "TCP_HIT/200", "1234"]
+    assert row == [
+        "1710000000",
+        "15",
+        "10.0.0.5",
+        "GET",
+        "http://example.com/a",
+        "TCP_HIT/200",
+        "1234",
+    ]
 
 
 def test_split_tsv_fast_path_accepts_escaped_tab_rows() -> None:
     _add_repo_paths()
     from services.diagnostic_store import _split_tsv  # type: ignore
 
-    row = _split_tsv("1710000001\t20\t10.0.0.6\tPOST\thttp://example.org/login\tTCP_MISS/200\t42")
+    row = _split_tsv(
+        "1710000001\t20\t10.0.0.6\tPOST\thttp://example.org/login\tTCP_MISS/200\t42"
+    )
 
-    assert row == ["1710000001", "20", "10.0.0.6", "POST", "http://example.org/login", "TCP_MISS/200", "42"]
+    assert row == [
+        "1710000001",
+        "20",
+        "10.0.0.6",
+        "POST",
+        "http://example.org/login",
+        "TCP_MISS/200",
+        "42",
+    ]

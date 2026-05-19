@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STYLE = REPO_ROOT / "web" / "static" / "style.css"
 TEMPLATES = REPO_ROOT / "web" / "templates"
@@ -48,7 +47,10 @@ def test_observability_overview_explains_fleet_wide_clear_logs() -> None:
 
     assert "Clear Logs" in html
     assert "fleet-wide database maintenance action" in html
-    assert "stored MySQL request, SSL, security, web-filter, ad-block, and performance log history" in html
+    assert (
+        "stored MySQL request, SSL, security, web-filter, ad-block, and performance log history"
+        in html
+    )
     assert "Wiped stored MySQL observability history from" in html
     assert "without changing proxy configuration or policy settings" in html
 
@@ -90,7 +92,10 @@ def test_relevant_ui_pages_warn_that_http3_quic_uses_udp_443() -> None:
 def test_templates_do_not_force_full_width_with_inline_styles() -> None:
     for template in TEMPLATES.glob("*.html"):
         html = template.read_text(encoding="utf-8")
-        assert 'style="grid-column: 1 / -1; justify-self: stretch; width: 100%;"' not in html, template.name
+        assert (
+            'style="grid-column: 1 / -1; justify-self: stretch; width: 100%;"'
+            not in html
+        ), template.name
 
 
 def test_login_page_does_not_advertise_default_credentials_or_fixed_port() -> None:
@@ -114,7 +119,10 @@ def test_tools_nav_links_to_winhttp_registry_builder() -> None:
 
     assert "request.endpoint in ['winhttp_registry_builder']" in html
     assert "url_for('winhttp_registry_builder')" in html
-    assert "Microsoft does not publish a formal byte-for-byte registry binary serialization" in page
+    assert (
+        "Microsoft does not publish a formal byte-for-byte registry binary serialization"
+        in page
+    )
     assert "advproxy JSON" in page
 
 

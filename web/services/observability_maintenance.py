@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from services.db import DATABASE_ERRORS, connect, table_exists
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 OBSERVABILITY_LOG_TABLES: tuple[str, ...] = (
     "diagnostic_requests",
@@ -36,7 +38,8 @@ class ObservabilityLogTableResult:
 def _quote_identifier(identifier: str) -> str:
     value = (identifier or "").strip()
     if not value or not value.replace("_", "").isalnum():
-        raise ValueError(f"Unsafe MySQL identifier: {identifier!r}")
+        msg = f"Unsafe MySQL identifier: {identifier!r}"
+        raise ValueError(msg)
     return f"`{value}`"
 
 
@@ -120,7 +123,7 @@ def public_detail(exc: BaseException) -> str:
     return text[:300] if text else exc.__class__.__name__
 
 
-def clear_observability_logs(*, optimize: bool = False) -> Dict[str, Any]:
+def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:
     """Wipe stored MySQL observability/log history across the whole fleet.
 
     This intentionally does not take a proxy_id. The Observability overview
@@ -133,13 +136,15 @@ def clear_observability_logs(*, optimize: bool = False) -> Dict[str, Any]:
     resets table storage/auto-increment and avoids the long transaction that
     made the first implementation fragile against MySQL read timeouts.
     """
-    table_results: List[ObservabilityLogTableResult] = []
-    failed: List[ObservabilityLogTableResult] = []
+    table_results: list[ObservabilityLogTableResult] = []
+    failed: list[ObservabilityLogTableResult] = []
     total_deleted = 0
 
     for table in OBSERVABILITY_LOG_TABLES:
         if not _table_exists(table):
-            table_results.append(ObservabilityLogTableResult(table=table, status="missing"))
+            table_results.append(
+                ObservabilityLogTableResult(table=table, status="missing"),
+            )
             continue
 
         try:
@@ -149,7 +154,7 @@ def clear_observability_logs(*, optimize: bool = False) -> Dict[str, Any]:
                     table=table,
                     status="cleared",
                     maintenance="truncated",
-                )
+                ),
             )
         except DATABASE_ERRORS:
             status, deleted, detail = _best_effort_delete_fallback(table)

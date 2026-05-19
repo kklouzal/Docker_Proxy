@@ -1,33 +1,47 @@
 from __future__ import annotations
 
-from .admin_route_test_utils import FakeProxyClient, csrf_token, load_admin_app, login_client
+from typing import NoReturn
+
+from .admin_route_test_utils import (
+    FakeProxyClient,
+    csrf_token,
+    load_admin_app,
+    login_client,
+)
 
 
 class RaisingObservabilityQueries:
-    def summary(self, **_kwargs):
-        raise RuntimeError("summary database password=secret")
+    def summary(self, **_kwargs) -> NoReturn:
+        msg = "summary database password=secret"
+        raise RuntimeError(msg)
 
-    def overview_bundle(self, **_kwargs):
-        raise RuntimeError("overview failed")
+    def overview_bundle(self, **_kwargs) -> NoReturn:
+        msg = "overview failed"
+        raise RuntimeError(msg)
 
-    def top_destinations(self, **_kwargs):
-        raise RuntimeError("destinations failed")
+    def top_destinations(self, **_kwargs) -> NoReturn:
+        msg = "destinations failed"
+        raise RuntimeError(msg)
 
-    def ssl_overview(self, **_kwargs):
-        raise RuntimeError("ssl failed")
+    def ssl_overview(self, **_kwargs) -> NoReturn:
+        msg = "ssl failed"
+        raise RuntimeError(msg)
 
 
 class RaisingWebfilterStore:
     def init_db(self) -> None:
-        raise RuntimeError("init failed")
+        msg = "init failed"
+        raise RuntimeError(msg)
 
-    def test_domain(self, _domain: str):
-        raise RuntimeError("internal db password=secret")
+    def test_domain(self, _domain: str) -> NoReturn:
+        msg = "internal db password=secret"
+        raise RuntimeError(msg)
 
 
 class InitFailingAdblockStore:
     def init_db(self) -> None:
-        raise RuntimeError("init failed")
+        msg = "init failed"
+        raise RuntimeError(msg)
 
     def list_statuses(self):
         return []
@@ -39,14 +53,25 @@ class InitFailingAdblockStore:
         return {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
 
     def cache_stats(self):
-        return {"hits": 0, "misses": 0, "evictions": 0, "current_size": 0, "last_flush": 0, "last_flush_req": 0}
+        return {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "current_size": 0,
+            "last_flush": 0,
+            "last_flush_req": 0,
+        }
 
-    def get_update_interval_seconds(self):
+    def get_update_interval_seconds(self) -> int:
         return 3600
 
 
-def test_observability_route_and_export_degrade_to_empty_payloads(monkeypatch, tmp_path) -> None:
-    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=RaisingObservabilityQueries())
+def test_observability_route_and_export_degrade_to_empty_payloads(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, observability_queries=RaisingObservabilityQueries()
+    )
     client = loaded.module.app.test_client()
     login_client(client)
 
@@ -61,12 +86,18 @@ def test_observability_route_and_export_degrade_to_empty_payloads(monkeypatch, t
 
 
 def test_webfilter_test_returns_sanitized_error_json(monkeypatch, tmp_path) -> None:
-    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=RaisingWebfilterStore())
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, webfilter_store=RaisingWebfilterStore()
+    )
     client = loaded.module.app.test_client()
     login_client(client)
     token = csrf_token(client, "/")
 
-    response = client.post("/webfilter/test", json={"domain": "example.com"}, headers={"X-CSRF-Token": token})
+    response = client.post(
+        "/webfilter/test",
+        json={"domain": "example.com"},
+        headers={"X-CSRF-Token": token},
+    )
 
     assert response.status_code == 200
     assert response.json["ok"] is False
@@ -74,7 +105,9 @@ def test_webfilter_test_returns_sanitized_error_json(monkeypatch, tmp_path) -> N
     assert "secret" not in response.json["reason"]
 
 
-def test_clamav_page_and_test_routes_degrade_when_proxy_unavailable(monkeypatch, tmp_path) -> None:
+def test_clamav_page_and_test_routes_degrade_when_proxy_unavailable(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     failing_client = FakeProxyClient(loaded.module, fail=True)
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=failing_client)
@@ -86,12 +119,16 @@ def test_clamav_page_and_test_routes_degrade_when_proxy_unavailable(monkeypatch,
     assert "proxy unavailable" in page.get_data(as_text=True)
 
     token = csrf_token(client, "/clamav")
-    eicar = client.post("/clamav/test-eicar", data={"csrf_token": token}, follow_redirects=False)
+    eicar = client.post(
+        "/clamav/test-eicar", data={"csrf_token": token}, follow_redirects=False
+    )
     assert eicar.status_code in {301, 302, 303}
     assert "eicar=fail" in eicar.headers["Location"]
 
     token = csrf_token(client, "/clamav")
-    icap = client.post("/clamav/test-icap", data={"csrf_token": token}, follow_redirects=False)
+    icap = client.post(
+        "/clamav/test-icap", data={"csrf_token": token}, follow_redirects=False
+    )
     assert icap.status_code in {301, 302, 303}
     assert "icap_sample=fail" in icap.headers["Location"]
 
@@ -100,7 +137,7 @@ def test_clamav_page_caches_unavailable_proxy_health(monkeypatch, tmp_path) -> N
     loaded = load_admin_app(monkeypatch, tmp_path)
 
     class CountingFailingProxyClient(FakeProxyClient):
-        def __init__(self, admin_app):
+        def __init__(self, admin_app) -> None:
             super().__init__(admin_app, fail=True)
             self.health_calls = 0
 
@@ -122,7 +159,9 @@ def test_clamav_page_caches_unavailable_proxy_health(monkeypatch, tmp_path) -> N
     assert "proxy unavailable" in second.get_data(as_text=True)
 
 
-def test_reload_and_cache_clear_record_failure_without_crashing(monkeypatch, tmp_path) -> None:
+def test_reload_and_cache_clear_record_failure_without_crashing(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     failing_client = FakeProxyClient(loaded.module, fail=True)
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=failing_client)
@@ -130,22 +169,35 @@ def test_reload_and_cache_clear_record_failure_without_crashing(monkeypatch, tmp
     login_client(client)
 
     token = csrf_token(client, "/")
-    reload_response = client.post("/reload", data={"csrf_token": token}, follow_redirects=False)
+    reload_response = client.post(
+        "/reload", data={"csrf_token": token}, follow_redirects=False
+    )
     assert reload_response.status_code in {301, 302, 303}
 
     token = csrf_token(client, "/")
-    cache_response = client.post("/cache/clear", data={"csrf_token": token}, follow_redirects=False)
+    cache_response = client.post(
+        "/cache/clear", data={"csrf_token": token}, follow_redirects=False
+    )
     assert cache_response.status_code in {301, 302, 303}
 
-    failure_records = [record for record in loaded.audit_store.records if record["kind"] in {"proxy_sync", "cache_clear"}]
-    assert [record["kind"] for record in failure_records] == ["proxy_sync", "cache_clear"]
+    failure_records = [
+        record
+        for record in loaded.audit_store.records
+        if record["kind"] in {"proxy_sync", "cache_clear"}
+    ]
+    assert [record["kind"] for record in failure_records] == [
+        "proxy_sync",
+        "cache_clear",
+    ]
     assert failure_records[0]["ok"] is True
     assert "Proxy reconciliation queued" in failure_records[0]["detail"]
     assert failure_records[1]["ok"] is False
 
 
 def test_adblock_page_renders_when_init_db_fails(monkeypatch, tmp_path) -> None:
-    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=InitFailingAdblockStore())
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, adblock_store=InitFailingAdblockStore()
+    )
     client = loaded.module.app.test_client()
     login_client(client)
 

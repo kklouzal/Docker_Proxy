@@ -5,7 +5,6 @@ from services.proxy_context import normalize_proxy_id
 from services.proxy_registry import get_proxy_registry
 
 
-
 def _ephemeral_operation(
     proxy_id: object | None,
     *,

@@ -1,17 +1,26 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import threading
 import time
 from subprocess import run
-from typing import Dict, List, Optional, Set, Tuple
 
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.webfilter_core import _DEFAULT_SOURCE_URL, _env_int, _looks_like_host, _next_midnight_ts, _norm_domain, _now, _parent_domains, _parse_whitelist_lines, _whitelist_match, WebFilterStoreBase
 from services.safe_browsing_v5 import DEFAULT_SAFE_BROWSING_LISTS, SafeBrowsingStore
-
+from services.webfilter_core import (
+    _DEFAULT_SOURCE_URL,
+    WebFilterStoreBase,
+    _env_int,
+    _looks_like_host,
+    _next_midnight_ts,
+    _norm_domain,
+    _now,
+    _parent_domains,
+    _parse_whitelist_lines,
+    _whitelist_match,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +37,10 @@ class WebFilterStore(WebFilterStoreBase):
         self,
         squid_include_path: str = "/etc/squid/conf.d/30-webfilter.conf",
         whitelist_path: str = "/var/lib/squid-flask-proxy/webfilter_whitelist.txt",
-    ):
-        super().__init__(squid_include_path=squid_include_path, whitelist_path=whitelist_path)
+    ) -> None:
+        super().__init__(
+            squid_include_path=squid_include_path, whitelist_path=whitelist_path,
+        )
         self._started = False
         self._lock = threading.Lock()
 
@@ -44,10 +55,10 @@ class WebFilterStore(WebFilterStoreBase):
             "url TEXT NOT NULL, "
             "category VARCHAR(128) NOT NULL, "
             f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
-            ")"
+            ")",
         )
 
-    def list_blocked_log(self, limit: int = 200) -> List[Dict[str, object]]:
+    def list_blocked_log(self, limit: int = 200) -> list[dict[str, object]]:
         try:
             self.init_db()
         except Exception:
@@ -59,16 +70,15 @@ class WebFilterStore(WebFilterStoreBase):
                     f"SELECT ts, src_ip, url, category FROM {self._table('blocked_log')} WHERE proxy_id=%s ORDER BY ts DESC LIMIT %s",
                     (get_proxy_id(), int(limit)),
                 ).fetchall()
-                out: List[Dict[str, object]] = []
-                for row in rows:
-                    out.append(
-                        {
-                            "ts": int(row[0]) if row[0] is not None else 0,
-                            "src_ip": str(row[1] or ""),
-                            "url": str(row[2] or ""),
-                            "category": str(row[3] or ""),
-                        }
-                    )
+                out: list[dict[str, object]] = [
+                    {
+                        "ts": int(row[0]) if row[0] is not None else 0,
+                        "src_ip": str(row[1] or ""),
+                        "url": str(row[2] or ""),
+                        "category": str(row[3] or ""),
+                    }
+                    for row in rows
+                ]
                 return out
         except Exception:
             return []
@@ -78,41 +88,56 @@ class WebFilterStore(WebFilterStoreBase):
         *,
         enabled: bool,
         source_url: str,
-        blocked_categories: List[str],
+        blocked_categories: list[str],
         source_provider: str = "auto",
         safe_browsing_enabled: bool = False,
         safe_browsing_api_key: str = "",
-        safe_browsing_lists: List[str] | None = None,
+        safe_browsing_lists: list[str] | None = None,
     ) -> None:
         self.init_db()
         source = (source_url or "").strip()
         provider = (source_provider or "auto").strip().lower()
         if provider not in {"auto", "ut1", "category-dir", "csv"}:
             provider = "auto"
-        categories = [item.strip() for item in (blocked_categories or []) if (item or "").strip()]
+        categories = [
+            item.strip() for item in (blocked_categories or []) if (item or "").strip()
+        ]
         categories = self._resolve_category_aliases(categories)
         categories_csv = ",".join(sorted(set(categories)))
-        gsb_lists = SafeBrowsingStore.normalize_lists(safe_browsing_lists or DEFAULT_SAFE_BROWSING_LISTS)
+        gsb_lists = SafeBrowsingStore.normalize_lists(
+            safe_browsing_lists or DEFAULT_SAFE_BROWSING_LISTS,
+        )
 
         with self._connect() as conn:
             previous_enabled = self._get(conn, "enabled", "0") == "1"
             previous_source = self._get_global_setting_conn(conn, "source_url", "")
-            previous_provider = self._get_global_setting_conn(conn, "source_provider", "auto")
+            previous_provider = self._get_global_setting_conn(
+                conn, "source_provider", "auto",
+            )
 
             self._set(conn, "enabled", "1" if enabled else "0")
             self._set(conn, "source_url", source)
             self._set(conn, "source_provider", provider)
             self._set(conn, "blocked_categories", categories_csv)
-            self._set(conn, "safe_browsing_enabled", "1" if safe_browsing_enabled else "0")
-            self._set(conn, "safe_browsing_api_key", (safe_browsing_api_key or "").strip())
+            self._set(
+                conn, "safe_browsing_enabled", "1" if safe_browsing_enabled else "0",
+            )
+            self._set(
+                conn, "safe_browsing_api_key", (safe_browsing_api_key or "").strip(),
+            )
             self._set(conn, "safe_browsing_lists", ",".join(gsb_lists))
-            if safe_browsing_enabled and (not self._get_global_setting_conn(conn, "safe_browsing_next_run_ts", "0") or self._get_global_setting_conn(conn, "safe_browsing_next_run_ts", "0") == "0"):
+            if safe_browsing_enabled and (
+                not self._get_global_setting_conn(
+                    conn, "safe_browsing_next_run_ts", "0",
+                )
+                or self._get_global_setting_conn(conn, "safe_browsing_next_run_ts", "0")
+                == "0"
+            ):
                 self._set(conn, "safe_browsing_next_run_ts", str(_now()))
 
-            if source and (source != previous_source or provider != previous_provider):
-                self._set_meta(conn, "refresh_requested", "1")
-                self._set(conn, "next_run_ts", str(_next_midnight_ts(_now())))
-            elif enabled and not previous_enabled:
+            if (
+                source and (source != previous_source or provider != previous_provider)
+            ) or (enabled and not previous_enabled):
                 self._set_meta(conn, "refresh_requested", "1")
                 self._set(conn, "next_run_ts", str(_next_midnight_ts(_now())))
             elif enabled:
@@ -128,21 +153,21 @@ class WebFilterStore(WebFilterStoreBase):
     def clear_refresh_requested(self) -> None:
         self._clear_refresh_requested()
 
-    def list_available_categories(self, limit: int = 5000) -> List[Tuple[str, int]]:
+    def list_available_categories(self, limit: int = 5000) -> list[tuple[str, int]]:
         try:
             with self._connect_webcat() as conn:
                 rows = conn.execute(
                     "SELECT category, domains FROM webcat_categories ORDER BY category ASC LIMIT %s",
                     (int(limit),),
                 ).fetchall()
-            out: List[Tuple[str, int]] = []
-            for row in rows:
-                out.append((str(row[0]), int(row[1]) if row[1] is not None else 0))
+            out: list[tuple[str, int]] = [
+                (str(row[0]), int(row[1]) if row[1] is not None else 0) for row in rows
+            ]
             return out
         except Exception:
             return []
 
-    def _lookup_domain_categories(self, domain: str) -> Set[str]:
+    def _lookup_domain_categories(self, domain: str) -> set[str]:
         if not _looks_like_host(domain):
             return set()
 
@@ -154,12 +179,14 @@ class WebFilterStore(WebFilterStoreBase):
                         (candidate,),
                     ).fetchone()
                     if row and row[0]:
-                        return {category for category in str(row[0]).split("|") if category}
+                        return {
+                            category for category in str(row[0]).split("|") if category
+                        }
         except Exception:
             return set()
         return set()
 
-    def test_domain(self, domain: str) -> Dict[str, object]:
+    def test_domain(self, domain: str) -> dict[str, object]:
         normalized = _norm_domain(domain)
         if not _looks_like_host(normalized):
             return {
@@ -202,7 +229,9 @@ class WebFilterStore(WebFilterStoreBase):
                 "blocked_by": "",
             }
 
-        blocked = set(self._resolve_category_aliases(list(settings.blocked_categories or [])))
+        blocked = set(
+            self._resolve_category_aliases(list(settings.blocked_categories or [])),
+        )
         if not blocked:
             return {
                 "ok": True,
@@ -232,7 +261,9 @@ class WebFilterStore(WebFilterStoreBase):
 
         matched = sorted(category for category in categories if category in blocked)
         verdict = "blocked" if matched else "allowed"
-        reason = "Matched blocked category" if matched else "No blocked categories matched"
+        reason = (
+            "Matched blocked category" if matched else "No blocked categories matched"
+        )
         return {
             "ok": True,
             "domain": normalized,
@@ -282,7 +313,9 @@ class WebFilterStore(WebFilterStoreBase):
     def _refresh_requested_conn(self, conn) -> bool:
         return self._get_meta(conn, "refresh_requested", "0") == "1"
 
-    def _run_build(self, source_url: str, *, source_provider: str = "auto") -> Tuple[bool, str]:
+    def _run_build(
+        self, source_url: str, *, source_provider: str = "auto",
+    ) -> tuple[bool, str]:
         if not source_url:
             return False, "source_url is empty"
 
@@ -307,7 +340,9 @@ class WebFilterStore(WebFilterStoreBase):
             if proc.returncode != 0:
                 stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
                 stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
-                return False, (stderr or stdout or f"builder failed rc={proc.returncode}").strip()
+                return False, (
+                    stderr or stdout or f"builder failed rc={proc.returncode}"
+                ).strip()
             return True, ""
         except Exception as exc:
             logger.exception("webfilter build failed")
@@ -323,20 +358,27 @@ class WebFilterStore(WebFilterStoreBase):
                 return
             self._started = True
             self.init_db()
-            thread = threading.Thread(target=self._loop, name="webfilter-updater", daemon=True)
+            thread = threading.Thread(
+                target=self._loop, name="webfilter-updater", daemon=True,
+            )
             thread.start()
-            SafeBrowsingStore().start_background(self._safe_browsing_settings, self._record_safe_browsing_status)
-
+            SafeBrowsingStore().start_background(
+                self._safe_browsing_settings, self._record_safe_browsing_status,
+            )
 
     def _safe_browsing_settings(self):
         self.init_db()
         with self._connect() as conn:
-            return SafeBrowsingStore.settings_from_webfilter(conn, self._get_global_setting_conn)
+            return SafeBrowsingStore.settings_from_webfilter(
+                conn, self._get_global_setting_conn,
+            )
 
     def safe_browsing_status(self):
         return SafeBrowsingStore().status(self._safe_browsing_settings())
 
-    def _record_safe_browsing_status(self, ok: bool, err: str, next_run_ts: int) -> None:
+    def _record_safe_browsing_status(
+        self, ok: bool, err: str, next_run_ts: int,
+    ) -> None:
         self.init_db()
         with self._connect() as conn:
             self._set(conn, "safe_browsing_last_attempt", str(_now()))
@@ -348,17 +390,29 @@ class WebFilterStore(WebFilterStoreBase):
             self._set(conn, "safe_browsing_next_run_ts", str(int(next_run_ts or 0)))
 
     def _loop(self) -> None:
-        disabled_sleep = float(_env_int("WEBFILTER_DISABLED_POLL_SECONDS", 60, minimum=5, maximum=3600))
-        enabled_sleep = float(_env_int("WEBFILTER_ENABLED_POLL_SECONDS", 300, minimum=5, maximum=3600))
-        error_sleep = float(_env_int("WEBFILTER_ERROR_BACKOFF_SECONDS", 30, minimum=5, maximum=300))
+        disabled_sleep = float(
+            _env_int("WEBFILTER_DISABLED_POLL_SECONDS", 60, minimum=5, maximum=3600),
+        )
+        enabled_sleep = float(
+            _env_int("WEBFILTER_ENABLED_POLL_SECONDS", 300, minimum=5, maximum=3600),
+        )
+        error_sleep = float(
+            _env_int("WEBFILTER_ERROR_BACKOFF_SECONDS", 30, minimum=5, maximum=300),
+        )
         while True:
             sleep_seconds = enabled_sleep
             try:
                 self.init_db()
                 with self._connect() as conn:
-                    source_url = self._get_global_setting_conn(conn, "source_url", _DEFAULT_SOURCE_URL)
-                    source_provider = self._get_global_setting_conn(conn, "source_provider", "auto")
-                    next_ts = int(self._get_global_setting_conn(conn, "next_run_ts", "0") or 0)
+                    source_url = self._get_global_setting_conn(
+                        conn, "source_url", _DEFAULT_SOURCE_URL,
+                    )
+                    source_provider = self._get_global_setting_conn(
+                        conn, "source_provider", "auto",
+                    )
+                    next_ts = int(
+                        self._get_global_setting_conn(conn, "next_run_ts", "0") or 0,
+                    )
                     refresh = self._refresh_requested_conn(conn)
                     if next_ts <= 0:
                         next_ts = _next_midnight_ts(_now())
@@ -378,11 +432,17 @@ class WebFilterStore(WebFilterStoreBase):
                     do_build = now >= int(next_ts or 0)
                     next_after = _next_midnight_ts(now + 60)
                     if not do_build:
-                        remaining = max(5, int(next_ts or 0) - now) if int(next_ts or 0) > 0 else int(enabled_sleep)
+                        remaining = (
+                            max(5, int(next_ts or 0) - now)
+                            if int(next_ts or 0) > 0
+                            else int(enabled_sleep)
+                        )
                         sleep_seconds = min(enabled_sleep, float(remaining))
 
                 if do_build:
-                    ok, err = self._run_build(source_url, source_provider=source_provider)
+                    ok, err = self._run_build(
+                        source_url, source_provider=source_provider,
+                    )
                     with self._connect() as conn:
                         self._record_attempt_conn(conn, ok=ok, err=err)
                         if refresh:
@@ -400,7 +460,7 @@ class WebFilterStore(WebFilterStoreBase):
             time.sleep(sleep_seconds)
 
 
-_store: Optional[WebFilterStore] = None
+_store: WebFilterStore | None = None
 _store_lock = threading.Lock()
 
 
@@ -416,10 +476,9 @@ def get_webfilter_store() -> WebFilterStore:
 
 __all__ = [
     "WebFilterStore",
-    "get_webfilter_store",
-    "_norm_domain",
     "_looks_like_host",
+    "_norm_domain",
     "_parse_whitelist_lines",
     "_whitelist_match",
+    "get_webfilter_store",
 ]
-

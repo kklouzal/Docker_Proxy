@@ -6,7 +6,6 @@ import pytest
 
 from .live_test_helpers import LIVE_CONFIG, LiveStackClient
 
-
 pytestmark = pytest.mark.live
 
 
@@ -14,7 +13,9 @@ def _path(response_url: str) -> str:
     return urllib.parse.urlsplit(response_url).path
 
 
-def test_live_admin_security_headers_and_public_health(admin_client: LiveStackClient) -> None:
+def test_live_admin_security_headers_and_public_health(
+    admin_client: LiveStackClient,
+) -> None:
     response = admin_client.admin_request("/")
     assert response.status == 200
     assert response.headers.get("X-Content-Type-Options") == "nosniff"
@@ -30,21 +31,37 @@ def test_live_admin_security_headers_and_public_health(admin_client: LiveStackCl
     assert "Content-Security-Policy" not in health_response.headers
 
 
-def test_live_admin_protected_routes_redirect_to_login_without_session(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_admin_protected_routes_redirect_to_login_without_session(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
-    for path in ("/", "/api/squid-config", "/api/timeseries", "/certs", "/certs/download/ca.crt", "/observability", "/ssl-errors/export"):
+    for path in (
+        "/",
+        "/api/squid-config",
+        "/api/timeseries",
+        "/certs",
+        "/certs/download/ca.crt",
+        "/observability",
+        "/ssl-errors/export",
+    ):
         response = client.admin_request(path, follow_redirects=False)
-        assert response.status in (301, 302, 303, 307, 308)
+        assert response.status in {301, 302, 303, 307, 308}
         location = response.headers.get("Location", "") or ""
-        assert _path(location) == "/login", f"Expected {path} to redirect to login, got {location!r}."
+        assert _path(location) == "/login", (
+            f"Expected {path} to redirect to login, got {location!r}."
+        )
 
 
 def test_live_admin_login_rejects_open_redirects_and_allows_local_next(
     live_stack_ready: dict[str, dict[str, object]],
 ) -> None:
     _ = live_stack_ready
-    for next_url in ("https://evil.example/phish", "//evil.example/phish", "squid/config"):
+    for next_url in (
+        "https://evil.example/phish",
+        "//evil.example/phish",
+        "squid/config",
+    ):
         client = LiveStackClient()
         response = client.login(next_url=next_url)
         assert "evil.example" not in response.url
@@ -55,11 +72,17 @@ def test_live_admin_login_rejects_open_redirects_and_allows_local_next(
     assert _path(local_response.url) == "/squid/config"
 
 
-def test_live_admin_session_cookie_and_csrf_enforcement(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_admin_session_cookie_and_csrf_enforcement(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     login_client = LiveStackClient()
     login_page = login_client.admin_request("/login")
-    token = login_client.refresh_csrf("/login") if not login_client._csrf_token else login_client._csrf_token
+    token = (
+        login_client.refresh_csrf("/login")
+        if not login_client._csrf_token
+        else login_client._csrf_token
+    )
     assert login_page.status == 200
 
     login_response = login_client.admin_request(
@@ -71,12 +94,12 @@ def test_live_admin_session_cookie_and_csrf_enforcement(live_stack_ready: dict[s
                 "password": LIVE_CONFIG.password,
                 "next": "",
                 "csrf_token": token,
-            }
+            },
         ).encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         follow_redirects=False,
     )
-    assert login_response.status in (301, 302, 303, 307, 308)
+    assert login_response.status in {301, 302, 303, 307, 308}
     cookie = login_response.headers.get("Set-Cookie", "")
     assert "HttpOnly" in cookie
     assert "SameSite=Lax" in cookie
@@ -84,7 +107,9 @@ def test_live_admin_session_cookie_and_csrf_enforcement(live_stack_ready: dict[s
     missing_csrf = login_client.admin_request(
         "/administration",
         method="POST",
-        data=urllib.parse.urlencode({"action": "add_user", "username": "u2", "password": "1234"}).encode("utf-8"),
+        data=urllib.parse.urlencode(
+            {"action": "add_user", "username": "u2", "password": "1234"}
+        ).encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     assert missing_csrf.status == 403
@@ -96,19 +121,30 @@ def test_live_admin_session_cookie_and_csrf_enforcement(live_stack_ready: dict[s
         "/login",
         method="POST",
         data=urllib.parse.urlencode(
-            {"username": LIVE_CONFIG.username, "password": LIVE_CONFIG.password, "next": ""}
+            {
+                "username": LIVE_CONFIG.username,
+                "password": LIVE_CONFIG.password,
+                "next": "",
+            },
         ).encode("utf-8"),
-        headers={"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": header_token},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-CSRF-Token": header_token,
+        },
         follow_redirects=False,
     )
-    assert header_response.status in (301, 302, 303, 307, 308)
+    assert header_response.status in {301, 302, 303, 307, 308}
 
     no_session = LiveStackClient()
     rejected_login = no_session.admin_request(
         "/login",
         method="POST",
         data=urllib.parse.urlencode(
-            {"username": LIVE_CONFIG.username, "password": LIVE_CONFIG.password, "next": ""}
+            {
+                "username": LIVE_CONFIG.username,
+                "password": LIVE_CONFIG.password,
+                "next": "",
+            },
         ).encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )

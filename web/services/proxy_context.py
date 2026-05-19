@@ -26,7 +26,7 @@ def get_default_proxy_id() -> str:
         os.environ.get("DEFAULT_PROXY_ID")
         or os.environ.get("PROXY_INSTANCE_ID")
         or os.environ.get("PROXY_ID")
-        or _DEFAULT_PROXY_ID
+        or _DEFAULT_PROXY_ID,
     )
 
 

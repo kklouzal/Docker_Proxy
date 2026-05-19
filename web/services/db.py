@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
+from collections import UserDict
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
 import pymysql  # type: ignore
+from typing_extensions import Self
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 MYSQL_DEFAULT_DB = "squid_proxy"
 
@@ -27,9 +32,9 @@ class DatabaseConfig:
     create_database: bool = True
 
 
-class CompatRow(dict[str, Any]):
-    def __init__(self, columns: Sequence[str], values: Sequence[Any]):
-        super().__init__(zip(columns, values))
+class CompatRow(UserDict[str, Any]):
+    def __init__(self, columns: Sequence[str], values: Sequence[Any]) -> None:
+        super().__init__(zip(columns, values, strict=False))
         self._values = tuple(values)
         self._columns = tuple(columns)
 
@@ -43,9 +48,11 @@ class CompatRow(dict[str, Any]):
 
 
 class CompatResult:
-    def __init__(self, cursor: Any):
+    def __init__(self, cursor: Any) -> None:
         self._cursor = cursor
-        self._columns = tuple((d[0] if d else "") for d in (getattr(cursor, "description", None) or []))
+        self._columns = tuple(
+            (d[0] if d else "") for d in (getattr(cursor, "description", None) or [])
+        )
         self.rowcount = int(getattr(cursor, "rowcount", -1) or 0)
         self.lastrowid = getattr(cursor, "lastrowid", None)
 
@@ -79,7 +86,7 @@ class _EmptyCursor:
 
 
 class CompatConnection:
-    def __init__(self, native: Any, cfg: DatabaseConfig | None = None):
+    def __init__(self, native: Any, cfg: DatabaseConfig | None = None) -> None:
         self.native = native
         self._cfg = cfg
         self._closed = False
@@ -92,7 +99,9 @@ class CompatConnection:
         cur.execute(sql, tuple(params or ()))
         return CompatResult(cur)
 
-    def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> CompatResult:
+    def executemany(
+        self, sql: str, seq_of_params: Iterable[Sequence[Any]],
+    ) -> CompatResult:
         if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
         cur = self.native.cursor()
@@ -122,7 +131,7 @@ class CompatConnection:
             return
         _return_connection(self._cfg, self.native)
 
-    def __enter__(self) -> "CompatConnection":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -159,10 +168,14 @@ class _PoolState:
 _mysql_ready = False
 _mysql_ready_lock = threading.Lock()
 _pool_condition = threading.Condition()
-_pooled_connections: dict[tuple[str, int, str, str, str, str, int, int, int], _PoolState] = {}
+_pooled_connections: dict[
+    tuple[str, int, str, str, str, str, int, int, int], _PoolState,
+] = {}
 
 
-def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+def _env_int(
+    name: str, default: int, *, minimum: int | None = None, maximum: int | None = None,
+) -> int:
     try:
         value = int((os.environ.get(name) or str(default)).strip() or str(default))
     except Exception:
@@ -179,7 +192,7 @@ def _is_retryable_mysql_error(exc: BaseException) -> bool:
         return False
     code = None
     try:
-        if getattr(exc, 'args', None):
+        if getattr(exc, "args", None):
             code = int(exc.args[0])
     except Exception:
         code = None
@@ -187,19 +200,39 @@ def _is_retryable_mysql_error(exc: BaseException) -> bool:
 
 
 def _mysql_connect_retries() -> int:
-    return _env_int('MYSQL_CONNECT_RETRIES', 4, minimum=1, maximum=10)
+    return _env_int("MYSQL_CONNECT_RETRIES", 4, minimum=1, maximum=10)
 
 
 def _mysql_connect_retry_delay_seconds() -> float:
     try:
-        return max(0.05, min(5.0, float((os.environ.get('MYSQL_CONNECT_RETRY_DELAY_SECONDS') or '0.2').strip() or '0.2')))
+        return max(
+            0.05,
+            min(
+                5.0,
+                float(
+                    (
+                        os.environ.get("MYSQL_CONNECT_RETRY_DELAY_SECONDS") or "0.2"
+                    ).strip()
+                    or "0.2",
+                ),
+            ),
+        )
     except Exception:
         return 0.2
 
 
 def _pool_acquire_timeout_seconds() -> float:
     try:
-        return max(1.0, min(600.0, float((os.environ.get('DB_POOL_ACQUIRE_TIMEOUT_SECONDS') or '30').strip() or '30')))
+        return max(
+            1.0,
+            min(
+                600.0,
+                float(
+                    (os.environ.get("DB_POOL_ACQUIRE_TIMEOUT_SECONDS") or "30").strip()
+                    or "30",
+                ),
+            ),
+        )
     except Exception:
         return 30.0
 
@@ -215,10 +248,11 @@ def _retry_mysql_operation(operation):
             last_exc = exc
             if not _is_retryable_mysql_error(exc) or attempt >= attempts - 1:
                 raise
-            time.sleep(min(5.0, base_delay * (2 ** attempt)))
+            time.sleep(min(5.0, base_delay * (2**attempt)))
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError('MySQL operation failed')
+    msg = "MySQL operation failed"
+    raise RuntimeError(msg)
 
 
 def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
@@ -230,10 +264,23 @@ def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
     """
     statements: list[tuple[str, tuple[Any, ...]]] = []
     lock_wait_timeout = _env_int("MYSQL_LOCK_WAIT_TIMEOUT", 10, minimum=1, maximum=300)
-    innodb_lock_wait_timeout = _env_int("MYSQL_INNODB_LOCK_WAIT_TIMEOUT", lock_wait_timeout, minimum=1, maximum=300)
-    wait_timeout = _env_int("MYSQL_SESSION_WAIT_TIMEOUT", 300, minimum=30, maximum=86400)
-    isolation = (os.environ.get("MYSQL_TRANSACTION_ISOLATION") or "READ COMMITTED").strip().upper()
-    if isolation not in {"READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"}:
+    innodb_lock_wait_timeout = _env_int(
+        "MYSQL_INNODB_LOCK_WAIT_TIMEOUT", lock_wait_timeout, minimum=1, maximum=300,
+    )
+    wait_timeout = _env_int(
+        "MYSQL_SESSION_WAIT_TIMEOUT", 300, minimum=30, maximum=86400,
+    )
+    isolation = (
+        (os.environ.get("MYSQL_TRANSACTION_ISOLATION") or "READ COMMITTED")
+        .strip()
+        .upper()
+    )
+    if isolation not in {
+        "READ UNCOMMITTED",
+        "READ COMMITTED",
+        "REPEATABLE READ",
+        "SERIALIZABLE",
+    }:
         isolation = "READ COMMITTED"
     statements.extend(
         [
@@ -241,7 +288,7 @@ def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
             ("SET SESSION lock_wait_timeout=%s", (lock_wait_timeout,)),
             ("SET SESSION wait_timeout=%s", (wait_timeout,)),
             (f"SET SESSION TRANSACTION ISOLATION LEVEL {isolation}", ()),
-        ]
+        ],
     )
     cur = native.cursor()
     for sql, params in statements:
@@ -252,10 +299,8 @@ def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
             # connection is still usable; unsupported guardrails should not
             # prevent startup.
             pass
-    try:
+    with contextlib.suppress(Exception):
         native.rollback()
-    except Exception:
-        pass
 
 
 def _rollback_native_connection(native: Any) -> bool:
@@ -266,7 +311,9 @@ def _rollback_native_connection(native: Any) -> bool:
         return False
 
 
-def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int, int, int]:
+def _pool_key(
+    cfg: DatabaseConfig,
+) -> tuple[str, int, str, str, str, str, int, int, int]:
     return (
         cfg.host,
         int(cfg.port),
@@ -282,14 +329,24 @@ def _pool_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str, str, int, i
 
 def _pool_maxsize() -> int:
     try:
-        return max(0, min(16, int((os.environ.get("DB_POOL_SIZE") or "1").strip() or "1")))
+        return max(
+            0, min(16, int((os.environ.get("DB_POOL_SIZE") or "1").strip() or "1")),
+        )
     except Exception:
         return 1
 
 
 def _pool_max_idle_seconds() -> float:
     try:
-        return max(1.0, min(300.0, float((os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "30").strip() or "30")))
+        return max(
+            1.0,
+            min(
+                300.0,
+                float(
+                    (os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "30").strip() or "30",
+                ),
+            ),
+        )
     except Exception:
         return 30.0
 
@@ -310,10 +367,8 @@ def _open_native_connection(cfg: DatabaseConfig) -> Any:
 
 
 def _close_native_connection(native: Any) -> None:
-    try:
+    with contextlib.suppress(Exception):
         native.close()
-    except Exception:
-        pass
 
 
 def _clear_pooled_connections() -> None:
@@ -337,14 +392,16 @@ def _reap_pool_locked(now: float | None = None) -> None:
             else:
                 keep.append((last_used, native))
         if keep:
-            state.idle = keep[-_pool_maxsize():]
+            state.idle = keep[-_pool_maxsize() :]
         else:
             stale_keys.append(key)
     for key in stale_keys:
         _pooled_connections.pop(key, None)
 
 
-def _release_pool_slot_locked(key: tuple[str, int, str, str, str, str, int, int, int]) -> None:
+def _release_pool_slot_locked(
+    key: tuple[str, int, str, str, str, str, int, int, int],
+) -> None:
     state = _pooled_connections.get(key)
     if state is not None:
         state.active = max(0, state.active - 1)
@@ -363,7 +420,7 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
 
     deadline = time.monotonic() + _pool_acquire_timeout_seconds()
     while True:
-        source = ''
+        source = ""
         native = None
         with _pool_condition:
             _reap_pool_locked()
@@ -372,20 +429,20 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
                 if state.idle:
                     _last_used, native = state.idle.pop()
                     state.active += 1
-                    source = 'idle'
+                    source = "idle"
                     break
                 if state.active < maxsize:
                     state.active += 1
-                    source = 'new'
+                    source = "new"
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise pymysql.OperationalError(1040, 'Database pool exhausted')
+                    raise pymysql.OperationalError(1040, "Database pool exhausted")
                 _pool_condition.wait(timeout=min(remaining, 0.25))
                 _reap_pool_locked()
                 state = _pooled_connections.setdefault(key, _PoolState())
 
-        if source == 'idle':
+        if source == "idle":
             try:
                 native.ping(reconnect=True)
                 _configure_native_connection(native, cfg)
@@ -431,16 +488,21 @@ def _return_connection(cfg: DatabaseConfig, native: Any) -> None:
 
 def _env_bool(name: str, default: str = "0") -> bool:
     v = (os.environ.get(name, default) or "").strip().lower()
-    return v in ("1", "true", "yes", "on")
+    return v in {"1", "true", "yes", "on"}
 
 
 def _parse_database_url(url: str) -> DatabaseConfig:
     parsed = urlparse(url)
     scheme = (parsed.scheme or "").lower()
     if not scheme.startswith("mysql"):
-        raise ValueError(f"Unsupported DATABASE_URL scheme: {scheme}")
+        msg = f"Unsupported DATABASE_URL scheme: {scheme}"
+        raise ValueError(msg)
 
-    db_name = (parsed.path or "").lstrip("/") or os.environ.get("MYSQL_DATABASE") or MYSQL_DEFAULT_DB
+    db_name = (
+        (parsed.path or "").lstrip("/")
+        or os.environ.get("MYSQL_DATABASE")
+        or MYSQL_DEFAULT_DB
+    )
     return DatabaseConfig(
         host=parsed.hostname or os.environ.get("MYSQL_HOST") or "127.0.0.1",
         port=int(parsed.port or int(os.environ.get("MYSQL_PORT") or 3306)),
@@ -448,9 +510,15 @@ def _parse_database_url(url: str) -> DatabaseConfig:
         password=unquote(parsed.password or os.environ.get("MYSQL_PASSWORD") or ""),
         database=db_name,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
-        connect_timeout=int((os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"),
-        read_timeout=int((os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15"),
-        write_timeout=int((os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15"),
+        connect_timeout=int(
+            (os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10",
+        ),
+        read_timeout=int(
+            (os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15",
+        ),
+        write_timeout=int(
+            (os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15",
+        ),
         create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
     )
 
@@ -464,7 +532,8 @@ def resolve_database_config() -> DatabaseConfig:
     mysql_db = (os.environ.get("MYSQL_DATABASE") or "").strip()
     mysql_user = (os.environ.get("MYSQL_USER") or "").strip()
     if not mysql_host and not mysql_db and not mysql_user:
-        raise RuntimeError("MySQL configuration is required. Set DATABASE_URL or MYSQL_HOST/MYSQL_DATABASE.")
+        msg = "MySQL configuration is required. Set DATABASE_URL or MYSQL_HOST/MYSQL_DATABASE."
+        raise RuntimeError(msg)
 
     return DatabaseConfig(
         host=mysql_host or "127.0.0.1",
@@ -473,9 +542,15 @@ def resolve_database_config() -> DatabaseConfig:
         password=os.environ.get("MYSQL_PASSWORD") or "",
         database=mysql_db or MYSQL_DEFAULT_DB,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
-        connect_timeout=int((os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"),
-        read_timeout=int((os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15"),
-        write_timeout=int((os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15"),
+        connect_timeout=int(
+            (os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10",
+        ),
+        read_timeout=int(
+            (os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15",
+        ),
+        write_timeout=int(
+            (os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15",
+        ),
         create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
     )
 
@@ -510,7 +585,7 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
             try:
                 cur = native.cursor()
                 cur.execute(
-                    f"CREATE DATABASE IF NOT EXISTS `{cfg.database}` CHARACTER SET {cfg.charset} COLLATE {cfg.charset}_unicode_ci"
+                    f"CREATE DATABASE IF NOT EXISTS `{cfg.database}` CHARACTER SET {cfg.charset} COLLATE {cfg.charset}_unicode_ci",
                 )
             finally:
                 native.close()

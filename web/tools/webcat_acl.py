@@ -10,18 +10,27 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING
 
-
-HERE = os.path.abspath(os.path.dirname(__file__))
-APP_ROOT = os.path.abspath(os.path.join(HERE, ".."))
+HERE = Path(Path(__file__).parent).resolve()
+APP_ROOT = Path(os.path.join(HERE, "..")).resolve()
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
+import contextlib  # noqa: E402
+
 from services.db import connect  # noqa: E402
 from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
-from services.proxy_context import get_default_proxy_id, normalize_proxy_id  # noqa: E402
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, now_ts as _now  # noqa: E402
+from services.proxy_context import (  # noqa: E402
+    get_default_proxy_id,
+    normalize_proxy_id,
+)
+from services.runtime_helpers import env_float as _env_float  # noqa: E402
+from services.runtime_helpers import env_int as _env_int  # noqa: E402
+from services.runtime_helpers import now_ts as _now  # noqa: E402
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 
 def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
@@ -31,29 +40,39 @@ def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
     parts = [p for p in d.split(".") if p]
     if len(parts) < 2:
         return [d]
-    out = []
     # sub.example.co.uk -> try full, then drop left labels
-    for i in range(0, min(len(parts) - 1, max_levels)):
-        out.append(".".join(parts[i:]))
-    return out
+    return [".".join(parts[i:]) for i in range(min(len(parts) - 1, max_levels))]
 
 
 class _Db:
-    def __init__(self):
+    def __init__(self) -> None:
         self._conn = None
         self._last_open_attempt = 0
-        self._cache_max_entries = _env_int("WEBFILTER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000)
-        self._cache_ttl = _env_float("WEBFILTER_CACHE_TTL_SECONDS", 3600.0, minimum=5.0, maximum=86400.0)
-        self._cache_negative_ttl = _env_float("WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS", 1.0, minimum=0.1, maximum=3600.0)
+        self._cache_max_entries = _env_int(
+            "WEBFILTER_CACHE_ENTRIES", 200000, minimum=1000, maximum=1000000,
+        )
+        self._cache_ttl = _env_float(
+            "WEBFILTER_CACHE_TTL_SECONDS", 3600.0, minimum=5.0, maximum=86400.0,
+        )
+        self._cache_negative_ttl = _env_float(
+            "WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS", 1.0, minimum=0.1, maximum=3600.0,
+        )
         self._cache: OrderedDict[str, tuple[float, tuple[str, ...]]] = OrderedDict()
         self._snapshot_dir = Path(
-            (os.environ.get("WEBFILTER_SNAPSHOT_DIR") or "/var/lib/squid-flask-proxy/webfilter").strip()
-            or "/var/lib/squid-flask-proxy/webfilter"
+            (
+                os.environ.get("WEBFILTER_SNAPSHOT_DIR")
+                or "/var/lib/squid-flask-proxy/webfilter"
+            ).strip()
+            or "/var/lib/squid-flask-proxy/webfilter",
         )
         self._snapshot_path = self._snapshot_dir / "webcat.sqlite"
         self._snapshot_lock_path = self._snapshot_dir / ".webcat.sqlite.lock"
-        self._snapshot_refresh_seconds = _env_float("WEBFILTER_SNAPSHOT_REFRESH_SECONDS", 30.0, minimum=5.0, maximum=3600.0)
-        self._snapshot_lock_stale_seconds = max(60.0, self._snapshot_refresh_seconds * 4.0)
+        self._snapshot_refresh_seconds = _env_float(
+            "WEBFILTER_SNAPSHOT_REFRESH_SECONDS", 30.0, minimum=5.0, maximum=3600.0,
+        )
+        self._snapshot_lock_stale_seconds = max(
+            60.0, self._snapshot_refresh_seconds * 4.0,
+        )
         self._snapshot_started = False
         self._snapshot_start_lock = threading.Lock()
         self._snapshot_attempt_ts = 0.0
@@ -78,16 +97,14 @@ class _Db:
         except Exception:
             return None
 
-    def _discard_remote_conn(self):
+    def _discard_remote_conn(self) -> None:
         conn = self._conn
         self._conn = None
         if conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
-    def _cache_get(self, domain: str) -> Optional[Set[str]]:
+    def _cache_get(self, domain: str) -> set[str] | None:
         entry = self._cache.get(domain)
         if entry is None:
             return None
@@ -98,7 +115,7 @@ class _Db:
         self._cache.move_to_end(domain)
         return set(values)
 
-    def _cache_put(self, domain: str, values: Set[str]) -> Set[str]:
+    def _cache_put(self, domain: str, values: set[str]) -> set[str]:
         ttl = self._cache_ttl if values else self._cache_negative_ttl
         frozen = tuple(sorted(values))
         self._cache[domain] = (time.monotonic() + ttl, frozen)
@@ -122,26 +139,32 @@ class _Db:
             self._ensure_snapshot(force=True)
         except Exception:
             pass
-        thread = threading.Thread(target=self._snapshot_loop, name="webcat-snapshot-refresh", daemon=True)
+        thread = threading.Thread(
+            target=self._snapshot_loop, name="webcat-snapshot-refresh", daemon=True,
+        )
         thread.start()
 
     def _snapshot_available(self) -> bool:
         with self._snapshot_state_lock:
             return self._local_conn is not None
 
-    def _acquire_snapshot_lock(self) -> Optional[int]:
+    def _acquire_snapshot_lock(self) -> int | None:
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
         for _ in range(2):
             try:
-                fd = os.open(self._snapshot_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                try:
+                fd = os.open(
+                    self._snapshot_lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+                with contextlib.suppress(Exception):
                     os.write(fd, str(os.getpid()).encode("ascii", errors="ignore"))
-                except Exception:
-                    pass
                 return fd
             except FileExistsError:
                 try:
-                    stale = (time.time() - self._snapshot_lock_path.stat().st_mtime) > self._snapshot_lock_stale_seconds
+                    stale = (
+                        time.time() - self._snapshot_lock_path.stat().st_mtime
+                    ) > self._snapshot_lock_stale_seconds
                 except Exception:
                     stale = False
                 if not stale:
@@ -152,18 +175,14 @@ class _Db:
                     return None
         return None
 
-    def _release_snapshot_lock(self, fd: Optional[int]) -> None:
+    def _release_snapshot_lock(self, fd: int | None) -> None:
         if fd is not None:
-            try:
+            with contextlib.suppress(Exception):
                 os.close(fd)
-            except Exception:
-                pass
-        try:
+        with contextlib.suppress(Exception):
             self._snapshot_lock_path.unlink(missing_ok=True)
-        except Exception:
-            pass
 
-    def _refresh_snapshot_lock(self, fd: Optional[int]) -> None:
+    def _refresh_snapshot_lock(self, fd: int | None) -> None:
         if fd is None:
             return
         try:
@@ -173,7 +192,9 @@ class _Db:
         except Exception:
             pass
 
-    def _swap_local_snapshot(self, conn: sqlite3.Connection, *, built_ts: int, mtime_ns: int) -> None:
+    def _swap_local_snapshot(
+        self, conn: sqlite3.Connection, *, built_ts: int, mtime_ns: int,
+    ) -> None:
         old_conn: sqlite3.Connection | None = None
         previous_built_ts = 0
         with self._snapshot_state_lock:
@@ -185,10 +206,8 @@ class _Db:
         if int(built_ts or 0) != int(previous_built_ts or 0):
             self._cache.clear()
         if old_conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 old_conn.close()
-            except Exception:
-                pass
 
     def _load_snapshot_from_disk(self, *, force: bool = False) -> bool:
         try:
@@ -199,7 +218,11 @@ class _Db:
             return False
 
         with self._snapshot_state_lock:
-            if not force and self._local_conn is not None and self._local_snapshot_mtime_ns == int(stat.st_mtime_ns):
+            if (
+                not force
+                and self._local_conn is not None
+                and self._local_snapshot_mtime_ns == int(stat.st_mtime_ns)
+            ):
                 return True
 
         conn: sqlite3.Connection | None = None
@@ -212,16 +235,20 @@ class _Db:
             )
             conn.execute("PRAGMA query_only = ON")
             row = conn.execute("SELECT v FROM meta WHERE k='built_ts'").fetchone()
-            built_ts = int(str(row[0]).strip()) if row and row[0] is not None and str(row[0]).strip() else 0
+            built_ts = (
+                int(str(row[0]).strip())
+                if row and row[0] is not None and str(row[0]).strip()
+                else 0
+            )
         except Exception:
             if conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
             return False
 
-        self._swap_local_snapshot(conn, built_ts=built_ts, mtime_ns=int(stat.st_mtime_ns))
+        self._swap_local_snapshot(
+            conn, built_ts=built_ts, mtime_ns=int(stat.st_mtime_ns),
+        )
         return True
 
     def _load_remote_built_ts(self) -> int:
@@ -229,16 +256,20 @@ class _Db:
         if conn is None:
             return 0
         try:
-            row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",)).fetchone()
-            return int(str(row[0]).strip()) if row and row[0] is not None and str(row[0]).strip() else 0
+            row = conn.execute(
+                "SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",),
+            ).fetchone()
+            return (
+                int(str(row[0]).strip())
+                if row and row[0] is not None and str(row[0]).strip()
+                else 0
+            )
         except Exception:
             self._discard_remote_conn()
             return 0
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def _build_snapshot_from_db(self, *, expected_built_ts: int = 0) -> bool:
         lock_fd = self._acquire_snapshot_lock()
@@ -252,7 +283,10 @@ class _Db:
             self._snapshot_dir.mkdir(parents=True, exist_ok=True)
             self._load_snapshot_from_disk(force=True)
             with self._snapshot_state_lock:
-                if self._local_conn is not None and self._local_snapshot_built_ts >= int(expected_built_ts or 0):
+                if (
+                    self._local_conn is not None
+                    and self._local_snapshot_built_ts >= int(expected_built_ts or 0)
+                ):
                     return True
 
             remote_conn = self._connect()
@@ -260,24 +294,26 @@ class _Db:
                 return self._load_snapshot_from_disk(force=True)
 
             if tmp_path.exists():
-                try:
+                with contextlib.suppress(Exception):
                     tmp_path.unlink()
-                except Exception:
-                    pass
 
             local_db = sqlite3.connect(str(tmp_path))
             local_db.execute("PRAGMA journal_mode = OFF")
             local_db.execute("PRAGMA synchronous = OFF")
             local_db.execute("PRAGMA temp_store = MEMORY")
             local_db.execute("PRAGMA locking_mode = EXCLUSIVE")
-            local_db.execute("CREATE TABLE domains (domain TEXT PRIMARY KEY, categories TEXT NOT NULL)")
+            local_db.execute(
+                "CREATE TABLE domains (domain TEXT PRIMARY KEY, categories TEXT NOT NULL)",
+            )
             local_db.execute("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
 
             built_ts = int(expected_built_ts or self._load_remote_built_ts() or _now())
             row_count = 0
             cur = remote_conn.native.cursor()
             try:
-                cur.execute("SELECT domain, categories FROM webcat_domains ORDER BY domain ASC")
+                cur.execute(
+                    "SELECT domain, categories FROM webcat_domains ORDER BY domain ASC",
+                )
                 while True:
                     rows = cur.fetchmany(10000)
                     if not rows:
@@ -289,36 +325,37 @@ class _Db:
                     ]
                     if not batch:
                         continue
-                    local_db.executemany("INSERT OR REPLACE INTO domains(domain, categories) VALUES(?, ?)", batch)
+                    local_db.executemany(
+                        "INSERT OR REPLACE INTO domains(domain, categories) VALUES(?, ?)",
+                        batch,
+                    )
                     row_count += len(batch)
                     self._refresh_snapshot_lock(lock_fd)
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     cur.close()
-                except Exception:
-                    pass
 
-            local_db.execute("INSERT INTO meta(k, v) VALUES('built_ts', ?)", (str(built_ts),))
-            local_db.execute("INSERT INTO meta(k, v) VALUES('row_count', ?)", (str(row_count),))
+            local_db.execute(
+                "INSERT INTO meta(k, v) VALUES('built_ts', ?)", (str(built_ts),),
+            )
+            local_db.execute(
+                "INSERT INTO meta(k, v) VALUES('row_count', ?)", (str(row_count),),
+            )
             local_db.commit()
             local_db.close()
             local_db = None
-            os.replace(tmp_path, self._snapshot_path)
+            Path(tmp_path).replace(self._snapshot_path)
             return self._load_snapshot_from_disk(force=True)
         except Exception:
             self._discard_remote_conn()
             return False
         finally:
             if remote_conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     remote_conn.close()
-                except Exception:
-                    pass
             if local_db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     local_db.close()
-                except Exception:
-                    pass
             try:
                 if tmp_path.exists():
                     tmp_path.unlink()
@@ -328,8 +365,13 @@ class _Db:
 
     def _ensure_snapshot(self, *, force: bool = False) -> bool:
         now = time.monotonic()
-        if not force and (now - self._snapshot_attempt_ts) < self._snapshot_refresh_seconds:
-            return self._load_snapshot_from_disk(force=False) or self._snapshot_available()
+        if (
+            not force
+            and (now - self._snapshot_attempt_ts) < self._snapshot_refresh_seconds
+        ):
+            return (
+                self._load_snapshot_from_disk(force=False) or self._snapshot_available()
+            )
         self._snapshot_attempt_ts = now
 
         remote_built_ts = self._load_remote_built_ts()
@@ -356,27 +398,27 @@ class _Db:
                 pass
             time.sleep(self._snapshot_refresh_seconds)
 
-    def _lookup_categories_from_snapshot(self, normalized: str) -> Optional[Set[str]]:
+    def _lookup_categories_from_snapshot(self, normalized: str) -> set[str] | None:
         with self._snapshot_state_lock:
             conn = self._local_conn
             if conn is None:
                 return None
             for candidate in _parent_domains(normalized):
-                row = conn.execute("SELECT categories FROM domains WHERE domain = ?", (candidate,)).fetchone()
+                row = conn.execute(
+                    "SELECT categories FROM domains WHERE domain = ?", (candidate,),
+                ).fetchone()
                 if row and row[0]:
                     return {c for c in str(row[0]).split("|") if c}
         return set()
 
-    def _lookup_categories_remote(self, normalized: str) -> Set[str]:
+    def _lookup_categories_remote(self, normalized: str) -> set[str]:
         conn = self._connect()
         if conn is None:
             return set()
         candidates = list(_parent_domains(normalized))
         if not candidates:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
             return set()
         placeholders = ",".join(["%s"] * len(candidates))
         params = tuple(candidates + candidates)
@@ -389,16 +431,14 @@ class _Db:
             self._discard_remote_conn()
             return set()
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
         if row and row[0]:
             raw = str(row[0])
             return {c for c in raw.split("|") if c}
         return set()
 
-    def lookup_categories(self, domain: str) -> Set[str]:
+    def lookup_categories(self, domain: str) -> set[str]:
         normalized = _norm_domain(domain)
         if not normalized:
             return set()
@@ -417,15 +457,21 @@ class _Db:
 
 
 class _BlockedLogDb:
-    def __init__(self, *, max_rows: int = 5000):
+    def __init__(self, *, max_rows: int = 5000) -> None:
         self.max_rows = int(max_rows) if max_rows else 5000
         self._conn = None
         self._last_open_attempt = 0
         self._inserts = 0
-        self._batch_size = _env_int("WEBFILTER_LOG_BATCH_SIZE", 128, minimum=1, maximum=2000)
-        self._flush_interval = _env_float("WEBFILTER_LOG_FLUSH_INTERVAL_SECONDS", 1.0, minimum=0.1, maximum=10.0)
+        self._batch_size = _env_int(
+            "WEBFILTER_LOG_BATCH_SIZE", 128, minimum=1, maximum=2000,
+        )
+        self._flush_interval = _env_float(
+            "WEBFILTER_LOG_FLUSH_INTERVAL_SECONDS", 1.0, minimum=0.1, maximum=10.0,
+        )
         self._queue: queue.Queue[tuple[int, str, str, str, str]] = queue.Queue(
-            maxsize=_env_int("WEBFILTER_LOG_QUEUE_SIZE", 10000, minimum=100, maximum=100000)
+            maxsize=_env_int(
+                "WEBFILTER_LOG_QUEUE_SIZE", 10000, minimum=100, maximum=100000,
+            ),
         )
         self._writer_started = False
         self._writer_lock = threading.Lock()
@@ -435,7 +481,7 @@ class _BlockedLogDb:
             os.environ.get("PROXY_INSTANCE_ID")
             or os.environ.get("PROXY_ID")
             or os.environ.get("DEFAULT_PROXY_ID")
-            or get_default_proxy_id()
+            or get_default_proxy_id(),
         )
 
     def _table(self, conn) -> str:
@@ -460,7 +506,7 @@ class _BlockedLogDb:
                 "url TEXT NOT NULL, "
                 "category VARCHAR(128) NOT NULL, "
                 f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
-                ")"
+                ")",
             )
             self._conn = conn
             return conn
@@ -474,7 +520,9 @@ class _BlockedLogDb:
             if self._writer_started:
                 return
             self._writer_started = True
-            t = threading.Thread(target=self._run, name="webfilter-blocked-log-writer", daemon=True)
+            t = threading.Thread(
+                target=self._run, name="webfilter-blocked-log-writer", daemon=True,
+            )
             t.start()
 
     def insert(self, *, ts: int, src_ip: str, url: str, category: str) -> None:
@@ -519,27 +567,28 @@ class _BlockedLogDb:
             except queue.Empty:
                 pass
 
-            if batch and (len(batch) >= self._batch_size or (time.monotonic() - last_flush) >= self._flush_interval):
+            if batch and (
+                len(batch) >= self._batch_size
+                or (time.monotonic() - last_flush) >= self._flush_interval
+            ):
                 if conn is None:
                     conn = self._connect()
                 if conn is not None:
                     try:
                         self._flush(conn, batch)
                     except Exception:
-                        try:
+                        with contextlib.suppress(Exception):
                             conn.rollback()
-                        except Exception:
-                            pass
-                        try:
+                        with contextlib.suppress(Exception):
                             conn.close()
-                        except Exception:
-                            pass
                         conn = None
                 batch.clear()
                 last_flush = time.monotonic()
 
 
-def _parse_line(line: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+def _parse_line(
+    line: str,
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
     """Return (channel_id, src_ip, domain, url, category).
 
     Supported helper input formats:
@@ -548,7 +597,6 @@ def _parse_line(line: str) -> Tuple[Optional[str], Optional[str], Optional[str],
       - "<src_ip> <domain> <url> <category>"
       - "<channel> <src_ip> <domain> <url> <category>"
     """
-
     t = (line or "").strip()
     if not t:
         return None, None, None, None, None
@@ -556,7 +604,7 @@ def _parse_line(line: str) -> Tuple[Optional[str], Optional[str], Optional[str],
     if not parts:
         return None, None, None, None, None
 
-    channel_id: Optional[str] = None
+    channel_id: str | None = None
     if parts and parts[0].isdigit():
         channel_id = parts[0]
         parts = parts[1:]
@@ -572,7 +620,7 @@ def _parse_line(line: str) -> Tuple[Optional[str], Optional[str], Optional[str],
     return channel_id, None, parts[0], None, None
 
 
-def _write_response(channel_id: Optional[str], ok: bool) -> None:
+def _write_response(channel_id: str | None, ok: bool) -> None:
     if channel_id is not None:
         sys.stdout.write(f"{channel_id} {'OK' if ok else 'ERR'}\n")
     else:
@@ -580,10 +628,20 @@ def _write_response(channel_id: Optional[str], ok: bool) -> None:
     sys.stdout.flush()
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Squid external ACL helper for domain category blocking (local categories DB).")
-    ap.add_argument("--log-max-rows", type=int, default=int(os.environ.get("WEBFILTER_LOG_MAX_ROWS", "5000")))
-    ap.add_argument("--fail", choices=["open", "closed"], default=os.environ.get("WEBFILTER_FAIL", "open"))
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description="Squid external ACL helper for domain category blocking (local categories DB).",
+    )
+    ap.add_argument(
+        "--log-max-rows",
+        type=int,
+        default=int(os.environ.get("WEBFILTER_LOG_MAX_ROWS", "5000")),
+    )
+    ap.add_argument(
+        "--fail",
+        choices=["open", "closed"],
+        default=os.environ.get("WEBFILTER_FAIL", "open"),
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     db = _Db()
@@ -614,7 +672,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if match:
             # Best-effort: record the event so the admin UI can show a blocked log.
             # This helper is invoked only for requests that reach the deny ACL chain.
-            log_db.insert(ts=_now(), src_ip=(src_ip or ""), url=(url or domain or ""), category=(category or ""))
+            log_db.insert(
+                ts=_now(),
+                src_ip=(src_ip or ""),
+                url=(url or domain or ""),
+                category=(category or ""),
+            )
         _write_response(ch, match)
 
     return 0

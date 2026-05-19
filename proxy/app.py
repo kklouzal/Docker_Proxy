@@ -1,29 +1,39 @@
 from __future__ import annotations
 
-import os
 import hashlib
+import os
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from flask import Flask, Response, abort, jsonify, request
 from markupsafe import escape
-from werkzeug.exceptions import HTTPException
-
-from proxy.agent import start_agent
-from proxy.runtime import get_runtime
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
-from services.pac_http import PAC_CONTENT_TYPE, client_ip_from_headers, pac_content_disposition, request_host_from_headers, resolve_pac_bytes
+from services.pac_http import (
+    PAC_CONTENT_TYPE,
+    client_ip_from_headers,
+    pac_content_disposition,
+    request_host_from_headers,
+    resolve_pac_bytes,
+)
 from services.policy_requests import get_policy_request_store
 from services.proxy_context import get_proxy_id
 
+from proxy.agent import start_agent
+from proxy.runtime import get_runtime
+
+if TYPE_CHECKING:
+    from werkzeug.exceptions import HTTPException
 
 F = TypeVar("F", bound=Callable[..., Any])
 app = Flask(__name__)
 install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
-_PUBLIC_LISTENER_PATHS = frozenset({"/", "/health", "/proxy.pac", "/wpad.dat", "/policy-request"})
+_PUBLIC_LISTENER_PATHS = frozenset(
+    {"/", "/health", "/proxy.pac", "/wpad.dat", "/policy-request"},
+)
 
 
 def _runtime() -> Any:
@@ -33,10 +43,8 @@ def _runtime() -> Any:
     return runtime
 
 
-
 def _expected_token() -> str:
     return (os.environ.get("PROXY_MANAGEMENT_TOKEN") or "").strip()
-
 
 
 def _provided_token() -> str:
@@ -44,7 +52,6 @@ def _provided_token() -> str:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return (request.headers.get("X-Proxy-Token") or "").strip()
-
 
 
 def _require_management_auth(func: F) -> F:
@@ -61,7 +68,12 @@ def _require_management_auth(func: F) -> F:
 
 
 def _test_mode_enabled() -> bool:
-    return (os.environ.get("ENABLE_TEST_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return (os.environ.get("ENABLE_TEST_MODE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _public_pac_port() -> str:
@@ -106,7 +118,7 @@ def _management_forbidden(exc: HTTPException):
                 "ok": False,
                 "status": "forbidden",
                 "detail": "Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.",
-            }
+            },
         ), 403
     return exc
 
@@ -119,7 +131,7 @@ def _management_not_found(exc: HTTPException):
                 "ok": False,
                 "status": "not_found",
                 "detail": "Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.",
-            }
+            },
         ), 404
     return exc
 
@@ -135,7 +147,7 @@ def health() -> Any:
                     "proxy_api": "ok",
                     "pac": "ok",
                 },
-            }
+            },
         ), 200
     return jsonify({"ok": True, "service": "proxy-management"}), 200
 
@@ -158,7 +170,6 @@ def public_pac() -> Any:
     return response.make_conditional(request)
 
 
-
 @app.route("/policy-request", methods=["POST"])
 def public_policy_request() -> Any:
     if not _is_public_listener_request():
@@ -179,16 +190,32 @@ def public_policy_request() -> Any:
         body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Request submitted</title><style>body{{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}}main{{max-width:760px;margin:48px auto;padding:24px}}.card{{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}}code{{overflow-wrap:anywhere}}</style></head><body><main><section class="card"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #{req.id}: <code>{escape(req.domain)}</code></p></section></main></body></html>"""
         return Response(body, mimetype="text/html; charset=utf-8")
     except Exception as exc:
-        detail = escape(public_error_message(exc, default="The request could not be recorded."))
-        return Response(f"<!doctype html><title>Request failed</title><h1>Request failed</h1><p>{detail}</p>", status=400, mimetype="text/html; charset=utf-8")
+        detail = escape(
+            public_error_message(exc, default="The request could not be recorded."),
+        )
+        return Response(
+            f"<!doctype html><title>Request failed</title><h1>Request failed</h1><p>{detail}</p>",
+            status=400,
+            mimetype="text/html; charset=utf-8",
+        )
+
 
 @app.route("/api/manage/health", methods=["GET"])
 @_require_management_auth
 def manage_health() -> Any:
     try:
         current_runtime = _runtime()
-        full = str(request.args.get("full") or "").strip().lower() in {"1", "true", "yes", "full"}
-        force = str(request.args.get("force") or "").strip().lower() in {"1", "true", "yes"}
+        full = str(request.args.get("full") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "full",
+        }
+        force = str(request.args.get("force") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         if full:
             return jsonify(current_runtime.collect_health(force=force)), 200
         collector = getattr(current_runtime, "collect_navigation_health", None)
@@ -207,7 +234,7 @@ def manage_health() -> Any:
                 "services": {},
                 "state_errors": [detail],
                 "timestamp": int(time.time()),
-            }
+            },
         ), 200
 
 
@@ -221,7 +248,9 @@ def manage_clamav_health() -> Any:
             return jsonify(current_runtime.collect_health()), 200
         return jsonify(collector()), 200
     except Exception as exc:
-        detail = public_error_message(exc, default="Proxy ClamAV health collection failed.")
+        detail = public_error_message(
+            exc, default="Proxy ClamAV health collection failed.",
+        )
         return jsonify(
             {
                 "ok": False,
@@ -231,7 +260,7 @@ def manage_clamav_health() -> Any:
                 "services": {},
                 "state_errors": [detail],
                 "timestamp": int(time.time()),
-            }
+            },
         ), 200
 
 
@@ -244,10 +273,16 @@ def manage_sync() -> Any:
         try:
             operation_id = int(payload.get("operation_id") or 0)
         except Exception:
-            return jsonify({"ok": False, "detail": "operation_id must be an integer."}), 400
+            return jsonify(
+                {"ok": False, "detail": "operation_id must be an integer."},
+            ), 400
         if operation_id <= 0:
-            return jsonify({"ok": False, "detail": "operation_id must be a positive integer."}), 400
-    result = _runtime().sync_from_db(force=bool(payload.get("force")), operation_id=operation_id)
+            return jsonify(
+                {"ok": False, "detail": "operation_id must be a positive integer."},
+            ), 400
+    result = _runtime().sync_from_db(
+        force=bool(payload.get("force")), operation_id=operation_id,
+    )
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
@@ -263,7 +298,9 @@ def manage_config_validate() -> Any:
 @_require_management_auth
 def manage_config_rollback() -> Any:
     payload = request.get_json(silent=True) or {}
-    result = _runtime().rollback_last_known_good_config(reason=str(payload.get("reason") or "Rollback requested by management API."))
+    result = _runtime().rollback_last_known_good_config(
+        reason=str(payload.get("reason") or "Rollback requested by management API."),
+    )
     return jsonify(result), (200 if result.get("ok") else 409)
 
 

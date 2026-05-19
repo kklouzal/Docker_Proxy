@@ -4,23 +4,32 @@ import hashlib
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Set, Tuple
 
 from services.db import connect, table_exists
-from services.domain_normalization import looks_like_domain as _looks_like_host, normalize_domain as _norm_domain
+from services.domain_normalization import (
+    looks_like_domain as _looks_like_host,
+)
+from services.domain_normalization import (
+    normalize_domain as _norm_domain,
+)
 from services.errors import public_error_message
 from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_int as _env_int, now_ts as _now
+from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import now_ts as _now
 from services.safe_browsing_v5 import DEFAULT_SAFE_BROWSING_LISTS, SafeBrowsingStore
 
+
 def get_policy_request_store():
-    from services.policy_requests import get_policy_request_store as _get_policy_request_store
+    from services.policy_requests import (
+        get_policy_request_store as _get_policy_request_store,
+    )
 
     return _get_policy_request_store()
 
+
 _DEFAULT_SOURCE_URL = "https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz"
-_DEFAULT_BLOCKED_CATEGORIES: List[str] = [
+_DEFAULT_BLOCKED_CATEGORIES: list[str] = [
     "adult",
     "cryptojacking",
     "dangerous_material",
@@ -52,15 +61,29 @@ _DEFAULTS: dict[str, str] = {
 }
 
 _GLOBAL_SCOPE = "__global__"
-_GLOBAL_SETTINGS_KEYS = {"source_url", "source_provider", "last_success", "last_attempt", "last_error", "next_run_ts", "safe_browsing_enabled", "safe_browsing_api_key", "safe_browsing_lists", "safe_browsing_last_success", "safe_browsing_last_attempt", "safe_browsing_last_error", "safe_browsing_next_run_ts"}
+_GLOBAL_SETTINGS_KEYS = {
+    "source_url",
+    "source_provider",
+    "last_success",
+    "last_attempt",
+    "last_error",
+    "next_run_ts",
+    "safe_browsing_enabled",
+    "safe_browsing_api_key",
+    "safe_browsing_lists",
+    "safe_browsing_last_success",
+    "safe_browsing_last_attempt",
+    "safe_browsing_last_error",
+    "safe_browsing_next_run_ts",
+}
 
 
 @dataclass(frozen=True)
 class WebFilterSettings:
     enabled: bool
     source_url: str
-    blocked_categories: List[str]
-    whitelist_domains: List[str]
+    blocked_categories: list[str]
+    whitelist_domains: list[str]
     last_success: int
     last_attempt: int
     last_error: str
@@ -68,7 +91,7 @@ class WebFilterSettings:
     source_provider: str = "auto"
     safe_browsing_enabled: bool = False
     safe_browsing_api_key: str = ""
-    safe_browsing_lists: List[str] | None = None
+    safe_browsing_lists: list[str] | None = None
     safe_browsing_last_success: int = 0
     safe_browsing_last_attempt: int = 0
     safe_browsing_last_error: str = ""
@@ -81,10 +104,12 @@ class WebFilterMaterializedState:
     whitelist_text: str
 
 
-def _next_midnight_ts(now: Optional[int] = None) -> int:
+def _next_midnight_ts(now: int | None = None) -> int:
     current = int(now if now is not None else _now())
     local = time.localtime(current)
-    midnight = int(time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1)))
+    midnight = int(
+        time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1)),
+    )
     if current < midnight:
         return midnight
     return midnight + 24 * 60 * 60
@@ -94,15 +119,15 @@ def _strip_comment(line: str) -> str:
     return (line or "").split("#", 1)[0].strip()
 
 
-def _parent_domains(domain: str, *, max_levels: int = 6) -> List[str]:
+def _parent_domains(domain: str, *, max_levels: int = 6) -> list[str]:
     normalized = _norm_domain(domain)
     if not normalized:
         return []
     parts = [part for part in normalized.split(".") if part]
     if len(parts) < 2:
         return [normalized]
-    out: List[str] = []
-    for index in range(0, min(len(parts) - 1, max_levels)):
+    out: list[str] = []
+    for index in range(min(len(parts) - 1, max_levels)):
         out.append(".".join(parts[index:]))
     return out
 
@@ -112,9 +137,9 @@ def _default_webfilter_helpers() -> int:
     return max(1, min(256, workers * 2))
 
 
-def _parse_whitelist_lines(lines: List[str]) -> List[str]:
-    out: List[str] = []
-    seen: Set[str] = set()
+def _parse_whitelist_lines(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
     for raw in lines or []:
         text = _strip_comment(raw)
         if not text:
@@ -140,7 +165,7 @@ def _parse_whitelist_lines(lines: List[str]) -> List[str]:
     return out
 
 
-def _whitelist_match(domain: str, patterns: List[str]) -> str:
+def _whitelist_match(domain: str, patterns: list[str]) -> str:
     normalized = _norm_domain(domain)
     if not _looks_like_host(normalized):
         return ""
@@ -200,11 +225,13 @@ class WebFilterStoreBase:
                 meta_table = self._table("meta")
                 whitelist_table = self._table("whitelist")
                 conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', k VARCHAR(64) NOT NULL, v LONGTEXT NOT NULL, PRIMARY KEY(proxy_id, k))"
+                    f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', k VARCHAR(64) NOT NULL, v LONGTEXT NOT NULL, PRIMARY KEY(proxy_id, k))",
                 )
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)")
                 conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern), KEY idx_{whitelist_table}_proxy_ts (proxy_id, added_ts))"
+                    f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)",
+                )
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern), KEY idx_{whitelist_table}_proxy_ts (proxy_id, added_ts))",
                 )
                 SafeBrowsingStore.init_schema(conn)
                 for key, value in _DEFAULTS.items():
@@ -218,19 +245,19 @@ class WebFilterStoreBase:
     def _init_extra_schema(self, conn) -> None:
         return None
 
-    def _list_whitelist(self, conn, limit: int) -> List[Tuple[str, int]]:
+    def _list_whitelist(self, conn, limit: int) -> list[tuple[str, int]]:
         rows = conn.execute(
             f"SELECT pattern, added_ts FROM {self._table('whitelist')} WHERE proxy_id=%s ORDER BY added_ts DESC, pattern ASC LIMIT %s",
             (get_proxy_id(), int(limit)),
         ).fetchall()
         return [(str(row[0]), int(row[1]) if row[1] is not None else 0) for row in rows]
 
-    def list_whitelist(self, limit: int = 5000) -> List[Tuple[str, int]]:
+    def list_whitelist(self, limit: int = 5000) -> list[tuple[str, int]]:
         self.init_db()
         with self._connect() as conn:
             return self._list_whitelist(conn, limit=int(limit))
 
-    def add_whitelist(self, entry: str) -> Tuple[bool, str, str]:
+    def add_whitelist(self, entry: str) -> tuple[bool, str, str]:
         self.init_db()
         patterns = _parse_whitelist_lines([entry])
         if not patterns:
@@ -249,9 +276,12 @@ class WebFilterStoreBase:
         if not candidate:
             return
         with self._connect() as conn:
-            conn.execute(f"DELETE FROM {self._table('whitelist')} WHERE proxy_id=%s AND pattern=%s", (get_proxy_id(), candidate))
+            conn.execute(
+                f"DELETE FROM {self._table('whitelist')} WHERE proxy_id=%s AND pattern=%s",
+                (get_proxy_id(), candidate),
+            )
 
-    def _get_whitelist_patterns(self, conn) -> List[str]:
+    def _get_whitelist_patterns(self, conn) -> list[str]:
         rows = self._list_whitelist(conn, limit=10000)
         patterns = [pattern for pattern, _ts in rows if pattern]
         exact = [pattern for pattern in patterns if not pattern.startswith("*.")]
@@ -260,7 +290,7 @@ class WebFilterStoreBase:
         wild.sort(key=lambda item: (-len(item), item))
         return exact + wild
 
-    def get_whitelist_patterns(self) -> List[str]:
+    def get_whitelist_patterns(self) -> list[str]:
         self.init_db()
         with self._connect() as conn:
             return self._get_whitelist_patterns(conn)
@@ -288,7 +318,9 @@ class WebFilterStoreBase:
         return str(row[0]) if row and row[0] is not None else default
 
     def _get_meta(self, conn, key: str, default: str = "") -> str:
-        row = conn.execute(f"SELECT v FROM {self._table('meta')} WHERE k=%s", (key,)).fetchone()
+        row = conn.execute(
+            f"SELECT v FROM {self._table('meta')} WHERE k=%s", (key,),
+        ).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
     def _set_meta(self, conn, key: str, value: str) -> None:
@@ -325,7 +357,11 @@ class WebFilterStoreBase:
         if source_provider not in {"auto", "ut1", "category-dir", "csv"}:
             source_provider = "auto"
         blocked_raw = _value("blocked_categories", "")
-        blocked = [item.strip() for item in blocked_raw.replace("\n", ",").split(",") if item.strip()]
+        blocked = [
+            item.strip()
+            for item in blocked_raw.replace("\n", ",").split(",")
+            if item.strip()
+        ]
         whitelist = self._get_whitelist_patterns(conn)
         last_success = int(_value("last_success", "0") or 0)
         last_attempt = int(_value("last_attempt", "0") or 0)
@@ -359,8 +395,10 @@ class WebFilterStoreBase:
         with self._connect() as conn:
             return self._get_settings(conn)
 
-    def _resolve_category_aliases(self, categories: List[str]) -> List[str]:
-        normalized = [item.strip() for item in (categories or []) if (item or "").strip()]
+    def _resolve_category_aliases(self, categories: list[str]) -> list[str]:
+        normalized = [
+            item.strip() for item in (categories or []) if (item or "").strip()
+        ]
         if not normalized:
             return []
         try:
@@ -372,9 +410,11 @@ class WebFilterStoreBase:
                     f"SELECT alias, canonical FROM webcat_aliases WHERE alias IN ({placeholders})",
                     tuple(normalized),
                 ).fetchall()
-            mapping = {str(row[0]): str(row[1]) for row in rows if row and row[0] and row[1]}
-            seen: Set[str] = set()
-            out: List[str] = []
+            mapping = {
+                str(row[0]): str(row[1]) for row in rows if row and row[0] and row[1]
+            }
+            seen: set[str] = set()
+            out: list[str] = []
             for category in [mapping.get(item, item) for item in normalized]:
                 if category not in seen:
                     seen.add(category)
@@ -388,12 +428,20 @@ class WebFilterStoreBase:
             with self._connect_webcat() as conn:
                 if not table_exists(conn, "webcat_meta"):
                     return 0
-                row = conn.execute("SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",)).fetchone()
+                row = conn.execute(
+                    "SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",),
+                ).fetchone()
             return int((row[0] if row else 0) or 0)
         except Exception:
             return 0
 
-    def _webcat_helper_name(self, *, settings: WebFilterSettings, categories: List[str], exceptions: List[object]) -> str:
+    def _webcat_helper_name(
+        self,
+        *,
+        settings: WebFilterSettings,
+        categories: list[str],
+        exceptions: list[object],
+    ) -> str:
         # Squid and the helper both cache category lookups. Version the helper
         # name with the webcat/policy state so a reconfigure starts a fresh helper
         # namespace instead of preserving stale allow decisions after Admin UI
@@ -411,17 +459,29 @@ class WebFilterStoreBase:
             digest.update(value.encode("utf-8", errors="replace"))
             digest.update(b"\0")
         for ex in sorted(exceptions, key=lambda item: int(getattr(item, "id", 0) or 0)):
-            digest.update(str(getattr(ex, "id", 0) or 0).encode("ascii", errors="ignore"))
+            digest.update(
+                str(getattr(ex, "id", 0) or 0).encode("ascii", errors="ignore"),
+            )
             digest.update(b":")
-            digest.update(str(getattr(ex, "domain", "") or "").lower().encode("utf-8", errors="replace"))
+            digest.update(
+                str(getattr(ex, "domain", "") or "")
+                .lower()
+                .encode("utf-8", errors="replace"),
+            )
             digest.update(b":")
-            digest.update(str(getattr(ex, "client_ip", "") or "").encode("utf-8", errors="replace"))
+            digest.update(
+                str(getattr(ex, "client_ip", "") or "").encode(
+                    "utf-8", errors="replace",
+                ),
+            )
             digest.update(b"\0")
         return "webcat_" + digest.hexdigest()[:16]
 
     def render_materialized_state(self) -> WebFilterMaterializedState:
         settings = self.get_settings()
-        helpers = _env_int("WEBFILTER_HELPERS", _default_webfilter_helpers(), minimum=1, maximum=256)
+        helpers = _env_int(
+            "WEBFILTER_HELPERS", _default_webfilter_helpers(), minimum=1, maximum=256,
+        )
         ttl = _env_int("WEBFILTER_TTL_SECONDS", 0, minimum=0, maximum=86400)
         neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 0, minimum=0, maximum=3600)
         fail = "open"
@@ -435,7 +495,7 @@ class WebFilterStoreBase:
                     out.append("_")
             return "".join(out).strip("_") or "cat"
 
-        whitelist_lines: List[str] = []
+        whitelist_lines: list[str] = []
         for pattern in list(settings.whitelist_domains or []):
             normalized = (pattern or "").strip().lower()
             if not normalized:
@@ -448,38 +508,48 @@ class WebFilterStoreBase:
                 whitelist_lines.append(normalized)
         whitelist_text = ("\n".join(whitelist_lines) + "\n") if whitelist_lines else ""
 
-        selected = self._resolve_category_aliases(list(settings.blocked_categories or []))
-        safe_browsing_ready = bool(settings.safe_browsing_enabled and settings.safe_browsing_api_key)
+        selected = self._resolve_category_aliases(
+            list(settings.blocked_categories or []),
+        )
+        safe_browsing_ready = bool(
+            settings.safe_browsing_enabled and settings.safe_browsing_api_key,
+        )
         if not settings.enabled or (not selected and not safe_browsing_ready):
             return WebFilterMaterializedState(
                 include_text="# Autogenerated: web filtering disabled or no categories selected\n",
                 whitelist_text=whitelist_text,
             )
 
-        lines: List[str] = []
+        lines: list[str] = []
         exceptions = []
         if get_policy_request_store is not None:
             try:
-                exceptions = get_policy_request_store().active_webfilter_exceptions(proxy_id=get_proxy_id())
+                exceptions = get_policy_request_store().active_webfilter_exceptions(
+                    proxy_id=get_proxy_id(),
+                )
             except Exception:
                 exceptions = []
-        helper_name = self._webcat_helper_name(settings=settings, categories=selected, exceptions=exceptions)
+        helper_name = self._webcat_helper_name(
+            settings=settings, categories=selected, exceptions=exceptions,
+        )
 
-        lines.append("# Autogenerated: web filtering (domain categories + Safe Browsing)")
+        lines.append(
+            "# Autogenerated: web filtering (domain categories + Safe Browsing)",
+        )
         if selected:
             lines.append(
                 f"external_acl_type {helper_name} children={helpers} ttl={ttl} negative_ttl={neg_ttl} %SRC %DST %URI "
-                f"/usr/bin/python3 /app/tools/webcat_acl.py --fail {fail}"
+                f"/usr/bin/python3 /app/tools/webcat_acl.py --fail {fail}",
             )
         if safe_browsing_ready:
             gsb_helper = helper_name + "_gsb"
             lines.append(
                 f"external_acl_type {gsb_helper} children={helpers} ttl={ttl} negative_ttl={neg_ttl} %SRC %DST %URI "
-                f"/usr/bin/python3 /app/tools/safe_browsing_acl.py --fail {fail}"
+                f"/usr/bin/python3 /app/tools/safe_browsing_acl.py --fail {fail}",
             )
 
         if whitelist_lines:
-            lines.append(f"acl webfilter_whitelist dstdomain \"{self.whitelist_path}\"")
+            lines.append(f'acl webfilter_whitelist dstdomain "{self.whitelist_path}"')
             lines.append("note webfilter_allow whitelist webfilter_whitelist")
             lines.append("http_access allow webfilter_whitelist")
 
@@ -491,19 +561,31 @@ class WebFilterStoreBase:
             suffix = f"{getattr(ex, 'id', 0)}"
             lines.append(f"acl webfilter_exception_src_{suffix} src {client_ip}")
             dst_domains = f"{domain} .{domain}" if "." in domain else domain
-            lines.append(f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}")
-            lines.append(f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}")
-            lines.append(f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}")
+            lines.append(
+                f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}",
+            )
+            lines.append(
+                f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
+            )
+            lines.append(
+                f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
+            )
 
         for category in selected:
             safe = _safe_acl_name(category)
-            lines.append(f"acl webfilter_block_{safe} external {helper_name} {category}")
+            lines.append(
+                f"acl webfilter_block_{safe} external {helper_name} {category}",
+            )
             lines.append(f"deny_info ERR_WEBFILTER_BLOCKED webfilter_block_{safe}")
             lines.append(f"http_access deny webfilter_block_{safe}")
 
         if safe_browsing_ready:
-            lines.append(f"acl webfilter_block_google_safe_browsing external {gsb_helper}")
-            lines.append("deny_info ERR_WEBFILTER_BLOCKED webfilter_block_google_safe_browsing")
+            lines.append(
+                f"acl webfilter_block_google_safe_browsing external {gsb_helper}",
+            )
+            lines.append(
+                "deny_info ERR_WEBFILTER_BLOCKED webfilter_block_google_safe_browsing",
+            )
             lines.append("http_access deny webfilter_block_google_safe_browsing")
 
         return WebFilterMaterializedState(
@@ -518,18 +600,28 @@ class WebFilterStoreBase:
                 return True, "No web category snapshot build is available yet."
             from tools.webcat_acl import _Db as WebCatSnapshotDb  # type: ignore
 
-            if WebCatSnapshotDb()._build_snapshot_from_db(expected_built_ts=expected_built_ts):
+            if WebCatSnapshotDb()._build_snapshot_from_db(
+                expected_built_ts=expected_built_ts,
+            ):
                 return True, "Web category snapshot is current."
-            return False, "Failed to publish local web category snapshot; helper will use the last usable snapshot if present."
+            return (
+                False,
+                "Failed to publish local web category snapshot; helper will use the last usable snapshot if present.",
+            )
         except Exception as exc:
-            return False, public_error_message(exc, default="Failed to publish local web category snapshot.")
+            return False, public_error_message(
+                exc, default="Failed to publish local web category snapshot.",
+            )
 
     def apply_squid_include(self) -> None:
         state = self.render_materialized_state()
         if "webcat_acl.py" in state.include_text:
             snapshot_status = self._publish_webcat_snapshot_for_helper()
         else:
-            self.last_webcat_snapshot_status = (True, "Web category snapshot not needed for current policy.")
+            self.last_webcat_snapshot_status = (
+                True,
+                "Web category snapshot not needed for current policy.",
+            )
             snapshot_status = None
         if snapshot_status is not None:
             self.last_webcat_snapshot_status = snapshot_status
@@ -543,7 +635,7 @@ class ProxyWebFilterStore(WebFilterStoreBase):
     pass
 
 
-_store: Optional[ProxyWebFilterStore] = None
+_store: ProxyWebFilterStore | None = None
 _store_lock = threading.Lock()
 
 

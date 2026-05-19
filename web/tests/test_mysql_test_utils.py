@@ -4,7 +4,7 @@ import importlib
 import os
 
 
-def test_mysql_test_env_vars_take_priority_over_local_env_files(monkeypatch):
+def test_mysql_test_env_vars_take_priority_over_local_env_files(monkeypatch) -> None:
     mysql_test_utils = importlib.import_module("web.tests.mysql_test_utils")
     tracked_keys = [
         "DATABASE_URL",

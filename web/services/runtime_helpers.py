@@ -10,7 +10,7 @@ def now_ts() -> int:
 
 
 def escape_like(value: str) -> str:
-    """Escape special SQL LIKE pattern characters for safe ESCAPE '\\' queries."""
+    r"""Escape special SQL LIKE pattern characters for safe ESCAPE '\\' queries."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -41,7 +41,9 @@ def normalize_hostish(value: object | None) -> str:
     return host.strip().strip(".")
 
 
-def extract_domain(value: object | None, *, host: object | None = "", sni: object | None = "") -> str:
+def extract_domain(
+    value: object | None, *, host: object | None = "", sni: object | None = "",
+) -> str:
     for candidate in (sni, host):
         normalized = normalize_hostish(candidate)
         if normalized:
@@ -62,7 +64,9 @@ def extract_domain(value: object | None, *, host: object | None = "", sni: objec
     return normalize_hostish(candidate)
 
 
-def not_cached_reason(method: object | None, result_code: object | None, http_status: object | None = None) -> str:
+def not_cached_reason(
+    method: object | None, result_code: object | None, http_status: object | None = None,
+) -> str:
     m = str(method or "").strip().upper()
     rc = str(result_code or "").strip().upper()
 
@@ -79,14 +83,14 @@ def not_cached_reason(method: object | None, result_code: object | None, http_st
         except Exception:
             status = None
 
-    if m and m not in ("GET", "HEAD", "CONNECT"):
+    if m and m not in {"GET", "HEAD", "CONNECT"}:
         return f"{m} method (not cacheable by default)"
 
-    if m == "CONNECT" or rc.startswith("TCP_TUNNEL") or rc.startswith("TCP_CONNECT"):
+    if m == "CONNECT" or rc.startswith(("TCP_TUNNEL", "TCP_CONNECT")):
         return "HTTPS tunnel (CONNECT) — not cacheable without SSL-bump"
 
     if status is not None:
-        if status in (301, 302, 303, 307, 308):
+        if status in {301, 302, 303, 307, 308}:
             return f"Redirect response ({status}) (often not cached without explicit freshness)"
         if status >= 400:
             return f"Error response status {status} (often not cached)"

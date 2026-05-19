@@ -13,11 +13,12 @@ from .live_test_helpers import (
     wait_for_proxy_management_payload,
 )
 
-
 pytestmark = pytest.mark.live
 
 
-def _supervisor_control(client: LiveStackClient, program: str, action: str) -> dict[str, Any]:
+def _supervisor_control(
+    client: LiveStackClient, program: str, action: str
+) -> dict[str, Any]:
     response = client.proxy_management_post_json(
         f"/api/manage/test/supervisor/{program}/{action}",
         {},
@@ -46,7 +47,9 @@ def _wait_for_supervisor_program(program: str, *, ok: bool) -> dict[str, Any]:
     )
 
 
-def test_live_public_proxy_listener_rejects_management_routes(admin_client: LiveStackClient) -> None:
+def test_live_public_proxy_listener_rejects_management_routes(
+    admin_client: LiveStackClient,
+) -> None:
     health = admin_client.pac_request("/health")
     management = admin_client.pac_request("/api/manage/health")
     sync = admin_client.pac_request("/api/manage/sync")
@@ -57,7 +60,9 @@ def test_live_public_proxy_listener_rejects_management_routes(admin_client: Live
     assert sync.status == 404
 
 
-def test_live_disruptive_squid_restart_keeps_pac_serving(admin_client: LiveStackClient) -> None:
+def test_live_disruptive_squid_restart_keeps_pac_serving(
+    admin_client: LiveStackClient,
+) -> None:
     before = admin_client.pac_request()
     assert before.status == 200
     assert "FindProxyForURL" in before.text

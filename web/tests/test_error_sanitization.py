@@ -1,7 +1,7 @@
 from services.errors import clean_text, public_error_message
 
 
-def test_clean_text_strips_newlines_and_bounds_length():
+def test_clean_text_strips_newlines_and_bounds_length() -> None:
     s = "hello\nworld\r\n\t\x00!"
     out = clean_text(s, max_len=20)
     assert "\n" not in out
@@ -9,7 +9,7 @@ def test_clean_text_strips_newlines_and_bounds_length():
     assert len(out) <= 20
 
 
-def test_public_error_message_hides_details_by_default(monkeypatch):
+def test_public_error_message_hides_details_by_default(monkeypatch) -> None:
     monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
 
     class SecretError(RuntimeError):
@@ -19,13 +19,13 @@ def test_public_error_message_hides_details_by_default(monkeypatch):
     assert "supersecret" not in msg
 
 
-def test_public_error_message_shows_valueerror_message(monkeypatch):
+def test_public_error_message_shows_valueerror_message(monkeypatch) -> None:
     monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
     msg = public_error_message(ValueError("Bad input: x"))
     assert "Bad input" in msg
 
 
-def test_public_error_message_can_expose_details(monkeypatch):
+def test_public_error_message_can_expose_details(monkeypatch) -> None:
     monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
     msg = public_error_message(RuntimeError("detail"))
     assert "RuntimeError" in msg

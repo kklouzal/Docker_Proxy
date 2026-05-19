@@ -19,11 +19,16 @@ def _write_log(tmp_path: Path, line: str) -> str:
     return str(path)
 
 
-def test_parse_access_log_hit_rate_fast_path_accepts_tab_separated_rows(tmp_path) -> None:
+def test_parse_access_log_hit_rate_fast_path_accepts_tab_separated_rows(
+    tmp_path,
+) -> None:
     _add_repo_paths()
     from services.stats import parse_access_log_hit_rate  # type: ignore
 
-    log = _write_log(tmp_path, "1710000000	0.0	10.0.0.5	GET	http://example.com/a	TCP_HIT/200	1234")
+    log = _write_log(
+        tmp_path,
+        "1710000000	0.0	10.0.0.5	GET	http://example.com/a	TCP_HIT/200	1234",
+    )
 
     result = parse_access_log_hit_rate(log, max_lines=10)
 
@@ -34,7 +39,10 @@ def test_parse_access_log_hit_rate_fast_path_accepts_escaped_tab_rows(tmp_path) 
     _add_repo_paths()
     from services.stats import parse_access_log_hit_rate  # type: ignore
 
-    log = _write_log(tmp_path, "1710000001\t0.0\t10.0.0.6\tPOST\thttp://example.org/login\tTCP_MISS/200\t20")
+    log = _write_log(
+        tmp_path,
+        "1710000001\t0.0\t10.0.0.6\tPOST\thttp://example.org/login\tTCP_MISS/200\t20",
+    )
 
     result = parse_access_log_hit_rate(log, max_lines=10)
 

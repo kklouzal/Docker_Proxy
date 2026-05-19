@@ -4,11 +4,9 @@ import hashlib
 import logging
 import threading
 import time
-from typing import Optional
 
 from services.db import connect
 from services.proxy_context import get_proxy_id
-
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +34,22 @@ class AuditStore:
                     KEY idx_audit_kind (kind),
                     KEY idx_audit_proxy_ts (proxy_id, ts)
                 )
-                """
+                """,
             )
 
     def record(
         self,
         kind: str,
         ok: bool,
-        remote_addr: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        detail: Optional[str] = None,
-        config_text: Optional[str] = None,
+        remote_addr: str | None = None,
+        user_agent: str | None = None,
+        detail: str | None = None,
+        config_text: str | None = None,
         keep_config_text: bool = True,
     ) -> None:
         self.init_db()
 
-        def _clip(val: Optional[str], max_len: int) -> Optional[str]:
+        def _clip(val: str | None, max_len: int) -> str | None:
             if val is None:
                 return None
             s = str(val)
@@ -67,7 +65,9 @@ class AuditStore:
         sha = None
         stored_text = None
         if config_text is not None:
-            sha = hashlib.sha256(config_text.encode("utf-8", errors="replace")).hexdigest()
+            sha = hashlib.sha256(
+                config_text.encode("utf-8", errors="replace"),
+            ).hexdigest()
             if keep_config_text:
                 # Bound stored config text to avoid unbounded DB growth.
                 stored_text = _clip(config_text, 200_000)
@@ -95,26 +95,24 @@ class AuditStore:
 
             # Keep storage bounded (last 200 events).
             conn.execute(
-                "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200) AS keepers)"
+                "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200) AS keepers)",
             )
 
-    def latest_config_apply(self) -> Optional[object]:
+    def latest_config_apply(self) -> object | None:
         # Returns the most recent config_apply* event (if any).
         self.init_db()
         proxy_id = get_proxy_id()
         with self._connect() as conn:
-            row = conn.execute(
+            return conn.execute(
                 """
                 SELECT ts, kind, ok, remote_addr, user_agent, detail
                 FROM audit_events
                 WHERE proxy_id=%s AND kind LIKE 'config_apply%'
                 ORDER BY ts DESC, id DESC
                 LIMIT 1
-                """
-                ,
+                """,
                 (proxy_id,),
             ).fetchone()
-        return row
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune old audit/config apply history.
@@ -129,7 +127,7 @@ class AuditStore:
             conn.execute("DELETE FROM audit_events WHERE ts < %s", (int(cutoff),))
 
 
-_store: Optional[AuditStore] = None
+_store: AuditStore | None = None
 _store_lock = threading.Lock()
 
 

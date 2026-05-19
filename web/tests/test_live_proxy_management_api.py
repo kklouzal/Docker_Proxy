@@ -4,13 +4,20 @@ import time
 
 import pytest
 
-from .live_test_helpers import LIVE_CONFIG, LiveStackClient, _live_poll_sleep, active_config_text, wait_for_proxy_management_payload
-
+from .live_test_helpers import (
+    LIVE_CONFIG,
+    LiveStackClient,
+    _live_poll_sleep,
+    active_config_text,
+    wait_for_proxy_management_payload,
+)
 
 pytestmark = pytest.mark.live
 
 
-def test_live_proxy_management_health_requires_auth(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_health_requires_auth(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
     response = client.proxy_management_request("/api/manage/health", auth=False)
@@ -22,7 +29,9 @@ def test_live_proxy_management_auth_accepts_bearer_and_x_proxy_token_and_rejects
 ) -> None:
     _ = live_stack_ready
     if not LIVE_CONFIG.proxy_token:
-        pytest.skip("Live proxy-management token is not configured; auth variants are not meaningful.")
+        pytest.skip(
+            "Live proxy-management token is not configured; auth variants are not meaningful."
+        )
 
     client = LiveStackClient()
     bearer = client.proxy_management_request(
@@ -50,7 +59,9 @@ def test_live_proxy_management_auth_accepts_bearer_and_x_proxy_token_and_rejects
     assert "PROXY_MANAGEMENT_TOKEN" in str(bad.json().get("detail") or "")
 
 
-def test_live_proxy_management_health_returns_payload(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_health_returns_payload(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     payload = wait_for_proxy_management_payload()
     assert isinstance(payload.get("ok"), bool)
@@ -60,16 +71,27 @@ def test_live_proxy_management_health_returns_payload(live_stack_ready: dict[str
     assert isinstance(payload.get("stats"), dict)
 
 
-def test_live_proxy_management_health_reports_supervisor_programs(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_health_reports_supervisor_programs(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
-    expected_programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
+    expected_programs = (
+        "squid",
+        "cicap_adblock",
+        "cicap_av",
+        "proxy_api",
+        "proxy_agent",
+    )
     deadline = time.time() + 120.0
     payload = wait_for_proxy_management_payload()
     while time.time() < deadline:
         services = payload.get("services") or {}
         supervisor = services.get("supervisor") or {}
         programs = supervisor.get("programs") or {}
-        if all(program in programs and programs[program].get("ok") is True for program in expected_programs):
+        if all(
+            program in programs and programs[program].get("ok") is True
+            for program in expected_programs
+        ):
             break
         _live_poll_sleep()
         payload = wait_for_proxy_management_payload()
@@ -85,17 +107,23 @@ def test_live_proxy_management_health_reports_supervisor_programs(live_stack_rea
         assert "RUNNING" in str(programs[program].get("detail") or "")
 
 
-def test_live_proxy_management_sync_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_sync_endpoint(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
-    response = client.proxy_management_post_json("/api/manage/sync", {"force": True}, timeout_seconds=90.0)
+    response = client.proxy_management_post_json(
+        "/api/manage/sync", {"force": True}, timeout_seconds=90.0
+    )
     assert response.status == 200
     payload = response.json()
     assert isinstance(payload, dict)
     assert payload.get("ok") is True
 
 
-def test_live_proxy_management_config_validation_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_config_validation_endpoint(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
 
@@ -136,10 +164,14 @@ def test_live_proxy_management_rollback_endpoint_returns_structured_result_and_p
     wait_for_proxy_management_payload()
 
 
-def test_live_proxy_management_cache_clear_endpoint(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_cache_clear_endpoint(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
-    response = client.proxy_management_post_json("/api/manage/cache/clear", {}, timeout_seconds=90.0)
+    response = client.proxy_management_post_json(
+        "/api/manage/cache/clear", {}, timeout_seconds=90.0
+    )
     assert response.status == 200
     payload = response.json()
     assert isinstance(payload, dict)
@@ -147,12 +179,18 @@ def test_live_proxy_management_cache_clear_endpoint(live_stack_ready: dict[str, 
     wait_for_proxy_management_payload()
 
 
-def test_live_proxy_management_clamav_endpoints_reflect_current_backend_behavior(live_stack_ready: dict[str, dict[str, object]]) -> None:
+def test_live_proxy_management_clamav_endpoints_reflect_current_backend_behavior(
+    live_stack_ready: dict[str, dict[str, object]],
+) -> None:
     _ = live_stack_ready
     client = LiveStackClient()
 
-    eicar_response = client.proxy_management_post_json("/api/manage/clamav/test-eicar", {})
-    icap_response = client.proxy_management_post_json("/api/manage/clamav/test-icap", {})
+    eicar_response = client.proxy_management_post_json(
+        "/api/manage/clamav/test-eicar", {}
+    )
+    icap_response = client.proxy_management_post_json(
+        "/api/manage/clamav/test-icap", {}
+    )
 
     assert eicar_response.status == 503
     assert icap_response.status == 200

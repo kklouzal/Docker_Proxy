@@ -17,7 +17,9 @@ def test_parse_access_log_line_fast_path_accepts_tab_separated_liveui_rows() -> 
     _add_repo_paths()
     from services.live_stats import _parse_access_log_line  # type: ignore
 
-    row = _parse_access_log_line("1710000000\t0.0\t10.0.0.5\tGET\thttp://example.com/a\tTCP_HIT/200\t1234")
+    row = _parse_access_log_line(
+        "1710000000\t0.0\t10.0.0.5\tGET\thttp://example.com/a\tTCP_HIT/200\t1234"
+    )
 
     assert row == (1710000000, "10.0.0.5", "TCP_HIT/200", 1234, "example.com", "GET")
 
@@ -26,6 +28,8 @@ def test_parse_access_log_line_fast_path_accepts_escaped_tab_rows() -> None:
     _add_repo_paths()
     from services.live_stats import _parse_access_log_line  # type: ignore
 
-    row = _parse_access_log_line("1710000001\\t0.0\\t10.0.0.6\\tPOST\\thttp://example.org/login\\tTCP_MISS/200\\t42")
+    row = _parse_access_log_line(
+        "1710000001\\t0.0\\t10.0.0.6\\tPOST\\thttp://example.org/login\\tTCP_MISS/200\\t42"
+    )
 
     assert row == (1710000001, "10.0.0.6", "TCP_MISS/200", 42, "example.org", "POST")

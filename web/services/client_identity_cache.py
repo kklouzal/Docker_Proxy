@@ -5,10 +5,13 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable
+from typing import TYPE_CHECKING
 
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int
+from services.runtime_helpers import env_float as _env_float
+from services.runtime_helpers import env_int as _env_int
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _TIMEOUT_LOCK = threading.Lock()
 
@@ -29,12 +32,14 @@ class ClientIdentityCache:
         failure_ttl_seconds: float = 300.0,
         lookup_timeout_seconds: float = 0.35,
         max_entries: int = 1024,
-    ):
+    ) -> None:
         self.success_ttl_seconds = max(30.0, float(success_ttl_seconds or 3600.0))
         self.failure_ttl_seconds = max(10.0, float(failure_ttl_seconds or 300.0))
-        self.lookup_timeout_seconds = max(0.05, min(5.0, float(lookup_timeout_seconds or 0.35)))
+        self.lookup_timeout_seconds = max(
+            0.05, min(5.0, float(lookup_timeout_seconds or 0.35)),
+        )
         self.max_entries = max(64, int(max_entries or 1024))
-        self._cache: Dict[str, _CacheEntry] = {}
+        self._cache: dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
 
     def _normalize_ip(self, value: object) -> str:
@@ -73,7 +78,9 @@ class ClientIdentityCache:
                 return None
             return cached
 
-    def _store(self, ip: str, *, hostname: str, source: str, status: str, ttl_seconds: float) -> _CacheEntry:
+    def _store(
+        self, ip: str, *, hostname: str, source: str, status: str, ttl_seconds: float,
+    ) -> _CacheEntry:
         entry = _CacheEntry(
             hostname=hostname,
             source=source,
@@ -82,12 +89,14 @@ class ClientIdentityCache:
         )
         with self._lock:
             if len(self._cache) >= self.max_entries:
-                oldest_key = min(self._cache.items(), key=lambda item: item[1].expires_at)[0]
+                oldest_key = min(
+                    self._cache.items(), key=lambda item: item[1].expires_at,
+                )[0]
                 self._cache.pop(oldest_key, None)
             self._cache[ip] = entry
         return entry
 
-    def _resolve_normalized(self, normalized: str) -> Dict[str, str]:
+    def _resolve_normalized(self, normalized: str) -> dict[str, str]:
         cached = self._get_cached(normalized)
         if cached is not None:
             return {
@@ -98,14 +107,16 @@ class ClientIdentityCache:
 
         hostname, source, status = self._lookup_hostname(normalized)
         ttl = self.success_ttl_seconds if hostname else self.failure_ttl_seconds
-        entry = self._store(normalized, hostname=hostname, source=source, status=status, ttl_seconds=ttl)
+        entry = self._store(
+            normalized, hostname=hostname, source=source, status=status, ttl_seconds=ttl,
+        )
         return {
             "hostname": entry.hostname,
             "hostname_source": entry.source,
             "hostname_status": entry.status,
         }
 
-    def resolve(self, ip: object) -> Dict[str, str]:
+    def resolve(self, ip: object) -> dict[str, str]:
         normalized = self._normalize_ip(ip)
         if not normalized:
             return {
@@ -115,8 +126,8 @@ class ClientIdentityCache:
             }
         return self._resolve_normalized(normalized)
 
-    def resolve_many(self, ips: Iterable[object]) -> Dict[str, Dict[str, str]]:
-        resolved: Dict[str, Dict[str, str]] = {}
+    def resolve_many(self, ips: Iterable[object]) -> dict[str, dict[str, str]]:
+        resolved: dict[str, dict[str, str]] = {}
         for ip in ips:
             normalized = self._normalize_ip(ip)
             if not normalized or normalized in resolved:
@@ -136,9 +147,26 @@ def get_client_identity_cache() -> ClientIdentityCache:
     with _cache_lock:
         if _cache is None:
             _cache = ClientIdentityCache(
-                success_ttl_seconds=_env_float("OBS_CLIENT_HOSTNAME_TTL_SECONDS", 3600.0, minimum=30.0, maximum=86400.0),
-                failure_ttl_seconds=_env_float("OBS_CLIENT_HOSTNAME_FAILURE_TTL_SECONDS", 300.0, minimum=10.0, maximum=3600.0),
-                lookup_timeout_seconds=_env_float("OBS_CLIENT_HOSTNAME_TIMEOUT_SECONDS", 0.35, minimum=0.05, maximum=5.0),
-                max_entries=_env_int("OBS_CLIENT_HOSTNAME_CACHE_MAX", 1024, minimum=64, maximum=8192),
+                success_ttl_seconds=_env_float(
+                    "OBS_CLIENT_HOSTNAME_TTL_SECONDS",
+                    3600.0,
+                    minimum=30.0,
+                    maximum=86400.0,
+                ),
+                failure_ttl_seconds=_env_float(
+                    "OBS_CLIENT_HOSTNAME_FAILURE_TTL_SECONDS",
+                    300.0,
+                    minimum=10.0,
+                    maximum=3600.0,
+                ),
+                lookup_timeout_seconds=_env_float(
+                    "OBS_CLIENT_HOSTNAME_TIMEOUT_SECONDS",
+                    0.35,
+                    minimum=0.05,
+                    maximum=5.0,
+                ),
+                max_entries=_env_int(
+                    "OBS_CLIENT_HOSTNAME_CACHE_MAX", 1024, minimum=64, maximum=8192,
+                ),
             )
         return _cache

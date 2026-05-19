@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from services.certificate_core import CertificateBundle
 from services.db import connect
@@ -100,7 +99,7 @@ class CertificateBundleStore:
                     KEY idx_certificate_bundle_revisions_active (is_active, created_ts),
                     KEY idx_certificate_bundle_revisions_sha (bundle_sha256, created_ts)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -115,10 +114,10 @@ class CertificateBundleStore:
                     bundle_sha256 CHAR(64) NOT NULL DEFAULT '',
                     KEY idx_proxy_certificate_applications_proxy_ts (proxy_id, applied_ts)
                 )
-                """
+                """,
             )
 
-    def _row_to_revision(self, row: object | None) -> Optional[CertificateBundleRevision]:
+    def _row_to_revision(self, row: object | None) -> CertificateBundleRevision | None:
         if not row:
             return None
         return CertificateBundleRevision(
@@ -133,13 +132,15 @@ class CertificateBundleStore:
             not_before=str(row["not_before"] or ""),
             not_after=str(row["not_after"] or ""),
             original_filename=str(row["original_filename"] or ""),
-            original_pfx_blob=row["original_pfx_blob"] if row["original_pfx_blob"] is not None else None,
+            original_pfx_blob=row["original_pfx_blob"]
+            if row["original_pfx_blob"] is not None
+            else None,
             created_by=str(row["created_by"] or ""),
             created_ts=int(row["created_ts"] or 0),
             is_active=bool(int(row["is_active"] or 0)),
         )
 
-    def _row_to_application(self, row: object | None) -> Optional[CertificateApplication]:
+    def _row_to_application(self, row: object | None) -> CertificateApplication | None:
         if not row:
             return None
         return CertificateApplication(
@@ -153,7 +154,7 @@ class CertificateBundleStore:
             bundle_sha256=str(row["bundle_sha256"] or ""),
         )
 
-    def _row_to_metadata(self, row: object | None) -> Optional[CertificateBundleMetadata]:
+    def _row_to_metadata(self, row: object | None) -> CertificateBundleMetadata | None:
         if not row:
             return None
         return CertificateBundleMetadata(
@@ -169,7 +170,7 @@ class CertificateBundleStore:
             is_active=bool(int(row["is_active"] or 0)),
         )
 
-    def get_active_bundle(self) -> Optional[CertificateBundleRevision]:
+    def get_active_bundle(self) -> CertificateBundleRevision | None:
         self.init_db()
         with self._connect() as conn:
             row = conn.execute(
@@ -178,11 +179,11 @@ class CertificateBundleStore:
                 WHERE is_active=1
                 ORDER BY created_ts DESC, id DESC
                 LIMIT 1
-                """
+                """,
             ).fetchone()
         return self._row_to_revision(row)
 
-    def get_active_bundle_metadata(self) -> Optional[CertificateBundleMetadata]:
+    def get_active_bundle_metadata(self) -> CertificateBundleMetadata | None:
         self.init_db()
         with self._connect() as conn:
             row = conn.execute(
@@ -192,7 +193,7 @@ class CertificateBundleStore:
                 WHERE is_active=1
                 ORDER BY created_ts DESC, id DESC
                 LIMIT 1
-                """
+                """,
             ).fetchone()
         return self._row_to_metadata(row)
 
@@ -219,7 +220,9 @@ class CertificateBundleStore:
         now = int(time.time())
         with self._connect() as conn:
             if activate:
-                conn.execute("UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1")
+                conn.execute(
+                    "UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1",
+                )
             cur = conn.execute(
                 """
                 INSERT INTO certificate_bundle_revisions(
@@ -293,7 +296,7 @@ class CertificateBundleStore:
         assert application is not None
         return application
 
-    def latest_apply(self, proxy_id: object | None) -> Optional[CertificateApplication]:
+    def latest_apply(self, proxy_id: object | None) -> CertificateApplication | None:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
@@ -309,7 +312,7 @@ class CertificateBundleStore:
         return self._row_to_application(row)
 
 
-_store: Optional[CertificateBundleStore] = None
+_store: CertificateBundleStore | None = None
 _store_lock = threading.Lock()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 
 def _add_repo_paths() -> None:
@@ -37,17 +38,31 @@ def _public_get(client, path: str, **kwargs):
 class _Runtime:
     proxy_id = "edge-a"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.sync_force = None
         self.sync_operation_id = None
         self.validation_text = None
         self.rollback_reason = None
 
     def collect_health(self, *, force=False):
-        return {"ok": True, "status": "healthy", "proxy_id": self.proxy_id, "services": {}, "stats": {}, "health_scope": "full"}
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": self.proxy_id,
+            "services": {},
+            "stats": {},
+            "health_scope": "full",
+        }
 
     def collect_navigation_health(self, *, force=False):
-        return {"ok": True, "status": "healthy", "proxy_id": self.proxy_id, "services": {}, "stats": {}, "health_scope": "navigation"}
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": self.proxy_id,
+            "services": {},
+            "stats": {},
+            "health_scope": "navigation",
+        }
 
     def sync_from_db(self, *, force=False, operation_id=None):
         self.sync_force = force
@@ -73,19 +88,35 @@ class _Runtime:
 
     def test_control_supervisor_program(self, program_name: str, *, action: str):
         if program_name != "cicap_adblock":
-            return {"ok": False, "proxy_id": self.proxy_id, "program": program_name, "action": action, "detail": "not allowlisted"}
-        return {"ok": True, "proxy_id": self.proxy_id, "program": program_name, "action": action, "detail": "done"}
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "program": program_name,
+                "action": action,
+                "detail": "not allowlisted",
+            }
+        return {
+            "ok": True,
+            "proxy_id": self.proxy_id,
+            "program": program_name,
+            "action": action,
+            "detail": "done",
+        }
 
 
 class _BrokenHealthRuntime(_Runtime):
-    def collect_health(self, *, force=False):
-        raise RuntimeError("boom")
+    def collect_health(self, *, force=False) -> NoReturn:
+        msg = "boom"
+        raise RuntimeError(msg)
 
-    def collect_navigation_health(self, *, force=False):
-        raise RuntimeError("boom")
+    def collect_navigation_health(self, *, force=False) -> NoReturn:
+        msg = "boom"
+        raise RuntimeError(msg)
 
 
-def test_proxy_management_api_requires_token_for_all_management_endpoints(monkeypatch) -> None:
+def test_proxy_management_api_requires_token_for_all_management_endpoints(
+    monkeypatch,
+) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
@@ -104,7 +135,9 @@ def test_proxy_management_api_requires_token_for_all_management_endpoints(monkey
         ("POST", "/api/manage/test/supervisor/cicap_adblock/restart", {}),
     ]
     for method, path, payload in endpoints:
-        response = client.open(path, method=method, json=payload, base_url="http://localhost:5000")
+        response = client.open(
+            path, method=method, json=payload, base_url="http://localhost:5000"
+        )
         assert response.status_code == 403, path
         assert response.is_json, path
         assert response.get_json()["ok"] is False
@@ -117,9 +150,15 @@ def test_proxy_management_api_accepts_bearer_and_x_proxy_token(monkeypatch) -> N
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
 
-    bearer = _management_get(client, "/api/manage/health", headers={"Authorization": "Bearer secret"})
-    x_token = _management_get(client, "/api/manage/health", headers={"X-Proxy-Token": "secret"})
-    bad = _management_get(client, "/api/manage/health", headers={"Authorization": "Bearer wrong"})
+    bearer = _management_get(
+        client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
+    )
+    x_token = _management_get(
+        client, "/api/manage/health", headers={"X-Proxy-Token": "secret"}
+    )
+    bad = _management_get(
+        client, "/api/manage/health", headers={"Authorization": "Bearer wrong"}
+    )
 
     assert bearer.status_code == 200
     assert bearer.get_json()["proxy_id"] == "edge-a"
@@ -135,12 +174,33 @@ def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> N
     client = proxy_app.app.test_client()
     headers = {"Authorization": "Bearer secret"}
 
-    sync = _management_post(client, "/api/manage/sync", json={"force": True, "operation_id": 42}, headers=headers)
-    validate = _management_post(client, "/api/manage/config/validate", json={"config_text": "bad\n"}, headers=headers)
-    rollback = _management_post(client, "/api/manage/config/rollback", json={"reason": "bad apply"}, headers=headers)
-    cache = _management_post(client, "/api/manage/cache/clear", json={}, headers=headers)
-    eicar = _management_post(client, "/api/manage/clamav/test-eicar", json={}, headers=headers)
-    icap = _management_post(client, "/api/manage/clamav/test-icap", json={}, headers=headers)
+    sync = _management_post(
+        client,
+        "/api/manage/sync",
+        json={"force": True, "operation_id": 42},
+        headers=headers,
+    )
+    validate = _management_post(
+        client,
+        "/api/manage/config/validate",
+        json={"config_text": "bad\n"},
+        headers=headers,
+    )
+    rollback = _management_post(
+        client,
+        "/api/manage/config/rollback",
+        json={"reason": "bad apply"},
+        headers=headers,
+    )
+    cache = _management_post(
+        client, "/api/manage/cache/clear", json={}, headers=headers
+    )
+    eicar = _management_post(
+        client, "/api/manage/clamav/test-eicar", json={}, headers=headers
+    )
+    icap = _management_post(
+        client, "/api/manage/clamav/test-icap", json={}, headers=headers
+    )
 
     assert sync.status_code == 409
     assert sync.get_json()["detail"] == "sync failed"
@@ -164,7 +224,9 @@ def test_proxy_management_sync_rejects_invalid_operation_id(monkeypatch) -> None
     client = proxy_app.app.test_client()
     headers = {"Authorization": "Bearer secret"}
 
-    response = _management_post(client, "/api/manage/sync", json={"operation_id": "not-an-int"}, headers=headers)
+    response = _management_post(
+        client, "/api/manage/sync", json={"operation_id": "not-an-int"}, headers=headers
+    )
 
     assert response.status_code == 400
     assert response.get_json()["ok"] is False
@@ -172,13 +234,17 @@ def test_proxy_management_sync_rejects_invalid_operation_id(monkeypatch) -> None
     assert runtime.sync_operation_id is None
 
 
-def test_proxy_management_health_degrades_without_leaking_traceback(monkeypatch) -> None:
+def test_proxy_management_health_degrades_without_leaking_traceback(
+    monkeypatch,
+) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _BrokenHealthRuntime()
     client = proxy_app.app.test_client()
 
-    response = _management_get(client, "/api/manage/health", headers={"Authorization": "Bearer secret"})
+    response = _management_get(
+        client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
+    )
     payload = response.get_json()
 
     assert response.status_code == 200
@@ -188,7 +254,9 @@ def test_proxy_management_health_degrades_without_leaking_traceback(monkeypatch)
     assert "traceback" not in str(payload).lower()
 
 
-def test_proxy_management_test_supervisor_route_requires_test_mode_and_uses_allowlist(monkeypatch) -> None:
+def test_proxy_management_test_supervisor_route_requires_test_mode_and_uses_allowlist(
+    monkeypatch,
+) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     monkeypatch.delenv("ENABLE_TEST_MODE", raising=False)
@@ -196,12 +264,18 @@ def test_proxy_management_test_supervisor_route_requires_test_mode_and_uses_allo
     client = proxy_app.app.test_client()
     headers = {"Authorization": "Bearer secret"}
 
-    disabled = _management_post(client, "/api/manage/test/supervisor/cicap_adblock/restart", headers=headers)
+    disabled = _management_post(
+        client, "/api/manage/test/supervisor/cicap_adblock/restart", headers=headers
+    )
     assert disabled.status_code == 404
 
     monkeypatch.setenv("ENABLE_TEST_MODE", "1")
-    allowed = _management_post(client, "/api/manage/test/supervisor/cicap_adblock/restart", headers=headers)
-    rejected = _management_post(client, "/api/manage/test/supervisor/proxy_api/stop", headers=headers)
+    allowed = _management_post(
+        client, "/api/manage/test/supervisor/cicap_adblock/restart", headers=headers
+    )
+    rejected = _management_post(
+        client, "/api/manage/test/supervisor/proxy_api/stop", headers=headers
+    )
 
     assert allowed.status_code == 200
     assert allowed.get_json()["ok"] is True
@@ -233,14 +307,20 @@ def test_proxy_public_listener_serves_health_pac_wpad_and_root(monkeypatch) -> N
     assert root.get_data(as_text=True) == wpad.get_data(as_text=True)
 
 
-def test_proxy_public_listener_rejects_management_and_management_listener_rejects_pac(monkeypatch) -> None:
+def test_proxy_public_listener_rejects_management_and_management_listener_rejects_pac(
+    monkeypatch,
+) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
 
-    health = _public_get(client, "/api/manage/health", headers={"Authorization": "Bearer secret"})
-    sync = _public_get(client, "/api/manage/sync", headers={"Authorization": "Bearer secret"})
+    health = _public_get(
+        client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
+    )
+    sync = _public_get(
+        client, "/api/manage/sync", headers={"Authorization": "Bearer secret"}
+    )
     assert health.status_code == 404
     assert health.is_json
     assert "management listener" in health.get_json()["detail"]
@@ -249,7 +329,10 @@ def test_proxy_public_listener_rejects_management_and_management_listener_reject
     assert _management_get(client, "/proxy.pac").status_code == 404
     assert _management_get(client, "/wpad.dat").status_code == 404
 
-def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in(monkeypatch) -> None:
+
+def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in(
+    monkeypatch,
+) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()

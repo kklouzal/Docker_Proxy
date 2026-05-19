@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
-from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from services.db import connect
@@ -16,8 +15,8 @@ class PacProfile:
     id: int
     name: str
     client_cidr: str
-    direct_domains: List[str]
-    direct_dst_nets: List[str]
+    direct_domains: list[str]
+    direct_dst_nets: list[str]
     created_ts: int
 
 
@@ -32,24 +31,23 @@ class PacBackupProxy:
 
 @dataclass(frozen=True)
 class PacProxyChainSettings:
-    backup_proxies: List[PacBackupProxy]
+    backup_proxies: list[PacBackupProxy]
     direct_enabled: bool
 
 
-def _normalize_domain(domain: str) -> Tuple[Optional[str], str]:
+def _normalize_domain(domain: str) -> tuple[str | None, str]:
     d = (domain or "").strip().lower()
     if not d:
         return None, ""
     if " " in d or "/" in d:
         return None, "Invalid domain."
-    if d.startswith("."):
-        d = d[1:]
+    d = d.removeprefix(".")
     if not d:
         return None, "Invalid domain."
     return d, ""
 
 
-def _normalize_v4_cidr(cidr: str) -> Tuple[Optional[str], str]:
+def _normalize_v4_cidr(cidr: str) -> tuple[str | None, str]:
     c = (cidr or "").strip()
     if not c:
         return "", ""
@@ -62,7 +60,9 @@ def _normalize_v4_cidr(cidr: str) -> Tuple[Optional[str], str]:
     return str(net), ""
 
 
-def _normalize_proxy_host_port(proxy_host: str, proxy_port: object | None) -> Tuple[Optional[str], Optional[int], str]:
+def _normalize_proxy_host_port(
+    proxy_host: str, proxy_port: object | None,
+) -> tuple[str | None, int | None, str]:
     host = (proxy_host or "").strip()
     raw_port = "" if proxy_port is None else str(proxy_port or "").strip()
     if not host:
@@ -119,7 +119,7 @@ class PacProfilesStore:
                     KEY idx_pac_profiles_created (created_ts, id),
                     KEY idx_pac_profiles_proxy (proxy_id, id)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -128,7 +128,7 @@ class PacProfilesStore:
                     domain VARCHAR(255) NOT NULL,
                     PRIMARY KEY(profile_id, domain)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -137,7 +137,7 @@ class PacProfilesStore:
                     cidr VARCHAR(64) NOT NULL,
                     PRIMARY KEY(profile_id, cidr)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -150,7 +150,7 @@ class PacProfilesStore:
                     created_ts BIGINT NOT NULL,
                     KEY idx_pac_backup_proxies_proxy_position (proxy_id, position, id)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -159,11 +159,10 @@ class PacProfilesStore:
                     direct_enabled TINYINT(1) NOT NULL DEFAULT 1,
                     updated_ts BIGINT NOT NULL
                 )
-                """
+                """,
             )
 
-
-    def list_profiles(self) -> List[PacProfile]:
+    def list_profiles(self) -> list[PacProfile]:
         self.init_db()
         proxy_id = get_proxy_id()
         with self._connect() as conn:
@@ -177,23 +176,27 @@ class PacProfilesStore:
             profile_ids = [int(p["id"]) for p in profiles]
             placeholders = ",".join(["%s"] * len(profile_ids))
 
-            domains_by_profile: dict[int, List[str]] = {pid: [] for pid in profile_ids}
+            domains_by_profile: dict[int, list[str]] = {pid: [] for pid in profile_ids}
             domain_rows = conn.execute(
                 f"SELECT profile_id, domain FROM pac_direct_domains WHERE profile_id IN ({placeholders}) ORDER BY profile_id ASC, domain ASC",
                 tuple(profile_ids),
             ).fetchall()
             for row in domain_rows:
-                domains_by_profile.setdefault(int(row["profile_id"]), []).append(str(row["domain"]))
+                domains_by_profile.setdefault(int(row["profile_id"]), []).append(
+                    str(row["domain"]),
+                )
 
-            nets_by_profile: dict[int, List[str]] = {pid: [] for pid in profile_ids}
+            nets_by_profile: dict[int, list[str]] = {pid: [] for pid in profile_ids}
             net_rows = conn.execute(
                 f"SELECT profile_id, cidr FROM pac_direct_dst_nets WHERE profile_id IN ({placeholders}) ORDER BY profile_id ASC, cidr ASC",
                 tuple(profile_ids),
             ).fetchall()
             for row in net_rows:
-                nets_by_profile.setdefault(int(row["profile_id"]), []).append(str(row["cidr"]))
+                nets_by_profile.setdefault(int(row["profile_id"]), []).append(
+                    str(row["cidr"]),
+                )
 
-            res: List[PacProfile] = []
+            res: list[PacProfile] = []
             for p in profiles:
                 pid = int(p["id"])
                 res.append(
@@ -204,7 +207,7 @@ class PacProfilesStore:
                         direct_domains=domains_by_profile.get(pid, []),
                         direct_dst_nets=nets_by_profile.get(pid, []),
                         created_ts=int(p["created_ts"] or 0),
-                    )
+                    ),
                 )
             return res
 
@@ -236,10 +239,16 @@ class PacProfilesStore:
             )
             for row in rows
         ]
-        direct_enabled = True if setting is None else bool(int(setting["direct_enabled"] or 0))
-        return PacProxyChainSettings(backup_proxies=backups, direct_enabled=direct_enabled)
+        direct_enabled = (
+            True if setting is None else bool(int(setting["direct_enabled"] or 0))
+        )
+        return PacProxyChainSettings(
+            backup_proxies=backups, direct_enabled=direct_enabled,
+        )
 
-    def add_backup_proxy(self, *, proxy_host: str, proxy_port: object | None = None) -> Tuple[bool, str, Optional[int]]:
+    def add_backup_proxy(
+        self, *, proxy_host: str, proxy_port: object | None = None,
+    ) -> tuple[bool, str, int | None]:
         self.init_db()
         host, port, err = _normalize_proxy_host_port(proxy_host, proxy_port)
         if host is None or port is None:
@@ -261,14 +270,17 @@ class PacProfilesStore:
             )
             return True, "", int(cur.lastrowid)
 
-    def _resequence_backup_proxies(self, conn, proxy_id: str) -> List[int]:
+    def _resequence_backup_proxies(self, conn, proxy_id: str) -> list[int]:
         rows = conn.execute(
             "SELECT id FROM pac_backup_proxies WHERE proxy_id=%s ORDER BY position ASC, id ASC",
             (proxy_id,),
         ).fetchall()
         ordered_ids = [int(row["id"]) for row in rows]
         for idx, proxy_id_value in enumerate(ordered_ids, start=1):
-            conn.execute("UPDATE pac_backup_proxies SET position=%s WHERE id=%s", (idx, proxy_id_value))
+            conn.execute(
+                "UPDATE pac_backup_proxies SET position=%s WHERE id=%s",
+                (idx, proxy_id_value),
+            )
         return ordered_ids
 
     def delete_backup_proxy(self, backup_proxy_id: int) -> None:
@@ -276,7 +288,10 @@ class PacProfilesStore:
         proxy_id = get_proxy_id()
         bid = int(backup_proxy_id)
         with self._connect() as conn:
-            conn.execute("DELETE FROM pac_backup_proxies WHERE id=%s AND proxy_id=%s", (bid, proxy_id))
+            conn.execute(
+                "DELETE FROM pac_backup_proxies WHERE id=%s AND proxy_id=%s",
+                (bid, proxy_id),
+            )
             self._resequence_backup_proxies(conn, proxy_id)
 
     def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> None:
@@ -290,13 +305,22 @@ class PacProfilesStore:
                 return
             index = ordered_ids.index(bid)
             if normalized_direction == "up" and index > 0:
-                ordered_ids[index - 1], ordered_ids[index] = ordered_ids[index], ordered_ids[index - 1]
+                ordered_ids[index - 1], ordered_ids[index] = (
+                    ordered_ids[index],
+                    ordered_ids[index - 1],
+                )
             elif normalized_direction == "down" and index < len(ordered_ids) - 1:
-                ordered_ids[index + 1], ordered_ids[index] = ordered_ids[index], ordered_ids[index + 1]
+                ordered_ids[index + 1], ordered_ids[index] = (
+                    ordered_ids[index],
+                    ordered_ids[index + 1],
+                )
             else:
                 return
             for idx, proxy_id_value in enumerate(ordered_ids, start=1):
-                conn.execute("UPDATE pac_backup_proxies SET position=%s WHERE id=%s", (idx, proxy_id_value))
+                conn.execute(
+                    "UPDATE pac_backup_proxies SET position=%s WHERE id=%s",
+                    (idx, proxy_id_value),
+                )
 
     def set_direct_enabled(self, enabled: bool) -> None:
         self.init_db()
@@ -314,13 +338,13 @@ class PacProfilesStore:
     def upsert_profile(
         self,
         *,
-        profile_id: Optional[int],
+        profile_id: int | None,
         name: str,
         client_cidr: str,
         direct_domains_text: str,
         direct_dst_nets_text: str,
         **_ignored: object,
-    ) -> Tuple[bool, str, Optional[int]]:
+    ) -> tuple[bool, str, int | None]:
         self.init_db()
 
         nm = (name or "").strip()
@@ -331,7 +355,7 @@ class PacProfilesStore:
         if cidr_norm is None:
             return False, err, None
 
-        domains: List[str] = []
+        domains: list[str] = []
         for ln in (direct_domains_text or "").splitlines():
             d, derr = _normalize_domain(ln)
             if d is None:
@@ -341,7 +365,7 @@ class PacProfilesStore:
             if d not in domains:
                 domains.append(d)
 
-        nets: List[str] = []
+        nets: list[str] = []
         for ln in (direct_dst_nets_text or "").splitlines():
             c, cerr = _normalize_v4_cidr(ln)
             if c is None:
@@ -361,7 +385,10 @@ class PacProfilesStore:
                 pid = int(cur.lastrowid)
             else:
                 pid = int(profile_id)
-                existing = conn.execute("SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1", (pid, proxy_id)).fetchone()
+                existing = conn.execute(
+                    "SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
+                    (pid, proxy_id),
+                ).fetchone()
                 if existing is None:
                     return False, "Profile not found.", None
                 conn.execute(
@@ -370,8 +397,12 @@ class PacProfilesStore:
                 )
 
                 # Clear old rules.
-                conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
-                conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
+                conn.execute(
+                    "DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,),
+                )
+                conn.execute(
+                    "DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,),
+                )
 
             for d in domains:
                 conn.execute(
@@ -391,14 +422,19 @@ class PacProfilesStore:
         pid = int(profile_id)
         proxy_id = get_proxy_id()
         with self._connect() as conn:
-            row = conn.execute("SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1", (pid, proxy_id)).fetchone()
+            row = conn.execute(
+                "SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
+                (pid, proxy_id),
+            ).fetchone()
             if row is None:
                 return
             conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
             conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
-            conn.execute("DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s", (pid, proxy_id))
+            conn.execute(
+                "DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s", (pid, proxy_id),
+            )
 
-    def match_profile_for_client_ip(self, client_ip: str) -> Optional[PacProfile]:
+    def match_profile_for_client_ip(self, client_ip: str) -> PacProfile | None:
         """Return the first matching profile for client_ip.
 
         Matching order:
@@ -414,7 +450,7 @@ class PacProfilesStore:
         except Exception:
             ip = None
 
-        def sort_key(p: PacProfile) -> Tuple[int, int]:
+        def sort_key(p: PacProfile) -> tuple[int, int]:
             return (1 if not p.client_cidr else 0, int(p.id))
 
         for p in sorted(profiles, key=sort_key):
@@ -440,7 +476,7 @@ class PacProfilesStore:
         return None
 
 
-_store: Optional[PacProfilesStore] = None
+_store: PacProfilesStore | None = None
 _store_lock = threading.Lock()
 
 

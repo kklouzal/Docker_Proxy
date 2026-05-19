@@ -4,7 +4,6 @@ import hashlib
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from services.db import OPERATIONAL_ERRORS, connect
 from services.proxy_context import normalize_proxy_id
@@ -52,7 +51,11 @@ class ConfigRevisionStore:
         if not isinstance(exc, OPERATIONAL_ERRORS):
             return False
         text = str(exc).lower()
-        return "deadlock found" in text or "lock wait timeout" in text or "try restarting transaction" in text
+        return (
+            "deadlock found" in text
+            or "lock wait timeout" in text
+            or "try restarting transaction" in text
+        )
 
     def _with_db_lock_retry(self, fn, *, attempts: int = 4):
         last_exc: BaseException | None = None
@@ -61,9 +64,12 @@ class ConfigRevisionStore:
                 return fn()
             except Exception as exc:
                 last_exc = exc
-                if not self._is_transient_db_lock(exc) or i >= max(1, int(attempts)) - 1:
+                if (
+                    not self._is_transient_db_lock(exc)
+                    or i >= max(1, int(attempts)) - 1
+                ):
                     raise
-                time.sleep(min(1.0, 0.1 * (2 ** i)))
+                time.sleep(min(1.0, 0.1 * (2**i)))
         if last_exc is not None:
             raise last_exc
         return fn()
@@ -84,7 +90,7 @@ class ConfigRevisionStore:
                     KEY idx_proxy_config_revisions_proxy_active (proxy_id, is_active, created_ts),
                     KEY idx_proxy_config_revisions_proxy_sha (proxy_id, config_sha256)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -98,10 +104,10 @@ class ConfigRevisionStore:
                     applied_ts BIGINT NOT NULL,
                     KEY idx_proxy_config_applications_proxy_ts (proxy_id, applied_ts)
                 )
-                """
+                """,
             )
 
-    def _row_to_revision(self, row: object | None) -> Optional[ConfigRevision]:
+    def _row_to_revision(self, row: object | None) -> ConfigRevision | None:
         if not row:
             return None
         return ConfigRevision(
@@ -115,7 +121,7 @@ class ConfigRevisionStore:
             is_active=bool(int(row["is_active"] or 0)),
         )
 
-    def _row_to_application(self, row: object | None) -> Optional[ConfigApplication]:
+    def _row_to_application(self, row: object | None) -> ConfigApplication | None:
         if not row:
             return None
         return ConfigApplication(
@@ -128,7 +134,7 @@ class ConfigRevisionStore:
             applied_ts=int(row["applied_ts"] or 0),
         )
 
-    def _row_to_metadata(self, row: object | None) -> Optional[ConfigRevisionMetadata]:
+    def _row_to_metadata(self, row: object | None) -> ConfigRevisionMetadata | None:
         if not row:
             return None
         return ConfigRevisionMetadata(
@@ -141,7 +147,7 @@ class ConfigRevisionStore:
             is_active=bool(int(row["is_active"] or 0)),
         )
 
-    def get_active_revision(self, proxy_id: object | None) -> Optional[ConfigRevision]:
+    def get_active_revision(self, proxy_id: object | None) -> ConfigRevision | None:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
@@ -156,7 +162,9 @@ class ConfigRevisionStore:
             ).fetchone()
         return self._row_to_revision(row)
 
-    def get_revision(self, revision_id: object, *, proxy_id: object | None = None) -> Optional[ConfigRevision]:
+    def get_revision(
+        self, revision_id: object, *, proxy_id: object | None = None,
+    ) -> ConfigRevision | None:
         self.init_db()
         params: tuple[object, ...]
         if proxy_id is None:
@@ -166,10 +174,14 @@ class ConfigRevisionStore:
             where = "id=%s AND proxy_id=%s"
             params = (int(revision_id or 0), normalize_proxy_id(proxy_id))
         with self._connect() as conn:
-            row = conn.execute(f"SELECT * FROM proxy_config_revisions WHERE {where} LIMIT 1", params).fetchone()
+            row = conn.execute(
+                f"SELECT * FROM proxy_config_revisions WHERE {where} LIMIT 1", params,
+            ).fetchone()
         return self._row_to_revision(row)
 
-    def get_active_revision_metadata(self, proxy_id: object | None) -> Optional[ConfigRevisionMetadata]:
+    def get_active_revision_metadata(
+        self, proxy_id: object | None,
+    ) -> ConfigRevisionMetadata | None:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
@@ -205,7 +217,7 @@ class ConfigRevisionStore:
                 created_by=created_by,
                 source_kind=source_kind,
                 activate=activate,
-            )
+            ),
         )
 
     def _create_revision_once(
@@ -224,7 +236,12 @@ class ConfigRevisionStore:
         now = int(time.time())
 
         current = self.get_active_revision(proxy_key)
-        if activate and current is not None and current.config_sha256 == digest and current.config_text == text:
+        if (
+            activate
+            and current is not None
+            and current.config_sha256 == digest
+            and current.config_text == text
+        ):
             return current
 
         with self._connect() as conn:
@@ -272,7 +289,7 @@ class ConfigRevisionStore:
                 config_text,
                 created_by=created_by,
                 source_kind=source_kind,
-            )
+            ),
         )
 
     def _ensure_active_revision_once(
@@ -286,7 +303,13 @@ class ConfigRevisionStore:
         current = self.get_active_revision(proxy_id)
         if current is not None:
             return current
-        return self._create_revision_once(proxy_id, config_text, created_by=created_by, source_kind=source_kind, activate=True)
+        return self._create_revision_once(
+            proxy_id,
+            config_text,
+            created_by=created_by,
+            source_kind=source_kind,
+            activate=True,
+        )
 
     def record_apply_result(
         self,
@@ -306,7 +329,14 @@ class ConfigRevisionStore:
                 INSERT INTO proxy_config_applications(proxy_id, revision_id, ok, detail, applied_by, applied_ts)
                 VALUES(%s,%s,%s,%s,%s,%s)
                 """,
-                (proxy_key, int(revision_id), 1 if ok else 0, (detail or "")[:4000], (applied_by or "proxy")[:255], now),
+                (
+                    proxy_key,
+                    int(revision_id),
+                    1 if ok else 0,
+                    (detail or "")[:4000],
+                    (applied_by or "proxy")[:255],
+                    now,
+                ),
             )
             row = conn.execute(
                 "SELECT * FROM proxy_config_applications WHERE id=%s LIMIT 1",
@@ -316,7 +346,7 @@ class ConfigRevisionStore:
         assert application is not None
         return application
 
-    def latest_apply(self, proxy_id: object | None) -> Optional[ConfigApplication]:
+    def latest_apply(self, proxy_id: object | None) -> ConfigApplication | None:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
@@ -332,7 +362,7 @@ class ConfigRevisionStore:
         return self._row_to_application(row)
 
 
-_store: Optional[ConfigRevisionStore] = None
+_store: ConfigRevisionStore | None = None
 _store_lock = threading.Lock()
 
 

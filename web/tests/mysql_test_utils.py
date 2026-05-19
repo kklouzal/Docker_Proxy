@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import hashlib
 import os
 import sys
@@ -11,7 +12,6 @@ from unittest import SkipTest
 from urllib.parse import urlparse, urlunparse
 
 import pymysql
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = REPO_ROOT / "web"
@@ -78,7 +78,7 @@ def _parse_env_file(path: Path) -> dict[str, str]:
         value = value.strip()
         if not key:
             continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
             value = value[1:-1]
         values[key] = value
     return values
@@ -102,7 +102,9 @@ def _load_mysql_env_if_needed() -> None:
     if explicit_test_env:
         return
 
-    allow_env_files = (os.environ.get("MYSQL_TEST_ALLOW_ENV_FILES") or "").strip().lower() in {
+    allow_env_files = (
+        os.environ.get("MYSQL_TEST_ALLOW_ENV_FILES") or ""
+    ).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -138,7 +140,8 @@ def _base_connection_params() -> dict[str, Any]:
         parsed = urlparse(url)
         scheme = (parsed.scheme or "").lower()
         if not scheme.startswith("mysql"):
-            raise SkipTest(f"Unsupported DATABASE_URL for MySQL tests: {scheme}")
+            msg = f"Unsupported DATABASE_URL for MySQL tests: {scheme}"
+            raise SkipTest(msg)
         return {
             "host": parsed.hostname or "127.0.0.1",
             "port": int(parsed.port or 3306),
@@ -151,9 +154,12 @@ def _base_connection_params() -> dict[str, Any]:
     host = (os.environ.get("MYSQL_HOST") or "").strip()
     user = (os.environ.get("MYSQL_USER") or "").strip()
     if not host and not user:
-        raise SkipTest(
+        msg = (
             "MySQL test configuration is not available. Set DATABASE_URL, MYSQL_* variables, or MYSQL_TEST_* variables. "
             "To opt into loading local env files for tests, set MYSQL_TEST_ALLOW_ENV_FILES=1."
+        )
+        raise SkipTest(
+            msg,
         )
 
     return {
@@ -162,7 +168,9 @@ def _base_connection_params() -> dict[str, Any]:
         "user": user or "root",
         "password": os.environ.get("MYSQL_PASSWORD") or "",
         "charset": os.environ.get("MYSQL_CHARSET") or "utf8mb4",
-        "connect_timeout": int((os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"),
+        "connect_timeout": int(
+            (os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10"
+        ),
     }
 
 
@@ -184,10 +192,8 @@ def _register_cleanup() -> None:
 
     def _cleanup() -> None:
         for database_name in sorted(_REGISTERED_DATABASES):
-            try:
+            with contextlib.suppress(Exception):
                 _drop_database(database_name)
-            except Exception:
-                pass
 
     atexit.register(_cleanup)
 
@@ -212,11 +218,15 @@ def _set_database_name(database_name: str) -> None:
 
 def _purge_runtime_modules() -> None:
     for module_name in list(sys.modules):
-        if module_name in _MODULES_TO_PURGE_EXACT or module_name.startswith(_MODULES_TO_PURGE_PREFIXES):
+        if module_name in _MODULES_TO_PURGE_EXACT or module_name.startswith(
+            _MODULES_TO_PURGE_PREFIXES
+        ):
             sys.modules.pop(module_name, None)
 
 
-def configure_test_mysql_env(seed: object, *, secret_path: str | Path | None = None) -> str:
+def configure_test_mysql_env(
+    seed: object, *, secret_path: str | Path | None = None
+) -> str:
     digest = hashlib.sha1(str(seed).encode("utf-8", errors="replace")).hexdigest()[:16]
     database_name = f"sfp_test_{digest}"
 

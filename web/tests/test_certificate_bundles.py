@@ -43,7 +43,7 @@ def test_certificate_bundle_revision_fullchain_and_to_bundle() -> None:
 
 def test_certificate_bundle_store_row_converters_handle_nulls_and_types() -> None:
     _add_web_to_path()
-    import services.certificate_bundles as certificate_bundles  # type: ignore
+    from services import certificate_bundles  # type: ignore
 
     store = certificate_bundles.CertificateBundleStore()
     assert store._row_to_revision(None) is None
@@ -67,7 +67,7 @@ def test_certificate_bundle_store_row_converters_handle_nulls_and_types() -> Non
             "created_by": None,
             "created_ts": "123",
             "is_active": "1",
-        }
+        },
     )
     assert revision is not None
     assert revision.revision_id == 9
@@ -85,7 +85,7 @@ def test_certificate_bundle_store_row_converters_handle_nulls_and_types() -> Non
             "applied_by": "admin",
             "applied_ts": "456",
             "bundle_sha256": None,
-        }
+        },
     )
     assert application is not None
     assert application.proxy_id == "default"
@@ -104,7 +104,7 @@ def test_certificate_bundle_store_row_converters_handle_nulls_and_types() -> Non
             "created_by": "tester",
             "created_ts": "789",
             "is_active": "0",
-        }
+        },
     )
     assert metadata is not None
     assert metadata.source_kind == "manual"

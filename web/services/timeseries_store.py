@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
-
-import logging
+from typing import Any
 
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import now_ts as _now
-
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +21,7 @@ class Resolution:
     seconds: int
 
 
-RESOLUTIONS: List[Resolution] = [
+RESOLUTIONS: list[Resolution] = [
     Resolution("1s", "ts_1s", 1),
     Resolution("1m", "ts_1m", 60),
     Resolution("1h", "ts_1h", 60 * 60),
@@ -35,7 +33,7 @@ RESOLUTIONS: List[Resolution] = [
 RESOLUTION_BY_NAME = {resolution.name: resolution for resolution in RESOLUTIONS}
 
 
-def _get_metric(stats: Dict[str, Any], path: str) -> Optional[float]:
+def _get_metric(stats: dict[str, Any], path: str) -> float | None:
     # path like "cpu.util_percent"
     cur: Any = stats
     for part in path.split("."):
@@ -51,7 +49,7 @@ def _get_metric(stats: Dict[str, Any], path: str) -> Optional[float]:
 
 
 class TimeSeriesStore:
-    def __init__(self):
+    def __init__(self) -> None:
         self._started = False
         self._start_lock = threading.Lock()
         self._db_initialized = False
@@ -99,11 +97,11 @@ class TimeSeriesStore:
                             hit_rate DOUBLE,
                             PRIMARY KEY(proxy_id, ts)
                         )
-                        """
+                        """,
                     )
             self._db_initialized = True
 
-    def insert_snapshot(self, stats: Dict[str, Any], ts: Optional[int] = None) -> None:
+    def insert_snapshot(self, stats: dict[str, Any], ts: int | None = None) -> None:
         self.init_db()
         ts_i = int(ts or _now())
 
@@ -133,7 +131,14 @@ class TimeSeriesStore:
 
         self._with_missing_table_retry(write_snapshot)
 
-    def _rollup(self, src_table: str, dst_table: str, dst_seconds: int, cutoff_end_ts: int, proxy_id: str) -> None:
+    def _rollup(
+        self,
+        src_table: str,
+        dst_table: str,
+        dst_seconds: int,
+        cutoff_end_ts: int,
+        proxy_id: str,
+    ) -> None:
         # Roll complete destination buckets with bucket_start < aligned_end.
         aligned_end = (cutoff_end_ts // dst_seconds) * dst_seconds
         if aligned_end <= 0:
@@ -167,11 +172,14 @@ class TimeSeriesStore:
                     (dst_seconds, dst_seconds, proxy_id, aligned_end),
                 )
 
-                conn.execute(f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_end))
+                conn.execute(
+                    f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts < %s",
+                    (proxy_id, aligned_end),
+                )
 
         self._with_missing_table_retry(rollup_bucket)
 
-    def rollup_and_prune(self, ts: Optional[int] = None) -> None:
+    def rollup_and_prune(self, ts: int | None = None) -> None:
         self.init_db()
         now = int(ts or _now())
         proxy_id = get_proxy_id()
@@ -203,14 +211,19 @@ class TimeSeriesStore:
         aligned_y = (cutoff_y // (60 * 60 * 24 * 365)) * (60 * 60 * 24 * 365)
         if aligned_y > 0:
             self._with_missing_table_retry(
-                lambda: self._delete_old_year_points(proxy_id=proxy_id, aligned_y=aligned_y)
+                lambda: self._delete_old_year_points(
+                    proxy_id=proxy_id, aligned_y=aligned_y,
+                ),
             )
 
     def _delete_old_year_points(self, *, proxy_id: str, aligned_y: int) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s", (proxy_id, aligned_y))
+            conn.execute(
+                "DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s",
+                (proxy_id, aligned_y),
+            )
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         # Returns weighted averages for recent windows.
         now = _now()
 
@@ -222,7 +235,8 @@ class TimeSeriesStore:
         ]
         proxy_id = get_proxy_id()
 
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
+
         def read_summary() -> None:
             with self._connect() as conn:
                 for label, table, since in windows:
@@ -249,7 +263,9 @@ class TimeSeriesStore:
         self._with_missing_table_retry(read_summary)
         return out
 
-    def query(self, resolution: str, since: int, limit: int = 500) -> List[Dict[str, Any]]:
+    def query(
+        self, resolution: str, since: int, limit: int = 500,
+    ) -> list[dict[str, Any]]:
         res = RESOLUTION_BY_NAME.get(resolution) or RESOLUTIONS[0]
 
         lim = max(10, min(2000, int(limit)))
@@ -305,7 +321,7 @@ class TimeSeriesStore:
             self._started = True
 
 
-_store: Optional[TimeSeriesStore] = None
+_store: TimeSeriesStore | None = None
 _store_lock = threading.Lock()
 
 

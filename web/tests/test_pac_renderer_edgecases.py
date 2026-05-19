@@ -15,21 +15,33 @@ def _add_web_to_path() -> None:
 
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     assert pac_renderer.format_proxy_host("proxy.example:3128") == "proxy.example"
     assert pac_renderer.format_proxy_host("2001:db8::10") == "[2001:db8::10]"
     assert pac_renderer.format_proxy_host("[2001:db8::10]:3128") == "[2001:db8::10]"
 
-    assert pac_renderer._build_pac_url(scheme="http", host="proxy.example", port=80) == "http://proxy.example/proxy.pac"
-    assert pac_renderer._build_pac_url(scheme="https", host="proxy.example", port=443) == "https://proxy.example/proxy.pac"
-    assert pac_renderer._build_pac_url(scheme="ftp", host="proxy.example", port=8080) == "http://proxy.example:8080/proxy.pac"
-    assert pac_renderer._build_pac_url(scheme="http", host="2001:db8::10", port=8080) == "http://[2001:db8::10]:8080/proxy.pac"
+    assert (
+        pac_renderer._build_pac_url(scheme="http", host="proxy.example", port=80)
+        == "http://proxy.example/proxy.pac"
+    )
+    assert (
+        pac_renderer._build_pac_url(scheme="https", host="proxy.example", port=443)
+        == "https://proxy.example/proxy.pac"
+    )
+    assert (
+        pac_renderer._build_pac_url(scheme="ftp", host="proxy.example", port=8080)
+        == "http://proxy.example:8080/proxy.pac"
+    )
+    assert (
+        pac_renderer._build_pac_url(scheme="http", host="2001:db8::10", port=8080)
+        == "http://[2001:db8::10]:8080/proxy.pac"
+    )
 
 
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
         "PROXY proxy.example:3128; DIRECT",
@@ -40,7 +52,7 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
     )
 
     assert "host === 'localhost'" in rendered
-    assert "dnsDomainIs(host, \".local\")" in rendered
+    assert 'dnsDomainIs(host, ".local")' in rendered
     assert rendered.count('host === "example.com"') == 1
     assert "isInNet(ip, '10.20.0.0', '255.255.0.0')" in rendered
     assert "isInNet(ip, '192.168.0.0', '255.255.0.0')" in rendered
@@ -50,7 +62,7 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
 
 def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
         proxy_id="default",
@@ -66,7 +78,7 @@ def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
 
 def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
         proxy_id="default",
@@ -78,14 +90,23 @@ def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> 
         direct_enabled=False,
     )
 
-    assert target.proxy_chain == "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080"
-    assert target.proxy_chain_display == "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080"
-    assert "return 'PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080';" in pac_renderer._render_fallback_pac(target, include_private=False)
+    assert (
+        target.proxy_chain
+        == "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080"
+    )
+    assert (
+        target.proxy_chain_display
+        == "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080"
+    )
+    assert (
+        "return 'PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080';"
+        in pac_renderer._render_fallback_pac(target, include_private=False)
+    )
 
 
 def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     files_a = (
         pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),
@@ -97,13 +118,19 @@ def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
         pac_renderer.RenderedPacFile(relative_path="manifest.json", content="changed"),
     )
 
-    assert pac_renderer.calculate_pac_state_sha(files_a) == pac_renderer.calculate_pac_state_sha(files_b)
-    assert pac_renderer.calculate_pac_state_sha(files_a) != pac_renderer.calculate_pac_state_sha(files_c)
+    assert pac_renderer.calculate_pac_state_sha(
+        files_a
+    ) == pac_renderer.calculate_pac_state_sha(files_b)
+    assert pac_renderer.calculate_pac_state_sha(
+        files_a
+    ) != pac_renderer.calculate_pac_state_sha(files_c)
 
 
-def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback() -> None:
+def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback() -> (
+    None
+):
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -116,12 +143,19 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
 
     assert pac_renderer.select_manifest_file(manifest, "10.2.3.4") == "corp.pac"
     assert pac_renderer.select_manifest_file(manifest, "192.0.2.10") == "catch-all.pac"
-    assert pac_renderer.select_manifest_file({"fallback_file": "fallback.pac", "profiles": []}, "not-an-ip") == "fallback.pac"
+    assert (
+        pac_renderer.select_manifest_file(
+            {"fallback_file": "fallback.pac", "profiles": []}, "not-an-ip"
+        )
+        == "fallback.pac"
+    )
 
 
-def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing_payload(tmp_path) -> None:
+def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing_payload(
+    tmp_path,
+) -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
     target.mkdir()
@@ -130,7 +164,9 @@ def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing
     state = pac_renderer.ProxyPacState(
         proxy_id="live",
         state_sha256="sha",
-        files=(pac_renderer.RenderedPacFile(relative_path="../escape.pac", content="bad"),),
+        files=(
+            pac_renderer.RenderedPacFile(relative_path="../escape.pac", content="bad"),
+        ),
     )
 
     with pytest.raises(ValueError):
@@ -141,23 +177,27 @@ def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing
 
 def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     content = json.dumps({"proxy": pac_renderer.PAC_HOST_PLACEHOLDER})
-    assert "[2001:db8::20]" in pac_renderer.substitute_request_host(content, "[2001:db8::20]:3128")
+    assert "[2001:db8::20]" in pac_renderer.substitute_request_host(
+        content, "[2001:db8::20]:3128"
+    )
 
 
 class _FakeSslfilterStore:
-    def __init__(self, rules):
+    def __init__(self, rules) -> None:
         self._rules = rules
 
     def list_all(self):
         return self._rules
 
 
-def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rules(monkeypatch) -> None:
+def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rules(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
 
     rules = type(
         "SslFilterRules",
@@ -170,7 +210,9 @@ def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rul
             "exclude_private_nets": True,
         },
     )()
-    monkeypatch.setattr(pac_renderer, "get_sslfilter_store", lambda: _FakeSslfilterStore(rules))
+    monkeypatch.setattr(
+        pac_renderer, "get_sslfilter_store", lambda: _FakeSslfilterStore(rules)
+    )
 
     rendered = pac_renderer._render_fallback_pac(
         pac_renderer.ProxyPacTarget(
@@ -179,7 +221,7 @@ def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rul
             pac_scheme="http",
             pac_port=80,
             http_proxy_port=3128,
-        )
+        ),
     )
 
     assert "no-bump.example" not in rendered
@@ -189,13 +231,17 @@ def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rul
     assert "return 'PROXY proxy.example:3128; DIRECT';" in rendered
 
 
-def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(monkeypatch) -> None:
+def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
     from services.pac_profiles_store import PacProfile  # type: ignore
 
     rules = type("SslFilterRules", (), {"exclude_private_nets": True})()
-    monkeypatch.setattr(pac_renderer, "get_sslfilter_store", lambda: _FakeSslfilterStore(rules))
+    monkeypatch.setattr(
+        pac_renderer, "get_sslfilter_store", lambda: _FakeSslfilterStore(rules)
+    )
 
     rendered = pac_renderer._render_profile_pac(
         PacProfile(
@@ -222,7 +268,7 @@ def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(m
 
 def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
     _add_web_to_path()
-    import services.pac_renderer as pac_renderer  # type: ignore
+    from services import pac_renderer  # type: ignore
     from services.pac_profiles_store import PacProfile  # type: ignore
 
     class _CountingSslfilterStore:
@@ -235,7 +281,14 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
     class _FakePacProfilesStore:
         def list_profiles(self):
             return [
-                PacProfile(id=2, name="Second", client_cidr="", direct_domains=[], direct_dst_nets=[], created_ts=0),
+                PacProfile(
+                    id=2,
+                    name="Second",
+                    client_cidr="",
+                    direct_domains=[],
+                    direct_dst_nets=[],
+                    created_ts=0,
+                ),
                 PacProfile(
                     id=1,
                     name="First",
@@ -251,37 +304,54 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
                 "PacProxyChainSettings",
                 (),
                 {
-                    "backup_proxies": [type("PacBackupProxy", (), {"proxy_host": "backup.example", "proxy_port": 8080})()],
+                    "backup_proxies": [
+                        type(
+                            "PacBackupProxy",
+                            (),
+                            {"proxy_host": "backup.example", "proxy_port": 8080},
+                        )()
+                    ],
                     "direct_enabled": False,
                 },
             )()
 
     store = _CountingSslfilterStore()
     monkeypatch.setattr(pac_renderer, "get_sslfilter_store", lambda: store)
-    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", lambda: _FakePacProfilesStore())
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _FakePacProfilesStore)
     monkeypatch.setattr(
         pac_renderer,
         "resolve_proxy_pac_target",
-            lambda _proxy_id=None: pac_renderer.ProxyPacTarget(
-                proxy_id="default",
-                public_host="proxy.example",
-                pac_scheme="http",
-                pac_port=80,
-                http_proxy_port=3128,
-                backup_proxies=(("backup.example", 8080),),
-                direct_enabled=False,
-            ),
-        )
+        lambda _proxy_id=None: pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+            backup_proxies=(("backup.example", 8080),),
+            direct_enabled=False,
+        ),
+    )
 
     state = pac_renderer.build_proxy_pac_state("default")
 
     assert store.calls == 1
-    assert [item.relative_path for item in state.files if item.relative_path.endswith(".pac")] == [
+    assert [
+        item.relative_path
+        for item in state.files
+        if item.relative_path.endswith(".pac")
+    ] == [
         "fallback.pac",
         "profile-1.pac",
         "profile-2.pac",
     ]
-    manifest = json.loads(next(item.content for item in state.files if item.relative_path == "manifest.json"))
-    assert manifest["proxy_chain"] == "PROXY proxy.example:3128; PROXY backup.example:8080"
+    manifest = json.loads(
+        next(
+            item.content
+            for item in state.files
+            if item.relative_path == "manifest.json"
+        )
+    )
+    assert (
+        manifest["proxy_chain"] == "PROXY proxy.example:3128; PROXY backup.example:8080"
+    )
     assert manifest["direct_enabled"] is False
-

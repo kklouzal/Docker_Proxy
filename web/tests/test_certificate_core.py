@@ -19,7 +19,7 @@ KEY_A = "-----BEGIN PRIVATE KEY-----\nKEYA\n-----END PRIVATE KEY-----\n"
 
 def test_pem_helpers_normalize_extract_and_split_certificate_chains() -> None:
     _add_web_to_path()
-    import services.certificate_core as certificate_core  # type: ignore
+    from services import certificate_core  # type: ignore
 
     messy = "\r\n  " + CERT_A.replace("\n", "\r\n") + CERT_B + "  "
 
@@ -32,12 +32,16 @@ def test_pem_helpers_normalize_extract_and_split_certificate_chains() -> None:
 
 def test_build_certificate_bundle_hashes_content_and_metadata(monkeypatch) -> None:
     _add_web_to_path()
-    import services.certificate_core as certificate_core  # type: ignore
+    from services import certificate_core  # type: ignore
 
     monkeypatch.setattr(
         certificate_core,
         "_extract_certificate_metadata",
-        lambda _cert: ("CN=Proxy", "May 1 00:00:00 2026 GMT", "May 1 00:00:00 2036 GMT"),
+        lambda _cert: (
+            "CN=Proxy",
+            "May 1 00:00:00 2026 GMT",
+            "May 1 00:00:00 2036 GMT",
+        ),
     )
 
     bundle = certificate_core.build_certificate_bundle(
@@ -62,11 +66,15 @@ def test_build_certificate_bundle_hashes_content_and_metadata(monkeypatch) -> No
         certificate_core.build_certificate_bundle(CERT_A, "")
 
 
-def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(tmp_path, monkeypatch) -> None:
+def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_to_path()
-    import services.certificate_core as certificate_core  # type: ignore
+    from services import certificate_core  # type: ignore
 
-    monkeypatch.setattr(certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", ""))
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
 
     bundle_with_pfx = certificate_core.build_certificate_bundle(
         CERT_A,
@@ -93,9 +101,11 @@ def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
     assert not (tmp_path / "uploaded_ca.pfx").exists()
 
 
-def test_load_local_certificate_bundle_returns_none_for_missing_or_incomplete_material(tmp_path) -> None:
+def test_load_local_certificate_bundle_returns_none_for_missing_or_incomplete_material(
+    tmp_path,
+) -> None:
     _add_web_to_path()
-    import services.certificate_core as certificate_core  # type: ignore
+    from services import certificate_core  # type: ignore
 
     assert certificate_core.load_local_certificate_bundle(tmp_path) is None
     (tmp_path / "ca.crt").write_text(CERT_A, encoding="utf-8")

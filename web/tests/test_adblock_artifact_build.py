@@ -29,11 +29,10 @@ def _import_artifact_modules(tmp_path: Path):
     return store_module, artifacts_module
 
 
-def test_build_active_artifact_packages_compiled_lists_and_settings(tmp_path, monkeypatch):
-    env_backup = {
-        key: os.environ.get(key)
-        for key in ("DISABLE_BACKGROUND",)
-    }
+def test_build_active_artifact_packages_compiled_lists_and_settings(
+    tmp_path, monkeypatch
+) -> None:
+    env_backup = {key: os.environ.get(key) for key in ("DISABLE_BACKGROUND",)}
     try:
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
@@ -49,10 +48,7 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(tmp_path, mo
         store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
 
         Path(store.list_path(selected)).write_text(
-            "! comment\n"
-            "||ads.example^\n"
-            "@@||allow.example^\n"
-            "/tracker[.]example/\n",
+            "! comment\n||ads.example^\n@@||allow.example^\n/tracker[.]example/\n",
             encoding="utf-8",
         )
 
@@ -74,13 +70,27 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(tmp_path, mo
 
         with zipfile.ZipFile(io.BytesIO(revision.archive_blob), mode="r") as zf:
             names = set(zf.namelist())
-            assert {"domains_allow.txt", "domains_block.txt", "regex_block.txt", "settings.json", "report.json"} <= names
+            assert {
+                "domains_allow.txt",
+                "domains_block.txt",
+                "regex_block.txt",
+                "settings.json",
+                "report.json",
+            } <= names
 
-            domains_block = zf.read("domains_block.txt").decode("utf-8", errors="replace")
-            domains_allow = zf.read("domains_allow.txt").decode("utf-8", errors="replace")
+            domains_block = zf.read("domains_block.txt").decode(
+                "utf-8", errors="replace"
+            )
+            domains_allow = zf.read("domains_allow.txt").decode(
+                "utf-8", errors="replace"
+            )
             regex_block = zf.read("regex_block.txt").decode("utf-8", errors="replace")
-            settings = json.loads(zf.read("settings.json").decode("utf-8", errors="replace"))
-            report = json.loads(zf.read("report.json").decode("utf-8", errors="replace"))
+            settings = json.loads(
+                zf.read("settings.json").decode("utf-8", errors="replace")
+            )
+            report = json.loads(
+                zf.read("report.json").decode("utf-8", errors="replace")
+            )
 
         assert domains_block == "ads.example\n"
         assert domains_allow == "allow.example\n"
@@ -104,12 +114,10 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(tmp_path, mo
                 os.environ[key] = value
 
 
-
-def test_build_active_artifact_reports_download_pending_when_due_download_fails_but_cached_lists_compile(tmp_path, monkeypatch):
-    env_backup = {
-        key: os.environ.get(key)
-        for key in ("DISABLE_BACKGROUND",)
-    }
+def test_build_active_artifact_reports_download_pending_when_due_download_fails_but_cached_lists_compile(
+    tmp_path, monkeypatch
+) -> None:
+    env_backup = {key: os.environ.get(key) for key in ("DISABLE_BACKGROUND",)}
     try:
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 

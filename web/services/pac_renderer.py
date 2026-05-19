@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -9,14 +10,16 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from services.sslfilter_store import get_sslfilter_store
 from services.pac_profiles_store import PacProfile, get_pac_profiles_store
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_registry import get_proxy_registry
+from services.sslfilter_store import get_sslfilter_store
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 PAC_HOST_PLACEHOLDER = "__PAC_PROXY_HOST__"
 PAC_MANIFEST_FILENAME = "manifest.json"
@@ -73,8 +76,7 @@ def _normalize_domain_rule(domain: str) -> str:
 
 def _domain_match_expression(domain: str) -> str:
     normalized = _normalize_domain_rule(domain)
-    if normalized.startswith("*."):
-        normalized = normalized[2:]
+    normalized = normalized.removeprefix("*.")
     normalized = normalized.lstrip(".")
     if not normalized:
         return ""
@@ -98,13 +100,19 @@ class ProxyPacTarget:
 
     @property
     def proxy_host_token(self) -> str:
-        return format_proxy_host(self.public_host) if self.public_host else PAC_HOST_PLACEHOLDER
+        return (
+            format_proxy_host(self.public_host)
+            if self.public_host
+            else PAC_HOST_PLACEHOLDER
+        )
 
     @property
     def pac_url(self) -> str:
         if not self.public_host:
             return ""
-        return _build_pac_url(scheme=self.pac_scheme, host=self.public_host, port=self.pac_port)
+        return _build_pac_url(
+            scheme=self.pac_scheme, host=self.public_host, port=self.pac_port,
+        )
 
     @property
     def proxy_chain(self) -> str:
@@ -115,7 +123,9 @@ class ProxyPacTarget:
         return self._build_proxy_chain(display=True)
 
     def _build_proxy_chain(self, *, display: bool) -> str:
-        host = self.public_host or "<request-host>" if display else self.proxy_host_token
+        host = (
+            self.public_host or "<request-host>" if display else self.proxy_host_token
+        )
         entries = [f"PROXY {host}:{self.http_proxy_port}"]
         for backup_host, backup_port in self.backup_proxies:
             rendered_host = str(backup_host or "").strip()
@@ -178,13 +188,19 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         proxy = None
 
     env_public_host = (os.environ.get("PROXY_PUBLIC_HOST") or "").strip()
-    public_host = str(getattr(proxy, "public_host", "") or "").strip() or env_public_host
+    public_host = (
+        str(getattr(proxy, "public_host", "") or "").strip() or env_public_host
+    )
     pac_scheme = _normalize_pac_scheme(
-        getattr(proxy, "public_pac_scheme", None) if proxy is not None else os.environ.get("PROXY_PUBLIC_PAC_SCHEME")
+        getattr(proxy, "public_pac_scheme", None)
+        if proxy is not None
+        else os.environ.get("PROXY_PUBLIC_PAC_SCHEME"),
     )
     default_pac_port = 443 if pac_scheme == "https" else 80
     pac_port = _coerce_port(
-        getattr(proxy, "public_pac_port", None) if proxy is not None else os.environ.get("PROXY_PUBLIC_PAC_PORT"),
+        getattr(proxy, "public_pac_port", None)
+        if proxy is not None
+        else os.environ.get("PROXY_PUBLIC_PAC_PORT"),
         _coerce_port(os.environ.get("PROXY_PUBLIC_PAC_PORT"), default_pac_port),
     )
     http_proxy_port = _coerce_port(
@@ -198,7 +214,10 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
     try:
         chain_settings = get_pac_profiles_store().list_proxy_chain_settings()
         backup_proxies = tuple(
-            (str(getattr(item, "proxy_host", "") or ""), _coerce_port(getattr(item, "proxy_port", None), 3128))
+            (
+                str(getattr(item, "proxy_host", "") or ""),
+                _coerce_port(getattr(item, "proxy_port", None), 3128),
+            )
             for item in list(getattr(chain_settings, "backup_proxies", []) or [])
         )
         direct_enabled = bool(getattr(chain_settings, "direct_enabled", True))
@@ -244,31 +263,41 @@ def _render_pac(
     include_private: bool,
 ) -> str:
     lines: list[str] = []
-    lines.append("function FindProxyForURL(url, host) {")
-    lines.append("  host = host.toLowerCase();")
-    lines.append(f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};")
-    lines.append("  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase();")
-    lines.append("  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';")
-    lines.append("  if (isPlainHostName(host)) return 'DIRECT';")
-    lines.append("  if (host === normalizedProxyHost) return 'DIRECT';")
-    for suffix in LOCAL_DOMAIN_SUFFIXES:
-        lines.append(f"  if (dnsDomainIs(host, {json.dumps(suffix)})) return 'DIRECT';")
-    lines.append("")
-    lines.append("  var cachedIp = '';")
-    lines.append("  function hostIp() {")
-    lines.append("    if (cachedIp) return cachedIp;")
-    lines.append("    if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host)) {")
-    lines.append("      cachedIp = host;")
-    lines.append("      return cachedIp;")
-    lines.append("    }")
-    lines.append("    cachedIp = dnsResolve(host) || '';")
-    lines.append("    return cachedIp;")
-    lines.append("  }")
+    lines.extend(
+        (
+            "function FindProxyForURL(url, host) {",
+            "  host = host.toLowerCase();",
+            f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};",
+            "  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase();",
+            "  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';",
+            "  if (isPlainHostName(host)) return 'DIRECT';",
+            "  if (host === normalizedProxyHost) return 'DIRECT';",
+        ),
+    )
+    lines.extend(
+        f"  if (dnsDomainIs(host, {json.dumps(suffix)})) return 'DIRECT';"
+        for suffix in LOCAL_DOMAIN_SUFFIXES
+    )
+    lines.extend(
+        (
+            "",
+            "  var cachedIp = '';",
+            "  function hostIp() {",
+            "    if (cachedIp) return cachedIp;",
+            "    if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host)) {",
+            "      cachedIp = host;",
+            "      return cachedIp;",
+            "    }",
+            "    cachedIp = dnsResolve(host) || '';",
+            "    return cachedIp;",
+            "  }",
+        ),
+    )
 
     seen_domains: set[str] = set()
     for domain in direct_domains:
         d = _normalize_domain_rule(domain)
-        canonical = d[2:] if d.startswith("*.") else d
+        canonical = d.removeprefix("*.")
         canonical = canonical.lstrip(".")
         if not canonical or canonical in seen_domains:
             continue
@@ -279,9 +308,13 @@ def _render_pac(
 
     needs_ip_lookup = bool(direct_dst_nets or include_private)
     if needs_ip_lookup:
-        lines.append("")
-        lines.append("  var ip = hostIp();")
-        lines.append("  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';")
+        lines.extend(
+            (
+                "",
+                "  var ip = hostIp();",
+                "  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';",
+            ),
+        )
 
     for cidr in direct_dst_nets:
         try:
@@ -291,22 +324,27 @@ def _render_pac(
         if net.version != 4:
             continue
         lines.append(
-            f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(str(net))}')) return 'DIRECT';"
+            f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(str(net))}')) return 'DIRECT';",
         )
 
     if include_private:
-        lines.append("  if (ip && isInNet(ip, '10.0.0.0', '255.0.0.0')) return 'DIRECT';")
-        lines.append("  if (ip && isInNet(ip, '172.16.0.0', '255.240.0.0')) return 'DIRECT';")
-        lines.append("  if (ip && isInNet(ip, '192.168.0.0', '255.255.0.0')) return 'DIRECT';")
-        lines.append("  if (ip && isInNet(ip, '169.254.0.0', '255.255.0.0')) return 'DIRECT';")
+        lines.extend(
+            (
+                "  if (ip && isInNet(ip, '10.0.0.0', '255.0.0.0')) return 'DIRECT';",
+                "  if (ip && isInNet(ip, '172.16.0.0', '255.240.0.0')) return 'DIRECT';",
+                "  if (ip && isInNet(ip, '192.168.0.0', '255.255.0.0')) return 'DIRECT';",
+                "  if (ip && isInNet(ip, '169.254.0.0', '255.255.0.0')) return 'DIRECT';",
+            ),
+        )
 
-    lines.append(f"  return '{proxy_chain}';")
-    lines.append("}")
+    lines.extend((f"  return '{proxy_chain}';", "}"))
     return "\n".join(lines) + "\n"
 
 
 def _pac_include_private_nets() -> bool:
-    return bool(getattr(get_sslfilter_store().list_all(), "exclude_private_nets", False))
+    return bool(
+        getattr(get_sslfilter_store().list_all(), "exclude_private_nets", False),
+    )
 
 
 def _render_profile_pac(
@@ -321,11 +359,15 @@ def _render_profile_pac(
         proxy_host=resolved_target.proxy_host_token,
         direct_domains=list(getattr(profile, "direct_domains", []) or []),
         direct_dst_nets=list(getattr(profile, "direct_dst_nets", []) or []),
-        include_private=_pac_include_private_nets() if include_private is None else bool(include_private),
+        include_private=_pac_include_private_nets()
+        if include_private is None
+        else bool(include_private),
     )
 
 
-def _render_fallback_pac(target: ProxyPacTarget | None = None, *, include_private: bool | None = None) -> str:
+def _render_fallback_pac(
+    target: ProxyPacTarget | None = None, *, include_private: bool | None = None,
+) -> str:
     resolved_target = target or resolve_proxy_pac_target()
     return _render_pac(
         resolved_target.proxy_chain,
@@ -335,7 +377,9 @@ def _render_fallback_pac(target: ProxyPacTarget | None = None, *, include_privat
         # private/local destination option should generate DIRECT routing.
         direct_domains=[],
         direct_dst_nets=[],
-        include_private=_pac_include_private_nets() if include_private is None else bool(include_private),
+        include_private=_pac_include_private_nets()
+        if include_private is None
+        else bool(include_private),
     )
 
 
@@ -355,20 +399,21 @@ def _profile_sort_key(profile: PacProfile) -> tuple[int, int]:
 
 
 def _manifest_profiles(profiles: Iterable[PacProfile]) -> list[dict[str, object]]:
-    entries: list[dict[str, object]] = []
-    for profile in sorted(profiles, key=_profile_sort_key):
-        entries.append(
-            {
-                "profile_id": int(profile.id),
-                "name": str(profile.name or ""),
-                "client_cidr": str(profile.client_cidr or ""),
-                "file": f"profile-{int(profile.id)}.pac",
-            }
-        )
+    entries: list[dict[str, object]] = [
+        {
+            "profile_id": int(profile.id),
+            "name": str(profile.name or ""),
+            "client_cidr": str(profile.client_cidr or ""),
+            "file": f"profile-{int(profile.id)}.pac",
+        }
+        for profile in sorted(profiles, key=_profile_sort_key)
+    ]
     return entries
 
 
-def calculate_pac_state_sha(files: Sequence[RenderedPacFile] | Iterable[RenderedPacFile]) -> str:
+def calculate_pac_state_sha(
+    files: Sequence[RenderedPacFile] | Iterable[RenderedPacFile],
+) -> str:
     digest = hashlib.sha256()
     for item in sorted(files, key=lambda current: current.relative_path):
         digest.update(str(item.relative_path).encode("utf-8", errors="replace"))
@@ -383,14 +428,20 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
     token = set_proxy_id(normalized_proxy_id)
     try:
         target = resolve_proxy_pac_target(normalized_proxy_id)
-        sorted_profiles = sorted(get_pac_profiles_store().list_profiles(), key=_profile_sort_key)
+        sorted_profiles = sorted(
+            get_pac_profiles_store().list_profiles(), key=_profile_sort_key,
+        )
         include_private = _pac_include_private_nets()
         pac_files = {
-            f"profile-{int(profile.id)}.pac": _render_profile_pac(profile, target, include_private=include_private)
+            f"profile-{int(profile.id)}.pac": _render_profile_pac(
+                profile, target, include_private=include_private,
+            )
             for profile in sorted_profiles
         }
         fallback_file = "fallback.pac"
-        pac_files[fallback_file] = _render_fallback_pac(target, include_private=include_private)
+        pac_files[fallback_file] = _render_fallback_pac(
+            target, include_private=include_private,
+        )
 
         manifest = {
             "proxy_id": normalized_proxy_id,
@@ -412,16 +463,34 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
             "state_sha256": "",
         }
         manifest_text_for_hash = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-        files_for_hash = [RenderedPacFile(relative_path=path, content=content) for path, content in sorted(pac_files.items())]
-        files_for_hash.append(RenderedPacFile(relative_path=PAC_MANIFEST_FILENAME, content=manifest_text_for_hash))
+        files_for_hash = [
+            RenderedPacFile(relative_path=path, content=content)
+            for path, content in sorted(pac_files.items())
+        ]
+        files_for_hash.append(
+            RenderedPacFile(
+                relative_path=PAC_MANIFEST_FILENAME, content=manifest_text_for_hash,
+            ),
+        )
         state_sha256 = calculate_pac_state_sha(files_for_hash)
 
         manifest["state_sha256"] = state_sha256
         manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
 
-        files = [RenderedPacFile(relative_path=path, content=content) for path, content in sorted(pac_files.items())]
-        files.append(RenderedPacFile(relative_path=PAC_MANIFEST_FILENAME, content=manifest_text))
-        files.append(RenderedPacFile(relative_path=PAC_STATE_SHA_FILENAME, content=state_sha256 + "\n"))
+        files = [
+            RenderedPacFile(relative_path=path, content=content)
+            for path, content in sorted(pac_files.items())
+        ]
+        files.extend(
+            (
+                RenderedPacFile(
+                    relative_path=PAC_MANIFEST_FILENAME, content=manifest_text,
+                ),
+                RenderedPacFile(
+                    relative_path=PAC_STATE_SHA_FILENAME, content=state_sha256 + "\n",
+                ),
+            ),
+        )
         return ProxyPacState(
             proxy_id=normalized_proxy_id,
             state_sha256=state_sha256,
@@ -448,8 +517,9 @@ def materialize_proxy_pac_state(
     try:
         for item in state.files:
             rel = os.path.normpath(str(item.relative_path or "")).replace("\\", "/")
-            if not rel or rel.startswith("../") or rel.startswith("/") or rel == "..":
-                raise ValueError(f"Unsafe PAC materialization path: {item.relative_path}")
+            if not rel or rel.startswith(("../", "/")) or rel == "..":
+                msg = f"Unsafe PAC materialization path: {item.relative_path}"
+                raise ValueError(msg)
             dest = payload_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(str(item.content or ""), encoding="utf-8")
@@ -458,23 +528,23 @@ def materialize_proxy_pac_state(
             backup_dir = parent / f".pac-backup-{os.getpid()}-{int(time.time() * 1000)}"
             if backup_dir.exists():
                 shutil.rmtree(backup_dir, ignore_errors=True)
-            os.replace(str(target), str(backup_dir))
+            Path(str(target)).replace(str(backup_dir))
 
-        os.replace(str(payload_dir), str(target))
+        Path(str(payload_dir)).replace(str(target))
         if backup_dir is not None:
             shutil.rmtree(backup_dir, ignore_errors=True)
     except Exception:
         if backup_dir is not None and backup_dir.exists() and not target.exists():
-            try:
-                os.replace(str(backup_dir), str(target))
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                Path(str(backup_dir)).replace(str(target))
         raise
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
 
 
-def read_materialized_pac_state_sha(target_dir: str | os.PathLike[str] | None = None) -> str:
+def read_materialized_pac_state_sha(
+    target_dir: str | os.PathLike[str] | None = None,
+) -> str:
     root = Path(target_dir or os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR)
     marker = root / PAC_STATE_SHA_FILENAME
     try:
@@ -521,7 +591,9 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
 
 
 def substitute_request_host(content: str, request_host: str) -> str:
-    return str(content or "").replace(PAC_HOST_PLACEHOLDER, format_proxy_host(request_host))
+    return str(content or "").replace(
+        PAC_HOST_PLACEHOLDER, format_proxy_host(request_host),
+    )
 
 
 def render_proxy_pac_for_request(
@@ -536,8 +608,12 @@ def render_proxy_pac_for_request(
         manifest = json.loads(file_map.get(PAC_MANIFEST_FILENAME, "{}") or "{}")
     except Exception:
         manifest = {}
-    selected = select_manifest_file(manifest if isinstance(manifest, dict) else {}, requester_ip)
-    pac = file_map.get(selected) or file_map.get(str(manifest.get("fallback_file") or "fallback.pac"), "")
+    selected = select_manifest_file(
+        manifest if isinstance(manifest, dict) else {}, requester_ip,
+    )
+    pac = file_map.get(selected) or file_map.get(
+        str(manifest.get("fallback_file") or "fallback.pac"), "",
+    )
     if not pac:
         pac = build_emergency_pac(resolve_proxy_pac_target(proxy_id))
     return substitute_request_host(pac, request_host)

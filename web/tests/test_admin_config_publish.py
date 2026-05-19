@@ -4,6 +4,7 @@ import importlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -24,7 +25,7 @@ def _load_admin_app(monkeypatch, tmp_path):
 
 
 class _Controller:
-    def __init__(self):
+    def __init__(self) -> None:
         self.applied: list[str] = []
 
     def normalize_config_text(self, text: str) -> str:
@@ -36,11 +37,13 @@ class _Controller:
 
 
 class _Revisions:
-    def __init__(self):
+    def __init__(self) -> None:
         self.created: list[dict[str, object]] = []
         self.applied: list[dict[str, object]] = []
 
-    def create_revision(self, proxy_id, config_text, *, created_by, source_kind, activate):
+    def create_revision(
+        self, proxy_id, config_text, *, created_by, source_kind, activate
+    ):
         self.created.append(
             {
                 "proxy_id": proxy_id,
@@ -48,11 +51,13 @@ class _Revisions:
                 "created_by": created_by,
                 "source_kind": source_kind,
                 "activate": activate,
-            }
+            },
         )
         return SimpleNamespace(revision_id=17)
 
-    def record_apply_result(self, proxy_id, revision_id, *, ok, detail, applied_by):
+    def record_apply_result(
+        self, proxy_id, revision_id, *, ok, detail, applied_by
+    ) -> None:
         self.applied.append(
             {
                 "proxy_id": proxy_id,
@@ -60,11 +65,13 @@ class _Revisions:
                 "ok": ok,
                 "detail": detail,
                 "applied_by": applied_by,
-            }
+            },
         )
 
 
-def test_publish_config_does_not_create_revision_when_proxy_validation_fails(monkeypatch, tmp_path) -> None:
+def test_publish_config_does_not_create_revision_when_proxy_validation_fails(
+    monkeypatch, tmp_path
+) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
     controller = _Controller()
     revisions = _Revisions()
@@ -72,11 +79,17 @@ def test_publish_config_does_not_create_revision_when_proxy_validation_fails(mon
     monkeypatch.setattr(admin_app, "squid_controller", controller)
     monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
     monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
-    monkeypatch.setattr(admin_app, "_validate_config_for_current_mode", lambda _text: (False, "proxy parser rejected it"))
+    monkeypatch.setattr(
+        admin_app,
+        "_validate_config_for_current_mode",
+        lambda _text: (False, "proxy parser rejected it"),
+    )
 
     with admin_app.app.test_request_context("/"):
         admin_app.session["user"] = "admin"
-        ok, detail = admin_app._publish_config_for_current_mode("workers 1", source_kind="manual")
+        ok, detail = admin_app._publish_config_for_current_mode(
+            "workers 1", source_kind="manual"
+        )
 
     assert ok is False
     assert "revision was not activated" in detail
@@ -85,7 +98,9 @@ def test_publish_config_does_not_create_revision_when_proxy_validation_fails(mon
     assert controller.applied == []
 
 
-def test_publish_config_saves_revision_but_reports_remote_sync_failure(monkeypatch, tmp_path) -> None:
+def test_publish_config_saves_revision_but_reports_remote_sync_failure(
+    monkeypatch, tmp_path
+) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
     controller = _Controller()
     revisions = _Revisions()
@@ -103,13 +118,19 @@ def test_publish_config_saves_revision_but_reports_remote_sync_failure(monkeypat
     monkeypatch.setattr(admin_app, "squid_controller", controller)
     monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
     monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
-    monkeypatch.setattr(admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok"))
+    monkeypatch.setattr(
+        admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok")
+    )
     monkeypatch.setattr(admin_app, "_uses_remote_proxy_runtime", lambda: True)
-    monkeypatch.setattr(admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile)
+    monkeypatch.setattr(
+        admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
+    )
 
     with admin_app.app.test_request_context("/"):
         admin_app.session["user"] = "operator"
-        ok, detail = admin_app._publish_config_for_current_mode("workers 1", source_kind="manual")
+        ok, detail = admin_app._publish_config_for_current_mode(
+            "workers 1", source_kind="manual"
+        )
 
     assert ok is True
     assert "Revision 17 saved" in detail
@@ -121,12 +142,14 @@ def test_publish_config_saves_revision_but_reports_remote_sync_failure(monkeypat
             "created_by": "operator",
             "source_kind": "manual",
             "activate": True,
-        }
+        },
     ]
     assert controller.applied == []
 
 
-def test_validate_config_requires_proxy_or_local_squid_runtime(monkeypatch, tmp_path) -> None:
+def test_validate_config_requires_proxy_or_local_squid_runtime(
+    monkeypatch, tmp_path
+) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
 
     monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
@@ -140,7 +163,9 @@ def test_validate_config_requires_proxy_or_local_squid_runtime(monkeypatch, tmp_
     assert "does not include a local Squid runtime" in detail
 
 
-def test_validate_config_uses_selected_proxy_management_api(monkeypatch, tmp_path) -> None:
+def test_validate_config_uses_selected_proxy_management_api(
+    monkeypatch, tmp_path
+) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
     captured: dict[str, str] = {}
 
@@ -151,8 +176,10 @@ def test_validate_config_uses_selected_proxy_management_api(monkeypatch, tmp_pat
             return {"ok": True, "detail": "valid on proxy"}
 
     monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
-    monkeypatch.setattr(admin_app, "_active_proxy_management_url", lambda: "http://proxy:5000")
-    monkeypatch.setattr(admin_app, "get_proxy_client", lambda: Client())
+    monkeypatch.setattr(
+        admin_app, "_active_proxy_management_url", lambda: "http://proxy:5000"
+    )
+    monkeypatch.setattr(admin_app, "get_proxy_client", Client)
 
     ok, detail = admin_app._validate_config_for_current_mode("workers 1\n")
 
@@ -162,20 +189,22 @@ def test_validate_config_uses_selected_proxy_management_api(monkeypatch, tmp_pat
 
 
 class _AdminStore:
-    def __init__(self, users):
+    def __init__(self, users) -> None:
         self.users = list(users)
         self.deleted: list[str] = []
 
     def list_users(self):
         return list(self.users)
 
-    def add_user(self, username, password):
-        raise AssertionError("add_user should not be called")
+    def add_user(self, username, password) -> NoReturn:
+        msg = "add_user should not be called"
+        raise AssertionError(msg)
 
-    def set_password(self, username, new_password):
-        raise AssertionError("set_password should not be called")
+    def set_password(self, username, new_password) -> NoReturn:
+        msg = "set_password should not be called"
+        raise AssertionError(msg)
 
-    def delete_user(self, username):
+    def delete_user(self, username) -> None:
         self.deleted.append(username)
 
 
@@ -183,33 +212,57 @@ def _message_from_redirect(location: str) -> str:
     return (parse_qs(urlsplit(location).query).get("msg") or [""])[0]
 
 
-def test_administration_handler_rejects_current_user_and_last_user_deletion(monkeypatch, tmp_path) -> None:
+def test_administration_handler_rejects_current_user_and_last_user_deletion(
+    monkeypatch, tmp_path
+) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
 
-    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "delete_user", "username": "Admin"}):
-        response = admin_app._handle_administration_post(_AdminStore(["Admin", "other"]), "admin")
-        assert _message_from_redirect(response.location) == "Cannot remove the currently signed-in user."
+    with admin_app.app.test_request_context(
+        "/administration",
+        method="POST",
+        data={"action": "delete_user", "username": "Admin"},
+    ):
+        response = admin_app._handle_administration_post(
+            _AdminStore(["Admin", "other"]), "admin"
+        )
+        assert (
+            _message_from_redirect(response.location)
+            == "Cannot remove the currently signed-in user."
+        )
 
     one_user_store = _AdminStore(["admin"])
-    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "delete_user", "username": "other"}):
+    with admin_app.app.test_request_context(
+        "/administration",
+        method="POST",
+        data={"action": "delete_user", "username": "other"},
+    ):
         response = admin_app._handle_administration_post(one_user_store, "admin")
-        assert _message_from_redirect(response.location) == "Cannot remove the last user."
+        assert (
+            _message_from_redirect(response.location) == "Cannot remove the last user."
+        )
         assert one_user_store.deleted == []
 
 
-def test_administration_handler_allows_other_user_deletion_and_rejects_unknown_action(monkeypatch, tmp_path) -> None:
+def test_administration_handler_allows_other_user_deletion_and_rejects_unknown_action(
+    monkeypatch, tmp_path
+) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
     store = _AdminStore(["admin", "operator"])
 
-    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "delete_user", "username": "operator"}):
+    with admin_app.app.test_request_context(
+        "/administration",
+        method="POST",
+        data={"action": "delete_user", "username": "operator"},
+    ):
         response = admin_app._handle_administration_post(store, "admin")
         assert _message_from_redirect(response.location) == "User removed."
         assert store.deleted == ["operator"]
 
-    with admin_app.app.test_request_context("/administration", method="POST", data={"action": "definitely_unknown"}):
+    with admin_app.app.test_request_context(
+        "/administration", method="POST", data={"action": "definitely_unknown"}
+    ):
         response = admin_app._handle_administration_post(store, "admin")
         assert _message_from_redirect(response.location) == "Unknown action."
-
 
 
 def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
@@ -221,7 +274,11 @@ def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
         updated_ts = 123
 
         def to_dict(self):
-            return {"operation_id": self.operation_id, "status": self.status, "updated_ts": self.updated_ts}
+            return {
+                "operation_id": self.operation_id,
+                "status": self.status,
+                "updated_ts": self.updated_ts,
+            }
 
     class Ledger:
         def list_operations(self, proxy_id, *, limit):
@@ -234,7 +291,7 @@ def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
             return {"pending": 1, "applying": 0, "applied": 0, "failed": 0}
 
     monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
-    monkeypatch.setattr(admin_app, "get_operation_ledger", lambda: Ledger())
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
 
     with admin_app.app.test_request_context("/api/operations"):
         response, status = admin_app.api_operations()
@@ -243,7 +300,9 @@ def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
     data = response.get_json()
     assert data["ok"] is True
     assert data["proxy_id"] == "edge-a"
-    assert data["operations"] == [{"operation_id": 7, "status": "pending", "updated_ts": 123}]
+    assert data["operations"] == [
+        {"operation_id": 7, "status": "pending", "updated_ts": 123}
+    ]
     assert data["counts"]["pending"] == 1
 
 
@@ -271,7 +330,9 @@ def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
             assert proxy_id == "edge-a"
             return SimpleNamespace(revision_id=3, config_text="workers 1\n")
 
-        def create_revision(self, proxy_id, config_text, *, created_by, source_kind, activate):
+        def create_revision(
+            self, proxy_id, config_text, *, created_by, source_kind, activate
+        ):
             assert proxy_id == "edge-a"
             assert config_text == "workers 1\n"
             assert created_by == "operator"
@@ -284,9 +345,11 @@ def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
         return SimpleNamespace(operation_id=10)
 
     monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
-    monkeypatch.setattr(admin_app, "get_operation_ledger", lambda: Ledger())
-    monkeypatch.setattr(admin_app, "get_config_revisions", lambda: Revisions())
-    monkeypatch.setattr(admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile)
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(admin_app, "get_config_revisions", Revisions)
+    monkeypatch.setattr(
+        admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
+    )
 
     with admin_app.app.test_request_context("/operations/9/revert", method="POST"):
         admin_app.session["user"] = "operator"
@@ -308,5 +371,5 @@ def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
             "detail": "Revert queued from failed operation #9.",
             "created_by": "operator",
             "force": False,
-        }
+        },
     ]

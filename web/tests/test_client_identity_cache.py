@@ -10,12 +10,18 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
-def test_client_identity_cache_invalid_ip_returns_invalid_without_lookup(monkeypatch) -> None:
+def test_client_identity_cache_invalid_ip_returns_invalid_without_lookup(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
     from services.client_identity_cache import ClientIdentityCache  # type: ignore
 
     cache = ClientIdentityCache()
-    monkeypatch.setattr(cache, "_lookup_hostname", lambda _ip: (_ for _ in ()).throw(AssertionError("lookup called")))
+    monkeypatch.setattr(
+        cache,
+        "_lookup_hostname",
+        lambda _ip: (_ for _ in ()).throw(AssertionError("lookup called")),
+    )
 
     assert cache.resolve("not an ip") == {
         "hostname": "",
@@ -42,7 +48,9 @@ def test_client_identity_cache_resolve_uses_lookup_once_then_cache(monkeypatch) 
     assert calls == ["192.0.2.10"]
 
 
-def test_client_identity_cache_resolve_many_deduplicates_and_records_failures(monkeypatch) -> None:
+def test_client_identity_cache_resolve_many_deduplicates_and_records_failures(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
     from services.client_identity_cache import ClientIdentityCache  # type: ignore
 
@@ -70,8 +78,12 @@ def test_client_identity_cache_evicts_oldest_entry_when_full(monkeypatch) -> Non
     # max_entries is clamped to at least 64; shrink after construction to exercise eviction deterministically.
     cache.max_entries = 1
     now = {"value": 1000.0}
-    monkeypatch.setattr("services.client_identity_cache.time.time", lambda: now["value"])
-    monkeypatch.setattr(cache, "_lookup_hostname", lambda ip: (f"host-{ip}", "rdns", "resolved"))
+    monkeypatch.setattr(
+        "services.client_identity_cache.time.time", lambda: now["value"]
+    )
+    monkeypatch.setattr(
+        cache, "_lookup_hostname", lambda ip: (f"host-{ip}", "rdns", "resolved")
+    )
 
     assert cache.resolve("192.0.2.1")["hostname"] == "host-192.0.2.1"
     now["value"] += 1.0

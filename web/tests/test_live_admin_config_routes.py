@@ -9,11 +9,10 @@ from .live_test_helpers import (
     latest_config_apply,
     query_params,
     wait_for_config_apply,
-    wait_for_proxy_management_payload,
     wait_for_proxy_fixture_response,
+    wait_for_proxy_management_payload,
     wait_for_tcp_listener,
 )
-
 
 pytestmark = pytest.mark.live
 
@@ -36,15 +35,23 @@ def _restore_primary_config(client: LiveStackClient, config_text: str) -> None:
         source_kind="live_restore",
         activate=True,
     )
-    sync_response = client.proxy_management_post_json("/api/manage/sync", {"force": True}, timeout_seconds=90.0)
+    sync_response = client.proxy_management_post_json(
+        "/api/manage/sync", {"force": True}, timeout_seconds=90.0
+    )
     assert sync_response.status == 200
     assert sync_response.json().get("ok") is True
-    wait_for_config_apply(LIVE_CONFIG.primary_proxy_id, revision_id=revision.revision_id, timeout_seconds=120.0)
+    wait_for_config_apply(
+        LIVE_CONFIG.primary_proxy_id,
+        revision_id=revision.revision_id,
+        timeout_seconds=120.0,
+    )
     wait_for_proxy_management_payload()
     wait_for_proxy_fixture_response(client, "/health", timeout_seconds=120.0)
 
 
-def test_live_api_squid_config_returns_running_config(admin_client: LiveStackClient) -> None:
+def test_live_api_squid_config_returns_running_config(
+    admin_client: LiveStackClient,
+) -> None:
     response = admin_client.admin_request("/api/squid-config")
     assert response.status == 200
     assert response.headers.get("Content-Type", "").startswith("text/plain")
@@ -53,17 +60,24 @@ def test_live_api_squid_config_returns_running_config(admin_client: LiveStackCli
     assert "ssl_bump" in response.text
 
 
-def test_live_squid_config_network_tab_mentions_non_standard_ports(admin_client: LiveStackClient) -> None:
+def test_live_squid_config_network_tab_mentions_non_standard_ports(
+    admin_client: LiveStackClient,
+) -> None:
     response = admin_client.admin_request("/squid/config?tab=network")
     assert response.status == 200
     assert "Proxy listeners" in response.text
     assert "Enable HTTP NAT intercept listener" in response.text
     assert "Web destination ports" in response.text
-    assert "Non-standard HTTP and HTTPS destination ports are allowed by default" in response.text
+    assert (
+        "Non-standard HTTP and HTTPS destination ports are allowed by default"
+        in response.text
+    )
     assert "HTTP/3/QUIC uses <strong>UDP/443</strong>" in response.text
 
 
-def test_live_squid_config_can_enable_http_intercept_listener(admin_client: LiveStackClient) -> None:
+def test_live_squid_config_can_enable_http_intercept_listener(
+    admin_client: LiveStackClient,
+) -> None:
     original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
     before_apply = latest_config_apply(LIVE_CONFIG.primary_proxy_id)
 
@@ -103,7 +117,10 @@ def test_live_squid_config_can_enable_http_intercept_listener(admin_client: Live
 
         payload = wait_for_proxy_management_payload()
         listener_details = payload.get("listener_details") or []
-        assert {item.get("mode") for item in listener_details} >= {"explicit", "intercept"}
+        assert {item.get("mode") for item in listener_details} >= {
+            "explicit",
+            "intercept",
+        }
     finally:
         _restore_primary_config(admin_client, original_config)
 
@@ -111,15 +128,41 @@ def test_live_squid_config_can_enable_http_intercept_listener(admin_client: Live
 @pytest.mark.parametrize(
     ("path", "expected_snippets"),
     [
-        ("/squid/config?tab=config", ("data-config-page=\"true\"", "Copy editor contents", "Reset unsaved changes")),
-        ("/squid/config?tab=caching", ("Jump to group", "data-config-reset-for=\"safe-config-form\"", "data-depends-on=\"cache_dir_type\"")),
+        (
+            "/squid/config?tab=config",
+            (
+                'data-config-page="true"',
+                "Copy editor contents",
+                "Reset unsaved changes",
+            ),
+        ),
+        (
+            "/squid/config?tab=caching",
+            (
+                "Jump to group",
+                'data-config-reset-for="safe-config-form"',
+                'data-depends-on="cache_dir_type"',
+            ),
+        ),
         ("/squid/config?tab=timeouts", ("Timeouts", "request_timeout")),
         ("/squid/config?tab=logging", ("Logging", "logfile_rotate")),
         ("/squid/config?tab=dns", ("DNS", "dns_packet_max")),
-        ("/squid/config?tab=ssl", ("name=\"tls_outgoing_options_line\"", "name=\"sslproxy_cert_error_rules_text\"")),
+        (
+            "/squid/config?tab=ssl",
+            (
+                'name="tls_outgoing_options_line"',
+                'name="sslproxy_cert_error_rules_text"',
+            ),
+        ),
         ("/squid/config?tab=icap", ("ICAP", "icap_service_failure_limit")),
         ("/squid/config?tab=privacy", ("Privacy", "forwarded_for")),
-        ("/squid/config?tab=limits", ("name=\"request_header_max_size_kb\"", "name=\"http_upgrade_request_protocols_rules_text\"")),
+        (
+            "/squid/config?tab=limits",
+            (
+                'name="request_header_max_size_kb"',
+                'name="http_upgrade_request_protocols_rules_text"',
+            ),
+        ),
         ("/squid/config?tab=performance", ("Performance", "memory_pools")),
         ("/squid/config?tab=http", ("HTTP", "httpd_suppress_version_string")),
     ],
@@ -135,7 +178,9 @@ def test_live_squid_config_tabs_render_real_form_controls(
         assert snippet in response.text
 
 
-def test_live_squid_config_manual_validate_and_apply_current_config(admin_client: LiveStackClient) -> None:
+def test_live_squid_config_manual_validate_and_apply_current_config(
+    admin_client: LiveStackClient,
+) -> None:
     config_response = admin_client.admin_request("/api/squid-config")
     assert config_response.status == 200
     config_text = config_response.text
@@ -169,7 +214,9 @@ def test_live_squid_config_manual_validate_and_apply_current_config(admin_client
     assert payload.get("status") in {"healthy", "degraded"}
 
 
-def test_live_squid_config_rejects_invalid_manual_apply_without_changing_active_config(admin_client: LiveStackClient) -> None:
+def test_live_squid_config_rejects_invalid_manual_apply_without_changing_active_config(
+    admin_client: LiveStackClient,
+) -> None:
     original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
     response = admin_client.admin_post_form(
         "/squid/config?tab=config",
@@ -188,7 +235,9 @@ def test_live_squid_config_rejects_invalid_manual_apply_without_changing_active_
     wait_for_proxy_management_payload()
 
 
-def test_live_clamav_settings_publish_and_apply_runtime_controls(admin_client: LiveStackClient) -> None:
+def test_live_clamav_settings_publish_and_apply_runtime_controls(
+    admin_client: LiveStackClient,
+) -> None:
     original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
     before_apply = latest_config_apply(LIVE_CONFIG.primary_proxy_id)
 
@@ -234,8 +283,12 @@ def test_live_clamav_settings_publish_and_apply_runtime_controls(admin_client: L
         _restore_primary_config(admin_client, original_config)
 
 
-def test_live_observability_and_ssl_exports_return_csv(admin_client: LiveStackClient) -> None:
-    observability_export = admin_client.admin_request("/observability/export?pane=destinations&window=3600&limit=25")
+def test_live_observability_and_ssl_exports_return_csv(
+    admin_client: LiveStackClient,
+) -> None:
+    observability_export = admin_client.admin_request(
+        "/observability/export?pane=destinations&window=3600&limit=25"
+    )
     assert observability_export.status == 200
     assert observability_export.headers.get("Content-Type", "").startswith("text/csv")
     assert observability_export.text.splitlines()[0].startswith("domain;")
@@ -247,7 +300,9 @@ def test_live_observability_and_ssl_exports_return_csv(admin_client: LiveStackCl
 
 
 def test_live_api_timeseries_returns_json(admin_client: LiveStackClient) -> None:
-    response = admin_client.admin_request("/api/timeseries?resolution=1s&window=60&limit=25")
+    response = admin_client.admin_request(
+        "/api/timeseries?resolution=1s&window=60&limit=25"
+    )
     assert response.status == 200
     assert response.headers.get("Content-Type", "").startswith("application/json")
     assert "Content-Security-Policy" not in response.headers
@@ -257,7 +312,9 @@ def test_live_api_timeseries_returns_json(admin_client: LiveStackClient) -> None
     assert isinstance(payload.get("points"), list)
 
 
-def test_live_squid_config_apply_safe_publishes_and_syncs_template_revision(admin_client: LiveStackClient) -> None:
+def test_live_squid_config_apply_safe_publishes_and_syncs_template_revision(
+    admin_client: LiveStackClient,
+) -> None:
     original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
     before_apply = latest_config_apply(LIVE_CONFIG.primary_proxy_id)
 
@@ -280,12 +337,16 @@ def test_live_squid_config_apply_safe_publishes_and_syncs_template_revision(admi
             after_ts=_apply_ts(before_apply) or None,
             timeout_seconds=120.0,
         )
-        assert "negative_ttl 123 seconds" in active_config_text(LIVE_CONFIG.primary_proxy_id)
+        assert "negative_ttl 123 seconds" in active_config_text(
+            LIVE_CONFIG.primary_proxy_id
+        )
     finally:
         _restore_primary_config(admin_client, original_config)
 
 
-def test_live_squid_config_apply_overrides_publishes_override_metadata(admin_client: LiveStackClient) -> None:
+def test_live_squid_config_apply_overrides_publishes_override_metadata(
+    admin_client: LiveStackClient,
+) -> None:
     original_config = active_config_text(LIVE_CONFIG.primary_proxy_id)
     before_apply = latest_config_apply(LIVE_CONFIG.primary_proxy_id)
 

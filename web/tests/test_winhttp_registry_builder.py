@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from services.winhttp_registry_builder import (
     WinHttpBuilderError,
     build_advproxy_command,
@@ -25,13 +24,13 @@ def test_http_only_generation_matches_known_sample_prefix() -> None:
             "proxy_port": "3128",
             "destination_schemes": ["http"],
             "bypass_list": "localhost\n127.0.0.1\n192.168.*\n10.*\n<local>",
-        }
+        },
     )
 
     assert result.proxy_string == "http=192.168.5.45:3128"
     assert result.static_registry_available is True
     assert result.normalized_hex.startswith(
-        "28000000000000000300000016000000687474703d3139322e3136382e352e34353a33313238"
+        "28000000000000000300000016000000687474703d3139322e3136382e352e34353a33313238",
     )
 
 
@@ -43,7 +42,7 @@ def test_default_static_output_maps_http_and_https_destinations() -> None:
             "destination_schemes": ["http", "https"],
             "bypass_list": "",
             "include_local_bypass": True,
-        }
+        },
     )
 
     assert result.proxy_string == "http=192.168.5.45:3128;https=192.168.5.45:3128"
@@ -112,14 +111,17 @@ def test_pac_or_autodetect_disables_basic_registry_binary() -> None:
             "destination_schemes": ["http", "https"],
             "autoconfig_url": "http://proxy.example/proxy.pac",
             "autodetect": True,
-        }
+        },
     )
 
     assert result.static_registry_available is False
     assert result.normalized_hex == ""
     assert result.reg_file == ""
     assert "AutoconfigUrl" in result.advproxy_json
-    assert any("no official byte-for-byte registry serialization contract" in warning for warning in result.warnings)
+    assert any(
+        "no official byte-for-byte registry serialization contract" in warning
+        for warning in result.warnings
+    )
 
 
 def test_advproxy_contract_allows_pac_only_without_static_proxy() -> None:
@@ -131,7 +133,7 @@ def test_advproxy_contract_allows_pac_only_without_static_proxy() -> None:
             "autoconfig_url": "http://proxy.example/proxy.pac",
             "autodetect": True,
             "advproxy_scope": "machine",
-        }
+        },
     )
 
     parsed = json.loads(result.advproxy_json)

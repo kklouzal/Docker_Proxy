@@ -8,8 +8,8 @@ from services.db import DATABASE_ERRORS
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled, should_log
 from services.runtime_helpers import env_float as _env_float
-from proxy.runtime import get_runtime
 
+from proxy.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -85,16 +85,46 @@ def start_agent() -> None:
         # proxy data plane, public PAC/WPAD listener, and supervisor health are
         # local services and should remain alive while control-plane DB work is
         # retried by the regular loops below.
-        _run_once_logged("proxy.agent.initial_register", "Initial proxy registration failed", runtime.ensure_registered)
-        _run_once_logged("proxy.agent.initial_bootstrap", "Initial proxy revision bootstrap failed", runtime.bootstrap_revision_if_missing)
-        _run_once_logged("proxy.agent.initial_background", "Initial proxy background task startup failed", runtime.start_background_tasks)
-        _run_once_logged("proxy.agent.initial_sync", "Initial proxy sync failed", lambda: runtime.sync_from_db(force=False))
+        _run_once_logged(
+            "proxy.agent.initial_register",
+            "Initial proxy registration failed",
+            runtime.ensure_registered,
+        )
+        _run_once_logged(
+            "proxy.agent.initial_bootstrap",
+            "Initial proxy revision bootstrap failed",
+            runtime.bootstrap_revision_if_missing,
+        )
+        _run_once_logged(
+            "proxy.agent.initial_background",
+            "Initial proxy background task startup failed",
+            runtime.start_background_tasks,
+        )
+        _run_once_logged(
+            "proxy.agent.initial_sync",
+            "Initial proxy sync failed",
+            lambda: runtime.sync_from_db(force=False),
+        )
 
-        heartbeat_interval = _env_float("PROXY_HEARTBEAT_INTERVAL_SECONDS", 90.0, minimum=1.0, maximum=3600.0)
-        sync_interval = _env_float("PROXY_SYNC_INTERVAL_SECONDS", 30.0, minimum=1.0, maximum=3600.0)
+        heartbeat_interval = _env_float(
+            "PROXY_HEARTBEAT_INTERVAL_SECONDS", 90.0, minimum=1.0, maximum=3600.0,
+        )
+        sync_interval = _env_float(
+            "PROXY_SYNC_INTERVAL_SECONDS", 30.0, minimum=1.0, maximum=3600.0,
+        )
 
-        threading.Thread(target=_loop, args=(heartbeat_interval, runtime.heartbeat), name="proxy-heartbeat", daemon=True).start()
-        threading.Thread(target=_loop, args=(sync_interval, lambda: _sync_loop(runtime, force=False)), name="proxy-sync-loop", daemon=True).start()
+        threading.Thread(
+            target=_loop,
+            args=(heartbeat_interval, runtime.heartbeat),
+            name="proxy-heartbeat",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=_loop,
+            args=(sync_interval, lambda: _sync_loop(runtime, force=False)),
+            name="proxy-sync-loop",
+            daemon=True,
+        ).start()
 
 
 def main() -> None:

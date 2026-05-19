@@ -9,14 +9,18 @@ from urllib.parse import parse_qs, urlsplit
 class LiveFixtureHandler(BaseHTTPRequestHandler):
     server_version = "LiveFixture/1.0"
 
-    def log_message(self, format: str, *args: object) -> None:  # pragma: no cover - keep test logs quiet
+    def log_message(
+        self, format: str, *args: object
+    ) -> None:  # pragma: no cover - keep test logs quiet
         return None
 
     def _parsed_request(self) -> tuple[object, dict[str, list[str]]]:
         parsed = urlsplit(self.path)
         query = parse_qs(parsed.query)
         try:
-            delay_ms = max(0, min(int((query.get("delay_ms") or ["0"])[0] or "0"), 5_000))
+            delay_ms = max(
+                0, min(int((query.get("delay_ms") or ["0"])[0] or "0"), 5_000)
+            )
         except ValueError:
             delay_ms = 0
         if delay_ms:

@@ -3,19 +3,25 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import pathlib
 import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from services.db import DATABASE_ERRORS, connect
 from services.logutil import log_exception_throttled, should_log
 from services.proxy_context import get_proxy_id
-from services.runtime_helpers import env_float as _env_float, env_int as _env_int, escape_like as _escape_like, normalize_hostish as _normalize_hostish, now_ts as _now
-
+from services.runtime_helpers import env_float as _env_float
+from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import escape_like as _escape_like
+from services.runtime_helpers import normalize_hostish as _normalize_hostish
+from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class SslErrorRow:
     domain: str
@@ -31,22 +37,29 @@ _TS_PREFIX = re.compile(
     r"^(?P<date>\d{4}/\d{2}/\d{2})\s+"
     r"(?P<time>\d{2}:\d{2}:\d{2})"
     r"(?:\|\s*|\s+[^|]+\|\s*)?"
-    r"(?P<msg>.*)$"
+    r"(?P<msg>.*)$",
 )
-_TLS_ERROR_SIGNATURE = re.compile(r"\b(SQUID_TLS_ERR_[A-Z_]+(?:\+TLS_LIB_ERR=[0-9A-F]+)?(?:\+TLS_IO_ERR=\d+)?)\b", re.I)
-_MASTER_XACTION_PATTERN = re.compile(r"\bcurrent\s+master\s+transaction:\s*master?([A-Za-z0-9_.:-]+)\b", re.I)
+_TLS_ERROR_SIGNATURE = re.compile(
+    r"\b(SQUID_TLS_ERR_[A-Z_]+(?:\+TLS_LIB_ERR=[0-9A-F]+)?(?:\+TLS_IO_ERR=\d+)?)\b",
+    re.IGNORECASE,
+)
+_MASTER_XACTION_PATTERN = re.compile(
+    r"\bcurrent\s+master\s+transaction:\s*master?([A-Za-z0-9_.:-]+)\b", re.IGNORECASE,
+)
 
 # Best-effort extraction of a destination domain from cache.log lines.
-_DOMAIN_PATTERNS: List[re.Pattern[str]] = [
-    re.compile(r"\bCONNECT\s+([A-Za-z0-9.-]+):\d+\b", re.I),
-    re.compile(r"\bhttps?://([A-Za-z0-9.-]+)\b", re.I),
-    re.compile(r"\bhost=([A-Za-z0-9.-]+)\b", re.I),
-    re.compile(r"\bpeer=([A-Za-z0-9.-]+)(?::\d+)?\b", re.I),
-    re.compile(r"\bserver_name=([A-Za-z0-9.-]+)\b", re.I),
-    re.compile(r"\bsni=([A-Za-z0-9.-]+)\b", re.I),
-    re.compile(r"\bSNI\s*[:=]\s*([A-Za-z0-9.-]+)\b", re.I),
+_DOMAIN_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\bCONNECT\s+([A-Za-z0-9.-]+):\d+\b", re.IGNORECASE),
+    re.compile(r"\bhttps?://([A-Za-z0-9.-]+)\b", re.IGNORECASE),
+    re.compile(r"\bhost=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
+    re.compile(r"\bpeer=([A-Za-z0-9.-]+)(?::\d+)?\b", re.IGNORECASE),
+    re.compile(r"\bserver_name=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
+    re.compile(r"\bsni=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
+    re.compile(r"\bSNI\s*[:=]\s*([A-Za-z0-9.-]+)\b", re.IGNORECASE),
 ]
-def _parse_cache_log_ts(line: str) -> Tuple[int, str]:
+
+
+def _parse_cache_log_ts(line: str) -> tuple[int, str]:
     s = (line or "").strip("\r\n")
     m = _TS_PREFIX.match(s)
     if not m:
@@ -76,7 +89,7 @@ def _normalize_reason(msg: str) -> str:
     # Keep it stable-ish for grouping.
     s = (msg or "").strip()
     # Drop leading module/pid prefixes like "kid1|" if present.
-    s = re.sub(r"^kid\d+\|\s*", "", s, flags=re.I)
+    s = re.sub(r"^kid\d+\|\s*", "", s, flags=re.IGNORECASE)
     # Remove IPs, ports, hex-ish IDs, and long numbers.
     s = re.sub(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", "<ip>", s)
     s = re.sub(r":\d{2,5}\b", ":<port>", s)
@@ -96,12 +109,17 @@ def _canonical_reason(msg: str) -> str:
 
 def _is_tls_accept_header(msg: str) -> bool:
     sl = (msg or "").lower()
-    return "cannot accept a tls connection" in sl or "failure while accepting a tls connection" in sl
+    return (
+        "cannot accept a tls connection" in sl
+        or "failure while accepting a tls connection" in sl
+    )
 
 
 def _is_tls_accept_detail(msg: str) -> bool:
     sl = (msg or "").lower()
-    return "squid_tls_err_accept" in sl or ("error detail:" in sl and "tls_lib_err=" in sl)
+    return "squid_tls_err_accept" in sl or (
+        "error detail:" in sl and "tls_lib_err=" in sl
+    )
 
 
 def _extract_followup_context(line: str) -> str:
@@ -109,7 +127,7 @@ def _extract_followup_context(line: str) -> str:
     if not s:
         return ""
     sl = s.lower()
-    if sl.startswith("connection:") or sl.startswith("current master transaction:"):
+    if sl.startswith(("connection:", "current master transaction:")):
         return s[:280]
     return ""
 
@@ -123,9 +141,9 @@ def _is_startup_noise(msg: str) -> bool:
     )
 
 
-def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
+def _classify_ssl_error(msg: str) -> tuple[str, str] | None:
     # Returns (category, reason) or None if not SSL/TLS-related.
-    s = (msg or "")
+    s = msg or ""
     sl = s.lower()
 
     # Ignore common startup/config noise that mentions ssl/tls but is not an error.
@@ -133,7 +151,10 @@ def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
         return None
 
     # Fast keyword gate.
-    if not any(k in sl for k in ("ssl", "tls", "x509", "certificate", "handshake", "bump", "openssl")):
+    if not any(
+        k in sl
+        for k in ("ssl", "tls", "x509", "certificate", "handshake", "bump", "openssl")
+    ):
         return None
 
     # Filter some noisy but not really "error" lines.
@@ -162,7 +183,9 @@ def _classify_ssl_error(msg: str) -> Optional[Tuple[str, str]]:
     if "no shared cipher" in sl or "cipher" in sl:
         return "TLS_CIPHER", _normalize_reason(s)
 
-    if "protocol" in sl and ("unsupported" in sl or "wrong version" in sl or "version" in sl):
+    if "protocol" in sl and (
+        "unsupported" in sl or "wrong version" in sl or "version" in sl
+    ):
         return "TLS_PROTOCOL", _normalize_reason(s)
 
     if "ssl_bump" in sl or "bump" in sl:
@@ -177,13 +200,13 @@ class SslErrorsStore:
         self,
         cache_log_path: str = "/var/log/squid/cache.log",
         seed_max_lines: int = 5000,
-    ):
+    ) -> None:
         self.cache_log_path = cache_log_path
         self.seed_max_lines = seed_max_lines
 
         self._started = False
         self._start_lock = threading.Lock()
-        self._pending_error: Optional[Dict[str, Any]] = None
+        self._pending_error: dict[str, Any] | None = None
         self._db_initialized = False
         self._db_init_lock = threading.Lock()
 
@@ -191,9 +214,13 @@ class SslErrorsStore:
         return connect()
 
     def _row_key(self, proxy_id: str, domain: str, category: str, reason: str) -> str:
-        return hashlib.sha1(f"{proxy_id}|{domain}|{category}|{reason}".encode("utf-8", errors="replace")).hexdigest()
+        return hashlib.sha1(
+            f"{proxy_id}|{domain}|{category}|{reason}".encode("utf-8", errors="replace"),
+        ).hexdigest()
 
-    def _update_sample(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
+    def _update_sample(
+        self, conn, domain: str, category: str, reason: str, ts: int, sample: str,
+    ) -> None:
         proxy_id = get_proxy_id()
         row_key = self._row_key(proxy_id, domain, category, reason)
         conn.execute(
@@ -203,11 +230,25 @@ class SslErrorsStore:
 
     def _context_lookup_window_seconds(self) -> int:
         try:
-            return max(1, min(300, int((os.environ.get("SSL_ERRORS_CONTEXT_LOOKUP_WINDOW_SECONDS") or "20").strip() or "20")))
+            return max(
+                1,
+                min(
+                    300,
+                    int(
+                        (
+                            os.environ.get("SSL_ERRORS_CONTEXT_LOOKUP_WINDOW_SECONDS")
+                            or "20"
+                        ).strip()
+                        or "20",
+                    ),
+                ),
+            )
         except Exception:
             return 20
 
-    def _lookup_domain_for_master_xaction(self, conn, master_xaction: str, ts: int) -> str:
+    def _lookup_domain_for_master_xaction(
+        self, conn, master_xaction: str, ts: int,
+    ) -> str:
         tx = (master_xaction or "").strip()
         if not tx:
             return ""
@@ -231,7 +272,9 @@ class SslErrorsStore:
             return ""
         except Exception:
             if should_log("ssl_errors_store.context_lookup", interval_seconds=300.0):
-                logger.warning("SSL error context lookup failed; continuing without domain enrichment.")
+                logger.warning(
+                    "SSL error context lookup failed; continuing without domain enrichment.",
+                )
             return ""
         if not row:
             return ""
@@ -241,7 +284,9 @@ class SslErrorsStore:
                 return normalized
         return ""
 
-    def _enrich_domain_from_context(self, conn, domain: str, ts: int, sample: str) -> str:
+    def _enrich_domain_from_context(
+        self, conn, domain: str, ts: int, sample: str,
+    ) -> str:
         current = _normalize_hostish(domain or "")
         if current:
             return current
@@ -292,7 +337,9 @@ class SslErrorsStore:
                 )
                 return True
             if not str(pending.get("domain") or ""):
-                pending["domain"] = self._enrich_domain_from_context(conn, "", int(pending.get("ts") or _now()), combined)
+                pending["domain"] = self._enrich_domain_from_context(
+                    conn, "", int(pending.get("ts") or _now()), combined,
+                )
             return self._flush_pending_error(conn)
 
         ts, msg = _parse_cache_log_ts(raw_line)
@@ -308,9 +355,15 @@ class SslErrorsStore:
         sample = (msg or "").strip()[:400]
 
         pending = self._pending_error
-        if pending and not bool(pending.get("committed")) and _is_tls_accept_detail(msg):
+        if (
+            pending
+            and not bool(pending.get("committed"))
+            and _is_tls_accept_detail(msg)
+        ):
             domain = str(pending.get("domain") or domain)
-            combined = f"{str(pending.get('sample') or '').strip()}\n{sample}".strip()[:400]
+            combined = f"{str(pending.get('sample') or '').strip()}\n{sample}".strip()[
+                :400
+            ]
             self._pending_error = {
                 "ts": int(ts),
                 "domain": domain,
@@ -368,24 +421,48 @@ class SslErrorsStore:
                         KEY idx_ssl_errors_proxy_domain (proxy_id, domain, last_seen),
                         KEY idx_ssl_errors_proxy_category (proxy_id, category, last_seen)
                     )
-                    """
+                    """,
                 )
             self._db_initialized = True
             self._run_startup_cleanup()
 
     def _cleanup_chunk_size(self) -> int:
         try:
-            return max(1, min(5000, int((os.environ.get("SSL_ERRORS_CLEANUP_CHUNK_SIZE") or "500").strip() or "500")))
+            return max(
+                1,
+                min(
+                    5000,
+                    int(
+                        (
+                            os.environ.get("SSL_ERRORS_CLEANUP_CHUNK_SIZE") or "500"
+                        ).strip()
+                        or "500",
+                    ),
+                ),
+            )
         except Exception:
             return 500
 
     def _cleanup_max_rows(self) -> int:
         try:
-            return max(0, min(1_000_000, int((os.environ.get("SSL_ERRORS_CLEANUP_MAX_ROWS") or "50000").strip() or "50000")))
+            return max(
+                0,
+                min(
+                    1_000_000,
+                    int(
+                        (
+                            os.environ.get("SSL_ERRORS_CLEANUP_MAX_ROWS") or "50000"
+                        ).strip()
+                        or "50000",
+                    ),
+                ),
+            )
         except Exception:
             return 50_000
 
-    def _delete_in_chunks(self, where_sql: str, params: tuple[Any, ...], *, log_key: str) -> int:
+    def _delete_in_chunks(
+        self, where_sql: str, params: tuple[Any, ...], *, log_key: str,
+    ) -> int:
         chunk_size = self._cleanup_chunk_size()
         max_rows = self._cleanup_max_rows()
         if max_rows <= 0:
@@ -394,13 +471,21 @@ class SslErrorsStore:
         while total < max_rows:
             limit = min(chunk_size, max_rows - total)
             with self._connect() as conn:
-                result = conn.execute(f"DELETE FROM ssl_errors WHERE {where_sql} LIMIT %s", tuple(params) + (limit,))
+                result = conn.execute(
+                    f"DELETE FROM ssl_errors WHERE {where_sql} LIMIT %s",
+                    (*tuple(params), limit),
+                )
                 deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
             total += deleted
             if deleted < limit:
                 break
-        if total >= max_rows and should_log(log_key + ".truncated", interval_seconds=300.0):
-            logger.warning("SSL errors cleanup reached max_rows=%s; remaining rows will be cleaned up later.", max_rows)
+        if total >= max_rows and should_log(
+            log_key + ".truncated", interval_seconds=300.0,
+        ):
+            logger.warning(
+                "SSL errors cleanup reached max_rows=%s; remaining rows will be cleaned up later.",
+                max_rows,
+            )
         return total
 
     def _run_startup_cleanup(self) -> None:
@@ -411,23 +496,37 @@ class SslErrorsStore:
         try:
             self._cleanup_known_false_positives()
         except DATABASE_ERRORS:
-            if should_log("ssl_errors_store.cleanup.false_positives", interval_seconds=300.0):
-                logger.warning("SSL errors false-positive cleanup skipped because the database is busy/unavailable.")
+            if should_log(
+                "ssl_errors_store.cleanup.false_positives", interval_seconds=300.0,
+            ):
+                logger.warning(
+                    "SSL errors false-positive cleanup skipped because the database is busy/unavailable.",
+                )
 
         try:
             cutoff = _now() - (30 * 24 * 60 * 60)
-            self._delete_in_chunks("last_seen < %s", (int(cutoff),), log_key="ssl_errors_store.cleanup.retention")
+            self._delete_in_chunks(
+                "last_seen < %s",
+                (int(cutoff),),
+                log_key="ssl_errors_store.cleanup.retention",
+            )
         except DATABASE_ERRORS:
             if should_log("ssl_errors_store.cleanup.retention", interval_seconds=300.0):
-                logger.warning("SSL errors retention cleanup skipped because the database is busy/unavailable.")
+                logger.warning(
+                    "SSL errors retention cleanup skipped because the database is busy/unavailable.",
+                )
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
-        self._delete_in_chunks("last_seen < %s", (int(cutoff),), log_key="ssl_errors_store.prune")
+        self._delete_in_chunks(
+            "last_seen < %s", (int(cutoff),), log_key="ssl_errors_store.prune",
+        )
 
-    def _upsert(self, conn, domain: str, category: str, reason: str, ts: int, sample: str) -> None:
+    def _upsert(
+        self, conn, domain: str, category: str, reason: str, ts: int, sample: str,
+    ) -> None:
         proxy_id = get_proxy_id()
         domain = self._enrich_domain_from_context(conn, domain, ts, sample)
         row_key = self._row_key(proxy_id, domain, category, reason)
@@ -456,7 +555,11 @@ class SslErrorsStore:
         proxy_id = get_proxy_id()
         self._delete_in_chunks(
             "proxy_id = %s AND (reason LIKE %s OR sample LIKE %s)",
-            (proxy_id, "%Processing Configuration File:%", "%Processing Configuration File:%"),
+            (
+                proxy_id,
+                "%Processing Configuration File:%",
+                "%Processing Configuration File:%",
+            ),
             log_key="ssl_errors_store.cleanup.false_positives",
         )
 
@@ -465,12 +568,12 @@ class SslErrorsStore:
         with self._connect() as conn:
             self._ingest_line_with_conn(conn, line)
 
-    def _read_last_lines(self, max_lines: int) -> List[str]:
+    def _read_last_lines(self, max_lines: int) -> list[str]:
         path = self.cache_log_path
-        if not os.path.exists(path):
+        if not pathlib.Path(path).exists():
             return []
         try:
-            with open(path, "rb") as f:
+            with pathlib.Path(path).open("rb") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
                 read_size = min(size, max_lines * 260)
@@ -495,10 +598,12 @@ class SslErrorsStore:
                 self._ingest_line_with_conn(conn, line)
             self._flush_pending_error(conn)
 
-    def list_recent(self, *, since: Optional[int] = None, search: str = "", limit: int = 200) -> List[SslErrorRow]:
+    def list_recent(
+        self, *, since: int | None = None, search: str = "", limit: int = 200,
+    ) -> list[SslErrorRow]:
         self.init_db()
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= %s")
             params.append(int(since))
@@ -510,7 +615,7 @@ class SslErrorsStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors {where_sql} ORDER BY last_seen DESC LIMIT %s",
-                tuple(params + [lim]),
+                (*params, lim),
             ).fetchall()
         return [
             SslErrorRow(
@@ -525,10 +630,12 @@ class SslErrorsStore:
             for r in rows
         ]
 
-    def top_domains(self, *, since: Optional[int] = None, search: str = "", limit: int = 20) -> List[Dict[str, Any]]:
+    def top_domains(
+        self, *, since: int | None = None, search: str = "", limit: int = 20,
+    ) -> list[dict[str, Any]]:
         self.init_db()
         where = ["proxy_id = %s"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= %s")
             params.append(int(since))
@@ -547,11 +654,11 @@ class SslErrorsStore:
                 ORDER BY total DESC, last_seen DESC
                 LIMIT %s
                 """,
-                tuple(params + [lim]),
+                (*params, lim),
             ).fetchall()
         return [
             {
-                "domain": str(r[0] or ''),
+                "domain": str(r[0] or ""),
                 "buckets": int(r[1] or 0),
                 "total": int(r[2] or 0),
                 "last_seen": int(r[3] or 0),
@@ -559,19 +666,18 @@ class SslErrorsStore:
             for r in rows
         ]
 
-
     def suggest_exclusion_candidates(
         self,
         *,
-        since: Optional[int] = None,
+        since: int | None = None,
         search: str = "",
         limit: int = 20,
         min_events: int = 3,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Return advisory destination-splice candidates based on repeated TLS failures."""
         self.init_db()
         where = ["proxy_id = %s", "domain <> ''"]
-        params: List[Any] = [get_proxy_id()]
+        params: list[Any] = [get_proxy_id()]
         if since is not None:
             where.append("last_seen >= %s")
             params.append(int(since))
@@ -598,22 +704,24 @@ class SslErrorsStore:
                 ORDER BY total DESC, last_seen DESC
                 LIMIT %s
                 """,
-                tuple(params + [threshold, lim]),
+                (*params, threshold, lim),
             ).fetchall()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             total = int(r[1] or 0)
             buckets = int(r[2] or 0)
             score = min(100, (total * 12) + (buckets * 8))
-            out.append({
-                "domain": str(r[0] or ""),
-                "total": total,
-                "buckets": buckets,
-                "last_seen": int(r[3] or 0),
-                "categories": str(r[4] or ""),
-                "sample": str(r[5] or "")[:400],
-                "score": score,
-            })
+            out.append(
+                {
+                    "domain": str(r[0] or ""),
+                    "total": total,
+                    "buckets": buckets,
+                    "last_seen": int(r[3] or 0),
+                    "categories": str(r[4] or ""),
+                    "sample": str(r[5] or "")[:400],
+                    "score": score,
+                },
+            )
         return out
 
     def start_background(self) -> None:
@@ -621,16 +729,24 @@ class SslErrorsStore:
             if self._started:
                 return
             self._started = True
-            t = threading.Thread(target=self._tail_loop, name="ssl-errors-tailer", daemon=True)
+            t = threading.Thread(
+                target=self._tail_loop, name="ssl-errors-tailer", daemon=True,
+            )
             t.start()
 
     def _tail_loop(self) -> None:
-        commit_batch = _env_int("SSL_ERRORS_COMMIT_BATCH", 200, minimum=25, maximum=5000)
-        commit_interval = _env_float("SSL_ERRORS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0)
-        poll_interval = _env_float("SSL_ERRORS_POLL_INTERVAL_SECONDS", 0.75, minimum=0.1, maximum=5.0)
+        commit_batch = _env_int(
+            "SSL_ERRORS_COMMIT_BATCH", 200, minimum=25, maximum=5000,
+        )
+        commit_interval = _env_float(
+            "SSL_ERRORS_COMMIT_INTERVAL_SECONDS", 2.0, minimum=0.25, maximum=10.0,
+        )
+        poll_interval = _env_float(
+            "SSL_ERRORS_POLL_INTERVAL_SECONDS", 0.75, minimum=0.1, maximum=5.0,
+        )
 
         path = self.cache_log_path
-        last_inode: Optional[int] = None
+        last_inode: int | None = None
         seeded_recent_log = False
 
         while True:
@@ -640,7 +756,7 @@ class SslErrorsStore:
                     self.seed_from_recent_log()
                     seeded_recent_log = True
 
-                if not os.path.exists(path):
+                if not pathlib.Path(path).exists():
                     time.sleep(max(1.0, poll_interval))
                     continue
 
@@ -660,7 +776,7 @@ class SslErrorsStore:
                     with self._connect() as conn:
                         return self._flush_pending_error(conn)
 
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
                     f.seek(0, os.SEEK_END)
                     while True:
                         line = f.readline()
@@ -676,7 +792,10 @@ class SslErrorsStore:
                                     message="SSL errors tailer failed to ingest a log line",
                                 )
                             now = time.time()
-                            if pending >= commit_batch or (now - last_commit) >= commit_interval:
+                            if (
+                                pending >= commit_batch
+                                or (now - last_commit) >= commit_interval
+                            ):
                                 pending = 0
                                 last_commit = now
                             continue
@@ -700,7 +819,7 @@ class SslErrorsStore:
 
                         # Handle copytruncate: inode unchanged but file shrinks.
                         try:
-                            if os.path.getsize(path) < f.tell():
+                            if pathlib.Path(path).stat().st_size < f.tell():
                                 f.seek(0, os.SEEK_SET)
                                 continue
                         except Exception:
@@ -718,7 +837,11 @@ class SslErrorsStore:
                         except OSError:
                             inode2 = None
 
-                        if inode2 is not None and last_inode is not None and inode2 != last_inode:
+                        if (
+                            inode2 is not None
+                            and last_inode is not None
+                            and inode2 != last_inode
+                        ):
                             last_inode = inode2
                             try:
                                 flush_pending()
@@ -734,10 +857,12 @@ class SslErrorsStore:
                         time.sleep(poll_interval)
             except Exception:
                 if should_log("ssl_errors_store.loop", interval_seconds=300.0):
-                    logger.warning("SSL errors tailer is waiting for database availability; retrying.")
+                    logger.warning(
+                        "SSL errors tailer is waiting for database availability; retrying.",
+                    )
                 time.sleep(max(1.0, poll_interval))
 
-    def list_errors(self, limit: int = 200) -> List[Dict[str, Any]]:
+    def list_errors(self, limit: int = 200) -> list[dict[str, Any]]:
         self.init_db()
         lim = max(10, min(1000, int(limit)))
         proxy_id = get_proxy_id()
@@ -747,23 +872,22 @@ class SslErrorsStore:
                 (proxy_id, lim),
             ).fetchall()
 
-        out: List[Dict[str, Any]] = []
-        for r in rows:
-            out.append(
-                {
-                    "domain": str(r[0] or ""),
-                    "category": str(r[1] or ""),
-                    "reason": str(r[2] or ""),
-                    "count": int(r[3] or 0),
-                    "first_seen": int(r[4] or 0),
-                    "last_seen": int(r[5] or 0),
-                    "sample": str(r[6] or ""),
-                }
-            )
+        out: list[dict[str, Any]] = [
+            {
+                "domain": str(r[0] or ""),
+                "category": str(r[1] or ""),
+                "reason": str(r[2] or ""),
+                "count": int(r[3] or 0),
+                "first_seen": int(r[4] or 0),
+                "last_seen": int(r[5] or 0),
+                "sample": str(r[6] or ""),
+            }
+            for r in rows
+        ]
         return out
 
 
-_store: Optional[SslErrorsStore] = None
+_store: SslErrorsStore | None = None
 _store_lock = threading.Lock()
 
 

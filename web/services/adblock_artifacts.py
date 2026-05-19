@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -13,14 +14,14 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from services.db import connect
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
-from services.runtime_helpers import env_int as _env_int, now_ts as _now
-
+from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,12 @@ class AdblockArtifactMetadata:
 
 
 class AdblockArtifactStore:
-    def __init__(self, *, compiled_dir: str | None = None):
-        self.compiled_dir = (compiled_dir or os.environ.get("ADBLOCK_COMPILED_DIR") or _DEFAULT_COMPILED_DIR).strip() or _DEFAULT_COMPILED_DIR
+    def __init__(self, *, compiled_dir: str | None = None) -> None:
+        self.compiled_dir = (
+            compiled_dir
+            or os.environ.get("ADBLOCK_COMPILED_DIR")
+            or _DEFAULT_COMPILED_DIR
+        ).strip() or _DEFAULT_COMPILED_DIR
         self._started = False
         self._lock = threading.Lock()
 
@@ -112,7 +117,7 @@ class AdblockArtifactStore:
                     KEY idx_adblock_artifact_revisions_active (is_active, created_ts),
                     KEY idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts)
                 )
-                """
+                """,
             )
             conn.execute(
                 """
@@ -127,10 +132,10 @@ class AdblockArtifactStore:
                     artifact_sha256 CHAR(64) NOT NULL DEFAULT '',
                     KEY idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts)
                 )
-                """
+                """,
             )
 
-    def _row_to_revision(self, row: object | None) -> Optional[AdblockArtifactRevision]:
+    def _row_to_revision(self, row: object | None) -> AdblockArtifactRevision | None:
         if not row:
             return None
         return AdblockArtifactRevision(
@@ -146,7 +151,9 @@ class AdblockArtifactStore:
             is_active=bool(int(row["is_active"] or 0)),
         )
 
-    def _row_to_application(self, row: object | None) -> Optional[AdblockArtifactApplication]:
+    def _row_to_application(
+        self, row: object | None,
+    ) -> AdblockArtifactApplication | None:
         if not row:
             return None
         return AdblockArtifactApplication(
@@ -160,7 +167,7 @@ class AdblockArtifactStore:
             artifact_sha256=str(row["artifact_sha256"] or ""),
         )
 
-    def _row_to_metadata(self, row: object | None) -> Optional[AdblockArtifactMetadata]:
+    def _row_to_metadata(self, row: object | None) -> AdblockArtifactMetadata | None:
         if not row:
             return None
         return AdblockArtifactMetadata(
@@ -174,7 +181,7 @@ class AdblockArtifactStore:
             is_active=bool(int(row["is_active"] or 0)),
         )
 
-    def get_active_artifact(self) -> Optional[AdblockArtifactRevision]:
+    def get_active_artifact(self) -> AdblockArtifactRevision | None:
         self.init_db()
         with self._connect() as conn:
             row = conn.execute(
@@ -183,11 +190,11 @@ class AdblockArtifactStore:
                 WHERE is_active=1
                 ORDER BY created_ts DESC, id DESC
                 LIMIT 1
-                """
+                """,
             ).fetchone()
         return self._row_to_revision(row)
 
-    def get_active_artifact_metadata(self) -> Optional[AdblockArtifactMetadata]:
+    def get_active_artifact_metadata(self) -> AdblockArtifactMetadata | None:
         self.init_db()
         with self._connect() as conn:
             row = conn.execute(
@@ -197,7 +204,7 @@ class AdblockArtifactStore:
                 WHERE is_active=1
                 ORDER BY created_ts DESC, id DESC
                 LIMIT 1
-                """
+                """,
             ).fetchone()
         return self._row_to_metadata(row)
 
@@ -215,7 +222,9 @@ class AdblockArtifactStore:
     ) -> AdblockArtifactRevision:
         self.init_db()
         current = self.get_active_artifact()
-        enabled_lists_json = json.dumps(sorted(set(str(item).strip() for item in enabled_lists if str(item).strip())))
+        enabled_lists_json = json.dumps(
+            sorted({str(item).strip() for item in enabled_lists if str(item).strip()}),
+        )
         if (
             activate
             and current is not None
@@ -228,7 +237,9 @@ class AdblockArtifactStore:
         now = _now()
         with self._connect() as conn:
             if activate:
-                conn.execute("UPDATE adblock_artifact_revisions SET is_active=0 WHERE is_active=1")
+                conn.execute(
+                    "UPDATE adblock_artifact_revisions SET is_active=0 WHERE is_active=1",
+                )
             cur = conn.execute(
                 """
                 INSERT INTO adblock_artifact_revisions(
@@ -323,7 +334,9 @@ class AdblockArtifactStore:
         assert application is not None
         return application
 
-    def latest_apply(self, proxy_id: object | None) -> Optional[AdblockArtifactApplication]:
+    def latest_apply(
+        self, proxy_id: object | None,
+    ) -> AdblockArtifactApplication | None:
         self.init_db()
         from services.proxy_context import normalize_proxy_id
 
@@ -364,11 +377,17 @@ class AdblockArtifactStore:
             now_ts = _now()
             for status in enabled_statuses:
                 list_path = store.list_path(status.key)
-                needs_download = refresh_lists or not os.path.exists(list_path) or store.should_update(status, now_ts, False)
+                needs_download = (
+                    refresh_lists
+                    or not Path(list_path).exists()
+                    or store.should_update(status, now_ts, False)
+                )
                 if not needs_download:
                     continue
-                force_download = bool(refresh_lists or not os.path.exists(list_path))
-                downloaded_now = bool(store.update_one(status.key, force=force_download))
+                force_download = bool(refresh_lists or not Path(list_path).exists())
+                downloaded_now = bool(
+                    store.update_one(status.key, force=force_download),
+                )
                 any_downloaded = downloaded_now or any_downloaded
                 if not downloaded_now:
                     download_pending = True
@@ -397,14 +416,20 @@ class AdblockArtifactStore:
             logger.exception("adblock artifact build failed")
             return {
                 "ok": False,
-                "detail": public_error_message(exc, default="Adblock artifact build failed."),
+                "detail": public_error_message(
+                    exc, default="Adblock artifact build failed.",
+                ),
                 "revision": None,
                 "changed": False,
                 "downloaded": any_downloaded,
                 "download_pending": download_pending,
             }
 
-        changed = previous is None or previous.revision_id != revision.revision_id or previous.artifact_sha256 != revision.artifact_sha256
+        changed = (
+            previous is None
+            or previous.revision_id != revision.revision_id
+            or previous.artifact_sha256 != revision.artifact_sha256
+        )
         detail = "Adblock artifact is already current."
         if changed:
             detail = f"Activated adblock artifact revision {revision.revision_id}."
@@ -423,12 +448,20 @@ class AdblockArtifactStore:
                 return
             self._started = True
             self.init_db()
-            thread = threading.Thread(target=self._loop, name="adblock-artifact-builder", daemon=True)
+            thread = threading.Thread(
+                target=self._loop, name="adblock-artifact-builder", daemon=True,
+            )
             thread.start()
 
     def _loop(self) -> None:
-        poll_seconds = float(_env_int("ADBLOCK_BUILDER_POLL_SECONDS", 30, minimum=5, maximum=3600))
-        error_seconds = float(_env_int("ADBLOCK_BUILDER_ERROR_BACKOFF_SECONDS", 30, minimum=5, maximum=300))
+        poll_seconds = float(
+            _env_int("ADBLOCK_BUILDER_POLL_SECONDS", 30, minimum=5, maximum=3600),
+        )
+        error_seconds = float(
+            _env_int(
+                "ADBLOCK_BUILDER_ERROR_BACKOFF_SECONDS", 30, minimum=5, maximum=300,
+            ),
+        )
         from services.adblock_store import get_adblock_store
 
         store = get_adblock_store()
@@ -444,19 +477,34 @@ class AdblockArtifactStore:
                 refresh_requested = bool(store.get_refresh_requested())
                 settings_version = store.get_settings_version()
                 due_download = bool(settings.get("enabled")) and any(
-                    (not os.path.exists(store.list_path(status.key)) or store.should_update(status, _now(), False))
+                    (
+                        not Path(store.list_path(status.key)).exists()
+                        or store.should_update(status, _now(), False)
+                    )
                     for status in enabled_statuses
                 )
-                needs_build = refresh_requested or active is None or (active is not None and active.settings_version != settings_version) or due_download
+                needs_build = (
+                    refresh_requested
+                    or active is None
+                    or (
+                        active is not None
+                        and active.settings_version != settings_version
+                    )
+                    or due_download
+                )
                 if needs_build:
-                    result = self.build_active_artifact(refresh_lists=refresh_requested, created_by="system", source_kind="background")
-                    if not bool(result.get("ok")) or bool(result.get("download_pending")):
+                    result = self.build_active_artifact(
+                        refresh_lists=refresh_requested,
+                        created_by="system",
+                        source_kind="background",
+                    )
+                    if not bool(result.get("ok")) or bool(
+                        result.get("download_pending"),
+                    ):
                         sleep_seconds = error_seconds
                     else:
-                        try:
+                        with contextlib.suppress(Exception):
                             store.clear_refresh_requested()
-                        except Exception:
-                            pass
                         if bool(result.get("changed")):
                             nudge_registered_proxies(force=False)
                         sleep_seconds = 5.0
@@ -469,18 +517,28 @@ class AdblockArtifactStore:
                 )
                 sleep_seconds = error_seconds
             time.sleep(sleep_seconds)
+
+
 def _compile_current_lists(*, lists_dir: str, out_dir: str) -> None:
     from tools import adblock_compile  # type: ignore
 
-    rc = int(adblock_compile.main(["--lists-dir", str(lists_dir), "--out-dir", str(out_dir)]))
+    rc = int(
+        adblock_compile.main(["--lists-dir", str(lists_dir), "--out-dir", str(out_dir)]),
+    )
     if rc != 0:
-        raise RuntimeError(f"adblock_compile failed with exit code {rc}")
+        msg = f"adblock_compile failed with exit code {rc}"
+        raise RuntimeError(msg)
 
 
 def _write_empty_output(out_dir: str) -> None:
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
-    for filename in ("domains_allow.txt", "domains_block.txt", "regex_allow.txt", "regex_block.txt"):
+    for filename in (
+        "domains_allow.txt",
+        "domains_block.txt",
+        "regex_allow.txt",
+        "regex_block.txt",
+    ):
         (root / filename).write_text("", encoding="utf-8")
     report = {
         "enabled_lists": [],
@@ -502,10 +560,12 @@ def _write_empty_output(out_dir: str) -> None:
         },
         "per_list": {},
         "notes": {
-            "empty": "No enabled adblock lists are active, so the materialized artifact contains empty allow/block tables."
+            "empty": "No enabled adblock lists are active, so the materialized artifact contains empty allow/block tables.",
         },
     }
-    (root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (root / "report.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+    )
 
 
 def _write_settings_file(
@@ -520,7 +580,9 @@ def _write_settings_file(
         "cache_ttl": int(settings.get("cache_ttl") or 0),
         "cache_max": int(settings.get("cache_max") or 0),
         "settings_version": int(settings_version),
-        "enabled_lists": sorted(set(str(item).strip() for item in enabled_lists if str(item).strip())),
+        "enabled_lists": sorted(
+            {str(item).strip() for item in enabled_lists if str(item).strip()},
+        ),
     }
     Path(out_dir, _DEFAULT_SETTINGS_FILENAME).write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -573,8 +635,12 @@ def _load_report_json(file_map: dict[str, bytes]) -> str:
         return "{}"
 
 
-def read_materialized_artifact_sha(compiled_dir: str | os.PathLike[str] | None = None) -> str:
-    root = Path(compiled_dir or os.environ.get("ADBLOCK_COMPILED_DIR") or _DEFAULT_COMPILED_DIR)
+def read_materialized_artifact_sha(
+    compiled_dir: str | os.PathLike[str] | None = None,
+) -> str:
+    root = Path(
+        compiled_dir or os.environ.get("ADBLOCK_COMPILED_DIR") or _DEFAULT_COMPILED_DIR,
+    )
     marker = root / _ARTIFACT_SHA_FILENAME
     try:
         return marker.read_text(encoding="utf-8", errors="replace").strip()
@@ -604,11 +670,12 @@ def materialize_archive_to_directory(
                 if not name or name.endswith("/"):
                     continue
                 norm = os.path.normpath(name).replace("\\", "/")
-                if norm.startswith("../") or norm.startswith("/") or norm == "..":
-                    raise ValueError(f"Refusing to extract unsafe archive member: {name}")
+                if norm.startswith(("../", "/")) or norm == "..":
+                    msg = f"Refusing to extract unsafe archive member: {name}"
+                    raise ValueError(msg)
                 dest = payload_dir / norm
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info, "r") as src, open(dest, "wb") as dst:
+                with zf.open(info, "r") as src, Path(dest).open("wb") as dst:
                     shutil.copyfileobj(src, dst)
 
         if artifact_sha256:
@@ -618,20 +685,20 @@ def materialize_archive_to_directory(
             )
 
         if target.exists():
-            backup_dir = parent / f".adblock-backup-{os.getpid()}-{int(time.time() * 1000)}"
+            backup_dir = (
+                parent / f".adblock-backup-{os.getpid()}-{int(time.time() * 1000)}"
+            )
             if backup_dir.exists():
                 shutil.rmtree(backup_dir, ignore_errors=True)
-            os.replace(str(target), str(backup_dir))
+            Path(str(target)).replace(str(backup_dir))
 
-        os.replace(str(payload_dir), str(target))
+        Path(str(payload_dir)).replace(str(target))
         if backup_dir is not None:
             shutil.rmtree(backup_dir, ignore_errors=True)
     except Exception:
         if backup_dir is not None and backup_dir.exists() and not target.exists():
-            try:
-                os.replace(str(backup_dir), str(target))
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                Path(str(backup_dir)).replace(str(target))
         raise
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
@@ -640,16 +707,27 @@ def materialize_archive_to_directory(
 def _restart_local_adblock_service() -> tuple[bool, str]:
     try:
         proc = subprocess.run(
-            ["supervisorctl", "-c", "/etc/supervisord.conf", "restart", "cicap_adblock"],
+            [
+                "supervisorctl",
+                "-c",
+                "/etc/supervisord.conf",
+                "restart",
+                "cicap_adblock",
+            ],
             capture_output=True,
             timeout=30,
         )
     except Exception as exc:
-        return False, public_error_message(exc, default="Failed to restart cicap_adblock.")
+        return False, public_error_message(
+            exc, default="Failed to restart cicap_adblock.",
+        )
 
     stdout = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
     stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-    detail = "\n".join(part for part in (stdout, stderr) if part).strip() or "cicap_adblock restarted."
+    detail = (
+        "\n".join(part for part in (stdout, stderr) if part).strip()
+        or "cicap_adblock restarted."
+    )
     return proc.returncode == 0, detail
 
 
@@ -670,7 +748,11 @@ def apply_active_artifact_locally(
     changed = False
 
     if revision is not None and current_sha != revision.artifact_sha256:
-        materialize_archive_to_directory(target_dir, archive_blob=revision.archive_blob, artifact_sha256=revision.artifact_sha256)
+        materialize_archive_to_directory(
+            target_dir,
+            archive_blob=revision.archive_blob,
+            artifact_sha256=revision.artifact_sha256,
+        )
         changed = True
 
     if revision is None and not flush_requested and not changed:
@@ -680,14 +762,12 @@ def apply_active_artifact_locally(
 
     ok, detail = _restart_local_adblock_service()
     if ok and flush_requested:
-        try:
+        with contextlib.suppress(Exception):
             store.mark_cache_flushed(size=0)
-        except Exception:
-            pass
     return ok, detail
 
 
-_store: Optional[AdblockArtifactStore] = None
+_store: AdblockArtifactStore | None = None
 _store_lock = threading.Lock()
 
 

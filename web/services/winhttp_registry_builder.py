@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 REGISTRY_PATH = r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
 VALUE_NAME = "WinHttpSettings"
@@ -62,18 +64,22 @@ class WinHttpContractOutput:
 
 
 def _quote_cmd(value: str) -> str:
-    return '"' + str(value or "").replace('"', r'\"') + '"'
+    return '"' + str(value or "").replace('"', r"\"") + '"'
 
 
 def _write_dword_le(out: list[int], value: int) -> None:
     if not isinstance(value, int) or value < 0 or value > 0xFFFFFFFF:
-        raise WinHttpBuilderError(f"Invalid DWORD value: {value}")
-    out.extend((value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF))
+        msg = f"Invalid DWORD value: {value}"
+        raise WinHttpBuilderError(msg)
+    out.extend(
+        (value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF),
+    )
 
 
 def _ascii_bytes(value: str) -> list[int]:
     if re.search(r"[^\x00-\x7f]", value or ""):
-        raise WinHttpBuilderError(f"Only ASCII characters are supported: {value}")
+        msg = f"Only ASCII characters are supported: {value}"
+        raise WinHttpBuilderError(msg)
     return [ord(ch) for ch in value or ""]
 
 
@@ -88,13 +94,15 @@ def normalize_hex_only(value: str) -> str:
 def hex_to_bytes(hex_value: str) -> list[int]:
     clean = normalize_hex_only(hex_value)
     if len(clean) % 2:
-        raise WinHttpBuilderError("Hex string must contain an even number of characters.")
+        msg = "Hex string must contain an even number of characters."
+        raise WinHttpBuilderError(msg)
     return [int(clean[i : i + 2], 16) for i in range(0, len(clean), 2)]
 
 
 def _read_dword_le(bytes_: list[int], offset: int) -> int:
     if offset + 4 > len(bytes_):
-        raise WinHttpBuilderError("Unexpected end of binary while reading DWORD.")
+        msg = "Unexpected end of binary while reading DWORD."
+        raise WinHttpBuilderError(msg)
     return (
         bytes_[offset]
         | (bytes_[offset + 1] << 8)
@@ -105,12 +113,19 @@ def _read_dword_le(bytes_: list[int], offset: int) -> int:
 
 def _ascii_from_bytes(bytes_: list[int]) -> str:
     if any(byte > 0x7F for byte in bytes_):
-        raise WinHttpBuilderError("Basic WinHTTP strings must be ASCII.")
+        msg = "Basic WinHTTP strings must be ASCII."
+        raise WinHttpBuilderError(msg)
     return "".join(chr(byte) for byte in bytes_)
 
 
-def normalize_bypass_list(value: str | Iterable[str] | None, *, include_local: bool) -> str:
-    raw_items = list(value) if isinstance(value, (list, tuple)) else re.split(r"[\r\n;\s]+", str(value or ""))
+def normalize_bypass_list(
+    value: str | Iterable[str] | None, *, include_local: bool,
+) -> str:
+    raw_items = (
+        list(value)
+        if isinstance(value, (list, tuple))
+        else re.split(r"[\r\n;\s]+", str(value or ""))
+    )
     seen: set[str] = set()
     normalized: list[str] = []
     for item in raw_items:
@@ -118,7 +133,8 @@ def normalize_bypass_list(value: str | Iterable[str] | None, *, include_local: b
         if not cleaned:
             continue
         if "," in cleaned:
-            raise WinHttpBuilderError("Bypass entries must not contain commas.")
+            msg = "Bypass entries must not contain commas."
+            raise WinHttpBuilderError(msg)
         key = cleaned.lower()
         if key in seen:
             continue
@@ -135,12 +151,14 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
     value = (host or "").strip()
     warning = None
     if not value:
-        raise WinHttpBuilderError("Proxy host/IP is required.")
+        msg = "Proxy host/IP is required."
+        raise WinHttpBuilderError(msg)
     if "://" in value:
         warning = "Normal proxy host should not include http:// or https://; destination scheme mappings are generated separately."
         value = value.split("://", 1)[1].split("/", 1)[0]
     if "/" in value or any(ch.isspace() for ch in value):
-        raise WinHttpBuilderError("Proxy host/IP must not contain spaces or path separators.")
+        msg = "Proxy host/IP must not contain spaces or path separators."
+        raise WinHttpBuilderError(msg)
     _ascii_bytes(value)
     return value, warning
 
@@ -149,9 +167,11 @@ def _normalize_port(port: object) -> int:
     try:
         parsed = int(str(port or "").strip())
     except Exception as exc:
-        raise WinHttpBuilderError("Proxy port must be an integer from 1 to 65535.") from exc
+        msg = "Proxy port must be an integer from 1 to 65535."
+        raise WinHttpBuilderError(msg) from exc
     if parsed < 1 or parsed > 65535:
-        raise WinHttpBuilderError("Proxy port must be an integer from 1 to 65535.")
+        msg = "Proxy port must be an integer from 1 to 65535."
+        raise WinHttpBuilderError(msg)
     return parsed
 
 
@@ -162,7 +182,8 @@ def _normalize_scheme_list(values: Iterable[str]) -> list[str]:
         if not scheme:
             continue
         if scheme not in DESTINATION_SCHEMES:
-            raise WinHttpBuilderError(f"Unsupported destination scheme for documented WinHTTP mapping: {scheme}")
+            msg = f"Unsupported destination scheme for documented WinHTTP mapping: {scheme}"
+            raise WinHttpBuilderError(msg)
         if scheme not in normalized:
             normalized.append(scheme)
     return normalized
@@ -180,17 +201,20 @@ def build_proxy_string(
     if use_custom_proxy_map or (custom_proxy_map or "").strip():
         proxy_string = (custom_proxy_map or "").strip()
         if not proxy_string:
-            raise WinHttpBuilderError("Custom proxy map is enabled but empty.")
+            msg = "Custom proxy map is enabled but empty."
+            raise WinHttpBuilderError(msg)
         _ascii_bytes(proxy_string)
         for token in re.split(r"[;\s]+", proxy_string):
             if "=" not in token:
                 continue
             scheme = token.split("=", 1)[0].strip().lower()
             if scheme and scheme not in DESTINATION_SCHEMES:
-                warnings.append(f"Custom proxy map contains a nonstandard WinHTTP scheme mapping: {scheme}.")
+                warnings.append(
+                    f"Custom proxy map contains a nonstandard WinHTTP scheme mapping: {scheme}.",
+                )
             if scheme == "socks":
                 warnings.append(
-                    "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings."
+                    "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings.",
                 )
         return proxy_string, tuple(warnings)
 
@@ -200,10 +224,11 @@ def build_proxy_string(
     port = _normalize_port(proxy_port)
     schemes = _normalize_scheme_list(destination_schemes)
     if not schemes:
-        raise WinHttpBuilderError("At least one destination scheme must be selected.")
+        msg = "At least one destination scheme must be selected."
+        raise WinHttpBuilderError(msg)
     if "socks" in schemes:
         warnings.append(
-            "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings."
+            "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings.",
         )
     return ";".join(f"{scheme}={host}:{port}" for scheme in schemes), tuple(warnings)
 
@@ -234,13 +259,15 @@ def decode_basic_winhttp_settings_hex(hex_value: str) -> DecodedBasicWinHttpSett
     proxy_length = _read_dword_le(bytes_, offset)
     offset += 4
     if offset + proxy_length > len(bytes_):
-        raise WinHttpBuilderError("Proxy string length exceeds available binary data.")
+        msg = "Proxy string length exceeds available binary data."
+        raise WinHttpBuilderError(msg)
     proxy_string = _ascii_from_bytes(bytes_[offset : offset + proxy_length])
     offset += proxy_length
     bypass_length = _read_dword_le(bytes_, offset)
     offset += 4
     if offset + bypass_length > len(bytes_):
-        raise WinHttpBuilderError("Bypass string length exceeds available binary data.")
+        msg = "Bypass string length exceeds available binary data."
+        raise WinHttpBuilderError(msg)
     bypass_string = _ascii_from_bytes(bytes_[offset : offset + bypass_length])
     return DecodedBasicWinHttpSettings(
         header_marker=header,
@@ -254,7 +281,8 @@ def decode_basic_winhttp_settings_hex(hex_value: str) -> DecodedBasicWinHttpSett
 def generate_reg_file_from_hex(hex_value: str, *, bytes_per_line: int = 25) -> str:
     clean = normalize_hex_only(hex_value)
     if len(clean) % 2:
-        raise WinHttpBuilderError("Hex string must contain an even number of characters.")
+        msg = "Hex string must contain an even number of characters."
+        raise WinHttpBuilderError(msg)
     pairs = re.findall(r"..", clean)
     lines: list[str] = []
     for idx in range(0, len(pairs), bytes_per_line):
@@ -263,7 +291,9 @@ def generate_reg_file_from_hex(hex_value: str, *, bytes_per_line: int = 25) -> s
         prefix = f'"{VALUE_NAME}"=hex:' if idx == 0 else " "
         continuation = "" if last else ",\\"
         lines.append(f"{prefix}{chunk}{continuation}")
-    return "\r\n".join(["Windows Registry Editor Version 5.00", "", f"[{REGISTRY_PATH}]", *lines, ""])
+    return "\r\n".join(
+        ["Windows Registry Editor Version 5.00", "", f"[{REGISTRY_PATH}]", *lines, ""],
+    )
 
 
 def normalize_reg_binary_export(value: str) -> str:
@@ -274,7 +304,9 @@ def normalize_reg_binary_export(value: str) -> str:
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not collecting:
-            match = re.match(r'"WinHttpSettings"\s*=\s*hex:(.*)$', line, flags=re.IGNORECASE)
+            match = re.match(
+                r'"WinHttpSettings"\s*=\s*hex:(.*)$', line, flags=re.IGNORECASE,
+            )
             if not match:
                 continue
             collecting = True
@@ -294,7 +326,8 @@ def normalize_reg_binary_export(value: str) -> str:
     body = "".join(chunks) if chunks else text
     clean = normalize_hex_only(body)
     if len(clean) % 2:
-        raise WinHttpBuilderError("Normalized WinHttpSettings hex has an odd number of characters.")
+        msg = "Normalized WinHttpSettings hex has an odd number of characters."
+        raise WinHttpBuilderError(msg)
     return clean
 
 
@@ -316,9 +349,11 @@ def build_advproxy_settings_json(
     return json.dumps(payload, separators=(",", ":"))
 
 
-def build_advproxy_command(*, scope: Literal["machine", "user"], settings_json: str) -> str:
+def build_advproxy_command(
+    *, scope: Literal["machine", "user"], settings_json: str,
+) -> str:
     chosen_scope = scope if scope in ADVPROXY_SCOPES else "machine"
-    escaped = settings_json.replace('"', r'\"')
+    escaped = settings_json.replace('"', r"\"")
     return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={escaped}"
 
 
@@ -340,12 +375,14 @@ def build_tracing_command(
 ) -> str:
     state_value = (state or "disabled").strip().lower()
     if state_value not in {"enabled", "disabled"}:
-        raise WinHttpBuilderError("Tracing state must be enabled or disabled.")
+        msg = "Tracing state must be enabled or disabled."
+        raise WinHttpBuilderError(msg)
     parts = ["netsh winhttp set tracing"]
     output_value = (output or "").strip().lower()
     if output_value:
         if output_value not in TRACING_OUTPUTS:
-            raise WinHttpBuilderError("Tracing output must be file, debugger, or both.")
+            msg = "Tracing output must be file, debugger, or both."
+            raise WinHttpBuilderError(msg)
         parts.append(f"output={output_value}")
     if trace_file_prefix:
         _ascii_bytes(trace_file_prefix)
@@ -353,21 +390,25 @@ def build_tracing_command(
     level_value = (level or "").strip().lower()
     if level_value:
         if level_value not in TRACING_LEVELS:
-            raise WinHttpBuilderError("Tracing level must be default or verbose.")
+            msg = "Tracing level must be default or verbose."
+            raise WinHttpBuilderError(msg)
         parts.append(f"level={level_value}")
     format_value = (format_ or "").strip().lower()
     if format_value:
         if format_value not in TRACING_FORMATS:
-            raise WinHttpBuilderError("Tracing format must be ansi or hex.")
+            msg = "Tracing format must be ansi or hex."
+            raise WinHttpBuilderError(msg)
         parts.append(f"format={format_value}")
     size_value = str(max_trace_file_size or "").strip()
     if size_value:
         try:
             size = int(size_value)
         except Exception as exc:
-            raise WinHttpBuilderError("Maximum trace file size must be an integer.") from exc
+            msg = "Maximum trace file size must be an integer."
+            raise WinHttpBuilderError(msg) from exc
         if size < 1:
-            raise WinHttpBuilderError("Maximum trace file size must be positive.")
+            msg = "Maximum trace file size must be positive."
+            raise WinHttpBuilderError(msg)
         parts.append(f"max-trace-file-size={size}")
     parts.append(f"state={state_value}")
     return " ".join(parts)
@@ -386,7 +427,11 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
     proxy_host = str(form.get("proxy_host") or "")
     custom_proxy_map = str(form.get("custom_proxy_map") or "")
     use_custom_proxy_map = _form_bool(form, "use_custom_proxy_map")
-    if not proxy_host.strip() and not custom_proxy_map.strip() and (autoconfig_url or autodetect):
+    if (
+        not proxy_host.strip()
+        and not custom_proxy_map.strip()
+        and (autoconfig_url or autodetect)
+    ):
         proxy_string = ""
         proxy_warnings: tuple[str, ...] = ()
     else:
@@ -397,8 +442,15 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
             custom_proxy_map=custom_proxy_map,
             use_custom_proxy_map=use_custom_proxy_map,
         )
-    bypass_string = normalize_bypass_list(form.get("bypass_list") or "", include_local=_form_bool(form, "include_local_bypass"))
-    scope = "user" if str(form.get("advproxy_scope") or "").strip().lower() == "user" else "machine"
+    bypass_string = normalize_bypass_list(
+        form.get("bypass_list") or "",
+        include_local=_form_bool(form, "include_local_bypass"),
+    )
+    scope = (
+        "user"
+        if str(form.get("advproxy_scope") or "").strip().lower() == "user"
+        else "machine"
+    )
 
     warnings = list(proxy_warnings)
     if not bypass_string:
@@ -407,27 +459,43 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
         warnings.append("<local> is not present in the bypass list.")
     if autoconfig_url:
         _ascii_bytes(autoconfig_url)
-        warnings.append("Autoconfig/PAC URL deployment is represented by advproxy JSON/commands, not by the basic static WinHttpSettings binary.")
+        warnings.append(
+            "Autoconfig/PAC URL deployment is represented by advproxy JSON/commands, not by the basic static WinHttpSettings binary.",
+        )
     if autodetect:
-        warnings.append("AutoDetect deployment is represented by advproxy JSON/commands, not by the basic static WinHttpSettings binary.")
+        warnings.append(
+            "AutoDetect deployment is represented by advproxy JSON/commands, not by the basic static WinHttpSettings binary.",
+        )
 
-    static_registry_available = bool(proxy_string) and not autoconfig_url and not autodetect
+    static_registry_available = (
+        bool(proxy_string) and not autoconfig_url and not autodetect
+    )
     normalized_hex = ""
     reg_file = ""
     decoded: DecodedBasicWinHttpSettings | None = None
     if static_registry_available:
         normalized_hex = generate_basic_winhttp_binary(proxy_string, bypass_string)
         decoded = decode_basic_winhttp_settings_hex(normalized_hex)
-        if decoded.proxy_string != proxy_string or decoded.bypass_string != bypass_string:
-            raise WinHttpBuilderError("Generated WinHttpSettings failed decode verification.")
-        if decoded.header_marker != HEADER_MARKER or decoded.access_type != ACCESS_TYPE_NAMED_PROXY:
-            raise WinHttpBuilderError("Generated WinHttpSettings header failed verification.")
+        if (
+            decoded.proxy_string != proxy_string
+            or decoded.bypass_string != bypass_string
+        ):
+            msg = "Generated WinHttpSettings failed decode verification."
+            raise WinHttpBuilderError(msg)
+        if (
+            decoded.header_marker != HEADER_MARKER
+            or decoded.access_type != ACCESS_TYPE_NAMED_PROXY
+        ):
+            msg = "Generated WinHttpSettings header failed verification."
+            raise WinHttpBuilderError(msg)
         reg_file = generate_reg_file_from_hex(normalized_hex)
     elif not proxy_string:
-        warnings.append("No static proxy was supplied; use the advproxy JSON/commands or reset command rather than a WinHttpSettings REG_BINARY value.")
+        warnings.append(
+            "No static proxy was supplied; use the advproxy JSON/commands or reset command rather than a WinHttpSettings REG_BINARY value.",
+        )
     else:
         warnings.append(
-            "Microsoft documents WinHTTP PAC and AutoDetect through advproxy; no official byte-for-byte registry serialization contract is published for those modes."
+            "Microsoft documents WinHTTP PAC and AutoDetect through advproxy; no official byte-for-byte registry serialization contract is published for those modes.",
         )
 
     advproxy_json_compact = build_advproxy_settings_json(
@@ -444,9 +512,15 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
         normalized_hex=normalized_hex,
         reg_file=reg_file,
         decoded=decoded,
-        legacy_set_proxy_command=build_legacy_set_proxy_command(proxy_string, bypass_string) if proxy_string else "netsh winhttp reset proxy",
+        legacy_set_proxy_command=build_legacy_set_proxy_command(
+            proxy_string, bypass_string,
+        )
+        if proxy_string
+        else "netsh winhttp reset proxy",
         advproxy_json=advproxy_json_pretty,
-        advproxy_command=build_advproxy_command(scope=scope, settings_json=advproxy_json_compact),
+        advproxy_command=build_advproxy_command(
+            scope=scope, settings_json=advproxy_json_compact,
+        ),
         advproxy_settings_file_json=advproxy_json_pretty,
         advproxy_settings_file_command=f"netsh winhttp set advproxy setting-scope={scope} settings-file=winhttp-proxy-settings.json",
         reset_proxy_command="netsh winhttp reset proxy",

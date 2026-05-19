@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import io
 import os
 import sys
 import tarfile
-import io
 import tempfile
 import zipfile
-import pytest
 from pathlib import Path
+from typing import NoReturn
+
+import pytest
 
 
 def _import_webcat_build():
@@ -24,17 +26,18 @@ def test_ut1_tar_gz_lowercase_blacklists_detected() -> None:
 
     with tempfile.TemporaryDirectory(prefix="webcat_ut1_") as td:
         root = os.path.join(td, "payload")
-        os.makedirs(root, exist_ok=True)
+        Path(root).mkdir(exist_ok=True, parents=True)
 
         for cat, domains in {
             "adult": ["example.com", "sub.example.com"],
             "drogue": ["drug.example"],
         }.items():
             cat_dir = os.path.join(root, "blacklists", cat)
-            os.makedirs(cat_dir, exist_ok=True)
-            with open(os.path.join(cat_dir, "domains"), "w", encoding="utf-8") as handle:
-                for domain in domains:
-                    handle.write(domain + "\n")
+            Path(cat_dir).mkdir(exist_ok=True, parents=True)
+            with Path(os.path.join(cat_dir, "domains")).open(
+                "w", encoding="utf-8"
+            ) as handle:
+                handle.writelines(domain + "\n" for domain in domains)
 
         tar_path = os.path.join(td, "ut1.tar.gz")
         with tarfile.open(tar_path, "w:gz") as archive:
@@ -52,12 +55,14 @@ def test_ut1_dedup_identical_category_lists() -> None:
 
     with tempfile.TemporaryDirectory(prefix="webcat_ut1_") as td:
         root = os.path.join(td, "payload")
-        os.makedirs(root, exist_ok=True)
+        Path(root).mkdir(exist_ok=True, parents=True)
 
         for cat in ("proxy", "proxies"):
             cat_dir = os.path.join(root, "blacklists", cat)
-            os.makedirs(cat_dir, exist_ok=True)
-            with open(os.path.join(cat_dir, "domains"), "w", encoding="utf-8") as handle:
+            Path(cat_dir).mkdir(exist_ok=True, parents=True)
+            with Path(os.path.join(cat_dir, "domains")).open(
+                "w", encoding="utf-8"
+            ) as handle:
                 handle.write("example.com\n")
                 handle.write("sub.example.com\n")
 
@@ -79,7 +84,9 @@ def test_zip_extraction_blocks_path_traversal() -> None:
         pwned_path = os.path.join(td, "pwned.txt")
 
         with zipfile.ZipFile(zip_path, "w") as archive:
-            archive.writestr("blacklists/adult/domains", "example.com\nsub.example.com\n")
+            archive.writestr(
+                "blacklists/adult/domains", "example.com\nsub.example.com\n"
+            )
             archive.writestr("blacklists/drogue/domains", "drug.example\n")
             archive.writestr("../pwned.txt", "you should not see this")
 
@@ -88,10 +95,12 @@ def test_zip_extraction_blocks_path_traversal() -> None:
         assert len(pairs) >= 3
         assert {category for _domain, category in pairs} >= {"adult", "drogue"}
         assert aliases == {}
-        assert not os.path.exists(pwned_path)
+        assert not Path(pwned_path).exists()
 
 
-def test_download_rejects_oversized_content_length(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_download_rejects_oversized_content_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
 
     class _Headers:
@@ -108,21 +117,29 @@ def test_download_rejects_oversized_content_length(monkeypatch: pytest.MonkeyPat
             return False
 
         def read(self, _size: int) -> bytes:
-            raise AssertionError("body should not be read after oversized Content-Length")
+            msg = "body should not be read after oversized Content-Length"
+            raise AssertionError(msg)
 
     monkeypatch.setenv("WEBCAT_MAX_DOWNLOAD_BYTES", "10")
+
     class _Opener:
         def open(self, *_args, **_kwargs):
             return _Response()
 
-    monkeypatch.setattr(webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener())
+    monkeypatch.setattr(
+        webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener()
+    )
 
     with tempfile.TemporaryDirectory(prefix="webcat_download_") as td:
         with pytest.raises(ValueError, match="Content-Length=11"):
-            webcat_build._download("https://example.com/feed.csv", Path(td) / "feed.csv")
+            webcat_build._download(
+                "https://example.com/feed.csv", Path(td) / "feed.csv"
+            )
 
 
-def test_tar_extraction_blocks_traversal_and_enforces_size_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tar_extraction_blocks_traversal_and_enforces_size_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
 
     with tempfile.TemporaryDirectory(prefix="webcat_tar_duplicated_") as td:
@@ -145,23 +162,37 @@ def test_tar_extraction_blocks_traversal_and_enforces_size_limit(monkeypatch: py
         assert not pwned_path.exists()
 
 
-def test_download_rejects_hostname_resolving_private(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_download_rejects_hostname_resolving_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
 
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
         assert host == "public.example"
-        return [(webcat_build.socket.AF_INET, webcat_build.socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+        return [
+            (
+                webcat_build.socket.AF_INET,
+                webcat_build.socket.SOCK_STREAM,
+                0,
+                "",
+                ("127.0.0.1", 0),
+            )
+        ]
 
     monkeypatch.setattr(webcat_build.socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
         webcat_build.urllib.request,
         "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("urlopen should not be called")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("urlopen should not be called")
+        ),
     )
 
     with tempfile.TemporaryDirectory(prefix="webcat_ssrf_") as td:
         with pytest.raises(ValueError, match="internal/localhost"):
-            webcat_build._download("https://public.example/feed.csv", Path(td) / "feed.csv")
+            webcat_build._download(
+                "https://public.example/feed.csv", Path(td) / "feed.csv"
+            )
 
 
 def test_provider_ut1_rejects_non_ut1_archive() -> None:
@@ -190,15 +221,18 @@ def test_provider_category_dir_can_parse_non_ut1_archive() -> None:
         with tarfile.open(tar_path, "w:gz") as archive:
             archive.add(root, arcname="")
 
-        pairs, source, aliases = webcat_build._collect(tar_path, provider="category-dir")
+        pairs, source, aliases = webcat_build._collect(
+            tar_path, provider="category-dir"
+        )
 
         assert pairs == [("example.com", "adult")]
         assert source.startswith("tar:")
         assert aliases == {}
 
 
-
-def test_download_rejects_redirect_to_internal_host(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_download_rejects_redirect_to_internal_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
     from email.message import Message
 
@@ -206,37 +240,53 @@ def test_download_rejects_redirect_to_internal_host(monkeypatch: pytest.MonkeyPa
     headers["Location"] = "http://127.0.0.1/feed.csv"
 
     class _Opener:
-        def open(self, req, **_kwargs):
-            raise webcat_build.urllib.error.HTTPError(req.full_url, 302, "Found", headers, None)
+        def open(self, req, **_kwargs) -> NoReturn:
+            raise webcat_build.urllib.error.HTTPError(
+                req.full_url, 302, "Found", headers, None
+            )
 
-    monkeypatch.setattr(webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener())
+    monkeypatch.setattr(
+        webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener()
+    )
 
     with pytest.raises(ValueError, match="internal/localhost"):
         webcat_build._open_download_url("https://public.example/feed.csv", timeout=1)
 
-def test_download_if_changed_uses_conditional_headers_and_skips_on_304(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_download_if_changed_uses_conditional_headers_and_skips_on_304(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
 
     seen_headers = []
 
     class _Opener:
-        def open(self, req, **_kwargs):
+        def open(self, req, **_kwargs) -> NoReturn:
             seen_headers.append(dict(req.header_items()))
-            raise webcat_build.urllib.error.HTTPError(req.full_url, 304, "Not Modified", {}, None)
+            raise webcat_build.urllib.error.HTTPError(
+                req.full_url, 304, "Not Modified", {}, None
+            )
 
-    monkeypatch.setattr(webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener())
+    monkeypatch.setattr(
+        webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener()
+    )
     monkeypatch.setattr(webcat_build, "_now", lambda: 456)
 
     with tempfile.TemporaryDirectory(prefix="webcat_conditional_") as td:
         dest = Path(td) / "feed.tar.gz"
         dest.write_bytes(b"cached")
-        webcat_build._save_download_metadata(dest, {
-            "url": "https://public.example/feed.tar.gz",
-            "etag": "etag-1",
-            "last_modified": "Mon, 01 Jan 2024 00:00:00 GMT",
-        })
+        webcat_build._save_download_metadata(
+            dest,
+            {
+                "url": "https://public.example/feed.tar.gz",
+                "etag": "etag-1",
+                "last_modified": "Mon, 01 Jan 2024 00:00:00 GMT",
+            },
+        )
 
-        downloaded, source_path = webcat_build._download_if_changed("https://public.example/feed.tar.gz", dest)
+        downloaded, source_path = webcat_build._download_if_changed(
+            "https://public.example/feed.tar.gz", dest
+        )
 
         assert downloaded is False
         assert source_path == dest
@@ -250,27 +300,53 @@ def test_download_if_changed_uses_conditional_headers_and_skips_on_304(monkeypat
         assert metadata["checked_ts"] == "456"
 
 
-def test_main_skips_rebuild_when_upstream_not_modified_and_db_current(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_skips_rebuild_when_upstream_not_modified_and_db_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
 
     with tempfile.TemporaryDirectory(prefix="webcat_main_") as td:
         cached = Path(td) / "webcat_feed.tar.gz"
         cached.write_bytes(b"cached")
 
-        monkeypatch.setattr(webcat_build, "_download_if_changed", lambda *_args, **_kwargs: (False, cached))
-        monkeypatch.setattr(webcat_build, "_webcat_db_is_current", lambda **_kwargs: True)
-        monkeypatch.setattr(webcat_build, "_collect", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("_collect should not run")))
-        monkeypatch.setattr(webcat_build, "_build_db", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("_build_db should not run")))
+        monkeypatch.setattr(
+            webcat_build,
+            "_download_if_changed",
+            lambda *_args, **_kwargs: (False, cached),
+        )
+        monkeypatch.setattr(
+            webcat_build, "_webcat_db_is_current", lambda **_kwargs: True
+        )
+        monkeypatch.setattr(
+            webcat_build,
+            "_collect",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("_collect should not run")
+            ),
+        )
+        monkeypatch.setattr(
+            webcat_build,
+            "_build_db",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("_build_db should not run")
+            ),
+        )
 
-        rc = webcat_build.main([
-            "--source-url", "https://public.example/feed.tar.gz",
-            "--download-to", td,
-        ])
+        rc = webcat_build.main(
+            [
+                "--source-url",
+                "https://public.example/feed.tar.gz",
+                "--download-to",
+                td,
+            ]
+        )
 
         assert rc == 0
 
 
-def test_main_rebuilds_from_cached_feed_when_upstream_not_modified_but_db_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_rebuilds_from_cached_feed_when_upstream_not_modified_but_db_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
     calls = {}
 
@@ -278,8 +354,14 @@ def test_main_rebuilds_from_cached_feed_when_upstream_not_modified_but_db_stale(
         cached = Path(td) / "webcat_feed.tar.gz"
         cached.write_bytes(b"cached")
 
-        monkeypatch.setattr(webcat_build, "_download_if_changed", lambda *_args, **_kwargs: (False, cached))
-        monkeypatch.setattr(webcat_build, "_webcat_db_is_current", lambda **_kwargs: False)
+        monkeypatch.setattr(
+            webcat_build,
+            "_download_if_changed",
+            lambda *_args, **_kwargs: (False, cached),
+        )
+        monkeypatch.setattr(
+            webcat_build, "_webcat_db_is_current", lambda **_kwargs: False
+        )
 
         def fake_collect(source_path, provider="auto"):
             calls["collect"] = (source_path, provider)
@@ -297,10 +379,14 @@ def test_main_rebuilds_from_cached_feed_when_upstream_not_modified_but_db_stale(
         monkeypatch.setattr(webcat_build, "_collect", fake_collect)
         monkeypatch.setattr(webcat_build, "_build_db", fake_build_db)
 
-        rc = webcat_build.main([
-            "--source-url", "https://public.example/feed.tar.gz",
-            "--download-to", td,
-        ])
+        rc = webcat_build.main(
+            [
+                "--source-url",
+                "https://public.example/feed.tar.gz",
+                "--download-to",
+                td,
+            ]
+        )
 
         assert rc == 0
         assert calls["collect"][0] == cached
@@ -316,16 +402,24 @@ def test_webcat_domain_normalization_is_shared_and_idna() -> None:
         sys.path.insert(0, str(web_dir))
     from tools import webcat_acl  # type: ignore
 
-    assert webcat_build._norm_domain("http://Bücher.Example:8080/path") == "xn--bcher-kva.example"
-    assert webcat_acl._norm_domain("http://Bücher.Example:8080/path") == "xn--bcher-kva.example"
+    assert (
+        webcat_build._norm_domain("http://Bücher.Example:8080/path")
+        == "xn--bcher-kva.example"
+    )
+    assert (
+        webcat_acl._norm_domain("http://Bücher.Example:8080/path")
+        == "xn--bcher-kva.example"
+    )
     assert webcat_build._norm_domain("user@Example.COM:443") == "example.com"
 
 
-def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_db_stages_then_renames_without_deleting_live_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     webcat_build = _import_webcat_build()
 
     class _Conn:
-        def __init__(self):
+        def __init__(self) -> None:
             self.sql: list[str] = []
             self.commits = 0
 
@@ -333,7 +427,7 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
             self.sql.append(sql)
 
             class _Result:
-                def __init__(self, statement: str):
+                def __init__(self, statement: str) -> None:
                     self.statement = statement
 
                 def fetchone(self):
@@ -344,11 +438,10 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
 
             return _Result(sql)
 
-        def executemany(self, sql: str, seq):
+        def executemany(self, sql: str, seq) -> None:
             self.sql.append(sql)
-            return None
 
-        def commit(self):
+        def commit(self) -> None:
             self.commits += 1
 
         def __enter__(self):
@@ -363,7 +456,10 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
     monkeypatch.setattr(webcat_build.os, "getpid", lambda: 678)
 
     domains, pairs = webcat_build._build_db(
-        [("HTTP://Bücher.Example:443/path", "adult"), ("xn--bcher-kva.example", "gambling")],
+        [
+            ("HTTP://Bücher.Example:443/path", "adult"),
+            ("xn--bcher-kva.example", "gambling"),
+        ],
         source="unit-test",
     )
 
@@ -371,11 +467,19 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(monkeypatch: 
     assert pairs == 2
     joined = "\n".join(conn.sql)
     assert "DELETE FROM webcat_domains" not in joined
-    assert "CREATE TABLE `webcat_domains_stage_678_12345` LIKE `webcat_domains`" in joined
+    assert (
+        "CREATE TABLE `webcat_domains_stage_678_12345` LIKE `webcat_domains`" in joined
+    )
     assert "RENAME TABLE" in joined
     assert "webcat_pairs_stage_678_12345" not in joined
-    assert "INSERT INTO `webcat_domains_stage_678_12345`(domain, categories) VALUES(%s,%s)" in joined
-    assert "INSERT INTO `webcat_categories_stage_678_12345`(category, domains) VALUES(%s,%s)" in joined
+    assert (
+        "INSERT INTO `webcat_domains_stage_678_12345`(domain, categories) VALUES(%s,%s)"
+        in joined
+    )
+    assert (
+        "INSERT INTO `webcat_categories_stage_678_12345`(category, domains) VALUES(%s,%s)"
+        in joined
+    )
     assert "`webcat_domains_stage_678_12345` TO `webcat_domains`" in joined
     assert conn.commits >= 1
 
@@ -384,7 +488,7 @@ def test_build_db_drops_stale_stage_tables(monkeypatch: pytest.MonkeyPatch) -> N
     webcat_build = _import_webcat_build()
 
     class _Conn:
-        def __init__(self):
+        def __init__(self) -> None:
             self.sql: list[str] = []
 
         def execute(self, sql: str, params=()):
@@ -406,11 +510,10 @@ def test_build_db_drops_stale_stage_tables(monkeypatch: pytest.MonkeyPatch) -> N
 
             return _Result()
 
-        def executemany(self, sql: str, seq):
+        def executemany(self, sql: str, seq) -> None:
             self.sql.append(sql)
-            return None
 
-        def commit(self):
+        def commit(self) -> None:
             return None
 
         def __enter__(self):

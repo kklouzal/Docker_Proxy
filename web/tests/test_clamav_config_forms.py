@@ -25,9 +25,16 @@ def _directives(config_text: str) -> dict[str, str]:
     return directives
 
 
-def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract() -> None:
+def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract() -> (
+    None
+):
     _add_web_path()
-    from services.clamav_config_forms import DEFAULTS, normalize_clamav_options, render_file_security_policy_config, render_virus_scan_config
+    from services.clamav_config_forms import (
+        DEFAULTS,
+        normalize_clamav_options,
+        render_file_security_policy_config,
+        render_virus_scan_config,
+    )
 
     options = normalize_clamav_options()
 
@@ -52,7 +59,9 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     assert "adaptation_access av_req_set allow file_security_upload_methods" in policy
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
     assert "adaptation_access av_resp_set deny file_security_partial_response" in policy
-    assert "adaptation_access av_resp_set allow file_security_download_methods" in policy
+    assert (
+        "adaptation_access av_resp_set allow file_security_download_methods" in policy
+    )
     assert "acl file_security_risky_path urlpath_regex -i" in policy
 
 
@@ -106,7 +115,10 @@ def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
     assert "reply_body_max_size 64 MB" in policy
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
     assert "acl file_security_risky_path urlpath_regex -i" in policy
-    assert "http_access deny file_security_executable_mime file_security_upload_methods" in policy
+    assert (
+        "http_access deny file_security_executable_mime file_security_upload_methods"
+        in policy
+    )
 
 
 def test_clamav_preset_change_reseeds_untouched_policy_fields() -> None:
@@ -148,7 +160,9 @@ def test_clamav_monitor_preset_relaxes_untouched_blocking_controls() -> None:
         "file_security_block_executable_content": True,
     }
 
-    options = read_clamav_options_from_form({"file_security_preset": "monitor"}, current)
+    options = read_clamav_options_from_form(
+        {"file_security_preset": "monitor"}, current
+    )
 
     assert options["file_security_preset"] == "monitor"
     assert options["file_security_scan_downloads"] is True
@@ -163,15 +177,29 @@ def test_packaged_virus_scan_config_matches_schema_streaming_defaults() -> None:
     _add_web_path()
     from services.clamav_config_forms import render_virus_scan_config
 
-    packaged = _directives((_repo_root() / "docker" / "virus_scan.conf").read_text(encoding="utf-8"))
+    packaged = _directives(
+        (_repo_root() / "docker" / "virus_scan.conf").read_text(encoding="utf-8")
+    )
     rendered = _directives(render_virus_scan_config())
 
-    assert packaged["virus_scan.StartSendPercentDataAfter"] == rendered["virus_scan.StartSendPercentDataAfter"] == "1K"
-    assert packaged["virus_scan.SendPercentData"] == rendered["virus_scan.SendPercentData"] == "99"
-    assert packaged["virus_scan.PassOnError"] == rendered["virus_scan.PassOnError"] == "on"
+    assert (
+        packaged["virus_scan.StartSendPercentDataAfter"]
+        == rendered["virus_scan.StartSendPercentDataAfter"]
+        == "1K"
+    )
+    assert (
+        packaged["virus_scan.SendPercentData"]
+        == rendered["virus_scan.SendPercentData"]
+        == "99"
+    )
+    assert (
+        packaged["virus_scan.PassOnError"] == rendered["virus_scan.PassOnError"] == "on"
+    )
 
 
-def test_squid_controller_materializes_clamav_runtime_files(tmp_path, monkeypatch) -> None:
+def test_squid_controller_materializes_clamav_runtime_files(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_path()
     from services.clamav_config_forms import apply_clamav_options_to_config
     from services.squid_core import SquidController
@@ -180,7 +208,10 @@ def test_squid_controller_materializes_clamav_runtime_files(tmp_path, monkeypatc
     virus_path = tmp_path / "virus_scan.conf"
     monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(icap_path))
     monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(virus_path))
-    from services.squid_core import _cached_icap_include_path, _cached_virus_scan_config_path
+    from services.squid_core import (
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
 
     _cached_icap_include_path.cache_clear()
     _cached_virus_scan_config_path.cache_clear()
@@ -209,13 +240,24 @@ def test_squid_controller_materializes_clamav_runtime_files(tmp_path, monkeypatc
     assert "updated" in detail
     include_text = icap_path.read_text(encoding="utf-8")
     assert "icap_service av_req reqmod_precache" in include_text
-    assert "adaptation_access av_req_set allow file_security_upload_methods" in include_text
-    assert "adaptation_access av_resp_set deny file_security_range_request" in include_text
-    assert "adaptation_access av_resp_set deny file_security_partial_response" in include_text
+    assert (
+        "adaptation_access av_req_set allow file_security_upload_methods"
+        in include_text
+    )
+    assert (
+        "adaptation_access av_resp_set deny file_security_range_request" in include_text
+    )
+    assert (
+        "adaptation_access av_resp_set deny file_security_partial_response"
+        in include_text
+    )
     assert "request_body_max_size 64 MB" in include_text
     assert "reply_body_max_size 128 MB" in include_text
     assert "http_access deny file_security_risky_path" in include_text
-    assert "http_access deny file_security_executable_mime file_security_upload_methods" in include_text
+    assert (
+        "http_access deny file_security_executable_mime file_security_upload_methods"
+        in include_text
+    )
     virus_conf = virus_path.read_text(encoding="utf-8")
     assert "virus_scan.PassOnError off" in virus_conf
     assert "virus_scan.SendPercentData 99" in virus_conf

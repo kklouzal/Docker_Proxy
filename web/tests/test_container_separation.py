@@ -118,6 +118,9 @@ def test_admin_ui_compose_service_can_run_without_proxy_dependency() -> None:
 def test_proxy_entrypoint_removes_stale_cicap_pidfiles_before_start() -> None:
     text = _read("docker/entrypoint.sh")
 
-    assert "rm -f /var/run/c-icap/c-icap-adblock.pid; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf" in text
+    assert (
+        "rm -f /var/run/c-icap/c-icap-adblock.pid; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf"
+        in text
+    )
     assert "rm -f /var/run/c-icap/c-icap-av.pid; HOST=" in text
     assert "exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf" in text

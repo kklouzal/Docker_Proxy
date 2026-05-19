@@ -105,7 +105,9 @@ def test_eicar_uses_clamd_instream_protocol() -> None:
         thread.join(timeout=2)
 
 
-def test_eicar_reports_socket_failure_without_filesystem_side_effects(tmp_path, monkeypatch) -> None:
+def test_eicar_reports_socket_failure_without_filesystem_side_effects(
+    tmp_path, monkeypatch
+) -> None:
     _add_web_to_path()
     from services.proxy_health import test_eicar  # type: ignore
 

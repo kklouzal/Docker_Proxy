@@ -1,17 +1,16 @@
+import logging
 import os
+import pathlib
 import re
 import secrets
 import threading
 import time
-import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from services.db import INTEGRITY_ERRORS, connect
 from services.logutil import log_exception_throttled
-
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +26,10 @@ class UserRow:
 
 
 class AuthStore:
-    def __init__(self, secret_path: Optional[str] = None):
-        self.secret_path = secret_path or os.environ.get("FLASK_SECRET_PATH") or DEFAULT_SECRET_PATH
+    def __init__(self, secret_path: str | None = None) -> None:
+        self.secret_path = (
+            secret_path or os.environ.get("FLASK_SECRET_PATH") or DEFAULT_SECRET_PATH
+        )
 
     def _connect(self):
         return connect()
@@ -43,7 +44,7 @@ class AuthStore:
                     created_ts BIGINT NOT NULL,
                     updated_ts BIGINT NOT NULL
                 )
-                """
+                """,
             )
 
     def ensure_default_admin(self) -> None:
@@ -54,11 +55,11 @@ class AuthStore:
         self.add_user("admin", "admin")
 
     def get_or_create_secret_key(self) -> str:
-        secret_dir = os.path.dirname(self.secret_path)
+        secret_dir = pathlib.Path(self.secret_path).parent
         if secret_dir:
-            os.makedirs(secret_dir, exist_ok=True)
+            pathlib.Path(secret_dir).mkdir(exist_ok=True, parents=True)
         try:
-            with open(self.secret_path, "r", encoding="utf-8") as f:
+            with pathlib.Path(self.secret_path).open(encoding="utf-8") as f:
                 val = f.read().strip()
                 if val:
                     return val
@@ -67,12 +68,12 @@ class AuthStore:
 
         secret = secrets.token_urlsafe(48)
         tmp_path = self.secret_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with pathlib.Path(tmp_path).open("w", encoding="utf-8") as f:
             f.write(secret)
             f.write("\n")
-        os.replace(tmp_path, self.secret_path)
+        pathlib.Path(tmp_path).replace(self.secret_path)
         try:
-            os.chmod(self.secret_path, 0o600)
+            pathlib.Path(self.secret_path).chmod(0o600)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -92,9 +93,12 @@ class AuthStore:
         self.ensure_schema()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT username, created_ts, updated_ts FROM users ORDER BY username ASC"
+                "SELECT username, created_ts, updated_ts FROM users ORDER BY username ASC",
             ).fetchall()
-        return [UserRow(username=r[0], created_ts=int(r[1]), updated_ts=int(r[2])) for r in rows]
+        return [
+            UserRow(username=r[0], created_ts=int(r[1]), updated_ts=int(r[2]))
+            for r in rows
+        ]
 
     def verify_user(self, username: str, password: str) -> bool:
         self.ensure_schema()
@@ -114,15 +118,20 @@ class AuthStore:
         self.ensure_schema()
         u = (username or "").strip()
         if not u:
-            raise ValueError("Username is required.")
+            msg = "Username is required."
+            raise ValueError(msg)
         if len(u) > 64:
-            raise ValueError("Username too long.")
+            msg = "Username too long."
+            raise ValueError(msg)
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", u):
-            raise ValueError("Username may only include letters, numbers, underscore, dash, dot.")
+            msg = "Username may only include letters, numbers, underscore, dash, dot."
+            raise ValueError(msg)
         if password is None or password == "":
-            raise ValueError("Password is required.")
+            msg = "Password is required."
+            raise ValueError(msg)
         if len(password) < 4:
-            raise ValueError("Password must be at least 4 characters.")
+            msg = "Password must be at least 4 characters."
+            raise ValueError(msg)
 
         now = int(time.time())
         pw_hash = generate_password_hash(password)
@@ -133,17 +142,21 @@ class AuthStore:
                     (u, pw_hash, now, now),
                 )
             except INTEGRITY_ERRORS:
-                raise ValueError("User already exists.")
+                msg = "User already exists."
+                raise ValueError(msg)
 
     def set_password(self, username: str, new_password: str) -> None:
         self.ensure_schema()
         u = (username or "").strip()
         if not u:
-            raise ValueError("Username is required.")
+            msg = "Username is required."
+            raise ValueError(msg)
         if new_password is None or new_password == "":
-            raise ValueError("Password is required.")
+            msg = "Password is required."
+            raise ValueError(msg)
         if len(new_password) < 4:
-            raise ValueError("Password must be at least 4 characters.")
+            msg = "Password must be at least 4 characters."
+            raise ValueError(msg)
 
         now = int(time.time())
         pw_hash = generate_password_hash(new_password)
@@ -153,20 +166,23 @@ class AuthStore:
                 (pw_hash, now, u),
             )
             if cur.rowcount < 1:
-                raise ValueError("User not found.")
+                msg = "User not found."
+                raise ValueError(msg)
 
     def delete_user(self, username: str) -> None:
         self.ensure_schema()
         u = (username or "").strip()
         if not u:
-            raise ValueError("Username is required.")
+            msg = "Username is required."
+            raise ValueError(msg)
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM users WHERE username = %s", (u,))
             if cur.rowcount < 1:
-                raise ValueError("User not found.")
+                msg = "User not found."
+                raise ValueError(msg)
 
 
-_auth_store: Optional[AuthStore] = None
+_auth_store: AuthStore | None = None
 _auth_store_lock = threading.Lock()
 
 

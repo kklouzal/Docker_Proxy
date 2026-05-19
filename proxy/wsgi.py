@@ -1,3 +1,3 @@
-from proxy.app import app as app
+from proxy.app import app
 
 application = app

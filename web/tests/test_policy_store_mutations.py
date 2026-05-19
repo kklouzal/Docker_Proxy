@@ -42,7 +42,10 @@ def test_pac_profiles_validate_scope_dedupe_match_and_delete(tmp_path) -> None:
         assert ok is False
         assert missing_id is None
         assert "not found" in detail.lower()
-        assert store.list_profiles()[0].direct_domains == ["example.com", "media.example"]
+        assert store.list_profiles()[0].direct_domains == [
+            "example.com",
+            "media.example",
+        ]
 
         ok, detail, _ = store.upsert_profile(
             profile_id=None,
@@ -92,16 +95,36 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
 
     token = set_proxy_id("edge-a")
     try:
-        assert store.add_domain("nobump", "*.Example.COM") == (True, "", "*.example.com")
-        assert store.add_domain("nobump", "*.example.com") == (True, "", "*.example.com")
-        assert store.add_domain("nocache", "cache.example") == (True, "", "cache.example")
+        assert store.add_domain("nobump", "*.Example.COM") == (
+            True,
+            "",
+            "*.example.com",
+        )
+        assert store.add_domain("nobump", "*.example.com") == (
+            True,
+            "",
+            "*.example.com",
+        )
+        assert store.add_domain("nocache", "cache.example") == (
+            True,
+            "",
+            "cache.example",
+        )
         ok, detail, canonical = store.add_domain("nobump", "bad domain/example")
         assert ok is False
         assert canonical == ""
         assert "invalid" in detail.lower()
 
-        assert store.add_src_net("nobump", "192.168.44.99/24") == (True, "", "192.168.44.0/24")
-        assert store.add_src_net("nocache", "192.168.55.99/24") == (True, "", "192.168.55.0/24")
+        assert store.add_src_net("nobump", "192.168.44.99/24") == (
+            True,
+            "",
+            "192.168.44.0/24",
+        )
+        assert store.add_src_net("nocache", "192.168.55.99/24") == (
+            True,
+            "",
+            "192.168.55.0/24",
+        )
         ok, detail, canonical = store.add_src_net("nobump", "not-a-cidr")
         assert ok is False
         assert canonical == ""
@@ -136,7 +159,11 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
 
     token = set_proxy_id("edge-b")
     try:
-        assert store.add_domain("nobump", "edge-b.example") == (True, "", "edge-b.example")
+        assert store.add_domain("nobump", "edge-b.example") == (
+            True,
+            "",
+            "edge-b.example",
+        )
         assert store.list_all().no_bump_domains == ["edge-b.example"]
     finally:
         reset_proxy_id(token)
@@ -148,7 +175,9 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         reset_proxy_id(token)
 
 
-def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(tmp_path) -> None:
+def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
+    tmp_path,
+) -> None:
     configure_test_mysql_env(tmp_path / "sslfilter-mutations")
 
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
@@ -156,7 +185,9 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(tmp_path
 
     include_path = tmp_path / "10-sslfilter.conf"
     list_path = tmp_path / "nobump.txt"
-    store = SslFilterStore(squid_include_path=str(include_path), nobump_list_path=str(list_path))
+    store = SslFilterStore(
+        squid_include_path=str(include_path), nobump_list_path=str(list_path)
+    )
     store.init_db()
 
     token = set_proxy_id("edge-a")
@@ -175,7 +206,9 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(tmp_path
 
         store.apply_squid_include()
         assert "10.1.2.3/32" in list_path.read_text(encoding="utf-8")
-        assert "ssl_bump splice sslfilter_nobump" in include_path.read_text(encoding="utf-8")
+        assert "ssl_bump splice sslfilter_nobump" in include_path.read_text(
+            encoding="utf-8"
+        )
 
         store.remove_nobump("10.1.2.3/32")
         store.remove_nobump("10.1.2.3/32")

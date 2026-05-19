@@ -19,7 +19,6 @@ from .live_test_helpers import (
     wait_for_proxy_inventory,
 )
 
-
 pytestmark = pytest.mark.live
 
 
@@ -34,7 +33,7 @@ def _build_test_pfx(password: bytes) -> bytes:
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Live Tests"),
             x509.NameAttribute(NameOID.COMMON_NAME, "Live Uploaded Proxy CA"),
-        ]
+        ],
     )
     now = datetime.now(timezone.utc)
     cert = (
@@ -127,10 +126,14 @@ def test_live_generate_certificate_creates_shared_bundle_and_nudges_all_register
 
     for bad_name in ("nope.crt", "ca.key", "../ca.crt", "..%2Fca.crt"):
         rejected = multi_proxy_admin.admin_request(f"/certs/download/{bad_name}")
-        assert rejected.status == 404, f"Expected certificate download name {bad_name!r} to be rejected."
+        assert rejected.status == 404, (
+            f"Expected certificate download name {bad_name!r} to be rejected."
+        )
 
 
-def test_live_certificate_upload_rejects_invalid_requests(multi_proxy_admin: LiveStackClient) -> None:
+def test_live_certificate_upload_rejects_invalid_requests(
+    multi_proxy_admin: LiveStackClient,
+) -> None:
     missing = multi_proxy_admin.admin_post_form(
         "/certs/upload",
         {"pfx_password": ""},
@@ -148,12 +151,20 @@ def test_live_certificate_upload_rejects_invalid_requests(multi_proxy_admin: Liv
     )
     assert wrong_ext.status == 200
     assert query_params(wrong_ext.url).get("ok") == ["0"]
-    assert query_params(wrong_ext.url).get("msg") == ["Unsupported file type. Please upload a .pfx or .p12."]
+    assert query_params(wrong_ext.url).get("msg") == [
+        "Unsupported file type. Please upload a .pfx or .p12."
+    ]
 
     too_large = multi_proxy_admin.admin_post_multipart(
         "/certs/upload",
         {"pfx_password": ""},
-        {"pfx": ("too-large.pfx", b"x" * (10 * 1024 * 1024 + 1), "application/x-pkcs12")},
+        {
+            "pfx": (
+                "too-large.pfx",
+                b"x" * (10 * 1024 * 1024 + 1),
+                "application/x-pkcs12",
+            )
+        },
         csrf_path="/certs",
         timeout_seconds=90.0,
     )
@@ -172,7 +183,13 @@ def test_live_upload_certificate_pfx_creates_shared_bundle_and_nudges_all_regist
     response = multi_proxy_admin.admin_post_multipart(
         "/certs/upload",
         {"pfx_password": password.decode("ascii")},
-        {"pfx": ("live-upload-ca.pfx", _build_test_pfx(password), "application/x-pkcs12")},
+        {
+            "pfx": (
+                "live-upload-ca.pfx",
+                _build_test_pfx(password),
+                "application/x-pkcs12",
+            )
+        },
         csrf_path="/certs",
         timeout_seconds=120.0,
     )

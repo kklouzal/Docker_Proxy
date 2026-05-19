@@ -12,7 +12,7 @@ def _add_web_to_path() -> None:
 
 
 class _FakeConn:
-    def __init__(self, calls: list[str]):
+    def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
     def __enter__(self):
@@ -58,7 +58,9 @@ def test_prune_methods_initialize_tables_before_deleting(monkeypatch) -> None:
 
     for store in stores:
         calls: list[str] = []
-        monkeypatch.setattr(store, "init_db", lambda calls=calls: calls.append("init_db"))
+        monkeypatch.setattr(
+            store, "init_db", lambda calls=calls: calls.append("init_db")
+        )
         monkeypatch.setattr(store, "_connect", _fake_connect(calls))
 
         store.prune_old_entries(retention_days=1)
@@ -68,7 +70,9 @@ def test_prune_methods_initialize_tables_before_deleting(monkeypatch) -> None:
 
 
 class _TimeseriesConn:
-    def __init__(self, calls: list[str], *, fail_insert: bool = False, fail_select: bool = False):
+    def __init__(
+        self, calls: list[str], *, fail_insert: bool = False, fail_select: bool = False
+    ) -> None:
         self.calls = calls
         self.fail_insert = fail_insert
         self.fail_select = fail_select
@@ -83,14 +87,16 @@ class _TimeseriesConn:
         text = str(sql)
         self.calls.append(text)
         if self.fail_insert and "INSERT INTO ts_1s" in text:
-            raise RuntimeError("(1146, table 'squid_proxy.ts_1s' doesn't exist)")
+            msg = "(1146, table 'squid_proxy.ts_1s' doesn't exist)"
+            raise RuntimeError(msg)
         if self.fail_select and "FROM ts_" in text:
-            raise RuntimeError("(1146, table 'squid_proxy.ts_1s' doesn't exist)")
+            msg = "(1146, table 'squid_proxy.ts_1s' doesn't exist)"
+            raise RuntimeError(msg)
         return _TimeseriesResult(text)
 
 
 class _TimeseriesResult:
-    def __init__(self, sql: str):
+    def __init__(self, sql: str) -> None:
         self.sql = sql
 
     def fetchone(self):
@@ -102,7 +108,9 @@ class _TimeseriesResult:
         return []
 
 
-def test_timeseries_insert_reinitializes_after_external_schema_wipe(monkeypatch) -> None:
+def test_timeseries_insert_reinitializes_after_external_schema_wipe(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
     from services.timeseries_store import TimeSeriesStore  # type: ignore
 
@@ -110,11 +118,13 @@ def test_timeseries_insert_reinitializes_after_external_schema_wipe(monkeypatch)
     store._db_initialized = True
     store._db_init_lock = threading.Lock()
     calls: list[str] = []
-    connections = iter([
-        _TimeseriesConn(calls, fail_insert=True),
-        _TimeseriesConn(calls),
-        _TimeseriesConn(calls),
-    ])
+    connections = iter(
+        [
+            _TimeseriesConn(calls, fail_insert=True),
+            _TimeseriesConn(calls),
+            _TimeseriesConn(calls),
+        ]
+    )
     monkeypatch.setattr(store, "_connect", lambda: next(connections))
 
     store.insert_snapshot({}, ts=123)
@@ -124,7 +134,9 @@ def test_timeseries_insert_reinitializes_after_external_schema_wipe(monkeypatch)
     assert sum(1 for call in calls if "INSERT INTO ts_1s" in call) == 2
 
 
-def test_timeseries_summary_reinitializes_after_external_schema_wipe(monkeypatch) -> None:
+def test_timeseries_summary_reinitializes_after_external_schema_wipe(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
     from services.timeseries_store import TimeSeriesStore  # type: ignore
 
@@ -132,11 +144,13 @@ def test_timeseries_summary_reinitializes_after_external_schema_wipe(monkeypatch
     store._db_initialized = True
     store._db_init_lock = threading.Lock()
     calls: list[str] = []
-    connections = iter([
-        _TimeseriesConn(calls, fail_select=True),
-        _TimeseriesConn(calls),
-        _TimeseriesConn(calls),
-    ])
+    connections = iter(
+        [
+            _TimeseriesConn(calls, fail_select=True),
+            _TimeseriesConn(calls),
+            _TimeseriesConn(calls),
+        ]
+    )
     monkeypatch.setattr(store, "_connect", lambda: next(connections))
 
     summary = store.summary()
@@ -155,11 +169,13 @@ def test_timeseries_query_reinitializes_after_external_schema_wipe(monkeypatch) 
     store._db_initialized = True
     store._db_init_lock = threading.Lock()
     calls: list[str] = []
-    connections = iter([
-        _TimeseriesConn(calls, fail_select=True),
-        _TimeseriesConn(calls),
-        _TimeseriesConn(calls),
-    ])
+    connections = iter(
+        [
+            _TimeseriesConn(calls, fail_select=True),
+            _TimeseriesConn(calls),
+            _TimeseriesConn(calls),
+        ]
+    )
     monkeypatch.setattr(store, "_connect", lambda: next(connections))
 
     rows = store.query("1s", since=0, limit=25)

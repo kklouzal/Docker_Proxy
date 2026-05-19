@@ -16,17 +16,20 @@ from services.pac_renderer import (
     substitute_request_host,
 )
 
-
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 
 
 @lru_cache(maxsize=1)
 def pac_render_dir() -> str:
-    return (os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR).strip() or PAC_RENDER_DIR
+    return (
+        os.environ.get("PAC_RENDER_DIR") or PAC_RENDER_DIR
+    ).strip() or PAC_RENDER_DIR
 
 
 def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
-    xff = str((headers.get("X-Forwarded-For") if headers is not None else "") or "").strip()
+    xff = str(
+        (headers.get("X-Forwarded-For") if headers is not None else "") or "",
+    ).strip()
     if xff:
         candidate = (xff.split(",")[0] or "").strip()
         if candidate:
@@ -38,7 +41,10 @@ def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
 
 
 def request_host_from_headers(headers: Any) -> str:
-    return str((headers.get("Host") if headers is not None else "") or "").strip() or "127.0.0.1"
+    return (
+        str((headers.get("Host") if headers is not None else "") or "").strip()
+        or "127.0.0.1"
+    )
 
 
 def default_pac_bytes(request_host: str) -> bytes:
@@ -47,7 +53,7 @@ def default_pac_bytes(request_host: str) -> bytes:
 
 
 class LocalPacCache:
-    def __init__(self, pac_dir: str):
+    def __init__(self, pac_dir: str) -> None:
         self.pac_dir = Path(pac_dir)
         self._lock = threading.Lock()
         self._state_sha = ""
@@ -56,13 +62,22 @@ class LocalPacCache:
 
     def _read_state_sha(self) -> str:
         try:
-            return (self.pac_dir / PAC_STATE_SHA_FILENAME).read_text(encoding="utf-8", errors="replace").strip()
+            return (
+                (self.pac_dir / PAC_STATE_SHA_FILENAME)
+                .read_text(encoding="utf-8", errors="replace")
+                .strip()
+            )
         except Exception:
             return ""
 
     def _load_locked(self) -> bool:
         state_sha = self._read_state_sha()
-        if state_sha and state_sha == self._state_sha and self._manifest and self._files:
+        if (
+            state_sha
+            and state_sha == self._state_sha
+            and self._manifest
+            and self._files
+        ):
             return True
 
         manifest_path = self.pac_dir / PAC_MANIFEST_FILENAME
@@ -73,7 +88,9 @@ class LocalPacCache:
             return False
 
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8", errors="replace") or "{}")
+            manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8", errors="replace") or "{}",
+            )
         except Exception:
             self._state_sha = ""
             self._manifest = {}
@@ -101,7 +118,9 @@ class LocalPacCache:
             if not file_path.exists() or not file_path.is_file():
                 continue
             try:
-                files[rel_path] = file_path.read_text(encoding="utf-8", errors="replace")
+                files[rel_path] = file_path.read_text(
+                    encoding="utf-8", errors="replace",
+                )
             except Exception:
                 continue
 
@@ -142,8 +161,12 @@ def get_pac_cache(pac_dir: str | None = None) -> LocalPacCache:
         return cache
 
 
-def resolve_pac_bytes(*, client_ip: str, request_host: str, pac_dir: str | None = None) -> bytes:
-    data = get_pac_cache(pac_dir).resolve(client_ip=client_ip, request_host=request_host)
+def resolve_pac_bytes(
+    *, client_ip: str, request_host: str, pac_dir: str | None = None,
+) -> bytes:
+    data = get_pac_cache(pac_dir).resolve(
+        client_ip=client_ip, request_host=request_host,
+    )
     if data is not None:
         return data
     return default_pac_bytes(request_host)

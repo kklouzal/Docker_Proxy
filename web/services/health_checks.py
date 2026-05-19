@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import socket
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from services.errors import public_error_message
-
 
 ErrorFormatter = Callable[[Exception], str]
 
@@ -35,17 +36,20 @@ def check_tcp(
         with socket.create_connection((host, int(port)), timeout=timeout):
             return {"ok": True, "detail": "tcp connect ok"}
     except Exception as exc:
-        return {"ok": False, "detail": _format_error(exc, error_formatter=error_formatter)}
+        return {
+            "ok": False,
+            "detail": _format_error(exc, error_formatter=error_formatter),
+        }
 
 
 def is_local_host(host: str) -> bool:
     normalized = (host or "").strip().lower()
-    return normalized in ("", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::")
+    return normalized in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::"}
 
 
 def has_listen_socket(path: str, port: int) -> bool:
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with pathlib.Path(path).open(encoding="utf-8", errors="replace") as fh:
             next(fh, None)
             for line in fh:
                 parts = line.split()
@@ -69,7 +73,9 @@ def has_listen_socket(path: str, port: int) -> bool:
 
 
 def check_local_listener(service_name: str, host: str, port: int) -> dict[str, Any]:
-    if has_listen_socket("/proc/net/tcp", port) or has_listen_socket("/proc/net/tcp6", port):
+    if has_listen_socket("/proc/net/tcp", port) or has_listen_socket(
+        "/proc/net/tcp6", port,
+    ):
         return {"ok": True, "detail": f"{service_name} listening on {host}:{port}"}
     return {"ok": False, "detail": f"{service_name} is not listening on {host}:{port}"}
 
@@ -96,12 +102,19 @@ def check_icap_service(
             sock.settimeout(timeout)
             sock.sendall(req)
             data = sock.recv(512)
-        first = data.split(b"\r\n", 1)[0].decode("ascii", errors="replace") if data else "no data"
+        first = (
+            data.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+            if data
+            else "no data"
+        )
         if data.startswith(b"ICAP/1.0 200"):
             return {"ok": True, "detail": success_detail or first}
         return {"ok": False, "detail": first}
     except Exception as exc:
-        return {"ok": False, "detail": _format_error(exc, error_formatter=error_formatter)}
+        return {
+            "ok": False,
+            "detail": _format_error(exc, error_formatter=error_formatter),
+        }
 
 
 def annotate_service_target(
@@ -137,10 +150,16 @@ def resolve_host_port(
     return resolved_host, resolved_port
 
 
-def _resolve_clamd_target(host: str | None = None, port: int | None = None) -> tuple[str, int]:
-    resolved_host = (host or os.environ.get("CLAMD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+def _resolve_clamd_target(
+    host: str | None = None, port: int | None = None,
+) -> tuple[str, int]:
+    resolved_host = (
+        host or os.environ.get("CLAMD_HOST") or "127.0.0.1"
+    ).strip() or "127.0.0.1"
     try:
-        resolved_port = int(port if port is not None else (os.environ.get("CLAMD_PORT") or "3310"))
+        resolved_port = int(
+            port if port is not None else (os.environ.get("CLAMD_PORT") or "3310"),
+        )
     except Exception:
         resolved_port = 3310
     return resolved_host, resolved_port
@@ -167,15 +186,26 @@ def check_clamd(
 ) -> dict[str, Any]:
     resolved_host, resolved_port = _resolve_clamd_target(host=host, port=port)
     try:
-        with socket.create_connection((resolved_host, resolved_port), timeout=timeout) as sock:
+        with socket.create_connection(
+            (resolved_host, resolved_port), timeout=timeout,
+        ) as sock:
             sock.settimeout(timeout)
             sock.sendall(b"PING\n")
             data = _recv_clamd_reply(sock, max_bytes=64)
-        detail = data.replace(b"\0", b"\n").decode("utf-8", errors="replace").strip() or "no data"
-        return {"ok": data.startswith(b"PONG"), "detail": f"{detail} ({resolved_host}:{resolved_port})"}
+        detail = (
+            data.replace(b"\0", b"\n").decode("utf-8", errors="replace").strip()
+            or "no data"
+        )
+        return {
+            "ok": data.startswith(b"PONG"),
+            "detail": f"{detail} ({resolved_host}:{resolved_port})",
+        }
     except Exception as exc:
         error_detail = _format_error(exc, error_formatter=error_formatter)
-        return {"ok": False, "detail": f"{resolved_host}:{resolved_port}: {error_detail}"}
+        return {
+            "ok": False,
+            "detail": f"{resolved_host}:{resolved_port}: {error_detail}",
+        }
 
 
 def test_clamd_eicar(
@@ -188,21 +218,30 @@ def test_clamd_eicar(
     data = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
     resolved_host, resolved_port = _resolve_clamd_target(host=host, port=port)
     try:
-        with socket.create_connection((resolved_host, resolved_port), timeout=timeout) as sock:
+        with socket.create_connection(
+            (resolved_host, resolved_port), timeout=timeout,
+        ) as sock:
             sock.settimeout(timeout)
             sock.sendall(b"zINSTREAM\0")
             view = memoryview(data)
             chunk_size = 8192
             for offset in range(0, len(data), chunk_size):
-                chunk = view[offset:offset + chunk_size]
+                chunk = view[offset : offset + chunk_size]
                 sock.sendall(len(chunk).to_bytes(4, "big"))
                 sock.sendall(chunk.tobytes())
             sock.sendall((0).to_bytes(4, "big"))
             reply = _recv_clamd_reply(sock, max_bytes=4096)
 
-        detail = reply.replace(b"\0", b"\n").decode("ascii", errors="replace").strip() if reply else ""
+        detail = (
+            reply.replace(b"\0", b"\n").decode("ascii", errors="replace").strip()
+            if reply
+            else ""
+        )
         ok = ("Eicar" in detail) or ("FOUND" in detail)
-        return {"ok": ok, "detail": detail or f"no data from {resolved_host}:{resolved_port}"}
+        return {
+            "ok": ok,
+            "detail": detail or f"no data from {resolved_host}:{resolved_port}",
+        }
     except Exception as exc:
         error_detail = _format_error(exc, error_formatter=error_formatter)
         return {
@@ -225,19 +264,30 @@ def send_sample_respmod_to(
     chunk = f"{len(http_body):X}\r\n".encode("ascii") + http_body + b"\r\n0\r\n\r\n"
     res_body_off = len(http_hdr)
     icap_req = (
-        f"RESPMOD icap://{host}:{port}{path} ICAP/1.0\r\n"
-        f"Host: {host}\r\n"
-        "Allow: 204\r\n"
-        f"Encapsulated: res-hdr=0, res-body={res_body_off}\r\n"
-        "\r\n"
-    ).encode("ascii") + http_hdr + chunk
+        (
+            f"RESPMOD icap://{host}:{port}{path} ICAP/1.0\r\n"
+            f"Host: {host}\r\n"
+            "Allow: 204\r\n"
+            f"Encapsulated: res-hdr=0, res-body={res_body_off}\r\n"
+            "\r\n"
+        ).encode("ascii")
+        + http_hdr
+        + chunk
+    )
     try:
         with socket.create_connection((host, int(port)), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(icap_req)
             response = sock.recv(512)
-        first_line = response.split(b"\r\n", 1)[0].decode("ascii", errors="replace") if response else "no data"
-        return {"ok": first_line.startswith("ICAP/1.0 20"), "detail": first_line or "no data"}
+        first_line = (
+            response.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+            if response
+            else "no data"
+        )
+        return {
+            "ok": first_line.startswith("ICAP/1.0 20"),
+            "detail": first_line or "no data",
+        }
     except Exception as exc:
         return {
             "ok": False,
@@ -249,7 +299,9 @@ def send_sample_respmod_to(
         }
 
 
-def build_clamav_health(clamd_health: dict[str, Any], av_icap_health: dict[str, Any]) -> dict[str, Any]:
+def build_clamav_health(
+    clamd_health: dict[str, Any], av_icap_health: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "ok": bool(clamd_health.get("ok")) and bool(av_icap_health.get("ok")),
         "detail": f"AV c-icap={av_icap_health.get('detail')} | clamd={clamd_health.get('detail')}",

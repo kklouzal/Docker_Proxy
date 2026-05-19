@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+import pathlib
 
 from services.logutil import log_exception_throttled
-
 
 logger = logging.getLogger(__name__)
 
 
-_LOCK_FD: Optional[int] = None
+_LOCK_FD: int | None = None
 
 
 def _close_lock_fd(fd: int, *, log_key: str, message: str) -> None:
@@ -38,15 +37,16 @@ def acquire_background_lock() -> bool:
       - BACKGROUND_FORCE=1: always start background tasks (no locking)
       - BACKGROUND_LOCK_PATH: lock file path (default: /var/lib/squid-flask-proxy/background.lock)
     """
-
     if (os.environ.get("BACKGROUND_FORCE") or "").strip() == "1":
         return True
 
-    lock_path = (os.environ.get("BACKGROUND_LOCK_PATH") or "").strip() or "/var/lib/squid-flask-proxy/background.lock"
-    lock_dir = os.path.dirname(lock_path)
+    lock_path = (
+        os.environ.get("BACKGROUND_LOCK_PATH") or ""
+    ).strip() or "/var/lib/squid-flask-proxy/background.lock"
+    lock_dir = pathlib.Path(lock_path).parent
     if lock_dir:
         try:
-            os.makedirs(lock_dir, exist_ok=True)
+            pathlib.Path(lock_dir).mkdir(exist_ok=True, parents=True)
         except Exception:
             # If we can't create directories, don't block startup.
             log_exception_throttled(
