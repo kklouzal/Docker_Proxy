@@ -60,7 +60,7 @@ def _looks_like_stale_connection(exc: BaseException) -> bool:
 T = TypeVar("T")
 
 
-def _retry_stale_connection(operation: Callable[[], T]) -> T:
+def _retry_stale_connection[T](operation: Callable[[], T]) -> T:
     last_exc: BaseException | None = None
     for attempt in range(2):
         try:

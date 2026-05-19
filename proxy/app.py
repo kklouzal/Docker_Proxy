@@ -54,7 +54,7 @@ def _provided_token() -> str:
     return (request.headers.get("X-Proxy-Token") or "").strip()
 
 
-def _require_management_auth(func: F) -> F:
+def _require_management_auth[F: Callable[..., Any]](func: F) -> F:
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any):
         expected = _expected_token()
@@ -249,7 +249,8 @@ def manage_clamav_health() -> Any:
         return jsonify(collector()), 200
     except Exception as exc:
         detail = public_error_message(
-            exc, default="Proxy ClamAV health collection failed.",
+            exc,
+            default="Proxy ClamAV health collection failed.",
         )
         return jsonify(
             {
@@ -281,7 +282,8 @@ def manage_sync() -> Any:
                 {"ok": False, "detail": "operation_id must be a positive integer."},
             ), 400
     result = _runtime().sync_from_db(
-        force=bool(payload.get("force")), operation_id=operation_id,
+        force=bool(payload.get("force")),
+        operation_id=operation_id,
     )
     return jsonify(result), (200 if result.get("ok") else 409)
 

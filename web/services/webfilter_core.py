@@ -126,9 +126,9 @@ def _parent_domains(domain: str, *, max_levels: int = 6) -> list[str]:
     parts = [part for part in normalized.split(".") if part]
     if len(parts) < 2:
         return [normalized]
-    out: list[str] = []
-    for index in range(min(len(parts) - 1, max_levels)):
-        out.append(".".join(parts[index:]))
+    out: list[str] = [
+        ".".join(parts[index:]) for index in range(min(len(parts) - 1, max_levels))
+    ]
     return out
 
 
@@ -193,7 +193,7 @@ class WebFilterStoreBase:
         self,
         squid_include_path: str = "/etc/squid/conf.d/30-webfilter.conf",
         whitelist_path: str = "/var/lib/squid-flask-proxy/webfilter_whitelist.txt",
-    ):
+    ) -> None:
         self.squid_include_path = squid_include_path
         self.whitelist_path = whitelist_path
         self.last_webcat_snapshot_status: tuple[bool, str] = (True, "")
@@ -319,7 +319,8 @@ class WebFilterStoreBase:
 
     def _get_meta(self, conn, key: str, default: str = "") -> str:
         row = conn.execute(
-            f"SELECT v FROM {self._table('meta')} WHERE k=%s", (key,),
+            f"SELECT v FROM {self._table('meta')} WHERE k=%s",
+            (key,),
         ).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
@@ -429,7 +430,8 @@ class WebFilterStoreBase:
                 if not table_exists(conn, "webcat_meta"):
                     return 0
                 row = conn.execute(
-                    "SELECT v FROM webcat_meta WHERE k=%s", ("built_ts",),
+                    "SELECT v FROM webcat_meta WHERE k=%s",
+                    ("built_ts",),
                 ).fetchone()
             return int((row[0] if row else 0) or 0)
         except Exception:
@@ -471,7 +473,8 @@ class WebFilterStoreBase:
             digest.update(b":")
             digest.update(
                 str(getattr(ex, "client_ip", "") or "").encode(
-                    "utf-8", errors="replace",
+                    "utf-8",
+                    errors="replace",
                 ),
             )
             digest.update(b"\0")
@@ -480,7 +483,10 @@ class WebFilterStoreBase:
     def render_materialized_state(self) -> WebFilterMaterializedState:
         settings = self.get_settings()
         helpers = _env_int(
-            "WEBFILTER_HELPERS", _default_webfilter_helpers(), minimum=1, maximum=256,
+            "WEBFILTER_HELPERS",
+            _default_webfilter_helpers(),
+            minimum=1,
+            maximum=256,
         )
         ttl = _env_int("WEBFILTER_TTL_SECONDS", 0, minimum=0, maximum=86400)
         neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 0, minimum=0, maximum=3600)
@@ -530,7 +536,9 @@ class WebFilterStoreBase:
             except Exception:
                 exceptions = []
         helper_name = self._webcat_helper_name(
-            settings=settings, categories=selected, exceptions=exceptions,
+            settings=settings,
+            categories=selected,
+            exceptions=exceptions,
         )
 
         lines.append(
@@ -549,9 +557,13 @@ class WebFilterStoreBase:
             )
 
         if whitelist_lines:
-            lines.append(f'acl webfilter_whitelist dstdomain "{self.whitelist_path}"')
-            lines.append("note webfilter_allow whitelist webfilter_whitelist")
-            lines.append("http_access allow webfilter_whitelist")
+            lines.extend(
+                (
+                    f'acl webfilter_whitelist dstdomain "{self.whitelist_path}"',
+                    "note webfilter_allow whitelist webfilter_whitelist",
+                    "http_access allow webfilter_whitelist",
+                )
+            )
 
         for ex in exceptions:
             domain = _norm_domain(getattr(ex, "domain", ""))
@@ -561,32 +573,32 @@ class WebFilterStoreBase:
             suffix = f"{getattr(ex, 'id', 0)}"
             lines.append(f"acl webfilter_exception_src_{suffix} src {client_ip}")
             dst_domains = f"{domain} .{domain}" if "." in domain else domain
-            lines.append(
-                f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}",
-            )
-            lines.append(
-                f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
-            )
-            lines.append(
-                f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
+            lines.extend(
+                (
+                    f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}",
+                    f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
+                    f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
+                )
             )
 
         for category in selected:
             safe = _safe_acl_name(category)
-            lines.append(
-                f"acl webfilter_block_{safe} external {helper_name} {category}",
+            lines.extend(
+                (
+                    f"acl webfilter_block_{safe} external {helper_name} {category}",
+                    f"deny_info ERR_WEBFILTER_BLOCKED webfilter_block_{safe}",
+                    f"http_access deny webfilter_block_{safe}",
+                )
             )
-            lines.append(f"deny_info ERR_WEBFILTER_BLOCKED webfilter_block_{safe}")
-            lines.append(f"http_access deny webfilter_block_{safe}")
 
         if safe_browsing_ready:
-            lines.append(
-                f"acl webfilter_block_google_safe_browsing external {gsb_helper}",
+            lines.extend(
+                (
+                    f"acl webfilter_block_google_safe_browsing external {gsb_helper}",
+                    "deny_info ERR_WEBFILTER_BLOCKED webfilter_block_google_safe_browsing",
+                    "http_access deny webfilter_block_google_safe_browsing",
+                )
             )
-            lines.append(
-                "deny_info ERR_WEBFILTER_BLOCKED webfilter_block_google_safe_browsing",
-            )
-            lines.append("http_access deny webfilter_block_google_safe_browsing")
 
         return WebFilterMaterializedState(
             include_text="\n".join(lines) + "\n",
@@ -610,7 +622,8 @@ class WebFilterStoreBase:
             )
         except Exception as exc:
             return False, public_error_message(
-                exc, default="Failed to publish local web category snapshot.",
+                exc,
+                default="Failed to publish local web category snapshot.",
             )
 
     def apply_squid_include(self) -> None:
