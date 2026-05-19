@@ -189,6 +189,7 @@ services:
       - -lc
       - >-
         python -m pytest -m live -p no:cacheprovider
+        --maxfail=1
         --timeout=${LIVE_TEST_PYTEST_TIMEOUT_SECONDS:-180}
         --timeout-method=signal
         --durations=10
