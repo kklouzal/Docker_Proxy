@@ -34,13 +34,11 @@ def main() -> int:
     store = ProxyWebFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
-        snapshot_ok, _snapshot_detail = getattr(
+        _snapshot_ok, _snapshot_detail = getattr(
             store,
             "last_webcat_snapshot_status",
             (True, ""),
         )
-        if not snapshot_ok:
-            pass
         return 0
     except Exception:
         # Ensure include exists so Squid include is safe.

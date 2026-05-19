@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import NoReturn
 
+import pytest
 from services import stats
 
 
@@ -40,8 +41,8 @@ def test_get_stats_caches_cpu(monkeypatch) -> None:
     a = stats.get_stats()
     b = stats.get_stats()
 
-    assert a["cpu"]["util_percent"] == 12.34
-    assert b["cpu"]["util_percent"] == 12.34
+    assert a["cpu"]["util_percent"] == pytest.approx(12.34)
+    assert b["cpu"]["util_percent"] == pytest.approx(12.34)
     assert calls["cpu"] == 1
     assert calls["load"] == 1
 

@@ -4,6 +4,8 @@ import os
 import pathlib
 import sys
 
+import pytest
+
 from .mysql_test_utils import configure_test_mysql_env
 
 
@@ -232,7 +234,7 @@ def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     assert destinations[0]["requests"] == 3
     assert destinations[0]["clients"] == 1
     assert destinations[0]["transactions"] == 3
-    assert destinations[0]["cache_pct"] == 33.3
+    assert destinations[0]["cache_pct"] == pytest.approx(33.3)
     assert destinations[0]["av_icap_events"] == 1
     assert destinations[0]["adblock_icap_events"] == 0
 

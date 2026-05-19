@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
+import pytest
+
 
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
@@ -487,9 +489,12 @@ def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._reload_for_policy_update = lambda: reloads.append(True) or (
-        True,
-        "Squid reconfigured for policy update.",
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
+        or (
+            True,
+            "Squid reconfigured for policy update.",
+        )
     )
 
     result = runtime.sync_from_db(force=False)
@@ -552,9 +557,12 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False}
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._reload_for_policy_update = lambda: reloads.append(True) or (
-        True,
-        "Squid reconfigured for policy update.",
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
+        or (
+            True,
+            "Squid reconfigured for policy update.",
+        )
     )
 
     result = runtime.sync_from_db(force=True)
@@ -582,7 +590,7 @@ def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> 
             return _cp(0, stdout="reconfigured")
 
         def _wait_for_http_listener(self, *, timeout) -> bool:
-            assert timeout == 10.0
+            assert timeout == pytest.approx(10.0)
             return True
 
     def fake_icap(**_kwargs):
@@ -617,7 +625,7 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
             return _cp(0, stdout="reconfigured")
 
         def _wait_for_http_listener(self, *, timeout) -> bool:
-            assert timeout == 10.0
+            assert timeout == pytest.approx(10.0)
             return True
 
     runtime.controller = Controller()
@@ -865,9 +873,12 @@ def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() ->
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
     runtime.adblock_store = Store()
-    runtime._restart_adblock_service = lambda: restarts.append(True) or (
-        True,
-        "restarted",
+    runtime._restart_adblock_service = lambda: (
+        restarts.append(True)
+        or (
+            True,
+            "restarted",
+        )
     )
 
     result = runtime.sync_adblock_state(force=True)
@@ -1134,9 +1145,12 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
     runtime.controller.get_current_config = lambda: "http_port 3128\n"
-    runtime._reload_for_policy_update = lambda: reloads.append(True) or (
-        True,
-        "Squid reconfigured for policy update.",
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
+        or (
+            True,
+            "Squid reconfigured for policy update.",
+        )
     )
 
     result = runtime.sync_from_db(force=False)
@@ -1214,9 +1228,12 @@ def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() ->
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "normalized-sha"
-    runtime._reload_for_policy_update = lambda: reloads.append(True) or (
-        True,
-        "Squid reconfigured for policy update.",
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
+        or (
+            True,
+            "Squid reconfigured for policy update.",
+        )
     )
 
     result = runtime.sync_from_db(force=False)

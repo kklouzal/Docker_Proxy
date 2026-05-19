@@ -1078,9 +1078,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         and _webcat_db_is_current(source_sha256=source_sha256)
     ):
         return 0
-    if source_url and not downloaded:
-        pass
-
     try:
         pairs, source_label, aliases = _collect(source_path, provider=args.provider)
     except ValueError:

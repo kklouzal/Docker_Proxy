@@ -868,25 +868,32 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         controller=fake_controller,
         get_certificate_bundles=lambda: fake_certificates,
         get_config_revisions=lambda: fake_revisions,
-        get_diagnostic_store=lambda: overrides.get("diagnostic_store")
-        or FakeDiagnosticStore(),
+        get_diagnostic_store=lambda: (
+            overrides.get("diagnostic_store") or FakeDiagnosticStore()
+        ),
         get_audit_store=lambda: fake_audit,
-        get_timeseries_store=lambda: overrides.get("timeseries_store")
-        or FakeTimeseriesStore(),
-        get_ssl_errors_store=lambda: overrides.get("ssl_errors_store")
-        or FakeSslErrorsStore(),
+        get_timeseries_store=lambda: (
+            overrides.get("timeseries_store") or FakeTimeseriesStore()
+        ),
+        get_ssl_errors_store=lambda: (
+            overrides.get("ssl_errors_store") or FakeSslErrorsStore()
+        ),
         get_adblock_store=lambda: overrides.get("adblock_store") or FakeAdblockStore(),
-        get_webfilter_store=lambda: overrides.get("webfilter_store")
-        or FakeWebfilterStore(),
+        get_webfilter_store=lambda: (
+            overrides.get("webfilter_store") or FakeWebfilterStore()
+        ),
         get_policy_request_store=lambda: overrides.get("policy_request_store") or None,
-        get_sslfilter_store=lambda: overrides.get("sslfilter_store")
-        or FakeSslfilterStore(),
-        get_pac_profiles_store=lambda: overrides.get("pac_profiles_store")
-        or FakePacProfilesStore(),
+        get_sslfilter_store=lambda: (
+            overrides.get("sslfilter_store") or FakeSslfilterStore()
+        ),
+        get_pac_profiles_store=lambda: (
+            overrides.get("pac_profiles_store") or FakePacProfilesStore()
+        ),
         get_proxy_client=lambda: fake_proxy_client,
         get_proxy_registry=lambda: fake_registry,
-        get_observability_queries=lambda: overrides.get("observability_queries")
-        or FakeObservabilityQueries(),
+        get_observability_queries=lambda: (
+            overrides.get("observability_queries") or FakeObservabilityQueries()
+        ),
         clear_observability_logs=overrides.get("clear_observability_logs")
         or (lambda: {"ok": True, "deleted_rows": 0, "tables": []}),
         check_icap_adblock=lambda: {"ok": True, "detail": "ok"},

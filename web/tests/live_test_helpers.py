@@ -393,10 +393,11 @@ def wait_for_proxy_management_payload(
         resolve_url(LIVE_CONFIG.proxy_management_url, health_path),
         headers=management_auth_headers(),
         description="proxy management health",
-        accept=lambda payload, _response: payload.get("status")
-        in {"healthy", "degraded"}
-        and str(payload.get("proxy_id") or "") == LIVE_CONFIG.primary_proxy_id
-        and (require_ok is None or bool(payload.get("ok")) is require_ok),
+        accept=lambda payload, _response: (
+            payload.get("status") in {"healthy", "degraded"}
+            and str(payload.get("proxy_id") or "") == LIVE_CONFIG.primary_proxy_id
+            and (require_ok is None or bool(payload.get("ok")) is require_ok)
+        ),
     )
 
 
@@ -407,10 +408,11 @@ def wait_for_remote_proxy_management_payload(
         resolve_url(LIVE_CONFIG.remote_proxy_management_url, "/api/manage/health"),
         headers=management_auth_headers(),
         description="remote proxy management health",
-        accept=lambda payload, _response: payload.get("status")
-        in {"healthy", "degraded"}
-        and str(payload.get("proxy_id") or "") == LIVE_CONFIG.remote_proxy_id
-        and (require_ok is None or bool(payload.get("ok")) is require_ok),
+        accept=lambda payload, _response: (
+            payload.get("status") in {"healthy", "degraded"}
+            and str(payload.get("proxy_id") or "") == LIVE_CONFIG.remote_proxy_id
+            and (require_ok is None or bool(payload.get("ok")) is require_ok)
+        ),
     )
 
 
@@ -451,8 +453,10 @@ def wait_for_proxy_inventory(
     wanted = [str(proxy_id).strip() for proxy_id in proxy_ids if str(proxy_id).strip()]
     return _wait_for_response(
         lambda: client.admin_request("/proxies"),
-        accept=lambda response: response.status == 200
-        and all(proxy_id in response.text for proxy_id in wanted),
+        accept=lambda response: (
+            response.status == 200
+            and all(proxy_id in response.text for proxy_id in wanted)
+        ),
         description=f"proxy inventory containing {wanted!r}",
         timeout_seconds=timeout_seconds,
     )
@@ -611,8 +615,9 @@ def wait_for_proxy_fixture_response(
             headers=headers,
             timeout_seconds=per_request_timeout,
         ),
-        accept=lambda response: response.status == 200
-        and (needle is None or needle in response.text),
+        accept=lambda response: (
+            response.status == 200 and (needle is None or needle in response.text)
+        ),
         description=f"proxy fixture request {resolved_url!r}",
         timeout_seconds=total_timeout,
     )

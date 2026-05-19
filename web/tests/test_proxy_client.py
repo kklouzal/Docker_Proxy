@@ -88,7 +88,7 @@ def test_proxy_client_sets_bearer_auth_and_json_body(monkeypatch) -> None:
     assert captured["auth"] == "Bearer secret-token"
     assert captured["content_type"] == "application/json"
     assert json.loads(captured["body"].decode("utf-8")) == {"force": True}
-    assert captured["timeout"] == 9.5
+    assert captured["timeout"] == pytest.approx(9.5)
 
 
 def test_proxy_client_can_request_config_validation_and_rollback(monkeypatch) -> None:
@@ -158,7 +158,7 @@ def test_proxy_client_get_health_default_timeout_handles_cold_health_collection(
 
     assert payload["ok"] is True
     assert captured["url"] == "http://proxy-mgmt:5000/api/manage/health"
-    assert captured["timeout"] == 5.0
+    assert captured["timeout"] == pytest.approx(5.0)
 
 
 def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
