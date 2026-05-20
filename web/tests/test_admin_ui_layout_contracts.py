@@ -172,6 +172,7 @@ def test_admin_dockerfile_packages_observability_maintenance_service() -> None:
 
     assert "web/services/observability_maintenance.py" in dockerfile
 
+
 def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -> None:
     js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
 

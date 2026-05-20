@@ -253,6 +253,7 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     assert _params(toggled.location)["ok"] == ["1"]
     assert store.direct_enabled is False
 
+
 def test_adblock_list_save_queues_runtime_refresh(monkeypatch, tmp_path) -> None:
     store = FakeAdblockStore()
     loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
