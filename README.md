@@ -56,15 +56,19 @@ Put database and management-token settings in a root `.env` file or your launch 
 ```dotenv
 MYSQL_HOST=192.168.1.10
 MYSQL_PORT=3306
-MYSQL_USER=root
+MYSQL_USER=docker_proxy
 MYSQL_PASSWORD=change_me
 MYSQL_DATABASE=squid_proxy
-MYSQL_CREATE_DATABASE=1
+MYSQL_CREATE_DATABASE=0
 PROXY_MANAGEMENT_TOKEN=change_me_too
 DOCKER_LOG_DRIVER=json-file
 DOCKER_LOG_MAX_SIZE=10m
 DOCKER_LOG_MAX_FILE=3
 ```
+
+For production, create the database and runtime user before starting remote proxy
+containers. Keep `MYSQL_CREATE_DATABASE=0` on proxy/admin containers unless that
+specific container is allowed to create databases during provisioning.
 
 Build and run from source:
 
@@ -128,6 +132,24 @@ docker compose up -d --build admin-ui
 ```
 
 The admin UI still requires MySQL. Proxy-specific actions become available after proxy runtimes register management URLs and public PAC/proxy metadata.
+
+### Multi-proxy deployments
+
+When multiple proxy runtimes share one MySQL/admin-ui control plane, every proxy
+container must have a stable, unique identity and public coordinates:
+
+```dotenv
+PROXY_INSTANCE_ID=site-a-proxy-1
+PROXY_DISPLAY_NAME=Site A Proxy 1
+PROXY_PUBLIC_HOST=site-a-proxy-1.example.internal
+PROXY_PUBLIC_PAC_URL=http://site-a-proxy-1.example.internal/proxy.pac
+PROXY_MANAGEMENT_URL=http://site-a-proxy-1.example.internal:5000
+```
+
+Set `DEFAULT_PROXY_ID` only on the admin UI host to choose the initial UI
+selection. Do not reuse the same `PROXY_INSTANCE_ID` on multiple proxy hosts;
+registration, heartbeat, queued operations, PAC metadata, and health status are
+keyed by that ID.
 
 ## Core capabilities
 
@@ -217,6 +239,13 @@ Docker_Proxy normally targets an external MySQL 8+ server. If you deploy MySQL a
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d --build
 ```
+
+The bundled MySQL service is attached to the Compose `control` network and is
+not published to the host by default. That is intentional for single-host
+stacks. For physically remote proxy containers, either use an externally managed
+MySQL service or add an explicit host-port mapping on the MySQL host, restrict it
+with host/network firewalls, and point every admin/proxy container at that
+reachable address with `MYSQL_HOST` and `MYSQL_PORT`.
 
 The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, caps `innodb_redo_log_capacity=256M`, and expires binary logs after one day when binlogs are enabled. Operators who need verbose SQL logging or longer PITR retention should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
 

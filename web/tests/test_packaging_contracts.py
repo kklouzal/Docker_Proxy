@@ -40,3 +40,17 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
 
 def test_repo_does_not_ship_stale_squid_mime_override() -> None:
     assert not (REPO_ROOT / "squid" / "mime.conf").exists()
+
+
+def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
+    entrypoint = _read("docker/entrypoint.admin.sh")
+    supervisord = _read("docker/supervisord.admin.conf")
+    env_example = _read("config/app.env.example")
+
+    assert "--threads ${WEB_THREADS:-2}" in supervisord
+    assert "# WEB_THREADS=2" in env_example
+    assert "web_threads=\"${WEB_THREADS:-2}\"" in entrypoint
+    assert "web_workers" not in entrypoint
+    assert "derived_pool=$((web_threads + 1))" in entrypoint
+    assert 'if [ "$derived_pool" -lt 2 ]; then' in entrypoint
+    assert 'if [ "$derived_pool" -gt 8 ]; then' in entrypoint
