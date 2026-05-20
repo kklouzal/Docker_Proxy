@@ -1760,6 +1760,10 @@ class ProxyRuntime:
 
     def collect_navigation_health(self, *, force: bool = False) -> dict[str, Any]:
         now_mono = time.monotonic()
+        try:
+            current_config_sha = self._current_config_sha()
+        except Exception:
+            current_config_sha = ""
         if not force and self.health_cache_ttl_seconds > 0:
             with self._health_cache_lock:
                 cached = self._navigation_health_cache_value
@@ -1767,6 +1771,10 @@ class ProxyRuntime:
                     cached is not None
                     and (now_mono - self._navigation_health_cache_ts)
                     < self.health_cache_ttl_seconds
+                    and (
+                        not current_config_sha
+                        or str(cached.get("current_config_sha") or "") == current_config_sha
+                    )
                 ):
                     return cached
 
@@ -1806,6 +1814,7 @@ class ProxyRuntime:
             "listener_details": [dict(item) for item in listener_details],
             "stats": {},
             "services": services,
+            "current_config_sha": current_config_sha,
             "health_scope": "navigation",
             "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
             "timestamp": int(time.time()),

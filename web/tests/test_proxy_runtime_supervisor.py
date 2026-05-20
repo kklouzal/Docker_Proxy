@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 import threading
@@ -119,6 +120,65 @@ def test_forced_navigation_health_does_not_seed_cache() -> None:
 
     cached = runtime.collect_navigation_health()
     assert cached is refreshed
+    assert controller.calls == 2
+
+
+def test_navigation_health_cache_refreshes_when_config_sha_changes() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 60.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._navigation_health_cache_ts = 0.0
+    runtime._navigation_health_cache_value = None
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+
+    state = {"config_text": "http_port 0.0.0.0:3128 ssl-bump\n"}
+
+    class Controller:
+        calls = 0
+
+        def get_status(self):
+            return b"Squid check ok.", b""
+
+        def _http_listener_details(self):
+            self.calls += 1
+            listeners = [{"port": 3128, "mode": "explicit"}]
+            if "3129 intercept" in state["config_text"]:
+                listeners.append({"port": 3129, "mode": "intercept"})
+            return tuple(listeners)
+
+        def _wait_for_http_listener(self, *, timeout: float = 0.5) -> bool:
+            return True
+
+    controller = Controller()
+    runtime.controller = controller
+    runtime.services = SimpleNamespace(
+        current_config_sha_reader=lambda: hashlib.sha256(
+            state["config_text"].encode("utf-8"),
+        ).hexdigest(),
+    )
+
+    first = runtime.collect_navigation_health()
+    assert {item.get("mode") for item in first["listener_details"]} == {"explicit"}
+
+    cached = runtime.collect_navigation_health()
+    assert cached is first
+    assert controller.calls == 1
+
+    state["config_text"] = (
+        "http_port 0.0.0.0:3128 ssl-bump\n"
+        "http_port 0.0.0.0:3129 intercept\n"
+    )
+
+    refreshed = runtime.collect_navigation_health()
+    assert refreshed is not first
+    assert {item.get("mode") for item in refreshed["listener_details"]} == {
+        "explicit",
+        "intercept",
+    }
     assert controller.calls == 2
 
 
