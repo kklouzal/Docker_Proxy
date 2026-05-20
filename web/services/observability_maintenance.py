@@ -182,7 +182,7 @@ def _ensure_observability_settings_table() -> None:
                 """
                 INSERT INTO observability_settings(id, retention_days, updated_ts)
                 VALUES(1, %s, %s) AS incoming
-                ON DUPLICATE KEY UPDATE id = id
+                ON DUPLICATE KEY UPDATE id = observability_settings.id
                 """,
                 (DEFAULT_OBSERVABILITY_RETENTION_DAYS, now),
             )

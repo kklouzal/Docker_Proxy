@@ -250,17 +250,18 @@ class LiveStatsStore:
 
         domains = batch["domains"]
         if domains:
+            domains_table = self._table(conn, "domains")
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, "domains")} (proxy_id, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                INSERT INTO {domains_table} (proxy_id, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
                 ON DUPLICATE KEY UPDATE
-                    requests = requests + incoming.requests,
-                    hit_requests = hit_requests + incoming.hit_requests,
-                    bytes = bytes + incoming.bytes,
-                    hit_bytes = hit_bytes + incoming.hit_bytes,
-                    first_seen = LEAST(first_seen, incoming.first_seen),
-                    last_seen = GREATEST(last_seen, incoming.last_seen);
+                    requests = {domains_table}.requests + incoming.requests,
+                    hit_requests = {domains_table}.hit_requests + incoming.hit_requests,
+                    bytes = {domains_table}.bytes + incoming.bytes,
+                    hit_bytes = {domains_table}.hit_bytes + incoming.hit_bytes,
+                    first_seen = LEAST({domains_table}.first_seen, incoming.first_seen),
+                    last_seen = GREATEST({domains_table}.last_seen, incoming.last_seen);
                 """,
                 [
                     (
@@ -280,17 +281,18 @@ class LiveStatsStore:
 
         clients = batch["clients"]
         if clients:
+            clients_table = self._table(conn, "clients")
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, "clients")} (proxy_id, ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                INSERT INTO {clients_table} (proxy_id, ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
                 ON DUPLICATE KEY UPDATE
-                    requests = requests + incoming.requests,
-                    hit_requests = hit_requests + incoming.hit_requests,
-                    bytes = bytes + incoming.bytes,
-                    hit_bytes = hit_bytes + incoming.hit_bytes,
-                    first_seen = LEAST(first_seen, incoming.first_seen),
-                    last_seen = GREATEST(last_seen, incoming.last_seen);
+                    requests = {clients_table}.requests + incoming.requests,
+                    hit_requests = {clients_table}.hit_requests + incoming.hit_requests,
+                    bytes = {clients_table}.bytes + incoming.bytes,
+                    hit_bytes = {clients_table}.hit_bytes + incoming.hit_bytes,
+                    first_seen = LEAST({clients_table}.first_seen, incoming.first_seen),
+                    last_seen = GREATEST({clients_table}.last_seen, incoming.last_seen);
                 """,
                 [
                     (
@@ -310,17 +312,18 @@ class LiveStatsStore:
 
         client_domains = batch["client_domains"]
         if client_domains:
+            client_domains_table = self._table(conn, "client_domains")
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, "client_domains")} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                INSERT INTO {client_domains_table} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) AS incoming
                 ON DUPLICATE KEY UPDATE
-                    requests = requests + incoming.requests,
-                    hit_requests = hit_requests + incoming.hit_requests,
-                    bytes = bytes + incoming.bytes,
-                    hit_bytes = hit_bytes + incoming.hit_bytes,
-                    first_seen = LEAST(first_seen, incoming.first_seen),
-                    last_seen = GREATEST(last_seen, incoming.last_seen);
+                    requests = {client_domains_table}.requests + incoming.requests,
+                    hit_requests = {client_domains_table}.hit_requests + incoming.hit_requests,
+                    bytes = {client_domains_table}.bytes + incoming.bytes,
+                    hit_bytes = {client_domains_table}.hit_bytes + incoming.hit_bytes,
+                    first_seen = LEAST({client_domains_table}.first_seen, incoming.first_seen),
+                    last_seen = GREATEST({client_domains_table}.last_seen, incoming.last_seen);
                 """,
                 [
                     (
@@ -341,14 +344,15 @@ class LiveStatsStore:
 
         nocache = batch["client_domain_nocache"]
         if nocache:
+            nocache_table = self._table(conn, "client_domain_nocache")
             conn.executemany(
                 f"""
-                INSERT INTO {self._table(conn, "client_domain_nocache")} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
+                INSERT INTO {nocache_table} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
                 ON DUPLICATE KEY UPDATE
-                    requests = requests + incoming.requests,
-                    first_seen = LEAST(first_seen, incoming.first_seen),
-                    last_seen = GREATEST(last_seen, incoming.last_seen);
+                    requests = {nocache_table}.requests + incoming.requests,
+                    first_seen = LEAST({nocache_table}.first_seen, incoming.first_seen),
+                    last_seen = GREATEST({nocache_table}.last_seen, incoming.last_seen);
                 """,
                 [
                     (
