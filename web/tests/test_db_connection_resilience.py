@@ -95,6 +95,24 @@ def test_failed_pool_rollback_discards_connection(monkeypatch) -> None:
     assert not db._pooled_connections
 
 
+def test_pool_reaper_preserves_active_only_bucket(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+    key = db._pool_key(cfg)
+
+    with db._pool_condition:
+        db._pooled_connections[key] = db._PoolState(idle=[], active=1)
+        db._reap_pool_locked(now=123.0)
+
+    assert key in db._pooled_connections
+    assert db._pooled_connections[key].active == 1
+    db.reset_mysql_ready_for_tests()
+
+
 def test_new_native_connections_receive_session_guardrails(monkeypatch) -> None:
     _add_repo_paths()
     from services import db  # type: ignore

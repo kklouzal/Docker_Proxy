@@ -441,7 +441,7 @@ def _reap_pool_locked(now: float | None = None) -> None:
                 keep.append((last_used, native))
         if keep:
             state.idle = keep[-_pool_maxsize() :]
-        else:
+        elif state.active <= 0:
             stale_keys.append(key)
     for key in stale_keys:
         _pooled_connections.pop(key, None)
