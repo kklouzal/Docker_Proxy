@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from dataclasses import dataclass
@@ -69,6 +70,48 @@ class OperationLedger:
     def _connect(self):
         return connect()
 
+    def _column_exists(self, conn, table_name: str, column_name: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s
+            LIMIT 1
+            """,
+            (table_name, column_name),
+        ).fetchone()
+        return row is not None
+
+    def _index_exists(self, conn, table_name: str, index_name: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1 FROM information_schema.statistics
+            WHERE table_schema = DATABASE() AND table_name = %s AND index_name = %s
+            LIMIT 1
+            """,
+            (table_name, index_name),
+        ).fetchone()
+        return row is not None
+
+    def _request_key(
+        self,
+        *,
+        operation_type: str,
+        subject: str,
+        target_kind: str,
+        target_ref: object | None,
+        request_hash: str,
+    ) -> str:
+        payload = "\0".join(
+            (
+                (operation_type or "sync")[:64],
+                (subject or "")[:255],
+                (target_kind or "")[:64],
+                str(target_ref or "")[:255],
+                (request_hash or "")[:64],
+            ),
+        )
+        return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
+
     def init_db(self) -> None:
         if self._schema_ready:
             return
@@ -90,6 +133,7 @@ class OperationLedger:
                     rollback_kind VARCHAR(64) NOT NULL DEFAULT '',
                     rollback_ref VARCHAR(255) NOT NULL DEFAULT '',
                     request_hash CHAR(64) NOT NULL DEFAULT '',
+                    request_key CHAR(64) NULL DEFAULT NULL,
                     detail TEXT,
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
@@ -102,6 +146,18 @@ class OperationLedger:
                     )
                     """,
                 )
+                if not self._column_exists(conn, "proxy_operations", "request_key"):
+                    conn.execute(
+                        "ALTER TABLE proxy_operations ADD COLUMN request_key CHAR(64) NULL DEFAULT NULL AFTER request_hash",
+                    )
+                if not self._index_exists(
+                    conn,
+                    "proxy_operations",
+                    "uniq_proxy_operations_active_request",
+                ):
+                    conn.execute(
+                        "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
+                    )
             self._schema_ready = True
 
     def _row_to_operation(self, row: object | None) -> ProxyOperation | None:
@@ -145,47 +201,56 @@ class OperationLedger:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
+        op_type = (operation_type or "sync")[:64]
+        subject_text = (subject or "")[:255]
+        summary_text = (summary or "")[:512]
+        target_kind_text = (target_kind or "")[:64]
+        target_ref_text = str(target_ref or "")[:255]
+        rollback_kind_text = (rollback_kind or "")[:64]
+        rollback_ref_text = str(rollback_ref or "")[:255]
+        request_hash_text = (request_hash or "")[:64]
+        detail_text = (detail or "")[:4000]
+        created_by_text = (created_by or "")[:255]
+        request_key = self._request_key(
+            operation_type=op_type,
+            subject=subject_text,
+            target_kind=target_kind_text,
+            target_ref=target_ref_text,
+            request_hash=request_hash_text,
+        )
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,detail,created_by,created_ts,updated_ts)
-                VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts)
+                VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
                 """,
                 (
                     proxy_key,
-                    (operation_type or "sync")[:64],
-                    (subject or "")[:255],
-                    (summary or "")[:512],
-                    (target_kind or "")[:64],
-                    str(target_ref or "")[:255],
-                    (rollback_kind or "")[:64],
-                    str(rollback_ref or "")[:255],
-                    (request_hash or "")[:64],
-                    (detail or "")[:4000],
-                    (created_by or "")[:255],
+                    op_type,
+                    subject_text,
+                    summary_text,
+                    target_kind_text,
+                    target_ref_text,
+                    rollback_kind_text,
+                    rollback_ref_text,
+                    request_hash_text,
+                    request_key,
+                    detail_text,
+                    created_by_text,
                     now,
                     now,
                 ),
             )
-        return ProxyOperation(
-            operation_id=int(cur.lastrowid or 0),
-            proxy_id=proxy_key,
-            status="pending",
-            operation_type=(operation_type or "sync")[:64],
-            subject=(subject or "")[:255],
-            summary=(summary or "")[:512],
-            target_kind=(target_kind or "")[:64],
-            target_ref=str(target_ref or "")[:255],
-            rollback_kind=(rollback_kind or "")[:64],
-            rollback_ref=str(rollback_ref or "")[:255],
-            request_hash=(request_hash or "")[:64],
-            detail=(detail or "")[:4000],
-            created_by=(created_by or "")[:255],
-            created_ts=now,
-            started_ts=0,
-            completed_ts=0,
-            updated_ts=now,
-        )
+            row = conn.execute(
+                f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
+                (int(cur.lastrowid or 0),),
+            ).fetchone()
+        operation = self._row_to_operation(row)
+        if operation is None:
+            msg = "Operation ledger insert did not return a row."
+            raise RuntimeError(msg)
+        return operation
 
     def list_operations(
         self,
@@ -351,8 +416,15 @@ class OperationLedger:
         completed = now if status in TERMINAL_STATUSES else 0
         with self._connect() as conn:
             conn.execute(
-                "UPDATE proxy_operations SET status=%s, detail=%s, completed_ts=%s, updated_ts=%s WHERE id=%s",
-                (status, (detail or "")[:4000], completed, now, int(operation_id or 0)),
+                "UPDATE proxy_operations SET status=%s, detail=%s, completed_ts=%s, updated_ts=%s, request_key=IF(%s, NULL, request_key) WHERE id=%s",
+                (
+                    status,
+                    (detail or "")[:4000],
+                    completed,
+                    now,
+                    status in TERMINAL_STATUSES,
+                    int(operation_id or 0),
+                ),
             )
             row = conn.execute(
                 f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",

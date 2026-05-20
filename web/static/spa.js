@@ -274,6 +274,13 @@
     return window.confirm(UNSAVED_CONFIG_MESSAGE);
   };
 
+  const confirmRequestedAction = (trigger) => {
+    if (!(trigger instanceof HTMLElement)) return true;
+    const message = trigger.dataset.confirmMessage || '';
+    if (!message) return true;
+    return window.confirm(message);
+  };
+
   const setTransientButtonLabel = (button, label) => {
     if (!(button instanceof HTMLButtonElement)) return;
     if (!button.dataset.originalLabel) {
@@ -400,6 +407,8 @@
       button.className = 'btn danger';
       button.type = 'submit';
       button.textContent = 'Revert';
+      button.dataset.confirmMessage = `Revert failed operation #${operation.operation_id || 0}?`;
+      button.dataset.pendingLabel = 'Reverting...';
       form.appendChild(button);
       actions.appendChild(form);
     } else if (operation.can_revert) {
@@ -1225,6 +1234,10 @@
     if (method !== 'GET' && method !== 'POST') return;
 
     event.preventDefault();
+
+    if (!confirmRequestedAction(event.submitter)) {
+      return;
+    }
 
     if (form.dataset.allowDirtySubmit !== '1' && !confirmDiscardUnsavedConfigChanges()) {
       return;

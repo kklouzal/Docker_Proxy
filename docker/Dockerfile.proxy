@@ -139,6 +139,10 @@ COPY --chmod=755 docker/healthcheck.sh /healthcheck.sh
 COPY --chmod=755 docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
 
 COPY --from=cicap_builder /out/ /
+RUN set -eu; \
+    if [ ! -x /usr/bin/c-icap ] && [ -x /usr/sbin/c-icap ]; then \
+        ln -s /usr/sbin/c-icap /usr/bin/c-icap; \
+    fi
 COPY docker/c-icap.conf /etc/c-icap/c-icap.conf
 COPY docker/adblock_req.conf /etc/adblock_req.conf
 COPY docker/virus_scan.conf /etc/virus_scan.conf

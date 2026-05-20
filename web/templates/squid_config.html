@@ -116,20 +116,27 @@
                 <form class="form config-form-shell" id="raw-config-form" action="{{ url_for('squid_config', tab=tab) }}" method="post" data-config-form="raw" data-allow-dirty-submit="1">
                     {{ csrf_field() }}
                     <input type="hidden" name="tab" value="{{ tab }}" />
+                    <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
                     <label for="config_text">Configuration file</label>
                     <textarea id="config_text" name="config_text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">{{ config_text }}</textarea>
                     <div class="actions config-editor-actions">
-                        <button class="btn primary" type="submit" name="action" value="apply">Save & Apply</button>
-                        <button class="btn secondary" type="submit" form="apply-all-config-form">Rebuild, Verify &amp; Apply Saved Settings</button>
+                        <button class="btn primary" type="submit" name="action" value="apply" data-confirm-message="Apply the raw squid.conf editor contents to {{ active_proxy.display_name }}? Validation failure keeps the previous config." data-pending-label="Applying...">Save &amp; Apply</button>
+                        <button class="btn danger" type="submit" form="apply-all-config-form" data-confirm-message="Rebuild from saved UI settings for {{ active_proxy.display_name }} and apply it now? Unsaved raw-editor changes are ignored." data-pending-label="Rebuilding...">Rebuild, Verify &amp; Apply Saved Settings</button>
                         <button class="btn ghost" type="submit" name="action" value="validate">Validate only</button>
                         <button class="btn ghost" type="button" id="reload-running-config" data-url="{{ url_for('api_squid_config') }}">Reload from running config</button>
                         <button class="btn ghost" type="button" data-copy-target="#config_text">Copy editor contents</button>
                         <button class="btn ghost" type="button" data-config-reset-for="raw-config-form">Reset unsaved changes</button>
                     </div>
-                    <div class="small">Save &amp; Apply applies the editor text. Rebuild, Verify &amp; Apply Saved Settings regenerates from the selected proxy's saved UI settings and ignores unsaved editor text. Validation failure keeps the previous config.</div>
+                    <div class="banner warning compact-banner">
+                        <span class="badge warn">Live proxy</span>
+                        <div class="banner-copy">
+                            <span class="small">Save &amp; Apply changes the selected proxy after validation. Rebuild, Verify &amp; Apply Saved Settings regenerates from saved UI settings and ignores unsaved editor text.</span>
+                        </div>
+                    </div>
                 </form>
                 <form class="config-hidden-form" id="apply-all-config-form" action="{{ url_for('apply_all_saved_config') }}" method="post">
                     {{ csrf_field() }}
+                    <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
                 </form>
             </div>
         </section>
@@ -217,6 +224,7 @@
                 <div class="card-body">
                     <form class="form config-form-shell" id="config-overrides-form" action="{{ url_for('apply_cache_overrides') }}" method="post" data-config-form="overrides" data-allow-dirty-submit="1">
                         {{ csrf_field() }}
+                        <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
                         <div class="small config-note">
                             These six controls are the current Squid <span class="mono">refresh_pattern</span> HTTP-semantics override options. They intentionally violate normal cache-control behavior; use only for controlled networks where stale/private/no-store risk is understood.
                         </div>
@@ -253,7 +261,7 @@
 
                         <div class="config-form-footer">
                             <div class="actions">
-                                <button class="btn primary" type="submit">Save & Apply (template)</button>
+                                <button class="btn danger" type="submit" data-confirm-message="Apply cache override semantics to {{ active_proxy.display_name }}? These options can serve stale, private, or no-store content." data-pending-label="Applying...">Save &amp; Apply overrides</button>
                                 <button class="btn ghost" type="button" data-config-reset-for="config-overrides-form">Reset overrides</button>
                             </div>
                             <div class="small">Applies overrides via <span class="mono">refresh_pattern</span> options and reloads Squid.</div>
@@ -270,6 +278,7 @@
             <form id="safe-config-form" class="config-hidden-form" action="{{ url_for('apply_safe_caching') }}" method="post" data-config-form="managed" data-allow-dirty-submit="1">
                 {{ csrf_field() }}
                 <input type="hidden" name="form_kind" value="{{ active_section.key }}" />
+                <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
             </form>
 
             <section class="card config-overview-card">
@@ -325,7 +334,7 @@
                 </div>
                 <div class="card-body">
                     <div class="actions">
-                        <button class="btn primary" type="submit" form="safe-config-form">Save & Apply (template)</button>
+                        <button class="btn primary" type="submit" form="safe-config-form" data-confirm-message="Apply {{ active_section.label }} settings to {{ active_proxy.display_name }} and reload Squid after validation?" data-pending-label="Applying...">Save &amp; Apply (template)</button>
                         <button class="btn ghost" type="button" data-config-reset-for="safe-config-form">Reset section</button>
                         <a class="btn ghost" href="#config-page-top">Back to top</a>
                     </div>

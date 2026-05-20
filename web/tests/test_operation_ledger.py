@@ -25,6 +25,30 @@ class _Result:
         return self._rows[0] if self._rows else None
 
 
+def _operation_row(**overrides):
+    base = {
+        "id": 11,
+        "proxy_id": "edge-a",
+        "status": "pending",
+        "operation_type": "config_apply",
+        "subject": "Squid config",
+        "summary": "Apply revision",
+        "target_kind": "config_revision",
+        "target_ref": "42",
+        "rollback_kind": "",
+        "rollback_ref": "",
+        "request_hash": "abc123",
+        "detail": "",
+        "created_by": "admin",
+        "created_ts": 123,
+        "started_ts": 0,
+        "completed_ts": 0,
+        "updated_ts": 123,
+    }
+    base.update(overrides)
+    return base
+
+
 class _Connection:
     def __init__(self) -> None:
         self.queries = []
@@ -105,3 +129,74 @@ def test_claim_pending_can_target_single_operation_id(monkeypatch) -> None:
     assert "AND id=%s" in select_sql
     assert "LIMIT %s FOR UPDATE SKIP LOCKED" in select_sql
     assert select_params == ("edge-a", 7, 1)
+
+
+def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _CreateConnection:
+        def __init__(self) -> None:
+            self.queries = []
+            self.committed = False
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                result = _Result()
+                result.lastrowid = 11
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([_operation_row()])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if exc_type is None:
+                self.committed = True
+            return False
+
+    conn = _CreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    op = ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Apply revision",
+        target_kind="config_revision",
+        target_ref=42,
+        request_hash="abc123",
+        created_by="admin",
+    )
+
+    insert_sql, insert_params = conn.queries[0]
+    assert "request_key" in insert_sql
+    assert "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)" in insert_sql
+    assert len(insert_params[9]) == 64
+    assert op.operation_id == 11
+    assert conn.committed is True
+
+
+def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+
+    ledger.mark_status(7, status="applied", detail="done")
+
+    update_sql, update_params = conn.queries[0]
+    assert "request_key=IF(%s, NULL, request_key)" in update_sql
+    assert update_params == ("applied", "done", 456, 456, True, 7)

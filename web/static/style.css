@@ -813,6 +813,11 @@ a.brand:hover{
   box-shadow: var(--shadow);
 }
 
+.compact-banner{
+  padding: 12px 14px;
+  box-shadow: none;
+}
+
 .banner.success{
   border-color: rgba(46,229,157,.22);
   background: rgba(46,229,157,.10);
@@ -836,6 +841,8 @@ a.brand:hover{
 .banner-copy{
   display:grid;
   gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .stat{
@@ -1185,6 +1192,7 @@ input.check{
   gap: 10px;
   flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
 }
 
 .table-action-stack{
@@ -1222,6 +1230,10 @@ input.check{
   cursor:pointer;
   font-weight: 600;
   letter-spacing: .2px;
+  max-width: 100%;
+  min-height: 42px;
+  text-align: center;
+  white-space: normal;
 }
 
 .btn:hover{
