@@ -799,14 +799,16 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(
     artifacts = _adblock_artifacts_store()
     blocked_token = unique_token("live_adblock_block")
     allowed_token = unique_token("live_adblock_allow")
-    blocked_path = f"/ads/{blocked_token}.js"
-    allowed_path = f"/ads/{allowed_token}.js"
+    # Keep this on a neutral extension so the assertion isolates adblock
+    # allow/block behavior instead of Squid file-security URL ACLs.
+    blocked_path = f"/ads/{blocked_token}.json"
+    allowed_path = f"/ads/{allowed_token}.json"
 
     artifact_dir = tmp_path / "adblock-artifact"
     _write_live_adblock_artifact(
         artifact_dir,
-        regex_block=f"/.*{blocked_token}[.]js.*/\n/.*{allowed_token}[.]js.*/\n",
-        regex_allow=f"/.*{allowed_token}[.]js.*/\n",
+        regex_block=f"/.*{blocked_token}[.]json.*/\n/.*{allowed_token}[.]json.*/\n",
+        regex_allow=f"/.*{allowed_token}[.]json.*/\n",
     )
     revision = artifacts.create_revision_from_directory(
         artifact_dir,
