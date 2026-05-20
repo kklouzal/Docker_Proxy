@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -30,6 +31,9 @@ OBSERVABILITY_LOG_TABLES: tuple[str, ...] = (
     "ts_1y",
 )
 
+_OBSERVABILITY_MAINTENANCE_LOCK_NAME = "docker_proxy_observability_maintenance"
+_MAINTENANCE_HISTORY_LIMIT = 5
+
 
 @dataclass(frozen=True)
 class ObservabilityLogTableResult:
@@ -38,6 +42,10 @@ class ObservabilityLogTableResult:
     deleted_rows: int = 0
     maintenance: str = ""
     detail: str = ""
+
+
+class ObservabilityMaintenanceAlreadyRunningError(RuntimeError):
+    """Raised when another scheduled or manual maintenance run is active."""
 
 
 def _quote_identifier(identifier: str) -> str:
@@ -227,6 +235,158 @@ def set_observability_retention_settings(*, retention_days: object) -> dict[str,
 
     _retry_stale_connection(save)
     return {"retention_days": days, "updated_ts": now}
+
+
+def _ensure_observability_maintenance_runs_table() -> None:
+    def ensure() -> None:
+        with connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS observability_maintenance_runs (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    run_type VARCHAR(32) NOT NULL,
+                    started_ts BIGINT NOT NULL,
+                    finished_ts BIGINT NOT NULL,
+                    duration_ms BIGINT NOT NULL DEFAULT 0,
+                    status VARCHAR(16) NOT NULL,
+                    retention_days INT NOT NULL,
+                    analyze TINYINT NOT NULL DEFAULT 0,
+                    optimize TINYINT NOT NULL DEFAULT 0,
+                    pruned TINYINT NOT NULL DEFAULT 0,
+                    maintained_tables INT NOT NULL DEFAULT 0,
+                    detail VARCHAR(512) NOT NULL DEFAULT '',
+                    KEY idx_observability_maintenance_runs_started (started_ts),
+                    KEY idx_observability_maintenance_runs_status (status)
+                )
+                """,
+            )
+
+    _retry_stale_connection(ensure)
+
+
+def _maintenance_row_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": int(row[0] or 0),
+        "run_type": str(row[1] or ""),
+        "started_ts": int(row[2] or 0),
+        "finished_ts": int(row[3] or 0),
+        "duration_ms": int(row[4] or 0),
+        "status": str(row[5] or ""),
+        "retention_days": normalize_retention_days(row[6]),
+        "analyze": bool(row[7]),
+        "optimize": bool(row[8]),
+        "pruned": bool(row[9]),
+        "maintained_tables": int(row[10] or 0),
+        "detail": str(row[11] or ""),
+    }
+
+
+def get_observability_maintenance_status(*, limit: int = 5) -> dict[str, Any]:
+    _ensure_observability_maintenance_runs_table()
+    history_limit = max(1, min(_MAINTENANCE_HISTORY_LIMIT, int(limit or 5)))
+
+    def load() -> dict[str, Any]:
+        with connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_type, started_ts, finished_ts, duration_ms, status,
+                       retention_days, analyze, optimize, pruned, maintained_tables, detail
+                FROM observability_maintenance_runs
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (history_limit,),
+            ).fetchall()
+        history = [_maintenance_row_to_dict(row) for row in rows]
+        latest = next((row for row in history if row.get("status") != "skipped"), None)
+        if latest is None and history:
+            latest = history[0]
+        return {"latest": latest or {}, "history": history}
+
+    return _retry_stale_connection(load)
+
+
+def _maintenance_detail_from_result(result: dict[str, Any]) -> str:
+    detail = str(result.get("detail") or "").strip()
+    if detail:
+        return detail[:512]
+    maintenance = result.get("maintenance") or {}
+    for table in maintenance.get("tables") or []:
+        if table.get("status") == "failed" and table.get("detail"):
+            return str(table.get("detail"))[:512]
+    return ""
+
+
+def record_observability_maintenance_run(
+    *,
+    run_type: str,
+    result: dict[str, Any],
+    status: str | None = None,
+) -> None:
+    _ensure_observability_maintenance_runs_table()
+    maintenance = result.get("maintenance") or {}
+    started_ts = int(result.get("started_ts") or time.time())
+    finished_ts = int(result.get("finished_ts") or started_ts)
+    duration_ms = max(0, int(result.get("duration_ms") or 0))
+    status_value = str(
+        status or result.get("status") or ("ok" if result.get("ok", True) else "failed"),
+    )[:16]
+
+    def save() -> None:
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO observability_maintenance_runs(
+                    run_type, started_ts, finished_ts, duration_ms, status,
+                    retention_days, analyze, optimize, pruned, maintained_tables, detail
+                )
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    str(run_type or "manual")[:32],
+                    started_ts,
+                    finished_ts,
+                    duration_ms,
+                    status_value,
+                    normalize_retention_days(result.get("retention_days", 30)),
+                    1 if result.get("analyze") else 0,
+                    1 if result.get("optimize") else 0,
+                    1 if result.get("pruned") else 0,
+                    int(maintenance.get("maintained_tables") or 0),
+                    _maintenance_detail_from_result(result),
+                ),
+            )
+
+    _retry_stale_connection(save)
+
+
+def acquire_observability_maintenance_lock():
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT GET_LOCK(%s, 0)",
+            (_OBSERVABILITY_MAINTENANCE_LOCK_NAME,),
+        ).fetchone()
+        if not row or int(row[0] or 0) != 1:
+            conn.close()
+            return None
+        return conn
+    except Exception:
+        with contextlib.suppress(Exception):
+            conn.close()
+        raise
+
+
+def release_observability_maintenance_lock(conn: Any) -> None:
+    if conn is None:
+        return
+    try:
+        conn.execute(
+            "SELECT RELEASE_LOCK(%s)",
+            (_OBSERVABILITY_MAINTENANCE_LOCK_NAME,),
+        )
+    finally:
+        conn.close()
 
 
 def maintain_observability_tables(

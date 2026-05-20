@@ -69,6 +69,8 @@
 
 {% if pane == 'settings' %}
 {% set retention = payload.retention_settings or {'retention_days': 30, 'updated_ts': 0} %}
+{% set maintenance_status = payload.maintenance_status or {'latest': {}, 'history': []} %}
+{% set latest_maintenance = maintenance_status.latest or {} %}
 <section class="card">
   <div class="card-header">
     <h2 class="card-title">MySQL retention</h2>
@@ -82,6 +84,8 @@
     {% endif %}
     {% if request.args.get('maintenance_run') == '1' %}
     <div class="surface-note small">Database maintenance completed. Pruned records older than {{ request.args.get('retention_days', retention.retention_days) }} days, then analyzed and optimized {{ request.args.get('maintained_tables', '0') }} tables.</div>
+    {% elif request.args.get('maintenance_busy') == '1' %}
+    <div class="surface-note small">Database maintenance is already running. The manual request was skipped.</div>
     {% elif request.args.get('maintenance_error') == '1' %}
     <div class="surface-note small">Database maintenance failed. Check Admin UI logs for the database error.</div>
     {% endif %}
@@ -108,6 +112,28 @@
         <button class="btn secondary" type="submit">Run prune, analyze, optimize now</button>
       </div>
     </form>
+    <div class="surface-note small">
+      {% if latest_maintenance %}
+      Last maintenance: {{ latest_maintenance.status }} {{ latest_maintenance.run_type }} run at {{ latest_maintenance.finished_ts|datetimeformat }}; retention {{ latest_maintenance.retention_days }} days; {% if latest_maintenance.pruned %}pruned{% else %}not pruned{% endif %}{% if latest_maintenance.analyze or latest_maintenance.optimize %}; maintained {{ latest_maintenance.maintained_tables }} tables{% endif %}{% if latest_maintenance.duration_ms %}; {{ latest_maintenance.duration_ms }} ms{% endif %}.
+      {% if latest_maintenance.detail %}<br />{{ latest_maintenance.detail }}{% endif %}
+      {% else %}
+      No maintenance run history has been recorded yet.
+      {% endif %}
+    </div>
+    {% if maintenance_status.history %}
+    <div class="list">
+      {% for run in maintenance_status.history %}
+      <div class="list-item">
+        <div>
+          <strong>{{ run.status }} {{ run.run_type }}</strong>
+          <div class="muted small">{{ run.finished_ts|datetimeformat }} - retention {{ run.retention_days }} days - {% if run.pruned %}pruned{% else %}not pruned{% endif %}{% if run.analyze or run.optimize %} - maintained {{ run.maintained_tables }} tables{% endif %}</div>
+          {% if run.detail %}<div class="muted small">{{ run.detail }}</div>{% endif %}
+        </div>
+        <span class="badge">{{ run.duration_ms }} ms</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 </section>
 {% else %}

@@ -230,6 +230,13 @@ def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None
 
     monkeypatch.setattr(housekeeping, "maintain_observability_tables", maintain)
 
+    def acquire_lock():
+        return object()
+
+    monkeypatch.setattr(housekeeping, "acquire_observability_maintenance_lock", acquire_lock)
+    monkeypatch.setattr(housekeeping, "release_observability_maintenance_lock", lambda _conn: None)
+    monkeypatch.setattr(housekeeping, "record_observability_maintenance_run", lambda **_kwargs: None)
+
     result = housekeeping.run_housekeeping_once(
         retention_days=45,
         analyze=True,

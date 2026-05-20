@@ -68,7 +68,13 @@ from services.housekeeping import start_housekeeping
 from services.http_optimizations import install_http_optimizations
 from services.logutil import log_exception_throttled
 from services.observability_maintenance import (
+    ObservabilityMaintenanceAlreadyRunningError,
+)
+from services.observability_maintenance import (
     clear_observability_logs as _default_clear_observability_logs,
+)
+from services.observability_maintenance import (
+    get_observability_maintenance_status as _default_get_observability_maintenance_status,
 )
 from services.observability_maintenance import (
     get_observability_retention_settings as _default_get_observability_retention_settings,
@@ -455,11 +461,23 @@ def clear_observability_logs():
     return _app_runtime_services().clear_observability_logs()
 
 
-def run_observability_maintenance(*, analyze: bool = False, optimize: bool = False):
-    return _app_runtime_services().run_observability_maintenance(
-        analyze=analyze,
-        optimize=optimize,
-    )
+def run_observability_maintenance(
+    *,
+    analyze: bool = False,
+    optimize: bool = False,
+    run_type: str = "manual",
+):
+    runner = _app_runtime_services().run_observability_maintenance
+    if "run_type" in inspect.signature(runner).parameters:
+        return runner(analyze=analyze, optimize=optimize, run_type=run_type)
+    return runner(analyze=analyze, optimize=optimize)
+
+
+def get_observability_maintenance_status():
+    try:
+        return _default_get_observability_maintenance_status()
+    except Exception:
+        return {"latest": {}, "history": []}
 
 
 def get_observability_retention_settings():
@@ -2523,6 +2541,7 @@ def observability():
         elif pane == "settings":
             pane_payload = {
                 "retention_settings": get_observability_retention_settings(),
+                "maintenance_status": get_observability_maintenance_status(),
             }
         else:
             pane_payload = _cached_observability_result(
@@ -2617,7 +2636,11 @@ def observability_clear_logs():
 @app.route("/observability/maintenance", methods=["POST"])
 def observability_maintenance():
     try:
-        result = run_observability_maintenance(analyze=True, optimize=True)
+        result = run_observability_maintenance(
+            analyze=True,
+            optimize=True,
+            run_type="manual",
+        )
         maintained_tables = int(
             (result.get("maintenance") or {}).get("maintained_tables")
             or sum(
@@ -2648,6 +2671,18 @@ def observability_maintenance():
             maintenance_run="1",
             retention_days=days,
             maintained_tables=maintained_tables,
+        )
+    except ObservabilityMaintenanceAlreadyRunningError as exc:
+        detail = public_error_message(exc)
+        _record_audit_event(
+            "observability_database_maintenance",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to(
+            "observability",
+            pane="settings",
+            maintenance_busy="1",
         )
     except Exception as exc:
         detail = public_error_message(exc)

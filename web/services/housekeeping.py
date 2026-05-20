@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -13,9 +14,13 @@ from services.diagnostic_store import get_diagnostic_store
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
 from services.observability_maintenance import (
+    ObservabilityMaintenanceAlreadyRunningError,
+    acquire_observability_maintenance_lock,
     get_observability_retention_settings,
     maintain_observability_tables,
     normalize_retention_days,
+    record_observability_maintenance_run,
+    release_observability_maintenance_lock,
 )
 from services.ssl_errors_store import get_ssl_errors_store
 
@@ -94,26 +99,81 @@ def run_housekeeping_once(
     retention_days: int | None = None,
     analyze: bool = False,
     optimize: bool = False,
+    run_type: str | None = None,
 ) -> dict[str, Any]:
+    started = time.time()
     days = (
         current_retention_days(30)
         if retention_days is None
         else normalize_retention_days(retention_days)
     )
-    _run_prune_once(retention_days=days)
-    maintenance: dict[str, Any] | None = None
-    if analyze or optimize:
-        maintenance = _run_with_db_lock_retry(
-            lambda: maintain_observability_tables(analyze=analyze, optimize=optimize),
-        )
-    return {
-        "ok": bool(maintenance.get("ok", True)) if maintenance else True,
-        "retention_days": days,
-        "pruned": True,
-        "analyze": bool(analyze),
-        "optimize": bool(optimize),
-        "maintenance": maintenance or {},
-    }
+    resolved_run_type = run_type or ("weekly" if analyze or optimize else "daily")
+    lock_conn = acquire_observability_maintenance_lock()
+    if lock_conn is None:
+        skipped = {
+            "ok": False,
+            "status": "skipped",
+            "started_ts": int(started),
+            "finished_ts": int(time.time()),
+            "duration_ms": int((time.time() - started) * 1000),
+            "retention_days": days,
+            "pruned": False,
+            "analyze": bool(analyze),
+            "optimize": bool(optimize),
+            "maintenance": {},
+            "detail": "another observability maintenance run is already active",
+        }
+        with contextlib.suppress(Exception):
+            record_observability_maintenance_run(
+                run_type=resolved_run_type,
+                result=skipped,
+                status="skipped",
+            )
+        raise ObservabilityMaintenanceAlreadyRunningError(skipped["detail"])
+
+    try:
+        _run_prune_once(retention_days=days)
+        maintenance: dict[str, Any] | None = None
+        if analyze or optimize:
+            maintenance = _run_with_db_lock_retry(
+                lambda: maintain_observability_tables(analyze=analyze, optimize=optimize),
+            )
+        maintenance_ok = bool(maintenance.get("ok", True)) if maintenance else True
+        result = {
+            "ok": maintenance_ok,
+            "status": "ok" if maintenance_ok else "failed",
+            "started_ts": int(started),
+            "finished_ts": int(time.time()),
+            "duration_ms": int((time.time() - started) * 1000),
+            "retention_days": days,
+            "pruned": True,
+            "analyze": bool(analyze),
+            "optimize": bool(optimize),
+            "maintenance": maintenance or {},
+        }
+        with contextlib.suppress(Exception):
+            record_observability_maintenance_run(run_type=resolved_run_type, result=result)
+        return result
+    except Exception as exc:
+        failed = {
+            "ok": False,
+            "status": "failed",
+            "started_ts": int(started),
+            "finished_ts": int(time.time()),
+            "duration_ms": int((time.time() - started) * 1000),
+            "retention_days": days,
+            "pruned": False,
+            "analyze": bool(analyze),
+            "optimize": bool(optimize),
+            "maintenance": {},
+            "detail": str(exc)[:300],
+        }
+        with contextlib.suppress(Exception):
+            record_observability_maintenance_run(run_type=resolved_run_type, result=failed)
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            release_observability_maintenance_lock(lock_conn)
 
 
 def _next_local_run(
