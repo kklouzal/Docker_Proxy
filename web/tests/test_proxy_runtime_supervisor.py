@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
@@ -74,6 +75,51 @@ def test_test_control_supervisor_program_uses_squid_controller_restart() -> None
         "action": "restart",
         "detail": "Squid HTTP listener is accepting connections.",
     }
+
+
+def test_forced_navigation_health_does_not_seed_cache() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 60.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._navigation_health_cache_ts = 0.0
+    runtime._navigation_health_cache_value = None
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+
+    class Controller:
+        calls = 0
+
+        def get_status(self):
+            return b"Squid check ok.", b""
+
+        def _http_listener_details(self):
+            self.calls += 1
+            listeners = [{"port": 3128, "mode": "explicit"}]
+            if self.calls > 1:
+                listeners.append({"port": 3129, "mode": "intercept"})
+            return tuple(listeners)
+
+        def _wait_for_http_listener(self, *, timeout: float = 0.5) -> bool:
+            return True
+
+    controller = Controller()
+    runtime.controller = controller
+
+    forced = runtime.collect_navigation_health(force=True)
+    assert {item.get("mode") for item in forced["listener_details"]} == {"explicit"}
+
+    refreshed = runtime.collect_navigation_health()
+    assert {item.get("mode") for item in refreshed["listener_details"]} == {
+        "explicit",
+        "intercept",
+    }
+
+    cached = runtime.collect_navigation_health()
+    assert cached is refreshed
+    assert controller.calls == 2
 
 
 def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) -> None:

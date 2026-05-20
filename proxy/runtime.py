@@ -1810,7 +1810,7 @@ class ProxyRuntime:
             "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
             "timestamp": int(time.time()),
         }
-        if self.health_cache_ttl_seconds > 0:
+        if not force and self.health_cache_ttl_seconds > 0:
             with self._health_cache_lock:
                 self._navigation_health_cache_value = result
                 self._navigation_health_cache_ts = time.monotonic()
@@ -1974,7 +1974,7 @@ class ProxyRuntime:
                 "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
                 "timestamp": int(time.time()),
             }
-            if self.health_cache_ttl_seconds > 0:
+            if not force and self.health_cache_ttl_seconds > 0:
                 with self._health_cache_lock:
                     self._health_cache_value = result
                     self._health_cache_ts = time.monotonic()
