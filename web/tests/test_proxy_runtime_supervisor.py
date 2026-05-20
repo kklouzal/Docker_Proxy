@@ -1171,6 +1171,31 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
     assert calls[0][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "status"]
 
 
+def test_packaged_proxy_healthcheck_treats_clamav_as_optional_by_default() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
+        encoding="utf-8",
+    )
+
+    assert "clamav_required()" in healthcheck
+    assert "supervisor reports cicap_adblock is not RUNNING" in healthcheck
+    assert "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING" in healthcheck
+    assert "CLAMAV_REQUIRED is set but remote clamd is not responding" in healthcheck
+    assert "supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av" not in healthcheck
+
+
+def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(
+        encoding="utf-8",
+    )
+
+    assert "CLAMAV_REQUIRED=0" in entrypoint
+    assert "optional ClamAV backend" in entrypoint
+    assert "exec sleep infinity" in entrypoint
+    assert "i=0; while [ $i -lt 120 ]; do ping_clamd" in entrypoint
+
+
 def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:
     _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore

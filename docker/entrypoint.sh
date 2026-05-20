@@ -18,6 +18,13 @@ case "$(printf '%s' "${ENABLE_TEST_MODE:-0}" | tr 'A-Z' 'a-z')" in
         ;;
 esac
 
+env_enabled() {
+    case "$(printf '%s' "${1:-0}" | tr 'A-Z' 'a-z')" in
+        1|true|yes|on|required|strict) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 LOCALHOST_SRC_ACL="127.0.0.1/32 ::1"
 if [ "$IPV6_DISABLED" = "1" ]; then
     LOCALHOST_SRC_ACL="127.0.0.1/32"
@@ -801,7 +808,13 @@ case "$CLAMD_PORT_RAW" in
     *) CLAMD_PORT="$CLAMD_PORT_RAW" ;;
 esac
 
-export CLAMD_HOST CLAMD_PORT
+CLAMAV_REQUIRED_RAW="${CLAMAV_REQUIRED:-}"
+CLAMAV_REQUIRED=0
+if env_enabled "$CLAMAV_REQUIRED_RAW" || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}"; then
+    CLAMAV_REQUIRED=1
+fi
+
+export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED
 
 cat > /etc/clamd_mod.conf <<EOF
 # c-icap clamd_mod configuration for squid-flask-proxy
@@ -871,8 +884,8 @@ EOF
 
 cat > /etc/supervisor.d/cicap_av.conf <<'EOF'
 [program:cicap_av]
-# Wait for the remote clamd backend so clamd_mod can register the engine before virus_scan starts.
-command=/bin/sh -c 'rm -f /var/run/c-icap/c-icap-av.pid; HOST="${CLAMD_HOST:-127.0.0.1}"; PORT="${CLAMD_PORT:-3310}"; i=0; while [ $i -lt 120 ]; do python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "$HOST" "$PORT" >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf'
+# Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
+command=/bin/sh -c 'rm -f /var/run/c-icap/c-icap-av.pid; HOST="${CLAMD_HOST:-127.0.0.1}"; PORT="${CLAMD_PORT:-3310}"; REQUIRED="${CLAMAV_REQUIRED:-0}"; ping_clamd() { python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "$HOST" "$PORT" >/dev/null 2>&1; }; if [ "$REQUIRED" = "1" ]; then i=0; while [ $i -lt 120 ]; do ping_clamd && exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf; i=$((i+1)); sleep 1; done; echo "required ClamAV backend ${HOST}:${PORT} is not responding" >&2; exit 1; fi; if ping_clamd; then exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf; fi; echo "optional ClamAV backend ${HOST}:${PORT} is unavailable; AV ICAP service remains disabled while Squid bypasses AV adaptation" >&2; exec sleep infinity'
 autostart=true
 autorestart=true
 priority=11

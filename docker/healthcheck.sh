@@ -133,6 +133,17 @@ supervisor_program_running() {
     supervisorctl -c /etc/supervisord.conf status "$program" 2>/dev/null | grep -q "RUNNING"
 }
 
+env_enabled() {
+    case "$(printf '%s' "${1:-0}" | tr 'A-Z' 'a-z')" in
+        1|true|yes|on|required|strict) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+clamav_required() {
+    env_enabled "${CLAMAV_REQUIRED:-}" || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}"
+}
+
 # Check Squid liveness (internal check)
 if ! supervisor_program_running squid; then
     echo "supervisor reports squid is not RUNNING"
@@ -170,24 +181,35 @@ if ! python3 -c "import os, urllib.request; port=(os.environ.get('PAC_HTTP_PORT'
     exit 1
 fi
 
-# Check c-icap liveness without generating synthetic OPTIONS traffic.
-# Confirm both ICAP ports are listening instead of probing the services over
-# the protocol, which would otherwise pollute c-icap access logs
-# every 15 seconds.
-if ! supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av; then
-    echo "one or more c-icap supervisor programs are not RUNNING"
+# Check required c-icap liveness without generating synthetic OPTIONS traffic.
+# Adblock is part of the normal proxy path. AV is optional by default because
+# Squid ICAP uses bypass=on and should degrade cleanly when clamd is absent.
+if ! supervisor_program_running cicap_adblock; then
+    echo "supervisor reports cicap_adblock is not RUNNING"
     exit 1
 fi
 
-if ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1 || ! has_listen_socket "${CICAP_AV_PORT:-14001}" >/dev/null 2>&1; then
-    echo "One or more c-icap services are not listening on their configured ports"
+if ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1; then
+    echo "cicap_adblock is not listening on its configured port"
     exit 1
 fi
 
-# Check the remote clamd backend used by the local AV c-icap service.
-if ! python3 -c "import os,socket; host=(os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'; port=int((os.environ.get('CLAMD_PORT') or '3310').strip()); s=socket.create_connection((host, port), 1.5); s.settimeout(1.5); s.sendall(b'PING\n'); d=s.recv(64); s.close(); assert d.startswith(b'PONG')" >/dev/null 2>&1; then
-    echo "remote clamd is not responding"
-    exit 1
+if clamav_required; then
+    if ! supervisor_program_running cicap_av; then
+        echo "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING"
+        exit 1
+    fi
+
+    if ! has_listen_socket "${CICAP_AV_PORT:-14001}" >/dev/null 2>&1; then
+        echo "CLAMAV_REQUIRED is set but cicap_av is not listening on its configured port"
+        exit 1
+    fi
+
+    # Check the remote clamd backend used by the local AV c-icap service.
+    if ! python3 -c "import os,socket; host=(os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'; port=int((os.environ.get('CLAMD_PORT') or '3310').strip()); s=socket.create_connection((host, port), 1.5); s.settimeout(1.5); s.sendall(b'PING\n'); d=s.recv(64); s.close(); assert d.startswith(b'PONG')" >/dev/null 2>&1; then
+        echo "CLAMAV_REQUIRED is set but remote clamd is not responding"
+        exit 1
+    fi
 fi
 
 echo "OK"
