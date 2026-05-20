@@ -128,7 +128,7 @@ shutdown_lifetime 30 seconds
 # Resolver source selection, hostname validation, and DNS cache sizing.
 dns_timeout 30 seconds
 dns_retransmit_interval 5 seconds
-dns_packet_max 1232
+dns_packet_max 1232 bytes
 hosts_file /etc/hosts
 dns_defnames off
 dns_multicast_local off

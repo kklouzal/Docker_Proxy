@@ -897,7 +897,7 @@ class SquidController(_CoreSquidController):
             if dns_packet_max_raw.lower() == "none":
                 lines.append("dns_packet_max none")
             elif dns_packet_max_raw.isdigit():
-                lines.append(f"dns_packet_max {int(dns_packet_max_raw)}")
+                lines.append(f"dns_packet_max {int(dns_packet_max_raw)} bytes")
         if dns_nameservers:
             lines.append(f"dns_nameservers {dns_nameservers}")
         lines.append(f"hosts_file {hosts_file}")
@@ -1349,7 +1349,7 @@ class SquidController(_CoreSquidController):
 
         def find_int_or_none(key: str) -> Any | None:
             match = re.search(
-                rf"^\s*{re.escape(key)}\s+(\S+)\s*$",
+                rf"^\s*{re.escape(key)}\s+(\S+)(?:\s+\S+)?\s*$",
                 text,
                 re.MULTILINE | re.IGNORECASE,
             )

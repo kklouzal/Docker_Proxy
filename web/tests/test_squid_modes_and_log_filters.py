@@ -240,7 +240,7 @@ def test_repo_template_includes_cache_first_defaults() -> None:
     assert "quick_abort_min 16 KB" in text
     assert "quick_abort_max 16 KB" in text
     assert "quick_abort_pct 95" in text
-    assert "dns_packet_max 1232" in text
+    assert "dns_packet_max 1232 bytes" in text
     assert "positive_dns_ttl 21600 seconds" in text
     assert "tls_outgoing_options min-version=1.2 options=NO_SSLv3" in text
     assert "request_header_max_size 64 KB" in text
@@ -379,7 +379,7 @@ http_port 0.0.0.0:3129 intercept
 https_port 0.0.0.0:3130 intercept ssl-bump name=https_intercept dynamic_cert_mem_cache_size=256MB
 acl https_intercept_listener myportname https_intercept
 ssl_bump splice https_intercept_listener
-dns_packet_max 1232
+dns_packet_max 1232 bytes
 sslproxy_session_ttl 900
 sslproxy_session_cache_size 16 MB
 high_response_time_warning 2500
