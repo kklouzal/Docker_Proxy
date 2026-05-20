@@ -261,6 +261,39 @@ def _retry_mysql_operation(operation):
     raise RuntimeError(msg)
 
 
+def run_mysql_operation_with_retry(operation):
+    return _retry_mysql_operation(operation)
+
+
+def mysql_schema_lock_timeout_seconds(default: int = 30) -> int:
+    return _env_int(
+        "MYSQL_SCHEMA_LOCK_TIMEOUT_SECONDS",
+        int(default),
+        minimum=1,
+        maximum=300,
+    )
+
+
+@contextlib.contextmanager
+def mysql_advisory_lock(
+    conn: CompatConnection,
+    name: str,
+    timeout_seconds: int = 30,
+):
+    lock_name = str(name or "docker_proxy:schema")[:64]
+    timeout = max(1, int(timeout_seconds or 30))
+    row = conn.execute("SELECT GET_LOCK(%s, %s) AS acquired", (lock_name, timeout)).fetchone()
+    acquired = row["acquired"] if row is not None else 0
+    if int(acquired or 0) != 1:
+        msg = f"Timed out waiting for MySQL advisory lock {lock_name!r}"
+        raise TimeoutError(msg)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            conn.execute("DO RELEASE_LOCK(%s)", (lock_name,))
+
+
 def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
     """Apply defensive per-session settings to every checked-out connection.
 
@@ -340,13 +373,14 @@ def _pool_key(
 
 
 def _pool_maxsize() -> int:
-    try:
-        return max(
-            0,
-            min(16, int((os.environ.get("DB_POOL_SIZE") or "1").strip() or "1")),
-        )
-    except Exception:
-        return 1
+    raw = os.environ.get("DB_POOL_SIZE")
+    if raw is not None and raw.strip():
+        try:
+            return max(0, min(16, int(raw.strip())))
+        except Exception:
+            return 1
+    threads = _env_int("WEB_THREADS", 2, minimum=1, maximum=64)
+    return max(2, min(8, threads + 2))
 
 
 def _pool_max_idle_seconds() -> float:

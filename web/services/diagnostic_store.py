@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import contextlib
 import csv
@@ -13,7 +13,12 @@ import threading
 import time
 from typing import Any
 
-from services.db import connect
+from services.db import (
+    connect,
+    mysql_advisory_lock,
+    mysql_schema_lock_timeout_seconds,
+    run_mysql_operation_with_retry,
+)
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float
@@ -37,6 +42,33 @@ def _env_truthy(value: object | None) -> bool:
 
 def _env_falsey(value: object | None) -> bool:
     return str(value or "").strip().lower() in _FALSE_ENV_VALUES
+
+
+def _append_bounded_pending_row(
+    pending_rows: list[tuple[Any, ...]],
+    row: tuple[Any, ...],
+    *,
+    max_pending_rows: int,
+    loop_name: str,
+    drop_state: dict[str, Any],
+) -> None:
+    pending_rows.append(row)
+    overflow = len(pending_rows) - max_pending_rows
+    if overflow <= 0:
+        return
+    del pending_rows[:overflow]
+    dropped = int(drop_state.get("dropped", 0)) + overflow
+    drop_state["dropped"] = dropped
+    now = time.time()
+    if now - float(drop_state.get("last_log_ts", 0.0)) >= 300.0:
+        logger.warning(
+            "Diagnostic tailer pending rows exceeded %s in %s; dropped %s oldest rows while database flush is unavailable",
+            max_pending_rows,
+            loop_name,
+            dropped,
+        )
+        drop_state["last_log_ts"] = now
+        drop_state["dropped"] = 0
 
 
 def _running_in_container() -> bool:
@@ -263,7 +295,7 @@ def _request_tls_summary(row: dict[str, Any]) -> str:
     if client_version:
         cipher_text = f"/{client_cipher}" if client_cipher else ""
         parts.append(f"client={client_version}{cipher_text}")
-    return " · ".join(parts)
+    return " Â· ".join(parts)
 
 
 def _normalize_request_row(row: Any) -> dict[str, Any]:
@@ -368,126 +400,135 @@ class DiagnosticStore:
         with self._db_init_lock:
             if self._db_initialized:
                 return
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS diagnostic_requests (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                        event_key CHAR(40) NOT NULL,
-                        ts BIGINT NOT NULL,
-                        duration_ms INT NOT NULL DEFAULT 0,
-                        client_ip VARCHAR(64) NOT NULL,
-                        method VARCHAR(16) NOT NULL,
-                        url TEXT NOT NULL,
-                        domain VARCHAR(255) NOT NULL,
-                        result_code VARCHAR(96) NOT NULL,
-                        http_status INT NOT NULL DEFAULT 0,
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        master_xaction VARCHAR(128) NOT NULL,
-                        hierarchy_status VARCHAR(255) NOT NULL,
-                        bump_mode VARCHAR(64) NOT NULL,
-                        sni VARCHAR(255) NOT NULL,
-                        tls_server_version VARCHAR(64) NOT NULL,
-                        tls_server_cipher VARCHAR(128) NOT NULL,
-                        tls_client_version VARCHAR(64) NOT NULL,
-                        tls_client_cipher VARCHAR(128) NOT NULL,
-                        host VARCHAR(255) NOT NULL,
-                        user_agent VARCHAR(512) NOT NULL,
-                        referer VARCHAR(512) NOT NULL,
-                        exclusion_rule VARCHAR(64) NOT NULL,
-                        ssl_exception VARCHAR(64) NOT NULL,
-                        webfilter_allow VARCHAR(64) NOT NULL,
-                        cache_bypass VARCHAR(64) NOT NULL,
-                        raw TEXT NOT NULL,
-                        created_ts BIGINT NOT NULL,
-                        UNIQUE KEY idx_diagnostic_requests_proxy_event (proxy_id, event_key),
-                        KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
-                        KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
-                        KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
-                        KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts),
-                        KEY idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes),
-                        KEY idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts),
-                        KEY idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)
-                    )
-                    """,
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS diagnostic_icap_events (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                        event_key CHAR(40) NOT NULL,
-                        ts BIGINT NOT NULL,
-                        master_xaction VARCHAR(128) NOT NULL,
-                        client_ip VARCHAR(64) NOT NULL,
-                        method VARCHAR(16) NOT NULL,
-                        url TEXT NOT NULL,
-                        domain VARCHAR(255) NOT NULL,
-                        icap_time_ms INT NOT NULL DEFAULT 0,
-                        adapt_summary VARCHAR(1024) NOT NULL,
-                        adapt_details TEXT NOT NULL,
-                        host VARCHAR(255) NOT NULL,
-                        user_agent VARCHAR(512) NOT NULL,
-                        sni VARCHAR(255) NOT NULL,
-                        exclusion_rule VARCHAR(64) NOT NULL,
-                        ssl_exception VARCHAR(64) NOT NULL,
-                        webfilter_allow VARCHAR(64) NOT NULL,
-                        cache_bypass VARCHAR(64) NOT NULL,
-                        service_family VARCHAR(32) NOT NULL,
-                        raw TEXT NOT NULL,
-                        created_ts BIGINT NOT NULL,
-                        UNIQUE KEY idx_diagnostic_icap_proxy_event (proxy_id, event_key),
-                        KEY idx_diagnostic_icap_proxy_ts (proxy_id, ts, id),
-                        KEY idx_diagnostic_icap_proxy_tx (proxy_id, master_xaction, ts),
-                        KEY idx_diagnostic_icap_proxy_domain (proxy_id, domain, ts),
-                        KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts),
-                        KEY idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)
-                    )
-                    """,
-                )
-                for table, index_name, ddl in (
-                    (
-                        "diagnostic_requests",
-                        "idx_diagnostic_requests_proxy_client_bytes",
-                        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes)",
-                    ),
-                    (
-                        "diagnostic_requests",
-                        "idx_diagnostic_requests_proxy_bump_domain",
-                        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts)",
-                    ),
-                    (
-                        "diagnostic_requests",
-                        "idx_diagnostic_requests_proxy_result_ts",
-                        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)",
-                    ),
-                    (
-                        "diagnostic_icap_events",
-                        "idx_diagnostic_icap_proxy_client_service",
-                        "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)",
-                    ),
-                ):
-                    try:
-                        exists = conn.execute(
+
+            def _ensure_schema() -> None:
+                with self._connect() as conn:
+                    with mysql_advisory_lock(
+                        conn,
+                        "docker_proxy:diagnostic_store:schema",
+                        mysql_schema_lock_timeout_seconds(),
+                    ):
+                        conn.execute(
                             """
-                            SELECT 1
-                            FROM information_schema.statistics
-                            WHERE table_schema = DATABASE()
-                              AND table_name = %s
-                              AND index_name = %s
-                            LIMIT 1
+                            CREATE TABLE IF NOT EXISTS diagnostic_requests (
+                                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                                event_key CHAR(40) NOT NULL,
+                                ts BIGINT NOT NULL,
+                                duration_ms INT NOT NULL DEFAULT 0,
+                                client_ip VARCHAR(64) NOT NULL,
+                                method VARCHAR(16) NOT NULL,
+                                url TEXT NOT NULL,
+                                domain VARCHAR(255) NOT NULL,
+                                result_code VARCHAR(96) NOT NULL,
+                                http_status INT NOT NULL DEFAULT 0,
+                                bytes BIGINT NOT NULL DEFAULT 0,
+                                master_xaction VARCHAR(128) NOT NULL,
+                                hierarchy_status VARCHAR(255) NOT NULL,
+                                bump_mode VARCHAR(64) NOT NULL,
+                                sni VARCHAR(255) NOT NULL,
+                                tls_server_version VARCHAR(64) NOT NULL,
+                                tls_server_cipher VARCHAR(128) NOT NULL,
+                                tls_client_version VARCHAR(64) NOT NULL,
+                                tls_client_cipher VARCHAR(128) NOT NULL,
+                                host VARCHAR(255) NOT NULL,
+                                user_agent VARCHAR(512) NOT NULL,
+                                referer VARCHAR(512) NOT NULL,
+                                exclusion_rule VARCHAR(64) NOT NULL,
+                                ssl_exception VARCHAR(64) NOT NULL,
+                                webfilter_allow VARCHAR(64) NOT NULL,
+                                cache_bypass VARCHAR(64) NOT NULL,
+                                raw TEXT NOT NULL,
+                                created_ts BIGINT NOT NULL,
+                                UNIQUE KEY idx_diagnostic_requests_proxy_event (proxy_id, event_key),
+                                KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
+                                KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
+                                KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
+                                KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts),
+                                KEY idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes),
+                                KEY idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts),
+                                KEY idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)
+                            )
                             """,
-                            (table, index_name),
-                        ).fetchone()
-                        if not exists:
-                            conn.execute(ddl)
-                    except Exception:
-                        logger.warning(
-                            "Failed to ensure diagnostic reporting index %s on %s",
-                            index_name,
-                            table,
                         )
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS diagnostic_icap_events (
+                                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                                event_key CHAR(40) NOT NULL,
+                                ts BIGINT NOT NULL,
+                                master_xaction VARCHAR(128) NOT NULL,
+                                client_ip VARCHAR(64) NOT NULL,
+                                method VARCHAR(16) NOT NULL,
+                                url TEXT NOT NULL,
+                                domain VARCHAR(255) NOT NULL,
+                                icap_time_ms INT NOT NULL DEFAULT 0,
+                                adapt_summary VARCHAR(1024) NOT NULL,
+                                adapt_details TEXT NOT NULL,
+                                host VARCHAR(255) NOT NULL,
+                                user_agent VARCHAR(512) NOT NULL,
+                                sni VARCHAR(255) NOT NULL,
+                                exclusion_rule VARCHAR(64) NOT NULL,
+                                ssl_exception VARCHAR(64) NOT NULL,
+                                webfilter_allow VARCHAR(64) NOT NULL,
+                                cache_bypass VARCHAR(64) NOT NULL,
+                                service_family VARCHAR(32) NOT NULL,
+                                raw TEXT NOT NULL,
+                                created_ts BIGINT NOT NULL,
+                                UNIQUE KEY idx_diagnostic_icap_proxy_event (proxy_id, event_key),
+                                KEY idx_diagnostic_icap_proxy_ts (proxy_id, ts, id),
+                                KEY idx_diagnostic_icap_proxy_tx (proxy_id, master_xaction, ts),
+                                KEY idx_diagnostic_icap_proxy_domain (proxy_id, domain, ts),
+                                KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts),
+                                KEY idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)
+                            )
+                            """,
+                        )
+                        for table, index_name, ddl in (
+                            (
+                                "diagnostic_requests",
+                                "idx_diagnostic_requests_proxy_client_bytes",
+                                "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes)",
+                            ),
+                            (
+                                "diagnostic_requests",
+                                "idx_diagnostic_requests_proxy_bump_domain",
+                                "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts)",
+                            ),
+                            (
+                                "diagnostic_requests",
+                                "idx_diagnostic_requests_proxy_result_ts",
+                                "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)",
+                            ),
+                            (
+                                "diagnostic_icap_events",
+                                "idx_diagnostic_icap_proxy_client_service",
+                                "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)",
+                            ),
+                        ):
+                            try:
+                                exists = conn.execute(
+                                    """
+                                    SELECT 1
+                                    FROM information_schema.statistics
+                                    WHERE table_schema = DATABASE()
+                                      AND table_name = %s
+                                      AND index_name = %s
+                                    LIMIT 1
+                                    """,
+                                    (table, index_name),
+                                ).fetchone()
+                                if not exists:
+                                    conn.execute(ddl)
+                            except Exception:
+                                logger.warning(
+                                    "Failed to ensure diagnostic reporting index %s on %s",
+                                    index_name,
+                                    table,
+                                )
+
+            run_mysql_operation_with_retry(_ensure_schema)
             self._db_initialized = True
 
     def prune_old_entries(self, *, retention_days: int = 0) -> None:
@@ -607,6 +648,12 @@ class DiagnosticStore:
             minimum=0.1,
             maximum=5.0,
         )
+        max_pending_rows = _env_int(
+            "DIAGNOSTIC_PENDING_MAX_ROWS",
+            5000,
+            minimum=commit_batch,
+            maximum=100000,
+        )
         last_inode: int | None = None
 
         while True:
@@ -622,6 +669,7 @@ class DiagnosticStore:
 
                 pending = 0
                 pending_rows: list[tuple[Any, ...]] = []
+                drop_state: dict[str, Any] = {"dropped": 0, "last_log_ts": 0.0}
                 last_commit = time.time()
 
                 def flush_pending() -> None:
@@ -647,8 +695,14 @@ class DiagnosticStore:
                             try:
                                 row = build_row_fn(line)
                                 if row is not None:
-                                    pending_rows.append(row)
-                                    pending += 1
+                                    _append_bounded_pending_row(
+                                        pending_rows,
+                                        row,
+                                        max_pending_rows=max_pending_rows,
+                                        loop_name=loop_name,
+                                        drop_state=drop_state,
+                                    )
+                                    pending = len(pending_rows)
                             except Exception:
                                 log_exception_throttled(
                                     logger,

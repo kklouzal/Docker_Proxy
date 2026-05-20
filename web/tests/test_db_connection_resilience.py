@@ -357,3 +357,73 @@ def test_ssl_errors_init_db_survives_cleanup_lock_timeout(
 
     assert store._db_initialized is True
     assert any("CREATE TABLE IF NOT EXISTS ssl_errors" in sql for sql in created_tables)
+
+
+def test_blank_db_pool_size_derives_from_web_threads(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    monkeypatch.delenv("DB_POOL_SIZE", raising=False)
+    monkeypatch.setenv("WEB_THREADS", "2")
+
+    assert db._pool_maxsize() == 4
+
+
+def test_explicit_db_pool_size_still_allows_single_connection(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    monkeypatch.setenv("WEB_THREADS", "8")
+
+    assert db._pool_maxsize() == 1
+
+
+def test_mysql_advisory_lock_acquires_and_releases() -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    statements: list[tuple[str, tuple[object, ...]]] = []
+
+    class Result:
+        def __init__(self, acquired: int | None = None) -> None:
+            self.acquired = acquired
+
+        def fetchone(self):
+            if self.acquired is None:
+                return None
+            return {"acquired": self.acquired}
+
+    class Conn:
+        def execute(self, sql, params=()):
+            statements.append((str(sql), tuple(params or ())))
+            if "GET_LOCK" in str(sql):
+                return Result(1)
+            return Result()
+
+    with db.mysql_advisory_lock(Conn(), "docker_proxy:test", 7):
+        statements.append(("body", ()))
+
+    assert statements[0] == (
+        "SELECT GET_LOCK(%s, %s) AS acquired",
+        ("docker_proxy:test", 7),
+    )
+    assert statements[-1] == ("DO RELEASE_LOCK(%s)", ("docker_proxy:test",))
+
+
+def test_mysql_advisory_lock_times_out() -> None:
+    _add_repo_paths()
+    import pytest
+    from services import db  # type: ignore
+
+    class Result:
+        def fetchone(self):
+            return {"acquired": 0}
+
+    class Conn:
+        def execute(self, _sql, _params=()):
+            return Result()
+
+    with pytest.raises(TimeoutError):
+        with db.mysql_advisory_lock(Conn(), "docker_proxy:test", 1):
+            pass

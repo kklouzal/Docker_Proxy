@@ -11,6 +11,11 @@ slow_query_log=OFF
 # Useful errors without note-level chatter.
 log_error_verbosity=2
 
+# Capacity for six proxy containers plus admin workers with the default
+# derived DB pool sizing. External MySQL deployments should budget at least
+# this much connection headroom for the same topology.
+max_connections=160
+
 # Bound redo growth on small/edge deployments.
 innodb_redo_log_capacity=256M
 

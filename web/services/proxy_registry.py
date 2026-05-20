@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import re
@@ -8,7 +8,13 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from services.db import DATABASE_ERRORS, connect
+from services.db import (
+    DATABASE_ERRORS,
+    connect,
+    mysql_advisory_lock,
+    mysql_schema_lock_timeout_seconds,
+    run_mysql_operation_with_retry,
+)
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 
 
@@ -184,60 +190,69 @@ class ProxyRegistry:
         with self._schema_lock:
             if self._schema_ready:
                 return
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS proxy_instances (
-                        proxy_id VARCHAR(64) PRIMARY KEY,
-                        display_name VARCHAR(255) NOT NULL,
-                        hostname VARCHAR(255) NOT NULL DEFAULT '',
-                        management_url VARCHAR(512) NOT NULL DEFAULT '',
-                        public_host VARCHAR(255) NOT NULL DEFAULT '',
-                        public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',
-                        public_pac_port INT NOT NULL DEFAULT 80,
-                        public_http_proxy_port INT NOT NULL DEFAULT 3128,
-                        status VARCHAR(32) NOT NULL DEFAULT 'unknown',
-                        last_heartbeat BIGINT NOT NULL DEFAULT 0,
-                        last_apply_ts BIGINT NOT NULL DEFAULT 0,
-                        last_apply_ok TINYINT(1) NOT NULL DEFAULT 0,
-                        current_config_sha CHAR(64) NOT NULL DEFAULT '',
-                        detail TEXT,
-                        created_ts BIGINT NOT NULL,
-                        updated_ts BIGINT NOT NULL,
-                        KEY idx_proxy_instances_status (status, last_heartbeat),
-                        KEY idx_proxy_instances_updated (updated_ts)
-                    )
-                    """,
-                )
-                columns = self._existing_columns(conn, "proxy_instances")
-                required_columns = {
-                    "public_host": "ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url",
-                    "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
-                    "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
-                    "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
-                }
-                for column_name, ddl in required_columns.items():
-                    if column_name not in columns:
-                        try:
-                            conn.execute(ddl)
-                        except DATABASE_ERRORS as exc:
-                            if not _is_mysql_error_code(exc, {1060}):
-                                raise
-                for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
-                    if column_name in columns:
-                        try:
-                            conn.execute(
-                                f"ALTER TABLE proxy_instances DROP COLUMN {column_name}",
+
+            def _ensure_schema() -> None:
+                with self._connect() as conn:
+                    with mysql_advisory_lock(
+                        conn,
+                        "docker_proxy:proxy_registry:schema",
+                        mysql_schema_lock_timeout_seconds(),
+                    ):
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS proxy_instances (
+                                proxy_id VARCHAR(64) PRIMARY KEY,
+                                display_name VARCHAR(255) NOT NULL,
+                                hostname VARCHAR(255) NOT NULL DEFAULT '',
+                                management_url VARCHAR(512) NOT NULL DEFAULT '',
+                                public_host VARCHAR(255) NOT NULL DEFAULT '',
+                                public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',
+                                public_pac_port INT NOT NULL DEFAULT 80,
+                                public_http_proxy_port INT NOT NULL DEFAULT 3128,
+                                status VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                                last_heartbeat BIGINT NOT NULL DEFAULT 0,
+                                last_apply_ts BIGINT NOT NULL DEFAULT 0,
+                                last_apply_ok TINYINT(1) NOT NULL DEFAULT 0,
+                                current_config_sha CHAR(64) NOT NULL DEFAULT '',
+                                detail TEXT,
+                                created_ts BIGINT NOT NULL,
+                                updated_ts BIGINT NOT NULL,
+                                KEY idx_proxy_instances_status (status, last_heartbeat),
+                                KEY idx_proxy_instances_updated (updated_ts)
                             )
-                        except DATABASE_ERRORS as exc:
-                            if not _is_mysql_error_code(exc, {1091}):
-                                raise
-                conn.execute("DROP TABLE IF EXISTS socks_events")
-                self._columns_cache.pop("proxy_instances", None)
-                self._columns_cache["proxy_instances"] = self._existing_columns(
-                    conn,
-                    "proxy_instances",
-                )
+                            """,
+                        )
+                        columns = self._existing_columns(conn, "proxy_instances")
+                        required_columns = {
+                            "public_host": "ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url",
+                            "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
+                            "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
+                            "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
+                        }
+                        for column_name, ddl in required_columns.items():
+                            if column_name not in columns:
+                                try:
+                                    conn.execute(ddl)
+                                except DATABASE_ERRORS as exc:
+                                    if not _is_mysql_error_code(exc, {1060}):
+                                        raise
+                        for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
+                            if column_name in columns:
+                                try:
+                                    conn.execute(
+                                        f"ALTER TABLE proxy_instances DROP COLUMN {column_name}",
+                                    )
+                                except DATABASE_ERRORS as exc:
+                                    if not _is_mysql_error_code(exc, {1091}):
+                                        raise
+                        conn.execute("DROP TABLE IF EXISTS socks_events")
+                        self._columns_cache.pop("proxy_instances", None)
+                        self._columns_cache["proxy_instances"] = self._existing_columns(
+                            conn,
+                            "proxy_instances",
+                        )
+
+            run_mysql_operation_with_retry(_ensure_schema)
             self._schema_ready = True
 
     def _row_to_instance(self, row: object | None) -> ProxyInstance | None:

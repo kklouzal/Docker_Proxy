@@ -1,4 +1,4 @@
-import ipaddress
+﻿import ipaddress
 
 from services.diagnostic_store import DiagnosticStore
 
@@ -93,7 +93,7 @@ def test_list_recent_transactions_attaches_related_icap_and_filters_service() ->
                 "user_agent": "Mozilla/5.0",
                 "referer": "-",
                 "policy_tags": ["cache:cookie"],
-                "tls_summary": "bump=bump · sni=example.com",
+                "tls_summary": "bump=bump Â· sni=example.com",
             },
             {
                 "ts": 1777000001,
@@ -116,7 +116,7 @@ def test_list_recent_transactions_attaches_related_icap_and_filters_service() ->
                 "user_agent": "Mozilla/5.0",
                 "referer": "-",
                 "policy_tags": [],
-                "tls_summary": "bump=bump · sni=example.net",
+                "tls_summary": "bump=bump Â· sni=example.net",
             },
         ]
 
@@ -227,3 +227,23 @@ def test_build_icap_insert_params_filters_internal_sources(monkeypatch) -> None:
         "\t\tsslfilter_nobump\t\t"
     )
     assert store._build_icap_insert_params(line) is None
+
+
+def test_append_bounded_pending_row_drops_oldest_rows(monkeypatch) -> None:
+    from services import diagnostic_store
+
+    pending = [("old-1",), ("old-2",)]
+    drop_state = {"dropped": 0, "last_log_ts": 0.0}
+    monkeypatch.setattr(diagnostic_store.time, "time", lambda: 301.0)
+
+    diagnostic_store._append_bounded_pending_row(
+        pending,
+        ("new",),
+        max_pending_rows=2,
+        loop_name="test",
+        drop_state=drop_state,
+    )
+
+    assert pending == [("old-2",), ("new",)]
+    assert drop_state["dropped"] == 0
+    assert drop_state["last_log_ts"] > 300.0

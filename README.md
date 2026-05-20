@@ -156,6 +156,13 @@ default `PROXY_SHM_SIZE=512m` unless you also lower Squid memory cache settings.
 The default Squid template uses shared memory for cache metadata; Docker's bare
 `docker run` default `/dev/shm` size is too small for that production profile.
 
+For a six-proxy fleet plus one admin UI, budget MySQL connections explicitly.
+The bundled MySQL Compose profile defaults `MYSQL_MAX_CONNECTIONS=160`; external
+MySQL deployments should set equivalent headroom. Leave `DB_POOL_SIZE` blank
+unless you have measured a need to override it: the application derives a small
+per-process idle pool from `WEB_THREADS`, and six default proxy containers plus
+one default admin UI stay well inside the 160-connection budget.
+
 ## Core capabilities
 
 ### Proxy policy and Squid configuration
@@ -221,7 +228,7 @@ The Compose files expose the common production knobs as environment variables. T
 
 | Area | Variables |
 | --- | --- |
-| Database | `DATABASE_URL`, `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_CREATE_DATABASE`, `MYSQL_CONNECT_TIMEOUT`, `MYSQL_READ_TIMEOUT`, `MYSQL_WRITE_TIMEOUT`, `MYSQL_CONNECT_RETRIES`, `MYSQL_LOCK_WAIT_TIMEOUT`, `MYSQL_INNODB_LOCK_WAIT_TIMEOUT`, `MYSQL_SESSION_WAIT_TIMEOUT`, `MYSQL_TRANSACTION_ISOLATION`, `DB_POOL_ACQUIRE_TIMEOUT_SECONDS` |
+| Database | `DATABASE_URL`, `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_CREATE_DATABASE`, `MYSQL_CONNECT_TIMEOUT`, `MYSQL_READ_TIMEOUT`, `MYSQL_WRITE_TIMEOUT`, `MYSQL_CONNECT_RETRIES`, `MYSQL_LOCK_WAIT_TIMEOUT`, `MYSQL_INNODB_LOCK_WAIT_TIMEOUT`, `MYSQL_SESSION_WAIT_TIMEOUT`, `MYSQL_TRANSACTION_ISOLATION`, `MYSQL_SCHEMA_LOCK_TIMEOUT_SECONDS`, `MYSQL_MAX_CONNECTIONS`, `DB_POOL_SIZE`, `DB_POOL_ACQUIRE_TIMEOUT_SECONDS` |
 | Container logging | `DOCKER_LOG_DRIVER`, `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE` |
 | Security | `FLASK_SECRET_KEY`, `SESSION_COOKIE_SECURE`, `SESSION_TIMEOUT_HOURS`, `PROXY_MANAGEMENT_TOKEN`, `DISABLE_CSRF` for controlled test/dev bypasses |
 | Runtime health | `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_UI_CACHE_TTL_SECONDS`, `PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` |
@@ -230,7 +237,7 @@ The Compose files expose the common production knobs as environment variables. T
 | Squid sizing | `SQUID_WORKERS`, `SQUID_CACHE_MEM_MB`, `PROXY_SHM_SIZE`, `SQUID_SSLCRTD_CHILDREN`, `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`, `SQUID_MAX_FILEDESCRIPTORS`, `ULIMIT_NOFILE` |
 | ICAP and AV | `CICAP_PORT`, `CICAP_AV_PORT`, `CLAMD_HOST`, `CLAMD_PORT` |
 | Web filtering | `WEBFILTER_HELPERS`, `SAFE_BROWSING_POLL_SECONDS`, `SAFE_BROWSING_HELPER_CACHE_ENTRIES`, `SAFE_BROWSING_FAIL` |
-| Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS` |
+| Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_PENDING_MAX_ROWS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS` |
 | Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE` |
 
 Both containers also load `/config/app.env` at startup when mounted. Use this for host-managed deployments that prefer a mounted environment file over a root `.env`.
@@ -252,7 +259,7 @@ MySQL service or add an explicit host-port mapping on the MySQL host, restrict i
 with host/network firewalls, and point every admin/proxy container at that
 reachable address with `MYSQL_HOST` and `MYSQL_PORT`.
 
-The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, caps `innodb_redo_log_capacity=256M`, and expires binary logs after one day when binlogs are enabled. Operators who need verbose SQL logging or longer PITR retention should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
+The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, sets `max_connections=160`, caps `innodb_redo_log_capacity=256M`, and expires binary logs after one day when binlogs are enabled. Operators who need verbose SQL logging, a different connection budget, or longer PITR retention should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
 
 For externally managed MySQL containers, apply equivalent MySQL settings and Docker log rotation on that host. Host-global Docker daemon rotation, if desired for every container on the host, still belongs in `/etc/docker/daemon.json`; this application can provide Compose defaults but cannot safely rewrite the host daemon policy.
 

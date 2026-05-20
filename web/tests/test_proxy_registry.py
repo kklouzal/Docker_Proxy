@@ -184,6 +184,9 @@ def test_init_db_tolerates_concurrent_column_add_race() -> None:
         def fetchall(self):
             return []
 
+        def fetchone(self):
+            return {"acquired": 1}
+
     class Conn:
         def __init__(self) -> None:
             self.statements: list[str] = []

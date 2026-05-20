@@ -7,6 +7,7 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --max-connections=${MYSQL_MAX_CONNECTIONS:-160}
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change_me}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-squid_proxy}
