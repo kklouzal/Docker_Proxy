@@ -61,6 +61,9 @@ from services.error_pages import (
     template_tokens,
 )
 from services.errors import public_error_message
+from services.housekeeping import (
+    run_housekeeping_once as _default_run_housekeeping_once,
+)
 from services.housekeeping import start_housekeeping
 from services.http_optimizations import install_http_optimizations
 from services.logutil import log_exception_throttled
@@ -334,6 +337,7 @@ class AppRuntimeServices:
     get_proxy_registry: Any
     get_observability_queries: Any
     clear_observability_logs: Any
+    run_observability_maintenance: Any
     get_observability_retention_settings: Any
     set_observability_retention_settings: Any
     check_icap_adblock: Any
@@ -361,6 +365,7 @@ _default_app_runtime_services = AppRuntimeServices(
     get_proxy_registry=_default_get_proxy_registry,
     get_observability_queries=_default_get_observability_queries,
     clear_observability_logs=_default_clear_observability_logs,
+    run_observability_maintenance=_default_run_housekeeping_once,
     get_observability_retention_settings=_default_get_observability_retention_settings,
     set_observability_retention_settings=_default_set_observability_retention_settings,
     check_icap_adblock=_default_check_icap_adblock,
@@ -448,6 +453,13 @@ def get_observability_queries():
 
 def clear_observability_logs():
     return _app_runtime_services().clear_observability_logs()
+
+
+def run_observability_maintenance(*, analyze: bool = False, optimize: bool = False):
+    return _app_runtime_services().run_observability_maintenance(
+        analyze=analyze,
+        optimize=optimize,
+    )
 
 
 def get_observability_retention_settings():
@@ -1270,9 +1282,9 @@ if not _disable_background:
     with contextlib.suppress(Exception):
         get_webfilter_store().start_background()
 
-    # Daily housekeeping: prune old benign DB entries (best-effort).
+    # Scheduled housekeeping: daily prune at 02:00, weekly full maintenance Sunday 03:00.
     with contextlib.suppress(Exception):
-        start_housekeeping(retention_days=30, interval_seconds=24 * 60 * 60)
+        start_housekeeping(retention_days=30)
 
 
 @app.context_processor
@@ -2600,6 +2612,57 @@ def observability_clear_logs():
         )
         _record_audit_event("observability_clear_logs", ok=False, detail=detail)
         return _redirect_to("observability", pane="overview", clear_error="1")
+
+
+@app.route("/observability/maintenance", methods=["POST"])
+def observability_maintenance():
+    try:
+        result = run_observability_maintenance(analyze=True, optimize=True)
+        maintained_tables = int(
+            (result.get("maintenance") or {}).get("maintained_tables")
+            or sum(
+                1
+                for table in (result.get("maintenance") or {}).get("tables") or []
+                if table.get("status") == "maintained"
+            ),
+        )
+        days = int(result.get("retention_days") or 30)
+        detail = (
+            "ran observability MySQL prune, analyze, and optimize "
+            f"with {days} day retention; maintained {maintained_tables} tables"
+        )
+        _record_audit_event(
+            "observability_database_maintenance",
+            ok=bool(result.get("ok", True)),
+            detail=detail,
+        )
+        if not bool(result.get("ok", True)):
+            return _redirect_to(
+                "observability",
+                pane="settings",
+                maintenance_error="1",
+            )
+        return _redirect_to(
+            "observability",
+            pane="settings",
+            maintenance_run="1",
+            retention_days=days,
+            maintained_tables=maintained_tables,
+        )
+    except Exception as exc:
+        detail = public_error_message(exc)
+        log_exception_throttled(
+            app.logger,
+            "web.app.observability.maintenance",
+            interval_seconds=30.0,
+            message="Failed to run observability database maintenance",
+        )
+        _record_audit_event(
+            "observability_database_maintenance",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to("observability", pane="settings", maintenance_error="1")
 
 
 @app.route("/observability/settings", methods=["POST"])

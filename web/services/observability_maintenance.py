@@ -113,6 +113,23 @@ def _delete_table(table: str) -> int:
     return _retry_stale_connection(delete)
 
 
+def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
+    quoted = _quote_identifier(table)
+    actions: list[str] = []
+
+    def run() -> None:
+        with connect() as conn:
+            if analyze:
+                conn.execute(f"ANALYZE TABLE {quoted}")
+                actions.append("analyzed")
+            if optimize:
+                conn.execute(f"OPTIMIZE TABLE {quoted}")
+                actions.append("optimized")
+
+    _retry_stale_connection(run)
+    return ",".join(actions)
+
+
 def _best_effort_delete_fallback(table: str) -> tuple[str, int, str]:
     try:
         deleted = _delete_table(table)
@@ -210,6 +227,68 @@ def set_observability_retention_settings(*, retention_days: object) -> dict[str,
 
     _retry_stale_connection(save)
     return {"retention_days": days, "updated_ts": now}
+
+
+def maintain_observability_tables(
+    *,
+    analyze: bool = True,
+    optimize: bool = False,
+) -> dict[str, Any]:
+    """Run explicit MySQL table maintenance for stored observability data.
+
+    ANALYZE is cheap enough for regular optimizer-stat refreshes. OPTIMIZE can
+    rebuild InnoDB tables and is intentionally caller-controlled so scheduled
+    policy can run it on a slower cadence than daily pruning.
+    """
+    table_results: list[ObservabilityLogTableResult] = []
+    failed: list[ObservabilityLogTableResult] = []
+
+    for table in OBSERVABILITY_LOG_TABLES:
+        if not _table_exists(table):
+            table_results.append(
+                ObservabilityLogTableResult(table=table, status="missing"),
+            )
+            continue
+
+        try:
+            maintenance = _run_table_maintenance(
+                table,
+                analyze=analyze,
+                optimize=optimize,
+            )
+            table_results.append(
+                ObservabilityLogTableResult(
+                    table=table,
+                    status="maintained",
+                    maintenance=maintenance,
+                ),
+            )
+        except DATABASE_ERRORS as exc:
+            row = ObservabilityLogTableResult(
+                table=table,
+                status="failed",
+                maintenance="failed",
+                detail=public_detail(exc),
+            )
+            table_results.append(row)
+            failed.append(row)
+        except Exception as exc:
+            row = ObservabilityLogTableResult(
+                table=table,
+                status="failed",
+                maintenance="failed",
+                detail=public_detail(exc),
+            )
+            table_results.append(row)
+            failed.append(row)
+
+    return {
+        "ok": not failed,
+        "maintained_tables": sum(
+            1 for row in table_results if row.status == "maintained"
+        ),
+        "tables": [r.__dict__.copy() for r in table_results],
+    }
 
 
 def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:

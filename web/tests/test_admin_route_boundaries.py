@@ -581,6 +581,54 @@ def test_observability_settings_updates_retention_days(monkeypatch, tmp_path) ->
     assert "45 days" in loaded.audit_store.records[-1]["detail"]
 
 
+def test_observability_settings_runs_manual_database_maintenance(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[tuple[bool, bool]] = []
+
+    def run_maintenance(*, analyze: bool = False, optimize: bool = False):
+        calls.append((analyze, optimize))
+        return {
+            "ok": True,
+            "retention_days": 45,
+            "maintenance": {"maintained_tables": 3, "tables": []},
+        }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        run_observability_maintenance=run_maintenance,
+        get_observability_retention_settings=lambda: {
+            "retention_days": 45,
+            "updated_ts": 0,
+        },
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/observability?pane=settings")
+    assert page.status_code == 200
+    assert b"Run prune, analyze, optimize now" in page.data
+
+    response = client.post(
+        "/observability/maintenance",
+        data={"csrf_token": csrf_token(client, "/")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert calls == [(True, True)]
+    location = response.headers["Location"]
+    assert "/observability" in location
+    assert "pane=settings" in location
+    assert "maintenance_run=1" in location
+    assert "retention_days=45" in location
+    assert "maintained_tables=3" in location
+    assert loaded.audit_store.records[-1]["kind"] == "observability_database_maintenance"
+    assert loaded.audit_store.records[-1]["ok"] is True
+    assert "45 day retention" in loaded.audit_store.records[-1]["detail"]
+
+
 def test_clamav_page_uses_dedicated_clamav_health_endpoint(
     monkeypatch, tmp_path
 ) -> None:

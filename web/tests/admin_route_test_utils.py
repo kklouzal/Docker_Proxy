@@ -896,6 +896,14 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         ),
         clear_observability_logs=overrides.get("clear_observability_logs")
         or (lambda: {"ok": True, "deleted_rows": 0, "tables": []}),
+        run_observability_maintenance=overrides.get("run_observability_maintenance")
+        or (
+            lambda *, analyze=False, optimize=False: {
+                "ok": True,
+                "retention_days": 30,
+                "maintenance": {"maintained_tables": 0, "tables": []},
+            }
+        ),
         get_observability_retention_settings=overrides.get(
             "get_observability_retention_settings"
         )

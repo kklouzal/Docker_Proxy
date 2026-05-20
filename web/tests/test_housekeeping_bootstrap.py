@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -209,3 +210,49 @@ def test_housekeeping_retention_setting_falls_back_to_default(monkeypatch) -> No
     monkeypatch.setattr(housekeeping, "get_observability_retention_settings", fail)
 
     assert housekeeping.current_retention_days(30) == 30
+
+
+def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        housekeeping,
+        "_run_prune_once",
+        lambda *, retention_days: calls.append(f"prune:{retention_days}"),
+    )
+
+    def maintain(*, analyze: bool, optimize: bool):
+        calls.append(f"maintain:{analyze}:{optimize}")
+        return {"ok": True, "maintained_tables": 2, "tables": []}
+
+    monkeypatch.setattr(housekeeping, "maintain_observability_tables", maintain)
+
+    result = housekeeping.run_housekeeping_once(
+        retention_days=45,
+        analyze=True,
+        optimize=True,
+    )
+
+    assert calls == ["prune:45", "maintain:True:True"]
+    assert result["ok"] is True
+    assert result["retention_days"] == 45
+    assert result["maintenance"]["maintained_tables"] == 2
+
+
+def test_housekeeping_schedules_next_daily_and_weekly_runs() -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    saturday = datetime(2026, 5, 23, 1, 30, tzinfo=UTC)
+    daily = housekeeping._next_local_run(hour=2, now=saturday)
+    weekly = housekeeping._next_local_run(
+        hour=3,
+        weekday=6,
+        now=saturday,
+    )
+
+    assert daily == datetime(2026, 5, 23, 2, 0, tzinfo=UTC)
+    assert weekly == datetime(2026, 5, 24, 3, 0, tzinfo=UTC)

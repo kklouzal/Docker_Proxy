@@ -80,6 +80,11 @@
     {% elif request.args.get('settings_error') == '1' %}
     <div class="surface-note small">Retention settings were not saved. Check Admin UI logs for the database error.</div>
     {% endif %}
+    {% if request.args.get('maintenance_run') == '1' %}
+    <div class="surface-note small">Database maintenance completed. Pruned records older than {{ request.args.get('retention_days', retention.retention_days) }} days, then analyzed and optimized {{ request.args.get('maintained_tables', '0') }} tables.</div>
+    {% elif request.args.get('maintenance_error') == '1' %}
+    <div class="surface-note small">Database maintenance failed. Check Admin UI logs for the database error.</div>
+    {% endif %}
     <form class="form" method="post" action="{{ url_for('observability_settings') }}">
       {{ csrf_field() }}
       <div class="row-2">
@@ -88,13 +93,19 @@
           <input id="retention_days" name="retention_days" type="number" min="1" max="3650" step="1" value="{{ retention.retention_days }}" />
         </div>
         <div>
-          <label>Current setting</label>
-          <div class="surface-note small">Daily housekeeping clears stored request, SSL, security, ad-block, audit, and aggregate rows older than this many days. The default is 30 days.</div>
+          <label>Automatic maintenance</label>
+          <div class="surface-note small">Daily housekeeping runs at 02:00 and clears stored request, SSL, security, ad-block, audit, and aggregate rows older than this many days. Weekly maintenance runs Sunday at 03:00 and then analyzes and optimizes the same observability tables.</div>
         </div>
       </div>
       <div class="actions">
         <button class="btn primary" type="submit">Save retention</button>
         <a class="btn ghost" href="{{ url_for('observability', pane='settings') }}">Reset</a>
+      </div>
+    </form>
+    <form class="form" method="post" action="{{ url_for('observability_maintenance') }}" onsubmit="return confirm('Run observability database maintenance now? This will prune expired rows, then ANALYZE and OPTIMIZE the observability tables.');">
+      {{ csrf_field() }}
+      <div class="actions">
+        <button class="btn secondary" type="submit">Run prune, analyze, optimize now</button>
       </div>
     </form>
   </div>

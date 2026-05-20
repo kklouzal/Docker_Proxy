@@ -116,6 +116,28 @@ def test_clear_observability_logs_retries_stale_connection_on_table_probe(
     assert any(sql == "TRUNCATE TABLE `diagnostic_requests`" for sql in conn.statements)
 
 
+def test_maintain_observability_tables_analyzes_and_optimizes_existing_tables(
+    monkeypatch,
+) -> None:
+    existing = {"diagnostic_requests", "ssl_errors"}
+    conn = FakeConnection(existing)
+
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(
+        maintenance, "table_exists", lambda _conn, table: table in existing
+    )
+
+    result = maintenance.maintain_observability_tables(analyze=True, optimize=True)
+
+    assert result["ok"] is True
+    assert result["maintained_tables"] == 2
+    assert "ANALYZE TABLE `diagnostic_requests`" in conn.statements
+    assert "OPTIMIZE TABLE `diagnostic_requests`" in conn.statements
+    assert "ANALYZE TABLE `ssl_errors`" in conn.statements
+    assert "OPTIMIZE TABLE `ssl_errors`" in conn.statements
+    assert not any("adblock_events" in sql for sql in conn.statements)
+
+
 def test_observability_retention_settings_round_trip(monkeypatch) -> None:
     class SettingsResult:
         def __init__(self, row=None, rowcount: int = 0) -> None:
