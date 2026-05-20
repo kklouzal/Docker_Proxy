@@ -173,3 +173,43 @@ def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
     assert instance.public_pac_port == 80
     assert instance.public_http_proxy_port == 3129
     assert instance.last_apply_ok is True
+
+
+def test_init_db_tolerates_concurrent_column_add_race() -> None:
+    _add_web_to_path()
+    import pymysql  # type: ignore
+    from services import proxy_registry  # type: ignore
+
+    class Result:
+        def fetchall(self):
+            return []
+
+    class Conn:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, sql, params=None):
+            statement = str(sql)
+            self.statements.append(statement)
+            if "ADD COLUMN public_host" in statement:
+                raise pymysql.OperationalError(1060, "Duplicate column name")
+            return Result()
+
+    class Context:
+        def __init__(self, conn: Conn) -> None:
+            self.conn = conn
+
+        def __enter__(self) -> Conn:
+            return self.conn
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    conn = Conn()
+    registry = proxy_registry.ProxyRegistry()
+    registry._connect = lambda: Context(conn)  # type: ignore[method-assign]
+
+    registry.init_db()
+
+    assert registry._schema_ready is True
+    assert any("ADD COLUMN public_host" in statement for statement in conn.statements)

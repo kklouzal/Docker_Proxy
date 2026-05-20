@@ -357,6 +357,11 @@ python3 /app/tools/adblock_compile.py \
     --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
     --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
     || true
+mkdir -p /var/lib/squid-flask-proxy/adblock/compiled
+for ADBLOCK_BUCKET in domains_allow.txt domains_block.txt regex_allow.txt regex_block.txt; do
+    ADBLOCK_BUCKET_PATH="/var/lib/squid-flask-proxy/adblock/compiled/${ADBLOCK_BUCKET}"
+    [ -f "$ADBLOCK_BUCKET_PATH" ] || : > "$ADBLOCK_BUCKET_PATH"
+done
 
 # Ensure squid.conf is based on our template (needed for caching + ssl-bump).
 # If the file already looks like our managed config, keep it.
@@ -887,7 +892,9 @@ EOF
     echo "adaptation_service_set adblock_req_set adblock_req"
     echo "adaptation_service_set av_req_set av_req"
     echo "adaptation_service_set av_resp_set av_resp"
-    echo "adaptation_access adblock_req_set allow all"
+    echo "acl icap_adblockable method GET HEAD"
+    echo "adaptation_access adblock_req_set allow icap_adblockable"
+    echo "adaptation_access adblock_req_set deny all"
     echo "acl file_security_upload_methods method POST PUT PATCH"
     echo "acl file_security_download_methods method GET HEAD"
     echo "acl file_security_risky_path urlpath_regex -i \\.(exe|dll|msi|bat|cmd|com|scr|ps1|vbs|js|jar|apk)($|[?#])"

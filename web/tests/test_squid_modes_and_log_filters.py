@@ -209,7 +209,10 @@ def test_render_icap_include_uses_single_endpoint_services_without_identity_rewr
     assert "icap_service av_resp_0" not in out
     assert "icap://127.0.0.1:24000/adblockreq" in out
     assert "icap://127.0.0.1:24001/avrespmod" in out
-    assert "adaptation_access adblock_req_set allow all" in out
+    assert "acl icap_adblockable method GET HEAD" in out
+    assert "adaptation_access adblock_req_set allow icap_adblockable" in out
+    assert "adaptation_access adblock_req_set deny all" in out
+    assert "adaptation_access adblock_req_set allow all" not in out
     assert "Accept-Encoding identity" not in out
 
 
@@ -336,7 +339,9 @@ def test_squid_controller_normalize_config_text_migrates_legacy_inline_icap_serv
     text = ctl.normalize_config_text(
         """
 icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on
-adaptation_access adblock_req_set allow all
+acl icap_adblockable method GET HEAD
+adaptation_access adblock_req_set allow icap_adblockable
+adaptation_access adblock_req_set deny all
 http_access allow all
 """.strip(),
     )

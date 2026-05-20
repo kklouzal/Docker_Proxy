@@ -8,8 +8,21 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from services.db import connect
+from services.db import DATABASE_ERRORS, connect
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+
+
+def _mysql_error_code(exc: BaseException) -> int | None:
+    try:
+        if getattr(exc, "args", None):
+            return int(exc.args[0])
+    except Exception:
+        return None
+    return None
+
+
+def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
+    return _mysql_error_code(exc) in codes
 
 
 def _normalize_public_scheme(value: object | None) -> str:
@@ -205,12 +218,20 @@ class ProxyRegistry:
                 }
                 for column_name, ddl in required_columns.items():
                     if column_name not in columns:
-                        conn.execute(ddl)
+                        try:
+                            conn.execute(ddl)
+                        except DATABASE_ERRORS as exc:
+                            if not _is_mysql_error_code(exc, {1060}):
+                                raise
                 for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
                     if column_name in columns:
-                        conn.execute(
-                            f"ALTER TABLE proxy_instances DROP COLUMN {column_name}",
-                        )
+                        try:
+                            conn.execute(
+                                f"ALTER TABLE proxy_instances DROP COLUMN {column_name}",
+                            )
+                        except DATABASE_ERRORS as exc:
+                            if not _is_mysql_error_code(exc, {1091}):
+                                raise
                 conn.execute("DROP TABLE IF EXISTS socks_events")
                 self._columns_cache.pop("proxy_instances", None)
                 self._columns_cache["proxy_instances"] = self._existing_columns(

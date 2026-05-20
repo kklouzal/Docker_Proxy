@@ -54,3 +54,35 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     assert "derived_pool=$((web_threads + 1))" in entrypoint
     assert 'if [ "$derived_pool" -lt 2 ]; then' in entrypoint
     assert 'if [ "$derived_pool" -gt 8 ]; then' in entrypoint
+
+
+def test_adblock_icap_only_adapts_browsing_methods() -> None:
+    entrypoint = _read("docker/entrypoint.sh")
+
+    assert "adaptation_access adblock_req_set allow all" not in entrypoint
+    assert "acl icap_adblockable method GET HEAD" in entrypoint
+    assert "adaptation_access adblock_req_set allow icap_adblockable" in entrypoint
+    assert "adaptation_access adblock_req_set deny all" in entrypoint
+
+
+def test_linux_container_payloads_are_lf_only() -> None:
+    paths = [
+        "docker/entrypoint.sh",
+        "docker/entrypoint.admin.sh",
+        "docker/healthcheck.sh",
+        "docker/healthcheck.admin.sh",
+        "docker/load-env.sh",
+        "docker/squid_logrotate.sh",
+        "scripts/generate_ca.sh",
+        "scripts/init_ssl_db.sh",
+        "docker/supervisord.proxy.conf",
+        "docker/supervisord.admin.conf",
+        "docker/c-icap.conf",
+        "docker/adblock_req.conf",
+        "docker/virus_scan.conf",
+        "docker/clamd_mod.conf",
+    ]
+
+    offenders = [path for path in paths if b"\r\n" in (REPO_ROOT / path).read_bytes()]
+
+    assert offenders == []
