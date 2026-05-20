@@ -1764,6 +1764,37 @@ def _best_effort_refresh_pac_runtime() -> None:
         )
 
 
+def _queue_adblock_runtime_refresh(*, action: str) -> None:
+    operation = request_proxy_reconcile(
+        get_proxy_id(),
+        operation_type="adblock_refresh",
+        subject="Adblock runtime refresh",
+        summary="Adblock settings changed; proxy reconciliation queued.",
+        detail=f"Admin requested adblock runtime refresh after {action}.",
+        created_by=str(session.get("user") or ""),
+        force=True,
+    )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        raise RuntimeError(
+            str(getattr(operation, "detail", "") or "Adblock runtime refresh was not queued."),
+        )
+
+
+def _best_effort_queue_adblock_runtime_refresh(*, action: str) -> None:
+    try:
+        _queue_adblock_runtime_refresh(action=action)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.adblock_runtime_refresh",
+            interval_seconds=30.0,
+            message="Failed to queue adblock runtime refresh",
+        )
+
+
 def _handle_adblock_post(store: Any):
     action = _form_action()
     if action == "save_lists":
@@ -1772,6 +1803,7 @@ def _handle_adblock_post(store: Any):
             enabled_map[st.key] = request.form.get(f"enabled_{st.key}") == "on"
         store.set_enabled(enabled_map)
         store.request_refresh_now()
+        _best_effort_queue_adblock_runtime_refresh(action="list save")
     elif action == "save_settings":
         enabled = request.form.get("adblock_enabled") == "on"
         cur = store.get_settings()
@@ -1779,6 +1811,7 @@ def _handle_adblock_post(store: Any):
         cache_max = _posted_int("cache_max", int(cur.get("cache_max") or 0))
         store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
         store.request_refresh_now()
+        _best_effort_queue_adblock_runtime_refresh(action="settings save")
     elif action == "refresh":
         any_enabled = False
         try:
@@ -1788,10 +1821,12 @@ def _handle_adblock_post(store: Any):
         if not any_enabled:
             return _redirect_to("adblock", refresh_no_lists="1")
         store.request_refresh_now()
+        _best_effort_queue_adblock_runtime_refresh(action="manual refresh")
         return _redirect_to("adblock", refresh_requested="1")
     elif action == "flush_cache":
         store.request_cache_flush()
         _best_effort_apply_adblock_flush()
+        _best_effort_queue_adblock_runtime_refresh(action="cache flush")
         return _redirect_to("adblock", cache_flushed="1")
     return _redirect_to("adblock")
 

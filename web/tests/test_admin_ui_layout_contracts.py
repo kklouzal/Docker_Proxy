@@ -171,3 +171,12 @@ def test_admin_dockerfile_packages_observability_maintenance_service() -> None:
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile.admin").read_text(encoding="utf-8")
 
     assert "web/services/observability_maintenance.py" in dockerfile
+
+def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "new FormData(form, submitter)" in js
+    assert "body.append(submitter.name, submitter.value || '')" in js
+    assert "clearSpaPageCache();" in js
+    assert "spaPagePrefetches.clear();" in js
+    assert "buildSubmitFormData(form, event.submitter)" in js

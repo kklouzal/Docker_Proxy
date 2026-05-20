@@ -160,6 +160,8 @@ def test_clamav_settings_route_persists_validated_runtime_controls(
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert "# BEGIN SQUID-UI CLAMAV SETTINGS" in config_text
     assert "# clamav_fail_mode: closed" in config_text
+    assert "# file_security_scan_downloads: off" in config_text
+    assert "# file_security_scan_uploads: off" in config_text
     assert "# virus_scan_scan_file_types: TEXT DATA" in config_text
     assert "# virus_scan_send_percent_data: 88" in config_text
     assert "# virus_scan_start_send_percent_after: 256K" in config_text

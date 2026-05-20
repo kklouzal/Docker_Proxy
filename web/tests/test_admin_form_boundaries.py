@@ -36,6 +36,8 @@ def test_adblock_settings_accept_non_int_default_and_request_refresh(
     assert store.settings["cache_ttl"] == 3600
     assert store.settings["cache_max"] == -10
     assert store.refresh_requested == 1
+    assert loaded.operation_ledger.operations[-1].operation_type == "adblock_refresh"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
 def test_adblock_refresh_with_no_enabled_lists_redirects_with_warning(
@@ -250,3 +252,19 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
         toggled = loaded.module._handle_pac_builder_post(store)
     assert _params(toggled.location)["ok"] == ["1"]
     assert store.direct_enabled is False
+
+def test_adblock_list_save_queues_runtime_refresh(monkeypatch, tmp_path) -> None:
+    store = FakeAdblockStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/adblock",
+        method="POST",
+        data={"action": "save_lists", "enabled_easylist": "on"},
+    ):
+        response = loaded.module._handle_adblock_post(store)
+
+    assert response.status_code in {301, 302, 303}
+    assert store.refresh_requested == 1
+    assert loaded.operation_ledger.operations[-1].operation_type == "adblock_refresh"
+    assert loaded.operation_ledger.operations[-1].subject == "Adblock runtime refresh"

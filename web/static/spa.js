@@ -98,6 +98,11 @@
     pruneSpaPageCache();
   };
 
+  const clearSpaPageCache = () => {
+    spaPageCache.clear();
+    spaPagePrefetches.clear();
+  };
+
   const parseSpaDocument = (html) => {
     const parsed = new DOMParser().parseFromString(html, 'text/html');
     const nextContainer = getSpaContainer(parsed);
@@ -1114,6 +1119,10 @@
       }
     }
 
+    if (!isGet) {
+      clearSpaPageCache();
+    }
+
     if (activeNavigationController) {
       activeNavigationController.abort();
     }
@@ -1217,6 +1226,27 @@
     void fetchAndSwap(href, { push: true, method: 'GET' });
   };
 
+  const buildSubmitFormData = (form, submitter) => {
+    try {
+      if (submitter instanceof HTMLElement && submitter.name) {
+        return new FormData(form, submitter);
+      }
+    } catch {
+      // Older browsers do not support the submitter overload.
+    }
+
+    const body = new FormData(form);
+    if (
+      submitter instanceof HTMLElement
+      && submitter.name
+      && (submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement)
+      && !body.has(submitter.name)
+    ) {
+      body.append(submitter.name, submitter.value || '');
+    }
+    return body;
+  };
+
   const onDocumentSubmit = (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
@@ -1255,7 +1285,7 @@
       return;
     }
 
-    const body = new FormData(form);
+    const body = buildSubmitFormData(form, event.submitter);
     setFormPending(form, true);
     showToast('Saved locally; queuing proxy reconciliation…', 'pending');
     // For POST, avoid adding noisy history entries; the server usually redirects back.
