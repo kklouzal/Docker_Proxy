@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -7,6 +8,10 @@ from services.db import DATABASE_ERRORS, connect, table_exists
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+DEFAULT_OBSERVABILITY_RETENTION_DAYS = 30
+MIN_OBSERVABILITY_RETENTION_DAYS = 1
+MAX_OBSERVABILITY_RETENTION_DAYS = 3650
 
 OBSERVABILITY_LOG_TABLES: tuple[str, ...] = (
     "diagnostic_requests",
@@ -121,6 +126,90 @@ def _best_effort_delete_fallback(table: str) -> tuple[str, int, str]:
 def public_detail(exc: BaseException) -> str:
     text = str(exc).strip()
     return text[:300] if text else exc.__class__.__name__
+
+
+def normalize_retention_days(value: object) -> int:
+    try:
+        days = int(value or DEFAULT_OBSERVABILITY_RETENTION_DAYS)
+    except Exception:
+        days = DEFAULT_OBSERVABILITY_RETENTION_DAYS
+    return max(
+        MIN_OBSERVABILITY_RETENTION_DAYS,
+        min(MAX_OBSERVABILITY_RETENTION_DAYS, days),
+    )
+
+
+def _ensure_observability_settings_table() -> None:
+    now = int(time.time())
+
+    def ensure() -> None:
+        with connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS observability_settings (
+                    id TINYINT PRIMARY KEY,
+                    retention_days INT NOT NULL DEFAULT 30,
+                    updated_ts BIGINT NOT NULL
+                )
+                """,
+            )
+            conn.execute(
+                """
+                INSERT INTO observability_settings(id, retention_days, updated_ts)
+                VALUES(1, %s, %s)
+                ON DUPLICATE KEY UPDATE id = id
+                """,
+                (DEFAULT_OBSERVABILITY_RETENTION_DAYS, now),
+            )
+
+    _retry_stale_connection(ensure)
+
+
+def get_observability_retention_settings() -> dict[str, int]:
+    _ensure_observability_settings_table()
+
+    def load() -> dict[str, int]:
+        with connect() as conn:
+            row = conn.execute(
+                """
+                SELECT retention_days, updated_ts
+                FROM observability_settings
+                WHERE id = 1
+                """,
+            ).fetchone()
+        if not row:
+            return {
+                "retention_days": DEFAULT_OBSERVABILITY_RETENTION_DAYS,
+                "updated_ts": 0,
+            }
+        return {
+            "retention_days": normalize_retention_days(row[0]),
+            "updated_ts": int(row[1] or 0),
+        }
+
+    return _retry_stale_connection(load)
+
+
+def set_observability_retention_settings(*, retention_days: object) -> dict[str, int]:
+    days = normalize_retention_days(retention_days)
+    now = int(time.time())
+    _ensure_observability_settings_table()
+
+    def save() -> None:
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO observability_settings(id, retention_days, updated_ts)
+                VALUES(1, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    retention_days = VALUES(retention_days),
+                    updated_ts = VALUES(updated_ts)
+                """,
+                (days, now),
+            )
+
+    _retry_stale_connection(save)
+    return {"retention_days": days, "updated_ts": now}
 
 
 def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:

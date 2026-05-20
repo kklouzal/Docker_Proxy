@@ -114,3 +114,60 @@ def test_clear_observability_logs_retries_stale_connection_on_table_probe(
     assert result["ok"] is True
     assert conn.table_exists_calls >= 2
     assert any(sql == "TRUNCATE TABLE `diagnostic_requests`" for sql in conn.statements)
+
+
+def test_observability_retention_settings_round_trip(monkeypatch) -> None:
+    class SettingsResult:
+        def __init__(self, row=None, rowcount: int = 0) -> None:
+            self._row = row
+            self.rowcount = rowcount
+
+        def fetchone(self):
+            return self._row
+
+    class SettingsConnection:
+        def __init__(self) -> None:
+            self.retention_days = maintenance.DEFAULT_OBSERVABILITY_RETENTION_DAYS
+            self.updated_ts = 0
+            self.statements: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params: tuple[object, ...] | None = None):
+            self.statements.append(sql)
+            normalized = " ".join(sql.split()).upper()
+            if normalized.startswith("SELECT RETENTION_DAYS"):
+                return SettingsResult((self.retention_days, self.updated_ts))
+            if "RETENTION_DAYS = VALUES(RETENTION_DAYS)" in normalized:
+                assert params is not None
+                self.retention_days = int(params[0])
+                self.updated_ts = int(params[1])
+            elif "INSERT INTO OBSERVABILITY_SETTINGS" in normalized:
+                assert params is not None
+                if not self.updated_ts:
+                    self.retention_days = int(params[0])
+                    self.updated_ts = int(params[1])
+            return SettingsResult(rowcount=1)
+
+    conn = SettingsConnection()
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance.time, "time", lambda: 1234)
+
+    initial = maintenance.get_observability_retention_settings()
+    saved = maintenance.set_observability_retention_settings(retention_days="45")
+    loaded = maintenance.get_observability_retention_settings()
+
+    assert initial["retention_days"] == 30
+    assert saved == {"retention_days": 45, "updated_ts": 1234}
+    assert loaded == {"retention_days": 45, "updated_ts": 1234}
+    assert any("CREATE TABLE IF NOT EXISTS observability_settings" in sql for sql in conn.statements)
+
+
+def test_observability_retention_days_are_bounded() -> None:
+    assert maintenance.normalize_retention_days("0") == maintenance.MIN_OBSERVABILITY_RETENTION_DAYS
+    assert maintenance.normalize_retention_days("999999") == maintenance.MAX_OBSERVABILITY_RETENTION_DAYS
+    assert maintenance.normalize_retention_days("not-a-number") == maintenance.DEFAULT_OBSERVABILITY_RETENTION_DAYS

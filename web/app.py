@@ -67,6 +67,12 @@ from services.logutil import log_exception_throttled
 from services.observability_maintenance import (
     clear_observability_logs as _default_clear_observability_logs,
 )
+from services.observability_maintenance import (
+    get_observability_retention_settings as _default_get_observability_retention_settings,
+)
+from services.observability_maintenance import (
+    set_observability_retention_settings as _default_set_observability_retention_settings,
+)
 from services.observability_queries import (
     get_observability_queries as _default_get_observability_queries,
 )
@@ -197,6 +203,7 @@ _OBSERVABILITY_PANES = (
     "security",
     "performance",
     "reports",
+    "settings",
 )
 _OBSERVABILITY_SORT_DEFAULTS = {
     "overview": "requests",
@@ -207,6 +214,7 @@ _OBSERVABILITY_SORT_DEFAULTS = {
     "security": "recent",
     "performance": "recent",
     "reports": "bandwidth",
+    "settings": "recent",
 }
 _OBSERVABILITY_SORT_OPTIONS = {
     "overview": ("requests",),
@@ -217,6 +225,7 @@ _OBSERVABILITY_SORT_OPTIONS = {
     "security": ("recent",),
     "performance": ("recent",),
     "reports": ("bandwidth",),
+    "settings": ("recent",),
 }
 _OBSERVABILITY_OVERVIEW_EXPORT_METRICS = (
     "request_records",
@@ -325,6 +334,8 @@ class AppRuntimeServices:
     get_proxy_registry: Any
     get_observability_queries: Any
     clear_observability_logs: Any
+    get_observability_retention_settings: Any
+    set_observability_retention_settings: Any
     check_icap_adblock: Any
     check_icap_av: Any
     check_clamd: Any
@@ -350,6 +361,8 @@ _default_app_runtime_services = AppRuntimeServices(
     get_proxy_registry=_default_get_proxy_registry,
     get_observability_queries=_default_get_observability_queries,
     clear_observability_logs=_default_clear_observability_logs,
+    get_observability_retention_settings=_default_get_observability_retention_settings,
+    set_observability_retention_settings=_default_set_observability_retention_settings,
     check_icap_adblock=_default_check_icap_adblock,
     check_icap_av=_default_check_icap_av,
     check_clamd=_default_check_clamd,
@@ -435,6 +448,16 @@ def get_observability_queries():
 
 def clear_observability_logs():
     return _app_runtime_services().clear_observability_logs()
+
+
+def get_observability_retention_settings():
+    return _app_runtime_services().get_observability_retention_settings()
+
+
+def set_observability_retention_settings(*, retention_days: object):
+    return _app_runtime_services().set_observability_retention_settings(
+        retention_days=retention_days,
+    )
 
 
 def _cached_proxy_health(
@@ -2485,6 +2508,10 @@ def observability():
                     summary=summary,
                 ),
             )
+        elif pane == "settings":
+            pane_payload = {
+                "retention_settings": get_observability_retention_settings(),
+            }
         else:
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key(
@@ -2573,6 +2600,40 @@ def observability_clear_logs():
         )
         _record_audit_event("observability_clear_logs", ok=False, detail=detail)
         return _redirect_to("observability", pane="overview", clear_error="1")
+
+
+@app.route("/observability/settings", methods=["POST"])
+def observability_settings():
+    retention_days = _bounded_int(
+        request.form.get("retention_days"),
+        default=30,
+        minimum=1,
+        maximum=3650,
+    )
+    try:
+        settings = set_observability_retention_settings(
+            retention_days=retention_days,
+        )
+        days = int(settings.get("retention_days") or retention_days)
+        _record_audit_event(
+            "observability_retention_settings_save",
+            ok=True,
+            detail=f"set observability MySQL retention to {days} days",
+        )
+        return _redirect_to(
+            "observability",
+            pane="settings",
+            settings_saved="1",
+            retention_days=days,
+        )
+    except Exception as exc:
+        detail = public_error_message(exc)
+        _record_audit_event(
+            "observability_retention_settings_save",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to("observability", pane="settings", settings_error="1")
 
 
 @app.route("/observability/report-schedules", methods=["POST"])

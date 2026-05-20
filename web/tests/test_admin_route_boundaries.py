@@ -538,6 +538,49 @@ def test_observability_clear_logs_is_fleet_wide_mutation(monkeypatch, tmp_path) 
     assert "2 tables" in loaded.audit_store.records[-1]["detail"]
 
 
+def test_observability_settings_updates_retention_days(monkeypatch, tmp_path) -> None:
+    saved: list[int] = []
+
+    def set_retention(*, retention_days: object) -> dict[str, int]:
+        days = int(retention_days)
+        saved.append(days)
+        return {"retention_days": days, "updated_ts": 123}
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        get_observability_retention_settings=lambda: {
+            "retention_days": 30,
+            "updated_ts": 0,
+        },
+        set_observability_retention_settings=set_retention,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/observability?pane=settings")
+    assert page.status_code == 200
+    assert b"MySQL retention" in page.data
+    assert b"Save retention" in page.data
+
+    response = client.post(
+        "/observability/settings",
+        data={"csrf_token": csrf_token(client, "/"), "retention_days": "45"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert saved == [45]
+    location = response.headers["Location"]
+    assert "/observability" in location
+    assert "pane=settings" in location
+    assert "settings_saved=1" in location
+    assert "retention_days=45" in location
+    assert loaded.audit_store.records[-1]["kind"] == "observability_retention_settings_save"
+    assert loaded.audit_store.records[-1]["ok"] is True
+    assert "45 days" in loaded.audit_store.records[-1]["detail"]
+
+
 def test_clamav_page_uses_dedicated_clamav_health_endpoint(
     monkeypatch, tmp_path
 ) -> None:

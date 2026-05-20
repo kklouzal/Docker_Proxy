@@ -896,6 +896,14 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         ),
         clear_observability_logs=overrides.get("clear_observability_logs")
         or (lambda: {"ok": True, "deleted_rows": 0, "tables": []}),
+        get_observability_retention_settings=overrides.get(
+            "get_observability_retention_settings"
+        )
+        or (lambda: {"retention_days": 30, "updated_ts": 0}),
+        set_observability_retention_settings=overrides.get(
+            "set_observability_retention_settings"
+        )
+        or (lambda *, retention_days: {"retention_days": int(retention_days), "updated_ts": 1}),
         check_icap_adblock=lambda: {"ok": True, "detail": "ok"},
         check_icap_av=lambda: {"ok": True, "detail": "ok"},
         check_clamd=lambda: {"ok": True, "detail": "ok"},

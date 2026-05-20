@@ -64,7 +64,42 @@
   <a class="btn {{ 'primary' if pane == 'security' else 'ghost' }}" href="{{ url_for('observability', pane='security', window=window, limit=limit, q=search) }}">Security</a>
   <a class="btn {{ 'primary' if pane == 'performance' else 'ghost' }}" href="{{ url_for('observability', pane='performance', window=window, limit=limit) }}">Performance</a>
   <a class="btn {{ 'primary' if pane == 'reports' else 'ghost' }}" href="{{ url_for('observability', pane='reports', window=window, limit=limit, q=search, resolve_hostnames=('1' if resolve_hostnames else '0'), privacy=('1' if privacy else '0')) }}">Reports</a>
+  <a class="btn {{ 'primary' if pane == 'settings' else 'ghost' }}" href="{{ url_for('observability', pane='settings', window=window) }}">Settings</a>
 </div>
+
+{% if pane == 'settings' %}
+{% set retention = payload.retention_settings or {'retention_days': 30, 'updated_ts': 0} %}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">MySQL retention</h2>
+    <span class="badge">{{ retention.retention_days }} days</span>
+  </div>
+  <div class="card-body">
+    {% if request.args.get('settings_saved') == '1' %}
+    <div class="surface-note small">Retention settings saved. Daily housekeeping will clear observability records older than {{ request.args.get('retention_days', retention.retention_days) }} days.</div>
+    {% elif request.args.get('settings_error') == '1' %}
+    <div class="surface-note small">Retention settings were not saved. Check Admin UI logs for the database error.</div>
+    {% endif %}
+    <form class="form" method="post" action="{{ url_for('observability_settings') }}">
+      {{ csrf_field() }}
+      <div class="row-2">
+        <div>
+          <label for="retention_days">Retain MySQL observability records</label>
+          <input id="retention_days" name="retention_days" type="number" min="1" max="3650" step="1" value="{{ retention.retention_days }}" />
+        </div>
+        <div>
+          <label>Current setting</label>
+          <div class="surface-note small">Daily housekeeping clears stored request, SSL, security, ad-block, audit, and aggregate rows older than this many days. The default is 30 days.</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn primary" type="submit">Save retention</button>
+        <a class="btn ghost" href="{{ url_for('observability', pane='settings') }}">Reset</a>
+      </div>
+    </form>
+  </div>
+</section>
+{% else %}
 
 <section class="card">
   <div class="card-header">
@@ -195,6 +230,8 @@
     </form>
   </div>
 </section>
+
+{% endif %}
 
 {% if pane == 'overview' %}
 <section class="card">

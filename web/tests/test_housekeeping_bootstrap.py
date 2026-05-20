@@ -183,3 +183,29 @@ def test_timeseries_query_reinitializes_after_external_schema_wipe(monkeypatch) 
     assert rows == [{"ts": 123, "count": 1, "cpu": 2.5, "mem": 50.0, "hit_rate": 75.0}]
     assert store._db_initialized is True
     assert sum(1 for call in calls if "CREATE TABLE IF NOT EXISTS" in call) == 7
+
+
+def test_housekeeping_resolves_current_retention_setting(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    monkeypatch.setattr(
+        housekeeping,
+        "get_observability_retention_settings",
+        lambda: {"retention_days": "45"},
+    )
+
+    assert housekeeping.current_retention_days(30) == 45
+
+
+def test_housekeeping_retention_setting_falls_back_to_default(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    def fail():
+        msg = "db unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(housekeeping, "get_observability_retention_settings", fail)
+
+    assert housekeeping.current_retention_days(30) == 30

@@ -10,6 +10,10 @@ from services.db import OPERATIONAL_ERRORS
 from services.diagnostic_store import get_diagnostic_store
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled
+from services.observability_maintenance import (
+    get_observability_retention_settings,
+    normalize_retention_days,
+)
 from services.ssl_errors_store import get_ssl_errors_store
 
 logger = logging.getLogger(__name__)
@@ -53,6 +57,14 @@ def _run_with_db_lock_retry(
         raise last_exc
 
 
+def current_retention_days(default: int = 30) -> int:
+    try:
+        settings = get_observability_retention_settings()
+        return normalize_retention_days(settings.get("retention_days", default))
+    except Exception:
+        return normalize_retention_days(default)
+
+
 def _run_once(*, retention_days: int) -> None:
     # Best-effort: each store handles its own DB locks and failures.
     _run_with_db_lock_retry(
@@ -91,7 +103,7 @@ def start_housekeeping(
     def loop() -> None:
         while True:
             try:
-                _run_once(retention_days=int(retention_days))
+                _run_once(retention_days=current_retention_days(retention_days))
             except Exception:
                 log_exception_throttled(
                     logger,
