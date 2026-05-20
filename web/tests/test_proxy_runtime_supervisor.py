@@ -511,6 +511,7 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     runtime = _runtime_shell()
     reloads: list[bool] = []
     applies: list[str] = []
+    invalidations: list[bool] = []
     recorded: list[tuple[int, bool, str]] = []
 
     class Controller:
@@ -544,7 +545,7 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     runtime.controller = Controller()
     runtime.revisions = Revisions()
     runtime.registry = Registry()
-    runtime._invalidate_health_cache = lambda: None
+    runtime._invalidate_health_cache = lambda: invalidations.append(True)
     runtime.ensure_registered = lambda: None
     runtime.bootstrap_revision_if_missing = lambda: None
     runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
@@ -571,6 +572,7 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     assert result["config_changed"] is True
     assert result["policy_changed"] is True
     assert applies == ["http_port 3128\n"]
+    assert len(invalidations) >= 2
     assert reloads == [True]
     assert recorded
     assert "Squid reconfigured for policy update." in recorded[0][2]

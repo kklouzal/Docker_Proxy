@@ -2388,6 +2388,7 @@ class ProxyRuntime:
         ).hexdigest()
 
         ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
+        self._invalidate_health_cache()
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
         if ok and (policy_reload_required or adblock_changed or clamav_runtime_changed):
