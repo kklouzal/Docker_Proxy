@@ -151,6 +151,11 @@ selection. Do not reuse the same `PROXY_INSTANCE_ID` on multiple proxy hosts;
 registration, heartbeat, queued operations, PAC metadata, and health status are
 keyed by that ID.
 
+Keep each proxy container's shared-memory allocation at or above the Compose
+default `PROXY_SHM_SIZE=512m` unless you also lower Squid memory cache settings.
+The default Squid template uses shared memory for cache metadata; Docker's bare
+`docker run` default `/dev/shm` size is too small for that production profile.
+
 ## Core capabilities
 
 ### Proxy policy and Squid configuration
