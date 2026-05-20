@@ -334,8 +334,8 @@ class PacProfilesStore:
             conn.execute(
                 """
                 INSERT INTO pac_proxy_chain_settings(proxy_id, direct_enabled, updated_ts)
-                VALUES(%s,%s,%s)
-                ON DUPLICATE KEY UPDATE direct_enabled=VALUES(direct_enabled), updated_ts=VALUES(updated_ts)
+                VALUES(%s,%s,%s) AS incoming
+                ON DUPLICATE KEY UPDATE direct_enabled=incoming.direct_enabled, updated_ts=incoming.updated_ts
                 """,
                 (proxy_id, 1 if enabled else 0, _now()),
             )

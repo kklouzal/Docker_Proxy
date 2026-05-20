@@ -685,8 +685,8 @@ class SafeBrowsingStore:
         now = _now()
         conn.execute(
             "INSERT INTO safe_browsing_hash_lists(name, version, threat_type, last_success, last_attempt, last_error, next_run_ts, prefix_count) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE version=VALUES(version), threat_type=VALUES(threat_type), "
-            "last_success=VALUES(last_success), last_attempt=VALUES(last_attempt), last_error='', prefix_count=VALUES(prefix_count)",
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s) AS incoming ON DUPLICATE KEY UPDATE version=incoming.version, threat_type=incoming.threat_type, "
+            "last_success=incoming.last_success, last_attempt=incoming.last_attempt, last_error='', prefix_count=incoming.prefix_count",
             (name, version, _threat_type_for_list(name), now, now, "", 0, len(merged)),
         )
 
@@ -859,14 +859,14 @@ class SafeBrowsingLocalChecker:
                 if not threat:
                     continue
                 conn.execute(
-                    "INSERT INTO safe_browsing_full_hash_cache(prefix, full_hash, threat_type, list_name, expires_ts) VALUES(%s,%s,%s,%s,%s) "
-                    "ON DUPLICATE KEY UPDATE threat_type=VALUES(threat_type), list_name=VALUES(list_name), expires_ts=VALUES(expires_ts)",
+                    "INSERT INTO safe_browsing_full_hash_cache(prefix, full_hash, threat_type, list_name, expires_ts) VALUES(%s,%s,%s,%s,%s) AS incoming "
+                    "ON DUPLICATE KEY UPDATE threat_type=incoming.threat_type, list_name=incoming.list_name, expires_ts=incoming.expires_ts",
                     (prefix, full, threat, "hashes.search", expires),
                 )
                 matched_any = True
             if not matched_any:
                 conn.execute(
-                    "INSERT INTO safe_browsing_negative_cache(prefix, expires_ts) VALUES(%s,%s) ON DUPLICATE KEY UPDATE expires_ts=VALUES(expires_ts)",
+                    "INSERT INTO safe_browsing_negative_cache(prefix, expires_ts) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE expires_ts=incoming.expires_ts",
                     (prefix, expires),
                 )
             conn.commit()

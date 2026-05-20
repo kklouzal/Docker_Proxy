@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import threading
@@ -117,14 +117,14 @@ class TimeSeriesStore:
                 conn.execute(
                     """
                     INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s) AS incoming
                     ON DUPLICATE KEY UPDATE
-                        count = VALUES(count),
-                        cpu = VALUES(cpu),
-                        mem = VALUES(mem),
-                        disk_used = VALUES(disk_used),
-                        cache_dir_size = VALUES(cache_dir_size),
-                        hit_rate = VALUES(hit_rate)
+                        count = incoming.count,
+                        cpu = incoming.cpu,
+                        mem = incoming.mem,
+                        disk_used = incoming.disk_used,
+                        cache_dir_size = incoming.cache_dir_size,
+                        hit_rate = incoming.hit_rate
                     """,
                     (proxy_id, ts_i, 1, cpu, mem, disk_used, cache_dir_size, hit_rate),
                 )
@@ -149,25 +149,27 @@ class TimeSeriesStore:
                 conn.execute(
                     f"""
                     INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                    SELECT
-                        proxy_id,
-                        (ts / %s) * %s AS bucket_start,
-                        SUM(count) AS cnt,
-                        CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END,
-                        CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END,
-                        CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END,
-                        CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END,
-                        CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END
-                    FROM {src_table}
-                    WHERE proxy_id = %s AND ts < %s
-                    GROUP BY proxy_id, bucket_start
+                    SELECT * FROM (
+                        SELECT
+                            proxy_id,
+                            (ts / %s) * %s AS bucket_start,
+                            SUM(count) AS count,
+                            CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END AS cpu,
+                            CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END AS mem,
+                            CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END AS disk_used,
+                            CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END AS cache_dir_size,
+                            CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END AS hit_rate
+                        FROM {src_table}
+                        WHERE proxy_id = %s AND ts < %s
+                        GROUP BY proxy_id, bucket_start
+                    ) AS incoming
                     ON DUPLICATE KEY UPDATE
-                        count = VALUES(count),
-                        cpu = VALUES(cpu),
-                        mem = VALUES(mem),
-                        disk_used = VALUES(disk_used),
-                        cache_dir_size = VALUES(cache_dir_size),
-                        hit_rate = VALUES(hit_rate)
+                        count = incoming.count,
+                        cpu = incoming.cpu,
+                        mem = incoming.mem,
+                        disk_used = incoming.disk_used,
+                        cache_dir_size = incoming.cache_dir_size,
+                        hit_rate = incoming.hit_rate
                     """,
                     (dst_seconds, dst_seconds, proxy_id, aligned_end),
                 )

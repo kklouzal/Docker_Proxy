@@ -27,6 +27,18 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+def _file_has_non_comment_lines(path: str) -> bool:
+    try:
+        with Path(path).open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 @lru_cache(maxsize=1)
 def _cached_icap_include_path() -> Path:
     return Path(
@@ -374,6 +386,8 @@ class SquidController:
         ).strip() or "/var/lib/squid-flask-proxy/adblock/compiled"
         regex_allow_path = os.path.join(adblock_dir, "regex_allow_squid.txt")
         regex_block_path = os.path.join(adblock_dir, "regex_block_squid.txt")
+        regex_allow_has_rules = _file_has_non_comment_lines(regex_allow_path)
+        regex_block_has_rules = _file_has_non_comment_lines(regex_block_path)
         lines = [
             f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
             f"icap_service av_req reqmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
@@ -384,11 +398,21 @@ class SquidController:
             "acl icap_adblockable method GET HEAD",
             "adaptation_access adblock_req_set allow icap_adblockable",
             "adaptation_access adblock_req_set deny all",
-            f'acl adblock_regex_allow url_regex -i "{regex_allow_path}"',
-            f'acl adblock_regex_block url_regex -i "{regex_block_path}"',
-            "deny_info ERR_ACCESS_DENIED adblock_regex_block",
-            "http_access deny adblock_regex_block !adblock_regex_allow",
         ]
+        if regex_block_has_rules:
+            if regex_allow_has_rules:
+                lines.append(f'acl adblock_regex_allow url_regex -i "{regex_allow_path}"')
+            lines.extend(
+                [
+                    f'acl adblock_regex_block url_regex -i "{regex_block_path}"',
+                    "deny_info ERR_ACCESS_DENIED adblock_regex_block",
+                    (
+                        "http_access deny adblock_regex_block !adblock_regex_allow"
+                        if regex_allow_has_rules
+                        else "http_access deny adblock_regex_block"
+                    ),
+                ],
+            )
         if file_security_policy:
             lines.extend(["", file_security_policy])
         return "\n".join(lines) + "\n"

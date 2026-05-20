@@ -181,7 +181,7 @@ def _ensure_observability_settings_table() -> None:
             conn.execute(
                 """
                 INSERT INTO observability_settings(id, retention_days, updated_ts)
-                VALUES(1, %s, %s)
+                VALUES(1, %s, %s) AS incoming
                 ON DUPLICATE KEY UPDATE id = id
                 """,
                 (DEFAULT_OBSERVABILITY_RETENTION_DAYS, now),
@@ -225,10 +225,10 @@ def set_observability_retention_settings(*, retention_days: object) -> dict[str,
             conn.execute(
                 """
                 INSERT INTO observability_settings(id, retention_days, updated_ts)
-                VALUES(1, %s, %s)
+                VALUES(1, %s, %s) AS incoming
                 ON DUPLICATE KEY UPDATE
-                    retention_days = VALUES(retention_days),
-                    updated_ts = VALUES(updated_ts)
+                    retention_days = incoming.retention_days,
+                    updated_ts = incoming.updated_ts
                 """,
                 (days, now),
             )

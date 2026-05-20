@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Self
 
@@ -164,7 +164,7 @@ def test_observability_retention_settings_round_trip(monkeypatch) -> None:
             normalized = " ".join(sql.split()).upper()
             if normalized.startswith("SELECT RETENTION_DAYS"):
                 return SettingsResult((self.retention_days, self.updated_ts))
-            if "RETENTION_DAYS = VALUES(RETENTION_DAYS)" in normalized:
+            if "RETENTION_DAYS = INCOMING.RETENTION_DAYS" in normalized:
                 assert params is not None
                 self.retention_days = int(params[0])
                 self.updated_ts = int(params[1])

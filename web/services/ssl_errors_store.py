@@ -566,12 +566,12 @@ class SslErrorsStore:
         conn.execute(
             """
             INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
-            VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s)
+            VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s) AS incoming
             ON DUPLICATE KEY UPDATE
                 count = count + 1,
-                first_seen = LEAST(first_seen, VALUES(first_seen)),
-                last_seen = GREATEST(last_seen, VALUES(last_seen)),
-                sample = VALUES(sample);
+                first_seen = LEAST(first_seen, incoming.first_seen),
+                last_seen = GREATEST(last_seen, incoming.last_seen),
+                sample = incoming.sample;
             """,
             (row_key, proxy_id, domain, category, reason, ts, ts, sample[:400]),
         )

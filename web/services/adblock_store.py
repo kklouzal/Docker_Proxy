@@ -190,8 +190,8 @@ class AdblockStore:
                 conn.execute(
                     """
                     INSERT INTO adblock_lists(`key`, url, enabled)
-                    VALUES(%s,%s,0)
-                    ON DUPLICATE KEY UPDATE url=VALUES(url);
+                    VALUES(%s,%s,0) AS incoming
+                    ON DUPLICATE KEY UPDATE url=incoming.url;
                     """,
                     (key, url),
                 )
@@ -231,10 +231,15 @@ class AdblockStore:
         return str(row[0]) if row and row[0] is not None else default
 
     def _set_meta(self, conn, key: str, value: str) -> None:
-        conn.execute(
-            "INSERT INTO adblock_meta(k,v) VALUES(%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
-            (key, value),
+        result = conn.execute(
+            "UPDATE adblock_meta SET v=%s WHERE k=%s",
+            (value, key),
         )
+        if int(getattr(result, "rowcount", 0) or 0) <= 0:
+            conn.execute(
+                "INSERT INTO adblock_meta(k,v) VALUES(%s,%s)",
+                (key, value),
+            )
 
     def _get_proxy_meta(self, conn, key: str, default: str = "") -> str:
         row = conn.execute(
@@ -244,10 +249,20 @@ class AdblockStore:
         return str(row[0]) if row and row[0] is not None else default
 
     def _set_proxy_meta(self, conn, key: str, value: str) -> None:
-        conn.execute(
-            "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
-            (get_proxy_id(), key, value),
+        proxy_id = get_proxy_id()
+        result = conn.execute(
+            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+            (value, proxy_id, key),
         )
+        if int(getattr(result, "rowcount", 0) or 0) <= 0:
+            conn.execute(
+                "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
+                (proxy_id, key, value),
+            )
+
+    def _set_proxy_meta_values(self, conn, values: dict[str, str]) -> None:
+        for key in sorted(values):
+            self._set_proxy_meta(conn, key, values[key])
 
     def start_blocklog_background(self) -> None:
         with self._blocklog_lock:
@@ -376,8 +391,13 @@ class AdblockStore:
         if not data:
             # Still update inode if it changed (so we don't keep resetting).
             try:
-                self._set_proxy_meta(conn, "cicap_access_inode", str(inode))
-                self._set_proxy_meta(conn, "cicap_access_pos", str(pos))
+                self._set_proxy_meta_values(
+                    conn,
+                    {
+                        "cicap_access_inode": str(inode),
+                        "cicap_access_pos": str(pos),
+                    },
+                )
                 conn.commit()
             except Exception:
                 with contextlib.suppress(Exception):
@@ -425,8 +445,13 @@ class AdblockStore:
                     event_rows,
                 )
 
-            self._set_proxy_meta(conn, "cicap_access_inode", str(inode))
-            self._set_proxy_meta(conn, "cicap_access_pos", str(new_pos))
+            self._set_proxy_meta_values(
+                conn,
+                {
+                    "cicap_access_inode": str(inode),
+                    "cicap_access_pos": str(new_pos),
+                },
+            )
 
             if event_rows:
                 if created_ts - int(self._last_events_prune_ts or 0) >= 60:
@@ -648,15 +673,15 @@ class AdblockStore:
 
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO adblock_settings(k,v) VALUES('enabled',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+                "INSERT INTO adblock_settings(k,v) VALUES('enabled',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
                 ("1" if enabled else "0",),
             )
             conn.execute(
-                "INSERT INTO adblock_settings(k,v) VALUES('cache_ttl',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+                "INSERT INTO adblock_settings(k,v) VALUES('cache_ttl',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
                 (str(cache_ttl),),
             )
             conn.execute(
-                "INSERT INTO adblock_settings(k,v) VALUES('cache_max',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+                "INSERT INTO adblock_settings(k,v) VALUES('cache_max',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
                 (str(cache_max),),
             )
             self._bump_version(conn)
@@ -670,21 +695,21 @@ class AdblockStore:
         except Exception:
             v = 1
         conn.execute(
-            "INSERT INTO adblock_meta(k,v) VALUES('settings_version',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+            "INSERT INTO adblock_meta(k,v) VALUES('settings_version',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
             (str(v + 1),),
         )
 
     def request_refresh_now(self) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested',%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
                 (str(_now()),),
             )
 
     def clear_refresh_requested(self) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') ON DUPLICATE KEY UPDATE v=VALUES(v)",
+                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
             )
 
     def request_cache_flush(self) -> None:
@@ -798,8 +823,8 @@ class AdblockStore:
         with self._connect() as conn:
             conn.executemany(
                 """
-                INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE blocked = blocked + VALUES(blocked)
+                INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,%s) AS incoming
+                ON DUPLICATE KEY UPDATE blocked = blocked + incoming.blocked
                 """,
                 rows,
             )
@@ -989,17 +1014,17 @@ class AdblockStore:
         with self._connect() as conn:
             if hits:
                 conn.execute(
-                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'hits', %s) ON DUPLICATE KEY UPDATE v = v + VALUES(v)",
+                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'hits', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
                     (proxy_id, int(hits)),
                 )
             if misses:
                 conn.execute(
-                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'misses', %s) ON DUPLICATE KEY UPDATE v = v + VALUES(v)",
+                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'misses', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
                     (proxy_id, int(misses)),
                 )
             if evictions:
                 conn.execute(
-                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'evictions', %s) ON DUPLICATE KEY UPDATE v = v + VALUES(v)",
+                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'evictions', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
                     (proxy_id, int(evictions)),
                 )
             if size is not None:

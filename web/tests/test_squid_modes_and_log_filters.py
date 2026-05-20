@@ -1004,6 +1004,45 @@ def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
         in versioned
     )
     assert "adblockreq?rev=" not in versioned
-    assert "acl adblock_regex_allow url_regex -i" in versioned
-    assert "acl adblock_regex_block url_regex -i" in versioned
-    assert "http_access deny adblock_regex_block !adblock_regex_allow" in versioned
+    assert "acl adblock_regex_allow url_regex -i" not in versioned
+    assert "acl adblock_regex_block url_regex -i" not in versioned
+    assert "http_access deny adblock_regex_block" not in versioned
+
+
+def test_squid_icap_include_omits_empty_adblock_regex_acls(tmp_path, monkeypatch) -> None:
+    _add_web_to_path()
+    from services.squid_core import SquidController  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / "regex_allow_squid.txt").write_text("", encoding="utf-8")
+    (compiled / "regex_block_squid.txt").write_text("# empty\n", encoding="utf-8")
+    monkeypatch.setenv("ADBLOCK_COMPILED_DIR", str(compiled))
+
+    controller = SquidController.__new__(SquidController)
+    controller._adblock_icap_revision_token = ""
+    rendered = controller._render_icap_include("")
+
+    assert "adblock_regex_allow" not in rendered
+    assert "adblock_regex_block" not in rendered
+    assert "http_access deny adblock_regex_block" not in rendered
+
+
+def test_squid_icap_include_renders_regex_block_without_empty_allow(tmp_path, monkeypatch) -> None:
+    _add_web_to_path()
+    from services.squid_core import SquidController  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / "regex_allow_squid.txt").write_text("", encoding="utf-8")
+    (compiled / "regex_block_squid.txt").write_text("tracker[.]example\n", encoding="utf-8")
+    monkeypatch.setenv("ADBLOCK_COMPILED_DIR", str(compiled))
+
+    controller = SquidController.__new__(SquidController)
+    controller._adblock_icap_revision_token = ""
+    rendered = controller._render_icap_include("")
+
+    assert "adblock_regex_allow" not in rendered
+    assert "acl adblock_regex_block url_regex -i" in rendered
+    assert "http_access deny adblock_regex_block\n" in rendered
+    assert "!adblock_regex_allow" not in rendered

@@ -307,7 +307,7 @@ class WebFilterStoreBase:
     def _set(self, conn, key: str, value: str) -> None:
         scope = self._settings_scope_for_key(key)
         conn.execute(
-            f"INSERT INTO {self._table('settings')}(proxy_id, k, v) VALUES(%s,%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+            f"INSERT INTO {self._table('settings')}(proxy_id, k, v) VALUES(%s,%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
             (scope, key, value),
         )
 
@@ -327,7 +327,7 @@ class WebFilterStoreBase:
 
     def _set_meta(self, conn, key: str, value: str) -> None:
         conn.execute(
-            f"INSERT INTO {self._table('meta')}(k,v) VALUES(%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+            f"INSERT INTO {self._table('meta')}(k,v) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
             (key, value),
         )
 

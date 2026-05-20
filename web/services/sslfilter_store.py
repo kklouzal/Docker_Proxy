@@ -166,8 +166,8 @@ class SslFilterStore:
         proxy_id = get_proxy_id()
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO sslfilter_settings(proxy_id, `key`, value) VALUES(%s,%s,%s) "
-                "ON DUPLICATE KEY UPDATE value=VALUES(value)",
+                "INSERT INTO sslfilter_settings(proxy_id, `key`, value) VALUES(%s,%s,%s) AS incoming "
+                "ON DUPLICATE KEY UPDATE value=incoming.value",
                 (proxy_id, key, value),
             )
 

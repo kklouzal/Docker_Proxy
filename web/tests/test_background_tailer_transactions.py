@@ -119,3 +119,37 @@ def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
 
     with pytest.raises(StopLoop):
         store._blocklog_tail_loop()
+
+
+def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import adblock_store  # type: ignore
+
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Conn:
+        def execute(self, sql, params=()):
+            calls.append((" ".join(str(sql).split()), tuple(params or ())))
+
+            class Result:
+                rowcount = 1
+
+            return Result()
+
+    monkeypatch.setattr(adblock_store, "get_proxy_id", lambda: "proxy-a")
+    store = adblock_store.AdblockStore()
+    store._set_proxy_meta_values(
+        Conn(),
+        {"cicap_access_pos": "20", "cicap_access_inode": "10"},
+    )
+
+    assert calls == [
+        (
+            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+            ("10", "proxy-a", "cicap_access_inode"),
+        ),
+        (
+            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+            ("20", "proxy-a", "cicap_access_pos"),
+        ),
+    ]

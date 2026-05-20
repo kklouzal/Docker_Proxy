@@ -582,7 +582,7 @@ def _init_db(conn) -> None:
 
 def _upsert_meta(conn, k: str, v: str) -> None:
     conn.execute(
-        "INSERT INTO webcat_meta(k,v) VALUES(%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+        "INSERT INTO webcat_meta(k,v) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
         (k, v),
     )
 
@@ -596,7 +596,7 @@ def _quote_table_name(name: str) -> str:
 
 def _upsert_meta_table(conn, table: str, k: str, v: str) -> None:
     conn.execute(
-        f"INSERT INTO {_quote_table_name(table)}(k,v) VALUES(%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+        f"INSERT INTO {_quote_table_name(table)}(k,v) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
         (k, v),
     )
 
@@ -696,7 +696,7 @@ def _build_db(
 
     domain_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_domains'])}(domain, categories) VALUES(%s,%s)"
     category_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_categories'])}(category, domains) VALUES(%s,%s)"
-    alias_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_aliases'])}(alias,canonical) VALUES(%s,%s) ON DUPLICATE KEY UPDATE canonical=VALUES(canonical)"
+    alias_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_aliases'])}(alias,canonical) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE canonical=incoming.canonical"
 
     domain_categories: dict[str, set[str]] = {}
     for d, c in pairs:
