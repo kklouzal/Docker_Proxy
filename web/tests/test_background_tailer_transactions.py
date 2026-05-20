@@ -153,3 +153,78 @@ def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(monkeypatc
             ("20", "proxy-a", "cicap_access_pos"),
         ),
     ]
+
+
+def test_adblock_proxy_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import adblock_store  # type: ignore
+
+    class DuplicateKeyError(Exception):
+        def __init__(self) -> None:
+            super().__init__(1062, "Duplicate entry 'proxy-a-cache_current_size' for key 'PRIMARY'")
+
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Conn:
+        def execute(self, sql, params=()):
+            normalized = " ".join(str(sql).split())
+            calls.append((normalized, tuple(params or ())))
+            if normalized.startswith("INSERT INTO adblock_proxy_meta"):
+                raise DuplicateKeyError
+
+            class Result:
+                rowcount = 0 if len(calls) == 1 else 1
+
+            return Result()
+
+    monkeypatch.setattr(adblock_store, "INTEGRITY_ERRORS", (DuplicateKeyError,))
+    monkeypatch.setattr(adblock_store, "get_proxy_id", lambda: "proxy-a")
+
+    adblock_store.AdblockStore()._set_proxy_meta(Conn(), "cache_current_size", "42")
+
+    assert calls == [
+        (
+            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+            ("42", "proxy-a", "cache_current_size"),
+        ),
+        (
+            "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
+            ("proxy-a", "cache_current_size", "42"),
+        ),
+        (
+            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+            ("42", "proxy-a", "cache_current_size"),
+        ),
+    ]
+
+
+def test_adblock_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import adblock_store  # type: ignore
+
+    class DuplicateKeyError(Exception):
+        def __init__(self) -> None:
+            super().__init__(1062, "Duplicate entry 'refresh_requested' for key 'PRIMARY'")
+
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Conn:
+        def execute(self, sql, params=()):
+            normalized = " ".join(str(sql).split())
+            calls.append((normalized, tuple(params or ())))
+            if normalized.startswith("INSERT INTO adblock_meta"):
+                raise DuplicateKeyError
+
+            class Result:
+                rowcount = 0 if len(calls) == 1 else 1
+
+            return Result()
+
+    monkeypatch.setattr(adblock_store, "INTEGRITY_ERRORS", (DuplicateKeyError,))
+
+    adblock_store.AdblockStore()._set_meta(Conn(), "refresh_requested", "123")
+
+    assert calls[-1] == (
+        "UPDATE adblock_meta SET v=%s WHERE k=%s",
+        ("123", "refresh_requested"),
+    )

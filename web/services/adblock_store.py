@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-from services.db import DATABASE_ERRORS, connect
+from services.db import DATABASE_ERRORS, INTEGRITY_ERRORS, connect
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
@@ -22,6 +22,15 @@ from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
+
+
+def _is_duplicate_key_error(exc: BaseException) -> bool:
+    try:
+        if getattr(exc, "args", None):
+            return int(exc.args[0]) == 1062
+    except Exception:
+        return False
+    return False
 
 
 def _is_internal_host(hostname: str) -> bool:
@@ -236,10 +245,18 @@ class AdblockStore:
             (value, key),
         )
         if int(getattr(result, "rowcount", 0) or 0) <= 0:
-            conn.execute(
-                "INSERT INTO adblock_meta(k,v) VALUES(%s,%s)",
-                (key, value),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO adblock_meta(k,v) VALUES(%s,%s)",
+                    (key, value),
+                )
+            except INTEGRITY_ERRORS as exc:
+                if not _is_duplicate_key_error(exc):
+                    raise
+                conn.execute(
+                    "UPDATE adblock_meta SET v=%s WHERE k=%s",
+                    (value, key),
+                )
 
     def _get_proxy_meta(self, conn, key: str, default: str = "") -> str:
         row = conn.execute(
@@ -255,10 +272,18 @@ class AdblockStore:
             (value, proxy_id, key),
         )
         if int(getattr(result, "rowcount", 0) or 0) <= 0:
-            conn.execute(
-                "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
-                (proxy_id, key, value),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
+                    (proxy_id, key, value),
+                )
+            except INTEGRITY_ERRORS as exc:
+                if not _is_duplicate_key_error(exc):
+                    raise
+                conn.execute(
+                    "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+                    (value, proxy_id, key),
+                )
 
     def _set_proxy_meta_values(self, conn, values: dict[str, str]) -> None:
         for key in sorted(values):
