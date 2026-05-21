@@ -30,7 +30,7 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     admin_block = compose.split("  proxy:", 1)[0]
     assert "  admin-ui:" in admin_block
     assert "depends_on:" not in admin_block
-    assert "- squid_logs:/var/log/squid:ro" in admin_block
+    assert "/var/log/squid" not in admin_block
 
     proxy_block = compose.split("  proxy:", 1)[1]
     assert "- squid_logs:/var/log/squid" in proxy_block

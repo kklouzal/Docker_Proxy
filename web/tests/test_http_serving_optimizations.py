@@ -194,7 +194,8 @@ def test_observability_reports_pane_json_export_and_metrics_routes_render(
     assert page.status_code == 200
     assert b"Top users by bandwidth" in page.data
     assert b"Generate report" in page.data
-    assert b"Scheduled delivery" in page.data
+    assert b"Report presets" in page.data
+    assert b"Saved presets" in page.data
     assert export.status_code == 200
     assert export.headers.get("Content-Type", "").startswith("application/json")
     assert b'"mode":"pseudonymized"' in export.data

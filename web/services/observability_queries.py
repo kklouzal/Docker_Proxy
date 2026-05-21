@@ -52,6 +52,65 @@ def _badge_rows(counter: Counter[str], *, limit: int = 8) -> list[dict[str, Any]
     return rows
 
 
+def _correlate_icap_events_with_requests(
+    diagnostic_store: Any,
+    rows: list[dict[str, Any]],
+    *,
+    icap_limit: int = 0,
+) -> list[dict[str, Any]]:
+    txs = [str(row.get("master_xaction") or "").strip() for row in rows]
+    if hasattr(diagnostic_store, "batch_find_requests_by_master_xactions"):
+        request_rows = diagnostic_store.batch_find_requests_by_master_xactions(txs)
+    else:
+        request_rows = {
+            tx: diagnostic_store.find_request_by_master_xaction(tx)
+            for tx in dict.fromkeys(txs)
+            if tx
+        }
+    for row in rows:
+        row["correlated_request"] = None
+        tx = str(row.get("master_xaction") or "").strip()
+        request_row = request_rows.get(tx) if tx else None
+        if request_row is None:
+            continue
+        event = dict(request_row)
+        event["related_icap"] = []
+        event["correlation_kind"] = "master_xaction"
+        row["correlated_request"] = present_transaction_rows(
+            [event],
+            icap_limit=icap_limit,
+        )[0]
+    return rows
+
+
+def _correlate_policy_events_with_requests(
+    diagnostic_store: Any,
+    rows: list[dict[str, Any]],
+    *,
+    window_seconds: int,
+    service: str = "",
+) -> list[dict[str, Any]]:
+    for row in rows:
+        row["correlated_candidates"] = []
+        try:
+            candidates = diagnostic_store.list_request_candidates_for_policy_event(
+                around_ts=int(row.get("ts") or 0),
+                url=str(row.get("url") or ""),
+                client_ip=str(row.get("src_ip") or ""),
+                domain=str(row.get("domain") or ""),
+                window_seconds=max(120, min(int(window_seconds or 300), 900)),
+                limit=3,
+                service=service,
+            )
+            row["correlated_candidates"] = present_transaction_rows(
+                candidates,
+                icap_limit=3,
+            )
+        except Exception:
+            row["correlated_candidates"] = []
+    return rows
+
+
 def _pseudonymize(value: object, *, namespace: str = "client") -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -699,6 +758,11 @@ class ObservabilityQueries:
                 -int(row.get("ts") or 0),
             ),
         )
+        av_enriched = _correlate_icap_events_with_requests(
+            diagnostic_store,
+            av_enriched,
+            icap_limit=3,
+        )
 
         adblock_rows = [
             {
@@ -723,6 +787,18 @@ class ObservabilityQueries:
             }
             for row in webfilter_recent_rows
         ]
+        correlation_window = int(time.time()) - int(since)
+        adblock_rows = _correlate_policy_events_with_requests(
+            diagnostic_store,
+            adblock_rows,
+            window_seconds=correlation_window,
+            service="adblock",
+        )
+        webfilter_rows = _correlate_policy_events_with_requests(
+            diagnostic_store,
+            webfilter_rows,
+            window_seconds=correlation_window,
+        )
 
         return {
             "summary": {

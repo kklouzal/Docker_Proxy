@@ -144,9 +144,6 @@ from services.ui_support import (
     present_ssl_error_rows as _present_ssl_error_rows,
 )
 from services.ui_support import (
-    present_transaction_rows as _present_transaction_rows,
-)
-from services.ui_support import (
     window_label as _window_label,
 )
 from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
@@ -1375,67 +1372,6 @@ def _cached_observability_summary(
     summary, _label = _build_observability_snapshot(window_i)
     _OBSERVABILITY_SUMMARY_CACHE[key] = (now, dict(summary))
     return summary
-
-
-def _correlate_request_for_icap_events(
-    diagnostic_store: Any,
-    icap_events: list[dict[str, Any]],
-    *,
-    icap_limit: int = 0,
-) -> list[dict[str, Any]]:
-    txs = [str(event.get("master_xaction") or "").strip() for event in icap_events]
-    if hasattr(diagnostic_store, "batch_find_requests_by_master_xactions"):
-        request_rows = diagnostic_store.batch_find_requests_by_master_xactions(txs)
-    else:
-        request_rows = {
-            tx: diagnostic_store.find_request_by_master_xaction(tx)
-            for tx in dict.fromkeys(txs)
-            if tx
-        }
-    for event in icap_events:
-        event["correlated_request"] = None
-        tx = str(event.get("master_xaction") or "").strip()
-        if not tx:
-            continue
-        request_row = request_rows.get(tx)
-        if request_row is None:
-            continue
-        request_event = dict(request_row)
-        request_event["related_icap"] = []
-        request_event["correlation_kind"] = "master_xaction"
-        event["correlated_request"] = _present_transaction_rows(
-            [request_event],
-            icap_limit=icap_limit,
-        )[0]
-    return icap_events
-
-
-def _correlate_policy_events(
-    diagnostic_store: Any,
-    rows: list[dict[str, Any]],
-    *,
-    window_i: int,
-    service: str = "",
-) -> list[dict[str, Any]]:
-    for row in rows:
-        row["correlated_candidates"] = []
-        try:
-            candidates = diagnostic_store.list_request_candidates_for_policy_event(
-                around_ts=int(row.get("ts") or 0),
-                url=str(row.get("url") or ""),
-                client_ip=str(row.get("src_ip") or ""),
-                domain=str(row.get("domain") or ""),
-                window_seconds=max(120, min(window_i, 900)),
-                limit=3,
-                service=service,
-            )
-            row["correlated_candidates"] = _present_transaction_rows(
-                candidates,
-                icap_limit=3,
-            )
-        except Exception:
-            row["correlated_candidates"] = []
-    return rows
 
 
 def _current_managed_config() -> str:
@@ -2817,7 +2753,7 @@ def observability_report_schedules():
         )
         _OBSERVABILITY_RESULT_CACHE.clear()
         detail = (
-            f"scheduled {cadence} {pane} observability report to {recipients[:160]}"
+            f"saved {cadence} {pane} observability report preset for {recipients[:160]}"
         )
         _record_audit_event(
             "observability_report_schedule_save",

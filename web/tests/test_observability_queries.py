@@ -379,7 +379,7 @@ def test_observability_queries_surface_ssl_security_and_performance(
     with webfilter_store._connect() as conn:
         conn.execute(
             "INSERT INTO webfilter_blocked_log(proxy_id, ts, src_ip, url, category) VALUES(%s,%s,%s,%s,%s)",
-            ("default", 3020, "192.0.2.42", "https://adult.example/video", "adult"),
+            ("default", 3020, "192.0.2.42", "id.evidence.com:443", "adult"),
         )
 
     monkeypatch.setattr(
@@ -405,6 +405,9 @@ def test_observability_queries_surface_ssl_security_and_performance(
     assert security_payload["summary"]["adblock_blocks"] == 1
     assert security_payload["summary"]["webfilter_blocks"] == 1
     assert security_payload["av_rows"][0]["av_status_label"] == "Potential finding"
+    assert security_payload["av_rows"][0]["correlated_request"]["client_ip"] == "192.0.2.40"
+    assert security_payload["adblock_rows"][0]["correlated_candidates"][0]["client_ip"] == "192.0.2.41"
+    assert security_payload["webfilter_rows"][0]["correlated_candidates"][0]["client_ip"] == "192.0.2.42"
     assert security_payload["adblock_top_domains"][0]["domain"] == "ads.example"
     assert security_payload["webfilter_top_categories"][0]["category"] == "adult"
 
