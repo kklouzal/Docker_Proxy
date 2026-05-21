@@ -676,7 +676,7 @@ def test_fleet_observability_summary_is_not_repeated_per_proxy(
     assert diagnostic_store.activity_calls == 1
 
 
-def test_observability_hostnames_are_not_resolved_by_default(
+def test_observability_hostnames_are_resolved_by_default(
     monkeypatch, tmp_path
 ) -> None:
     class RecordingObservabilityQueries:
@@ -701,9 +701,13 @@ def test_observability_hostnames_are_not_resolved_by_default(
 
     response = client.get("/observability?pane=clients")
     assert response.status_code == 200
+    assert observability_queries.top_client_calls[-1]["resolve_hostnames"] is True
+
+    response = client.get("/observability?pane=clients&resolve_hostnames=0")
+    assert response.status_code == 200
     assert observability_queries.top_client_calls[-1]["resolve_hostnames"] is False
 
-    response = client.get("/observability?pane=clients&resolve_hostnames=1")
+    response = client.get("/observability?pane=clients&resolve_hostnames=1&limit=60")
     assert response.status_code == 200
     assert observability_queries.top_client_calls[-1]["resolve_hostnames"] is True
 

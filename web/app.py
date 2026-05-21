@@ -812,6 +812,8 @@ def _observability_sort_from_request(pane: str) -> str:
 
 def _observability_resolve_hostnames_from_request() -> bool:
     resolve_values = request.args.getlist("resolve_hostnames")
+    if not resolve_values:
+        return True
     return any((value or "").strip() == "1" for value in resolve_values)
 
 
