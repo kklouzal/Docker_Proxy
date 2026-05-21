@@ -101,6 +101,7 @@
       <span class="badge">{{ rules.no_cache_domains|length }} no-cache domains</span>
       <span class="badge">{{ rules.no_bump_src_nets|length }} no-bump CIDRs</span>
       <span class="badge">{{ rules.no_cache_src_nets|length }} no-cache CIDRs</span>
+      <span class="badge {{ 'ok' if rules.inspection_enabled else 'danger' }}">Inspection {{ 'on' if rules.inspection_enabled else 'off' }}</span>
       <span class="badge {{ 'ok' if rules.exclude_private_nets else 'warn' }}">Private PAC {{ 'on' if rules.exclude_private_nets else 'off' }}</span>
     </div>
   </div>
@@ -144,9 +145,42 @@
 {% if request.args.get('private_saved') %}
   <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private/local PAC bypass preference updated.</span></div></div>
 {% endif %}
+{% if request.args.get('inspection_saved') %}
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL inspection preference updated and sync requested.</span></div></div>
+{% endif %}
 {% if request.args.get('compatibility_attempted') %}
   <div class="banner success"><span class="badge ok">Compatibility set installed</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} new shipped no-bump domains.</span></div></div>
 {% endif %}
+
+<section class="card section-shell">
+  <div class="card-header">
+    <h2 class="card-title">SSL Inspection</h2>
+    <span class="badge {{ 'ok' if rules.inspection_enabled else 'danger' }}">{{ 'Enabled' if rules.inspection_enabled else 'Disabled' }}</span>
+  </div>
+  <div class="card-body">
+    <form class="form" method="post" action="{{ url_for('sslfilter') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="toggle_inspection" />
+      <div id="sslfilter-inspection-hidden">
+        {% if rules.inspection_enabled %}
+          <input type="hidden" name="inspection_enabled" value="on" />
+        {% endif %}
+      </div>
+      <div class="webfilter-actions">
+        <button
+          id="sslfilter-inspection-toggle"
+          class="webfilter-toggle{% if rules.inspection_enabled %} is-enabled{% else %} is-disabled{% endif %}"
+          type="button"
+          aria-pressed="{% if rules.inspection_enabled %}true{% else %}false{% endif %}">
+          <span class="webfilter-toggle-title">SSL Inspection</span>
+          <span class="webfilter-toggle-state">{% if rules.inspection_enabled %}Enabled{% else %}Disabled{% endif %}</span>
+        </button>
+        <button class="btn primary" type="submit">Save</button>
+      </div>
+      <div class="surface-note small">Disabled writes a managed <span class="mono">ssl_bump splice all</span> rule so TLS is tunneled without MITM. Enabled restores the normal inspection flow with the no-bump exceptions below.</div>
+    </form>
+  </div>
+</section>
 
 <section class="card">
   <div class="card-header">

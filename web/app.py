@@ -1909,6 +1909,10 @@ def _handle_sslfilter_post(store: Any):
             apply_msg=detail[:1000],
         )
 
+    if action == "toggle_inspection":
+        store.set_inspection_enabled(request.form.get("inspection_enabled") == "on")
+        return _sslfilter_redirect(inspection_saved="1")
+
     if action == "install_compatibility_preset":
         preset_id = (request.form.get("preset_id") or "").strip()
         added, attempted, err = store.install_compatibility_preset(preset_id)

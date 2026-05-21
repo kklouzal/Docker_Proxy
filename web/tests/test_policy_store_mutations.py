@@ -150,6 +150,10 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         assert current.no_bump_src_nets == ["192.168.44.0/24"]
         assert current.no_cache_src_nets == ["192.168.55.0/24"]
         assert current.exclude_private_nets is False
+        assert current.inspection_enabled is True
+
+        store.set_inspection_enabled(False)
+        assert store.list_all().inspection_enabled is False
 
         store.remove_domain("nobump", "*.example.com")
         store.remove_src_net("nobump", "192.168.44.0/24")
@@ -210,6 +214,13 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
             encoding="utf-8"
         )
 
+        store.set_inspection_enabled(False)
+        store.apply_squid_include()
+        disabled_include = include_path.read_text(encoding="utf-8")
+        assert "ssl_bump splice all" in disabled_include
+        assert "ssl_bump splice sslfilter_nobump" not in disabled_include
+
+        store.set_inspection_enabled(True)
         store.remove_nobump("10.1.2.3/32")
         store.remove_nobump("10.1.2.3/32")
         assert store.list_nobump() == []

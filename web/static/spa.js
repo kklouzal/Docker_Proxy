@@ -1002,6 +1002,38 @@
       });
     }
 
+    // SSL Filtering page: bind the inspection mode toggle.
+    const sslInspectionHidden = container.querySelector('#sslfilter-inspection-hidden');
+    const sslInspectionToggle = container.querySelector('#sslfilter-inspection-toggle');
+    if (sslInspectionHidden && sslInspectionToggle && !sslInspectionToggle.dataset.spaBound) {
+      sslInspectionToggle.dataset.spaBound = '1';
+
+      const setInspectionTile = (enabled) => {
+        sslInspectionToggle.classList.toggle('is-enabled', enabled);
+        sslInspectionToggle.classList.toggle('is-disabled', !enabled);
+        sslInspectionToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+        const state = sslInspectionToggle.querySelector('.webfilter-toggle-state');
+        if (state) state.textContent = enabled ? 'Enabled' : 'Disabled';
+      };
+
+      const getInspectionHidden = () => sslInspectionHidden.querySelector('input[type="hidden"][name="inspection_enabled"][value="on"]');
+
+      sslInspectionToggle.addEventListener('click', () => {
+        const existing = getInspectionHidden();
+        const enabled = !existing;
+        if (enabled) {
+          const inp = document.createElement('input');
+          inp.type = 'hidden';
+          inp.name = 'inspection_enabled';
+          inp.value = 'on';
+          sslInspectionHidden.appendChild(inp);
+        } else if (existing) {
+          existing.remove();
+        }
+        setInspectionTile(enabled);
+      });
+    }
+
     const selectedWrap = container.querySelector('#webfilter-selected');
     const tiles = Array.from(container.querySelectorAll('.webfilter-cat'));
     if (selectedWrap && tiles.length > 0) {
