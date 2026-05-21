@@ -218,7 +218,8 @@ def test_clamav_settings_apply_exception_redirects_with_error_banner(
     loaded, client = _loaded(monkeypatch, tmp_path)
 
     def fail_reconcile(*_args, **_kwargs):
-        raise RuntimeError("operation ledger unavailable")
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
 
