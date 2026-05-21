@@ -38,6 +38,12 @@ services:
       - control
 
   admin-ui:
+    extends:
+      file: docker-compose.common.yml
+      service: admin-ui
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.admin
     depends_on:
       mysql-test:
         condition: service_healthy
@@ -57,6 +63,12 @@ services:
       MYSQL_CREATE_DATABASE: "1"
 
   proxy:
+    extends:
+      file: docker-compose.common.yml
+      service: proxy
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
     depends_on:
       mysql-test:
         condition: service_healthy
@@ -201,7 +213,14 @@ services:
     networks:
       - control
 
+networks:
+  control:
+
 volumes:
+  squid_logs:
+  squid_cache:
+  squid_ssl_db:
+  proxy_data:
   squid_logs_edge_2:
   squid_cache_edge_2:
   squid_ssl_db_edge_2:
