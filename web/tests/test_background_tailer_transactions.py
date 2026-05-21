@@ -271,3 +271,190 @@ def test_adblock_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None
         "UPDATE adblock_meta SET v=%s WHERE k=%s",
         ("123", "refresh_requested"),
     )
+
+
+def test_adblock_blocklog_tailer_logs_database_outage_without_traceback(
+    monkeypatch, tmp_path
+) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import adblock_store  # type: ignore
+
+    log_path = tmp_path / "cicap.log"
+    log_path.write_text("", encoding="utf-8")
+    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            pymysql.err.OperationalError(2003, "connect timed out")
+        ),
+    )
+    monkeypatch.setattr(
+        adblock_store,
+        "log_database_unavailable",
+        lambda _logger, key, message, _exc: calls.append((key, message)),
+    )
+    monkeypatch.setattr(
+        adblock_store,
+        "log_exception_throttled",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("database outage used traceback logging")
+        ),
+    )
+    monkeypatch.setattr(adblock_store.time, "sleep", _stop_sleep)
+
+    with pytest.raises(StopLoop):
+        store._blocklog_tail_loop()
+
+    assert calls == [
+        (
+            "adblock_store.blocklog.db_unavailable",
+            "Adblock blocklog tailer deferred database work while MySQL is unavailable",
+        )
+    ]
+
+
+def test_live_stats_tailer_logs_database_outage_without_traceback(
+    monkeypatch, tmp_path
+) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import live_stats  # type: ignore
+
+    log_path = tmp_path / "access.log"
+    log_path.write_text("", encoding="utf-8")
+    store = live_stats.LiveStatsStore(access_log_path=str(log_path))
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(store, "_accumulate_line", lambda _batch, _line: True)
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            pymysql.err.OperationalError(2003, "connect timed out")
+        ),
+    )
+    monkeypatch.setattr(
+        live_stats,
+        "log_database_unavailable",
+        lambda _logger, key, message, _exc: calls.append((key, message)),
+    )
+    monkeypatch.setattr(
+        live_stats,
+        "log_exception_throttled",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("database outage used traceback logging")
+        ),
+    )
+    times = iter([100.0, 101.0, 102.0])
+    monkeypatch.setattr(live_stats.time, "time", lambda: next(times))
+    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+
+    class Handle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def seek(self, *_args):
+            return 0
+
+        def tell(self) -> int:
+            return 0
+
+        def readline(self) -> str:
+            self.calls += 1
+            return "access line\n" if self.calls == 1 else ""
+
+    monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: Handle())
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert calls == [
+        (
+            "live_stats.idle_commit.db",
+            "Live stats tailer deferred idle flush while MySQL is unavailable",
+        )
+    ]
+
+
+def test_diagnostic_tailer_logs_database_outage_without_traceback(
+    monkeypatch, tmp_path
+) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import diagnostic_store  # type: ignore
+
+    log_path = tmp_path / "diagnostic.log"
+    log_path.write_text("", encoding="utf-8")
+    store = diagnostic_store.DiagnosticStore(
+        access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
+    )
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            pymysql.err.OperationalError(2003, "connect timed out")
+        ),
+    )
+    monkeypatch.setattr(
+        diagnostic_store,
+        "log_database_unavailable",
+        lambda _logger, key, message, _exc: calls.append((key, message)),
+    )
+    monkeypatch.setattr(
+        diagnostic_store,
+        "log_exception_throttled",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("database outage used traceback logging")
+        ),
+    )
+    times = iter([100.0, 101.0, 102.0])
+    monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times))
+    monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
+
+    class Handle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def seek(self, *_args):
+            return 0
+
+        def tell(self) -> int:
+            return 0
+
+        def readline(self) -> str:
+            self.calls += 1
+            return "diagnostic line\n" if self.calls == 1 else ""
+
+    monkeypatch.setattr(
+        diagnostic_store.pathlib.Path, "open", lambda *_args, **_kwargs: Handle()
+    )
+
+    with pytest.raises(StopLoop):
+        store._tail_file_loop(
+            str(log_path),
+            lambda _line: ("row",),
+            lambda _conn, _rows: None,
+            "test-diagnostic",
+        )
+
+    assert calls == [
+        (
+            "diagnostic_store.idle_commit.test-diagnostic.db",
+            "Diagnostic tailer deferred idle flush in test-diagnostic while MySQL is unavailable",
+        )
+    ]

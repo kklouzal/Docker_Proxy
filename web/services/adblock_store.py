@@ -15,8 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from services.db import DATABASE_ERRORS, INTEGRITY_ERRORS, connect
-from services.errors import public_error_message
-from services.logutil import log_exception_throttled
+from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
@@ -359,12 +358,12 @@ class AdblockStore:
                 if path and pathlib.Path(path).exists():
                     with self._connect() as conn:
                         self._ingest_new_cicap_lines(conn)
-            except DATABASE_ERRORS:
-                log_exception_throttled(
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
                     logger,
                     "adblock_store.blocklog.db_unavailable",
-                    interval_seconds=300.0,
-                    message="Adblock blocklog tailer database operation failed",
+                    "Adblock blocklog tailer deferred database work while MySQL is unavailable",
+                    exc,
                 )
             except Exception:
                 log_exception_throttled(

@@ -461,7 +461,6 @@ def test_ssl_errors_ingest_logs_database_outage_without_traceback(
 
     line = "2026/05/20 12:00:00 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
-    monkeypatch.setattr(ssl_errors_store, "should_log", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         store,
         "init_db",
@@ -469,11 +468,11 @@ def test_ssl_errors_ingest_logs_database_outage_without_traceback(
             pymysql.err.OperationalError(2003, "connect timed out")
         ),
     )
-    warnings: list[tuple[str, tuple[object, ...]]] = []
+    calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        ssl_errors_store.logger,
-        "warning",
-        lambda message, *args: warnings.append((message, args)),
+        ssl_errors_store,
+        "log_database_unavailable",
+        lambda _logger, key, message, _exc: calls.append((key, message)),
     )
     monkeypatch.setattr(
         ssl_errors_store,
@@ -485,5 +484,9 @@ def test_ssl_errors_ingest_logs_database_outage_without_traceback(
 
     store.ingest_line(line)
 
-    assert warnings
-    assert "database is unavailable" in str(warnings[0][1][0]).lower()
+    assert calls == [
+        (
+            "ssl_errors_store.ingest_direct.db",
+            "SSL errors ingest skipped database work because the database is unavailable",
+        )
+    ]

@@ -14,12 +14,13 @@ import time
 from typing import Any
 
 from services.db import (
+    DATABASE_ERRORS,
     connect,
     mysql_advisory_lock,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
-from services.logutil import log_exception_throttled
+from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
@@ -717,6 +718,14 @@ class DiagnosticStore:
                             ):
                                 try:
                                     flush_pending()
+                                except DATABASE_ERRORS as exc:
+                                    log_database_unavailable(
+                                        logger,
+                                        f"diagnostic_store.commit.{loop_name}.db",
+                                        f"Diagnostic tailer deferred batch flush in {loop_name} while MySQL is unavailable",
+                                        exc,
+                                    )
+                                    last_commit = now
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
@@ -731,6 +740,14 @@ class DiagnosticStore:
                         if pending and (now - last_commit) >= commit_interval:
                             try:
                                 flush_pending()
+                            except DATABASE_ERRORS as exc:
+                                log_database_unavailable(
+                                    logger,
+                                    f"diagnostic_store.idle_commit.{loop_name}.db",
+                                    f"Diagnostic tailer deferred idle flush in {loop_name} while MySQL is unavailable",
+                                    exc,
+                                )
+                                last_commit = now
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -764,6 +781,13 @@ class DiagnosticStore:
                             last_inode = inode_now
                             try:
                                 flush_pending()
+                            except DATABASE_ERRORS as exc:
+                                log_database_unavailable(
+                                    logger,
+                                    f"diagnostic_store.rotate.{loop_name}.db",
+                                    f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable",
+                                    exc,
+                                )
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -774,6 +798,14 @@ class DiagnosticStore:
                             break
 
                         time.sleep(poll_interval)
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    f"diagnostic_store.loop.{loop_name}.db",
+                    f"Diagnostic tailer deferred database work for {loop_name} while MySQL is unavailable",
+                    exc,
+                )
+                time.sleep(max(5.0, poll_interval))
             except Exception:
                 log_exception_throttled(
                     logger,

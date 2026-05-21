@@ -11,8 +11,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import connect
-from services.logutil import log_exception_throttled
+from services.db import DATABASE_ERRORS, connect
+from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import env_float as _env_float
@@ -693,6 +693,14 @@ class LiveStatsStore:
                             ):
                                 try:
                                     flush_pending()
+                                except DATABASE_ERRORS as exc:
+                                    log_database_unavailable(
+                                        logger,
+                                        "live_stats.commit.db",
+                                        "Live stats tailer deferred batch flush while MySQL is unavailable",
+                                        exc,
+                                    )
+                                    last_commit = now
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
@@ -710,6 +718,14 @@ class LiveStatsStore:
                         if pending and (now - last_commit) >= commit_interval:
                             try:
                                 flush_pending()
+                            except DATABASE_ERRORS as exc:
+                                log_database_unavailable(
+                                    logger,
+                                    "live_stats.idle_commit.db",
+                                    "Live stats tailer deferred idle flush while MySQL is unavailable",
+                                    exc,
+                                )
+                                last_commit = now
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -747,6 +763,13 @@ class LiveStatsStore:
                             last_inode = inode2
                             try:
                                 flush_pending()
+                            except DATABASE_ERRORS as exc:
+                                log_database_unavailable(
+                                    logger,
+                                    "live_stats.commit.rotate.db",
+                                    "Live stats tailer deferred rotation flush while MySQL is unavailable",
+                                    exc,
+                                )
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -757,6 +780,14 @@ class LiveStatsStore:
                             break
 
                         time.sleep(poll_interval)
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    "live_stats.loop.db",
+                    "Live stats tailer deferred database work while MySQL is unavailable",
+                    exc,
+                )
+                time.sleep(max(5.0, poll_interval))
             except Exception:
                 log_exception_throttled(
                     logger,

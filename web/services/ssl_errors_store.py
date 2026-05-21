@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db import DATABASE_ERRORS, connect
-from services.errors import public_error_message
-from services.logutil import log_exception_throttled, should_log
+from services.logutil import log_database_unavailable, log_exception_throttled, should_log
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
@@ -22,20 +21,6 @@ from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
 
-
-def _log_database_unavailable(
-    key: str,
-    message: str,
-    exc: BaseException,
-    *,
-    interval_seconds: float = 900.0,
-) -> None:
-    if should_log(key, interval_seconds=interval_seconds):
-        logger.warning(
-            "%s: %s",
-            message,
-            public_error_message(exc, default="Database is unavailable."),
-        )
 
 
 @dataclass(frozen=True)
@@ -633,7 +618,7 @@ class SslErrorsStore:
             with self._connect() as conn:
                 self._ingest_line_with_conn(conn, line)
         except DATABASE_ERRORS as exc:
-            _log_database_unavailable(
+            log_database_unavailable(logger,
                 "ssl_errors_store.ingest_direct.db",
                 "SSL errors ingest skipped database work because the database is unavailable",
                 exc,
@@ -875,7 +860,7 @@ class SslErrorsStore:
                                 if ingest_line(line):
                                     pending += 1
                             except DATABASE_ERRORS as exc:
-                                _log_database_unavailable(
+                                log_database_unavailable(logger,
                                     "ssl_errors_store.ingest.db",
                                     "SSL errors tailer skipped database ingest because the database is unavailable",
                                     exc,
@@ -905,7 +890,7 @@ class SslErrorsStore:
                                 if flush_pending():
                                     pending = 0
                             except DATABASE_ERRORS as exc:
-                                _log_database_unavailable(
+                                log_database_unavailable(logger,
                                     "ssl_errors_store.idle_commit.db",
                                     "SSL errors tailer deferred a pending SSL error flush because the database is unavailable",
                                     exc,
@@ -948,7 +933,7 @@ class SslErrorsStore:
                             try:
                                 flush_pending()
                             except DATABASE_ERRORS as exc:
-                                _log_database_unavailable(
+                                log_database_unavailable(logger,
                                     "ssl_errors_store.commit.rotate.db",
                                     "SSL errors tailer deferred final rotation flush because the database is unavailable",
                                     exc,
@@ -964,9 +949,9 @@ class SslErrorsStore:
 
                         time.sleep(poll_interval)
             except DATABASE_ERRORS as exc:
-                _log_database_unavailable(
+                log_database_unavailable(logger,
                     "ssl_errors_store.loop.db",
-                    "SSL errors tailer is waiting for database availability; retrying",
+                    "SSL errors tailer deferred database work while MySQL is unavailable",
                     exc,
                 )
                 time.sleep(max(5.0, poll_interval))
