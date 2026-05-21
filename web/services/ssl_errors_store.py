@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db import DATABASE_ERRORS, connect
-from services.logutil import log_database_unavailable, log_exception_throttled, should_log
+from services.logutil import (
+    log_database_unavailable,
+    log_exception_throttled,
+    should_log,
+)
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
@@ -20,7 +24,6 @@ from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
-
 
 
 @dataclass(frozen=True)
