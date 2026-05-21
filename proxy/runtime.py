@@ -2052,7 +2052,10 @@ class ProxyRuntime:
                 claimed_operations = []
                 ledger = None
             try:
-                result = self._sync_from_db_unlocked(force=force)
+                result = self._sync_from_db_unlocked(
+                    force=force,
+                    operations=claimed_operations,
+                )
             except Exception as exc:
                 if ledger is not None and claimed_operations:
                     with suppress(Exception):
@@ -2073,7 +2076,12 @@ class ProxyRuntime:
                     )
             return result
 
-    def _sync_from_db_unlocked(self, *, force: bool = False) -> dict[str, Any]:
+    def _sync_from_db_unlocked(
+        self,
+        *,
+        force: bool = False,
+        operations: list[Any] | None = None,
+    ) -> dict[str, Any]:
         self._invalidate_health_cache()
         self.ensure_registered()
         self.bootstrap_revision_if_missing()
@@ -2150,6 +2158,37 @@ class ProxyRuntime:
             pac_result["detail"] = detail
             return pac_result
 
+        operation_types = {
+            str(getattr(operation, "operation_type", "") or "")
+            for operation in (operations or [])
+        }
+        cache_cleared = False
+        if "cache_clear" in operation_types:
+            cache_ok, cache_detail = self.controller.clear_disk_cache()
+            cache_cleared = bool(cache_ok)
+            if str(cache_detail or "").strip():
+                detail_parts.append(str(cache_detail or "").strip())
+            if not cache_ok:
+                detail = "\n".join(detail_parts).strip() or "Proxy cache clear failed."
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=False,
+                    detail=detail,
+                    current_config_sha=self._current_config_sha(),
+                )
+                return {
+                    "ok": False,
+                    "detail": detail,
+                    "changed": bool(cert_changed or policy_changed or adblock_changed or pac_changed),
+                    "cache_cleared": False,
+                    "certificate_changed": cert_changed,
+                    "policy_changed": policy_changed,
+                    "adblock_changed": adblock_changed,
+                    "pac_changed": pac_changed,
+                    "config_changed": False,
+                    "current_config_sha": self._current_config_sha(),
+                }
+
         current_sha = self._current_config_sha()
         clamav_runtime_changed = False
         controller = getattr(self, "controller", None)
@@ -2212,6 +2251,7 @@ class ProxyRuntime:
                     "policy_changed": policy_changed,
                     "adblock_changed": adblock_changed,
                     "pac_changed": pac_changed,
+                    "cache_cleared": cache_cleared,
                     "config_changed": False,
                     "detail": detail,
                 }
@@ -2242,6 +2282,7 @@ class ProxyRuntime:
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
+                "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
@@ -2271,6 +2312,7 @@ class ProxyRuntime:
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
+                "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
@@ -2321,6 +2363,7 @@ class ProxyRuntime:
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
+                "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "rollback_active": True,
                 "detail": detail,
@@ -2359,6 +2402,7 @@ class ProxyRuntime:
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
+                "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
@@ -2385,6 +2429,7 @@ class ProxyRuntime:
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
                 "pac_changed": pac_changed,
+                "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
             }
@@ -2432,6 +2477,7 @@ class ProxyRuntime:
             "policy_changed": policy_changed,
             "adblock_changed": adblock_changed,
             "pac_changed": pac_changed,
+            "cache_cleared": cache_cleared,
             "config_changed": True,
             "detail": detail,
         }

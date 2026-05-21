@@ -372,3 +372,36 @@ def test_policy_admin_post_handlers_redirect_on_unexpected_store_failures(
     assert response.status_code in {302, 303}
     location = response.headers.get("Location", "")
     assert "Operation+failed" in location
+
+
+def test_pac_refresh_queues_only_without_direct_proxy_sync(monkeypatch, tmp_path):
+    class Store:
+        def upsert_profile(self, **kwargs):
+            return True, "", 1
+
+    store = Store()
+    loaded, client = _loaded(monkeypatch, tmp_path, pac_profiles_store=store)
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-pac")
+
+    response = _post(
+        client,
+        "/pac",
+        {"action": "create", "name": "Office", "client_cidr": "10.0.0.0/24"},
+    )
+
+    _assert_redirect_success(response)
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].operation_type == "pac_refresh"
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-pac"
+
+
+def test_cache_clear_queues_operation_without_direct_proxy_client(monkeypatch, tmp_path):
+    loaded, client = _loaded(monkeypatch, tmp_path)
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-cache")
+
+    response = client.post("/cache/clear", follow_redirects=False)
+
+    _assert_redirect_success(response)
+    assert loaded.proxy_client.cleared == []
+    assert loaded.operation_ledger.operations[-1].operation_type == "cache_clear"
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-cache"

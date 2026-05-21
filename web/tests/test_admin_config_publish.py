@@ -147,6 +147,44 @@ def test_publish_config_saves_revision_but_reports_remote_sync_failure(
     assert controller.applied == []
 
 
+def test_publish_config_queues_operation_without_local_apply_fallback(
+    monkeypatch, tmp_path
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+    controller = _Controller()
+    revisions = _Revisions()
+    queued: list[dict[str, object]] = []
+
+    def fake_request_proxy_reconcile(proxy_id, **kwargs):
+        queued.append({"proxy_id": proxy_id, **kwargs})
+        return SimpleNamespace(operation_id=77)
+
+    monkeypatch.setattr(admin_app, "squid_controller", controller)
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-local")
+    monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
+    monkeypatch.setattr(
+        admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok")
+    )
+    monkeypatch.setattr(admin_app, "_uses_remote_proxy_runtime", lambda: False)
+    monkeypatch.setattr(admin_app.shutil, "which", lambda _name: "squid")
+    monkeypatch.setattr(
+        admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
+    )
+
+    with admin_app.app.test_request_context("/"):
+        admin_app.session["user"] = "operator"
+        ok, detail = admin_app._publish_config_for_current_mode(
+            "workers 1", source_kind="manual"
+        )
+
+    assert ok is True
+    assert "operation #77" in detail
+    assert controller.applied == []
+    assert revisions.applied == []
+    assert queued[0]["operation_type"] == "config_apply"
+    assert queued[0]["proxy_id"] == "edge-local"
+
+
 def test_validate_config_requires_proxy_or_local_squid_runtime(
     monkeypatch, tmp_path
 ) -> None:

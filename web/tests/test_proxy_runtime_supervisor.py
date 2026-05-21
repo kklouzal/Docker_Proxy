@@ -1405,9 +1405,10 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
             calls.append(("mark", (operations, status, detail)))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False: {
+    runtime._sync_from_db_unlocked = lambda *, force=False, operations=None: {
         "ok": True,
         "detail": "runtime reconciled",
+        "claimed_operation_ids": [op.operation_id for op in (operations or [])],
     }
 
     result = runtime.sync_from_db(force=False)

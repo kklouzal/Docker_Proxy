@@ -191,7 +191,10 @@ def test_reload_and_cache_clear_record_failure_without_crashing(
     ]
     assert failure_records[0]["ok"] is True
     assert "Proxy reconciliation queued" in failure_records[0]["detail"]
-    assert failure_records[1]["ok"] is False
+    assert failure_records[1]["ok"] is True
+    assert "Proxy cache clear queued" in failure_records[1]["detail"]
+    assert loaded.proxy_client.cleared == []
+    assert loaded.operation_ledger.operations[-1].operation_type == "cache_clear"
 
 
 def test_adblock_page_renders_when_init_db_fails(monkeypatch, tmp_path) -> None:

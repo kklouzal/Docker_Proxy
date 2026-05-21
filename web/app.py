@@ -34,8 +34,6 @@ from services.auth_store import get_auth_store
 from services.background_guard import acquire_background_lock
 from services.cert_manager import (
     generate_self_signed_ca_bundle,
-    install_pfx_as_ca,
-    materialize_certificate_bundle,
     parse_pfx_bundle,
 )
 from services.certificate_bundles import (
@@ -113,7 +111,6 @@ from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_
 from services.proxy_health import test_eicar as _shared_test_eicar
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import request_proxy_reconcile
-from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.squid_config_forms import (
     build_template_options,
@@ -1448,21 +1445,6 @@ def _publish_config_for_current_mode(
         source_kind=source_kind,
         activate=True,
     )
-    if not _uses_remote_proxy_runtime():
-        if shutil.which("squid") is None:
-            return False, (
-                f"Revision {revision.revision_id} saved, but no proxy management URL is registered for proxy '{proxy_id}' "
-                "and the admin UI container cannot apply Squid configs locally."
-            )
-        ok, detail = squid_controller.apply_config_text(config_text)
-        revisions.record_apply_result(
-            proxy_id,
-            revision.revision_id,
-            ok=ok,
-            detail=str(detail or ""),
-            applied_by="admin-ui",
-        )
-        return ok, str(detail or f"Revision {revision.revision_id} applied locally.")
     try:
         operation = request_proxy_reconcile(
             proxy_id,
@@ -1549,73 +1531,41 @@ def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
 
 
 def _trigger_proxy_cache_clear() -> tuple[bool, str]:
-    """Clear cache for the selected proxy."""
+    """Queue cache clearing for the selected proxy through the operation ledger."""
     try:
-        result = get_proxy_client().clear_proxy_cache(get_proxy_id())
-        return bool(result.get("ok", False)), str(
-            result.get("detail") or "Cache clear requested.",
+        operation = request_proxy_reconcile(
+            get_proxy_id(),
+            operation_type="cache_clear",
+            subject="Proxy cache clear",
+            summary="Proxy cache clear queued.",
+            detail="Admin requested proxy disk cache clearing.",
+            created_by=str(session.get("user") or ""),
+            force=True,
         )
-    except ProxyClientError as exc:
-        return False, str(exc)
-
-
-def _record_local_certificate_apply(
-    bundle,
-    *,
-    original_filename: str = "",
-    already_materialized: bool = False,
-) -> tuple[bool, str]:
-    bundle_store = get_certificate_bundles()
-    revision = bundle_store.create_revision(
-        bundle,
-        created_by=str(session.get("user") or ""),
-        original_filename=(original_filename or "")[:255],
-        activate=True,
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.proxy_cache_clear",
+            interval_seconds=30.0,
+            message="Failed to queue proxy cache clear",
+        )
+        return False, public_error_message(
+            exc,
+            default="Proxy cache clear was not queued.",
+        )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return False, str(
+            getattr(operation, "detail", "") or "Proxy cache clear was not queued.",
+        )
+    op_suffix = (
+        f" operation #{operation.operation_id}"
+        if getattr(operation, "operation_id", 0)
+        else ""
     )
-    detail_parts: list[str] = []
-    ok = True
-    if not already_materialized:
-        try:
-            materialize_certificate_bundle(
-                (os.environ.get("CERTS_DIR") or "/etc/squid/ssl/certs").strip()
-                or "/etc/squid/ssl/certs",
-                bundle,
-                original_pfx_bytes=bundle.original_pfx_bytes,
-            )
-        except Exception as exc:
-            ok = False
-            detail_parts.append(
-                public_error_message(
-                    exc,
-                    default="Failed to install certificate bundle locally.",
-                ),
-            )
-    if ok:
-        reload_result = squid_controller.reload_squid()
-        if isinstance(reload_result, tuple) and len(reload_result) == 2:
-            stdout, stderr = reload_result
-            reload_detail = (
-                _decode_bytes(stdout) + "\n" + _decode_bytes(stderr)
-            ).strip()
-            ok = not bool(stderr)
-            if reload_detail:
-                detail_parts.append(reload_detail)
-        else:
-            detail_parts.append("Certificate bundle installed locally.")
-    detail = "\n".join(part for part in detail_parts if part).strip() or (
-        f"Certificate revision {revision.revision_id} applied locally."
-        if ok
-        else "Failed to apply certificate bundle locally."
-    )
-    bundle_store.record_apply_result(
-        get_proxy_id(),
-        revision.revision_id,
-        ok=ok,
-        detail=detail,
-        applied_by="admin-ui",
-        bundle_sha256=revision.bundle_sha256,
-    )
-    return ok, detail
+    return True, f"Proxy cache clear queued{op_suffix}."
 
 
 def _publish_certificate_bundle_remote(
@@ -1623,12 +1573,6 @@ def _publish_certificate_bundle_remote(
     *,
     original_filename: str = "",
 ) -> tuple[bool, str]:
-    if not _uses_remote_proxy_runtime():
-        return _record_local_certificate_apply(
-            bundle,
-            original_filename=original_filename,
-        )
-
     bundle_store = get_certificate_bundles()
     revision = bundle_store.create_revision(
         bundle,
@@ -1705,13 +1649,15 @@ def _best_effort_refresh_pac_runtime() -> None:
             created_by=str(session.get("user") or ""),
             force=True,
         )
-        operation_id = getattr(operation, "operation_id", 0) or None
-        if _uses_remote_proxy_runtime():
-            get_proxy_client().sync_proxy(
-                get_proxy_id(),
-                force=True,
-                operation_id=operation_id,
-                timeout_seconds=15.0,
+        if (
+            not getattr(operation, "operation_id", 0)
+            and getattr(operation, "status", "") == "failed"
+        ):
+            raise RuntimeError(
+                str(
+                    getattr(operation, "detail", "")
+                    or "PAC profile refresh was not queued."
+                ),
             )
     except Exception:
         log_exception_throttled(
@@ -4341,40 +4287,14 @@ def upload_certificate_pfx():
 
     pfx_bytes = bytes(buf)
     try:
-        if not _uses_remote_proxy_runtime():
-            installed = install_pfx_as_ca(
-                (os.environ.get("CERTS_DIR") or "/etc/squid/ssl/certs").strip()
-                or "/etc/squid/ssl/certs",
-                pfx_bytes,
-                password=password,
+        parsed = parse_pfx_bundle(pfx_bytes, password=password)
+        ok = bool(parsed.ok and parsed.bundle is not None)
+        detail = parsed.message
+        if ok and parsed.bundle is not None:
+            ok, detail = _publish_certificate_bundle_remote(
+                parsed.bundle,
+                original_filename=(pfx_file.filename or "").strip(),
             )
-            installed_bundle = getattr(installed, "bundle", None)
-            ok = bool(getattr(installed, "ok", False))
-            detail = str(getattr(installed, "message", "") or "")
-            if ok and installed_bundle is not None:
-                ok, detail = _record_local_certificate_apply(
-                    installed_bundle,
-                    original_filename=(pfx_file.filename or "").strip(),
-                    already_materialized=True,
-                )
-            elif ok:
-                reload_result = squid_controller.reload_squid()
-                if isinstance(reload_result, tuple) and len(reload_result) == 2:
-                    stdout, stderr = reload_result
-                    reload_detail = (
-                        _decode_bytes(stdout) + "\n" + _decode_bytes(stderr)
-                    ).strip()
-                    ok = not bool(stderr)
-                    detail = reload_detail or detail
-        else:
-            parsed = parse_pfx_bundle(pfx_bytes, password=password)
-            ok = bool(parsed.ok and parsed.bundle is not None)
-            detail = parsed.message
-            if ok and parsed.bundle is not None:
-                ok, detail = _publish_certificate_bundle_remote(
-                    parsed.bundle,
-                    original_filename=(pfx_file.filename or "").strip(),
-                )
     except Exception as exc:
         app.logger.exception("PFX upload failed")
         ok = False
