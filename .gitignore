@@ -12,6 +12,7 @@ __pycache__/
 # Local temp/debug scratch space
 .tmp/
 .tmp_proxy_debug/
+artifacts/
 
 # Virtual environments
 .venv/
