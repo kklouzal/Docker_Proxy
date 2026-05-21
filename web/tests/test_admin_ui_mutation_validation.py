@@ -4,6 +4,7 @@ import pytest
 
 from .admin_route_test_utils import (
     FakeController,
+    FakeRegistry,
     FakeSslfilterStore,
     load_admin_app,
     login_client,
@@ -18,14 +19,15 @@ def _post(client, path: str, data: dict[str, object], *, csrf_path: str | None =
     return client.post(path, data=dict(data), follow_redirects=False)
 
 
-def _loaded(monkeypatch, tmp_path, *, controller=None):
+def _loaded(monkeypatch, tmp_path, *, controller=None, **overrides):
     monkeypatch.setenv("DISABLE_CSRF", "1")
-    sslfilter_store = FakeSslfilterStore()
+    sslfilter_store = overrides.pop("sslfilter_store", None) or FakeSslfilterStore()
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
         controller=controller or FakeController(),
         sslfilter_store=sslfilter_store,
+        **overrides,
     )
     loaded.sslfilter_store = sslfilter_store
     client = loaded.module.app.test_client()
@@ -168,6 +170,77 @@ def test_clamav_settings_route_persists_validated_runtime_controls(
     assert "# virus_scan_allow_204_on: off" in config_text
     assert "# virus_scan_max_object_size: 64M" in config_text
     assert "# virus_scan_default_engine: clamd" in config_text
+
+
+def test_clamav_settings_preserves_selected_proxy_with_unchecked_policy_boxes(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client = _loaded(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["default", "edge-2"]),
+    )
+
+    response = _post(
+        client,
+        "/clamav/settings?proxy_id=edge-2",
+        {
+            "clamav_fail_mode": "open",
+            "file_security_preset": "balanced",
+            "file_security_scan_downloads": "on",
+            "file_security_risky_extensions": "exe dll msi",
+            "file_security_executable_extensions": "exe dll",
+            "file_security_blocked_mime_types": "application/x-msdownload",
+            "virus_scan_scan_file_types": "TEXT DATA BINARY",
+            "virus_scan_send_percent_data": "88",
+            "virus_scan_start_send_percent_after": "256K",
+            "virus_scan_max_object_size": "64M",
+        },
+        csrf_path="/clamav?proxy_id=edge-2",
+    )
+
+    _assert_redirect_success(response)
+    location = response.headers.get("Location", "")
+    assert "proxy_id=edge-2" in location
+    created = loaded.config_revisions.created[-1]
+    config_text = str(created["config_text"])
+    assert loaded.proxy_client.validated[-1] == ("edge-2", config_text)
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert "# file_security_scan_downloads: on" in config_text
+    assert "# file_security_scan_uploads: off" in config_text
+    assert "# file_security_block_risky_extensions: off" in config_text
+    assert "# file_security_block_executable_content: off" in config_text
+
+
+def test_clamav_settings_apply_exception_redirects_with_error_banner(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    def fail_reconcile(*_args, **_kwargs):
+        raise RuntimeError("operation ledger unavailable")
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    response = _post(
+        client,
+        "/clamav/settings",
+        {
+            "clamav_fail_mode": "open",
+            "file_security_preset": "balanced",
+            "file_security_scan_downloads": "on",
+            "virus_scan_scan_file_types": "TEXT DATA BINARY",
+            "virus_scan_send_percent_data": "88",
+            "virus_scan_start_send_percent_after": "256K",
+            "virus_scan_max_object_size": "64M",
+        },
+        csrf_path="/clamav",
+    )
+
+    assert response.status_code in {302, 303}
+    location = response.headers.get("Location", "")
+    assert "settings_ok=0" in location
+    assert "settings_msg=" in location
 
 
 def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(

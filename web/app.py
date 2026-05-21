@@ -3712,21 +3712,27 @@ def clamav():
 
 @app.route("/clamav/settings", methods=["POST"])
 def clamav_settings():
-    current = _current_managed_config()
-    options = read_clamav_options_from_form(
-        request.form,
-        extract_clamav_options(current),
-    )
-    new_cfg = apply_clamav_options_to_config(current, options)
-    ok, details = _publish_config_for_current_mode(
-        new_cfg,
-        source_kind="clamav-settings",
-    )
+    new_cfg = ""
+    try:
+        current = _current_managed_config()
+        options = read_clamav_options_from_form(
+            request.form,
+            extract_clamav_options(current),
+        )
+        new_cfg = apply_clamav_options_to_config(current, options)
+        ok, details = _publish_config_for_current_mode(
+            new_cfg,
+            source_kind="clamav-settings",
+        )
+    except Exception as exc:
+        app.logger.exception("ClamAV settings apply failed")
+        ok = False
+        details = public_error_message(exc)
     _record_audit_event(
         "clamav_settings_apply",
         ok=ok,
         detail=(details or ""),
-        config_text=new_cfg,
+        config_text=new_cfg or None,
     )
     return _redirect_to(
         "clamav",
