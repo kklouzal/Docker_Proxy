@@ -301,3 +301,74 @@ def test_policy_store_mutations_request_sync_without_config_revision_validation(
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "expected_location_fragment"),
+    [
+        (
+            "/squid/config",
+            {"action": "apply", "config_text": "http_port 3128\n"},
+            "error=1",
+        ),
+        ("/clamav/toggle", {"action": "disable"}, "error=1"),
+        ("/sslfilter", {"action": "apply_policy"}, "apply_ok=0"),
+        ("/reload", {}, "#status"),
+    ],
+)
+def test_admin_apply_actions_redirect_when_reconcile_queue_raises(
+    monkeypatch, tmp_path, path, data, expected_location_fragment
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    response = _post(client, path, data)
+
+    assert response.status_code in {302, 303}
+    assert expected_location_fragment in response.headers.get("Location", "")
+
+
+def test_revert_operation_redirects_when_revert_queue_fails(monkeypatch, tmp_path) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="config_apply",
+        rollback_kind="config_revision",
+        rollback_ref="1",
+    )
+
+    response = _post(client, f"/operations/{operation.operation_id}/revert", {})
+
+    assert response.status_code in {302, 303}
+    assert "error=revert_failed" in response.headers.get("Location", "")
+
+
+@pytest.mark.parametrize(
+    ("path", "handler_name", "data"),
+    [
+        ("/adblock", "_handle_adblock_post", {"action": "save_settings"}),
+        ("/webfilter", "_handle_webfilter_post", {"action": "save"}),
+        ("/sslfilter", "_handle_sslfilter_post", {"action": "toggle_private"}),
+    ],
+)
+def test_policy_admin_post_handlers_redirect_on_unexpected_store_failures(
+    monkeypatch, tmp_path, path, handler_name, data
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    def fail_handler(*_args, **_kwargs):
+        msg = "policy store unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, handler_name, fail_handler)
+
+    response = _post(client, path, data)
+
+    assert response.status_code in {302, 303}
+    location = response.headers.get("Location", "")
+    assert "Operation+failed" in location

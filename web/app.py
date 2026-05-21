@@ -1463,22 +1463,34 @@ def _publish_config_for_current_mode(
             applied_by="admin-ui",
         )
         return ok, str(detail or f"Revision {revision.revision_id} applied locally.")
-    operation = request_proxy_reconcile(
-        proxy_id,
-        operation_type="config_apply",
-        subject="Squid config",
-        summary=f"Revision {revision.revision_id} saved; applying asynchronously to proxy {proxy_id}.",
-        target_kind="config_revision",
-        target_ref=revision.revision_id,
-        rollback_kind="config_revision" if previous_revision is not None else "",
-        rollback_ref=getattr(previous_revision, "revision_id", "")
-        if previous_revision is not None
-        else "",
-        request_hash=getattr(revision, "config_sha256", ""),
-        detail=f"Revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
-        created_by=created_by,
-        force=False,
-    )
+    try:
+        operation = request_proxy_reconcile(
+            proxy_id,
+            operation_type="config_apply",
+            subject="Squid config",
+            summary=f"Revision {revision.revision_id} saved; applying asynchronously to proxy {proxy_id}.",
+            target_kind="config_revision",
+            target_ref=revision.revision_id,
+            rollback_kind="config_revision" if previous_revision is not None else "",
+            rollback_ref=getattr(previous_revision, "revision_id", "")
+            if previous_revision is not None
+            else "",
+            request_hash=getattr(revision, "config_sha256", ""),
+            detail=f"Revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
+            created_by=created_by,
+            force=False,
+        )
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.config_apply_reconcile",
+            interval_seconds=30.0,
+            message="Failed to queue config apply reconciliation",
+        )
+        return False, public_error_message(
+            exc,
+            default=f"Revision {revision.revision_id} saved, but proxy reconcile was not queued.",
+        )
     if (
         not getattr(operation, "operation_id", 0)
         and getattr(operation, "status", "") == "failed"
@@ -1500,15 +1512,27 @@ def _publish_config_for_current_mode(
 
 def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
     """Queue reconciliation for the selected proxy through the operation ledger."""
-    operation = request_proxy_reconcile(
-        get_proxy_id(),
-        operation_type="manual_sync",
-        subject="Proxy reconciliation",
-        summary="Manual proxy reconciliation queued.",
-        detail="Admin requested proxy reconciliation.",
-        created_by=str(session.get("user") or ""),
-        force=force,
-    )
+    try:
+        operation = request_proxy_reconcile(
+            get_proxy_id(),
+            operation_type="manual_sync",
+            subject="Proxy reconciliation",
+            summary="Manual proxy reconciliation queued.",
+            detail="Admin requested proxy reconciliation.",
+            created_by=str(session.get("user") or ""),
+            force=force,
+        )
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.proxy_sync",
+            interval_seconds=30.0,
+            message="Failed to queue proxy reconciliation",
+        )
+        return False, public_error_message(
+            exc,
+            default="Proxy reconciliation was not queued.",
+        )
     if (
         not getattr(operation, "operation_id", 0)
         and getattr(operation, "status", "") == "failed"
@@ -2314,31 +2338,40 @@ def revert_operation(operation_id: int):
     if op is None or op.proxy_id != get_proxy_id() or not op.can_revert:
         return _redirect_to("operations_status", error="not_revertible")
     if op.rollback_kind == "config_revision":
-        revisions = get_config_revisions()
-        previous = revisions.get_revision(op.rollback_ref, proxy_id=op.proxy_id)
-        if previous is None:
-            return _redirect_to("operations_status", error="rollback_missing")
-        revision = revisions.create_revision(
-            op.proxy_id,
-            previous.config_text,
-            created_by=str(session.get("user") or ""),
-            source_kind=f"revert-{op.operation_type}",
-            activate=True,
-        )
-        request_proxy_reconcile(
-            op.proxy_id,
-            operation_type="revert",
-            subject=f"Revert #{op.operation_id}",
-            summary=f"Restored config revision {previous.revision_id}; applying asynchronously.",
-            target_kind="config_revision",
-            target_ref=revision.revision_id,
-            rollback_kind="config_revision",
-            rollback_ref=op.target_ref,
-            request_hash=revision.config_sha256,
-            detail=f"Revert queued from failed operation #{op.operation_id}.",
-            created_by=str(session.get("user") or ""),
-            force=False,
-        )
+        try:
+            revisions = get_config_revisions()
+            previous = revisions.get_revision(op.rollback_ref, proxy_id=op.proxy_id)
+            if previous is None:
+                return _redirect_to("operations_status", error="rollback_missing")
+            revision = revisions.create_revision(
+                op.proxy_id,
+                previous.config_text,
+                created_by=str(session.get("user") or ""),
+                source_kind=f"revert-{op.operation_type}",
+                activate=True,
+            )
+            request_proxy_reconcile(
+                op.proxy_id,
+                operation_type="revert",
+                subject=f"Revert #{op.operation_id}",
+                summary=f"Restored config revision {previous.revision_id}; applying asynchronously.",
+                target_kind="config_revision",
+                target_ref=revision.revision_id,
+                rollback_kind="config_revision",
+                rollback_ref=op.target_ref,
+                request_hash=revision.config_sha256,
+                detail=f"Revert queued from failed operation #{op.operation_id}.",
+                created_by=str(session.get("user") or ""),
+                force=False,
+            )
+        except Exception:
+            log_exception_throttled(
+                app.logger,
+                "web.app.revert_operation",
+                interval_seconds=30.0,
+                message="Failed to queue revert operation",
+            )
+            return _redirect_to("operations_status", error="revert_failed")
         return _redirect_to("operations_status", reverted="1")
     return _redirect_to("operations_status", error="unsupported_rollback")
 
@@ -3405,7 +3438,16 @@ def adblock():
     _best_effort_init_store(store, key="adblock", description="adblock")
 
     if request.method == "POST":
-        return _handle_adblock_post(store)
+        try:
+            return _handle_adblock_post(store)
+        except Exception as exc:
+            log_exception_throttled(
+                app.logger,
+                "web.app.adblock.post",
+                interval_seconds=30.0,
+                message="Failed to process adblock admin action",
+            )
+            return _redirect_to("adblock", error="1", msg=public_error_message(exc))
 
     statuses = store.list_statuses()
     try:
@@ -3502,7 +3544,20 @@ def webfilter():
     )
 
     if request.method == "POST":
-        return _handle_webfilter_post(store, tab)
+        try:
+            return _handle_webfilter_post(store, tab)
+        except Exception as exc:
+            log_exception_throttled(
+                app.logger,
+                "web.app.webfilter.post",
+                interval_seconds=30.0,
+                message="Failed to process webfilter admin action",
+            )
+            return _redirect_to(
+                "webfilter",
+                tab=tab,
+                err=public_error_message(exc),
+            )
 
     settings = store.get_settings()
     try:
@@ -3556,7 +3611,16 @@ def sslfilter():
     _best_effort_init_store(store, key="sslfilter", description="SSL filter")
 
     if request.method == "POST":
-        return _handle_sslfilter_post(store)
+        try:
+            return _handle_sslfilter_post(store)
+        except Exception as exc:
+            log_exception_throttled(
+                app.logger,
+                "web.app.sslfilter.post",
+                interval_seconds=30.0,
+                message="Failed to process SSL filter admin action",
+            )
+            return _redirect_to("sslfilter", err=public_error_message(exc))
 
     rules = store.list_all()
     pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
@@ -3785,18 +3849,35 @@ def _set_clamav_enabled(cfg_text: str, enabled: bool) -> str:
 @app.route("/clamav/toggle", methods=["POST"])
 def clamav_toggle():
     action = _form_action(lower=True)
-    cfg = _current_managed_config()
-    currently_enabled = _is_clamav_enabled(cfg)
+    new_cfg = ""
+    try:
+        cfg = _current_managed_config()
+        currently_enabled = _is_clamav_enabled(cfg)
 
-    if action == "enable":
-        desired = True
-    elif action == "disable":
-        desired = False
-    else:
-        desired = not currently_enabled
+        if action == "enable":
+            desired = True
+        elif action == "disable":
+            desired = False
+        else:
+            desired = not currently_enabled
 
-    new_cfg = _set_clamav_enabled(cfg, desired)
-    ok, _details = _publish_config_for_current_mode(new_cfg, source_kind="clamav")
+        new_cfg = _set_clamav_enabled(cfg, desired)
+        ok, details = _publish_config_for_current_mode(new_cfg, source_kind="clamav")
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.clamav_toggle",
+            interval_seconds=30.0,
+            message="Failed to toggle ClamAV runtime policy",
+        )
+        ok = False
+        details = public_error_message(exc)
+    _record_audit_event(
+        "clamav_toggle",
+        ok=ok,
+        detail=(details or ""),
+        config_text=new_cfg or None,
+    )
     if ok:
         return _redirect_to("clamav")
     return _redirect_to("clamav", error="1")
@@ -3818,29 +3899,48 @@ def squid_config():
         action = _form_action(default="apply", lower=True)
         config_text = request.form.get("config_text", "")
         posted_config = config_text
-        if action == "validate":
-            ok, details = _validate_config_for_current_mode(config_text)
-            validation = {"ok": ok, "detail": (details or "").strip()}
+        try:
+            if action == "validate":
+                ok, details = _validate_config_for_current_mode(config_text)
+                validation = {"ok": ok, "detail": (details or "").strip()}
+                _record_audit_event(
+                    "config_validate_manual",
+                    ok=ok,
+                    detail=(details or ""),
+                    config_text=config_text,
+                )
+            else:
+                ok, details = _publish_config_for_current_mode(
+                    config_text,
+                    source_kind="manual",
+                )
+                _record_audit_event(
+                    "config_apply_manual",
+                    ok=ok,
+                    detail=(details or ""),
+                    config_text=config_text,
+                )
+                if ok:
+                    return _redirect_config(tab, ok=True)
+                return _redirect_config(tab, error=True)
+        except Exception as exc:
+            detail = public_error_message(exc)
+            log_exception_throttled(
+                app.logger,
+                "web.app.squid_config.post",
+                interval_seconds=30.0,
+                message="Failed to process manual Squid config action",
+            )
             _record_audit_event(
-                "config_validate_manual",
-                ok=ok,
-                detail=(details or ""),
+                "config_validate_manual" if action == "validate" else "config_apply_manual",
+                ok=False,
+                detail=detail,
                 config_text=config_text,
             )
-        else:
-            ok, details = _publish_config_for_current_mode(
-                config_text,
-                source_kind="manual",
-            )
-            _record_audit_event(
-                "config_apply_manual",
-                ok=ok,
-                detail=(details or ""),
-                config_text=config_text,
-            )
-            if ok:
-                return _redirect_config(tab, ok=True)
-            return _redirect_config(tab, error=True)
+            if action == "validate":
+                validation = {"ok": False, "detail": detail}
+            else:
+                return _redirect_config(tab, error=True)
     current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
     managed_options = build_template_options(tunables, max_workers=_max_workers())
