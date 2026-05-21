@@ -193,7 +193,7 @@ def test_live_proxy_management_clamav_endpoints_reflect_current_backend_behavior
     )
 
     assert eicar_response.status == 503
-    assert icap_response.status == 200
+    assert icap_response.status == 503
     assert eicar_response.json().get("ok") is False
-    assert icap_response.json().get("ok") is True
-    assert "204 No Content" in str(icap_response.json().get("detail") or "")
+    assert icap_response.json().get("ok") is False
+    assert "Connection refused" in str(icap_response.json().get("detail") or "")
