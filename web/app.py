@@ -8,7 +8,7 @@ import os
 import secrets
 import shutil
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -812,11 +812,7 @@ def _observability_sort_from_request(pane: str) -> str:
 
 def _observability_resolve_hostnames_from_request() -> bool:
     resolve_values = request.args.getlist("resolve_hostnames")
-    return (
-        True
-        if not resolve_values
-        else any((value or "").strip() == "1" for value in resolve_values)
-    )
+    return any((value or "").strip() == "1" for value in resolve_values)
 
 
 def _observability_privacy_from_request() -> bool:
@@ -1779,7 +1775,10 @@ def _queue_adblock_runtime_refresh(*, action: str) -> None:
         and getattr(operation, "status", "") == "failed"
     ):
         raise RuntimeError(
-            str(getattr(operation, "detail", "") or "Adblock runtime refresh was not queued."),
+            str(
+                getattr(operation, "detail", "")
+                or "Adblock runtime refresh was not queued."
+            ),
         )
 
 
@@ -3282,43 +3281,83 @@ def observability_metrics():
         maximum=7 * 24 * 3600,
     )
     since_ts = int(time.time()) - window_i
-    try:
-        summary = queries.summary(since=since_ts)
-        cache = queries.cache_savings(since=since_ts)
-        security = queries.security_overview(since=since_ts, limit=10)
-        lines = [
-            "# HELP docker_proxy_observability_requests Requests observed in the selected window.",
-            "# TYPE docker_proxy_observability_requests gauge",
-            f'docker_proxy_observability_requests{{proxy_id="{get_proxy_id()}"}} {int(summary.get("request_records") or 0)}',
-            "# HELP docker_proxy_observability_cache_hit_ratio Cache hit percentage in the selected window.",
-            "# TYPE docker_proxy_observability_cache_hit_ratio gauge",
-            f'docker_proxy_observability_cache_hit_ratio{{proxy_id="{get_proxy_id()}"}} {float(summary.get("cache_hit_pct") or 0.0)}',
-            "# HELP docker_proxy_observability_cache_saved_bytes Estimated cache-served response bytes in the selected window.",
-            "# TYPE docker_proxy_observability_cache_saved_bytes gauge",
-            f'docker_proxy_observability_cache_saved_bytes{{proxy_id="{get_proxy_id()}"}} {int(cache.get("estimated_saved_bytes") or 0)}',
-            "# HELP docker_proxy_observability_security_blocks Enforcement block events in the selected window.",
-            "# TYPE docker_proxy_observability_security_blocks gauge",
-            f'docker_proxy_observability_security_blocks{{proxy_id="{get_proxy_id()}"}} {int((security.get("summary") or {}).get("combined_blocks") or 0)}',
-            "# HELP docker_proxy_observability_malware_attempts Potential AV findings in the selected window.",
-            "# TYPE docker_proxy_observability_malware_attempts gauge",
-            f'docker_proxy_observability_malware_attempts{{proxy_id="{get_proxy_id()}"}} {int((security.get("summary") or {}).get("potential_findings") or 0)}',
-        ]
-        return app.response_class(
-            "\n".join(lines) + "\n",
-            mimetype="text/plain; version=0.0.4; charset=utf-8",
+    proxy_id = get_proxy_id()
+    lines = []
+    scrape_errors: list[str] = []
+
+    def collect(name: str, callback: Callable[[], Any]) -> Any:
+        try:
+            return callback()
+        except Exception:
+            scrape_errors.append(name)
+            log_exception_throttled(
+                app.logger,
+                f"web.app.observability.metrics.{name}",
+                interval_seconds=30.0,
+                message=f"Failed to collect observability metrics section: {name}",
+            )
+            return None
+
+    summary = collect("summary", lambda: queries.summary(since=since_ts))
+    if isinstance(summary, dict):
+        lines.extend(
+            [
+                "# HELP docker_proxy_observability_requests Requests observed in the selected window.",
+                "# TYPE docker_proxy_observability_requests gauge",
+                f'docker_proxy_observability_requests{{proxy_id="{proxy_id}"}} {int(summary.get("request_records") or 0)}',
+                "# HELP docker_proxy_observability_cache_hit_ratio Cache hit percentage in the selected window.",
+                "# TYPE docker_proxy_observability_cache_hit_ratio gauge",
+                f'docker_proxy_observability_cache_hit_ratio{{proxy_id="{proxy_id}"}} {float(summary.get("cache_hit_pct") or 0.0)}',
+            ],
         )
-    except Exception:
-        log_exception_throttled(
-            app.logger,
-            "web.app.observability.metrics",
-            interval_seconds=30.0,
-            message="Failed to build observability Prometheus metrics",
+
+    cache = collect("cache", lambda: queries.cache_savings(since=since_ts))
+    if isinstance(cache, dict):
+        lines.extend(
+            [
+                "# HELP docker_proxy_observability_cache_saved_bytes Estimated cache-served response bytes in the selected window.",
+                "# TYPE docker_proxy_observability_cache_saved_bytes gauge",
+                f'docker_proxy_observability_cache_saved_bytes{{proxy_id="{proxy_id}"}} {int(cache.get("estimated_saved_bytes") or 0)}',
+            ],
         )
-        return app.response_class(
-            "",
-            mimetype="text/plain; version=0.0.4; charset=utf-8",
-            status=503,
+
+    security = collect(
+        "security",
+        lambda: queries.security_overview(since=since_ts, limit=10),
+    )
+    if isinstance(security, dict):
+        security_summary = security.get("summary") or {}
+        lines.extend(
+            [
+                "# HELP docker_proxy_observability_security_blocks Enforcement block events in the selected window.",
+                "# TYPE docker_proxy_observability_security_blocks gauge",
+                f'docker_proxy_observability_security_blocks{{proxy_id="{proxy_id}"}} {int(security_summary.get("combined_blocks") or 0)}',
+                "# HELP docker_proxy_observability_malware_attempts Potential AV findings in the selected window.",
+                "# TYPE docker_proxy_observability_malware_attempts gauge",
+                f'docker_proxy_observability_malware_attempts{{proxy_id="{proxy_id}"}} {int(security_summary.get("potential_findings") or 0)}',
+            ],
         )
+
+    lines.extend(
+        [
+            "# HELP docker_proxy_observability_scrape_error Observability metrics collector failures in the selected window.",
+            "# TYPE docker_proxy_observability_scrape_error gauge",
+        ],
+    )
+    if scrape_errors:
+        lines.extend(
+            f'docker_proxy_observability_scrape_error{{proxy_id="{proxy_id}",section="{section}"}} 1'
+            for section in scrape_errors
+        )
+    else:
+        lines.append(
+            f'docker_proxy_observability_scrape_error{{proxy_id="{proxy_id}",section="none"}} 0',
+        )
+
+    return app.response_class(
+        "\n".join(lines) + "\n",
+        mimetype="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.route("/requests", methods=["GET", "POST"])

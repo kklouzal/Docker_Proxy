@@ -41,6 +41,7 @@ services:
       - "0.0.0.0:5000:5000"       # Flask UI
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - squid_logs:/var/log/squid:ro
     environment:
       <<: *shared-app-env
       DISABLE_BACKGROUND: 0
@@ -72,6 +73,7 @@ services:
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
+      - squid_logs:/var/log/squid
       - squid_ssl_db:/var/lib/ssl_db
       - squid_cache:/var/spool/squid
       - proxy_data:/var/lib/squid-flask-proxy

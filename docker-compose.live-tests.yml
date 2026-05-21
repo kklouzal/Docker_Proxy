@@ -103,6 +103,7 @@ services:
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
+      - squid_logs_edge_2:/var/log/squid
       - squid_ssl_db_edge_2:/var/lib/ssl_db
       - squid_cache_edge_2:/var/spool/squid
       - proxy_data_edge_2:/var/lib/squid-flask-proxy
@@ -201,6 +202,7 @@ services:
       - control
 
 volumes:
+  squid_logs_edge_2:
   squid_cache_edge_2:
   squid_ssl_db_edge_2:
   proxy_data_edge_2:

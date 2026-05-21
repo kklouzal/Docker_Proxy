@@ -697,7 +697,11 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
         window_seconds=86400,
     )
     payload = queries.reporting_overview(
-        since=4000, limit=10, resolve_hostnames=False, privacy=True
+        since=4000,
+        search="example",
+        limit=10,
+        resolve_hostnames=False,
+        privacy=True,
     )
 
     assert payload["cache_savings"]["estimated_saved_bytes"] == 4096

@@ -20,6 +20,7 @@ services:
       pull: true
 
 volumes:
+  squid_logs:
   squid_cache:
   squid_ssl_db:
   proxy_data:

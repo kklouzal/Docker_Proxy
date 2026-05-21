@@ -30,6 +30,17 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     admin_block = compose.split("  proxy:", 1)[0]
     assert "  admin-ui:" in admin_block
     assert "depends_on:" not in admin_block
+    assert "- squid_logs:/var/log/squid:ro" in admin_block
+
+    proxy_block = compose.split("  proxy:", 1)[1]
+    assert "- squid_logs:/var/log/squid" in proxy_block
+    assert "squid_logs:" in _read("docker-compose.yml")
+    assert "squid_logs:" in _read("docker-compose.ghcr.yml")
+
+    live_compose = _read("docker-compose.live-tests.yml")
+    assert "- squid_logs_edge_2:/var/log/squid" in live_compose
+    assert "squid_logs_edge_2:" in live_compose
+
     entrypoint = _read("docker/entrypoint.sh")
     assert (
         "rm -f /var/run/c-icap/c-icap-adblock.pid; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf"
@@ -49,7 +60,7 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
 
     assert "--threads ${WEB_THREADS:-2}" in supervisord
     assert "# WEB_THREADS=2" in env_example
-    assert "web_threads=\"${WEB_THREADS:-2}\"" in entrypoint
+    assert 'web_threads="${WEB_THREADS:-2}"' in entrypoint
     assert "web_workers" not in entrypoint
     assert "derived_pool=$((web_threads + 1))" in entrypoint
     assert 'if [ "$derived_pool" -lt 2 ]; then' in entrypoint

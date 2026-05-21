@@ -576,7 +576,10 @@ def test_observability_settings_updates_retention_days(monkeypatch, tmp_path) ->
     assert "pane=settings" in location
     assert "settings_saved=1" in location
     assert "retention_days=45" in location
-    assert loaded.audit_store.records[-1]["kind"] == "observability_retention_settings_save"
+    assert (
+        loaded.audit_store.records[-1]["kind"]
+        == "observability_retention_settings_save"
+    )
     assert loaded.audit_store.records[-1]["ok"] is True
     assert "45 days" in loaded.audit_store.records[-1]["detail"]
 
@@ -624,7 +627,9 @@ def test_observability_settings_runs_manual_database_maintenance(
     assert "maintenance_run=1" in location
     assert "retention_days=45" in location
     assert "maintained_tables=3" in location
-    assert loaded.audit_store.records[-1]["kind"] == "observability_database_maintenance"
+    assert (
+        loaded.audit_store.records[-1]["kind"] == "observability_database_maintenance"
+    )
     assert loaded.audit_store.records[-1]["ok"] is True
     assert "45 day retention" in loaded.audit_store.records[-1]["detail"]
 
@@ -669,3 +674,75 @@ def test_fleet_observability_summary_is_not_repeated_per_proxy(
 
     assert response.status_code == 200
     assert diagnostic_store.activity_calls == 1
+
+
+def test_observability_hostnames_are_not_resolved_by_default(
+    monkeypatch, tmp_path
+) -> None:
+    class RecordingObservabilityQueries:
+        def __init__(self) -> None:
+            self.top_client_calls = []
+
+        def summary(self, **_kwargs):
+            return {"request_records": 0, "cache_hit_pct": 0}
+
+        def top_clients(self, **kwargs):
+            self.top_client_calls.append(dict(kwargs))
+            return []
+
+    observability_queries = RecordingObservabilityQueries()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=observability_queries,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=clients")
+    assert response.status_code == 200
+    assert observability_queries.top_client_calls[-1]["resolve_hostnames"] is False
+
+    response = client.get("/observability?pane=clients&resolve_hostnames=1")
+    assert response.status_code == 200
+    assert observability_queries.top_client_calls[-1]["resolve_hostnames"] is True
+
+
+def test_observability_metrics_returns_partial_payload_on_collector_failure(
+    monkeypatch, tmp_path
+) -> None:
+    class PartiallyFailingObservabilityQueries:
+        def summary(self, **_kwargs):
+            msg = "summary unavailable"
+            raise RuntimeError(msg)
+
+        def cache_savings(self, **_kwargs):
+            return {"estimated_saved_bytes": 42}
+
+        def security_overview(self, **_kwargs):
+            return {
+                "summary": {
+                    "combined_blocks": 7,
+                    "potential_findings": 2,
+                },
+            }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=PartiallyFailingObservabilityQueries(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability/metrics")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "docker_proxy_observability_cache_saved_bytes" in body
+    assert 'docker_proxy_observability_cache_saved_bytes{proxy_id="default"} 42' in body
+    assert 'docker_proxy_observability_security_blocks{proxy_id="default"} 7' in body
+    assert (
+        'docker_proxy_observability_scrape_error{proxy_id="default",section="summary"} 1'
+        in body
+    )

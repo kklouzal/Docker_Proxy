@@ -113,6 +113,10 @@ def test_admin_ui_compose_service_can_run_without_proxy_dependency() -> None:
 
     assert "  admin-ui:" in admin_block
     assert "depends_on:" not in admin_block
+    assert "- squid_logs:/var/log/squid:ro" in admin_block
+
+    proxy_block = text.split("  proxy:", 1)[1]
+    assert "- squid_logs:/var/log/squid" in proxy_block
 
 
 def test_proxy_entrypoint_removes_stale_cicap_pidfiles_before_start() -> None:
