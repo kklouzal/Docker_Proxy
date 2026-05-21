@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import logging
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from services.errors import public_error_message
+
+if TYPE_CHECKING:
+    import logging
 
 _lock = threading.Lock()
 _last_log: dict[str, float] = {}
@@ -38,6 +41,7 @@ def log_exception_throttled(
     except Exception:
         # Never let logging break the worker loop.
         pass
+
 
 def log_database_unavailable(
     logger: logging.Logger,

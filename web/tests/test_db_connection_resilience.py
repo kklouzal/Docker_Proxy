@@ -305,6 +305,7 @@ def test_ssl_errors_ingest_retries_after_database_init_timeout(
 
     assert calls["init_db"] == 2
 
+
 def test_ssl_errors_cleanup_uses_bounded_delete_chunks(monkeypatch, tmp_path) -> None:
     _add_repo_paths()
     from services import ssl_errors_store  # type: ignore
@@ -451,6 +452,7 @@ def test_mysql_advisory_lock_times_out() -> None:
     with pytest.raises(TimeoutError):
         with db.mysql_advisory_lock(Conn(), "docker_proxy:test", 1):
             pass
+
 
 def test_ssl_errors_ingest_logs_database_outage_without_traceback(
     monkeypatch, tmp_path

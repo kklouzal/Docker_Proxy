@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from services.db import DATABASE_ERRORS, INTEGRITY_ERRORS, connect
+from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_int as _env_int
