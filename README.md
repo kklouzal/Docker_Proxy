@@ -57,10 +57,10 @@ Put database and management-token settings in a root `.env` file or your launch 
 MYSQL_HOST=192.168.1.10
 MYSQL_PORT=3306
 MYSQL_USER=docker_proxy
-MYSQL_PASSWORD=change_me
+MYSQL_PASSWORD=replace_with_the_database_password
 MYSQL_DATABASE=squid_proxy
 MYSQL_CREATE_DATABASE=0
-PROXY_MANAGEMENT_TOKEN=change_me_too
+PROXY_MANAGEMENT_TOKEN=replace_with_a_shared_internal_token
 DOCKER_LOG_DRIVER=json-file
 DOCKER_LOG_MAX_SIZE=10m
 DOCKER_LOG_MAX_FILE=3
