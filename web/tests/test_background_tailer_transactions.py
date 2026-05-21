@@ -99,6 +99,49 @@ def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
         store._tail_loop()
 
 
+def test_ssl_errors_tailer_does_not_initialize_db_when_log_missing(
+    monkeypatch, tmp_path
+) -> None:
+    _add_repo_paths()
+    from services import ssl_errors_store  # type: ignore
+
+    store = ssl_errors_store.SslErrorsStore(
+        cache_log_path=str(tmp_path / "missing-cache.log")
+    )
+    monkeypatch.setattr(
+        store,
+        "init_db",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("missing-log tailer initialized the database")
+        ),
+    )
+    monkeypatch.setattr(ssl_errors_store.time, "sleep", _stop_sleep)
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+
+def test_ssl_errors_tailer_ignores_irrelevant_lines_without_database(
+    monkeypatch, tmp_path
+) -> None:
+    _add_repo_paths()
+    from services import ssl_errors_store  # type: ignore
+
+    log_path = tmp_path / "cache.log"
+    log_path.write_text("", encoding="utf-8")
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("irrelevant cache.log line opened a DB connection")
+        ),
+    )
+
+    assert store.ingest_line("2026/05/20 12:00:00 kid1| storeDirWriteCleanLogs: Starting...") is None
+
+
 def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
     monkeypatch, tmp_path
 ) -> None:

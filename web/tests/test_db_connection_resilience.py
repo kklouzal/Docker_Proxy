@@ -262,20 +262,16 @@ def test_ssl_errors_background_start_does_not_block_on_database_init(
     assert len(targets) == 1
 
 
-def test_ssl_errors_tail_loop_retries_after_database_init_timeout(
+def test_ssl_errors_ingest_retries_after_database_init_timeout(
     monkeypatch, tmp_path
 ) -> None:
     _add_repo_paths()
     import pymysql  # type: ignore
     from services import ssl_errors_store  # type: ignore
 
-    class StopLoop(BaseException):
-        pass
-
     calls = {"init_db": 0}
-    store = ssl_errors_store.SslErrorsStore(
-        cache_log_path=str(tmp_path / "missing-cache.log")
-    )
+    line = "2026/05/20 12:00:00 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
 
     def flaky_init_db() -> None:
         calls["init_db"] += 1
@@ -285,19 +281,29 @@ def test_ssl_errors_tail_loop_retries_after_database_init_timeout(
             )
         store._db_initialized = True
 
-    def fake_sleep(_seconds: float) -> None:
-        if calls["init_db"] >= 2:
-            raise StopLoop
+    class Result:
+        rowcount = 1
+
+        def fetchone(self):
+            return None
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            return Result()
 
     monkeypatch.setattr(store, "init_db", flaky_init_db)
-    monkeypatch.setattr(ssl_errors_store.os.path, "exists", lambda _path: False)
-    monkeypatch.setattr(ssl_errors_store.time, "sleep", fake_sleep)
+    monkeypatch.setattr(store, "_connect", Conn)
 
-    with pytest.raises(StopLoop):
-        store._tail_loop()
+    store.ingest_line(line)
+    store.ingest_line(line)
 
-    assert calls["init_db"] >= 2
-
+    assert calls["init_db"] == 2
 
 def test_ssl_errors_cleanup_uses_bounded_delete_chunks(monkeypatch, tmp_path) -> None:
     _add_repo_paths()
@@ -445,3 +451,39 @@ def test_mysql_advisory_lock_times_out() -> None:
     with pytest.raises(TimeoutError):
         with db.mysql_advisory_lock(Conn(), "docker_proxy:test", 1):
             pass
+
+def test_ssl_errors_ingest_logs_database_outage_without_traceback(
+    monkeypatch, tmp_path
+) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import ssl_errors_store  # type: ignore
+
+    line = "2026/05/20 12:00:00 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+    monkeypatch.setattr(ssl_errors_store, "should_log", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        store,
+        "init_db",
+        lambda: (_ for _ in ()).throw(
+            pymysql.err.OperationalError(2003, "connect timed out")
+        ),
+    )
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        ssl_errors_store.logger,
+        "warning",
+        lambda message, *args: warnings.append((message, args)),
+    )
+    monkeypatch.setattr(
+        ssl_errors_store,
+        "log_exception_throttled",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("database outages should not log tracebacks")
+        ),
+    )
+
+    store.ingest_line(line)
+
+    assert warnings
+    assert "database is unavailable" in str(warnings[0][1][0]).lower()

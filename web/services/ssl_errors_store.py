@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db import DATABASE_ERRORS, connect
+from services.errors import public_error_message
 from services.logutil import log_exception_throttled, should_log
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float
@@ -20,6 +21,21 @@ from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
+
+
+def _log_database_unavailable(
+    key: str,
+    message: str,
+    exc: BaseException,
+    *,
+    interval_seconds: float = 900.0,
+) -> None:
+    if should_log(key, interval_seconds=interval_seconds):
+        logger.warning(
+            "%s: %s",
+            message,
+            public_error_message(exc, default="Database is unavailable."),
+        )
 
 
 @dataclass(frozen=True)
@@ -311,6 +327,19 @@ class SslErrorsStore:
             return ""
         return self._lookup_domain_for_master_xaction(conn, master_xaction, int(ts))
 
+    def _has_uncommitted_pending_error(self) -> bool:
+        pending = self._pending_error
+        return bool(pending and not bool(pending.get("committed")))
+
+    def _line_requires_database(self, line: str) -> bool:
+        raw_line = (line or "").strip("\r\n")
+        if _extract_followup_context(raw_line):
+            return self._pending_error is not None
+        _ts, msg = _parse_cache_log_ts(raw_line)
+        if _classify_ssl_error(msg):
+            return True
+        return self._has_uncommitted_pending_error() and bool(raw_line.strip())
+
     def _flush_pending_error(self, conn) -> bool:
         pending = self._pending_error
         if not pending or bool(pending.get("committed")):
@@ -597,9 +626,18 @@ class SslErrorsStore:
         )
 
     def ingest_line(self, line: str) -> None:
-        self.init_db()
-        with self._connect() as conn:
-            self._ingest_line_with_conn(conn, line)
+        if not self._line_requires_database(line):
+            return
+        try:
+            self.init_db()
+            with self._connect() as conn:
+                self._ingest_line_with_conn(conn, line)
+        except DATABASE_ERRORS as exc:
+            _log_database_unavailable(
+                "ssl_errors_store.ingest_direct.db",
+                "SSL errors ingest skipped database work because the database is unavailable",
+                exc,
+            )
 
     def _read_last_lines(self, max_lines: int) -> list[str]:
         path = self.cache_log_path
@@ -799,15 +837,9 @@ class SslErrorsStore:
 
         path = self.cache_log_path
         last_inode: int | None = None
-        seeded_recent_log = False
 
         while True:
             try:
-                self.init_db()
-                if not seeded_recent_log:
-                    self.seed_from_recent_log()
-                    seeded_recent_log = True
-
                 if not pathlib.Path(path).exists():
                     time.sleep(max(1.0, poll_interval))
                     continue
@@ -821,10 +853,16 @@ class SslErrorsStore:
                 last_commit = time.time()
 
                 def ingest_line(line: str) -> bool:
+                    if not self._line_requires_database(line):
+                        return False
+                    self.init_db()
                     with self._connect() as conn:
                         return self._ingest_line_with_conn(conn, line)
 
                 def flush_pending() -> bool:
+                    if not self._has_uncommitted_pending_error():
+                        return False
+                    self.init_db()
                     with self._connect() as conn:
                         return self._flush_pending_error(conn)
 
@@ -836,6 +874,12 @@ class SslErrorsStore:
                             try:
                                 if ingest_line(line):
                                     pending += 1
+                            except DATABASE_ERRORS as exc:
+                                _log_database_unavailable(
+                                    "ssl_errors_store.ingest.db",
+                                    "SSL errors tailer skipped database ingest because the database is unavailable",
+                                    exc,
+                                )
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -860,6 +904,12 @@ class SslErrorsStore:
                             try:
                                 if flush_pending():
                                     pending = 0
+                            except DATABASE_ERRORS as exc:
+                                _log_database_unavailable(
+                                    "ssl_errors_store.idle_commit.db",
+                                    "SSL errors tailer deferred a pending SSL error flush because the database is unavailable",
+                                    exc,
+                                )
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -897,6 +947,12 @@ class SslErrorsStore:
                             last_inode = inode2
                             try:
                                 flush_pending()
+                            except DATABASE_ERRORS as exc:
+                                _log_database_unavailable(
+                                    "ssl_errors_store.commit.rotate.db",
+                                    "SSL errors tailer deferred final rotation flush because the database is unavailable",
+                                    exc,
+                                )
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -907,11 +963,20 @@ class SslErrorsStore:
                             break
 
                         time.sleep(poll_interval)
+            except DATABASE_ERRORS as exc:
+                _log_database_unavailable(
+                    "ssl_errors_store.loop.db",
+                    "SSL errors tailer is waiting for database availability; retrying",
+                    exc,
+                )
+                time.sleep(max(5.0, poll_interval))
             except Exception:
-                if should_log("ssl_errors_store.loop", interval_seconds=300.0):
-                    logger.warning(
-                        "SSL errors tailer is waiting for database availability; retrying.",
-                    )
+                log_exception_throttled(
+                    logger,
+                    "ssl_errors_store.loop",
+                    interval_seconds=300.0,
+                    message="SSL errors tailer loop failed",
+                )
                 time.sleep(max(1.0, poll_interval))
 
     def list_errors(self, limit: int = 200) -> list[dict[str, Any]]:
