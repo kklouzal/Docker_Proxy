@@ -63,12 +63,12 @@ def _is_internal_host(hostname: str) -> bool:
 
     try:
         infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return False
-    except OSError:
+    except (socket.gaierror, OSError):
         return True
 
     resolved = {info[4][0] for info in infos if info and info[4]}
+    if not resolved:
+        return True
     return any(_is_forbidden_download_ip(address) for address in resolved)
 
 

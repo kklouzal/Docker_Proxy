@@ -160,6 +160,56 @@ def test_build_active_artifact_reports_download_pending_when_due_download_fails_
                 os.environ[key] = value
 
 
+def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
+    tmp_path, monkeypatch
+) -> None:
+    env_backup = {key: os.environ.get(key) for key in ("DISABLE_BACKGROUND",)}
+    try:
+        store_module, artifacts_module = _import_artifact_modules(tmp_path)
+
+        store = store_module.get_adblock_store()
+        store.lists_dir = str(tmp_path / "lists")
+        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
+        store.init_db()
+
+        statuses = store.list_statuses()
+        assert statuses, "expected default adblock lists to be present"
+        selected = statuses[0].key
+
+        store.set_enabled({status.key: status.key == selected for status in statuses})
+        store.set_settings(enabled=False, cache_ttl=120, cache_max=4096)
+        monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
+
+        result = artifacts_module.get_adblock_artifacts().build_active_artifact(
+            refresh_lists=False,
+            created_by="tester",
+            source_kind="test",
+        )
+
+        assert result["ok"] is True
+        revision = result["revision"]
+        assert revision is not None
+        assert revision.enabled_lists == []
+
+        with zipfile.ZipFile(io.BytesIO(revision.archive_blob), mode="r") as zf:
+            settings = json.loads(
+                zf.read("settings.json").decode("utf-8", errors="replace")
+            )
+            report = json.loads(
+                zf.read("report.json").decode("utf-8", errors="replace")
+            )
+
+        assert settings["enabled"] is False
+        assert settings["enabled_lists"] == []
+        assert report["enabled_lists"] == []
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_adblock_download_rejects_hostname_resolving_private(
     tmp_path, monkeypatch
 ) -> None:
@@ -183,6 +233,37 @@ def test_adblock_download_rejects_hostname_resolving_private(
         "build_opener",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("download should not open internal resolved host")
+        ),
+    )
+
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    ok, err, bytes_read, rules = store.download_list(
+        "easylist",
+        "https://public.example/easylist.txt",
+    )
+
+    assert ok is False
+    assert "internal/localhost" in err
+    assert bytes_read == 0
+    assert rules == 0
+
+
+def test_adblock_download_rejects_hostname_when_dns_cannot_be_verified(
+    tmp_path, monkeypatch
+) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        msg = "resolver unavailable"
+        raise store_module.socket.gaierror(msg)
+
+    monkeypatch.setattr(store_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        store_module.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("download should not open when DNS cannot be verified")
         ),
     )
 

@@ -384,6 +384,9 @@ class AdblockArtifactStore:
         settings_version = store.get_settings_version()
         statuses = store.list_statuses()
         enabled_statuses = [status for status in statuses if status.enabled]
+        effective_enabled_lists = [
+            status.key for status in enabled_statuses if bool(settings.get("enabled"))
+        ]
         previous = self.get_active_artifact()
         any_downloaded = False
         download_pending = False
@@ -417,12 +420,12 @@ class AdblockArtifactStore:
                     out_dir,
                     settings=settings,
                     settings_version=settings_version,
-                    enabled_lists=[status.key for status in enabled_statuses],
+                    enabled_lists=effective_enabled_lists,
                 )
                 revision = self.create_revision_from_directory(
                     out_dir,
                     settings_version=settings_version,
-                    enabled_lists=[status.key for status in enabled_statuses],
+                    enabled_lists=effective_enabled_lists,
                     created_by=created_by,
                     source_kind=source_kind,
                     activate=True,
