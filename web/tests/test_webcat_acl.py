@@ -229,12 +229,13 @@ def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) ->
 
     class FakeConn:
         def execute(self, *_args, **_kwargs):
-            raise RuntimeError("ddl failed")
+            msg = "ddl failed"
+            raise RuntimeError(msg)
 
         def close(self):
             closed.append(True)
 
-    monkeypatch.setattr(webcat_acl, "connect", lambda: FakeConn())
+    monkeypatch.setattr(webcat_acl, "connect", FakeConn)
 
     db = webcat_acl._BlockedLogDb(max_rows=10)
 

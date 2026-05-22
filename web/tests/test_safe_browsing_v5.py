@@ -417,7 +417,7 @@ def test_safe_browsing_update_lists_releases_db_before_network_fetch(monkeypatch
 
     store = SafeBrowsingStore()
     monkeypatch.setattr(store, "init_db", lambda: None)
-    monkeypatch.setattr(store, "_connect", lambda: FakeConn())
+    monkeypatch.setattr(store, "_connect", FakeConn)
     monkeypatch.setattr(store, "_apply_hash_list", lambda _conn, _item: events.append("apply"))
 
     def fake_request_json(*_args, **_kwargs):

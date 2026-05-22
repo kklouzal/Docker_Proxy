@@ -15,6 +15,10 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
+def _noop_init_schema(_conn) -> None:
+    return None
+
+
 def test_adblock_artifact_background_start_does_not_latch_on_init_failure(monkeypatch) -> None:
     _add_repo_paths()
     from services.adblock_artifacts import AdblockArtifactStore  # type: ignore
@@ -22,7 +26,8 @@ def test_adblock_artifact_background_start_does_not_latch_on_init_failure(monkey
     store = AdblockArtifactStore()
 
     def fail_init() -> None:
-        raise RuntimeError("db unavailable")
+        msg = "db unavailable"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(store, "init_db", fail_init)
 
@@ -39,7 +44,8 @@ def test_webfilter_background_start_does_not_latch_on_init_failure(monkeypatch) 
     store = WebFilterStore()
 
     def fail_init() -> None:
-        raise RuntimeError("db unavailable")
+        msg = "db unavailable"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(store, "init_db", fail_init)
 
@@ -56,7 +62,8 @@ def test_safe_browsing_background_start_does_not_latch_on_init_failure(monkeypat
     store = SafeBrowsingStore()
 
     def fail_init() -> None:
-        raise RuntimeError("db unavailable")
+        msg = "db unavailable"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(store, "init_db", fail_init)
 
@@ -76,11 +83,11 @@ def test_safe_browsing_local_checker_close_releases_cached_connection(monkeypatc
         def close(self) -> None:
             closed.append(True)
 
-    monkeypatch.setattr(safe_browsing_v5, "connect", lambda: FakeConn())
+    monkeypatch.setattr(safe_browsing_v5, "connect", FakeConn)
     monkeypatch.setattr(
         safe_browsing_v5.SafeBrowsingStore,
         "init_schema",
-        staticmethod(lambda _conn: None),
+        staticmethod(_noop_init_schema),
     )
 
     checker = safe_browsing_v5.SafeBrowsingLocalChecker(api_key="test")
@@ -103,11 +110,11 @@ def test_safe_browsing_local_checker_context_manager_closes(monkeypatch) -> None
         def close(self) -> None:
             closed.append(True)
 
-    monkeypatch.setattr(safe_browsing_v5, "connect", lambda: FakeConn())
+    monkeypatch.setattr(safe_browsing_v5, "connect", FakeConn)
     monkeypatch.setattr(
         safe_browsing_v5.SafeBrowsingStore,
         "init_schema",
-        staticmethod(lambda _conn: None),
+        staticmethod(_noop_init_schema),
     )
 
     with safe_browsing_v5.SafeBrowsingLocalChecker(api_key="test") as checker:
@@ -133,16 +140,17 @@ def test_safe_browsing_local_checker_discards_cached_connection_on_db_error(monk
             return False
 
         def execute(self, *_args, **_kwargs):
-            raise RuntimeError("stale connection")
+            msg = "stale connection"
+            raise RuntimeError(msg)
 
         def close(self) -> None:
             closed.append(True)
 
-    monkeypatch.setattr(safe_browsing_v5, "connect", lambda: FakeConn())
+    monkeypatch.setattr(safe_browsing_v5, "connect", FakeConn)
     monkeypatch.setattr(
         safe_browsing_v5.SafeBrowsingStore,
         "init_schema",
-        staticmethod(lambda _conn: None),
+        staticmethod(_noop_init_schema),
     )
 
     checker = safe_browsing_v5.SafeBrowsingLocalChecker(api_key="test")

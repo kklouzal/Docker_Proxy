@@ -211,8 +211,11 @@ def test_observability_advisory_lock_uses_unpooled_connection(monkeypatch) -> No
         def close(self):
             unpooled_calls.append("close")
 
-    monkeypatch.setattr(maintenance, "connect", lambda: pooled_calls.append("connect"))
-    monkeypatch.setattr(maintenance, "connect_unpooled", lambda: LockConn())
+    def record_pooled_call():
+        pooled_calls.append("connect")
+
+    monkeypatch.setattr(maintenance, "connect", record_pooled_call)
+    monkeypatch.setattr(maintenance, "connect_unpooled", LockConn)
 
     conn = maintenance.acquire_observability_maintenance_lock()
     maintenance.release_observability_maintenance_lock(conn)
