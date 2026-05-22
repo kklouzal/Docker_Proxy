@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,27 @@ def test_card_split_widths_are_opt_in_layouts() -> None:
     assert ".grid.data-pair-layout > .card.split-left" in css
     assert ".card.split-left{ grid-column" not in css
     assert ".card.split-right{ grid-column" not in css
+
+
+def test_shared_layout_wrappers_stretch_direct_children() -> None:
+    css = STYLE.read_text(encoding="utf-8")
+
+    assert ".page-shell > *{" in css
+    assert ".section-shell{" in css
+    assert "grid-template-columns: minmax(0, 1fr);" in css
+    assert ".section-shell > *{" in css
+    assert "grid-column: 1 / -1;" in css
+    assert "justify-self: stretch;" in css
+    assert ".grid > *," in css
+    assert ".grid > .card{" in css
+    card_rule = re.search(r"(?m)^\.card\{(?P<body>.*?)^\}", css, re.DOTALL)
+    assert card_rule is not None
+    assert "grid-column" not in card_rule.group("body")
+    assert ".card-stack > *," in css
+    assert ".content-stack > *{" in css
+    assert ".stack-sm > *," in css
+    assert ".stack-md > *," in css
+    assert ".stack-lg > *{" in css
 
 
 def test_pages_with_sidebars_declare_their_layout_intent() -> None:
@@ -72,7 +94,7 @@ def test_clamav_page_explains_configurable_failure_behavior() -> None:
 def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:
     html = (TEMPLATES / "sslfilter.html").read_text(encoding="utf-8")
 
-    assert '<div class="grid">' in html
+    assert '<div class="grid two-col">' in html
     assert 'class="grid split-layout"' not in html
     assert 'class="grid sidebar-wide-layout"' not in html
 
@@ -93,7 +115,7 @@ def test_templates_do_not_force_full_width_with_inline_styles() -> None:
     for template in TEMPLATES.glob("*.html"):
         html = template.read_text(encoding="utf-8")
         assert (
-            'style="grid-column: 1 / -1; justify-self: stretch; width: 100%;"'
+            ' style='
             not in html
         ), template.name
 
@@ -181,3 +203,103 @@ def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -
     assert "clearSpaPageCache();" in js
     assert "spaPagePrefetches.clear();" in js
     assert "buildSubmitFormData(form, event.submitter)" in js
+
+
+def test_admin_page_titles_use_docker_proxy_brand_except_error_pages() -> None:
+    expected = {
+        "adblock.html",
+        "administration.html",
+        "certs.html",
+        "clamav.html",
+        "fleet.html",
+        "index.html",
+        "login.html",
+        "observability.html",
+        "operations.html",
+        "pac.html",
+        "requests.html",
+        "squid_config.html",
+        "sslfilter.html",
+        "webfilter.html",
+        "winhttp_registry.html",
+    }
+
+    for template_name in expected:
+        html = (TEMPLATES / template_name).read_text(encoding="utf-8")
+        assert "Docker Proxy" in html, template_name
+        assert "Squid Flask Proxy" not in html, template_name
+
+
+def test_admin_pages_do_not_wrap_headings_in_neutralized_card_shells() -> None:
+    for template in TEMPLATES.glob("*.html"):
+        if template.name in {"layout.html", "_scope_macros.html", "error_pages.html"}:
+            continue
+        html = template.read_text(encoding="utf-8")
+        assert 'class="card section-shell"' not in html, template.name
+
+
+def test_polish_pass_declares_equal_column_grids_and_avoids_nested_cards() -> None:
+    expected_two_col = {
+        "clamav.html",
+        "pac.html",
+        "sslfilter.html",
+        "winhttp_registry.html",
+    }
+
+    for template_name in expected_two_col:
+        html = (TEMPLATES / template_name).read_text(encoding="utf-8")
+        assert 'class="grid two-col"' in html, template_name
+
+    pac = (TEMPLATES / "pac.html").read_text(encoding="utf-8")
+    assert 'class="surface-panel pac-profile-panel"' in pac
+    assert '<div class="card">\n          <div class="card-header">' not in pac
+
+
+def test_operations_css_is_merged_into_shared_theme() -> None:
+    css = STYLE.read_text(encoding="utf-8")
+
+    assert "--warn: #ffb347;" in css
+    assert ".toast-region{\n  position: fixed;" in css
+    assert ".status-badge.pending" in css
+    assert "var(--border-color,#263244)" not in css
+    assert "background:#172033" not in css
+    assert "background:#14532d" not in css
+    assert "background:#1d4ed8" not in css
+
+
+def test_error_pages_template_keeps_minimal_error_pages_layout() -> None:
+    html = (TEMPLATES / "error_pages.html").read_text(encoding="utf-8")
+
+    assert "Error Pages | Docker Proxy" in html
+    assert 'class="hero-card"' in html
+    assert 'class="grid cards-3"' in html
+    assert 'class="grid two-col"' in html
+    assert 'class="card section-shell"' not in html
+    assert 'class="page-heading"' not in html
+    assert 'class="stats-grid compact-stats"' not in html
+    assert 'class="card-body"' not in html
+    assert 'class="card-body content-stack"' not in html
+    assert 'class="row-2"' not in html
+
+
+def test_shared_minor_layout_utilities_have_width_contracts() -> None:
+    css = STYLE.read_text(encoding="utf-8")
+
+    for selector in (
+        ".stats-grid{",
+        ".split-grid{",
+        ".list{",
+        ".list-item{",
+        ".button-row{",
+        ".checkbox-grid{",
+        ".card-subheader{",
+    ):
+        assert selector in css
+
+    assert ".stats-grid > *," in css
+    assert ".summary-grid > *," in css
+    assert ".row-2 > *," in css
+    assert ".split-grid > *{" in css
+    assert ".split-grid > .split-left" in css
+    assert "width: 100%;" in css
+    assert "min-width: 0;" in css

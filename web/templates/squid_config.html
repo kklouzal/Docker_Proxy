@@ -1,11 +1,10 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}Squid Config · Squid Flask Proxy{% endblock %}
+{% block title %}Squid Config · Docker Proxy{% endblock %}
 
 {% block content %}
-<section class="card section-shell">
-    <div class="page-heading">
+<section class="page-heading">
         <div class="page-hero-copy">
             <span class="page-eyebrow">Proxy tuning</span>
             <h1 class="page-title">Squid Configuration</h1>
@@ -24,14 +23,11 @@
             <a class="btn ghost" href="{{ url_for('observability') }}">Open observability</a>
             <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
         </div>
-    </div>
 </section>
 
-<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy configuration', 'Every tab on this page edits only ' ~ active_proxy.display_name ~ '.') %}
 <div>Navigation and form submissions here are pinned to this proxy, so a different tab switching proxies will not accidentally retarget these changes.</div>
 {% endcall %}
-</section>
 
 <section class="card">
     <div class="card-header">
@@ -70,9 +66,9 @@
 </section>
 
 <div class="page-tabs config-tabs">
-    <a class="btn {{ 'primary' if tab == 'config' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='config') }}">Config</a>
+    <a class="btn {{ 'primary' if tab == 'config' else 'ghost' }}" href="{{ url_for('squid_config', tab='config') }}">Config</a>
     {% for section in config_sections %}
-        <a class="btn {{ 'primary' if tab == section.key else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab=section.key) }}">{{ section.label }}</a>
+        <a class="btn {{ 'primary' if tab == section.key else 'ghost' }}" href="{{ url_for('squid_config', tab=section.key) }}">{{ section.label }}</a>
     {% endfor %}
 </div>
 
@@ -168,8 +164,8 @@
 
         {% if active_section.key == 'caching' %}
             <div class="page-tabs config-subtabs">
-                <a class="btn {{ 'primary' if subtab == 'safe' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='caching', subtab='safe') }}">Managed tuning</a>
-                <a class="btn {{ 'primary' if subtab == 'overrides' else 'ghost' }}" style="width: 100%; justify-content: center;" href="{{ url_for('squid_config', tab='caching', subtab='overrides') }}">Override semantics</a>
+                <a class="btn {{ 'primary' if subtab == 'safe' else 'ghost' }}" href="{{ url_for('squid_config', tab='caching', subtab='safe') }}">Managed tuning</a>
+                <a class="btn {{ 'primary' if subtab == 'overrides' else 'ghost' }}" href="{{ url_for('squid_config', tab='caching', subtab='overrides') }}">Override semantics</a>
             </div>
         {% endif %}
 

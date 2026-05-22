@@ -1,12 +1,11 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}Observability &middot; Squid Flask Proxy{% endblock %}
+{% block title %}Observability &middot; Docker Proxy{% endblock %}
 
 {% block content %}
 {% set payload = pane_payload %}
-<section class="card section-shell">
-  <div class="page-heading">
+<section class="page-heading">
     <div class="page-hero-copy">
       <span class="page-eyebrow">Reporting and accountability</span>
       <h1 class="page-title">Observability</h1>
@@ -31,10 +30,8 @@
       </form>
       {% endif %}
     </div>
-  </div>
 </section>
 
-<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'Every number and quick action in this observability hub is scoped to ' ~ active_proxy.display_name ~ ' only, except Clear Logs.') %}
 <div>Use the pane tabs below to reorganize the same request facts by report, destination, client, cache, SSL incident, security enforcement, or performance lens.</div>
 {% endcall %}
@@ -470,7 +467,6 @@
       {% for row in payload.top_categories %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} &middot; {{ row.count }}</span>{% endfor %}
       {% if not payload.top_categories %}<span class="small">No SSL category signals yet.</span>{% endif %}
     </div>
-  </div>
 </section>
 
 {% if payload.hints %}
@@ -634,7 +630,6 @@
       <div class="stat compact-stat"><div class="stat-k">Audit events</div><div class="stat-v">{{ payload.audit.summary.events if payload.audit else 0 }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Rollup points</div><div class="stat-v">{{ payload.time_series.rollup_points if payload.time_series else 0 }}</div></div>
     </div>
-  </div>
 </section>
 
 <div class="split-grid">
@@ -819,7 +814,6 @@
         </table></div>
       </div>
     </div>
-  </div>
 </section>
 
 {% elif pane == 'performance' %}
@@ -833,7 +827,6 @@
       <div class="stat compact-stat"><div class="stat-k">AV ICAP</div><div class="stat-v">{{ payload.av_icap_summary.events }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Adblock ICAP</div><div class="stat-v">{{ payload.adblock_icap_summary.events }}</div></div>
     </div>
-  </div>
 </section>
 
 <div class="grid data-pair-layout">
@@ -877,7 +870,6 @@
       <div><div class="small"><strong>Server TLS versions</strong></div><div class="hero-badges">{% for row in payload.top_tls_server_versions %}<span class="badge">{{ row.label }} &middot; {{ row.count }}</span>{% endfor %}{% if not payload.top_tls_server_versions %}<span class="small">No TLS versions captured.</span>{% endif %}</div></div>
       <div><div class="small"><strong>Policy tags</strong></div><div class="hero-badges">{% for row in payload.top_policy_tags %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} &middot; {{ row.count }}</span>{% endfor %}{% if not payload.top_policy_tags %}<span class="small">No policy tags matched.</span>{% endif %}</div></div>
     </div>
-  </div>
 </section>
 
 {% endif %}

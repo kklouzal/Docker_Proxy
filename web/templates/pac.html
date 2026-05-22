@@ -1,11 +1,10 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}PAC Builder · Squid Flask Proxy{% endblock %}
+{% block title %}PAC Builder · Docker Proxy{% endblock %}
 
 {% block content %}
-<section class="card section-shell">
-  <div class="page-heading">
+<section class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">Client routing</span>
     <h1 class="page-title">PAC Builder</h1>
@@ -18,14 +17,11 @@
       {% if pac_url %}<a class="btn ghost" href="{{ pac_url }}" target="_blank" rel="noopener">Open proxy PAC</a>{% endif %}
       <a class="btn ghost" href="{{ url_for('sslfilter') }}">Open SSL Filtering</a>
     </div>
-  </div>
 </section>
 
-<section class="card section-shell">
 {% call scope_notice('proxy', 'Selected proxy only', 'PAC profiles on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
 <div>The published PAC URL below is the authoritative listener for this proxy, so clients fetch PAC content from the proxy they will actually use.</div>
 {% endcall %}
-</section>
 
 {% if request.args.get('ok') %}
   <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">PAC profiles updated.</span></div></div>
@@ -61,7 +57,7 @@
   </div>
 </section>
 
-<div class="grid">
+<div class="grid two-col">
   <section class="card">
     <div class="card-header">
       <h2 class="card-title">PAC URL</h2>
@@ -217,8 +213,8 @@
       {% endif %}
 
       {% for p in profiles %}
-        <div class="card">
-          <div class="card-header">
+        <div class="surface-panel pac-profile-panel">
+          <div class="card-subheader">
             <h3 class="card-title">{{ p.name }}</h3>
             {% if p.client_cidr %}
               <span class="badge">CIDR {{ p.client_cidr }}</span>

@@ -1,6 +1,6 @@
 {% extends 'layout.html' %}
 {% from "_scope_macros.html" import scope_notice %}
-{% block title %}SSL Filtering · Squid Flask Proxy{% endblock %}
+{% block title %}SSL Filtering · Docker Proxy{% endblock %}
 
 {% macro policy_table(items, policy, kind, value_name) -%}
   <div class="table-note">Current ({{ items|length }}):</div>
@@ -121,7 +121,7 @@
 <div>This lets you tune bypass behavior for one proxy without affecting the others.</div>
 {% endcall %}
 
-<section class="card section-shell">
+<section class="card">
   <div class="card-header">
     <h2 class="card-title">HTTP/3 and QUIC coverage</h2>
     <span class="badge warn">UDP/443 bypass</span>
@@ -152,7 +152,7 @@
   <div class="banner success"><span class="badge ok">Compatibility set installed</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} new shipped no-bump domains.</span></div></div>
 {% endif %}
 
-<section class="card section-shell">
+<section class="card">
   <div class="card-header">
     <h2 class="card-title">SSL Inspection</h2>
     <span class="badge {{ 'ok' if rules.inspection_enabled else 'danger' }}">{{ 'Enabled' if rules.inspection_enabled else 'Disabled' }}</span>
@@ -197,7 +197,7 @@
   </div>
 </section>
 
-<div class="grid">
+<div class="grid two-col">
   {{ domain_card('No bump requests going to the following domains', 'TLS splice', 'nobump', rules.no_bump_domains, 'Use this for destinations that break under TLS inspection or certificate pinning. HTTPS traffic is tunneled with the real site certificate.') }}
   {{ domain_card('No cache requests going to the following domains', 'cache deny', 'nocache', rules.no_cache_domains, 'Use this for destinations that may be safely inspected/proxied but should not be stored in Squid cache.') }}
   {{ src_card('No bump requests coming from IP CIDR', 'TLS splice', 'nobump', rules.no_bump_src_nets, 'Use this for clients that cannot trust the proxy CA: guest BYOD, IoT, consoles, printers, or unmanaged devices.') }}

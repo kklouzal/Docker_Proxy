@@ -1,11 +1,10 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}Certificates · Squid Flask Proxy{% endblock %}
+{% block title %}Certificates · Docker Proxy{% endblock %}
 
 {% block content %}
-<section class="card section-shell">
-    <div class="page-heading">
+<section class="page-heading">
     <div class="page-hero-copy">
         <span class="page-eyebrow">Certificate authority</span>
         <h1 class="page-title">Certificates</h1>
@@ -19,14 +18,11 @@
         {% if certificate %}<a class="btn ghost" href="{{ url_for('download_certificate', filename=certificate) }}">Download CA</a>{% endif %}
         <a class="btn ghost" href="{{ url_for('sslfilter') }}">Review SSL filtering</a>
     </div>
-    </div>
 </section>
 
-<section class="card section-shell">
 {% call scope_notice('global', 'Shared certificate authority', 'The active CA bundle on this page is shared across every registered proxy.') %}
 <div>Use this page for the single certificate authority that every registered proxy should publish and report apply status against.</div>
 {% endcall %}
-</section>
 
 {% if message %}
 <div class="banner {{ 'success' if message_ok else 'error' }}">

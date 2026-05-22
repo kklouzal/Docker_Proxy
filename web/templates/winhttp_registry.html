@@ -3,8 +3,7 @@
 {% block title %}Windows WinHTTP GPO Registry Builder | Docker Proxy{% endblock %}
 
 {% block content %}
-<section class="card section-shell">
-  <div class="page-heading">
+<section class="page-heading">
     <div class="page-hero-copy">
       <span class="page-eyebrow">Windows deployment</span>
       <h1 class="page-title">WinHTTP GPO Registry Builder</h1>
@@ -15,16 +14,13 @@
         <span class="badge">.reg normalizer</span>
       </div>
     </div>
-  </div>
 </section>
 
-<section class="card section-shell">
-  <div class="banner warn">
+<div class="banner warn">
     <span class="badge warn">Contract boundary</span>
     <div class="banner-copy">
       <span class="small">Microsoft documents the netsh winhttp command surface, advproxy JSON keys, and WINHTTP_PROXY_INFO fields. Microsoft does not publish a formal byte-for-byte registry binary serialization for every WinHTTP mode, so REG_BINARY generation here is limited to the observed basic static named-proxy value.</span>
     </div>
-  </div>
 </section>
 
 {% if error %}
@@ -35,7 +31,7 @@
   {{ csrf_field() }}
   <input type="hidden" name="action" value="generate" />
 
-  <div class="grid">
+  <div class="grid two-col">
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">Proxy configuration</h2>
@@ -117,7 +113,7 @@
       <span class="badge">documented netsh</span>
     </div>
     <div class="card-body">
-      <div class="grid">
+      <div class="grid two-col">
         <div>
           <label for="tracing_state">State</label>
           <select id="tracing_state" name="tracing_state">
@@ -197,7 +193,7 @@
     </div>
   </section>
 
-  <div class="grid">
+  <div class="grid two-col">
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">Basic REG_BINARY hex</h2>
@@ -228,7 +224,7 @@
     </section>
   </div>
 
-  <div class="grid">
+  <div class="grid two-col">
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">advproxy JSON</h2>

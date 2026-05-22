@@ -1,11 +1,10 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}Administration · Squid Flask Proxy{% endblock %}
+{% block title %}Administration · Docker Proxy{% endblock %}
 
 {% block content %}
-<section class="card section-shell">
-    <div class="page-heading">
+<section class="page-heading">
     <div class="page-hero-copy">
         <span class="page-eyebrow">Access control</span>
         <h1 class="page-title">Administration</h1>
@@ -19,14 +18,11 @@
     <div class="page-actions">
         <a class="btn ghost" href="{{ url_for('index') }}">Back to status</a>
     </div>
-    </div>
 </section>
 
-<section class="card section-shell">
 {% call scope_notice('global', 'Shared control-plane access', 'Admin users are shared across the web control plane, not tied to an individual proxy.') %}
 <div>Changes here affect who can manage shared settings and per-proxy settings from the admin UI.</div>
 {% endcall %}
-</section>
 
 {% if message %}
 <div class="banner {{ 'success' if message_ok else 'error' }}">
