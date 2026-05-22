@@ -642,12 +642,10 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     latest_apply = None
     while time.time() < deadline:
         latest_apply = _adblock_artifacts_store().latest_apply(
-            LIVE_CONFIG.primary_proxy_id
+            LIVE_CONFIG.primary_proxy_id,
+            revision_id=revision.revision_id,
         )
-        if (
-            latest_apply is not None
-            and latest_apply.revision_id == revision.revision_id
-        ):
+        if latest_apply is not None:
             break
         time.sleep(1.0)
     assert latest_apply is not None

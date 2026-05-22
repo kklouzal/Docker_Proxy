@@ -338,21 +338,34 @@ class AdblockArtifactStore:
     def latest_apply(
         self,
         proxy_id: object | None,
+        *,
+        revision_id: int | None = None,
     ) -> AdblockArtifactApplication | None:
         self.init_db()
         from services.proxy_context import normalize_proxy_id
 
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT * FROM proxy_adblock_artifact_applications
-                WHERE proxy_id=%s
-                ORDER BY applied_ts DESC, id DESC
-                LIMIT 1
-                """,
-                (proxy_key,),
-            ).fetchone()
+            if revision_id is None:
+                row = conn.execute(
+                    """
+                    SELECT * FROM proxy_adblock_artifact_applications
+                    WHERE proxy_id=%s
+                    ORDER BY applied_ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (proxy_key,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT * FROM proxy_adblock_artifact_applications
+                    WHERE proxy_id=%s AND revision_id=%s
+                    ORDER BY applied_ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (proxy_key, int(revision_id)),
+                ).fetchone()
         return self._row_to_application(row)
 
     def build_active_artifact(
