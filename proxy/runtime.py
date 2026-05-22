@@ -1362,6 +1362,24 @@ class ProxyRuntime:
             except Exception:
                 squid_regex_changed = False
         if not artifact_changed and not flush_requested:
+            applied = None
+            try:
+                applied = self.adblock_artifacts.latest_apply(
+                    self.proxy_id,
+                    revision_id=revision_meta.revision_id,
+                )
+            except Exception:
+                applied = None
+            if applied is None:
+                with suppress(Exception):
+                    applied = self.adblock_artifacts.record_apply_result(
+                        self.proxy_id,
+                        revision_meta.revision_id,
+                        ok=True,
+                        detail="Proxy is already using the active adblock artifact.",
+                        applied_by="proxy",
+                        artifact_sha256=revision_meta.artifact_sha256,
+                    )
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
@@ -1371,6 +1389,7 @@ class ProxyRuntime:
                 "squid_regex_changed": bool(squid_regex_changed),
                 "cache_flushed": False,
                 "revision_id": revision_meta.revision_id,
+                "application_id": getattr(applied, "application_id", None),
                 "artifact_sha256": revision_meta.artifact_sha256,
                 "detail": "Proxy is already using the active adblock artifact."
                 + (

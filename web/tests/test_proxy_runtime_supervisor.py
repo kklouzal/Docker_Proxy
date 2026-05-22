@@ -963,10 +963,14 @@ def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() ->
             msg = "current artifact should not be fetched for a no-op force sync"
             raise AssertionError(msg)
 
+        def latest_apply(self, _proxy_id, *, revision_id=None):
+            assert revision_id == 42
+            return SimpleNamespace(application_id=7, ok=True)
+
         def record_apply_result(
             self, *args, **kwargs
         ) -> NoReturn:  # pragma: no cover - should not be reached
-            msg = "no-op force sync should not record an adblock apply"
+            msg = "no-op force sync should not churn existing adblock apply rows"
             raise AssertionError(msg)
 
     class Store:
@@ -994,7 +998,61 @@ def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() ->
     assert result["ok"] is True
     assert result["changed"] is False
     assert result["artifact_changed"] is False
+    assert result["application_id"] == 7
     assert restarts == []
+
+
+def test_sync_adblock_state_records_missing_apply_for_current_artifact() -> None:
+    recorded = []
+
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def get_active_artifact(
+            self,
+        ) -> NoReturn:  # pragma: no cover - should not be reached
+            msg = "current artifact should not be fetched for a ledger backfill"
+            raise AssertionError(msg)
+
+        def latest_apply(self, _proxy_id, *, revision_id=None):
+            assert revision_id == 42
+
+        def record_apply_result(self, proxy_id, revision_id, **kwargs):
+            recorded.append(
+                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
+            )
+            return SimpleNamespace(application_id=11)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime._restart_adblock_service = lambda: (True, "restarted")
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["artifact_changed"] is False
+    assert result["application_id"] == 11
+    assert recorded == [
+        {
+            "proxy_id": runtime.proxy_id,
+            "revision_id": 42,
+            "ok": True,
+            "detail": "Proxy is already using the active adblock artifact.",
+            "applied_by": "proxy",
+            "artifact_sha256": "same-sha",
+        }
+    ]
 
 
 def test_sync_adblock_state_reports_cache_flush_as_runtime_change() -> None:
