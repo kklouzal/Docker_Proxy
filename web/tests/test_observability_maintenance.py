@@ -193,3 +193,33 @@ def test_observability_retention_days_are_bounded() -> None:
     assert maintenance.normalize_retention_days("0") == maintenance.MIN_OBSERVABILITY_RETENTION_DAYS
     assert maintenance.normalize_retention_days("999999") == maintenance.MAX_OBSERVABILITY_RETENTION_DAYS
     assert maintenance.normalize_retention_days("not-a-number") == maintenance.DEFAULT_OBSERVABILITY_RETENTION_DAYS
+
+
+def test_observability_advisory_lock_uses_unpooled_connection(monkeypatch) -> None:
+    pooled_calls: list[str] = []
+    unpooled_calls: list[str] = []
+
+    class Result:
+        def fetchone(self):
+            return (1,)
+
+    class LockConn:
+        def execute(self, sql, params=None):
+            unpooled_calls.append(sql)
+            return Result()
+
+        def close(self):
+            unpooled_calls.append("close")
+
+    monkeypatch.setattr(maintenance, "connect", lambda: pooled_calls.append("connect"))
+    monkeypatch.setattr(maintenance, "connect_unpooled", lambda: LockConn())
+
+    conn = maintenance.acquire_observability_maintenance_lock()
+    maintenance.release_observability_maintenance_lock(conn)
+
+    assert pooled_calls == []
+    assert unpooled_calls == [
+        "SELECT GET_LOCK(%s, 0)",
+        "SELECT RELEASE_LOCK(%s)",
+        "close",
+    ]

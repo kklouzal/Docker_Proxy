@@ -528,6 +528,7 @@ class _BlockedLogDb:
         if now == self._last_open_attempt:
             return None
         self._last_open_attempt = now
+        conn = None
         try:
             conn = connect()
             blocked_log_table = self._table(conn)
@@ -545,6 +546,9 @@ class _BlockedLogDb:
             self._conn = conn
             return conn
         except Exception:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
             return None
 
     def start(self) -> None:

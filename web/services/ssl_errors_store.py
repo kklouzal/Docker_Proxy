@@ -795,13 +795,13 @@ class SslErrorsStore:
         with self._start_lock:
             if self._started:
                 return
-            self._started = True
             t = threading.Thread(
                 target=self._tail_loop,
                 name="ssl-errors-tailer",
                 daemon=True,
             )
             t.start()
+            self._started = True
 
     def _tail_loop(self) -> None:
         commit_batch = _env_int(

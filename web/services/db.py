@@ -342,14 +342,18 @@ def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
         ],
     )
     cur = native.cursor()
-    for sql, params in statements:
-        try:
-            cur.execute(sql, params)
-        except Exception:
-            # Some MySQL/MariaDB variants may not support every setting.  The
-            # connection is still usable; unsupported guardrails should not
-            # prevent startup.
-            pass
+    try:
+        for sql, params in statements:
+            try:
+                cur.execute(sql, params)
+            except Exception:
+                # Some MySQL/MariaDB variants may not support every setting.  The
+                # connection is still usable; unsupported guardrails should not
+                # prevent startup.
+                pass
+    finally:
+        with contextlib.suppress(Exception):
+            cur.close()
     with contextlib.suppress(Exception):
         native.rollback()
 
@@ -616,6 +620,18 @@ def connect(config: DatabaseConfig | None = None) -> CompatConnection:
     return CompatConnection(native, cfg=cfg)
 
 
+def connect_unpooled(config: DatabaseConfig | None = None) -> CompatConnection:
+    cfg = config or resolve_database_config()
+    _ensure_mysql_database(cfg)
+    native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+    try:
+        _configure_native_connection(native, cfg)
+    except Exception:
+        _close_native_connection(native)
+        raise
+    return CompatConnection(native, cfg=None)
+
+
 def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
     global _mysql_ready
     if _mysql_ready or not cfg.create_database:
@@ -636,12 +652,16 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
                 read_timeout=int(cfg.read_timeout),
                 write_timeout=int(cfg.write_timeout),
             )
+            cur = None
             try:
                 cur = native.cursor()
                 cur.execute(
                     f"CREATE DATABASE IF NOT EXISTS `{cfg.database}` CHARACTER SET {cfg.charset} COLLATE {cfg.charset}_unicode_ci",
                 )
             finally:
+                if cur is not None:
+                    with contextlib.suppress(Exception):
+                        cur.close()
                 native.close()
 
         _retry_mysql_operation(_create_database)

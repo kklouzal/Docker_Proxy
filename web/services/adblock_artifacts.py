@@ -465,7 +465,6 @@ class AdblockArtifactStore:
         with self._lock:
             if self._started:
                 return
-            self._started = True
             self.init_db()
             thread = threading.Thread(
                 target=self._loop,
@@ -473,6 +472,7 @@ class AdblockArtifactStore:
                 daemon=True,
             )
             thread.start()
+            self._started = True
 
     def _loop(self) -> None:
         poll_seconds = float(

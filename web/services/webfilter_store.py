@@ -369,7 +369,6 @@ class WebFilterStore(WebFilterStoreBase):
         with self._lock:
             if self._started:
                 return
-            self._started = True
             self.init_db()
             thread = threading.Thread(
                 target=self._loop,
@@ -377,6 +376,7 @@ class WebFilterStore(WebFilterStoreBase):
                 daemon=True,
             )
             thread.start()
+            self._started = True
             SafeBrowsingStore().start_background(
                 self._safe_browsing_settings,
                 self._record_safe_browsing_status,

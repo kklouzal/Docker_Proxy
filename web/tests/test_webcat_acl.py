@@ -219,3 +219,25 @@ def test_webcat_acl_discards_stale_remote_connection_after_metadata_error() -> N
     assert db._load_remote_built_ts() == 0
     assert broken.closed is True
     assert db._conn is None
+
+
+def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) -> None:
+    _add_web_to_path()
+    from tools import webcat_acl  # type: ignore
+
+    closed: list[bool] = []
+
+    class FakeConn:
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("ddl failed")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(webcat_acl, "connect", lambda: FakeConn())
+
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+
+    assert db._connect() is None
+    assert closed == [True]
+    assert db._conn is None

@@ -567,3 +567,38 @@ def test_ssl_errors_ingest_logs_database_outage_without_traceback(
             "SSL errors ingest skipped database work because the database is unavailable",
         )
     ]
+
+
+def test_connect_unpooled_does_not_register_pool_slot(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+
+    class NativeConnection:
+        def cursor(self):
+            class Cursor:
+                def execute(self, *_args, **_kwargs):
+                    return None
+
+                def close(self):
+                    return None
+
+            return Cursor()
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d", create_database=False)
+    monkeypatch.setattr(db, "_open_native_connection", lambda _cfg: NativeConnection())
+
+    conn = db.connect_unpooled(cfg)
+
+    assert conn._cfg is None
+    assert db._pooled_connections == {}
+    conn.close()
+    db.reset_mysql_ready_for_tests()

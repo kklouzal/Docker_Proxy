@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import hashlib
 from typing import NoReturn
 
@@ -390,3 +390,48 @@ def test_safe_browsing_ignores_canary_full_hash_detail(monkeypatch) -> None:
         ),
     )
     assert checker.check_url("http://bad.example/").verdict == "safe"
+
+
+def test_safe_browsing_update_lists_releases_db_before_network_fetch(monkeypatch) -> None:
+    closed_before_request: list[bool] = []
+    events: list[str] = []
+
+    class FakeResult:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class FakeConn:
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("exit")
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            return FakeResult(("v1",))
+
+    store = SafeBrowsingStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: FakeConn())
+    monkeypatch.setattr(store, "_apply_hash_list", lambda _conn, _item: events.append("apply"))
+
+    def fake_request_json(*_args, **_kwargs):
+        closed_before_request.append(events == ["enter", "exit"])
+        return {"hashLists": [{"name": "mw-4b", "minimumWaitDuration": "3600s"}]}
+
+    monkeypatch.setattr(store, "_request_json", fake_request_json)
+
+    ok, err, wait = store.update_lists(
+        SafeBrowsingSettings(enabled=True, api_key="key", lists=("mw-4b",), last_success=0, last_attempt=0, last_error="", next_run_ts=0),
+    )
+
+    assert ok is True
+    assert err == ""
+    assert wait == 3600
+    assert closed_before_request == [True]
+    assert events == ["enter", "exit", "enter", "apply", "exit"]

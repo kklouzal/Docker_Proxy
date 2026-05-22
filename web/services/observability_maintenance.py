@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from services.db import DATABASE_ERRORS, connect, table_exists
+from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -361,7 +361,7 @@ def record_observability_maintenance_run(
 
 
 def acquire_observability_maintenance_lock():
-    conn = connect()
+    conn = connect_unpooled()
     try:
         row = conn.execute(
             "SELECT GET_LOCK(%s, 0)",
