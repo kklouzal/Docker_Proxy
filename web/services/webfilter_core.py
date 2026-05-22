@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -136,6 +137,13 @@ def _parent_domains(domain: str, *, max_levels: int = 6) -> list[str]:
 def _default_webfilter_helpers() -> int:
     workers = _env_int("SQUID_WORKERS", 1, minimum=1, maximum=4)
     return max(1, min(256, workers * 2))
+
+
+def _env_fail_mode(name: str, default: str = "open") -> str:
+    value = (os.environ.get(name) or default).strip().lower()
+    if value in {"open", "closed"}:
+        return value
+    return default
 
 
 def _parse_whitelist_lines(lines: list[str]) -> list[str]:
@@ -491,7 +499,8 @@ class WebFilterStoreBase:
         )
         ttl = _env_int("WEBFILTER_TTL_SECONDS", 0, minimum=0, maximum=86400)
         neg_ttl = _env_int("WEBFILTER_NEGATIVE_TTL_SECONDS", 0, minimum=0, maximum=3600)
-        fail = "open"
+        webfilter_fail = _env_fail_mode("WEBFILTER_FAIL")
+        safe_browsing_fail = _env_fail_mode("SAFE_BROWSING_FAIL")
 
         def _safe_acl_name(category: str) -> str:
             out = []
@@ -548,13 +557,13 @@ class WebFilterStoreBase:
         if selected:
             lines.append(
                 f"external_acl_type {helper_name} children={helpers} ttl={ttl} negative_ttl={neg_ttl} %SRC %DST %URI "
-                f"/usr/bin/python3 /app/tools/webcat_acl.py --fail {fail}",
+                f"/usr/bin/python3 /app/tools/webcat_acl.py --fail {webfilter_fail}",
             )
         if safe_browsing_ready:
             gsb_helper = helper_name + "_gsb"
             lines.append(
                 f"external_acl_type {gsb_helper} children={helpers} ttl={ttl} negative_ttl={neg_ttl} %SRC %DST %URI "
-                f"/usr/bin/python3 /app/tools/safe_browsing_acl.py --fail {fail}",
+                f"/usr/bin/python3 /app/tools/safe_browsing_acl.py --fail {safe_browsing_fail}",
             )
 
         if whitelist_lines:

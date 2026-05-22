@@ -154,6 +154,38 @@ def test_webfilter_apply_squid_include_skips_snapshot_publish_when_helper_not_re
     )
 
 
+def test_webfilter_materialized_helpers_honor_fail_mode_env(tmp_path, monkeypatch) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
+        whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
+    )
+    settings = module.WebFilterSettings(
+        enabled=True,
+        source_url="",
+        blocked_categories=["adult"],
+        whitelist_domains=[],
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        next_run_ts=0,
+        safe_browsing_enabled=True,
+        safe_browsing_api_key="test-key",
+    )
+    monkeypatch.setenv("WEBFILTER_FAIL", "closed")
+    monkeypatch.setenv("SAFE_BROWSING_FAIL", "closed")
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    monkeypatch.setattr(store, "_resolve_category_aliases", lambda categories: categories)
+    monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
+
+    rendered = store.render_materialized_state().include_text
+
+    assert "/app/tools/webcat_acl.py --fail closed" in rendered
+    assert "/app/tools/safe_browsing_acl.py --fail closed" in rendered
+
+
 def test_write_managed_text_files_restores_previous_files_when_late_replace_fails(
     tmp_path, monkeypatch
 ) -> None:

@@ -25,22 +25,22 @@ except Exception:  # pragma: no cover - logging is best-effort in helper startup
     _BlockedLogDb = None  # type: ignore
 
 
-def _parse_line(line: str) -> tuple[str | None, str]:
+def _parse_line(line: str) -> tuple[str | None, str, str]:
     text = (line or "").strip()
     if not text:
-        return None, ""
+        return None, "", ""
     parts = text.split()
     channel_id: str | None = None
     if parts and parts[0].isdigit():
         channel_id = parts.pop(0)
     # external_acl_type passes %SRC %DST %URI. Prefer URI; fall back to DST.
     if len(parts) >= 3:
-        return channel_id, parts[2]
+        return channel_id, parts[0], parts[2]
     if len(parts) >= 2:
-        return channel_id, parts[1]
+        return channel_id, parts[0], parts[1]
     if parts:
-        return channel_id, parts[0]
-    return channel_id, ""
+        return channel_id, "", parts[0]
+    return channel_id, "", ""
 
 
 def _write(channel_id: str | None, ok: bool) -> None:
@@ -76,7 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if log_db is not None:
         log_db.start()
     for raw in sys.stdin:
-        channel_id, url = _parse_line(raw)
+        channel_id, src_ip, url = _parse_line(raw)
         if not url:
             _write(channel_id, not fail_open)
             continue
@@ -90,7 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 with contextlib.suppress(Exception):
                     log_db.insert(
                         ts=int(__import__("time").time()),
-                        src_ip="",
+                        src_ip=src_ip,
                         url=url,
                         category=category,
                     )

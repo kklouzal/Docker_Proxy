@@ -125,6 +125,63 @@ def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
     )
 
 
+def test_safe_browsing_checker_continues_after_negative_prefix_cache(
+    monkeypatch,
+) -> None:
+    from services import safe_browsing_v5
+
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    first = b"a" * 32
+    second = b"b" * 32
+    monkeypatch.setattr(
+        safe_browsing_v5,
+        "expression_hashes",
+        lambda url: [first, second],
+    )
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix in {first[:4], second[:4]} else (),
+    )
+
+    def cache_lookup(prefix, full_hashes):
+        if prefix == first[:4]:
+            return SafeBrowsingVerdict(
+                "safe",
+                cache_hit=True,
+                reason="cached negative full-hash response",
+            )
+        return None
+
+    monkeypatch.setattr(checker, "_cache_lookup", cache_lookup)
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        lambda prefix, response, cache_duration: None,
+    )
+    monkeypatch.setattr(
+        checker._store,
+        "search_hashes",
+        lambda api_key, prefixes: (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(second)
+                    .decode("ascii")
+                    .rstrip("="),
+                    "fullHashDetails": [{"threatType": "MALWARE"}],
+                }
+            ],
+            300,
+        ),
+    )
+
+    verdict = checker.check_url("http://bad.example/")
+
+    assert verdict == SafeBrowsingVerdict(
+        "unsafe", "MALWARE", "mw-4b", False, "confirmed by hashes.search"
+    )
+
+
 def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
     from tools import safe_browsing_acl
 
@@ -157,6 +214,8 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
 
     assert safe_browsing_acl.main([]) == 0
     assert outputs == ["OK\n"]
+    assert inserted[0]["src_ip"] == "192.0.2.10"
+    assert inserted[0]["url"] == "http://bad.example/"
     assert inserted[0]["category"] == "google-safe-browsing/social-engineering"
 
 

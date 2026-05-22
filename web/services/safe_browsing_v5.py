@@ -882,11 +882,17 @@ class SafeBrowsingLocalChecker:
             return cached[1]
         hashes = expression_hashes(canonical)
         full_set = set(hashes)
+        saw_local_match = False
+        last_safe_verdict = SafeBrowsingVerdict(
+            "safe",
+            reason="no local hash-prefix match",
+        )
         for full_hash in hashes:
             prefix = full_hash[:4]
             local_lists = self._local_lists_for_prefix(prefix)
             if not local_lists:
                 continue
+            saw_local_match = True
             cached_verdict = self._cache_lookup(prefix, full_set)
             if cached_verdict is not None:
                 verdict = cached_verdict
@@ -921,8 +927,14 @@ class SafeBrowsingLocalChecker:
                                 "confirmed by hashes.search",
                             )
                             break
-            self._verdict_cache[canonical] = (time.monotonic() + 300, verdict)
-            return verdict
-        verdict = SafeBrowsingVerdict("safe", reason="no local hash-prefix match")
+            if verdict.verdict == "unsafe":
+                self._verdict_cache[canonical] = (time.monotonic() + 300, verdict)
+                return verdict
+            last_safe_verdict = verdict
+        verdict = (
+            last_safe_verdict
+            if saw_local_match
+            else SafeBrowsingVerdict("safe", reason="no local hash-prefix match")
+        )
         self._verdict_cache[canonical] = (time.monotonic() + 300, verdict)
         return verdict
