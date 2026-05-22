@@ -150,6 +150,7 @@ from services.winhttp_registry_builder import (
     decode_basic_winhttp_settings_hex,
     normalize_reg_binary_export,
 )
+from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 install_http_optimizations(app)
@@ -1048,6 +1049,52 @@ def _safe_next_url(next_url: str) -> str:
     if not candidate.startswith("/"):
         return ""
     return candidate
+
+
+def _clear_recoverable_session_state() -> None:
+    session.pop("active_proxy_id", None)
+
+
+@app.route("/recover", methods=["GET"])
+def recover_admin_session():
+    _clear_recoverable_session_state()
+    return _redirect_to("index", recovered="1")
+
+
+@app.errorhandler(Exception)
+def _recover_from_unhandled_admin_error(exc: Exception):
+    if isinstance(exc, HTTPException):
+        return exc
+
+    log_exception_throttled(
+        app.logger,
+        "web.app.unhandled",
+        interval_seconds=10.0,
+        message="Unhandled Admin UI request failed",
+    )
+    _clear_recoverable_session_state()
+    message = escape(public_error_message(exc))
+    recover_url = "/recover"
+    with contextlib.suppress(Exception):
+        recover_url = url_for("recover_admin_session")
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin UI Recovery | Docker Proxy</title>
+  <style>body{{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7f9;color:#151922}}main{{max-width:720px;margin:12vh auto;padding:32px;background:#fff;border:1px solid #d9dee8;border-radius:8px;box-shadow:0 12px 32px rgba(15,23,42,.08)}}h1{{font-size:1.35rem;margin:0 0 12px}}p{{line-height:1.5}}.btn{{display:inline-block;margin-top:14px;padding:10px 14px;border-radius:6px;background:#1f6feb;color:#fff;text-decoration:none;font-weight:600}}.small{{color:#5c667a;font-size:.92rem}}</style>
+</head>
+<body>
+  <main>
+    <h1>Admin UI recovered from a request error</h1>
+    <p>The selected proxy/session context was reset so the next page load can start from the current registered proxy inventory.</p>
+    <p class="small">{message}</p>
+    <a class="btn" href="{escape(recover_url)}">Return to dashboard</a>
+  </main>
+</body>
+</html>"""
+    return Response(html, status=500, mimetype="text/html")
 
 
 def _csrf_disabled() -> bool:

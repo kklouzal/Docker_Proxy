@@ -750,3 +750,105 @@ def test_observability_metrics_returns_partial_payload_on_collector_failure(
         'docker_proxy_observability_scrape_error{proxy_id="default",section="summary"} 1'
         in body
     )
+
+
+class SslPaneRowsObservability:
+    def summary(self, **_kwargs):
+        return {
+            "request_records": 1,
+            "cache_hits": 0,
+            "cache_misses": 1,
+            "cache_hit_pct": 0.0,
+            "clients": 1,
+            "destinations": 1,
+            "transactions": 1,
+            "icap_events": 0,
+            "av_icap_events": 0,
+            "adblock_icap_events": 0,
+        }
+
+    def _ssl_payload(self):
+        return {
+            "summary": {
+                "bucket_count": 1,
+                "total_events": 1,
+                "known_domains": 1,
+                "unknown_target_buckets": 0,
+            },
+            "top_categories": [],
+            "hints": [],
+            "top_domains": [
+                {"domain": "broken.example", "total": 1, "buckets": 1, "last_seen": 1}
+            ],
+            "exclusion_candidates": [
+                {
+                    "domain": "broken.example",
+                    "recommendation": "review",
+                    "badge_tone": "warn",
+                    "confidence": "medium",
+                    "categories": "tls",
+                    "sample": "sample",
+                    "total": 1,
+                    "buckets": 1,
+                    "last_seen": 1,
+                }
+            ],
+            "rows": [],
+        }
+
+    def overview_bundle(self, **_kwargs):
+        return {
+            "summary": self.summary(),
+            "destinations": [],
+            "clients": [],
+            "cache_reasons": [],
+            "ssl": self._ssl_payload(),
+            "security": {"summary": {}, "av_rows": [], "adblock_rows": [], "webfilter_rows": []},
+            "performance": {"summary": {}, "slow_requests": [], "slow_icap_events": []},
+        }
+
+    def ssl_overview(self, **_kwargs):
+        return self._ssl_payload()
+
+
+def test_observability_ssl_pane_links_to_sslfilter_without_template_error(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=SslPaneRowsObservability(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=ssl")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "/sslfilter?domain=broken.example" in text
+
+
+def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=FakeRegistry(["proxy-p"]))
+    loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
+
+    @loaded.module.app.route("/boom")
+    def _boom():
+        msg = "synthetic route failure"
+        raise RuntimeError(msg)
+
+    client = loaded.module.app.test_client()
+    login_client(client)
+    assert client.get("/?proxy_id=proxy-p").status_code == 200
+
+    response = client.get("/boom")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 500
+    assert "Admin UI recovered from a request error" in text
+    assert "/recover" in text
+    with client.session_transaction() as sess:
+        assert "active_proxy_id" not in sess
+
+    recovered = client.get("/recover", follow_redirects=False)
+    assert recovered.status_code in {302, 303}
+    assert recovered.headers["Location"].startswith("/?recovered=1")
