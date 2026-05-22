@@ -154,6 +154,126 @@ def test_webfilter_apply_squid_include_skips_snapshot_publish_when_helper_not_re
     )
 
 
+def test_webfilter_defaults_do_not_preselect_block_categories(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
+        whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
+    )
+
+    class _Result:
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.settings: dict[tuple[str, str], str] = {}
+
+        def execute(self, sql: str, params=()):
+            if (
+                "INSERT IGNORE INTO webfilter_settings" in sql
+                and len(params) == 3
+            ):
+                proxy_id, key, value = params
+                self.settings.setdefault((str(proxy_id), str(key)), str(value))
+                return _Result()
+            if "SELECT v FROM webfilter_settings" in sql and len(params) >= 2:
+                proxy_id, key = params[:2]
+                value = self.settings.get((str(proxy_id), str(key)))
+                return _Result((value,) if value is not None else None)
+            if "INSERT INTO webfilter_settings" in sql and len(params) == 3:
+                proxy_id, key, value = params
+                self.settings[str(proxy_id), str(key)] = str(value)
+                return _Result()
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    conn = _Conn()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    store.init_db()
+
+    assert conn.settings["default", "blocked_categories"] == ""
+
+
+def test_webfilter_init_clears_disabled_legacy_default_block_categories(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
+        whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
+    )
+
+    class _Result:
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.settings: dict[tuple[str, str], str] = {
+                ("default", "enabled"): "0",
+                (
+                    "default",
+                    "blocked_categories",
+                ): module._LEGACY_DEFAULT_BLOCKED_CATEGORIES_CSV,
+            }
+
+        def execute(self, sql: str, params=()):
+            if (
+                "INSERT IGNORE INTO webfilter_settings" in sql
+                and len(params) == 3
+            ):
+                proxy_id, key, value = params
+                self.settings.setdefault((str(proxy_id), str(key)), str(value))
+                return _Result()
+            if "SELECT v FROM webfilter_settings" in sql and len(params) >= 2:
+                proxy_id, key = params[:2]
+                value = self.settings.get((str(proxy_id), str(key)))
+                return _Result((value,) if value is not None else None)
+            if "INSERT INTO webfilter_settings" in sql and len(params) == 3:
+                proxy_id, key, value = params
+                self.settings[str(proxy_id), str(key)] = str(value)
+                return _Result()
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    conn = _Conn()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    store.init_db()
+
+    assert conn.settings["default", "blocked_categories"] == ""
+
+
 def test_webfilter_materialized_helpers_honor_fail_mode_env(tmp_path, monkeypatch) -> None:
     module = _import_webfilter_core_module()
     store = module.ProxyWebFilterStore(

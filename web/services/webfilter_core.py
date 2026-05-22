@@ -31,7 +31,7 @@ def get_policy_request_store():
 
 
 _DEFAULT_SOURCE_URL = "https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz"
-_DEFAULT_BLOCKED_CATEGORIES: list[str] = [
+_LEGACY_DEFAULT_BLOCKED_CATEGORIES: list[str] = [
     "adult",
     "cryptojacking",
     "dangerous_material",
@@ -43,12 +43,13 @@ _DEFAULT_BLOCKED_CATEGORIES: list[str] = [
     "residential-proxies",
     "stalkerware",
 ]
+_LEGACY_DEFAULT_BLOCKED_CATEGORIES_CSV = ",".join(_LEGACY_DEFAULT_BLOCKED_CATEGORIES)
 
 _DEFAULTS: dict[str, str] = {
     "enabled": "0",
     "source_url": _DEFAULT_SOURCE_URL,
     "source_provider": "auto",
-    "blocked_categories": ",".join(_DEFAULT_BLOCKED_CATEGORIES),
+    "blocked_categories": "",
     "last_success": "0",
     "last_attempt": "0",
     "last_error": "",
@@ -249,6 +250,12 @@ class WebFilterStoreBase:
                         (self._settings_scope_for_key(key), key, value),
                     )
                 self._init_extra_schema(conn)
+                if (
+                    self._get(conn, "enabled", "0") != "1"
+                    and self._get(conn, "blocked_categories", "")
+                    == _LEGACY_DEFAULT_BLOCKED_CATEGORIES_CSV
+                ):
+                    self._set(conn, "blocked_categories", "")
             self._schema_ready = True
 
     def _init_extra_schema(self, conn) -> None:
