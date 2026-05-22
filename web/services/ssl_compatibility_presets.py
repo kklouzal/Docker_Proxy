@@ -128,6 +128,8 @@ COMPATIBILITY_PRESETS: tuple[CompatibilityPreset, ...] = (
             "*.msauth.net",
             "github.com",
             "*.github.com",
+            "githubassets.com",
+            "*.githubassets.com",
             "githubcopilot.com",
             "*.githubcopilot.com",
         ),
@@ -512,6 +514,8 @@ COMPATIBILITY_PRESETS: tuple[CompatibilityPreset, ...] = (
         domains=(
             "github.com",
             "*.github.com",
+            "githubassets.com",
+            "*.githubassets.com",
             "api.github.com",
             "uploads.github.com",
             "codeload.github.com",

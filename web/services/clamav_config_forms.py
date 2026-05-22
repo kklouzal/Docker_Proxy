@@ -8,6 +8,7 @@ from typing import Any
 FormMap = Mapping[str, Any]
 CLAMAV_SETTINGS_START = "# BEGIN SQUID-UI CLAMAV SETTINGS"
 CLAMAV_SETTINGS_END = "# END SQUID-UI CLAMAV SETTINGS"
+LEGACY_RISKY_EXTENSIONS_WITH_WEB_ASSETS = "exe dll msi bat cmd com scr ps1 vbs js jar apk"
 
 DEFAULTS: dict[str, Any] = {
     "clamav_fail_mode": "open",
@@ -15,7 +16,7 @@ DEFAULTS: dict[str, Any] = {
     "file_security_scan_downloads": True,
     "file_security_scan_uploads": True,
     "file_security_block_risky_extensions": True,
-    "file_security_risky_extensions": "exe dll msi bat cmd com scr ps1 vbs js jar apk",
+    "file_security_risky_extensions": "exe dll msi bat cmd com scr ps1 vbs jar apk",
     "file_security_block_archives": False,
     "file_security_archive_extensions": "zip 7z rar tar gz bz2 xz iso",
     "file_security_block_nested_archives": False,
@@ -526,6 +527,12 @@ def _normalize_preset_name(value: Any) -> str:
     return preset
 
 
+def _migrate_legacy_risky_extensions(value: object, default: str) -> object:
+    if str(value or "").strip() == LEGACY_RISKY_EXTENSIONS_WITH_WEB_ASSETS:
+        return default
+    return value
+
+
 def _preset_defaults(preset: Any) -> dict[str, Any]:
     defaults = dict(DEFAULTS)
     defaults.update(_PRESET_DEFAULTS.get(_normalize_preset_name(preset), {}))
@@ -654,7 +661,10 @@ def normalize_clamav_options(values: Mapping[str, Any] | None = None) -> dict[st
             bool(preset_defaults["file_security_block_risky_extensions"]),
         ),
         "file_security_risky_extensions": _clean_token_list(
-            source.get("file_security_risky_extensions"),
+            _migrate_legacy_risky_extensions(
+                source.get("file_security_risky_extensions"),
+                str(preset_defaults["file_security_risky_extensions"]),
+            ),
             str(preset_defaults["file_security_risky_extensions"]),
         ),
         "file_security_block_archives": _clean_bool(

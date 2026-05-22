@@ -810,6 +810,7 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert "cdn.cloudflare.steamstatic.com" in presets["steam"].domains
     assert "*.teams.microsoft.com" in presets["microsoft-cloud"].domains
     assert "*.download.windowsupdate.com" in presets["microsoft-cloud"].domains
+    assert "*.githubassets.com" in presets["microsoft-cloud"].domains
     assert "*.webex.com" in presets["webex"].domains
     assert "*.zoom.us" in presets["zoom"].domains
     assert "workspace.turns.goog" in presets["google-meet"].domains
@@ -822,6 +823,7 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
         "copilot-proxy.githubusercontent.com"
         in presets["developer-collaboration"].domains
     )
+    assert "*.githubassets.com" in presets["developer-collaboration"].domains
     assert "wss-primary.slack.com" in presets["developer-collaboration"].domains
     assert "*.atl-paas.net" in presets["developer-collaboration"].domains
     assert "*.okta.com" in presets["identity-mfa"].domains
@@ -832,6 +834,18 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert attempted == sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)
     assert added > 200
     assert error == ""
+
+
+def test_github_compatibility_presets_cover_githubassets_domain() -> None:
+    _add_web_to_path()
+    from services.ssl_compatibility_presets import COMPATIBILITY_PRESETS  # type: ignore
+
+    presets = {preset.id: preset for preset in COMPATIBILITY_PRESETS}
+
+    for preset_id in ("microsoft-cloud", "developer-collaboration"):
+        domains = presets[preset_id].domains
+        assert "githubassets.com" in domains
+        assert "*.githubassets.com" in domains
 
 
 def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path) -> None:

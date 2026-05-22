@@ -910,7 +910,7 @@ EOF
     echo "adaptation_access adblock_req_set deny all"
     echo "acl file_security_upload_methods method POST PUT PATCH"
     echo "acl file_security_download_methods method GET HEAD"
-    echo "acl file_security_risky_path urlpath_regex -i \\.(exe|dll|msi|bat|cmd|com|scr|ps1|vbs|js|jar|apk)($|[?#])"
+    echo "acl file_security_risky_path urlpath_regex -i \\.(exe|dll|msi|bat|cmd|com|scr|ps1|vbs|jar|apk)($|[?#])"
     echo "acl file_security_executable_path urlpath_regex -i \\.(exe|dll|msi|com|scr|jar|apk)($|[?#])"
     echo "acl file_security_executable_mime req_header Content-Type -i (application/x-msdownload|application/x-msdos-program|application/x-ms-installer)"
     echo "adaptation_access av_req_set allow file_security_upload_methods"

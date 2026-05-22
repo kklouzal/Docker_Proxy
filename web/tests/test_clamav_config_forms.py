@@ -61,8 +61,22 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
         "adaptation_access av_resp_set allow file_security_download_methods" in policy
     )
     assert "acl file_security_risky_path urlpath_regex -i \\.(exe|dll" in policy
+    assert "|js|" not in policy
     assert "($|[?#])" in policy
     assert "?:" not in policy
+
+
+def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
+    _add_web_path()
+    from services.clamav_config_forms import normalize_clamav_options
+
+    options = normalize_clamav_options(
+        {
+            "file_security_risky_extensions": "exe dll msi bat cmd com scr ps1 vbs js jar apk",
+        },
+    )
+
+    assert options["file_security_risky_extensions"] == "exe dll msi bat cmd com scr ps1 vbs jar apk"
 
 
 def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
