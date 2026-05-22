@@ -254,6 +254,27 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     assert store.direct_enabled is False
 
 
+def test_adblock_cache_flush_queues_single_runtime_refresh(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeAdblockStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/adblock",
+        method="POST",
+        data={"action": "flush_cache"},
+    ):
+        response = loaded.module._handle_adblock_post(store)
+
+    assert _params(response.location)["cache_flushed"] == ["1"]
+    assert store.cache_flush_requested == 1
+    assert [
+        operation.operation_type for operation in loaded.operation_ledger.operations
+    ] == ["adblock_refresh"]
+    assert loaded.operation_ledger.operations[-1].subject == "Adblock runtime refresh"
+
+
 def test_adblock_list_save_queues_runtime_refresh(monkeypatch, tmp_path) -> None:
     store = FakeAdblockStore()
     loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)

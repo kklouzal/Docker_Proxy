@@ -1011,11 +1011,6 @@ def _uses_remote_proxy_runtime() -> bool:
     return bool(_active_proxy_management_url())
 
 
-def _best_effort_apply_adblock_flush() -> None:
-    with contextlib.suppress(Exception):
-        _trigger_proxy_sync()
-
-
 def _pac_profile_form_data(*, profile_id: int | None) -> dict[str, Any]:
     return {
         "profile_id": profile_id,
@@ -1732,7 +1727,6 @@ def _handle_adblock_post(store: Any):
         return _redirect_to("adblock", refresh_requested="1")
     elif action == "flush_cache":
         store.request_cache_flush()
-        _best_effort_apply_adblock_flush()
         _best_effort_queue_adblock_runtime_refresh(action="cache flush")
         return _redirect_to("adblock", cache_flushed="1")
     return _redirect_to("adblock")
@@ -3878,7 +3872,9 @@ def squid_config():
                 message="Failed to process manual Squid config action",
             )
             _record_audit_event(
-                "config_validate_manual" if action == "validate" else "config_apply_manual",
+                "config_validate_manual"
+                if action == "validate"
+                else "config_apply_manual",
                 ok=False,
                 detail=detail,
                 config_text=config_text,
@@ -4187,7 +4183,6 @@ def reload_squid():
 
 @app.route("/cache/clear", methods=["POST"])
 def clear_caches():
-    # Clear Squid disk cache (best-effort) and restart Squid.
     ok, detail = _trigger_proxy_cache_clear()
     _record_audit_event("cache_clear", ok=ok, detail=detail)
     return redirect(_endpoint_url("index") + "#status")
