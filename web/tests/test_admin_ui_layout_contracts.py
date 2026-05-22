@@ -205,6 +205,15 @@ def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -
     assert "buildSubmitFormData(form, event.submitter)" in js
 
 
+def test_adblock_page_does_not_expose_unimplemented_decision_cache_controls() -> None:
+    html = (TEMPLATES / "adblock.html").read_text(encoding="utf-8")
+
+    assert "Decision cache" not in html
+    assert "cache_ttl" not in html
+    assert "cache_max" not in html
+    assert "Flush cache" not in html
+
+
 def test_admin_page_titles_use_docker_proxy_brand_except_error_pages() -> None:
     expected = {
         "adblock.html",

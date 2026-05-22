@@ -3398,18 +3398,6 @@ def adblock():
         stats = store.stats()
     except Exception:
         stats = {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
-    try:
-        cache_stats = store.cache_stats()
-    except Exception:
-        cache_stats = {
-            "hits": 0,
-            "misses": 0,
-            "evictions": 0,
-            "current_size": 0,
-            "last_flush": 0,
-            "last_flush_req": 0,
-        }
-
     interval = store.get_update_interval_seconds()
     window_i = _query_int_arg(
         "window",
@@ -3459,11 +3447,7 @@ def adblock():
         statuses=status_rows,
         stats=stats,
         settings=settings,
-        cache_stats=cache_stats,
-        cache_max=settings.get("cache_max"),
-        cache_ttl=settings.get("cache_ttl"),
         update_interval_seconds=interval,
-        cache_flushed=(request.args.get("cache_flushed") == "1"),
         refresh_requested=(request.args.get("refresh_requested") == "1"),
         refresh_no_lists=(request.args.get("refresh_no_lists") == "1"),
         window=window_i,

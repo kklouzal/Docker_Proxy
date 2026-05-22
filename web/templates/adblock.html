@@ -53,71 +53,16 @@
               Enable ad blocking
             </label>
           </div>
-
-          <div>
-            <label class="small field-note" for="adblock-cache-ttl">Decision cache TTL (seconds)</label>
-            <input class="input" id="adblock-cache-ttl" type="number" name="cache_ttl" value="{{ settings.cache_ttl }}" min="0" max="604800" step="1" />
-            <div class="small">0 disables caching.</div>
-          </div>
-
-          <div>
-            <label class="small field-note" for="adblock-cache-max">Decision cache max entries</label>
-            <input class="input" id="adblock-cache-max" type="number" name="cache_max" value="{{ settings.cache_max }}" min="0" max="1000000" step="1" />
-            <div class="small">0 disables caching.</div>
-          </div>
         </div>
 
         <div class="surface-note small">
-          This proxy always performs full URL matching (no CONNECT pre-block and no host gating). If performance is an issue, raise caching before trimming coverage.
+          This proxy performs full URL matching for HTTP browsing methods through c-icap. CONNECT traffic is not pre-blocked by this ad-blocking layer.
         </div>
       </form>
     </div>
   </section>
 
   <aside class="split-right">
-    <section class="card">
-      <div class="card-header">
-        <div>
-          <h2 class="card-title">Decision cache</h2>
-          <div class="small">Live runtime cache for the currently selected proxy.</div>
-        </div>
-        {{ scope_chip('proxy') }}
-      </div>
-      <div class="card-body">
-        <div class="summary-grid">
-          <div class="stat compact-stat">
-            <div class="stat-k">Hit rate</div>
-            {% set hits = cache_stats.hits or 0 %}
-            {% set misses = cache_stats.misses or 0 %}
-            {% set total = hits + misses %}
-            {% if total > 0 %}
-              {% set rate = (100.0 * hits / total) %}
-              <div class="stat-v">{{ "%.1f"|format(rate) }}%</div>
-            {% else %}
-              <div class="stat-v">n/a</div>
-            {% endif %}
-          </div>
-          <div class="stat compact-stat">
-            <div class="stat-k">Entries</div>
-            <div class="stat-v">{{ cache_stats.current_size }}/{{ cache_max }}</div>
-            <div class="small">TTL {{ cache_ttl }}s</div>
-          </div>
-          <div class="stat compact-stat">
-            <div class="stat-k">Hits / Misses</div>
-            <div class="stat-v">{{ hits }} / {{ misses }}</div>
-            <div class="small">Evictions {{ cache_stats.evictions }}</div>
-          </div>
-        </div>
-        <form method="post" action="{{ url_for('adblock') }}">
-          {{ csrf_field() }}
-          <input type="hidden" name="action" value="flush_cache">
-          <button class="btn" type="submit">Flush cache</button>
-          {% if cache_flushed %}<span class="small">Requested</span>{% endif %}
-        </form>
-        <div class="surface-note small">Cache size and hit/miss totals come from the ICAP runtime; flush requests clear the live in-memory cache for this proxy.</div>
-      </div>
-    </section>
-
     <section class="card">
       <div class="card-header">
         <div>

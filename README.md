@@ -203,7 +203,7 @@ one default admin UI stay well inside the 160-connection budget.
 - EasyList-style subscription download and compilation.
 - c-icap REQMOD service at `icap://127.0.0.1:${CICAP_PORT:-14000}/adblockreq`.
 - Domain and URL-rule artifacts staged locally in the proxy container.
-- Decision cache controls, block counters, recent event logging, and artifact application tracking.
+- Block counters, recent event logging, and artifact application tracking.
 
 ### ClamAV scanning
 
