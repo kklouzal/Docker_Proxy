@@ -358,7 +358,7 @@ class FakeOperationLedger:
         return list(reversed(rows))[:limit]
 
     def counts_by_status(self, proxy_id: object) -> dict[str, int]:
-        counts = {"pending": 0, "applying": 0, "applied": 0, "failed": 0}
+        counts = {"pending": 0, "applying": 0, "applied": 0, "superseded": 0, "failed": 0}
         for op in self.operations:
             if op.proxy_id == str(proxy_id) and op.status in counts:
                 counts[op.status] += 1

@@ -18,7 +18,7 @@
   const spaPagePrefetches = new Map();
   let linkIntentListenersBound = false;
   const UNSAVED_CONFIG_MESSAGE = 'You have unsaved Squid configuration changes. Leave this page anyway?';
-  const OPERATION_STATUSES = ['pending', 'applying', 'applied', 'failed'];
+  const OPERATION_STATUSES = ['pending', 'applying', 'applied', 'superseded', 'failed'];
   const seenOperationStatuses = new Map();
   let operationPollTimer = null;
 

@@ -9,8 +9,8 @@ from typing import Any
 from services.db import connect
 from services.proxy_context import normalize_proxy_id
 
-OPERATION_STATUSES = ("pending", "applying", "applied", "failed")
-TERMINAL_STATUSES = {"applied", "failed"}
+OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
+TERMINAL_STATUSES = {"applied", "superseded", "failed"}
 
 
 @dataclass(frozen=True)

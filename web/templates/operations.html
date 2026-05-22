@@ -5,12 +5,12 @@
     <div class="page-hero-copy">
         <span class="page-eyebrow">Control plane</span>
         <h1 class="page-title">Operations</h1>
-        <p class="page-subtitle">Pending, applying, applied, and failed changes for the selected proxy. Writes are recorded here first, then reconciled asynchronously by the proxy runtime.</p>
+        <p class="page-subtitle">Pending, applying, applied, superseded, and failed changes for the selected proxy. Writes are recorded here first, then reconciled asynchronously by the proxy runtime.</p>
     </div>
 </section>
 
 <section class="stats-grid compact-stats operation-counts" data-operation-counts>
-    {% for status in ['pending','applying','applied','failed'] %}
+    {% for status in ['pending','applying','applied','superseded','failed'] %}
     <article class="stat-card operation-count-card {{ status }}">
         <span class="metric-label">{{ status|capitalize }}</span>
         <strong class="stat-value" data-operation-count="{{ status }}">{{ operation_counts.get(status, 0) }}</strong>

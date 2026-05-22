@@ -66,6 +66,42 @@ _SUPERVISOR_CONTROL_LOCK = threading.RLock()
 _SYNC_CONTROL_LOCK = threading.RLock()
 
 
+def _int_or_none(value: object) -> int | None:
+    try:
+        parsed = int(value or 0)
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _operation_completion_status(
+    operation: Any,
+    *,
+    default_status: str,
+    detail: str,
+    result: dict[str, Any],
+) -> tuple[str, str]:
+    if default_status != "applied":
+        return default_status, detail
+
+    target_kind = str(getattr(operation, "target_kind", "") or "")
+    if target_kind != "config_revision":
+        return default_status, detail
+
+    target_ref = _int_or_none(getattr(operation, "target_ref", None))
+    applied_ref = _int_or_none(result.get("revision_id"))
+    if target_ref is None or applied_ref is None or target_ref == applied_ref:
+        return default_status, detail
+
+    op_detail = (
+        f"Superseded by active config revision {applied_ref}; "
+        f"queued target revision {target_ref} was not applied because a newer desired state was reconciled."
+    )
+    if detail:
+        op_detail = f"{op_detail}\n{detail}"
+    return "superseded", op_detail[:4000]
+
+
 @contextmanager
 def _exclusive_runtime_lock(name: str, thread_lock: threading.RLock):
     """Serialize runtime mutations across proxy_api threads and proxy_agent."""
@@ -2086,14 +2122,29 @@ class ProxyRuntime:
                 raise
             if ledger is not None and claimed_operations:
                 with suppress(Exception):
-                    ledger.mark_many(
-                        claimed_operations,
-                        status="applied" if bool(result.get("ok")) else "failed",
-                        detail=str(
-                            result.get("detail") or "Proxy reconciliation completed.",
-                        )[:4000],
-                    )
+                    self._mark_claimed_operations(ledger, claimed_operations, result)
             return result
+
+    def _mark_claimed_operations(
+        self,
+        ledger: Any,
+        operations: list[Any],
+        result: dict[str, Any],
+    ) -> None:
+        default_status = "applied" if bool(result.get("ok")) else "failed"
+        detail = str(result.get("detail") or "Proxy reconciliation completed.")[:4000]
+        for operation in operations:
+            status, operation_detail = _operation_completion_status(
+                operation,
+                default_status=default_status,
+                detail=detail,
+                result=result,
+            )
+            ledger.mark_status(
+                getattr(operation, "operation_id", 0),
+                status=status,
+                detail=operation_detail,
+            )
 
     def _sync_from_db_unlocked(
         self,

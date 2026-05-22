@@ -1448,7 +1448,7 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
 
     runtime = _runtime_shell()
     monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
-    op = SimpleNamespace(operation_id=5)
+    op = SimpleNamespace(operation_id=5, target_kind="", target_ref="")
     calls: list[tuple[str, object]] = []
 
     class Ledger:
@@ -1459,8 +1459,8 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
             calls.append(("claim", (proxy_id, limit, operation_id)))
             return [op]
 
-        def mark_many(self, operations, *, status, detail) -> None:
-            calls.append(("mark", (operations, status, detail)))
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append(("mark", (operation_id, status, detail)))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
     runtime._sync_from_db_unlocked = lambda *, force=False, operations=None: {
@@ -1475,5 +1475,43 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
     assert calls == [
         ("requeue", "edge-a"),
         ("claim", ("edge-a", 100, None)),
-        ("mark", ([op], "applied", "runtime reconciled")),
+        ("mark", (5, "applied", "runtime reconciled")),
     ]
+
+
+def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    stale = SimpleNamespace(operation_id=5, target_kind="config_revision", target_ref="7")
+    current = SimpleNamespace(operation_id=6, target_kind="config_revision", target_ref="9")
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id) -> None:
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id is None
+            return [stale, current]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = lambda *, force=False, operations=None: {
+        "ok": True,
+        "revision_id": 9,
+        "detail": "runtime reconciled",
+    }
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls[0][0:2] == (5, "superseded")
+    assert "queued target revision 7 was not applied" in calls[0][2]
+    assert calls[1] == (6, "applied", "runtime reconciled")

@@ -1930,6 +1930,7 @@ pre{
 }
 
 .operation-toast.applied{ background: color-mix(in srgb, var(--ok) 24%, rgba(17,24,39,.96)); }
+.operation-toast.superseded{ background: color-mix(in srgb, var(--muted) 28%, rgba(17,24,39,.96)); }
 .operation-toast.failed{ background: color-mix(in srgb, var(--danger) 24%, rgba(17,24,39,.96)); }
 .operation-toast.applying{ background: color-mix(in srgb, var(--accent) 24%, rgba(17,24,39,.96)); }
 
@@ -1975,6 +1976,12 @@ pre{
   border-color: color-mix(in srgb, var(--ok) 36%, transparent);
   background: color-mix(in srgb, var(--ok) 16%, transparent);
   color: color-mix(in srgb, var(--ok) 92%, white);
+}
+
+.status-badge.superseded{
+  border-color: color-mix(in srgb, var(--muted) 42%, transparent);
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: color-mix(in srgb, var(--muted) 88%, white);
 }
 
 .status-badge.failed{

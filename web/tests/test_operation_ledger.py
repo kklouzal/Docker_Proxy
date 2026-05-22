@@ -195,8 +195,8 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
 
-    ledger.mark_status(7, status="applied", detail="done")
+    ledger.mark_status(7, status="superseded", detail="newer revision applied")
 
     update_sql, update_params = conn.queries[0]
     assert "request_key=IF(%s, NULL, request_key)" in update_sql
-    assert update_params == ("applied", "done", 456, 456, True, 7)
+    assert update_params == ("superseded", "newer revision applied", 456, 456, True, 7)
