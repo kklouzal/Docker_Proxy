@@ -66,6 +66,27 @@ class InitFailingAdblockStore:
         return 3600
 
 
+class DestinationExportQueries:
+    def summary(self, **_kwargs):
+        return {"request_records": 4}
+
+    def top_destinations(self, **kwargs):
+        return [
+            {
+                "domain": "example.com",
+                "requests": 2,
+                "pct": 50.0,
+                "clients": 1,
+                "transactions": 2,
+                "cache_pct": 0.0,
+                "av_icap_events": 0,
+                "adblock_icap_events": 0,
+                "last_seen": 123,
+                "total_requests": kwargs.get("total_requests"),
+            },
+        ]
+
+
 def test_observability_route_and_export_degrade_to_empty_payloads(
     monkeypatch, tmp_path
 ) -> None:
@@ -83,6 +104,23 @@ def test_observability_route_and_export_degrade_to_empty_payloads(
     assert export.status_code == 200
     assert export.headers.get("Content-Type", "").startswith("text/csv")
     assert export.get_data(as_text=True).splitlines()[0].startswith("domain;")
+
+
+def test_observability_destination_export_initializes_total_requests(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, observability_queries=DestinationExportQueries()
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    export = client.get("/observability/export?pane=destinations&limit=10")
+
+    assert export.status_code == 200
+    body = export.get_data(as_text=True)
+    assert "example.com" in body
+    assert body.splitlines()[0].startswith("domain;")
 
 
 def test_webfilter_test_returns_sanitized_error_json(monkeypatch, tmp_path) -> None:

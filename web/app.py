@@ -2877,6 +2877,7 @@ def observability_export():
     privacy = _observability_privacy_from_request()
     export_format = _observability_export_format_from_request()
     summary_data: dict[str, Any] | None = None
+    total_requests = 0
     try:
         if pane in {"overview", "clients", "destinations", "performance", "reports"}:
             summary_data = _cached_observability_result(
