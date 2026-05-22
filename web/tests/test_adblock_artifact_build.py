@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import zipfile
+from email.message import Message
 from pathlib import Path
 
 from .mysql_test_utils import configure_test_mysql_env
@@ -39,6 +40,7 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
         store = store_module.get_adblock_store()
         store.lists_dir = str(tmp_path / "lists")
         Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
+        store.init_db()
 
         statuses = store.list_statuses()
         assert statuses, "expected default adblock lists to be present"
@@ -124,6 +126,7 @@ def test_build_active_artifact_reports_download_pending_when_due_download_fails_
         store = store_module.get_adblock_store()
         store.lists_dir = str(tmp_path / "lists")
         Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
+        store.init_db()
 
         statuses = store.list_statuses()
         assert statuses, "expected default adblock lists to be present"
@@ -155,3 +158,90 @@ def test_build_active_artifact_reports_download_pending_when_due_download_fails_
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_adblock_download_rejects_hostname_resolving_private(
+    tmp_path, monkeypatch
+) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                store_module.socket.AF_INET,
+                store_module.socket.SOCK_STREAM,
+                0,
+                "",
+                ("127.0.0.1", 0),
+            ),
+        ]
+
+    monkeypatch.setattr(store_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        store_module.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("download should not open internal resolved host")
+        ),
+    )
+
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    ok, err, bytes_read, rules = store.download_list(
+        "easylist",
+        "https://public.example/easylist.txt",
+    )
+
+    assert ok is False
+    assert "internal/localhost" in err
+    assert bytes_read == 0
+    assert rules == 0
+
+
+def test_adblock_download_rejects_redirect_to_internal_host(
+    tmp_path, monkeypatch
+) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                store_module.socket.AF_INET,
+                store_module.socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    headers = Message()
+    headers["Location"] = "http://127.0.0.1/easylist.txt"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            raise store_module.urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                headers,
+                None,
+            )
+
+    monkeypatch.setattr(store_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        store_module.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    ok, err, bytes_read, rules = store.download_list(
+        "easylist",
+        "https://public.example/easylist.txt",
+    )
+
+    assert ok is False
+    assert "internal/localhost" in err
+    assert bytes_read == 0
+    assert rules == 0
