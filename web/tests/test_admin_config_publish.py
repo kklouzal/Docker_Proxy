@@ -246,6 +246,12 @@ class _AdminStore:
         self.deleted.append(username)
 
 
+class _ValidationAdminStore(_AdminStore):
+    def add_user(self, username, password) -> NoReturn:
+        msg = "Password is required."
+        raise ValueError(msg)
+
+
 def _message_from_redirect(location: str) -> str:
     return (parse_qs(urlsplit(location).query).get("msg") or [""])[0]
 
@@ -301,6 +307,24 @@ def test_administration_handler_allows_other_user_deletion_and_rejects_unknown_a
     ):
         response = admin_app._handle_administration_post(store, "admin")
         assert _message_from_redirect(response.location) == "Unknown action."
+
+
+def test_administration_handler_validation_error_does_not_log_exception(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    with admin_app.app.test_request_context(
+        "/administration",
+        method="POST",
+        data={"action": "add_user", "username": "operator", "password": ""},
+    ):
+        response = admin_app._handle_administration_post(
+            _ValidationAdminStore(["admin"]), "admin"
+        )
+
+    assert _message_from_redirect(response.location) == "Password is required."
+    assert "Administration action failed" not in caplog.text
 
 
 def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:

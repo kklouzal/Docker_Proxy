@@ -2149,6 +2149,12 @@ def _handle_administration_post(store: Any, current_user: str):
             )
 
         return _redirect_with_message("administration", ok=False, msg="Unknown action.")
+    except ValueError as e:
+        return _redirect_with_message(
+            "administration",
+            ok=False,
+            msg=public_error_message(e),
+        )
     except Exception as e:
         app.logger.exception("Administration action failed")
         return _redirect_with_message(
