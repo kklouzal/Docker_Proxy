@@ -67,6 +67,14 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     assert 'if [ "$derived_pool" -gt 32 ]; then' in entrypoint
 
 
+def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:
+    healthcheck = _read("docker/healthcheck.admin.sh")
+
+    assert "urllib.request" not in healthcheck
+    assert "[g]unicorn.*wsgi:app" in healthcheck
+    assert "socket.create_connection" in healthcheck
+
+
 def test_adblock_icap_only_adapts_browsing_methods() -> None:
     entrypoint = _read("docker/entrypoint.sh")
 
