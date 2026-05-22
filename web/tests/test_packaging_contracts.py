@@ -62,9 +62,9 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     assert "# WEB_THREADS=2" in env_example
     assert 'web_threads="${WEB_THREADS:-2}"' in entrypoint
     assert "web_workers" not in entrypoint
-    assert "derived_pool=$((web_threads + 1))" in entrypoint
-    assert 'if [ "$derived_pool" -lt 2 ]; then' in entrypoint
-    assert 'if [ "$derived_pool" -gt 8 ]; then' in entrypoint
+    assert "derived_pool=$((web_threads + 12))" in entrypoint
+    assert 'if [ "$derived_pool" -lt 16 ]; then' in entrypoint
+    assert 'if [ "$derived_pool" -gt 32 ]; then' in entrypoint
 
 
 def test_adblock_icap_only_adapts_browsing_methods() -> None:

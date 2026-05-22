@@ -95,6 +95,72 @@ def test_failed_pool_rollback_discards_connection(monkeypatch) -> None:
     assert not db._pooled_connections
 
 
+def test_discarded_compat_connection_releases_pool_slot(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class NativeConnection:
+        def commit(self) -> NoReturn:
+            calls.append("commit")
+            msg = "commit failed"
+            raise RuntimeError(msg)
+
+        def rollback(self) -> None:
+            calls.append("rollback")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+    key = db._pool_key(cfg)
+    with db._pool_condition:
+        db._pooled_connections[key] = db._PoolState(idle=[], active=1)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        with db.CompatConnection(NativeConnection(), cfg=cfg):
+            pass
+
+    assert calls == ["commit", "close"]
+    assert key not in db._pooled_connections
+    db.reset_mysql_ready_for_tests()
+
+
+def test_failed_context_rollback_releases_pool_slot(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class NativeConnection:
+        def rollback(self) -> NoReturn:
+            calls.append("rollback")
+            msg = "rollback failed"
+            raise RuntimeError(msg)
+
+        def close(self) -> None:
+            calls.append("close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+    key = db._pool_key(cfg)
+    with db._pool_condition:
+        db._pooled_connections[key] = db._PoolState(idle=[], active=1)
+
+    with pytest.raises(RuntimeError, match="body failed"):
+        with db.CompatConnection(NativeConnection(), cfg=cfg):
+            msg = "body failed"
+            raise RuntimeError(msg)
+
+    assert calls == ["rollback", "close"]
+    assert key not in db._pooled_connections
+    db.reset_mysql_ready_for_tests()
+
+
 def test_pool_reaper_preserves_active_only_bucket(monkeypatch) -> None:
     _add_repo_paths()
     from services import db  # type: ignore
@@ -391,7 +457,7 @@ def test_blank_db_pool_size_derives_from_web_threads(monkeypatch) -> None:
     monkeypatch.delenv("DB_POOL_SIZE", raising=False)
     monkeypatch.setenv("WEB_THREADS", "2")
 
-    assert db._pool_maxsize() == 4
+    assert db._pool_maxsize() == 6
 
 
 def test_explicit_db_pool_size_still_allows_single_connection(monkeypatch) -> None:
@@ -402,6 +468,15 @@ def test_explicit_db_pool_size_still_allows_single_connection(monkeypatch) -> No
     monkeypatch.setenv("WEB_THREADS", "8")
 
     assert db._pool_maxsize() == 1
+
+
+def test_explicit_db_pool_size_caps_at_larger_admin_budget(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    monkeypatch.setenv("DB_POOL_SIZE", "64")
+
+    assert db._pool_maxsize() == 32
 
 
 def test_mysql_advisory_lock_acquires_and_releases() -> None:

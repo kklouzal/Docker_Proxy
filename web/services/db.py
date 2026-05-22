@@ -127,8 +127,14 @@ class CompatConnection:
         if self._closed:
             return
         self._closed = True
-        if self._discard_on_close or self._cfg is None:
+        if self._cfg is None:
             _close_native_connection(self.native)
+            return
+        if self._discard_on_close:
+            key = _pool_key(self._cfg)
+            _close_native_connection(self.native)
+            with _pool_condition:
+                _release_pool_slot_locked(key)
             return
         _return_connection(self._cfg, self.native)
 
@@ -376,11 +382,11 @@ def _pool_maxsize() -> int:
     raw = os.environ.get("DB_POOL_SIZE")
     if raw is not None and raw.strip():
         try:
-            return max(0, min(16, int(raw.strip())))
+            return max(0, min(32, int(raw.strip())))
         except Exception:
             return 1
     threads = _env_int("WEB_THREADS", 2, minimum=1, maximum=64)
-    return max(2, min(8, threads + 2))
+    return max(4, min(16, threads + 4))
 
 
 def _pool_max_idle_seconds() -> float:
