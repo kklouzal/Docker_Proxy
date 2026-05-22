@@ -629,7 +629,9 @@ def _query_flag(value: bool) -> str | None:
     return "1" if value else None
 
 
-_NON_PROXY_ENDPOINTS = frozenset({"static", "login", "logout", "health"})
+_NON_PROXY_ENDPOINTS = frozenset(
+    {"static", "login", "logout", "health", "recover_admin_session"},
+)
 
 
 def _filter_none_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -946,6 +948,27 @@ def _empty_observability_payload(
     return {"rows": []}
 
 
+def _merge_observability_payload_defaults(
+    pane: str,
+    payload: Any,
+    *,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    def merge(default: Any, value: Any) -> Any:
+        if isinstance(default, dict):
+            merged = dict(default)
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    merged[key] = merge(merged.get(key), item)
+            return merged
+        return value if value is not None else default
+
+    defaults = _empty_observability_payload(pane, summary=summary)
+    if not isinstance(payload, dict):
+        return defaults
+    return merge(defaults, payload)
+
+
 def _empty_observability_export_response(pane: str, export_format: str = "csv"):
     headers = _OBSERVABILITY_EMPTY_EXPORT_HEADERS.get(
         pane,
@@ -1196,7 +1219,7 @@ def _require_login_guard():
 
 
 def _request_needs_proxy_context() -> bool:
-    if request.endpoint in {None, "static", "health", "login", "logout"}:
+    if request.endpoint in {None, *_NON_PROXY_ENDPOINTS}:
         return False
     return _is_logged_in()
 
@@ -1873,6 +1896,25 @@ def _handle_webfilter_post(store: Any, tab: str):
     return _redirect_to("webfilter", tab=tab)
 
 
+def _normalize_webfilter_categories(rows: Any) -> list[tuple[str, int]]:
+    normalized: list[tuple[str, int]] = []
+    for row in rows or []:
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            key, count = row[0], row[1]
+        else:
+            key = getattr(row, "key", None) or getattr(row, "category", None)
+            count = getattr(row, "domains", None) or getattr(row, "count", None) or 0
+        key = str(key or "").strip()
+        if not key:
+            continue
+        try:
+            count_i = int(count or 0)
+        except Exception:
+            count_i = 0
+        normalized.append((key, max(0, count_i)))
+    return normalized
+
+
 def _sslfilter_policy_from_form() -> str:
     return (request.form.get("policy") or "").strip().lower()
 
@@ -2398,6 +2440,10 @@ def observability():
             message="Failed to load observability summary; rendering empty state",
         )
         summary = _empty_observability_summary()
+    summary = {
+        **_empty_observability_summary(),
+        **(summary if isinstance(summary, dict) else {}),
+    }
 
     try:
         pane_payload: dict[str, Any]
@@ -2568,6 +2614,11 @@ def observability():
             message="Failed to load observability pane; rendering empty state",
         )
         pane_payload = _empty_observability_payload(pane, summary=summary)
+    pane_payload = _merge_observability_payload_defaults(
+        pane,
+        pane_payload,
+        summary=summary,
+    )
 
     return render_template(
         "observability.html",
@@ -3361,11 +3412,25 @@ def policy_requests():
         except Exception as exc:
             return _redirect_to("policy_requests", error=public_error_message(exc))
         return _redirect_to("policy_requests")
+    try:
+        pending_requests = store.list_requests(statuses=["pending"], limit=200)
+        recent_requests = store.list_requests(limit=200)
+        exceptions = store.list_exceptions(include_inactive=True, limit=200)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.policy_requests.list",
+            interval_seconds=30.0,
+            message="Failed to load policy requests; rendering empty state",
+        )
+        pending_requests = []
+        recent_requests = []
+        exceptions = []
     return render_template(
         "requests.html",
-        pending_requests=store.list_requests(statuses=["pending"], limit=200),
-        recent_requests=store.list_requests(limit=200),
-        exceptions=store.list_exceptions(include_inactive=True, limit=200),
+        pending_requests=pending_requests,
+        recent_requests=recent_requests,
+        exceptions=exceptions,
         message=request.args.get("ok") or "",
         error=request.args.get("error") or "",
     )
@@ -3530,14 +3595,32 @@ def webfilter():
                 err=public_error_message(exc),
             )
 
-    settings = store.get_settings()
+    try:
+        settings = store.get_settings()
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.webfilter.settings",
+            interval_seconds=30.0,
+            message="Failed to load webfilter settings; rendering empty state",
+        )
+        settings = {"enabled": False, "source_url": "", "blocked_categories": []}
     try:
         safe_browsing_status = store.safe_browsing_status()
     except Exception:
         safe_browsing_status = None
-    available = store.list_available_categories()
-    selected = set(settings.blocked_categories)
-    whitelist_rows = store.list_whitelist()
+    try:
+        available = _normalize_webfilter_categories(store.list_available_categories())
+    except Exception:
+        available = []
+    selected = set(
+        getattr(settings, "blocked_categories", None)
+        or (settings.get("blocked_categories", []) if isinstance(settings, dict) else [])
+    )
+    try:
+        whitelist_rows = store.list_whitelist()
+    except Exception:
+        whitelist_rows = []
     window_i = _query_int_arg(
         "window",
         default=3600,

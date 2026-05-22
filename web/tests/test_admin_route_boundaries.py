@@ -811,6 +811,50 @@ class SslPaneRowsObservability:
         return self._ssl_payload()
 
 
+class RegistryListRaises(FakeRegistry):
+    def list_proxies(self):
+        msg = "registry unavailable"
+        raise RuntimeError(msg)
+
+
+class PartialObservabilityPayload:
+    def summary(self, **_kwargs):
+        return {}
+
+    def overview_bundle(self, **_kwargs):
+        return {
+            "summary": {},
+            "destinations": [],
+            "clients": [],
+            "cache_reasons": [],
+            "ssl": {},
+            "security": {},
+            "performance": {},
+        }
+
+
+class UnavailableWebfilterStore:
+    def init_db(self):
+        msg = "webfilter unavailable"
+        raise RuntimeError(msg)
+
+    def get_settings(self):
+        msg = "webfilter unavailable"
+        raise RuntimeError(msg)
+
+    def safe_browsing_status(self):
+        msg = "webfilter unavailable"
+        raise RuntimeError(msg)
+
+    def list_available_categories(self):
+        msg = "webfilter unavailable"
+        raise RuntimeError(msg)
+
+    def list_whitelist(self):
+        msg = "webfilter unavailable"
+        raise RuntimeError(msg)
+
+
 def test_observability_ssl_pane_links_to_sslfilter_without_template_error(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(
         monkeypatch,
@@ -852,3 +896,76 @@ def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
     recovered = client.get("/recover", follow_redirects=False)
     assert recovered.status_code in {302, 303}
     assert recovered.headers["Location"].startswith("/?recovered=1")
+
+
+def test_observability_overview_merges_partial_payload_defaults(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=PartialObservabilityPayload(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=overview")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Cache hit rate" in text
+    assert "Potential AV findings" in text
+
+
+def test_policy_requests_page_renders_empty_state_when_store_unavailable(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/requests")
+
+    assert response.status_code == 200
+    assert "Internal Server Error" not in response.get_data(as_text=True)
+
+
+def test_webfilter_page_renders_empty_state_when_store_unavailable(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        webfilter_store=UnavailableWebfilterStore(),
+    )
+    loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/webfilter")
+
+    assert response.status_code == 200
+    assert "Internal Server Error" not in response.get_data(as_text=True)
+
+
+def test_webfilter_page_normalizes_object_category_rows(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/webfilter")
+
+    assert response.status_code == 200
+    assert 'data-category="adult"' in response.get_data(as_text=True)
+
+
+def test_recover_route_skips_proxy_registry_when_selection_is_stale(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=RegistryListRaises())
+    loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    with client.session_transaction() as sess:
+        sess["active_proxy_id"] = "missing-proxy"
+
+    response = client.get("/recover", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"].startswith("/?recovered=1")
+    with client.session_transaction() as sess:
+        assert "active_proxy_id" not in sess
