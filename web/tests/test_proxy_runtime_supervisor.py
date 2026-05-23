@@ -1,5 +1,3 @@
-Total output lines: 1578
-
 from __future__ import annotations
 
 import hashlib
@@ -595,7 +593,433 @@ def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None
         "adblock_changed": True,
         "detail": "Adblock artifact applied.",
     }
-    runtime.sync_pac_state = lambda force=False: {"ok": Tr…3664 tokens truncated…          recorded.append(
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
+        or (
+            True,
+            "Squid reconfigured for policy update.",
+        )
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert result["config_changed"] is False
+    assert result["adblock_changed"] is True
+    assert reloads == [True]
+    assert "Squid reconfigured for policy update." in result["detail"]
+    assert marked == []
+
+
+def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
+    runtime = _runtime_shell()
+    reloads: list[bool] = []
+    applies: list[str] = []
+    invalidations: list[bool] = []
+    recorded: list[tuple[int, bool, str]] = []
+
+    class Controller:
+        def normalize_config_text(self, text):
+            return text
+
+        def apply_config_text(self, text):
+            applies.append(text)
+            return True, "Squid reconfigured."
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="active-sha")
+
+        def latest_apply(self, _proxy_id) -> None:
+            return None
+
+        def get_active_revision(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_text="http_port 3128\n")
+
+        def record_apply_result(
+            self, _proxy_id, revision_id, *, ok, detail, applied_by
+        ):
+            recorded.append((revision_id, ok, detail))
+            return SimpleNamespace(application_id=44)
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs):
+            return SimpleNamespace()
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: invalidations.append(True)
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": True,
+        "reload_required": True,
+        "detail": "Updated policy files.",
+    }
+    runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
+        or (
+            True,
+            "Squid reconfigured for policy update.",
+        )
+    )
+
+    result = runtime.sync_from_db(force=True)
+
+    assert result["ok"] is True
+    assert result["config_changed"] is True
+    assert result["policy_changed"] is True
+    assert applies == ["http_port 3128\n"]
+    assert len(invalidations) >= 2
+    assert reloads == [True]
+    assert recorded
+    assert "Squid reconfigured for policy update." in recorded[0][2]
+
+
+def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    calls = {"icap": 0}
+    sleeps: list[float] = []
+
+    class Controller:
+        def _run(self, args, **_kwargs):
+            assert args == ["squid", "-k", "reconfigure"]
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout) -> bool:
+            assert timeout == pytest.approx(10.0)
+            return True
+
+    def fake_icap(**_kwargs):
+        calls["icap"] += 1
+        return {"ok": calls["icap"] >= 2, "detail": "icap ready"}
+
+    runtime.controller = Controller()
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", fake_icap)
+    monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
+
+    ok, detail = runtime._reload_for_policy_update()
+
+    assert ok is True
+    assert "reconfigured" in detail
+    assert "Squid reconfigured for policy update." in detail
+    assert calls["icap"] == 2
+    assert sleeps == [0.5]
+
+
+def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    now = {"value": 0.0}
+
+    class Controller:
+        def _run(self, args, **_kwargs):
+            assert args == ["squid", "-k", "reconfigure"]
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout) -> bool:
+            assert timeout == pytest.approx(10.0)
+            return True
+
+    runtime.controller = Controller()
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_icap_adblock",
+        lambda **_kwargs: {"ok": False, "detail": "icap not ready"},
+    )
+    monkeypatch.setattr(runtime_module.time, "time", lambda: now["value"])
+    monkeypatch.setattr(
+        runtime_module.time,
+        "sleep",
+        lambda seconds: now.__setitem__("value", now["value"] + seconds + 1.0),
+    )
+
+    ok, detail = runtime._reload_for_policy_update()
+
+    assert ok is False
+    assert "reconfigured" in detail
+    assert "icap not ready" in detail
+
+
+def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(
+    tmp_path, monkeypatch
+) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    squid_conf.write_text("workers 1\n# good\n", encoding="utf-8")
+    persisted_conf.write_text("workers 1\n# good\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[:3] == ["squid", "-k", "reconfigure"]:
+            raise subprocess.TimeoutExpired(args, timeout=15)
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(tmp_path / "20-icap.conf"))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(tmp_path / "virus_scan.conf"))
+    from services.squid_core import (
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+    controller = SquidController(str(squid_conf), cmd_run=fake_run)
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    monkeypatch.setattr(
+        controller, "_wait_for_http_listener_absent", lambda *, timeout: True
+    )
+    monkeypatch.setattr(controller, "_wait_for_http_listener", lambda *, timeout: True)
+
+    ok, detail = controller.apply_config_text("workers 1\n# bad-but-parseable\n")
+
+    assert ok is False
+    assert "timed out" in detail.lower()
+    assert "Rolled back to last-known-good" in detail
+    restored = squid_conf.read_text(encoding="utf-8")
+    assert "# good" in restored
+    assert "bad-but-parseable" not in restored
+
+
+def test_squid_controller_validation_timeout_returns_actionable_detail(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    def fake_run(args, **_kwargs) -> NoReturn:
+        raise subprocess.TimeoutExpired(args, timeout=15)
+
+    controller = SquidController(str(tmp_path / "squid.conf"), cmd_run=fake_run)
+
+    ok, detail = controller.validate_config_text("workers 1\n")
+
+    assert ok is False
+    assert detail == "Squid config validation timed out after 15 seconds."
+
+
+def test_squid_controller_extracts_all_http_listener_ports(tmp_path) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    squid_conf.write_text(
+        """
+http_port 0.0.0.0:3128 ssl-bump \\
+    cert=/etc/squid/ssl/certs/ca.crt \\
+    key=/etc/squid/ssl/certs/ca.key
+http_port 0.0.0.0:3129 intercept
+http_port 3130 tproxy
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    controller = SquidController(str(squid_conf))
+
+    assert controller._http_listener_details() == (
+        {"port": 3128, "mode": "explicit"},
+        {"port": 3129, "mode": "intercept"},
+        {"port": 3130, "mode": "tproxy"},
+    )
+    assert controller._http_listener_ports() == (3128, 3129, 3130)
+    assert controller._http_listener_port() == 3128
+
+
+def test_squid_controller_removes_stale_pidfile_before_restart(
+    monkeypatch, tmp_path
+) -> None:
+    _add_repo_paths()
+    from services import squid_core  # type: ignore
+    from services.squid_core import SquidController  # type: ignore
+
+    calls: list[list[str]] = []
+    unlinked: list[str] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return _cp(0, stdout="ok")
+
+    controller = SquidController(str(tmp_path / "squid.conf"), cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller, "_wait_for_http_listener_absent", lambda *, timeout: True
+    )
+    monkeypatch.setattr(controller, "_wait_for_http_listener", lambda *, timeout: True)
+    monkeypatch.setattr(
+        squid_core.os.path, "exists", lambda path: path == "/var/run/squid.pid"
+    )
+    monkeypatch.setattr(squid_core.Path, "read_text", lambda self, **_kwargs: "12345")
+    monkeypatch.setattr(squid_core.os, "unlink", unlinked.append)
+
+    ok, detail = controller.restart_squid()
+
+    assert ok is True
+    assert unlinked == ["/var/run/squid.pid"]
+    assert "Removed stale Squid PID file" in detail
+    assert calls[-1][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "start"]
+
+
+def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fails(
+    tmp_path, monkeypatch
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / ".artifact-sha256").write_text("old-sha", encoding="utf-8")
+    (compiled / "domains_block.txt").write_text("old.example\n", encoding="utf-8")
+    recorded: list[dict[str, object]] = []
+    restarts = iter([(False, "cicap_adblock BACKOFF"), (True, "cicap_adblock RUNNING")])
+
+    class Artifacts:
+        compiled_dir = str(compiled)
+
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="new-sha")
+
+        def get_active_artifact(self):
+            return SimpleNamespace(
+                revision_id=42, artifact_sha256="new-sha", archive_blob=b"new"
+            )
+
+        def record_apply_result(
+            self, proxy_id, revision_id, *, ok, detail, applied_by, artifact_sha256
+        ):
+            recorded.append(
+                {
+                    "proxy_id": proxy_id,
+                    "revision_id": revision_id,
+                    "ok": ok,
+                    "detail": detail,
+                    "artifact_sha256": artifact_sha256,
+                },
+            )
+            return SimpleNamespace(application_id=77)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
+        (root / "domains_block.txt").write_text("bad.example\n", encoding="utf-8")
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "old-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime.adblock_compiled_dir = str(compiled)
+    runtime._restart_adblock_service = lambda: next(restarts)
+
+    monkeypatch.setattr(
+        runtime_module, "materialize_archive_to_directory", fake_materialize
+    )
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is False
+    assert result["artifact_rolled_back"] is True
+    assert "Restored previous adblock compiled artifact" in result["detail"]
+    assert (compiled / ".artifact-sha256").read_text(encoding="utf-8") == "old-sha"
+    assert (compiled / "domains_block.txt").read_text(
+        encoding="utf-8"
+    ) == "old.example\n"
+    assert recorded[-1]["ok"] is False
+
+
+def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() -> None:
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def get_active_artifact(
+            self,
+        ) -> NoReturn:  # pragma: no cover - should not be reached
+            msg = "current artifact should not be fetched for a no-op force sync"
+            raise AssertionError(msg)
+
+        def latest_apply(self, _proxy_id, *, revision_id=None):
+            assert revision_id == 42
+            return SimpleNamespace(application_id=7, ok=True)
+
+        def record_apply_result(
+            self, *args, **kwargs
+        ) -> NoReturn:  # pragma: no cover - should not be reached
+            msg = "no-op force sync should not churn existing adblock apply rows"
+            raise AssertionError(msg)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    restarts = []
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime._restart_adblock_service = lambda: (
+        restarts.append(True)
+        or (
+            True,
+            "restarted",
+        )
+    )
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["artifact_changed"] is False
+    assert result["application_id"] == 7
+    assert restarts == []
+
+
+def test_sync_adblock_state_records_missing_apply_for_current_artifact() -> None:
+    recorded = []
+
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def get_active_artifact(
+            self,
+        ) -> NoReturn:  # pragma: no cover - should not be reached
+            msg = "current artifact should not be fetched for a ledger backfill"
+            raise AssertionError(msg)
+
+        def latest_apply(self, _proxy_id, *, revision_id=None):
+            assert revision_id == 42
+
+        def record_apply_result(self, proxy_id, revision_id, **kwargs):
+            recorded.append(
                 {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
             )
             return SimpleNamespace(application_id=11)
