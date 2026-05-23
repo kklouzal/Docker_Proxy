@@ -381,17 +381,15 @@ class AdblockArtifactStore:
         store = get_adblock_store()
         store.init_db()
         settings = store.get_settings()
+        settings_enabled = bool(settings.get("enabled"))
         settings_version = store.get_settings_version()
         statuses = store.list_statuses()
         enabled_statuses = [status for status in statuses if status.enabled]
-        effective_enabled_lists = [
-            status.key for status in enabled_statuses if bool(settings.get("enabled"))
-        ]
         previous = self.get_active_artifact()
         any_downloaded = False
         download_pending = False
 
-        if bool(settings.get("enabled")) and enabled_statuses:
+        if settings_enabled and enabled_statuses:
             now_ts = _now()
             for status in enabled_statuses:
                 list_path = store.list_path(status.key)
@@ -410,9 +408,31 @@ class AdblockArtifactStore:
                 if not downloaded_now:
                     download_pending = True
 
+        available_enabled_statuses = [
+            status
+            for status in enabled_statuses
+            if settings_enabled and Path(store.list_path(status.key)).exists()
+        ]
+        effective_enabled_lists = [status.key for status in available_enabled_statuses]
+        if settings_enabled and enabled_statuses and not available_enabled_statuses:
+            detail = "No enabled adblock subscription lists are available locally."
+            if download_pending:
+                detail = (
+                    "Enabled adblock subscription lists could not be downloaded and "
+                    "no cached lists are available."
+                )
+            return {
+                "ok": False,
+                "detail": detail,
+                "revision": previous,
+                "changed": False,
+                "downloaded": any_downloaded,
+                "download_pending": download_pending,
+            }
+
         try:
             with tempfile.TemporaryDirectory(prefix="adblock-build-") as out_dir:
-                if bool(settings.get("enabled")) and enabled_statuses:
+                if settings_enabled and available_enabled_statuses:
                     _compile_current_lists(lists_dir=store.lists_dir, out_dir=out_dir)
                 else:
                     _write_empty_output(out_dir)

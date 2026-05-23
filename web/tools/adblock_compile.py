@@ -1078,7 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     report = {
-        "enabled_lists": [k for k, _ in enabled_paths],
+        "enabled_lists": [k for k, _ in enabled_paths if k in per_list_counts],
         "counts": merged_counts,
         "breakdowns": {
             "network_by_pattern_kind": dict(
