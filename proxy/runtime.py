@@ -293,6 +293,15 @@ def _listener_mode_summary(listeners: object) -> str:
         return ""
 
 
+def _state_drift_detail(label: str, desired_sha: object, current_sha: object) -> str:
+    desired = str(desired_sha or "").strip()
+    current = str(current_sha or "").strip()
+    if not desired or desired == current:
+        return ""
+    current_display = current[:12] if current else "missing"
+    return f"{label}: desired {desired[:12]} does not match current {current_display}."
+
+
 def _decode_completed(proc: Any) -> str:
     stdout_text = _decode_bytes(getattr(proc, "stdout", b""))
     stderr_text = _decode_bytes(getattr(proc, "stderr", b""))
@@ -2021,6 +2030,33 @@ class ProxyRuntime:
                     message="Failed to collect proxy PAC health state",
                 )
 
+            active_revision_sha = active_revision.config_sha256 if active_revision else ""
+            active_certificate_sha = (
+                active_certificate.bundle_sha256 if active_certificate else ""
+            )
+            active_adblock_sha = (
+                active_adblock_artifact.artifact_sha256
+                if active_adblock_artifact
+                else ""
+            )
+            for drift_detail in (
+                _state_drift_detail("config", active_revision_sha, current_sha),
+                _state_drift_detail(
+                    "certificate bundle",
+                    active_certificate_sha,
+                    current_certificate_sha,
+                ),
+                _state_drift_detail(
+                    "adblock artifact",
+                    active_adblock_sha,
+                    current_adblock_sha,
+                ),
+                _state_drift_detail("policy", desired_policy_sha, current_policy_sha),
+                _state_drift_detail("PAC", desired_pac_sha, current_pac_sha),
+            ):
+                if drift_detail:
+                    state_errors.append(drift_detail)
+
             ok = (
                 proxy_ok
                 and all(bool(item.get("ok")) for item in services.values())
@@ -2038,23 +2074,17 @@ class ProxyRuntime:
                 "active_revision_id": active_revision.revision_id
                 if active_revision
                 else None,
-                "active_revision_sha": active_revision.config_sha256
-                if active_revision
-                else "",
+                "active_revision_sha": active_revision_sha,
                 "current_config_sha": current_sha,
                 "active_certificate_revision_id": active_certificate.revision_id
                 if active_certificate
                 else None,
-                "active_certificate_sha": active_certificate.bundle_sha256
-                if active_certificate
-                else "",
+                "active_certificate_sha": active_certificate_sha,
                 "current_certificate_sha": current_certificate_sha,
                 "active_adblock_revision_id": active_adblock_artifact.revision_id
                 if active_adblock_artifact
                 else None,
-                "active_adblock_sha": active_adblock_artifact.artifact_sha256
-                if active_adblock_artifact
-                else "",
+                "active_adblock_sha": active_adblock_sha,
                 "current_adblock_sha": current_adblock_sha,
                 "desired_policy_sha": desired_policy_sha,
                 "current_policy_sha": current_policy_sha,

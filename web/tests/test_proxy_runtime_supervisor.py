@@ -1222,9 +1222,7 @@ def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
     runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
         policy_sha256="policy-sha", files=()
     )
-    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(
-        state_sha256="desired-pac-sha"
-    )
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(state_sha256="pac-sha")
 
     result = runtime.collect_health()
 
@@ -1233,6 +1231,67 @@ def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
     assert result["current_policy_sha"] == "policy-sha"
     assert result["health_elapsed_seconds"] >= 0
     assert runtime._health_cache_value is result
+
+
+def test_collect_health_degrades_when_desired_runtime_state_drifts() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 0.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._health_refresh_lock = threading.Lock()
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime.stats_provider = dict
+    runtime.runtime_services_builder = lambda **_kwargs: {"icap": {"ok": True}}
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=7,
+            config_sha256="desired-config-sha",
+        ),
+    )
+    runtime.certificate_bundles = SimpleNamespace(
+        get_active_bundle_metadata=lambda: SimpleNamespace(
+            revision_id=8,
+            bundle_sha256="desired-cert-sha",
+        ),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        get_active_artifact_metadata=lambda: SimpleNamespace(
+            revision_id=9,
+            artifact_sha256="desired-adblock-sha",
+        ),
+    )
+    runtime._current_config_sha = lambda: "current-config-sha"
+    runtime._current_certificate_bundle_sha = lambda: "current-cert-sha"
+    runtime._current_adblock_artifact_sha = lambda: "current-adblock-sha"
+    runtime._current_policy_sha = lambda: "current-policy-sha"
+    runtime._current_pac_state_sha = lambda: "current-pac-sha"
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="desired-policy-sha",
+        files=(),
+    )
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(
+        state_sha256="desired-pac-sha",
+    )
+
+    result = runtime.collect_health(force=True)
+
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert result["state_errors"] == [
+        "config: desired desired-conf does not match current current-conf.",
+        "certificate bundle: desired desired-cert does not match current current-cert.",
+        "adblock artifact: desired desired-adbl does not match current current-adbl.",
+        "policy: desired desired-poli does not match current current-poli.",
+        "PAC: desired desired-pac- does not match current current-pac-.",
+    ]
 
 
 def test_local_runtime_service_health_checks_run_in_parallel(monkeypatch) -> None:
