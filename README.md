@@ -133,6 +133,13 @@ docker compose up -d --build admin-ui
 
 The admin UI still requires MySQL. Proxy-specific actions become available after proxy runtimes register management URLs and public PAC/proxy metadata.
 
+Server-002 is an admin-UI-only host. Use the Server-002 deployment compose file for updates there so redeploys do not recreate the local proxy container:
+
+```powershell
+docker compose -f docker-compose.server002.yml pull admin-ui
+docker compose -f docker-compose.server002.yml up -d --remove-orphans admin-ui
+```
+
 ### Multi-proxy deployments
 
 When multiple proxy runtimes share one MySQL/admin-ui control plane, every proxy

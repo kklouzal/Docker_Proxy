@@ -1,0 +1,11 @@
+name: squid-flask-proxy
+
+services:
+  admin-ui:
+    extends:
+      file: docker-compose.common.yml
+      service: admin-ui
+    image: ghcr.io/kklouzal/docker_proxy-admin-ui:main
+
+networks:
+  control:
