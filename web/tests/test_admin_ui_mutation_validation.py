@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from .admin_route_test_utils import (
@@ -34,6 +36,15 @@ def _loaded(monkeypatch, tmp_path, *, controller=None, **overrides):
     client = loaded.module.app.test_client()
     _login(client)
     return loaded, client
+
+
+def _allow_public_example_dns(monkeypatch) -> None:
+    from services import webfilter_core
+
+    def fake_getaddrinfo(*_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(webfilter_core.socket, "getaddrinfo", fake_getaddrinfo)
 
 
 def _assert_redirect_success(response) -> None:
@@ -293,6 +304,7 @@ def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(
 def test_policy_store_mutations_request_sync_without_config_revision_validation(
     monkeypatch, tmp_path, path, data
 ) -> None:
+    _allow_public_example_dns(monkeypatch)
     loaded, client = _loaded(monkeypatch, tmp_path)
 
     response = _post(client, path, data)
@@ -327,6 +339,7 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
 
 
 def test_webfilter_save_persists_shared_source_provider(monkeypatch, tmp_path) -> None:
+    _allow_public_example_dns(monkeypatch)
     webfilter_store = FakeWebfilterStore()
     loaded, client = _loaded(monkeypatch, tmp_path, webfilter_store=webfilter_store)
 
