@@ -12,6 +12,7 @@ from services.proxy_context import get_proxy_id
 from services.safe_browsing_v5 import DEFAULT_SAFE_BROWSING_LISTS, SafeBrowsingStore
 from services.webfilter_core import (
     _DEFAULT_SOURCE_URL,
+    _GLOBAL_SCOPE,
     WebFilterStoreBase,
     _env_int,
     _looks_like_host,
@@ -98,7 +99,7 @@ class WebFilterStore(WebFilterStoreBase):
         safe_browsing_lists: list[str] | None = None,
     ) -> None:
         self.init_db()
-        source = validate_source_url(source_url) if source_url else ""
+        source_candidate = (source_url or "").strip()
         provider = (source_provider or "auto").strip().lower()
         if provider not in {"auto", "ut1", "category-dir", "csv"}:
             provider = "auto"
@@ -118,6 +119,13 @@ class WebFilterStore(WebFilterStoreBase):
                 conn,
                 "source_provider",
                 "auto",
+            )
+
+            source = (
+                validate_source_url(source_candidate)
+                if source_candidate
+                and (enabled or self._category_build_needed_conn(conn))
+                else source_candidate
             )
 
             self._set(conn, "enabled", "1" if enabled else "0")
@@ -146,15 +154,23 @@ class WebFilterStore(WebFilterStoreBase):
             ):
                 self._set(conn, "safe_browsing_next_run_ts", str(_now()))
 
+            category_build_needed = self._category_build_needed_conn(conn)
             if (
-                source and (source != previous_source or provider != previous_provider)
-            ) or (enabled and not previous_enabled):
+                category_build_needed
+                and source
+                and (
+                    (source != previous_source or provider != previous_provider)
+                    or (enabled and not previous_enabled)
+                )
+            ):
                 self._set_meta(conn, "refresh_requested", "1")
                 self._set(conn, "next_run_ts", str(_next_midnight_ts(_now())))
-            elif enabled:
+            elif category_build_needed:
                 current_next = int(self._get(conn, "next_run_ts", "0") or 0)
                 if current_next <= 0:
                     self._set(conn, "next_run_ts", str(_next_midnight_ts(_now())))
+            else:
+                self._clear_refresh_requested_conn(conn)
 
     def request_refresh_now(self) -> None:
         self.init_db()
@@ -324,6 +340,32 @@ class WebFilterStore(WebFilterStoreBase):
     def _refresh_requested_conn(self, conn) -> bool:
         return self._get_meta(conn, "refresh_requested", "0") == "1"
 
+    def _category_build_needed_conn(self, conn) -> bool:
+        rows = conn.execute(
+            f"SELECT proxy_id, k, v FROM {self._table('settings')} WHERE proxy_id<>%s AND k IN ('enabled','blocked_categories')",
+            (_GLOBAL_SCOPE,),
+        ).fetchall()
+        by_proxy: dict[str, dict[str, str]] = {}
+        for row in rows:
+            proxy_id = str(row[0] or "")
+            key = str(row[1] or "")
+            value = str(row[2]) if row[2] is not None else ""
+            by_proxy.setdefault(proxy_id, {})[key] = value
+
+        for values in by_proxy.values():
+            if values.get("enabled") != "1":
+                continue
+            categories = [
+                item.strip()
+                for item in values.get("blocked_categories", "")
+                .replace("\n", ",")
+                .split(",")
+                if item.strip()
+            ]
+            if categories:
+                return True
+        return False
+
     def _run_build(
         self,
         source_url: str,
@@ -442,8 +484,12 @@ class WebFilterStore(WebFilterStoreBase):
                     if next_ts <= 0:
                         next_ts = _next_midnight_ts(_now())
                         self._set_next_run_conn(conn, ts=next_ts)
+                    category_build_needed = self._category_build_needed_conn(conn)
 
-                if not source_url:
+                if not category_build_needed or not source_url:
+                    if refresh:
+                        with self._connect() as conn:
+                            self._clear_refresh_requested_conn(conn)
                     sleep_seconds = disabled_sleep
                     time.sleep(sleep_seconds)
                     continue

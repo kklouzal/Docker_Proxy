@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from .mysql_test_utils import configure_test_mysql_env
 
 
@@ -229,3 +231,31 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
         assert "none configured" in include_path.read_text(encoding="utf-8")
     finally:
         reset_proxy_id(token)
+
+
+def test_webfilter_category_refresh_only_tracks_active_category_policy(
+    tmp_path,
+) -> None:
+    configure_test_mysql_env(tmp_path / "webfilter-category-refresh")
+
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    store = WebFilterStore()
+    store.init_db()
+
+    store.set_settings(
+        enabled=False,
+        source_url="http://127.0.0.1/private-feed.tar.gz",
+        blocked_categories=["adult"],
+    )
+
+    with store._connect() as conn:
+        assert store._refresh_requested_conn(conn) is False
+        assert store._category_build_needed_conn(conn) is False
+
+    with pytest.raises(ValueError):
+        store.set_settings(
+            enabled=True,
+            source_url="http://127.0.0.1/private-feed.tar.gz",
+            blocked_categories=["adult"],
+        )
