@@ -85,6 +85,9 @@ def test_webfilter_run_build_defaults_invalid_provider_to_auto() -> None:
         "http://127.0.0.1/feed.csv",
         "http://localhost/feed.csv",
         "http://proxy.internal/feed.csv",
+        "http://exa mple.com/feed.csv",
+        "https://example.test/feed file.csv",
+        "http://[::1",
     ],
 )
 def test_webfilter_source_url_validation_rejects_unsafe_targets(source_url) -> None:
@@ -93,4 +96,7 @@ def test_webfilter_source_url_validation_rejects_unsafe_targets(source_url) -> N
     with pytest.raises(ValueError):
         m.validate_source_url(source_url)
 
-    assert m.validate_source_url(" https://example.test/feed.csv ") == "https://example.test/feed.csv"
+    assert (
+        m.validate_source_url(" https://example.test/feed.csv ")
+        == "https://example.test/feed.csv"
+    )
