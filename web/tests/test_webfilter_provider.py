@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _import_webfilter_store_module():
     web_dir = Path(__file__).resolve().parents[1]
@@ -74,3 +76,21 @@ def test_webfilter_run_build_defaults_invalid_provider_to_auto() -> None:
 
     assert ok is True
     assert captured["argv"][captured["argv"].index("--provider") + 1] == "auto"
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "file:///etc/passwd",
+        "http://127.0.0.1/feed.csv",
+        "http://localhost/feed.csv",
+        "http://proxy.internal/feed.csv",
+    ],
+)
+def test_webfilter_source_url_validation_rejects_unsafe_targets(source_url) -> None:
+    m = _import_webfilter_store_module()
+
+    with pytest.raises(ValueError):
+        m.validate_source_url(source_url)
+
+    assert m.validate_source_url(" https://example.test/feed.csv ") == "https://example.test/feed.csv"

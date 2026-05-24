@@ -20,6 +20,7 @@ from services.webfilter_core import (
     _now,
     _parent_domains,
     _parse_whitelist_lines,
+    validate_source_url,
     _whitelist_match,
 )
 
@@ -97,7 +98,7 @@ class WebFilterStore(WebFilterStoreBase):
         safe_browsing_lists: list[str] | None = None,
     ) -> None:
         self.init_db()
-        source = (source_url or "").strip()
+        source = validate_source_url(source_url) if source_url else ""
         provider = (source_provider or "auto").strip().lower()
         if provider not in {"auto", "ut1", "category-dir", "csv"}:
             provider = "auto"

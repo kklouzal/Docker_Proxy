@@ -303,6 +303,28 @@ def test_policy_store_mutations_request_sync_without_config_revision_validation(
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
+def test_webfilter_save_rejects_internal_source_without_queueing_sync(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(
+        client,
+        "/webfilter",
+        {
+            "action": "save",
+            "enabled": "on",
+            "source_url": "http://127.0.0.1/private-feed.txt",
+            "categories": ["adult"],
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert "err_source=1" in response.headers.get("Location", "")
+    assert loaded.operation_ledger.operations == []
+
+
 @pytest.mark.parametrize(
     ("path", "data", "expected_location_fragment"),
     [
