@@ -662,7 +662,7 @@ def test_live_webfilter_category_validation_and_save_workflows(
     admin_client: LiveStackClient,
 ) -> None:
     original_settings = _webfilter_settings(LIVE_CONFIG.primary_proxy_id)
-    source_url = f"https://example.invalid/{unique_token('webcat')}.tar.gz"
+    source_url = f"https://example.com/{unique_token('webcat')}.tar.gz"
 
     try:
         missing_source_response = admin_client.admin_post_form(
