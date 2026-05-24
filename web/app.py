@@ -143,8 +143,10 @@ from services.ui_support import (
 from services.ui_support import (
     window_label as _window_label,
 )
+from services.webfilter_core import (
+    validate_source_url as _validate_webfilter_source_url,
+)
 from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
-from services.webfilter_core import validate_source_url as _validate_webfilter_source_url
 from services.winhttp_registry_builder import (
     WinHttpBuilderError,
     build_contract_output,

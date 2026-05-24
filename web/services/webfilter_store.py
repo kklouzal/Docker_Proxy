@@ -20,8 +20,8 @@ from services.webfilter_core import (
     _now,
     _parent_domains,
     _parse_whitelist_lines,
-    validate_source_url,
     _whitelist_match,
+    validate_source_url,
 )
 
 logger = logging.getLogger(__name__)
