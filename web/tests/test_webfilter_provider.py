@@ -116,7 +116,8 @@ def test_webfilter_source_url_validation_rejects_unverifiable_dns(monkeypatch) -
     m = _import_webfilter_store_module()
 
     def fake_getaddrinfo(*_args, **_kwargs):
-        raise socket.gaierror("dns unavailable")
+        msg = "dns unavailable"
+        raise socket.gaierror(msg)
 
     monkeypatch.setattr(
         m.validate_source_url.__globals__["socket"], "getaddrinfo", fake_getaddrinfo
