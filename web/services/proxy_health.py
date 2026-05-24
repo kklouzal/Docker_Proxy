@@ -9,8 +9,6 @@ from services.health_checks import (
     build_clamav_health,
     check_clamd,
     check_icap_service,
-    check_local_listener,
-    is_local_host,
     resolve_host_port,
     send_sample_respmod_to,
     test_clamd_eicar,
@@ -138,18 +136,14 @@ def _check_icap_target(
     user_agent: str = "squid-flask-proxy-ui",
     success_detail: str | None = None,
 ) -> dict[str, Any]:
-    result = (
-        check_local_listener(service_name, host, port)
-        if is_local_host(host)
-        else check_icap_service(
-            host=host,
-            port=port,
-            service=icap_service,
-            timeout=timeout,
-            user_agent=user_agent,
-            success_detail=success_detail,
-            error_formatter=error_formatter,
-        )
+    result = check_icap_service(
+        host=host,
+        port=port,
+        service=icap_service,
+        timeout=timeout,
+        user_agent=user_agent,
+        success_detail=success_detail,
+        error_formatter=error_formatter,
     )
     return annotate_service_target(result, host=host, port=port, service=icap_service)
 

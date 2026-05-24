@@ -161,3 +161,42 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
     )
     assert combined["ok"] is False
     assert combined["components"]["clamd"]["detail"] == "clamd ok"
+
+
+def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import proxy_health  # type: ignore
+
+    calls = []
+
+    def fake_check_icap_service(**kwargs):
+        calls.append(kwargs)
+        return {"ok": False, "detail": "ICAP/1.0 404 Not Found"}
+
+    monkeypatch.setattr(proxy_health, "check_icap_service", fake_check_icap_service)
+
+    result = proxy_health.check_adblock_icap_health(
+        host="127.0.0.1",
+        port=14000,
+        timeout=0.4,
+    )
+
+    assert calls == [
+        {
+            "host": "127.0.0.1",
+            "port": 14000,
+            "service": "/adblockreq",
+            "timeout": 0.4,
+            "user_agent": "squid-flask-proxy-ui",
+            "success_detail": None,
+            "error_formatter": None,
+        }
+    ]
+    assert result == {
+        "ok": False,
+        "detail": "ICAP/1.0 404 Not Found",
+        "host": "127.0.0.1",
+        "port": 14000,
+        "target": "127.0.0.1:14000",
+        "service": "/adblockreq",
+    }
