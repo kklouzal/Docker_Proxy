@@ -218,7 +218,7 @@ def test_live_remote_clamav_test_actions_surface_selected_proxy_targets(
 def test_live_remote_webfilter_save_updates_only_selected_proxy(
     multi_proxy_admin: LiveStackClient,
 ) -> None:
-    source_url = f"https://example.invalid/{unique_token('remote-webcat')}.tar.gz"
+    source_url = f"https://example.com/{unique_token('remote-webcat')}.tar.gz"
     cleanup_source_url = ""
 
     try:
