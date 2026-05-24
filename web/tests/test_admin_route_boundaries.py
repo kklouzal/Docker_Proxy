@@ -954,6 +954,24 @@ def test_webfilter_page_normalizes_object_category_rows(monkeypatch, tmp_path) -
     assert 'data-category="adult"' in response.get_data(as_text=True)
 
 
+def test_webfilter_page_renders_editable_shared_source_controls(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/webfilter")
+
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert 'id="webfilter-source-url"' in text
+    assert 'name="source_url"' in text
+    assert 'id="webfilter-source-provider"' in text
+    assert 'name="source_provider"' in text
+    assert 'value="csv"' in text
+
+
 def test_recover_route_skips_proxy_registry_when_selection_is_stale(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path, registry=RegistryListRaises())
     loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)

@@ -121,8 +121,6 @@
       {{ csrf_field() }}
       <input type="hidden" name="tab" value="categories">
       <input type="hidden" name="action" value="save">
-      <input type="hidden" name="source_url" value="{{ feed_url }}">
-      <input type="hidden" name="source_provider" value="{{ settings.source_provider or 'auto' }}">
 
       <div class="card-header">
         <div>
@@ -139,6 +137,26 @@
               A valid shared category source URL is required before web filtering can be enabled.
             </div>
           {% endif %}
+
+          <section class="surface-panel">
+            <div class="section-header-row">
+              <div>
+                <h3>Shared category feed</h3>
+                <div class="small">Controls the catalog source used by all proxies. Source changes request a fresh build before enforcement refresh.</div>
+              </div>
+              {{ scope_chip('global') }}
+            </div>
+            <label class="label" for="webfilter-source-url">Source URL</label>
+            <input id="webfilter-source-url" class="input" type="url" name="source_url" value="{{ feed_url }}" placeholder="https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz" required>
+            <label class="label" for="webfilter-source-provider">Provider</label>
+            <select id="webfilter-source-provider" class="input" name="source_provider">
+              {% set selected_provider = settings.source_provider or 'auto' %}
+              {% for provider, label in [('auto','Auto-detect'), ('ut1','UT1 archive/directory'), ('category-dir','Category directory'), ('csv','CSV domain/category file')] %}
+                <option value="{{ provider }}" {% if selected_provider == provider %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            <div class="help">HTTP/HTTPS only. Internal or localhost targets are rejected before the builder runs.</div>
+          </section>
 
           <div class="webfilter-toolbar">
             <div>
@@ -335,7 +353,7 @@
             </div>
           </div>
           <div class="surface-note small">
-            Blocked-request review and recent enforcement evidence now live in <strong>Observability â†’ Security</strong>, leaving this page focused on rule configuration.
+            Blocked-request review and recent enforcement evidence now live in <strong>Observability &gt; Security</strong>, leaving this page focused on rule configuration.
           </div>
           <div class="actions">
             <a class="btn" href="{{ url_for('observability', pane='security', window=window if window is defined else observability_default_window) }}">Open security pane</a>

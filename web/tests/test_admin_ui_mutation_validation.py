@@ -6,6 +6,7 @@ from .admin_route_test_utils import (
     FakeController,
     FakeRegistry,
     FakeSslfilterStore,
+    FakeWebfilterStore,
     load_admin_app,
     login_client,
 )
@@ -323,6 +324,31 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
     assert response.status_code in {302, 303}
     assert "err_source=1" in response.headers.get("Location", "")
     assert loaded.operation_ledger.operations == []
+
+
+def test_webfilter_save_persists_shared_source_provider(monkeypatch, tmp_path) -> None:
+    webfilter_store = FakeWebfilterStore()
+    loaded, client = _loaded(monkeypatch, tmp_path, webfilter_store=webfilter_store)
+
+    response = _post(
+        client,
+        "/webfilter",
+        {
+            "action": "save",
+            "enabled": "on",
+            "source_url": "https://example.test/categories.csv",
+            "source_provider": "csv",
+            "categories": ["adult"],
+        },
+    )
+
+    _assert_redirect_success(response)
+    assert (
+        webfilter_store.last_set_settings["source_url"]
+        == "https://example.test/categories.csv"
+    )
+    assert webfilter_store.last_set_settings["source_provider"] == "csv"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
 
 
 @pytest.mark.parametrize(

@@ -555,7 +555,17 @@ class FakeAdblockStore:
 class FakeWebfilterStore:
     def __init__(self) -> None:
         self.settings = SimpleNamespace(
-            enabled=False, source_url="", blocked_categories=[]
+            enabled=False,
+            source_url="",
+            source_provider="auto",
+            blocked_categories=[],
+            safe_browsing_enabled=False,
+            safe_browsing_api_key="",
+            safe_browsing_lists=[],
+            safe_browsing_last_success=0,
+            safe_browsing_last_attempt=0,
+            safe_browsing_last_error="",
+            safe_browsing_next_run_ts=0,
         )
         self.whitelist: list[tuple[str, int]] = []
 
@@ -566,13 +576,38 @@ class FakeWebfilterStore:
         return self.settings
 
     def set_settings(
-        self, *, enabled: bool, source_url: str, blocked_categories: list[str]
+        self,
+        *,
+        enabled: bool,
+        source_url: str,
+        blocked_categories: list[str],
+        source_provider: str = "auto",
+        safe_browsing_enabled: bool = False,
+        safe_browsing_api_key: str = "",
+        safe_browsing_lists: list[str] | None = None,
     ) -> None:
+        safe_browsing_lists = safe_browsing_lists or []
         self.settings = SimpleNamespace(
             enabled=enabled,
             source_url=source_url,
+            source_provider=source_provider,
             blocked_categories=blocked_categories,
+            safe_browsing_enabled=safe_browsing_enabled,
+            safe_browsing_api_key=safe_browsing_api_key,
+            safe_browsing_lists=safe_browsing_lists,
+            safe_browsing_last_success=0,
+            safe_browsing_last_attempt=0,
+            safe_browsing_last_error="",
+            safe_browsing_next_run_ts=0,
         )
+        self.last_set_settings = {
+            "enabled": enabled,
+            "source_url": source_url,
+            "source_provider": source_provider,
+            "blocked_categories": blocked_categories,
+            "safe_browsing_enabled": safe_browsing_enabled,
+            "safe_browsing_lists": safe_browsing_lists,
+        }
 
     def list_available_categories(self) -> list[Any]:
         return [
