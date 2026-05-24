@@ -2057,23 +2057,25 @@ class ProxyRuntime:
                 if active_adblock_artifact
                 else ""
             )
-            for drift_detail in (
-                _state_drift_detail("config", active_revision_sha, current_sha),
-                _state_drift_detail(
-                    "certificate bundle",
-                    active_certificate_sha,
-                    current_certificate_sha,
-                ),
-                _state_drift_detail(
-                    "adblock artifact",
-                    active_adblock_sha,
-                    current_adblock_sha,
-                ),
-                _state_drift_detail("policy", desired_policy_sha, current_policy_sha),
-                _state_drift_detail("PAC", desired_pac_sha, current_pac_sha),
-            ):
-                if drift_detail:
-                    state_errors.append(drift_detail)
+            state_errors.extend(
+                drift_detail
+                for drift_detail in (
+                    _state_drift_detail("config", active_revision_sha, current_sha),
+                    _state_drift_detail(
+                        "certificate bundle",
+                        active_certificate_sha,
+                        current_certificate_sha,
+                    ),
+                    _state_drift_detail(
+                        "adblock artifact",
+                        active_adblock_sha,
+                        current_adblock_sha,
+                    ),
+                    _state_drift_detail("policy", desired_policy_sha, current_policy_sha),
+                    _state_drift_detail("PAC", desired_pac_sha, current_pac_sha),
+                )
+                if drift_detail
+            )
 
             ok = (
                 proxy_ok
