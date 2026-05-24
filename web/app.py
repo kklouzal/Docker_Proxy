@@ -499,4 +499,3981 @@ def _cached_proxy_health(
     now = time.monotonic()
     cached = _PROXY_HEALTH_CACHE.get(key)
     if cached is not None:
-        cachedãN÷ŞÚ$z{-®éÜj×÷'VÆW2ÒvWE÷76Æf–ÇFW%÷7F÷&R‚’æÆ—7EöÆÂ‚¢76Æf–ÇFW%ö6÷VçBÒ€¢ÆVâ†vWFGG"‡76Æf–ÇFW%÷'VÆW2Â&æõö'V×öFöÖ–ç2"ÂµÒ’÷"µÒ¢²ÆVâ†vWFGG"‡76Æf–ÇFW%÷'VÆW2Â&æõö66†UöFöÖ–ç2"ÂµÒ’÷"µÒ¢²ÆVâ†vWFGG"‡76Æf–ÇFW%÷'VÆW2Â&æõö'V×÷7&5öæWG2"ÂµÒ’÷"µÒ¢²ÆVâ†vWFGG"‡76Æf–ÇFW%÷'VÆW2Â&æõö66†U÷7&5öæWG2"ÂµÒ’÷"µÒ¢²ƒ–b&ööÂ†vWFGG"‡76Æf–ÇFW%÷'VÆW2Â&W†6ÇVFU÷&—fFUöæWG2"ÂfÇ6R’’VÇ6R¢¢7VÖÖ'’Ò°¢'v÷&¶W'2#¢GVæ&ÆW2ævWB‚'v÷&¶W'2"’–bGVæ&ÆW2VÇ6RæöæRÀ¢&W‡Æ–6—E÷&÷‡•÷÷'B#¢GVæ&ÆW2ævWB‚&W‡Æ–6—E÷&÷‡•÷÷'B"¢–bGVæ&ÆW0¢VÇ6RæöæRÀ¢&–çFW&6WEöVæ&ÆVB#¢&ööÂ‡GVæ&ÆW2ævWB‚&–çFW&6WEöVæ&ÆVB"’¢–bGVæ&ÆW0¢VÇ6RfÇ6RÀ¢&–çFW&6WE÷÷'B#¢GVæ&ÆW2ævWB‚&–çFW&6WE÷÷'B"’–bGVæ&ÆW2VÇ6RæöæRÀ¢&66†UöF—%÷6—¦UöÖ"#¢GVæ&ÆW2ævWB‚&66†UöF—%÷6—¦UöÖ""’–bGVæ&ÆW2VÇ6RæöæRÀ¢&66†UöÖVÕöÖ"#¢GVæ&ÆW2ævWB‚&66†UöÖVÕöÖ""’–bGVæ&ÆW2VÇ6RæöæRÀ¢&÷fW'&–FW2#¢÷fW'&–FW2÷"·ÒÀ¢&÷fW'&–FW5ööâ#¢ç’†÷fW'&–FW2çfÇVW2‚’’–b÷fW'&–FW2VÇ6RfÇ6RÀ¢'76Æf–ÇFW%ö6÷VçB#¢76Æf–ÇFW%ö6÷VçBÀ¢Ğ¢6öæf–u÷FW‡BÒ÷7FVEö6öæf–r–b÷7FVEö6öæf–r—2æ÷BæöæRVÇ6R7W'&VçEö6öæf–p¢7V'F"Òöæ÷&ÖÆ—¦Uö6†ö–6R€¢&WVW7Bæ&w2ævWB‚'7V'F""’÷"'6fR"À¢‚'6fR"Â&÷fW'&–FW2"’À¢'6fR"À¢¢&WGW&â&VæFW%÷FV×ÆFR€¢'7V–Eö6öæf–ræ‡FÖÂ"À¢F#×F"À¢6öæf–u÷FW‡CÖ6öæf–u÷FW‡BÀ¢GVæ&ÆW3×GVæ&ÆW2À¢ÖævVEö÷F–öç3ÖÖævVEö÷F–öç2À¢÷fW'&–FW3Ö÷fW'&–FW2À¢7V'F#×7V'F"À¢7VÖÖ'“×7VÖÖ'’À¢fÆ–FF–öã×fÆ–FF–öâÀ¢76Æf–ÇFW%÷'VÆW3×76Æf–ÇFW%÷'VÆW2À¢6öæf–u÷6V7F–öç3Ö6öæf–u÷6V7F–öç2À¢6öæf–uöf–VÆEöÖÖvWEö6öæf–u÷V•öf–VÆEöÖ‚’À¢7F—fU÷6V7F–öãÖ7F—fU÷6V7F–öâÀ¢Æ–æUöÖÖÆ–æUöÖÀ¢66†–æuöÆ–æW3Ö66†–æuöÆ–æW2À¢F–ÖV÷WEöÆ–æW3×F–ÖV÷WEöÆ–æW2À¢Æövv–æuöÆ–æW3ÖÆövv–æuöÆ–æW2À¢æWGv÷&µöÆ–æW3ÖæWGv÷&µöÆ–æW2À¢Fç5öÆ–æW3ÖFç5öÆ–æW2À¢76ÅöÆ–æW3×76ÅöÆ–æW2À¢–6öÆ–æW3Ö–6öÆ–æW2À¢&—f7•öÆ–æW3×&—f7•öÆ–æW2À¢Æ–Ö—G5öÆ–æW3ÖÆ–Ö—G5öÆ–æW2À¢W&f÷&Öæ6UöÆ–æW3×W&f÷&Öæ6UöÆ–æW2À¢‡GGöÆ–æW3Ö‡GGöÆ–æW2À¢  ¤ç&÷WFR‚"÷7V–Bö6öæf–röÇ’ÖÆÂ"ÂÖWF†öG3Õ²%õ5B%Ò¦FVbÇ•öÆÅ÷6fVEö6öæf–r‚“ ¢""%&V'V–ÆBF†R6VÆV7FVB&÷‡’6öæf–rg&öÒ6fVBT’6WGF–æw2ÂfÆ–FFRÂæBÇ’—Bâ"" ¢G'“ ¢7W'&VçBÒö7W'&VçEöÖævVEö6öæf–r‚¢GVæ&ÆW2Ò7V–Eö6öçG&öÆÆW"ævWE÷GVæ&ÆUö÷F–öç2†7W'&VçB¢÷F–öç2Òö÷F–öç5ög&öÕ÷GVæ&ÆW2‡GVæ&ÆW2¢÷fW'&–FW2Ò7V–Eö6öçG&öÆÆW"ævWEö66†Uö÷fW'&–FUö÷F–öç2†7W'&VçB¢ö²ÂFWF–ÂÒ÷V&Æ—6…÷FV×ÆFUö6öæf–r€¢÷F–öç2À¢6÷W&6Uö¶–æCÒ'FV×ÆFR×&V6öæ6–ÆR"À¢VF—Eö¶–æCÒ&6öæf–uöÇ•öÆÅ÷6fVB"À¢÷fW'&–FW3Ö÷fW'&–FW2À¢¢W†6WBW†6WF–öâ2W†3 ¢÷&V6÷&EöVF—EöWfVçB€¢&6öæf–uöÇ•öÆÅ÷6fVB"À¢ö³ÔfÇ6RÀ¢FWF–Ã×V&Æ–5öW'&÷%öÖW76vR†W†2’À¢¢&WGW&â÷&VF—&V7E÷Fò‚'7V–Eö6öæf–r"ÂF#Ò&6öæf–r"ÂÇ•öÆÅöö³Ò#" ¢&WGW&â÷&VF—&V7E÷Fò€¢'7V–Eö6öæf–r"À¢F#Ò&6öæf–r"À¢Ç•öÆÅöö³Õö&ööÅ÷&W7VÇE÷&Ò†ö²’À¢Ç•öÆÅö×6sÒ†FWF–Â÷"""•³£ÒÀ¢  ¤ç&÷WFR‚"÷7V–Bö6öæf–röÇ’×6fR"ÂÖWF†öG3Õ²%õ5B%Ò¦FVbÇ•÷6fUö66†–ær‚“ ¢f÷&Õö¶–æBÒæ÷&ÖÆ—¦U÷6fUöf÷&Õö¶–æB‡&WVW7Bæf÷&ÒævWB‚&f÷&Õö¶–æB"’¢G'“ ¢7W'&VçBÒö7W'&VçEöÖævVEö6öæf–r‚¢GVæ&ÆW2Ò7V–Eö6öçG&öÆÆW"ævWE÷GVæ&ÆUö÷F–öç2†7W'&VçB¢W†6WBW†6WF–öã ¢GVæ&ÆW2Ò·Ğ ¢÷F–öç2Ò'V–ÆE÷FV×ÆFUö÷F–öç5ög&öÕöf÷&Ò€¢GVæ&ÆW2À¢&WVW7Bæf÷&ÒÀ¢f÷&Õö¶–æCÖf÷&Õö¶–æBÀ¢Ö…÷v÷&¶W'3ÕöÖ…÷v÷&¶W'2‚’À¢ ¢G'“ ¢ö²ÂöFWF–Ç2Ò÷V&Æ—6…÷FV×ÆFUö6öæf–r€¢÷F–öç2À¢6÷W&6Uö¶–æCÒ'FV×ÆFR"À¢VF—Eö¶–æCÒ&6öæf–uöÇ•÷FV×ÆFR"À¢¢W†6WBW†6WF–öã ¢&WGW&â÷&VF—&V7Eö6öæf–r‚&66†–ær"ÂW'&÷#ÕG'VR ¢&WGW&â÷&VF—&V7Eö6öæf–r†f÷&Õö¶–æBÂö³Öö²ÂW'&÷#Öæ÷Bö²  ¤ç&÷WFR‚"÷7V–Bö6öæf–röÇ’Ö÷fW'&–FW2"ÂÖWF†öG3Õ²%õ5B%Ò¦FVbÇ•ö66†Uö÷fW'&–FW2‚“ ¢2Ç’66†R÷fW'&–FRFövvÆW2öâF÷öbF†R7W'&VçBGVæ&ÆW2æBÖævVBöÆ–7’–æ6ÇVFW2à¢G'“ ¢7W'&VçBÒö7W'&VçEöÖævVEö6öæf–r‚¢GVæ&ÆW2Ò7V–Eö6öçG&öÆÆW"ævWE÷GVæ&ÆUö÷F–öç2†7W'&VçB ¢÷F–öç2Òö÷F–öç5ög&öÕ÷GVæ&ÆW2‡GVæ&ÆW2¢÷fW'&–FW2Ò'6Uö66†Uö÷fW'&–FUöf÷&Ò‡&WVW7Bæf÷&Ò¢ö²ÂöFWF–Ç2Ò÷V&Æ—6…÷FV×ÆFUö6öæf–r€¢÷F–öç2À¢6÷W&6Uö¶–æCÒ&÷fW'&–FW2"À¢VF—Eö¶–æCÒ&6öæf–uöÇ•ö÷fW'&–FW2"À¢÷fW'&–FW3Ö÷fW'&–FW2À¢¢W†6WBW†6WF–öã ¢&WGW&â÷&VF—&V7Eö6öæf–r‚&66†–ær"Â7V'F#Ò&÷fW'&–FW2"ÂW'&÷#ÕG'VR ¢&WGW&â÷&VF—&V7Eö6öæf–r‚&66†–ær"Â7V'F#Ò&÷fW'&–FW2"Âö³Öö²ÂW'&÷#Öæ÷Bö²  ¤ç&÷WFR‚"÷2"ÂÖWF†öG3Õ²$tUB"Â%õ5B%Ò¦FVb5ö'V–ÆFW"‚“ ¢7F÷&RÒvWE÷5÷&öf–ÆW5÷7F÷&R‚ ¢–b&WVW7BæÖWF†öBÓÒ%õ5B# ¢&WGW&âö†æFÆU÷5ö'V–ÆFW%÷÷7B‡7F÷&R ¢&öf–ÆW2ÒµĞ¢G'“ ¢&öf–ÆW2Ò7F÷&RæÆ—7E÷&öf–ÆW2‚¢W†6WBW†6WF–öã ¢&öf–ÆW2ÒµĞ ¢5÷F&vWBÂ5÷W&ÂÂ5÷v&æ–ærÒ÷6VÆV7FVE÷&÷‡•÷5ö6öçFW‡B‚¢G'“ ¢6†–å÷6WGF–æw2Ò7F÷&RæÆ—7E÷&÷‡•ö6†–å÷6WGF–æw2‚¢W†6WBW†6WF–öã ¢6†–å÷6WGF–æw2ÒæöæP¢&WGW&â&VæFW%÷FV×ÆFR€¢'2æ‡FÖÂ"À¢&öf–ÆW3×&öf–ÆW2À¢5÷W&Ã×5÷W&ÂÀ¢5÷v&æ–æs×5÷v&æ–ærÀ¢5÷F&vWC×5÷F&vWBÀ¢6†–å÷6WGF–æw3Ö6†–å÷6WGF–æw2À¢  ¦FVböFVfVÇE÷v–æ‡GG÷&Vv—7G'•öf÷&Ò‚’ÓâF–7E·7G"Âç•Ó ¢&WGW&â°¢'&÷‡•ö†÷7B#¢""À¢'&÷‡•÷÷'B#¢#3#‚"À¢&FW7F–æF–öå÷66†VÖW2#¢²&‡GG"Â&‡GG2%ÒÀ¢&'—75öÆ—7B#¢""À¢&–æ6ÇVFUöÆö6Åö'—72#¢G'VRÀ¢'W6Uö7W7FöÕ÷&÷‡•öÖ#¢fÇ6RÀ¢&7W7FöÕ÷&÷‡•öÖ#¢""À¢&WFö6öæf–u÷W&Â#¢""À¢&WFöFWFV7B#¢fÇ6RÀ¢&Gg&÷‡•÷66÷R#¢&Ö6†–æR"À¢'G&6–æu÷7FFR#¢&F—6&ÆVB"À¢'G&6–æuö÷WGWB#¢""À¢'G&6Uöf–ÆU÷&Vf—‚#¢""À¢'G&6–æuöÆWfVÂ#¢""À¢'G&6–æuöf÷&ÖB#¢""À¢&Ö…÷G&6Uöf–ÆU÷6—¦R#¢""À¢'&Vuö–çWB#¢""À¢Ğ  ¦FVb÷v–æ‡GGöf÷&Õög&öÕ÷&WVW7B‚’ÓâF–7E·7G"Âç•Ó ¢f÷&ÒÒöFVfVÇE÷v–æ‡GG÷&Vv—7G'•öf÷&Ò‚¢f÷&ÒçWFFR€¢°¢'&÷‡•ö†÷7B#¢&WVW7Bæf÷&ÒævWB‚'&÷‡•ö†÷7B"Â""’À¢'&÷‡•÷÷'B#¢&WVW7Bæf÷&ÒævWB‚'&÷‡•÷÷'B"Â#3#‚"’À¢&FW7F–æF–öå÷66†VÖW2#¢&WVW7Bæf÷&ÒævWFÆ—7B‚&FW7F–æF–öå÷66†VÖW2"’À¢&'—75öÆ—7B#¢&WVW7Bæf÷&ÒævWB‚&'—75öÆ—7B"Â""’À¢&–æ6ÇVFUöÆö6Åö'—72#¢&WVW7Bæf÷&ÒævWB‚&–æ6ÇVFUöÆö6Åö'—72"’ÓÒ&öâ"À¢'W6Uö7W7FöÕ÷&÷‡•öÖ#¢&WVW7Bæf÷&ÒævWB‚'W6Uö7W7FöÕ÷&÷‡•öÖ"’ÓÒ&öâ"À¢&7W7FöÕ÷&÷‡•öÖ#¢&WVW7Bæf÷&ÒævWB‚&7W7FöÕ÷&÷‡•öÖ"Â""’À¢&WFö6öæf–u÷W&Â#¢&WVW7Bæf÷&ÒævWB‚&WFö6öæf–u÷W&Â"Â""’À¢&WFöFWFV7B#¢&WVW7Bæf÷&ÒævWB‚&WFöFWFV7B"’ÓÒ&öâ"À¢&Gg&÷‡•÷66÷R#¢&WVW7Bæf÷&ÒævWB‚&Gg&÷‡•÷66÷R"Â&Ö6†–æR"’À¢'G&6–æu÷7FFR#¢&WVW7Bæf÷&ÒævWB‚'G&6–æu÷7FFR"Â&F—6&ÆVB"’À¢'G&6–æuö÷WGWB#¢&WVW7Bæf÷&ÒævWB‚'G&6–æuö÷WGWB"Â""’À¢'G&6Uöf–ÆU÷&Vf—‚#¢&WVW7Bæf÷&ÒævWB‚'G&6Uöf–ÆU÷&Vf—‚"Â""’À¢'G&6–æuöÆWfVÂ#¢&WVW7Bæf÷&ÒævWB‚'G&6–æuöÆWfVÂ"Â""’À¢'G&6–æuöf÷&ÖB#¢&WVW7Bæf÷&ÒævWB‚'G&6–æuöf÷&ÖB"Â""’À¢&Ö…÷G&6Uöf–ÆU÷6—¦R#¢&WVW7Bæf÷&ÒævWB‚&Ö…÷G&6Uöf–ÆU÷6—¦R"Â""’À¢'&Vuö–çWB#¢&WVW7Bæf÷&ÒævWB‚'&Vuö–çWB"Â""’À¢ÒÀ¢¢&WGW&âf÷&Ğ  ¤ç&÷WFR‚"÷FööÇ2÷v–æ‡GG×&Vv—7G'’"ÂÖWF†öG3Õ²$tUB"Â%õ5B%Ò¦FVbv–æ‡GG÷&Vv—7G'•ö'V–ÆFW"‚“ ¢f÷&ÒÒöFVfVÇE÷v–æ‡GG÷&Vv—7G'•öf÷&Ò‚¢÷WGWBÒæöæP¢æ÷&ÖÆ—¦VE÷&Vuö†W‚Ò" ¢FV6öFVE÷&VrÒæöæP¢W'&÷"Ò" ¢7F–öâÒ"  ¢–b&WVW7BæÖWF†öBÓÒ%õ5B# ¢7F–öâÒ&WVW7Bæf÷&ÒævWB‚&7F–öâ"Â&vVæW&FR"¢f÷&ÒÒ÷v–æ‡GGöf÷&Õög&öÕ÷&WVW7B‚¢G'“ ¢–b7F–öâÓÒ&æ÷&ÖÆ—¦U÷&Vr# ¢æ÷&ÖÆ—¦VE÷&Vuö†W‚Òæ÷&ÖÆ—¦U÷&Vuö&–æ'•öW‡÷'B€¢f÷&ÒævWB‚'&Vuö–çWB"’÷"""À¢¢G'“ ¢FV6öFVE÷&VrÒFV6öFUö&6–5÷v–æ‡GG÷6WGF–æw5ö†W‚†æ÷&ÖÆ—¦VE÷&Vuö†W‚¢W†6WBv–ä‡GG'V–ÆFW$W'&÷# ¢FV6öFVE÷&VrÒæöæP¢VÇ6S ¢÷WGWBÒ'V–ÆEö6öçG&7Eö÷WGWB†f÷&Ò¢W†6WBv–ä‡GG'V–ÆFW$W'&÷"2W†3 ¢W'&÷"Ò7G"†W†2 ¢&WGW&â&VæFW%÷FV×ÆFR€¢'v–æ‡GG÷&Vv—7G'’æ‡FÖÂ"À¢f÷&ÓÖf÷&ÒÀ¢÷WGWCÖ÷WGWBÀ¢æ÷&ÖÆ—¦VE÷&Vuö†WƒÖæ÷&ÖÆ—¦VE÷&Vuö†W‚À¢FV6öFVE÷&VsÖFV6öFVE÷&VrÀ¢W'&÷#ÖW'&÷"À¢7F–öãÖ7F–öâÀ¢  ¤ç&÷WFR‚"ö’÷F–ÖW6W&–W2"ÂÖWF†öG3Õ²$tUB%Ò¦FVb•÷F–ÖW6W&–W2‚“ ¢&W2Ò‡&WVW7Bæ&w2ævWB‚'&W6öÇWF–öâ"’÷"#2"’ç7G&—‚¢v–æF÷uö’Ò÷VW'•ö–çEö&r‚'v–æF÷r"ÂFVfVÇCÓcÂÖ–æ–×VÓÓÂÖ†–×VÓÓ3cR¢#B¢3c¢Æ–Ö—Eö’Ò÷VW'•ö–çEö&r‚&Æ–Ö—B"ÂFVfVÇCÓS ¢6–æ6RÒ–çB‡F–ÖRçF–ÖR‚’’Òv–æF÷uö¢ö–çG2ÒvWE÷F–ÖW6W&–W5÷7F÷&R‚’çVW'’‡&W6öÇWF–öã×&W2Â6–æ6S×6–æ6RÂÆ–Ö—CÖÆ–Ö—Eö’¢&WGW&â§6öæ–g’‡²'&W6öÇWF–öâ#¢&W2Â'6–æ6R#¢6–æ6RÂ'ö–çG2#¢ö–çG7Ò  ¤ç&÷WFR‚"÷&VÆöB"ÂÖWF†öG3Õ²%õ5B%Ò¦FVb&VÆöE÷7V–B‚“ ¢ö²ÂFWF–ÂÒ÷G&–vvW%÷&÷‡•÷7–æ2†f÷&6SÕG'VR¢÷&V6÷&EöVF—EöWfVçB‚'&÷‡•÷7–æ2"Âö³Öö²ÂFWF–ÃÖFWF–Â¢&WGW&â&VF—&V7B…öVæGö–çE÷W&Â‚&–æFW‚"’²"77FGW2"  ¤ç&÷WFR‚"ö66†Rö6ÆV""ÂÖWF†öG3Õ²%õ5B%Ò¦FVb6ÆV%ö66†W2‚“ ¢ö²ÂFWF–ÂÒ÷G&–vvW%÷&÷‡•ö66†Uö6ÆV"‚¢÷&V6÷&EöVF—EöWfVçB‚&66†Uö6ÆV""Âö³Öö²ÂFWF–ÃÖFWF–Â¢&WGW&â&VF—&V7B…öVæGö–çE÷W&Â‚&–æFW‚"’²"77FGW2"  ¤ç&÷WFR‚"ö6W'G2"ÂÖWF†öG3Õ²$tUB%Ò¦FVb6W'G2‚“ ¢'VæFÆU÷7F÷&RÒvWEö6W'F–f–6FUö'VæFÆW2‚¢'VæFÆRÒ'VæFÆU÷7F÷&RævWEö7F—fUö'VæFÆR‚¢6W'F–f–6FRÒ&6æ7'B"–b'VæFÆR—2æ÷BæöæRVÇ6RæöæP¢&÷‡•ö6W'E÷7FGW6W2ÒµĞ¢f÷"&÷‡’–âvWE÷&÷‡•÷&Vv—7G'’‚’æÆ—7E÷&÷†–W2‚“ ¢ÆFW7EöÇ’Ò'VæFÆU÷7F÷&RæÆFW7EöÇ’‡&÷‡’ç&÷‡•ö–B¢&÷‡•ö6W'E÷7FGW6W2æVæB€¢°¢'&÷‡•ö–B#¢&÷‡’ç&÷‡•ö–BÀ¢&F—7Æ•öæÖR#¢&÷‡’æF—7Æ•öæÖR÷"&÷‡’ç&÷‡•ö–BÀ¢&ö²#¢ÆFW7EöÇ’æö²–bÆFW7EöÇ’—2æ÷BæöæRVÇ6RæöæRÀ¢&FWF–Â#¢ÆFW7EöÇ’æFWF–Â–bÆFW7EöÇ’—2æ÷BæöæRVÇ6R""À¢&Æ–VE÷G2#¢ÆFW7EöÇ’æÆ–VE÷G0¢–bÆFW7EöÇ’—2æ÷BæöæP¢VÇ6RÀ¢ÒÀ¢¢ÖW76vRÒ&WVW7Bæ&w2ævWB‚&×6r"¢ÖW76vUöö²Ò&WVW7Bæ&w2ævWB‚&ö²"’ÓÒ# ¢&WGW&â&VæFW%÷FV×ÆFR€¢&6W'G2æ‡FÖÂ"À¢6W'F–f–6FSÖ6W'F–f–6FRÀ¢'VæFÆSÖ'VæFÆRÀ¢&÷‡•ö6W'E÷7FGW6W3×&÷‡•ö6W'E÷7FGW6W2À¢ÖW76vSÖÖW76vRÀ¢ÖW76vUöö³ÖÖW76vUöö²À¢  ¤ç&÷WFR‚"ö6W'G2övVæW&FR"ÂÖWF†öG3Õ²%õ5B%Ò¦FVbvVæW&FUö6W'F–f–6FR‚“ ¢G'“ ¢'VæFÆRÒvVæW&FU÷6VÆe÷6–væVEö6ö'VæFÆR‚¢ö²ÂFWF–ÂÒ÷V&Æ—6…ö6W'F–f–6FUö'VæFÆU÷&VÖ÷FR†'VæFÆR¢÷&V6÷&EöVF—EöWfVçB‚&6öVç7W&R"Âö³Öö²ÂFWF–ÃÖFWF–Â¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR‚&6W'G2"Âö³Öö²Â×6sÖFWF–Â¢W†6WBW†6WF–öâ2S ¢æÆövvW"æW†6WF–öâ‚$4vVæW&F–öâf–ÆVB"¢ÖW76vRÒV&Æ–5öW'&÷%öÖW76vR†R¢÷&V6÷&EöVF—EöWfVçB‚&6öVç7W&R"Âö³ÔfÇ6RÂFWF–ÃÖÖW76vR¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR‚&6W'G2"Âö³ÔfÇ6RÂ×6sÖÖW76vR  ¤ç&÷WFR‚"ö6W'G2÷WÆöB"ÂÖWF†öG3Õ²%õ5B%Ò¦FVbWÆöEö6W'F–f–6FU÷g‚‚“ ¢2WÆöB´523"'VæFÆR6öçF–æ–ær6W'B²&—fFR¶W’æB–ç7FÆÂ—B27V–Bw24à¢g…öf–ÆRÒ&WVW7Bæf–ÆW2ævWB‚'g‚"¢77v÷&BÒ&WVW7Bæf÷&ÒævWB‚'g…÷77v÷&B"Â"" ¢–bæ÷Bg…öf–ÆR÷"æ÷BvWFGG"‡g…öf–ÆRÂ&f–ÆVæÖR"Â""“ ¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR‚&6W'G2"Âö³ÔfÇ6RÂ×6sÒ$æòe‚f–ÆR6VÆV7FVBâ" ¢f–ÆVæÖRÒ‡g…öf–ÆRæf–ÆVæÖR÷"""’æÆ÷vW"‚¢òÂW‡BÒ÷2çF‚ç7Æ—FW‡B†f–ÆVæÖR¢–bW‡Bæ÷B–â²"çg‚"Â"ç"'Ó ¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR€¢&6W'G2"À¢ö³ÔfÇ6RÀ¢×6sÒ%Vç7W÷'FVBf–ÆRG—RâÆV6RWÆöBçg‚÷"ç"â"À¢ ¢2&6–2wV&Bv–ç7B66–FVçFÂ‡VvRWÆöG2à¢–b&WVW7Bæ6öçFVçEöÆVæwF‚—2æ÷BæöæRæB&WVW7Bæ6öçFVçEöÆVæwF‚â€¢¢#B¢#@¢“ ¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR€¢&6W'G2"À¢ö³ÔfÇ6RÀ¢×6sÒ%WÆöBFöòÆ&vR†Ö‚Ô"’â"À¢ ¢2&VBv—F‚†&B6WfVâ–b6öçFVçBÔÆVæwF‚—2Ö—76–ær÷"–æ6÷'&V7Bà¢Ö…÷g…ö'—FW2Ò¢#B¢#@¢'VbÒ'—FV'&’‚¢G'“ ¢7G&VÒÒvWFGG"‡g…öf–ÆRÂ'7G&VÒ"ÂæöæR’÷"g…öf–ÆP¢v†–ÆRG'VS ¢6‡Væ²Ò7G&VÒç&VBƒS"¢#B¢–bæ÷B6‡Væ³ ¢'&V°¢'VbæW‡FVæB†6‡Væ²¢–bÆVâ†'Vb’âÖ…÷g…ö'—FW3 ¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR€¢&6W'G2"À¢ö³ÔfÇ6RÀ¢×6sÒ%WÆöBFöòÆ&vR†Ö‚Ô"’â"À¢¢W†6WBW†6WF–öã ¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR‚&6W'G2"Âö³ÔfÇ6RÂ×6sÒ$f–ÆVBFò&VBWÆöBâ" ¢g…ö'—FW2Ò'—FW2†'Vb¢G'“ ¢'6VBÒ'6U÷g…ö'VæFÆR‡g…ö'—FW2Â77v÷&C×77v÷&B¢ö²Ò&ööÂ‡'6VBæö²æB'6VBæ'VæFÆR—2æ÷BæöæR¢FWF–ÂÒ'6VBæÖW76vP¢–bö²æB'6VBæ'VæFÆR—2æ÷BæöæS ¢ö²ÂFWF–ÂÒ÷V&Æ—6…ö6W'F–f–6FUö'VæFÆU÷&VÖ÷FR€¢'6VBæ'VæFÆRÀ¢÷&–v–æÅöf–ÆVæÖSÒ‡g…öf–ÆRæf–ÆVæÖR÷"""’ç7G&—‚’À¢¢W†6WBW†6WF–öâ2W†3 ¢æÆövvW"æW†6WF–öâ‚%e‚WÆöBf–ÆVB"¢ö²ÒfÇ6P¢FWF–ÂÒV&Æ–5öW'&÷%öÖW76vR€¢W†2À¢FVfVÇCÒ$f–ÆVBFò&ö6W72WÆöFVBe‚'VæFÆRâ"À¢ ¢÷&V6÷&EöVF—EöWfVçB‚&6÷WÆöE÷g‚"Âö³Öö²ÂFWF–ÃÖFWF–Â ¢&WGW&â÷&VF—&V7E÷v—F…öÖW76vR‚&6W'G2"Âö³Öö²Â×6sÖFWF–Â  ¤ç&÷WFR‚"ö6W'G2öF÷væÆöBóÇFƒ¦f–ÆVæÖSâ"ÂÖWF†öG3Õ²$tUB%Ò¦FVbF÷væÆöEö6W'F–f–6FR†f–ÆVæÖS¢7G"“ ¢2öæÇ’ÆÆ÷rF÷væÆöF–ærF†RV&Æ–246W'@¢–bf–ÆVæÖRÒ&6æ7'B# ¢&÷'BƒCB¢'VæFÆRÒvWEö6W'F–f–6FUö'VæFÆW2‚’ævWEö7F—fUö'VæFÆR‚¢–b'VæFÆR—2æöæS ¢&÷'BƒCB¢&W7öç6RÒç&W7öç6Uö6Æ72€¢'VæFÆRægVÆÆ6†–å÷VÒÀ¢Ö–ÖWG—SÒ&Æ–6F–öâ÷‚×VÒÖf–ÆR"À¢¢&W7öç6Ræ†VFW'5²$6öçFVçBÔF—7÷6—F–öâ%ÒÒ&GF6†ÖVçC²f–ÆVæÖS×7V–B×&÷‡’Ö6æ7'B ¢&WGW&â&W7öç6P  ¤ç&÷WFR‚"öFÖ–æ—7G&F–öâ"ÂÖWF†öG3Õ²$tUB"Â%õ5B%Ò¦FVbFÖ–æ—7G&F–öâ‚“ ¢7F÷&RÒöWF…÷7F÷&P¢7W'&VçE÷W6W"Ò‡6W76–öâævWB‚'W6W""’÷"""’ç7G&—‚ ¢–b&WVW7BæÖWF†öBÓÒ%õ5B# ¢&WGW&âö†æFÆUöFÖ–æ—7G&F–öå÷÷7B‡7F÷&RÂ7W'&VçE÷W6W" ¢W6W'2ÒµĞ¢G'“ ¢W6W'2Ò7F÷&RæÆ—7E÷W6W'2‚¢W†6WBW†6WF–öã ¢W6W'2ÒµĞ ¢ÖW76vRÒ&WVW7Bæ&w2ævWB‚&×6r"¢ÖW76vUöö²Ò&WVW7Bæ&w2ævWB‚&ö²"’ÓÒ# ¢&WGW&â&VæFW%÷FV×ÆFR€¢&FÖ–æ—7G&F–öâæ‡FÖÂ"À¢W6W'3×W6W'2À¢7W'&VçE÷W6W#Ö7W'&VçE÷W6W"À¢ÖW76vSÖÖW76vRÀ¢ÖW76vUöö³ÖÖW76vUöö²À¢  ¦–bõöæÖUõòÓÒ%õöÖ–åõò# ¢ç'Vâ††÷7CÒ#ããã"Â÷'CÓS
+        cached_at, payload = cached
+        if now - cached_at <= max(0.0, float(ttl_seconds)):
+            return dict(payload)
+    try:
+        payload = get_proxy_client().get_health(
+            proxy_id,
+            timeout_seconds=timeout_seconds,
+        )
+    except ProxyClientError as exc:
+        if cached is not None:
+            stale_payload = dict(cached[1])
+            stale_payload.setdefault(
+                "detail",
+                "using recent cached health after refresh failure",
+            )
+            stale_payload["_stale"] = True
+            return stale_payload
+        proxy = get_proxy_registry().get_proxy(proxy_id)
+        payload = build_unavailable_runtime_health(
+            str(exc),
+            proxy_status=proxy.status if proxy else "offline",
+        )
+        payload["_unavailable_cached"] = True
+        _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
+        return payload
+    _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
+    return payload
+
+
+def _prune_observability_result_cache() -> None:
+    while len(_OBSERVABILITY_RESULT_CACHE) > _OBSERVABILITY_RESULT_CACHE_LIMIT:
+        first_key = next(iter(_OBSERVABILITY_RESULT_CACHE), None)
+        if first_key is None:
+            break
+        _OBSERVABILITY_RESULT_CACHE.pop(first_key, None)
+
+
+def _observability_result_cache_key(
+    *parts: Any,
+    bucket_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS,
+) -> tuple[Any, ...]:
+    return tuple(parts)
+
+
+def _cached_observability_result(
+    cache_key: tuple[Any, ...],
+    builder: Any,
+    *,
+    ttl_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS,
+) -> Any:
+    now = time.monotonic()
+    cached = _OBSERVABILITY_RESULT_CACHE.get(cache_key)
+    if cached is not None:
+        cached_at, payload = cached
+        if now - cached_at <= max(0.0, float(ttl_seconds)):
+            return dict(payload) if isinstance(payload, dict) else payload
+    payload = builder()
+    stored = dict(payload) if isinstance(payload, dict) else payload
+    _OBSERVABILITY_RESULT_CACHE[cache_key] = (now, stored)
+    _prune_observability_result_cache()
+    return dict(stored) if isinstance(stored, dict) else stored
+
+
+def _max_workers() -> int:
+    """Upper bound for Squid workers.
+
+    Must match the backend Squid controller clamp to avoid the UI silently
+    downscaling an existing config.
+    """
+    try:
+        v = int((os.environ.get("MAX_WORKERS") or "4").strip())
+    except Exception:
+        v = 4
+    # Hard-cap worker count to keep SMP sizing sane for this container profile.
+    return min(4, max(1, v))
+
+
+# Global request body limit (bytes). Keep reasonably above common form posts.
+try:
+    app.config.setdefault(
+        "MAX_CONTENT_LENGTH",
+        int((os.environ.get("MAX_CONTENT_LENGTH") or str(16 * 1024 * 1024)).strip()),
+    )
+except Exception:
+    app.config.setdefault("MAX_CONTENT_LENGTH", 16 * 1024 * 1024)
+
+# Session security: persist a secret key so login survives container restarts.
+_auth_store = get_auth_store()
+_env_secret = (os.environ.get("FLASK_SECRET_KEY") or "").strip()
+if _env_secret:
+    app.secret_key = _env_secret
+else:
+    try:
+        app.secret_key = _auth_store.get_or_create_secret_key()
+    except Exception:
+        # Fallback: sessions will reset on restart.
+        app.secret_key = secrets.token_urlsafe(48)
+
+# Cookie hardening. Defaults chosen to avoid breaking common HTTP deployments.
+# Note: use explicit assignment (not setdefault) so the Set-Cookie attributes are
+# reliably emitted across Flask/Werkzeug versions.
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+if (os.environ.get("SESSION_COOKIE_SECURE") or "").strip() in {
+    "1",
+    "true",
+    "True",
+    "yes",
+    "on",
+}:
+    app.config["SESSION_COOKIE_SECURE"] = True
+
+# Session timeout: auto-logout after 8 hours of inactivity (configurable via env).
+try:
+    _session_hours = int(os.environ.get("SESSION_TIMEOUT_HOURS", "8").strip())
+except Exception:
+    _session_hours = 8
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=max(1, _session_hours))
+
+# Ensure there is at least one login.
+with contextlib.suppress(Exception):
+    _auth_store.ensure_default_admin()
+
+
+def _is_logged_in() -> bool:
+    u = session.get("user")
+    return bool(u and isinstance(u, str))
+
+
+def _query_flag(value: bool) -> str | None:
+    return "1" if value else None
+
+
+_NON_PROXY_ENDPOINTS = frozenset(
+    {"static", "login", "logout", "health", "recover_admin_session"},
+)
+
+
+def _filter_none_params(params: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in params.items() if v is not None}
+
+
+def _should_preserve_proxy(endpoint: str, params: dict[str, Any] | None = None) -> bool:
+    if endpoint in _NON_PROXY_ENDPOINTS:
+        return False
+    return not (params and params.get("proxy_id") is not None)
+
+
+def _endpoint_url(endpoint: str, **params: Any) -> str:
+    values = _filter_none_params(params)
+    if _should_preserve_proxy(endpoint, values):
+        values["proxy_id"] = get_proxy_id()
+    return url_for(endpoint, **values)
+
+
+def _redirect_to(endpoint: str, **params):
+    return redirect(_endpoint_url(endpoint, **params))
+
+
+def _redirect_with_message(endpoint: str, *, ok: bool, msg: str, **params):
+    return _redirect_to(endpoint, ok=("1" if ok else "0"), msg=msg, **params)
+
+
+def _redirect_config(
+    tab: str,
+    *,
+    ok: bool = False,
+    error: bool = False,
+    subtab: str | None = None,
+):
+    return _redirect_to(
+        "squid_config",
+        tab=tab,
+        subtab=subtab,
+        ok=_query_flag(ok),
+        error=_query_flag(error),
+    )
+
+
+def _record_audit_event(
+    kind: str,
+    *,
+    ok: bool,
+    detail: str = "",
+    config_text: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "ok": ok,
+        "remote_addr": request.remote_addr,
+        "user_agent": request.headers.get("User-Agent"),
+        "detail": str(detail or "")[:4000],
+    }
+    if config_text is not None:
+        payload["config_text"] = config_text
+    with contextlib.suppress(Exception):
+        get_audit_store().record(**payload)
+
+
+def _normalize_choice(
+    value: str | None,
+    allowed: tuple[str, ...] | list[str] | set[str],
+    default: str,
+) -> str:
+    candidate = (value or "").strip().lower()
+    return candidate if candidate in allowed else default
+
+
+def _form_action(*, default: str = "", lower: bool = False) -> str:
+    action = (request.form.get("action") or default).strip()
+    return action.lower() if lower else action
+
+
+def _posted_int(name: str, default: int) -> int:
+    value = (request.form.get(name) or "").strip()
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _bounded_int(
+    value: object,
+    *,
+    default: int,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        parsed = int(default)
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _query_int_arg(
+    name: str,
+    *,
+    default: int,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    return _bounded_int(
+        request.args.get(name),
+        default=default,
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
+def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";", lineterminator="\n")
+    writer.writerow(list(headers))
+    for row in rows:
+        writer.writerow([_csv_safe(value) for value in row])
+    return app.response_class(buf.getvalue(), mimetype="text/csv; charset=utf-8")
+
+
+def _json_response(payload: Any):
+    return app.response_class(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        mimetype="application/json; charset=utf-8",
+    )
+
+
+def _jsonl_response(rows: Iterable[dict[str, Any]]):
+    body = "".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows
+    )
+    return app.response_class(body, mimetype="application/x-ndjson; charset=utf-8")
+
+
+def _observability_export_response(
+    headers: Sequence[str],
+    rows: Iterable[Sequence[object]],
+    export_format: str,
+):
+    materialized = [list(row) for row in rows]
+    if export_format == "json":
+        return _json_response(
+            [dict(zip(headers, row, strict=False)) for row in materialized],
+        )
+    if export_format == "jsonl":
+        return _jsonl_response(
+            dict(zip(headers, row, strict=False)) for row in materialized
+        )
+    return _csv_response(headers, materialized)
+
+
+def _observability_pane_from_request() -> str:
+    return _normalize_choice(
+        request.args.get("pane") or "overview",
+        _OBSERVABILITY_PANES,
+        "overview",
+    )
+
+
+def _observability_sort_from_request(pane: str) -> str:
+    default = _OBSERVABILITY_SORT_DEFAULTS[pane]
+    return _normalize_choice(
+        request.args.get("sort") or default,
+        _OBSERVABILITY_SORT_OPTIONS[pane],
+        default,
+    )
+
+
+def _observability_resolve_hostnames_from_request() -> bool:
+    resolve_values = request.args.getlist("resolve_hostnames")
+    if not resolve_values:
+        return True
+    return any((value or "").strip() == "1" for value in resolve_values)
+
+
+def _observability_privacy_from_request() -> bool:
+    values = request.args.getlist("privacy")
+    return any(
+        (value or "").strip().lower() in {"1", "true", "yes", "on", "pseudonymized"}
+        for value in values
+    )
+
+
+def _observability_export_format_from_request() -> str:
+    return _normalize_choice(
+        request.args.get("format") or "csv",
+        ("csv", "json", "jsonl"),
+        "csv",
+    )
+
+
+def _observability_pseudonym(value: object, *, namespace: str = "user") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    digest = hashlib.sha256(
+        f"{get_proxy_id()}:{namespace}:{raw}".encode("utf-8", errors="replace"),
+    ).hexdigest()
+    return f"{namespace}-{digest[:10]}"
+
+
+def _empty_observability_summary() -> dict[str, Any]:
+    return {
+        "request_records": 0,
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "cache_hit_pct": 0.0,
+        "clients": 0,
+        "destinations": 0,
+        "transactions": 0,
+        "icap_events": 0,
+        "av_icap_events": 0,
+        "adblock_icap_events": 0,
+    }
+
+
+def _empty_observability_payload(
+    pane: str,
+    *,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    base_summary = dict(summary or _empty_observability_summary())
+    ssl_payload = {
+        "summary": {
+            "bucket_count": 0,
+            "total_events": 0,
+            "known_domains": 0,
+            "unknown_target_buckets": 0,
+        },
+        "top_categories": [],
+        "hints": [],
+        "top_domains": [],
+        "rows": [],
+    }
+    security_payload = {
+        "summary": {
+            "av_events": 0,
+            "potential_findings": 0,
+            "adblock_blocks": 0,
+            "webfilter_blocks": 0,
+            "webfilter_categories": 0,
+            "combined_blocks": 0,
+        },
+        "notes": [],
+        "av_rows": [],
+        "av_top_targets": [],
+        "adblock_rows": [],
+        "adblock_top_domains": [],
+        "webfilter_rows": [],
+        "webfilter_top_categories": [],
+    }
+    performance_payload = {
+        "summary": {
+            "requests": 0,
+            "transactions": 0,
+            "icap_events": 0,
+        },
+        "av_icap_summary": {"events": 0},
+        "adblock_icap_summary": {"events": 0},
+        "slow_requests": [],
+        "slow_icap_events": [],
+        "top_user_agents": [],
+        "top_bump_modes": [],
+        "top_tls_server_versions": [],
+        "top_policy_tags": [],
+    }
+
+    if pane == "overview":
+        return {
+            "summary": base_summary,
+            "destinations": [],
+            "clients": [],
+            "cache_reasons": [],
+            "ssl": ssl_payload,
+            "security": security_payload,
+            "performance": performance_payload,
+        }
+    if pane in {"destinations", "clients", "cache"}:
+        return {"rows": []}
+    if pane == "ssl":
+        return ssl_payload
+    if pane == "security":
+        return security_payload
+    if pane == "performance":
+        return performance_payload
+    if pane == "reports":
+        return {
+            "summary": base_summary,
+            "cache_savings": {"estimated_saved_bytes": 0, "byte_hit_pct": 0.0},
+            "top_users": [],
+            "top_blocked_categories": [],
+            "top_malware_attempts": [],
+            "top_ssl_bump_failures": [],
+            "top_spliced_destinations": [],
+            "per_group": [],
+            "security": security_payload,
+            "audit": {
+                "summary": {"events": 0, "failed_events": 0, "last_seen": 0},
+                "top_kinds": [],
+                "recent": [],
+            },
+            "time_series": {"tables": [], "latest_ts": 0, "rollup_points": 0},
+            "schedules": [],
+            "export_contracts": [],
+            "privacy": {"enabled": False, "mode": "raw"},
+        }
+    return {"rows": []}
+
+
+def _merge_observability_payload_defaults(
+    pane: str,
+    payload: Any,
+    *,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    def merge(default: Any, value: Any) -> Any:
+        if isinstance(default, dict):
+            merged = dict(default)
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    merged[key] = merge(merged.get(key), item)
+            return merged
+        return value if value is not None else default
+
+    defaults = _empty_observability_payload(pane, summary=summary)
+    if not isinstance(payload, dict):
+        return defaults
+    return merge(defaults, payload)
+
+
+def _empty_observability_export_response(pane: str, export_format: str = "csv"):
+    headers = _OBSERVABILITY_EMPTY_EXPORT_HEADERS.get(
+        pane,
+        _OBSERVABILITY_EMPTY_EXPORT_HEADERS["destinations"],
+    )
+    if pane == "overview":
+        rows = ([metric, 0] for metric in _OBSERVABILITY_OVERVIEW_EXPORT_METRICS)
+        return _observability_export_response(headers, rows, export_format)
+    return _observability_export_response(headers, [], export_format)
+
+
+def _redirect_after_policy_refresh(
+    endpoint: str,
+    store: Any,
+    *,
+    force: bool = True,
+    **params,
+):
+    _best_effort_refresh_managed_policy(store, force=force)
+    return _redirect_to(endpoint, **params)
+
+
+def _redirect_after_pac_refresh(endpoint: str, **params):
+    _best_effort_refresh_pac_runtime()
+    return _redirect_to(endpoint, **params)
+
+
+def _render_template_config_text(
+    options: dict[str, Any],
+    *,
+    overrides: dict[str, bool] | None = None,
+) -> str:
+    current = _current_managed_config()
+    effective_overrides = (
+        overrides
+        if overrides is not None
+        else squid_controller.get_cache_override_options(current)
+    )
+    config_text = squid_controller.generate_config_from_template(options)
+    return squid_controller.apply_cache_overrides(config_text, effective_overrides)
+
+
+def _publish_template_config(
+    options: dict[str, Any],
+    *,
+    source_kind: str,
+    audit_kind: str,
+    overrides: dict[str, bool] | None = None,
+) -> tuple[bool, str]:
+    config_text = _render_template_config_text(options, overrides=overrides)
+    ok, detail = _publish_config_for_current_mode(config_text, source_kind=source_kind)
+    _record_audit_event(audit_kind, ok=ok, detail=detail, config_text=config_text)
+    return ok, str(detail or "")
+
+
+def _active_proxy_management_url() -> str:
+    proxy = get_proxy_registry().get_proxy(get_proxy_id())
+    if proxy is None:
+        return ""
+    return str(proxy.management_url or "").strip()
+
+
+def _uses_remote_proxy_runtime() -> bool:
+    return bool(_active_proxy_management_url())
+
+
+def _pac_profile_form_data(*, profile_id: int | None) -> dict[str, Any]:
+    return {
+        "profile_id": profile_id,
+        "name": request.form.get("name") or "",
+        "client_cidr": request.form.get("client_cidr") or "",
+        "direct_domains_text": request.form.get("direct_domains") or "",
+        "direct_dst_nets_text": request.form.get("direct_dst_nets") or "",
+    }
+
+
+def _selected_proxy_pac_context() -> tuple[Any, str, str]:
+    target = resolve_proxy_pac_target(get_proxy_id())
+    pac_url = target.pac_url
+    warning = ""
+    if not pac_url:
+        warning = (
+            "This proxy does not advertise an authoritative public PAC hostname yet. "
+            "Set PROXY_PUBLIC_HOST or PROXY_PUBLIC_PAC_URL on the selected proxy container so the Admin UI can publish a direct PAC URL."
+        )
+    return target, pac_url, warning
+
+
+def _safe_next_url(next_url: str) -> str:
+    """Allow only local relative redirects to avoid open-redirect issues."""
+    candidate = (next_url or "").strip()
+    if not candidate:
+        return ""
+    # Disallow scheme-relative (//evil.com) and absolute URLs.
+    if candidate.startswith("//"):
+        return ""
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc:
+        return ""
+    # Only allow app-local paths.
+    if not candidate.startswith("/"):
+        return ""
+    return candidate
+
+
+def _clear_recoverable_session_state() -> None:
+    session.pop("active_proxy_id", None)
+
+
+@app.route("/recover", methods=["GET"])
+def recover_admin_session():
+    _clear_recoverable_session_state()
+    return _redirect_to("index", recovered="1")
+
+
+@app.errorhandler(Exception)
+def _recover_from_unhandled_admin_error(exc: Exception):
+    if isinstance(exc, HTTPException):
+        return exc
+
+    log_exception_throttled(
+        app.logger,
+        "web.app.unhandled",
+        interval_seconds=10.0,
+        message="Unhandled Admin UI request failed",
+    )
+    _clear_recoverable_session_state()
+    message = escape(public_error_message(exc))
+    recover_url = "/recover"
+    with contextlib.suppress(Exception):
+        recover_url = url_for("recover_admin_session")
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin UI Recovery | Docker Proxy</title>
+  <style>body{{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7f9;color:#151922}}main{{max-width:720px;margin:12vh auto;padding:32px;background:#fff;border:1px solid #d9dee8;border-radius:8px;box-shadow:0 12px 32px rgba(15,23,42,.08)}}h1{{font-size:1.35rem;margin:0 0 12px}}p{{line-height:1.5}}.btn{{display:inline-block;margin-top:14px;padding:10px 14px;border-radius:6px;background:#1f6feb;color:#fff;text-decoration:none;font-weight:600}}.small{{color:#5c667a;font-size:.92rem}}</style>
+</head>
+<body>
+  <main>
+    <h1>Admin UI recovered from a request error</h1>
+    <p>The selected proxy/session context was reset so the next page load can start from the current registered proxy inventory.</p>
+    <p class="small">{message}</p>
+    <a class="btn" href="{escape(recover_url)}">Return to dashboard</a>
+  </main>
+</body>
+</html>"""
+    return Response(html, status=500, mimetype="text/html")
+
+
+def _csrf_disabled() -> bool:
+    return (os.environ.get("DISABLE_CSRF") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _ensure_csrf_token() -> str:
+    tok = session.get("_csrf_token")
+    if not tok or not isinstance(tok, str):
+        tok = secrets.token_urlsafe(32)
+        session["_csrf_token"] = tok
+    return tok
+
+
+@app.before_request
+def _csrf_guard() -> None:
+    if _csrf_disabled():
+        return
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return
+
+    sent = (request.headers.get("X-CSRF-Token") or "").strip()
+    if not sent:
+        sent = (request.form.get("csrf_token") or "").strip()
+
+    expected = _ensure_csrf_token()
+    if not sent or not secrets.compare_digest(sent, expected):
+        abort(403)
+    return
+
+
+@app.after_request
+def _security_headers(resp):
+    # Conservative baseline. Avoid breaking existing inline scripts/styles.
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault(
+        "Permissions-Policy",
+        "geolocation=(), microphone=(), camera=()",
+    )
+    try:
+        if (resp.mimetype or "").lower().startswith("text/html"):
+            resp.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
+            )
+    except Exception:
+        pass
+    return resp
+
+
+@app.context_processor
+def _inject_csrf():
+    token = _ensure_csrf_token()
+
+    def csrf_field() -> Markup:
+        return Markup(
+            f'<input type="hidden" name="csrf_token" value="{escape(token)}">'
+        )
+
+    return {
+        "csrf_token": token,
+        "csrf_field": csrf_field,
+    }
+
+
+@app.context_processor
+def _inject_route_helpers():
+    def scoped_url_for(endpoint: str, **values: Any) -> str:
+        return _endpoint_url(endpoint, **values)
+
+    return {
+        "proxy_url": scoped_url_for,
+        "url_for": scoped_url_for,
+    }
+
+
+@app.before_request
+def _require_login_guard():
+    # Allow liveness and static assets unauthenticated.
+    if request.endpoint in {None, "static", "health"}:
+        return None
+
+    # Allow auth routes.
+    if request.endpoint in {"login", "logout"}:
+        return None
+
+    if _is_logged_in():
+        return None
+
+    # Redirect everything else to login.
+    return _redirect_to("login", next=request.full_path)
+
+
+def _request_needs_proxy_context() -> bool:
+    if request.endpoint in {None, *_NON_PROXY_ENDPOINTS}:
+        return False
+    return _is_logged_in()
+
+
+def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
+    requested_proxy = request.form.get("proxy_id") or request.args.get("proxy_id")
+    if requested_proxy is not None:
+        session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
+
+    preferred = session.get("active_proxy_id") or get_default_proxy_id()
+    registry = get_proxy_registry()
+    proxies = registry.list_proxies()
+    if not proxies:
+        proxies = [registry.ensure_default_proxy()]
+    active_proxy = next(
+        (proxy for proxy in proxies if proxy.proxy_id == normalize_proxy_id(preferred)),
+        proxies[0],
+    )
+    session["active_proxy_id"] = active_proxy.proxy_id
+    return active_proxy.proxy_id, active_proxy, proxies
+
+
+@app.before_request
+def _bind_proxy_context() -> None:
+    if not _request_needs_proxy_context():
+        return
+    active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
+    g._active_proxy = active_proxy
+    g._proxy_inventory = proxies
+    token = set_proxy_id(active_proxy_id)
+    g._proxy_context_token = token
+    return
+
+
+@app.teardown_request
+def _reset_proxy_context(_exc) -> None:
+    token = getattr(g, "_proxy_context_token", None)
+    if token is not None:
+        reset_proxy_id(token)
+
+
+@app.context_processor
+def _inject_proxy_context():
+    if not _is_logged_in():
+        return {
+            "active_proxy_id": None,
+            "active_proxy": None,
+            "proxy_inventory": [],
+        }
+    get_proxy_id()
+    active_proxy = getattr(g, "_active_proxy", None)
+    proxies = getattr(g, "_proxy_inventory", None)
+    if active_proxy is None or proxies is None:
+        _active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
+    return {
+        "active_proxy_id": active_proxy.proxy_id,
+        "active_proxy": active_proxy,
+        "proxy_inventory": proxies,
+    }
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        next_url = _safe_next_url(request.form.get("next") or "")
+        if _auth_store.verify_user(username, password):
+            # Prevent session fixation by clearing any existing session data.
+            prev_csrf = session.get("_csrf_token")
+            session.clear()
+            # Keep a CSRF token available immediately after login so that the
+            # next POST (often triggered by UI actions) can succeed even if the
+            # client does not perform an intermediate template-rendering GET.
+            if prev_csrf and isinstance(prev_csrf, str):
+                session["_csrf_token"] = prev_csrf
+            else:
+                session["_csrf_token"] = secrets.token_urlsafe(32)
+            session["user"] = username
+            session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
+            _record_audit_event("login_success", ok=True, detail=f"user={username}")
+            return redirect(next_url or url_for("index"))
+        # Log failed login attempt for security auditing
+        _record_audit_event("login_failed", ok=False, detail=f"user={username}")
+        return render_template(
+            "login.html",
+            error="Invalid username or password.",
+            next=next_url,
+        )
+
+    if _is_logged_in():
+        return _redirect_to("index")
+    next_url = _safe_next_url(request.args.get("next") or "")
+    return render_template("login.html", error=None, next=next_url)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return _redirect_to("login")
+
+
+def _options_from_tunables(tunables: dict[str, Any]) -> dict[str, Any]:
+    return build_template_options(tunables, max_workers=_max_workers())
+
+
+_disable_background = (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1"
+
+# In multi-worker servers, ensure only one process runs background workers.
+if not _disable_background:
+    try:
+        if not acquire_background_lock():
+            _disable_background = True
+    except Exception:
+        pass
+
+
+@app.template_filter("datetimeformat")
+def _datetimeformat(ts: object) -> str:
+    try:
+        i = int(ts)  # type: ignore[arg-type]
+        if i <= 0:
+            return ""
+        return datetime.fromtimestamp(i, UTC).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+if not _disable_background:
+    # Build and activate adblock artifacts from MySQL-backed admin state.
+    with contextlib.suppress(Exception):
+        get_adblock_artifacts().start_background()
+
+    # Start web filtering background updater (downloads/compiles categories daily at midnight).
+    with contextlib.suppress(Exception):
+        get_webfilter_store().start_background()
+
+    # Scheduled housekeeping: daily prune at 02:00, weekly full maintenance Sunday 03:00.
+    with contextlib.suppress(Exception):
+        start_housekeeping(retention_days=30)
+
+
+@app.context_processor
+def inject_now():
+    def fmt_ts(ts: int) -> str:
+        try:
+            return datetime.fromtimestamp(int(ts), UTC).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return ""
+
+    return {
+        # Use timezone-aware UTC to avoid deprecation warnings.
+        "current_year": datetime.now(UTC).year,
+        "asset_version": _asset_version,
+        "fmt_ts": fmt_ts,
+        "observability_default_window": OBSERVABILITY_DEFAULT_WINDOW,
+    }
+
+
+def _build_observability_snapshot(
+    window_i: int = OBSERVABILITY_DEFAULT_WINDOW,
+) -> tuple[dict[str, int], str]:
+    since_ts = int(time.time()) - max(
+        300,
+        int(window_i or OBSERVABILITY_DEFAULT_WINDOW),
+    )
+
+    def _build_snapshot() -> dict[str, int]:
+        diagnostic_summary: dict[str, Any] = {}
+        ssl_summary: dict[str, Any] = {}
+        try:
+            diagnostic_summary = get_diagnostic_store().activity_summary(since=since_ts)
+        except Exception:
+            diagnostic_summary = {}
+        try:
+            ssl_rows = get_ssl_errors_store().list_recent(
+                since=since_ts,
+                search="",
+                limit=100,
+            )
+            ssl_summary = _present_ssl_error_rows(ssl_rows).get("summary", {})
+        except Exception:
+            ssl_summary = {}
+        return _present_observability_summary(
+            diagnostic_summary=diagnostic_summary,
+            ssl_summary=ssl_summary,
+        )
+
+    summary = _cached_observability_result(
+        _observability_result_cache_key(
+            "observability-snapshot",
+            get_proxy_id(),
+            since_ts,
+        ),
+        _build_snapshot,
+    )
+    return summary, _window_label(window_i)
+
+
+def _cached_observability_summary(
+    proxy_id: str,
+    window_i: int = OBSERVABILITY_DEFAULT_WINDOW,
+) -> dict[str, int]:
+    window_i = max(300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW))
+    key = (str(proxy_id or ""), window_i)
+    now = time.monotonic()
+    cached = _OBSERVABILITY_SUMMARY_CACHE.get(key)
+    if cached is not None:
+        cached_at, payload = cached
+        if now - cached_at <= max(0.0, float(_PROXY_OBSERVABILITY_TTL_SECONDS)):
+            return dict(payload)
+    summary, _label = _build_observability_snapshot(window_i)
+    _OBSERVABILITY_SUMMARY_CACHE[key] = (now, dict(summary))
+    return summary
+
+
+def _current_managed_config() -> str:
+    """Return the effective config for the active proxy.
+
+    Config revisions are the source of truth. The live Squid config is used only
+    as a bootstrap fallback for a proxy that has not yet stored its first revision.
+    """
+    revisions = get_config_revisions()
+    current = revisions.get_active_config_text(get_proxy_id())
+    if current:
+        return current
+    fallback = squid_controller.get_current_config() or ""
+    if fallback.strip():
+        revisions.ensure_active_revision(
+            get_proxy_id(),
+            fallback,
+            created_by="system",
+            source_kind="bootstrap",
+        )
+    return fallback
+
+
+def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
+    """Validate with the selected proxy runtime when available.
+
+    The admin UI image is intentionally standalone-capable and does not require
+    a local Squid process. Real validation belongs on the selected proxy because
+    that container owns the Squid binary, generated includes, ssl_db paths, and
+    cache runtime layout.
+    """
+    proxy_id = get_proxy_id()
+    if _active_proxy_management_url():
+        try:
+            result = get_proxy_client().validate_config(proxy_id, config_text)
+            return bool(result.get("ok", False)), str(result.get("detail") or "")
+        except ProxyClientError as exc:
+            return False, f"Proxy validation failed: {exc}"
+
+    if shutil.which("squid") is not None:
+        return squid_controller.validate_config_text(config_text)
+
+    return False, (
+        f"Proxy '{proxy_id}' is not registered with a management URL, and this admin UI container "
+        "does not include a local Squid runtime for validation. Start/select a proxy container before applying config changes."
+    )
+
+
+def _publish_config_for_current_mode(
+    config_text: str,
+    *,
+    source_kind: str,
+) -> tuple[bool, str]:
+    config_text = squid_controller.normalize_config_text(config_text)
+    proxy_id = get_proxy_id()
+    created_by = str(session.get("user") or "")
+    revisions = get_config_revisions()
+    previous_revision = None
+    try:
+        previous_revision = revisions.get_active_revision(proxy_id)
+    except Exception:
+        previous_revision = None
+    valid, validation_detail = _validate_config_for_current_mode(config_text)
+    if not valid:
+        detail = (validation_detail or "Squid config validation failed.").strip()
+        return (
+            False,
+            f"Config validation failed; revision was not activated.\n{detail}".strip(),
+        )
+    revision = revisions.create_revision(
+        proxy_id,
+        config_text,
+        created_by=created_by,
+        source_kind=source_kind,
+        activate=True,
+    )
+    try:
+        operation = request_proxy_reconcile(
+            proxy_id,
+            operation_type="config_apply",
+            subject="Squid config",
+            summary=f"Revision {revision.revision_id} saved; applying asynchronously to proxy {proxy_id}.",
+            target_kind="config_revision",
+            target_ref=revision.revision_id,
+            rollback_kind="config_revision" if previous_revision is not None else "",
+            rollback_ref=getattr(previous_revision, "revision_id", "")
+            if previous_revision is not None
+            else "",
+            request_hash=getattr(revision, "config_sha256", ""),
+            detail=f"Revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
+            created_by=created_by,
+            force=False,
+        )
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.config_apply_reconcile",
+            interval_seconds=30.0,
+            message="Failed to queue config apply reconciliation",
+        )
+        return False, public_error_message(
+            exc,
+            default=f"Revision {revision.revision_id} saved, but proxy reconcile was not queued.",
+        )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return False, str(
+            getattr(operation, "detail", "")
+            or "Revision saved, but proxy reconcile was not queued.",
+        )
+    op_suffix = (
+        f" operation #{operation.operation_id}"
+        if getattr(operation, "operation_id", 0)
+        else " operation"
+    )
+    return (
+        True,
+        f"Revision {revision.revision_id} saved; applying asynchronously as{op_suffix}.",
+    )
+
+
+def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
+    """Queue reconciliation for the selected proxy through the operation ledger."""
+    try:
+        operation = request_proxy_reconcile(
+            get_proxy_id(),
+            operation_type="manual_sync",
+            subject="Proxy reconciliation",
+            summary="Manual proxy reconciliation queued.",
+            detail="Admin requested proxy reconciliation.",
+            created_by=str(session.get("user") or ""),
+            force=force,
+        )
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.proxy_sync",
+            interval_seconds=30.0,
+            message="Failed to queue proxy reconciliation",
+        )
+        return False, public_error_message(
+            exc,
+            default="Proxy reconciliation was not queued.",
+        )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return False, str(
+            getattr(operation, "detail", "") or "Proxy reconcile was not queued.",
+        )
+    op_suffix = (
+        f" operation #{operation.operation_id}"
+        if getattr(operation, "operation_id", 0)
+        else ""
+    )
+    return True, f"Proxy reconciliation queued{op_suffix}."
+
+
+def _trigger_proxy_cache_clear() -> tuple[bool, str]:
+    """Queue cache clearing for the selected proxy through the operation ledger."""
+    try:
+        operation = request_proxy_reconcile(
+            get_proxy_id(),
+            operation_type="cache_clear",
+            subject="Proxy cache clear",
+            summary="Proxy cache clear queued.",
+            detail="Admin requested proxy disk cache clearing.",
+            created_by=str(session.get("user") or ""),
+            force=True,
+        )
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.proxy_cache_clear",
+            interval_seconds=30.0,
+            message="Failed to queue proxy cache clear",
+        )
+        return False, public_error_message(
+            exc,
+            default="Proxy cache clear was not queued.",
+        )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return False, str(
+            getattr(operation, "detail", "") or "Proxy cache clear was not queued.",
+        )
+    op_suffix = (
+        f" operation #{operation.operation_id}"
+        if getattr(operation, "operation_id", 0)
+        else ""
+    )
+    return True, f"Proxy cache clear queued{op_suffix}."
+
+
+def _publish_certificate_bundle_remote(
+    bundle,
+    *,
+    original_filename: str = "",
+) -> tuple[bool, str]:
+    bundle_store = get_certificate_bundles()
+    revision = bundle_store.create_revision(
+        bundle,
+        created_by=str(session.get("user") or ""),
+        original_filename=(original_filename or "")[:255],
+        activate=True,
+    )
+    proxies = get_proxy_registry().list_proxies()
+    attempted = len(proxies)
+    queued_count = 0
+    for proxy in proxies:
+        operation = request_proxy_reconcile(
+            proxy.proxy_id,
+            operation_type="certificate_apply",
+            subject="Certificate bundle",
+            summary=f"Certificate revision {revision.revision_id} saved; applying asynchronously to proxy {proxy.proxy_id}.",
+            target_kind="certificate_revision",
+            target_ref=revision.revision_id,
+            request_hash=getattr(revision, "bundle_sha256", ""),
+            detail=f"Certificate revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
+            created_by=str(session.get("user") or ""),
+            force=True,
+        )
+        if getattr(operation, "operation_id", 0) and operation.status == "pending":
+            queued_count += 1
+    if attempted == 0:
+        detail = (
+            f"Certificate revision {revision.revision_id} saved. "
+            "No registered proxies were available to queue; proxies will apply it when reconciliation is requested."
+        )
+    elif queued_count == attempted:
+        plural = "operation" if queued_count == 1 else "operations"
+        detail = f"Certificate revision {revision.revision_id} saved. Queued {queued_count} async {plural}."
+    else:
+        detail = (
+            f"Certificate revision {revision.revision_id} saved. "
+            f"Queued {queued_count}/{attempted} async operations; check the operations ledger for failures."
+        )
+    return True, detail
+
+
+def _best_effort_init_store(store: Any, *, key: str, description: str) -> None:
+    try:
+        store.init_db()
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f"web.app.{key}.init_db",
+            interval_seconds=30.0,
+            message=f"Failed to initialize {description} store",
+        )
+
+
+def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> None:
+    try:
+        _trigger_proxy_sync(force=force)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.refresh_managed_policy",
+            interval_seconds=30.0,
+            message="Failed to refresh managed policy state",
+        )
+
+
+def _best_effort_refresh_pac_runtime() -> None:
+    try:
+        operation = request_proxy_reconcile(
+            get_proxy_id(),
+            operation_type="pac_refresh",
+            subject="PAC profile refresh",
+            summary="PAC profile changes queued for proxy materialization.",
+            detail="Admin changed PAC profile state; proxy should refresh materialized PAC files.",
+            created_by=str(session.get("user") or ""),
+            force=True,
+        )
+        if (
+            not getattr(operation, "operation_id", 0)
+            and getattr(operation, "status", "") == "failed"
+        ):
+            raise RuntimeError(
+                str(
+                    getattr(operation, "detail", "")
+                    or "PAC profile refresh was not queued."
+                ),
+            )
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.refresh_pac_runtime",
+            interval_seconds=30.0,
+            message="Failed to refresh PAC runtime state",
+        )
+
+
+def _queue_adblock_runtime_refresh(*, action: str) -> None:
+    operation = request_proxy_reconcile(
+        get_proxy_id(),
+        operation_type="adblock_refresh",
+        subject="Adblock runtime refresh",
+        summary="Adblock settings changed; proxy reconciliation queued.",
+        detail=f"Admin requested adblock runtime refresh after {action}.",
+        created_by=str(session.get("user") or ""),
+        force=True,
+    )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        raise RuntimeError(
+            str(
+                getattr(operation, "detail", "")
+                or "Adblock runtime refresh was not queued."
+            ),
+        )
+
+
+def _best_effort_queue_adblock_runtime_refresh(*, action: str) -> None:
+    try:
+        _queue_adblock_runtime_refresh(action=action)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.adblock_runtime_refresh",
+            interval_seconds=30.0,
+            message="Failed to queue adblock runtime refresh",
+        )
+
+
+def _handle_adblock_post(store: Any):
+    action = _form_action()
+    if action == "save_lists":
+        enabled_map = {}
+        for st in store.list_statuses():
+            enabled_map[st.key] = request.form.get(f"enabled_{st.key}") == "on"
+        store.set_enabled(enabled_map)
+        store.request_refresh_now()
+        _best_effort_queue_adblock_runtime_refresh(action="list save")
+    elif action == "save_settings":
+        enabled = request.form.get("adblock_enabled") == "on"
+        cur = store.get_settings()
+        cache_ttl = _posted_int("cache_ttl", int(cur.get("cache_ttl") or 0))
+        cache_max = _posted_int("cache_max", int(cur.get("cache_max") or 0))
+        store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
+        store.request_refresh_now()
+        _best_effort_queue_adblock_runtime_refresh(action="settings save")
+    elif action == "refresh":
+        any_enabled = False
+        try:
+            any_enabled = any(st.enabled for st in store.list_statuses())
+        except Exception:
+            any_enabled = False
+        if not any_enabled:
+            return _redirect_to("adblock", refresh_no_lists="1")
+        store.request_refresh_now()
+        _best_effort_queue_adblock_runtime_refresh(action="manual refresh")
+        return _redirect_to("adblock", refresh_requested="1")
+    elif action == "flush_cache":
+        store.request_cache_flush()
+        _best_effort_queue_adblock_runtime_refresh(action="cache flush")
+        return _redirect_to("adblock", cache_flushed="1")
+    return _redirect_to("adblock")
+
+
+def _handle_webfilter_post(store: Any, tab: str):
+    action = _form_action()
+    if action == "save":
+        enabled = request.form.get("enabled") == "on"
+        source_url = (request.form.get("source_url") or "").strip()
+        source_provider = (
+            (request.form.get("source_provider") or "auto").strip().lower()
+        )
+        if source_provider not in {"auto", "ut1", "category-dir", "csv"}:
+            source_provider = "auto"
+        categories = [
+            c.strip() for c in request.form.getlist("categories") if (c or "").strip()
+        ]
+        safe_browsing_enabled = request.form.get("safe_browsing_enabled") == "on"
+        safe_browsing_api_key = (
+            request.form.get("safe_browsing_api_key") or ""
+        ).strip()
+        safe_browsing_lists = [
+            c.strip()
+            for c in request.form.getlist("safe_browsing_lists")
+            if (c or "").strip()
+        ]
+
+        if enabled and categories and not source_url:
+            return _redirect_to("webfilter", tab="categories", err_source="1")
+
+        try:
+            source_url = (
+                _validate_webfilter_source_url(source_url)
+                if enabled and source_url
+                else source_url
+            )
+        except ValueError:
+            return _redirect_to("webfilter", tab="categories", err_source="1")
+
+        set_settings_kwargs = {
+            "enabled": enabled,
+            "source_url": source_url,
+            "blocked_categories": categories,
+        }
+        optional_settings = {
+            "source_provider": source_provider,
+            "safe_browsing_enabled": safe_browsing_enabled,
+            "safe_browsing_api_key": safe_browsing_api_key,
+            "safe_browsing_lists": safe_browsing_lists,
+        }
+        try:
+            accepted_settings = set(inspect.signature(store.set_settings).parameters)
+        except (TypeError, ValueError):
+            accepted_settings = set(optional_settings)
+        set_settings_kwargs.update(
+            {
+                key: value
+                for key, value in optional_settings.items()
+                if key in accepted_settings
+            },
+        )
+        try:
+            store.set_settings(**set_settings_kwargs)
+        except ValueError:
+            return _redirect_to("webfilter", tab="categories", err_source="1")
+        return _redirect_after_policy_refresh(
+            "webfilter",
+            store,
+            force=True,
+            tab="categories",
+        )
+
+    if action == "whitelist_add":
+        entry = (request.form.get("whitelist_domain") or "").strip()
+        ok, err, _pat = store.add_whitelist(entry)
+        if not ok:
+            return _redirect_after_policy_refresh(
+                "webfilter",
+                store,
+                force=True,
+                tab="whitelist",
+                wl_err=(err or "1"),
+            )
+        return _redirect_after_policy_refresh(
+            "webfilter",
+            store,
+            force=True,
+            tab="whitelist",
+            wl_ok="1",
+        )
+
+    if action == "whitelist_remove":
+        pat = (request.form.get("pattern") or "").strip()
+        with contextlib.suppress(Exception):
+            store.remove_whitelist(pat)
+        return _redirect_after_policy_refresh(
+            "webfilter",
+            store,
+            force=True,
+            tab="whitelist",
+        )
+
+    return _redirect_to("webfilter", tab=tab)
+
+
+def _normalize_webfilter_categories(rows: Any) -> list[tuple[str, int]]:
+    normalized: list[tuple[str, int]] = []
+    for row in rows or []:
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            key, count = row[0], row[1]
+        else:
+            key = getattr(row, "key", None) or getattr(row, "category", None)
+            count = getattr(row, "domains", None) or getattr(row, "count", None) or 0
+        key = str(key or "").strip()
+        if not key:
+            continue
+        try:
+            count_i = int(count or 0)
+        except Exception:
+            count_i = 0
+        normalized.append((key, max(0, count_i)))
+    return normalized
+
+
+def _sslfilter_policy_from_form() -> str:
+    return (request.form.get("policy") or "").strip().lower()
+
+
+def _sslfilter_redirect(**params: Any):
+    return _redirect_after_policy_refresh(
+        "sslfilter",
+        get_sslfilter_store(),
+        force=True,
+        **params,
+    )
+
+
+def _bool_result_param(ok: bool) -> str:
+    return "1" if ok else "0"
+
+
+def _add_sslfilter_domain(store: Any, policy: str, value: str) -> tuple[bool, str, str]:
+    try:
+        return store.add_domain(policy, value)
+    except Exception as exc:
+        return False, public_error_message(exc), ""
+
+
+def _add_sslfilter_src(store: Any, policy: str, value: str) -> tuple[bool, str, str]:
+    try:
+        return store.add_src_net(policy, value)
+    except Exception as exc:
+        return False, public_error_message(exc), ""
+
+
+def _handle_sslfilter_post(store: Any):
+    action = _form_action(lower=True)
+    policy = _sslfilter_policy_from_form()
+
+    if action in {"apply_policy", "apply_verify"}:
+        ok, detail = _trigger_proxy_sync(force=True)
+        detail = (
+            detail or ("Policy sync requested." if ok else "Policy sync failed.")
+        ).strip()
+        _record_audit_event("sslfilter_apply_policy", ok=ok, detail=detail)
+        return _redirect_to(
+            "sslfilter",
+            apply_ok=_bool_result_param(ok),
+            apply_msg=detail[:1000],
+        )
+
+    if action == "toggle_inspection":
+        store.set_inspection_enabled(request.form.get("inspection_enabled") == "on")
+        return _sslfilter_redirect(inspection_saved="1")
+
+    if action == "install_compatibility_preset":
+        preset_id = (request.form.get("preset_id") or "").strip()
+        added, attempted, err = store.install_compatibility_preset(preset_id)
+        if err:
+            return _sslfilter_redirect(err=err)
+        return _sslfilter_redirect(
+            compatibility_added=added,
+            compatibility_attempted=attempted,
+        )
+
+    if action == "add":
+        ok, err, canonical = _add_sslfilter_src(
+            store,
+            "nobump",
+            request.form.get("cidr") or "",
+        )
+        if not ok:
+            return _sslfilter_redirect(err=err or "Invalid CIDR.")
+        return _sslfilter_redirect(ok="1", added="1", value=canonical, policy="nobump")
+
+    if action == "remove":
+        store.remove_src_net("nobump", request.form.get("cidr") or "")
+        return _sslfilter_redirect(removed="1")
+
+    if action in {"add_domain", "add_domain_bulk"}:
+        if policy not in {"nobump", "nocache"}:
+            return _sslfilter_redirect(err="Invalid domain policy.")
+        field = "domains_bulk" if action == "add_domain_bulk" else "domain"
+        values = (
+            _bulk_lines(request.form.get(field))
+            if action == "add_domain_bulk"
+            else [request.form.get(field) or ""]
+        )
+        added = 0
+        errors: list[str] = []
+        last_value = ""
+        for value in values:
+            ok, err, canonical = _add_sslfilter_domain(store, policy, value)
+            if ok:
+                added += 1
+                last_value = canonical
+            elif err:
+                errors.append(f"{value}: {err}")
+        if errors:
+            return _sslfilter_redirect(err=" | ".join(errors[:3]), added=added)
+        return _sslfilter_redirect(ok="1", added=added, value=last_value, policy=policy)
+
+    if action == "remove_domain":
+        if policy in {"nobump", "nocache"}:
+            store.remove_domain(policy, request.form.get("domain") or "")
+        return _sslfilter_redirect(removed="1")
+
+    if action in {"add_src", "add_src_bulk"}:
+        if policy not in {"nobump", "nocache"}:
+            return _sslfilter_redirect(err="Invalid CIDR policy.")
+        field = "src_bulk" if action == "add_src_bulk" else "cidr"
+        values = (
+            _bulk_lines(request.form.get(field))
+            if action == "add_src_bulk"
+            else [request.form.get(field) or ""]
+        )
+        added = 0
+        errors: list[str] = []
+        last_value = ""
+        for value in values:
+            ok, err, canonical = _add_sslfilter_src(store, policy, value)
+            if ok:
+                added += 1
+                last_value = canonical
+            elif err:
+                errors.append(f"{value}: {err}")
+        if errors:
+            return _sslfilter_redirect(err=" | ".join(errors[:3]), added=added)
+        return _sslfilter_redirect(ok="1", added=added, value=last_value, policy=policy)
+
+    if action == "remove_src":
+        if policy in {"nobump", "nocache"}:
+            store.remove_src_net(policy, request.form.get("cidr") or "")
+        return _sslfilter_redirect(removed="1")
+
+    if action == "toggle_private":
+        store.set_exclude_private_nets(request.form.get("exclude_private_nets") == "on")
+        _best_effort_refresh_pac_runtime()
+        return _redirect_to("sslfilter", private_saved="1")
+
+    return _redirect_to("sslfilter")
+
+
+def _handle_pac_builder_post(store: Any):
+    action = _form_action()
+    try:
+        if action == "add_backup_proxy":
+            ok, err, _ = store.add_backup_proxy(
+                proxy_host=request.form.get("backup_proxy_host") or "",
+                proxy_port=request.form.get("backup_proxy_port") or "",
+            )
+            if not ok:
+                return _redirect_to("pac_builder", error="1", msg=err)
+            return _redirect_after_pac_refresh("pac_builder", ok="1")
+
+        if action == "remove_backup_proxy":
+            store.delete_backup_proxy(int(request.form.get("backup_proxy_id") or "0"))
+            return _redirect_after_pac_refresh("pac_builder", ok="1")
+
+        if action == "move_backup_proxy":
+            store.move_backup_proxy(
+                int(request.form.get("backup_proxy_id") or "0"),
+                request.form.get("direction") or "",
+            )
+            return _redirect_after_pac_refresh("pac_builder", ok="1")
+
+        if action == "toggle_direct":
+            store.set_direct_enabled(request.form.get("direct_enabled") == "on")
+            return _redirect_after_pac_refresh("pac_builder", ok="1")
+
+        if action == "create":
+            ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
+            if not ok:
+                return _redirect_to("pac_builder", error="1", msg=err)
+            return _redirect_after_pac_refresh("pac_builder", ok="1")
+
+        if action == "update":
+            pid = int(request.form.get("profile_id") or "0")
+            ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
+            if not ok:
+                return _redirect_to("pac_builder", error="1", msg=err)
+            return _redirect_after_pac_refresh("pac_builder", ok="1")
+
+        if action == "delete":
+            pid = int(request.form.get("profile_id") or "0")
+            store.delete_profile(pid)
+            return _redirect_after_pac_refresh("pac_builder", ok="1")
+    except Exception as e:
+        return _redirect_to("pac_builder", error="1", msg=public_error_message(e))
+
+    return _redirect_to("pac_builder")
+
+
+def _handle_administration_post(store: Any, current_user: str):
+    action = _form_action()
+    try:
+        if action == "add_user":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            store.add_user(username, password)
+            return _redirect_with_message("administration", ok=True, msg="User added.")
+
+        if action == "set_password":
+            username = (request.form.get("username") or "").strip()
+            new_password = request.form.get("new_password") or ""
+            store.set_password(username, new_password)
+            return _redirect_with_message(
+                "administration",
+                ok=True,
+                msg="Password updated.",
+            )
+
+        if action == "delete_user":
+            username = (request.form.get("username") or "").strip()
+            if (
+                username == current_user
+                or username.casefold() == current_user.casefold()
+            ):
+                return _redirect_with_message(
+                    "administration",
+                    ok=False,
+                    msg="Cannot remove the currently signed-in user.",
+                )
+            users = store.list_users()
+            if len(users) <= 1:
+                return _redirect_with_message(
+                    "administration",
+                    ok=False,
+                    msg="Cannot remove the last user.",
+                )
+            store.delete_user(username)
+            return _redirect_with_message(
+                "administration",
+                ok=True,
+                msg="User removed.",
+            )
+
+        return _redirect_with_message("administration", ok=False, msg="Unknown action.")
+    except ValueError as e:
+        return _redirect_with_message(
+            "administration",
+            ok=False,
+            msg=public_error_message(e),
+        )
+    except Exception as e:
+        app.logger.exception("Administration action failed")
+        return _redirect_with_message(
+            "administration",
+            ok=False,
+            msg=public_error_message(e),
+        )
+
+
+@app.route("/")
+def index():
+    proxy_id = get_proxy_id()
+    observability = _cached_observability_summary(
+        proxy_id,
+        OBSERVABILITY_DEFAULT_WINDOW,
+    )
+    observability_window_label = _window_label(OBSERVABILITY_DEFAULT_WINDOW)
+    try:
+        health = _cached_proxy_health(
+            proxy_id,
+            timeout_seconds=_proxy_health_timeout_seconds(),
+        )
+    except ProxyClientError as exc:
+        proxy = get_proxy_registry().get_proxy(proxy_id)
+        health = {
+            "ok": False,
+            "status": proxy.status if proxy else "offline",
+            "proxy_status": str(exc),
+            "stats": {},
+            "services": {
+                "icap": {"ok": False, "detail": "unavailable"},
+                "clamav": {"ok": False, "detail": "unavailable"},
+            },
+        }
+
+    proxy_detail = str(health.get("proxy_status") or health.get("detail") or "")
+    proxy_ok = bool(health.get("ok"))
+    stats = health.get("stats") or {}
+    try:
+        trends = get_timeseries_store().summary()
+    except Exception:
+        trends = {}
+
+    services = health.get("services") or {}
+    icap_health = services.get("icap") or {"ok": False, "detail": "n/a"}
+    clamav_health = services.get("clamav") or {"ok": False, "detail": "n/a"}
+
+    last_config = None
+    latest_apply = get_config_revisions().latest_apply(proxy_id)
+    if latest_apply is not None:
+        last_config = {
+            "ts": latest_apply.applied_ts,
+            "kind": "config_apply_remote",
+            "ok": latest_apply.ok,
+            "remote_addr": proxy_id,
+            "user_agent": latest_apply.applied_by,
+            "detail": latest_apply.detail,
+        }
+    else:
+        try:
+            row = get_audit_store().latest_config_apply()
+            if row:
+                last_config = {
+                    "ts": int(row[0]),
+                    "kind": row[1],
+                    "ok": bool(row[2]),
+                    "remote_addr": row[3],
+                    "user_agent": row[4],
+                    "detail": row[5],
+                }
+        except Exception:
+            pass
+
+    return render_template(
+        "index.html",
+        proxy_status=proxy_detail,
+        proxy_ok=proxy_ok,
+        flask_status="OK",
+        stats=stats,
+        trends=trends,
+        icap_health=icap_health,
+        clamav_health=clamav_health,
+        last_config=last_config,
+        observability=observability,
+        observability_window_label=observability_window_label,
+    )
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/api/squid-config", methods=["GET"])
+def api_squid_config():
+    cfg = _current_managed_config()
+    return app.response_class(cfg, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/proxies", methods=["GET"])
+def proxies():
+    registry = get_proxy_registry()
+    proxies = registry.list_proxies()
+    live_health = {
+        proxy.proxy_id: {
+            "ok": str(proxy.status or "").lower() == "healthy",
+            "status": proxy.status,
+            "proxy_status": proxy.detail,
+            "detail": proxy.detail,
+            "listener_details": [],
+            "services": {},
+        }
+        for proxy in proxies
+    }
+    active_proxy_id = get_proxy_id()
+    if active_proxy_id in live_health:
+        try:
+            live_health[active_proxy_id] = _cached_proxy_health(
+                active_proxy_id,
+                timeout_seconds=_proxy_health_timeout_seconds(),
+            )
+        except ProxyClientError as exc:
+            active_proxy = next(
+                (proxy for proxy in proxies if proxy.proxy_id == active_proxy_id),
+                None,
+            )
+            live_health[active_proxy_id] = {
+                "ok": False,
+                "status": active_proxy.status if active_proxy else "unknown",
+                "detail": str(exc),
+                "listener_details": [],
+                "services": {},
+            }
+    observability_by_proxy: dict[str, dict[str, Any]] = {}
+    if active_proxy_id:
+        try:
+            observability_by_proxy[active_proxy_id] = _cached_observability_summary(
+                active_proxy_id,
+                OBSERVABILITY_DEFAULT_WINDOW,
+            )
+        except Exception:
+            observability_by_proxy[active_proxy_id] = _present_observability_summary()
+    return render_template(
+        "fleet.html",
+        proxies=proxies,
+        live_health=live_health,
+        observability_by_proxy=observability_by_proxy,
+    )
+
+
+@app.route("/operations", methods=["GET"])
+def operations_status():
+    proxy_id = get_proxy_id()
+    ledger = get_operation_ledger()
+    try:
+        operations = ledger.list_operations(proxy_id, limit=100)
+        operation_counts = ledger.counts_by_status(proxy_id)
+    except Exception:
+        operations = []
+        operation_counts = {"pending": 0, "applying": 0, "applied": 0, "failed": 0}
+    return render_template(
+        "operations.html",
+        operations=operations,
+        operation_counts=operation_counts,
+    )
+
+
+@app.route("/api/operations", methods=["GET"])
+def api_operations():
+    proxy_id = get_proxy_id()
+    ledger = get_operation_ledger()
+    try:
+        after_ts = int(request.args.get("after_updated_ts") or 0)
+        after_id = int(request.args.get("after_id") or 0)
+    except Exception:
+        after_ts = 0
+        after_id = 0
+    try:
+        if after_ts or after_id:
+            operations = ledger.list_recent_since(
+                proxy_id,
+                after_updated_ts=after_ts,
+                after_id=after_id,
+                limit=100,
+            )
+        else:
+            operations = ledger.list_operations(proxy_id, limit=100)
+        counts = ledger.counts_by_status(proxy_id)
+        return jsonify(
+            {
+                "ok": True,
+                "proxy_id": proxy_id,
+                "operations": [op.to_dict() for op in operations],
+                "counts": counts,
+            },
+        ), 200
+    except Exception as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "proxy_id": proxy_id,
+                "operations": [],
+                "counts": {},
+                "error": public_error_message(exc),
+            },
+        ), 200
+
+
+@app.route("/operations/<int:operation_id>/revert", methods=["POST"])
+def revert_operation(operation_id: int):
+    ledger = get_operation_ledger()
+    try:
+        op = ledger.get_operation(operation_id)
+    except Exception:
+        op = None
+    if op is None or op.proxy_id != get_proxy_id() or not op.can_revert:
+        return _redirect_to("operations_status", error="not_revertible")
+    if op.rollback_kind == "config_revision":
+        try:
+            revisions = get_config_revisions()
+            previous = revisions.get_revision(op.rollback_ref, proxy_id=op.proxy_id)
+            if previous is None:
+                return _redirect_to("operations_status", error="rollback_missing")
+            revision = revisions.create_revision(
+                op.proxy_id,
+                previous.config_text,
+                created_by=str(session.get("user") or ""),
+                source_kind=f"revert-{op.operation_type}",
+                activate=True,
+            )
+            request_proxy_reconcile(
+                op.proxy_id,
+                operation_type="revert",
+                subject=f"Revert #{op.operation_id}",
+                summary=f"Restored config revision {previous.revision_id}; applying asynchronously.",
+                target_kind="config_revision",
+                target_ref=revision.revision_id,
+                rollback_kind="config_revision",
+                rollback_ref=op.target_ref,
+                request_hash=revision.config_sha256,
+                detail=f"Revert queued from failed operation #{op.operation_id}.",
+                created_by=str(session.get("user") or ""),
+                force=False,
+            )
+        except Exception:
+            log_exception_throttled(
+                app.logger,
+                "web.app.revert_operation",
+                interval_seconds=30.0,
+                message="Failed to queue revert operation",
+            )
+            return _redirect_to("operations_status", error="revert_failed")
+        return _redirect_to("operations_status", reverted="1")
+    return _redirect_to("operations_status", error="unsupported_rollback")
+
+
+@app.route("/observability", methods=["GET"])
+def observability():
+    queries = get_observability_queries()
+    pane = _observability_pane_from_request()
+    sort = _observability_sort_from_request(pane)
+    limit = _query_int_arg("limit", default=50, minimum=10, maximum=200)
+    window_i = _query_int_arg(
+        "window",
+        default=OBSERVABILITY_DEFAULT_WINDOW,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    since_ts = int(time.time()) - window_i
+    search = (request.args.get("q") or "").strip().lower()
+    resolve_hostnames = _observability_resolve_hostnames_from_request()
+    privacy = _observability_privacy_from_request()
+
+    try:
+        summary = _cached_observability_result(
+            _observability_result_cache_key(
+                "observability",
+                "summary",
+                get_proxy_id(),
+                window_i,
+            ),
+            lambda: queries.summary(since=since_ts),
+        )
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.observability.summary",
+            interval_seconds=30.0,
+            message="Failed to load observability summary; rendering empty state",
+        )
+        summary = _empty_observability_summary()
+    summary = {
+        **_empty_observability_summary(),
+        **(summary if isinstance(summary, dict) else {}),
+    }
+
+    try:
+        pane_payload: dict[str, Any]
+        if pane == "overview":
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    min(limit, 10),
+                    int(resolve_hostnames),
+                ),
+                lambda: queries.overview_bundle(
+                    since=since_ts,
+                    search=search,
+                    limit=min(limit, 10),
+                    resolve_hostnames=resolve_hostnames,
+                    summary=summary,
+                ),
+            )
+        elif pane == "clients":
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                    sort,
+                    int(resolve_hostnames),
+                ),
+                lambda: {
+                    "rows": queries.top_clients(
+                        since=since_ts,
+                        search=search,
+                        limit=limit,
+                        sort=sort,
+                        resolve_hostnames=resolve_hostnames,
+                        total_requests=int(summary.get("request_records") or 0),
+                    ),
+                },
+            )
+        elif pane == "cache":
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                    sort,
+                ),
+                lambda: {
+                    "rows": queries.top_cache_reasons(
+                        since=since_ts,
+                        search=search,
+                        limit=limit,
+                        sort=sort,
+                    ),
+                },
+            )
+        elif pane == "ssl":
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                ),
+                lambda: queries.ssl_overview(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                ),
+            )
+        elif pane == "security":
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                ),
+                lambda: queries.security_overview(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                ),
+            )
+        elif pane == "performance":
+            performance_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    limit,
+                ),
+                lambda: queries.performance_overview(
+                    since=since_ts,
+                    limit=limit,
+                    summary=summary,
+                ),
+            )
+            pane_payload = _empty_observability_payload(pane, summary=summary)
+            if isinstance(performance_payload, dict):
+                pane_payload.update(performance_payload)
+        elif pane == "reports":
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                    int(resolve_hostnames),
+                    int(privacy),
+                ),
+                lambda: queries.reporting_overview(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                    resolve_hostnames=resolve_hostnames,
+                    privacy=privacy,
+                    summary=summary,
+                ),
+            )
+        elif pane == "settings":
+            pane_payload = {
+                "retention_settings": get_observability_retention_settings(),
+                "maintenance_status": get_observability_maintenance_status(),
+            }
+        else:
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                    sort,
+                ),
+                lambda: {
+                    "rows": queries.top_destinations(
+                        since=since_ts,
+                        search=search,
+                        limit=limit,
+                        sort=sort,
+                        total_requests=int(summary.get("request_records") or 0),
+                    ),
+                },
+            )
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f"web.app.observability.pane.{pane}",
+            interval_seconds=30.0,
+            message="Failed to load observability pane; rendering empty state",
+        )
+        pane_payload = _empty_observability_payload(pane, summary=summary)
+    pane_payload = _merge_observability_payload_defaults(
+        pane,
+        pane_payload,
+        summary=summary,
+    )
+
+    return render_template(
+        "observability.html",
+        pane=pane,
+        sort=sort,
+        limit=limit,
+        window=window_i,
+        window_label=_window_label(window_i),
+        search=search,
+        resolve_hostnames=resolve_hostnames,
+        privacy=privacy,
+        summary=summary,
+        pane_payload=pane_payload,
+    )
+
+
+@app.route("/observability/clear-logs", methods=["POST"])
+def observability_clear_logs():
+    try:
+        result = clear_observability_logs()
+        cleared_tables = int(
+            result.get("cleared_tables")
+            or sum(
+                1
+                for table in result.get("tables") or []
+                if table.get("status") == "cleared"
+            ),
+        )
+        failed_tables = [
+            str(table.get("table") or "")
+            for table in result.get("tables") or []
+            if table.get("status") == "failed"
+        ]
+        detail = f"cleared stored observability log history from {cleared_tables} tables across the fleet"
+        if failed_tables:
+            detail += f"; failed tables: {', '.join(failed_tables[:5])}"
+        _record_audit_event(
+            "observability_clear_logs",
+            ok=not failed_tables and bool(result.get("ok", True)),
+            detail=detail,
+        )
+        if failed_tables or not bool(result.get("ok", True)):
+            return _redirect_to("observability", pane="overview", clear_error="1")
+        return _redirect_to(
+            "observability",
+            pane="overview",
+            logs_cleared="1",
+            clear_tables=cleared_tables,
+        )
+    except Exception as exc:
+        detail = public_error_message(exc)
+        log_exception_throttled(
+            app.logger,
+            "web.app.observability.clear_logs",
+            interval_seconds=30.0,
+            message="Failed to clear stored observability logs",
+        )
+        _record_audit_event("observability_clear_logs", ok=False, detail=detail)
+        return _redirect_to("observability", pane="overview", clear_error="1")
+
+
+@app.route("/observability/maintenance", methods=["POST"])
+def observability_maintenance():
+    try:
+        result = run_observability_maintenance(
+            analyze=True,
+            optimize=True,
+            run_type="manual",
+        )
+        maintained_tables = int(
+            (result.get("maintenance") or {}).get("maintained_tables")
+            or sum(
+                1
+                for table in (result.get("maintenance") or {}).get("tables") or []
+                if table.get("status") == "maintained"
+            ),
+        )
+        days = int(result.get("retention_days") or 30)
+        detail = (
+            "ran observability MySQL prune, analyze, and optimize "
+            f"with {days} day retention; maintained {maintained_tables} tables"
+        )
+        _record_audit_event(
+            "observability_database_maintenance",
+            ok=bool(result.get("ok", True)),
+            detail=detail,
+        )
+        if not bool(result.get("ok", True)):
+            return _redirect_to(
+                "observability",
+                pane="settings",
+                maintenance_error="1",
+            )
+        return _redirect_to(
+            "observability",
+            pane="settings",
+            maintenance_run="1",
+            retention_days=days,
+            maintained_tables=maintained_tables,
+        )
+    except ObservabilityMaintenanceAlreadyRunningError as exc:
+        detail = public_error_message(exc)
+        _record_audit_event(
+            "observability_database_maintenance",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to(
+            "observability",
+            pane="settings",
+            maintenance_busy="1",
+        )
+    except Exception as exc:
+        detail = public_error_message(exc)
+        log_exception_throttled(
+            app.logger,
+            "web.app.observability.maintenance",
+            interval_seconds=30.0,
+            message="Failed to run observability database maintenance",
+        )
+        _record_audit_event(
+            "observability_database_maintenance",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to("observability", pane="settings", maintenance_error="1")
+
+
+@app.route("/observability/settings", methods=["POST"])
+def observability_settings():
+    retention_days = _bounded_int(
+        request.form.get("retention_days"),
+        default=30,
+        minimum=1,
+        maximum=3650,
+    )
+    try:
+        settings = set_observability_retention_settings(
+            retention_days=retention_days,
+        )
+        days = int(settings.get("retention_days") or retention_days)
+        _record_audit_event(
+            "observability_retention_settings_save",
+            ok=True,
+            detail=f"set observability MySQL retention to {days} days",
+        )
+        return _redirect_to(
+            "observability",
+            pane="settings",
+            settings_saved="1",
+            retention_days=days,
+        )
+    except Exception as exc:
+        detail = public_error_message(exc)
+        _record_audit_event(
+            "observability_retention_settings_save",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to("observability", pane="settings", settings_error="1")
+
+
+@app.route("/observability/report-schedules", methods=["POST"])
+def observability_report_schedules():
+    queries = get_observability_queries()
+    pane = _normalize_choice(request.form.get("pane"), _OBSERVABILITY_PANES, "reports")
+    cadence = _normalize_choice(
+        request.form.get("cadence"),
+        ("daily", "weekly"),
+        "daily",
+    )
+    report_format = _normalize_choice(
+        request.form.get("format"),
+        ("csv", "json", "jsonl"),
+        "csv",
+    )
+    privacy = str(request.form.get("privacy") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    enabled = str(request.form.get("enabled") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    window_i = _bounded_int(
+        request.form.get("window"),
+        default=OBSERVABILITY_DEFAULT_WINDOW,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    name = (request.form.get("name") or "").strip()
+    recipients = (request.form.get("recipients") or "").strip()
+    try:
+        schedule = queries.save_report_schedule(
+            name=name,
+            cadence=cadence,
+            recipients=recipients,
+            pane=pane,
+            report_format=report_format,
+            privacy=privacy,
+            window_seconds=window_i,
+            enabled=enabled,
+        )
+        _OBSERVABILITY_RESULT_CACHE.clear()
+        detail = (
+            f"saved {cadence} {pane} observability report preset for {recipients[:160]}"
+        )
+        _record_audit_event(
+            "observability_report_schedule_save",
+            ok=True,
+            detail=detail,
+        )
+        return _redirect_to(
+            "observability",
+            pane="reports",
+            window=window_i,
+            privacy=_query_flag(privacy),
+            schedule_saved="1",
+            schedule_id=schedule.get("id", ""),
+        )
+    except Exception as exc:
+        detail = public_error_message(exc)
+        _record_audit_event(
+            "observability_report_schedule_save",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to(
+            "observability",
+            pane="reports",
+            window=window_i,
+            privacy=_query_flag(privacy),
+            schedule_error="1",
+        )
+
+
+@app.route("/observability/export", methods=["GET"])
+def observability_export():
+    queries = get_observability_queries()
+    pane = _observability_pane_from_request()
+    sort = _observability_sort_from_request(pane)
+    limit = _query_int_arg("limit", default=200, minimum=10, maximum=1000)
+    window_i = _query_int_arg(
+        "window",
+        default=OBSERVABILITY_DEFAULT_WINDOW,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    since_ts = int(time.time()) - window_i
+    search = (request.args.get("q") or "").strip().lower()
+    resolve_hostnames = _observability_resolve_hostnames_from_request()
+    privacy = _observability_privacy_from_request()
+    export_format = _observability_export_format_from_request()
+    summary_data: dict[str, Any] | None = None
+    total_requests = 0
+    try:
+        if pane in {"overview", "clients", "destinations", "performance", "reports"}:
+            summary_data = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    "summary",
+                    get_proxy_id(),
+                    since_ts,
+                ),
+                lambda: queries.summary(since=since_ts),
+            )
+            total_requests = int(summary_data.get("request_records") or 0)
+        if pane == "overview":
+            overview = queries.overview_bundle(
+                since=since_ts,
+                search=search,
+                limit=min(limit, 10),
+                resolve_hostnames=resolve_hostnames,
+                summary=summary_data or {},
+            )
+            summary = overview["summary"]
+            headers = ["metric", "value"]
+            data_rows = (
+                [metric, summary.get(metric, 0)]
+                for metric in (
+                    "request_records",
+                    "cache_hits",
+                    "cache_misses",
+                    "cache_hit_pct",
+                    "clients",
+                    "destinations",
+                    "transactions",
+                    "icap_events",
+                    "av_icap_events",
+                    "adblock_icap_events",
+                )
+            )
+            return _observability_export_response(headers, data_rows, export_format)
+
+        if pane == "reports":
+            payload = queries.reporting_overview(
+                since=since_ts,
+                search=search,
+                limit=limit,
+                resolve_hostnames=resolve_hostnames,
+                privacy=privacy,
+                summary=summary_data or {},
+            )
+            if export_format == "json":
+                return _json_response(payload)
+            if export_format == "jsonl":
+                rows = [
+                    {"section": "top_users", **row}
+                    for row in payload.get("top_users", [])
+                ]
+                rows.extend(
+                    {"section": "top_blocked_categories", **row}
+                    for row in payload.get("top_blocked_categories", [])
+                )
+                rows.extend(
+                    {"section": "top_malware_attempts", **row}
+                    for row in payload.get("top_malware_attempts", [])
+                )
+                rows.extend(
+                    {"section": "top_ssl_bump_failures", **row}
+                    for row in payload.get("top_ssl_bump_failures", [])
+                )
+                rows.extend(
+                    {"section": "top_spliced_destinations", **row}
+                    for row in payload.get("top_spliced_destinations", [])
+                )
+                rows.extend(
+                    {"section": "per_group", **row}
+                    for row in payload.get("per_group", [])
+                )
+                rows.extend(
+                    {"section": "audit_recent", **row}
+                    for row in (payload.get("audit") or {}).get("recent", [])
+                )
+                return _jsonl_response(rows)
+            headers = _OBSERVABILITY_EMPTY_EXPORT_HEADERS["reports"]
+            rows = []
+            for row in payload.get("top_users", []):
+                rows.append(
+                    [
+                        "top_users",
+                        row.get("client_label") or row.get("client_ip", ""),
+                        row.get("requests", 0),
+                        "",
+                        row.get("destinations", 0),
+                        row.get("bytes", 0),
+                        row.get("cache_hit_bytes", 0),
+                        row.get("last_seen", 0),
+                        row.get("hostname", ""),
+                    ],
+                )
+            for row in payload.get("top_blocked_categories", []):
+                rows.append(
+                    [
+                        "top_blocked_categories",
+                        row.get("category", ""),
+                        row.get("blocks", 0),
+                        "",
+                        "",
+                        "",
+                        "",
+                        row.get("last_seen", 0),
+                        "webfilter",
+                    ],
+                )
+            for row in payload.get("top_malware_attempts", []):
+                rows.append(
+                    [
+                        "top_malware_attempts",
+                        row.get("domain", ""),
+                        row.get("attempts", 0),
+                        row.get("client_label", ""),
+                        "",
+                        "",
+                        "",
+                        row.get("last_seen", 0),
+                        row.get("sample", ""),
+                    ],
+                )
+            for row in payload.get("top_ssl_bump_failures", []):
+                rows.append(
+                    [
+                        "top_ssl_bump_failures",
+                        row.get("domain", ""),
+                        row.get("count", 0),
+                        "",
+                        "",
+                        "",
+                        "",
+                        row.get("last_seen", 0),
+                        row.get("reason", ""),
+                    ],
+                )
+            for row in payload.get("top_spliced_destinations", []):
+                rows.append(
+                    [
+                        "top_spliced_destinations",
+                        row.get("domain", ""),
+                        row.get("requests", 0),
+                        row.get("clients", 0),
+                        "",
+                        row.get("bytes", 0),
+                        "",
+                        row.get("last_seen", 0),
+                        "splice",
+                    ],
+                )
+            for row in payload.get("per_group", []):
+                rows.append(
+                    [
+                        "per_group",
+                        row.get("group", ""),
+                        row.get("requests", 0),
+                        row.get("clients", 0),
+                        row.get("destinations", 0),
+                        row.get("bytes", 0),
+                        row.get("cache_hit_bytes", 0),
+                        row.get("last_seen", 0),
+                        row.get("group_source", ""),
+                    ],
+                )
+            for row in (payload.get("audit") or {}).get("recent", []):
+                rows.append(
+                    [
+                        "audit_recent",
+                        row.get("kind", ""),
+                        1,
+                        "",
+                        "",
+                        "",
+                        "",
+                        row.get("ts", 0),
+                        row.get("detail", ""),
+                    ],
+                )
+            return _observability_export_response(headers, rows, export_format)
+
+        if pane == "clients":
+            rows = queries.top_clients(
+                since=since_ts,
+                search=search,
+                limit=limit,
+                sort=sort,
+                resolve_hostnames=resolve_hostnames,
+                total_requests=total_requests,
+            )
+            headers = [
+                "client_ip",
+                "hostname",
+                "requests",
+                "percent_of_total",
+                "destinations",
+                "transactions",
+                "cache_hit_pct",
+                "av_icap_events",
+                "adblock_icap_events",
+                "last_seen",
+            ]
+            data_rows = (
+                [
+                    _observability_pseudonym(row.get("ip", ""), namespace="user")
+                    if privacy
+                    else row.get("ip", ""),
+                    "" if privacy else row.get("hostname", ""),
+                    row.get("requests", 0),
+                    row.get("pct", 0.0),
+                    row.get("destinations", 0),
+                    row.get("transactions", 0),
+                    row.get("cache_pct", 0.0),
+                    row.get("av_icap_events", 0),
+                    row.get("adblock_icap_events", 0),
+                    row.get("last_seen", 0),
+                ]
+                for row in rows
+            )
+            return _observability_export_response(headers, data_rows, export_format)
+
+        if pane == "cache":
+            rows = queries.top_cache_reasons(
+                since=since_ts,
+                search=search,
+                limit=limit,
+                sort=sort,
+            )
+            headers = [
+                "reason",
+                "requests",
+                "percent_of_misses",
+                "domains",
+                "clients",
+                "last_seen",
+            ]
+            data_rows = (
+                [
+                    row.get("reason", ""),
+                    row.get("requests", 0),
+                    row.get("pct", 0.0),
+                    row.get("domains", 0),
+                    row.get("clients", 0),
+                    row.get("last_seen", 0),
+                ]
+                for row in rows
+            )
+            return _observability_export_response(headers, data_rows, export_format)
+
+        if pane == "ssl":
+            payload = queries.ssl_overview(since=since_ts, search=search, limit=limit)
+            rows = payload["rows"]
+            headers = [
+                "domain",
+                "category",
+                "category_label",
+                "reason",
+                "count",
+                "first_seen",
+                "last_seen",
+            ]
+            data_rows = (
+                [
+                    row.get("domain", ""),
+                    row.get("category", ""),
+                    row.get("category_label", ""),
+                    row.get("reason", ""),
+                    row.get("count", 0),
+                    row.get("first_seen", 0),
+                    row.get("last_seen", 0),
+                ]
+                for row in rows
+            )
+            return _observability_export_response(headers, data_rows, export_format)
+
+        if pane == "security":
+            payload = queries.security_overview(
+                since=since_ts,
+                search=search,
+                limit=limit,
+            )
+            headers = ["source", "timestamp", "client", "target", "detail", "status"]
+            rows = []
+            for row in payload.get("av_rows", []):
+                rows.append(
+                    [
+                        "av",
+                        row.get("ts", 0),
+                        _observability_pseudonym(
+                            row.get("client_ip", ""),
+                            namespace="user",
+                        )
+                        if privacy
+                        else row.get("client_ip", ""),
+                        row.get("target_display", ""),
+                        row.get("adapt_summary", ""),
+                        row.get("av_status_label", ""),
+                    ],
+                )
+            for row in payload.get("adblock_rows", []):
+                rows.append(
+                    [
+                        "adblock",
+                        row.get("ts", 0),
+                        _observability_pseudonym(
+                            row.get("src_ip", ""),
+                            namespace="user",
+                        )
+                        if privacy
+                        else row.get("src_ip", ""),
+                        row.get("url", ""),
+                        f"HTTP {row.get('http_status', 0)}",
+                        row.get("result", ""),
+                    ],
+                )
+            for row in payload.get("webfilter_rows", []):
+                rows.append(
+                    [
+                        "webfilter",
+                        row.get("ts", 0),
+                        _observability_pseudonym(
+                            row.get("src_ip", ""),
+                            namespace="user",
+                        )
+                        if privacy
+                        else row.get("src_ip", ""),
+                        row.get("url", ""),
+                        row.get("category", ""),
+                        row.get("result", ""),
+                    ],
+                )
+            return _observability_export_response(headers, rows, export_format)
+
+        if pane == "performance":
+            payload = queries.performance_overview(
+                since=since_ts,
+                limit=limit,
+                summary=summary_data or {},
+            )
+            headers = ["type", "timestamp", "subject", "metric", "detail"]
+            rows = []
+            for row in payload.get("slow_requests", []):
+                rows.append(
+                    [
+                        "request",
+                        row.get("ts", 0),
+                        row.get("target_display", ""),
+                        row.get("duration_ms", 0),
+                        row.get("result_summary", ""),
+                    ],
+                )
+            for row in payload.get("slow_icap_events", []):
+                rows.append(
+                    [
+                        "icap",
+                        row.get("ts", 0),
+                        row.get("target_display", ""),
+                        row.get("icap_time_ms", 0),
+                        row.get("adapt_summary", ""),
+                    ],
+                )
+            return _observability_export_response(headers, rows, export_format)
+
+        rows = queries.top_destinations(
+            since=since_ts,
+            search=search,
+            limit=limit,
+            sort=sort,
+            total_requests=total_requests,
+        )
+        headers = [
+            "domain",
+            "requests",
+            "percent_of_total",
+            "clients",
+            "transactions",
+            "cache_hit_pct",
+            "av_icap_events",
+            "adblock_icap_events",
+            "last_seen",
+        ]
+        data_rows = (
+            [
+                row.get("domain", ""),
+                row.get("requests", 0),
+                row.get("pct", 0.0),
+                row.get("clients", 0),
+                row.get("transactions", 0),
+                row.get("cache_pct", 0.0),
+                row.get("av_icap_events", 0),
+                row.get("adblock_icap_events", 0),
+                row.get("last_seen", 0),
+            ]
+            for row in rows
+        )
+        return _observability_export_response(headers, data_rows, export_format)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f"web.app.observability.export.{pane}",
+            interval_seconds=30.0,
+            message="Failed to export observability pane; returning empty CSV",
+        )
+        return _empty_observability_export_response(pane, export_format)
+
+
+@app.route("/observability/metrics", methods=["GET"])
+def observability_metrics():
+    queries = get_observability_queries()
+    window_i = _query_int_arg(
+        "window",
+        default=OBSERVABILITY_DEFAULT_WINDOW,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    since_ts = int(time.time()) - window_i
+    proxy_id = get_proxy_id()
+    lines = []
+    scrape_errors: list[str] = []
+
+    def collect(name: str, callback: Callable[[], Any]) -> Any:
+        try:
+            return callback()
+        except Exception:
+            scrape_errors.append(name)
+            log_exception_throttled(
+                app.logger,
+                f"web.app.observability.metrics.{name}",
+                interval_seconds=30.0,
+                message=f"Failed to collect observability metrics section: {name}",
+            )
+            return None
+
+    summary = collect("summary", lambda: queries.summary(since=since_ts))
+    if isinstance(summary, dict):
+        lines.extend(
+            [
+                "# HELP docker_proxy_observability_requests Requests observed in the selected window.",
+                "# TYPE docker_proxy_observability_requests gauge",
+                f'docker_proxy_observability_requests{{proxy_id="{proxy_id}"}} {int(summary.get("request_records") or 0)}',
+                "# HELP docker_proxy_observability_cache_hit_ratio Cache hit percentage in the selected window.",
+                "# TYPE docker_proxy_observability_cache_hit_ratio gauge",
+                f'docker_proxy_observability_cache_hit_ratio{{proxy_id="{proxy_id}"}} {float(summary.get("cache_hit_pct") or 0.0)}',
+            ],
+        )
+
+    cache = collect("cache", lambda: queries.cache_savings(since=since_ts))
+    if isinstance(cache, dict):
+        lines.extend(
+            [
+                "# HELP docker_proxy_observability_cache_saved_bytes Estimated cache-served response bytes in the selected window.",
+                "# TYPE docker_proxy_observability_cache_saved_bytes gauge",
+                f'docker_proxy_observability_cache_saved_bytes{{proxy_id="{proxy_id}"}} {int(cache.get("estimated_saved_bytes") or 0)}',
+            ],
+        )
+
+    security = collect(
+        "security",
+        lambda: queries.security_overview(since=since_ts, limit=10),
+    )
+    if isinstance(security, dict):
+        security_summary = security.get("summary") or {}
+        lines.extend(
+            [
+                "# HELP docker_proxy_observability_security_blocks Enforcement block events in the selected window.",
+                "# TYPE docker_proxy_observability_security_blocks gauge",
+                f'docker_proxy_observability_security_blocks{{proxy_id="{proxy_id}"}} {int(security_summary.get("combined_blocks") or 0)}',
+                "# HELP docker_proxy_observability_malware_attempts Potential AV findings in the selected window.",
+                "# TYPE docker_proxy_observability_malware_attempts gauge",
+                f'docker_proxy_observability_malware_attempts{{proxy_id="{proxy_id}"}} {int(security_summary.get("potential_findings") or 0)}',
+            ],
+        )
+
+    lines.extend(
+        [
+            "# HELP docker_proxy_observability_scrape_error Observability metrics collector failures in the selected window.",
+            "# TYPE docker_proxy_observability_scrape_error gauge",
+        ],
+    )
+    if scrape_errors:
+        lines.extend(
+            f'docker_proxy_observability_scrape_error{{proxy_id="{proxy_id}",section="{section}"}} 1'
+            for section in scrape_errors
+        )
+    else:
+        lines.append(
+            f'docker_proxy_observability_scrape_error{{proxy_id="{proxy_id}",section="none"}} 0',
+        )
+
+    return app.response_class(
+        "\n".join(lines) + "\n",
+        mimetype="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
+@app.route("/requests", methods=["GET", "POST"])
+def policy_requests():
+    store = get_policy_request_store()
+    _best_effort_init_store(store, key="policy_requests", description="policy request")
+    if request.method == "POST":
+        action = _form_action(lower=True)
+        reviewer = str(session.get("user") or "")
+        try:
+            if action == "approve":
+                duration = _posted_int("duration_seconds", 86400)
+                indefinite = request.form.get("duration_mode") == "indefinite"
+                store.approve_request(
+                    int(request.form.get("request_id") or "0"),
+                    reviewer=reviewer,
+                    admin_note=request.form.get("admin_note") or "",
+                    duration_seconds=duration,
+                    indefinite=indefinite,
+                )
+                _best_effort_refresh_managed_policy(store, force=True)
+                return _redirect_to("policy_requests", ok="approved")
+            if action in {"reject", "close"}:
+                store.close_request(
+                    int(request.form.get("request_id") or "0"),
+                    reviewer=reviewer,
+                    admin_note=request.form.get("admin_note") or "",
+                    status=("closed" if action == "close" else "rejected"),
+                )
+                return _redirect_to("policy_requests", ok=action)
+            if action == "revoke":
+                store.revoke_exception(
+                    int(request.form.get("exception_id") or "0"),
+                    revoked_by=reviewer,
+                    admin_note=request.form.get("admin_note") or "",
+                )
+                _best_effort_refresh_managed_policy(store, force=True)
+                return _redirect_to("policy_requests", ok="revoked")
+        except Exception as exc:
+            return _redirect_to("policy_requests", error=public_error_message(exc))
+        return _redirect_to("policy_requests")
+    try:
+        pending_requests = store.list_requests(statuses=["pending"], limit=200)
+        recent_requests = store.list_requests(limit=200)
+        exceptions = store.list_exceptions(include_inactive=True, limit=200)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.policy_requests.list",
+            interval_seconds=30.0,
+            message="Failed to load policy requests; rendering empty state",
+        )
+        pending_requests = []
+        recent_requests = []
+        exceptions = []
+    return render_template(
+        "requests.html",
+        pending_requests=pending_requests,
+        recent_requests=recent_requests,
+        exceptions=exceptions,
+        message=request.args.get("ok") or "",
+        error=request.args.get("error") or "",
+    )
+
+
+@app.route("/ssl-errors", methods=["GET"])
+def ssl_errors():
+    return _redirect_to(
+        "observability",
+        pane="ssl",
+        window=_query_int_arg(
+            "window",
+            default=OBSERVABILITY_DEFAULT_WINDOW,
+            minimum=300,
+            maximum=90 * 24 * 3600,
+        ),
+        limit=_query_int_arg("limit", default=50, minimum=10, maximum=200),
+        q=((request.args.get("q") or "").strip().lower() or None),
+    )
+
+
+@app.route("/ssl-errors/exclude", methods=["POST"])
+def ssl_errors_exclude():
+    domain = _extract_domain(request.form.get("domain"))
+    if domain:
+        with contextlib.suppress(Exception):
+            get_sslfilter_store().add_domain("nobump", domain)
+        return _redirect_after_policy_refresh(
+            "observability",
+            get_sslfilter_store(),
+            force=True,
+            pane="ssl",
+            q=domain,
+        )
+    return _redirect_to("observability", pane="ssl", q=domain)
+
+
+@app.route("/ssl-errors/export", methods=["GET"])
+def ssl_errors_export():
+    return _redirect_to(
+        "observability_export",
+        pane="ssl",
+        window=_query_int_arg(
+            "window",
+            default=OBSERVABILITY_DEFAULT_WINDOW,
+            minimum=300,
+            maximum=90 * 24 * 3600,
+        ),
+        limit=_query_int_arg("limit", default=1000, minimum=10, maximum=1000),
+        q=((request.args.get("q") or "").strip().lower() or None),
+    )
+
+
+@app.route("/adblock", methods=["GET", "POST"])
+def adblock():
+    store = get_adblock_store()
+    _best_effort_init_store(store, key="adblock", description="adblock")
+
+    if request.method == "POST":
+        try:
+            return _handle_adblock_post(store)
+        except Exception as exc:
+            log_exception_throttled(
+                app.logger,
+                "web.app.adblock.post",
+                interval_seconds=30.0,
+                message="Failed to process adblock admin action",
+            )
+            return _redirect_to("adblock", error="1", msg=public_error_message(exc))
+
+    statuses = store.list_statuses()
+    try:
+        settings = store.get_settings()
+    except Exception:
+        settings = {"enabled": True, "cache_ttl": 3600, "cache_max": 200000}
+    try:
+        stats = store.stats()
+    except Exception:
+        stats = {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
+    interval = store.get_update_interval_seconds()
+    window_i = _query_int_arg(
+        "window",
+        default=3600,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    since_ts = int(time.time()) - window_i
+    now_ts = int(time.time())
+    status_rows = []
+    for st in statuses:
+        next_refresh = (
+            now_ts
+            if not st.enabled
+            else (st.last_success + interval if st.last_success > 0 else now_ts)
+        )
+        last_failure_ts = st.last_attempt if st.last_error else 0
+        status_rows.append(
+            {
+                "key": st.key,
+                "url": st.url,
+                "enabled": st.enabled,
+                "rules": st.rules,
+                "bytes": st.bytes,
+                "last_success": st.last_success,
+                "last_attempt": st.last_attempt,
+                "last_error": st.last_error,
+                "last_failure_ts": last_failure_ts,
+                "next_refresh": next_refresh,
+            },
+        )
+
+    try:
+        adblock_icap_summary = get_diagnostic_store().icap_summary(
+            since=since_ts,
+            service="adblock",
+        )
+    except Exception:
+        adblock_icap_summary = {
+            "events": 0,
+            "avg_icap_time_ms": 0,
+            "max_icap_time_ms": 0,
+        }
+
+    return render_template(
+        "adblock.html",
+        statuses=status_rows,
+        stats=stats,
+        settings=settings,
+        update_interval_seconds=interval,
+        refresh_requested=(request.args.get("refresh_requested") == "1"),
+        refresh_no_lists=(request.args.get("refresh_no_lists") == "1"),
+        window=window_i,
+        window_label=_window_label(window_i),
+        adblock_icap_summary=adblock_icap_summary,
+    )
+
+
+@app.route("/webfilter", methods=["GET", "POST"])
+def webfilter():
+    store = get_webfilter_store()
+    _best_effort_init_store(store, key="webfilter", description="web filter")
+
+    tab = _normalize_choice(
+        request.args.get("tab") or request.form.get("tab") or "categories",
+        ("categories", "whitelist"),
+        "categories",
+    )
+
+    if request.method == "POST":
+        try:
+            return _handle_webfilter_post(store, tab)
+        except Exception as exc:
+            log_exception_throttled(
+                app.logger,
+                "web.app.webfilter.post",
+                interval_seconds=30.0,
+                message="Failed to process webfilter admin action",
+            )
+            return _redirect_to(
+                "webfilter",
+                tab=tab,
+                err=public_error_message(exc),
+            )
+
+    try:
+        settings = store.get_settings()
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.webfilter.settings",
+            interval_seconds=30.0,
+            message="Failed to load webfilter settings; rendering empty state",
+        )
+        settings = {"enabled": False, "source_url": "", "blocked_categories": []}
+    try:
+        safe_browsing_status = store.safe_browsing_status()
+    except Exception:
+        safe_browsing_status = None
+    try:
+        available = _normalize_webfilter_categories(store.list_available_categories())
+    except Exception:
+        available = []
+    selected = set(
+        getattr(settings, "blocked_categories", None)
+        or (settings.get("blocked_categories", []) if isinstance(settings, dict) else [])
+    )
+    try:
+        whitelist_rows = store.list_whitelist()
+    except Exception:
+        whitelist_rows = []
+    window_i = _query_int_arg(
+        "window",
+        default=3600,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    return render_template(
+        "webfilter.html",
+        tab=tab,
+        settings=settings,
+        available_categories=available,
+        selected=selected,
+        whitelist_rows=whitelist_rows,
+        safe_browsing_status=safe_browsing_status,
+        window=window_i,
+        window_label=_window_label(window_i),
+        err_source=(request.args.get("err_source") == "1"),
+        wl_ok=(request.args.get("wl_ok") == "1"),
+        wl_err=(request.args.get("wl_err") or ""),
+    )
+
+
+@app.route("/webfilter/test", methods=["POST"])
+def webfilter_test_domain():
+    store = get_webfilter_store()
+    _best_effort_init_store(store, key="webfilter_test", description="web filter")
+
+    payload = request.get_json(silent=True) or {}
+    domain = (payload.get("domain") or request.form.get("domain") or "").strip()
+    try:
+        res = store.test_domain(domain)
+        return jsonify(res), 200
+    except Exception as e:
+        return jsonify(
+            {"ok": False, "verdict": "error", "reason": public_error_message(e)},
+        ), 200
+
+
+@app.route("/sslfilter", methods=["GET", "POST"])
+def sslfilter():
+    store = get_sslfilter_store()
+    _best_effort_init_store(store, key="sslfilter", description="SSL filter")
+
+    if request.method == "POST":
+        try:
+            return _handle_sslfilter_post(store)
+        except Exception as exc:
+            log_exception_throttled(
+                app.logger,
+                "web.app.sslfilter.post",
+                interval_seconds=30.0,
+                message="Failed to process SSL filter admin action",
+            )
+            return _redirect_to("sslfilter", err=public_error_message(exc))
+
+    rules = store.list_all()
+    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
+    return render_template(
+        "sslfilter.html",
+        rules=rules,
+        pac_target=pac_target,
+        pac_url=pac_url,
+        pac_warning=pac_warning,
+        private_dst_nets=store.private_dst_nets,
+        compatibility_presets=store.list_compatibility_presets(),
+        ok=(request.args.get("ok") == "1"),
+        err=(request.args.get("err") or ""),
+    )
+
+
+def _check_icap_adblock() -> dict[str, Any]:
+    return _app_runtime_services().check_icap_adblock()
+
+
+def _check_icap_av() -> dict[str, Any]:
+    return _app_runtime_services().check_icap_av()
+
+
+def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
+    timeout_seconds = _proxy_clamav_health_timeout_seconds()
+    key = (str(proxy_id or ""), "clamav", float(timeout_seconds))
+    now = time.monotonic()
+    cached = _PROXY_HEALTH_CACHE.get(key)
+    if cached is not None:
+        cached_at, payload = cached
+        if now - cached_at <= max(0.0, float(_PROXY_HEALTH_TTL_SECONDS)):
+            return dict(payload)
+    try:
+        payload = get_proxy_client().get_clamav_health(
+            proxy_id,
+            timeout_seconds=timeout_seconds,
+        )
+    except AttributeError:
+        return _cached_proxy_health(proxy_id, timeout_seconds=timeout_seconds)
+    except ProxyClientError as exc:
+        if cached is not None:
+            stale_payload = dict(cached[1])
+            stale_payload.setdefault(
+                "detail",
+                "using recent cached ClamAV health after refresh failure",
+            )
+            stale_payload["_stale"] = True
+            return stale_payload
+        proxy = get_proxy_registry().get_proxy(proxy_id)
+        payload = build_unavailable_runtime_health(
+            str(exc),
+            proxy_status=proxy.status if proxy else "offline",
+        )
+        payload["_unavailable_cached"] = True
+        _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
+        return payload
+    _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
+    return payload
+
+
+def _send_sample_av_icap() -> dict[str, Any]:
+    return _app_runtime_services().send_sample_av_icap()
+
+
+def _check_clamd() -> dict[str, Any]:
+    return _app_runtime_services().check_clamd()
+
+
+def _test_eicar() -> dict[str, Any]:
+    return _app_runtime_services().test_eicar()
+
+
+@app.route("/error-pages", methods=["GET"])
+def error_pages():
+    pages = list_error_pages()
+    token_summary = {
+        page.name: ", ".join(template_tokens(read_template(page.name)))
+        for page in pages
+    }
+    return render_template(
+        "error_pages.html",
+        pages=pages,
+        token_summary=token_summary,
+    )
+
+
+@app.route("/error-pages/preview/<name>", methods=["GET"])
+def error_page_preview(name: str):
+    try:
+        html = render_preview(name)
+    except KeyError:
+        abort(404)
+    response = Response(html, mimetype="text/html")
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
+@app.route("/clamav", methods=["GET"])
+def clamav():
+    cfg = _current_managed_config()
+    clamav_enabled = _is_clamav_enabled(cfg)
+    window_i = _query_int_arg(
+        "window",
+        default=3600,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    since_ts = int(time.time()) - window_i
+    proxy_id = get_proxy_id()
+    health_payload = _clamav_remote_health(proxy_id)
+    clamav_view = build_remote_clamav_view(health_payload)
+    health = clamav_view["health"]
+    clamd_health = clamav_view["clamd_health"]
+    av_icap_health = clamav_view["av_icap_health"]
+    health_source = clamav_view["health_source"]
+
+    try:
+        clamav_icap_summary = get_diagnostic_store().icap_summary(
+            since=since_ts,
+            service="av",
+        )
+    except Exception:
+        clamav_icap_summary = {
+            "events": 0,
+            "avg_icap_time_ms": 0,
+            "max_icap_time_ms": 0,
+        }
+
+    clamav_options = extract_clamav_options(cfg)
+
+    return render_template(
+        "clamav.html",
+        health=health,
+        clamd_health=clamd_health,
+        av_icap_health=av_icap_health,
+        health_source=health_source,
+        clamav_enabled=clamav_enabled,
+        clamav_icap_summary=clamav_icap_summary,
+        clamav_sections=get_clamav_ui_sections(),
+        clamav_field_map=get_clamav_ui_field_map(),
+        clamav_options=clamav_options,
+        window=window_i,
+        window_label=_window_label(window_i),
+        eicar_result=request.args.get("eicar"),
+        eicar_detail=request.args.get("eicar_detail"),
+        icap_result=request.args.get("icap_sample"),
+        icap_detail=request.args.get("icap_detail"),
+        settings_ok=request.args.get("settings_ok"),
+        settings_msg=request.args.get("settings_msg"),
+    )
+
+
+@app.route("/clamav/settings", methods=["POST"])
+def clamav_settings():
+    new_cfg = ""
+    try:
+        current = _current_managed_config()
+        options = read_clamav_options_from_form(
+            request.form,
+            extract_clamav_options(current),
+        )
+        new_cfg = apply_clamav_options_to_config(current, options)
+        ok, details = _publish_config_for_current_mode(
+            new_cfg,
+            source_kind="clamav-settings",
+        )
+    except Exception as exc:
+        app.logger.exception("ClamAV settings apply failed")
+        ok = False
+        details = public_error_message(exc)
+    _record_audit_event(
+        "clamav_settings_apply",
+        ok=ok,
+        detail=(details or ""),
+        config_text=new_cfg or None,
+    )
+    return _redirect_to(
+        "clamav",
+        settings_ok=_bool_result_param(ok),
+        settings_msg=(details or "")[:1000],
+    )
+
+
+@app.route("/clamav/test-eicar", methods=["POST"])
+def clamav_test_eicar():
+    try:
+        res = get_proxy_client().test_clamav_eicar(get_proxy_id())
+    except ProxyClientError as exc:
+        res = {"ok": False, "detail": str(exc)}
+    return _redirect_to(
+        "clamav",
+        eicar="ok" if res.get("ok") else "fail",
+        eicar_detail=(res.get("detail") or "")[:300],
+    )
+
+
+@app.route("/clamav/test-icap", methods=["POST"])
+def clamav_test_icap():
+    try:
+        res = get_proxy_client().test_clamav_icap(get_proxy_id())
+    except ProxyClientError as exc:
+        res = {"ok": False, "detail": str(exc)}
+    return _redirect_to(
+        "clamav",
+        icap_sample="ok" if res.get("ok") else "fail",
+        icap_detail=(res.get("detail") or "")[:300],
+    )
+
+
+def _is_clamav_enabled(cfg_text: str) -> bool:
+    options = extract_clamav_options(cfg_text or "")
+    return bool(
+        options.get("file_security_scan_downloads")
+        or options.get("file_security_scan_uploads"),
+    )
+
+
+def _set_clamav_enabled(cfg_text: str, enabled: bool) -> str:
+    options = extract_clamav_options(cfg_text or "")
+    options["file_security_scan_downloads"] = bool(enabled)
+    options["file_security_scan_uploads"] = bool(enabled)
+    return apply_clamav_options_to_config(cfg_text or "", options)
+
+
+@app.route("/clamav/toggle", methods=["POST"])
+def clamav_toggle():
+    action = _form_action(lower=True)
+    new_cfg = ""
+    try:
+        cfg = _current_managed_config()
+        currently_enabled = _is_clamav_enabled(cfg)
+
+        if action == "enable":
+            desired = True
+        elif action == "disable":
+            desired = False
+        else:
+            desired = not currently_enabled
+
+        new_cfg = _set_clamav_enabled(cfg, desired)
+        ok, details = _publish_config_for_current_mode(new_cfg, source_kind="clamav")
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.clamav_toggle",
+            interval_seconds=30.0,
+            message="Failed to toggle ClamAV runtime policy",
+        )
+        ok = False
+        details = public_error_message(exc)
+    _record_audit_event(
+        "clamav_toggle",
+        ok=ok,
+        detail=(details or ""),
+        config_text=new_cfg or None,
+    )
+    if ok:
+        return _redirect_to("clamav")
+    return _redirect_to("clamav", error="1")
+
+
+@app.route("/squid/config", methods=["GET", "POST"])
+def squid_config():
+    config_sections = get_config_ui_sections()
+    safe_tabs = tuple(section.key for section in config_sections)
+    tab = _normalize_choice(
+        request.args.get("tab") or request.form.get("tab") or "config",
+        ("config", *safe_tabs),
+        "config",
+    )
+
+    validation = None
+    posted_config = None
+    if request.method == "POST":
+        action = _form_action(default="apply", lower=True)
+        config_text = request.form.get("config_text", "")
+        posted_config = config_text
+        try:
+            if action == "validate":
+                ok, details = _validate_config_for_current_mode(config_text)
+                validation = {"ok": ok, "detail": (details or "").strip()}
+                _record_audit_event(
+                    "config_validate_manual",
+                    ok=ok,
+                    detail=(details or ""),
+                    config_text=config_text,
+                )
+            else:
+                ok, details = _publish_config_for_current_mode(
+                    config_text,
+                    source_kind="manual",
+                )
+                _record_audit_event(
+                    "config_apply_manual",
+                    ok=ok,
+                    detail=(details or ""),
+                    config_text=config_text,
+                )
+                if ok:
+                    return _redirect_config(tab, ok=True)
+                return _redirect_config(tab, error=True)
+        except Exception as exc:
+            detail = public_error_message(exc)
+            log_exception_throttled(
+                app.logger,
+                "web.app.squid_config.post",
+                interval_seconds=30.0,
+                message="Failed to process manual Squid config action",
+            )
+            _record_audit_event(
+                "config_validate_manual"
+                if action == "validate"
+                else "config_apply_manual",
+                ok=False,
+                detail=detail,
+                config_text=config_text,
+            )
+            if action == "validate":
+                validation = {"ok": False, "detail": detail}
+            else:
+                return _redirect_config(tab, error=True)
+    current_config = _current_managed_config()
+    tunables = squid_controller.get_tunable_options(current_config)
+    managed_options = build_template_options(tunables, max_workers=_max_workers())
+    overrides = squid_controller.get_cache_override_options(current_config)
+    caching_lines = squid_controller.get_caching_lines(current_config)
+    timeout_lines = squid_controller.get_timeout_lines(current_config)
+    logging_lines = squid_controller.get_logging_lines(current_config)
+    network_lines = squid_controller.get_network_lines(current_config)
+    dns_lines = squid_controller.get_dns_lines(current_config)
+    ssl_lines = squid_controller.get_ssl_lines(current_config)
+    icap_lines = squid_controller.get_icap_lines(current_config)
+    privacy_lines = squid_controller.get_privacy_lines(current_config)
+    limits_lines = squid_controller.get_limits_lines(current_config)
+    performance_lines = squid_controller.get_performance_lines(current_config)
+    http_lines = squid_controller.get_http_lines(current_config)
+    line_map = {
+        "caching": caching_lines,
+        "timeouts": timeout_lines,
+        "logging": logging_lines,
+        "network": network_lines,
+        "dns": dns_lines,
+        "ssl": ssl_lines,
+        "icap": icap_lines,
+        "privacy": privacy_lines,
+        "limits": limits_lines,
+        "performance": performance_lines,
+        "http": http_lines,
+    }
+    section_map = {section.key: section for section in config_sections}
+    active_section = section_map.get(tab)
+    sslfilter_rules = get_sslfilter_store().list_all()
+    sslfilter_count = (
+        len(getattr(sslfilter_rules, "no_bump_domains", []) or [])
+        + len(getattr(sslfilter_rules, "no_cache_domains", []) or [])
+        + len(getattr(sslfilter_rules, "no_bump_src_nets", []) or [])
+        + len(getattr(sslfilter_rules, "no_cache_src_nets", []) or [])
+        + (1 if bool(getattr(sslfilter_rules, "exclude_private_nets", False)) else 0)
+    )
+    summary = {
+        "workers": tunables.get("workers") if tunables else None,
+        "explicit_proxy_port": tunables.get("explicit_proxy_port")
+        if tunables
+        else None,
+        "intercept_enabled": bool(tunables.get("intercept_enabled"))
+        if tunables
+        else False,
+        "intercept_port": tunables.get("intercept_port") if tunables else None,
+        "cache_dir_size_mb": tunables.get("cache_dir_size_mb") if tunables else None,
+        "cache_mem_mb": tunables.get("cache_mem_mb") if tunables else None,
+        "overrides": overrides or {},
+        "overrides_on": any(overrides.values()) if overrides else False,
+        "sslfilter_count": sslfilter_count,
+    }
+    config_text = posted_config if posted_config is not None else current_config
+    subtab = _normalize_choice(
+        request.args.get("subtab") or "safe",
+        ("safe", "overrides"),
+        "safe",
+    )
+    return render_template(
+        "squid_config.html",
+        tab=tab,
+        config_text=config_text,
+        tunables=tunables,
+        managed_options=managed_options,
+        overrides=overrides,
+        subtab=subtab,
+        summary=summary,
+        validation=validation,
+        sslfilter_rules=sslfilter_rules,
+        config_sections=config_sections,
+        config_field_map=get_config_ui_field_map(),
+        active_section=active_section,
+        line_map=line_map,
+        caching_lines=caching_lines,
+        timeout_lines=timeout_lines,
+        logging_lines=logging_lines,
+        network_lines=network_lines,
+        dns_lines=dns_lines,
+        ssl_lines=ssl_lines,
+        icap_lines=icap_lines,
+        privacy_lines=privacy_lines,
+        limits_lines=limits_lines,
+        performance_lines=performance_lines,
+        http_lines=http_lines,
+    )
+
+
+@app.route("/squid/config/apply-all", methods=["POST"])
+def apply_all_saved_config():
+    """Rebuild the selected proxy config from saved UI settings, validate, and apply it."""
+    try:
+        current = _current_managed_config()
+        tunables = squid_controller.get_tunable_options(current)
+        options = _options_from_tunables(tunables)
+        overrides = squid_controller.get_cache_override_options(current)
+        ok, detail = _publish_template_config(
+            options,
+            source_kind="template-reconcile",
+            audit_kind="config_apply_all_saved",
+            overrides=overrides,
+        )
+    except Exception as exc:
+        _record_audit_event(
+            "config_apply_all_saved",
+            ok=False,
+            detail=public_error_message(exc),
+        )
+        return _redirect_to("squid_config", tab="config", apply_all_ok="0")
+
+    return _redirect_to(
+        "squid_config",
+        tab="config",
+        apply_all_ok=_bool_result_param(ok),
+        apply_all_msg=(detail or "")[:1000],
+    )
+
+
+@app.route("/squid/config/apply-safe", methods=["POST"])
+def apply_safe_caching():
+    form_kind = normalize_safe_form_kind(request.form.get("form_kind"))
+    try:
+        current = _current_managed_config()
+        tunables = squid_controller.get_tunable_options(current)
+    except Exception:
+        tunables = {}
+
+    options = build_template_options_from_form(
+        tunables,
+        request.form,
+        form_kind=form_kind,
+        max_workers=_max_workers(),
+    )
+
+    try:
+        ok, _details = _publish_template_config(
+            options,
+            source_kind="template",
+            audit_kind="config_apply_template",
+        )
+    except Exception:
+        return _redirect_config("caching", error=True)
+
+    return _redirect_config(form_kind, ok=ok, error=not ok)
+
+
+@app.route("/squid/config/apply-overrides", methods=["POST"])
+def apply_cache_overrides():
+    # Apply cache override toggles on top of the current tunables and managed policy includes.
+    try:
+        current = _current_managed_config()
+        tunables = squid_controller.get_tunable_options(current)
+
+        options = _options_from_tunables(tunables)
+        overrides = parse_cache_override_form(request.form)
+        ok, _details = _publish_template_config(
+            options,
+            source_kind="overrides",
+            audit_kind="config_apply_overrides",
+            overrides=overrides,
+        )
+    except Exception:
+        return _redirect_config("caching", subtab="overrides", error=True)
+
+    return _redirect_config("caching", subtab="overrides", ok=ok, error=not ok)
+
+
+@app.route("/pac", methods=["GET", "POST"])
+def pac_builder():
+    store = get_pac_profiles_store()
+
+    if request.method == "POST":
+        return _handle_pac_builder_post(store)
+
+    profiles = []
+    try:
+        profiles = store.list_profiles()
+    except Exception:
+        profiles = []
+
+    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
+    try:
+        chain_settings = store.list_proxy_chain_settings()
+    except Exception:
+        chain_settings = None
+    return render_template(
+        "pac.html",
+        profiles=profiles,
+        pac_url=pac_url,
+        pac_warning=pac_warning,
+        pac_target=pac_target,
+        chain_settings=chain_settings,
+    )
+
+
+def _default_winhttp_registry_form() -> dict[str, Any]:
+    return {
+        "proxy_host": "",
+        "proxy_port": "3128",
+        "destination_schemes": ["http", "https"],
+        "bypass_list": "",
+        "include_local_bypass": True,
+        "use_custom_proxy_map": False,
+        "custom_proxy_map": "",
+        "autoconfig_url": "",
+        "autodetect": False,
+        "advproxy_scope": "machine",
+        "tracing_state": "disabled",
+        "tracing_output": "",
+        "trace_file_prefix": "",
+        "tracing_level": "",
+        "tracing_format": "",
+        "max_trace_file_size": "",
+        "reg_input": "",
+    }
+
+
+def _winhttp_form_from_request() -> dict[str, Any]:
+    form = _default_winhttp_registry_form()
+    form.update(
+        {
+            "proxy_host": request.form.get("proxy_host", ""),
+            "proxy_port": request.form.get("proxy_port", "3128"),
+            "destination_schemes": request.form.getlist("destination_schemes"),
+            "bypass_list": request.form.get("bypass_list", ""),
+            "include_local_bypass": request.form.get("include_local_bypass") == "on",
+            "use_custom_proxy_map": request.form.get("use_custom_proxy_map") == "on",
+            "custom_proxy_map": request.form.get("custom_proxy_map", ""),
+            "autoconfig_url": request.form.get("autoconfig_url", ""),
+            "autodetect": request.form.get("autodetect") == "on",
+            "advproxy_scope": request.form.get("advproxy_scope", "machine"),
+            "tracing_state": request.form.get("tracing_state", "disabled"),
+            "tracing_output": request.form.get("tracing_output", ""),
+            "trace_file_prefix": request.form.get("trace_file_prefix", ""),
+            "tracing_level": request.form.get("tracing_level", ""),
+            "tracing_format": request.form.get("tracing_format", ""),
+            "max_trace_file_size": request.form.get("max_trace_file_size", ""),
+            "reg_input": request.form.get("reg_input", ""),
+        },
+    )
+    return form
+
+
+@app.route("/tools/winhttp-registry", methods=["GET", "POST"])
+def winhttp_registry_builder():
+    form = _default_winhttp_registry_form()
+    output = None
+    normalized_reg_hex = ""
+    decoded_reg = None
+    error = ""
+    action = ""
+
+    if request.method == "POST":
+        action = request.form.get("action", "generate")
+        form = _winhttp_form_from_request()
+        try:
+            if action == "normalize_reg":
+                normalized_reg_hex = normalize_reg_binary_export(
+                    form.get("reg_input") or "",
+                )
+                try:
+                    decoded_reg = decode_basic_winhttp_settings_hex(normalized_reg_hex)
+                except WinHttpBuilderError:
+                    decoded_reg = None
+            else:
+                output = build_contract_output(form)
+        except WinHttpBuilderError as exc:
+            error = str(exc)
+
+    return render_template(
+        "winhttp_registry.html",
+        form=form,
+        output=output,
+        normalized_reg_hex=normalized_reg_hex,
+        decoded_reg=decoded_reg,
+        error=error,
+        action=action,
+    )
+
+
+@app.route("/api/timeseries", methods=["GET"])
+def api_timeseries():
+    res = (request.args.get("resolution") or "1s").strip()
+    window_i = _query_int_arg("window", default=60, minimum=10, maximum=365 * 24 * 3600)
+    limit_i = _query_int_arg("limit", default=500)
+
+    since = int(time.time()) - window_i
+    points = get_timeseries_store().query(resolution=res, since=since, limit=limit_i)
+    return jsonify({"resolution": res, "since": since, "points": points})
+
+
+@app.route("/reload", methods=["POST"])
+def reload_squid():
+    ok, detail = _trigger_proxy_sync(force=True)
+    _record_audit_event("proxy_sync", ok=ok, detail=detail)
+    return redirect(_endpoint_url("index") + "#status")
+
+
+@app.route("/cache/clear", methods=["POST"])
+def clear_caches():
+    ok, detail = _trigger_proxy_cache_clear()
+    _record_audit_event("cache_clear", ok=ok, detail=detail)
+    return redirect(_endpoint_url("index") + "#status")
+
+
+@app.route("/certs", methods=["GET"])
+def certs():
+    bundle_store = get_certificate_bundles()
+    bundle = bundle_store.get_active_bundle()
+    certificate = "ca.crt" if bundle is not None else None
+    proxy_cert_statuses = []
+    for proxy in get_proxy_registry().list_proxies():
+        latest_apply = bundle_store.latest_apply(proxy.proxy_id)
+        proxy_cert_statuses.append(
+            {
+                "proxy_id": proxy.proxy_id,
+                "display_name": proxy.display_name or proxy.proxy_id,
+                "ok": latest_apply.ok if latest_apply is not None else None,
+                "detail": latest_apply.detail if latest_apply is not None else "",
+                "applied_ts": latest_apply.applied_ts
+                if latest_apply is not None
+                else 0,
+            },
+        )
+    message = request.args.get("msg")
+    message_ok = request.args.get("ok") == "1"
+    return render_template(
+        "certs.html",
+        certificate=certificate,
+        bundle=bundle,
+        proxy_cert_statuses=proxy_cert_statuses,
+        message=message,
+        message_ok=message_ok,
+    )
+
+
+@app.route("/certs/generate", methods=["POST"])
+def generate_certificate():
+    try:
+        bundle = generate_self_signed_ca_bundle()
+        ok, detail = _publish_certificate_bundle_remote(bundle)
+        _record_audit_event("ca_ensure", ok=ok, detail=detail)
+        return _redirect_with_message("certs", ok=ok, msg=detail)
+    except Exception as e:
+        app.logger.exception("CA generation failed")
+        message = public_error_message(e)
+        _record_audit_event("ca_ensure", ok=False, detail=message)
+        return _redirect_with_message("certs", ok=False, msg=message)
+
+
+@app.route("/certs/upload", methods=["POST"])
+def upload_certificate_pfx():
+    # Upload a PKCS#12 bundle containing cert + private key and install it as Squid's CA.
+    pfx_file = request.files.get("pfx")
+    password = request.form.get("pfx_password", "")
+
+    if not pfx_file or not getattr(pfx_file, "filename", ""):
+        return _redirect_with_message("certs", ok=False, msg="No PFX file selected.")
+
+    filename = (pfx_file.filename or "").lower()
+    _, ext = os.path.splitext(filename)
+    if ext not in {".pfx", ".p12"}:
+        return _redirect_with_message(
+            "certs",
+            ok=False,
+            msg="Unsupported file type. Please upload a .pfx or .p12.",
+        )
+
+    # Basic guard against accidental huge uploads.
+    if request.content_length is not None and request.content_length > (
+        10 * 1024 * 1024
+    ):
+        return _redirect_with_message(
+            "certs",
+            ok=False,
+            msg="Upload too large (max 10MB).",
+        )
+
+    # Read with a hard cap even if Content-Length is missing or incorrect.
+    max_pfx_bytes = 10 * 1024 * 1024
+    buf = bytearray()
+    try:
+        stream = getattr(pfx_file, "stream", None) or pfx_file
+        while True:
+            chunk = stream.read(512 * 1024)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_pfx_bytes:
+                return _redirect_with_message(
+                    "certs",
+                    ok=False,
+                    msg="Upload too large (max 10MB).",
+                )
+    except Exception:
+        return _redirect_with_message("certs", ok=False, msg="Failed to read upload.")
+
+    pfx_bytes = bytes(buf)
+    try:
+        parsed = parse_pfx_bundle(pfx_bytes, password=password)
+        ok = bool(parsed.ok and parsed.bundle is not None)
+        detail = parsed.message
+        if ok and parsed.bundle is not None:
+            ok, detail = _publish_certificate_bundle_remote(
+                parsed.bundle,
+                original_filename=(pfx_file.filename or "").strip(),
+            )
+    except Exception as exc:
+        app.logger.exception("PFX upload failed")
+        ok = False
+        detail = public_error_message(
+            exc,
+            default="Failed to process uploaded PFX bundle.",
+        )
+
+    _record_audit_event("ca_upload_pfx", ok=ok, detail=detail)
+
+    return _redirect_with_message("certs", ok=ok, msg=detail)
+
+
+@app.route("/certs/download/<path:filename>", methods=["GET"])
+def download_certificate(filename: str):
+    # Only allow downloading the public CA cert
+    if filename != "ca.crt":
+        abort(404)
+    bundle = get_certificate_bundles().get_active_bundle()
+    if bundle is None:
+        abort(404)
+    response = app.response_class(
+        bundle.fullchain_pem,
+        mimetype="application/x-pem-file",
+    )
+    response.headers["Content-Disposition"] = "attachment; filename=squid-proxy-ca.crt"
+    return response
+
+
+@app.route("/administration", methods=["GET", "POST"])
+def administration():
+    store = _auth_store
+    current_user = (session.get("user") or "").strip()
+
+    if request.method == "POST":
+        return _handle_administration_post(store, current_user)
+
+    users = []
+    try:
+        users = store.list_users()
+    except Exception:
+        users = []
+
+    message = request.args.get("msg")
+    message_ok = request.args.get("ok") == "1"
+    return render_template(
+        "administration.html",
+        users=users,
+        current_user=current_user,
+        message=message,
+        message_ok=message_ok,
+    )
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
