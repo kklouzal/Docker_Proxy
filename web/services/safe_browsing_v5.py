@@ -866,7 +866,6 @@ class SafeBrowsingLocalChecker:
         expires = _now() + max(60, min(24 * 60 * 60, int(cache_duration or 300)))
         try:
             with self._connect() as conn:
-                matched_any = False
                 for item in response:
                     full = _decode_b64(item.get("fullHash"))
                     if len(full) != 32:
@@ -879,12 +878,10 @@ class SafeBrowsingLocalChecker:
                         "ON DUPLICATE KEY UPDATE threat_type=incoming.threat_type, list_name=incoming.list_name, expires_ts=incoming.expires_ts",
                         (prefix, full, threat, "hashes.search", expires),
                     )
-                    matched_any = True
-                if not matched_any:
-                    conn.execute(
-                        "INSERT INTO safe_browsing_negative_cache(prefix, expires_ts) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE expires_ts=incoming.expires_ts",
-                        (prefix, expires),
-                    )
+                conn.execute(
+                    "INSERT INTO safe_browsing_negative_cache(prefix, expires_ts) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE expires_ts=incoming.expires_ts",
+                    (prefix, expires),
+                )
         except Exception:
             self.close()
 
