@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from .mysql_test_utils import configure_test_mysql_env
@@ -337,3 +339,51 @@ def test_webfilter_safe_browsing_setting_changes_schedule_immediate_refresh(
         safe_browsing_lists=["mw-4b", "se-4b"],
     )
     assert values["safe_browsing_next_run_ts"] == "1000"
+
+
+def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(monkeypatch) -> None:
+    from services import webfilter_store  # type: ignore
+    from services.safe_browsing_v5 import SafeBrowsingVerdict  # type: ignore
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    class FakeChecker:
+        def __init__(self, *, api_key: str) -> None:
+            assert api_key == "test-key"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+        def check_url(self, url: str):
+            assert url == "http://bad.example/"
+            return SafeBrowsingVerdict(
+                "unsafe",
+                "SOCIAL_ENGINEERING",
+                "se-4b",
+                False,
+                "confirmed",
+            )
+
+    store = WebFilterStore()
+    monkeypatch.setattr(webfilter_store, "SafeBrowsingLocalChecker", FakeChecker)
+    monkeypatch.setattr(
+        store,
+        "get_settings",
+        lambda: SimpleNamespace(
+            enabled=True,
+            blocked_categories=[],
+            safe_browsing_enabled=True,
+            safe_browsing_api_key="test-key",
+        ),
+    )
+    monkeypatch.setattr(store, "get_whitelist_patterns", list)
+
+    result = store.test_domain("bad.example")
+
+    assert result["verdict"] == "blocked"
+    assert result["reason"] == "Matched Google Safe Browsing threat"
+    assert result["blocked_by"] == "google-safe-browsing/social-engineering"
+    assert result["matched_blocked"] == []
+    assert result["safe_browsing"]["threat_type"] == "SOCIAL_ENGINEERING"
