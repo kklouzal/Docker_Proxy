@@ -9,7 +9,11 @@ from typing import ClassVar
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.safe_browsing_v5 import DEFAULT_SAFE_BROWSING_LISTS, SafeBrowsingStore
+from services.safe_browsing_v5 import (
+    DEFAULT_SAFE_BROWSING_LISTS,
+    SafeBrowsingLocalChecker,
+    SafeBrowsingStore,
+)
 from services.webfilter_core import (
     _DEFAULT_SOURCE_URL,
     _GLOBAL_SCOPE,
@@ -232,6 +236,40 @@ class WebFilterStore(WebFilterStoreBase):
             return set()
         return set()
 
+    def _test_safe_browsing_domain(self, domain: str, settings) -> dict[str, str]:
+        if not (
+            getattr(settings, "safe_browsing_enabled", False)
+            and getattr(settings, "safe_browsing_api_key", "")
+        ):
+            return {
+                "verdict": "not_configured",
+                "reason": "Safe Browsing is not configured",
+                "threat_type": "",
+                "list_name": "",
+            }
+        try:
+            with SafeBrowsingLocalChecker(
+                api_key=str(getattr(settings, "safe_browsing_api_key", "") or ""),
+            ) as checker:
+                verdict = checker.check_url(f"http://{domain}/")
+        except Exception as exc:
+            return {
+                "verdict": "unavailable",
+                "reason": public_error_message(
+                    exc,
+                    default="Safe Browsing test unavailable.",
+                    max_len=200,
+                ),
+                "threat_type": "",
+                "list_name": "",
+            }
+        return {
+            "verdict": verdict.verdict,
+            "reason": verdict.reason,
+            "threat_type": verdict.threat_type,
+            "list_name": verdict.list_name,
+        }
+
     def test_domain(self, domain: str) -> dict[str, object]:
         normalized = _norm_domain(domain)
         if not _looks_like_host(normalized):
@@ -278,17 +316,37 @@ class WebFilterStore(WebFilterStoreBase):
         blocked = set(
             self._resolve_category_aliases(list(settings.blocked_categories or [])),
         )
+        safe_browsing = self._test_safe_browsing_domain(normalized, settings)
+        if safe_browsing["verdict"] == "unsafe":
+            threat = safe_browsing["threat_type"].lower().replace("_", "-")
+            blocked_by = "google-safe-browsing" + (f"/{threat}" if threat else "")
+            return {
+                "ok": True,
+                "domain": normalized,
+                "verdict": "blocked",
+                "reason": "Matched Google Safe Browsing threat",
+                "whitelisted": False,
+                "whitelist_match": "",
+                "domain_categories": [],
+                "matched_blocked": [],
+                "blocked_by": blocked_by,
+                "safe_browsing": safe_browsing,
+            }
         if not blocked:
+            reason = "No categories are currently blocked"
+            if safe_browsing["verdict"] == "safe":
+                reason = "No categories are blocked; Safe Browsing did not match"
             return {
                 "ok": True,
                 "domain": normalized,
                 "verdict": "allowed",
-                "reason": "No categories are currently blocked",
+                "reason": reason,
                 "whitelisted": False,
                 "whitelist_match": "",
                 "domain_categories": [],
                 "matched_blocked": [],
                 "blocked_by": "",
+                "safe_browsing": safe_browsing,
             }
 
         categories = self._lookup_domain_categories(normalized)
@@ -303,6 +361,7 @@ class WebFilterStore(WebFilterStoreBase):
                 "domain_categories": [],
                 "matched_blocked": [],
                 "blocked_by": "",
+                "safe_browsing": safe_browsing,
             }
 
         matched = sorted(category for category in categories if category in blocked)
@@ -320,6 +379,7 @@ class WebFilterStore(WebFilterStoreBase):
             "domain_categories": sorted(categories),
             "matched_blocked": matched,
             "blocked_by": (matched[0] if matched else ""),
+            "safe_browsing": safe_browsing,
         }
 
     def _record_attempt(self, ok: bool, err: str) -> None:
