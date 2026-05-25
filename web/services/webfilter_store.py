@@ -121,6 +121,18 @@ class WebFilterStore(WebFilterStoreBase):
                 "auto",
             )
 
+            previous_safe_browsing_enabled = (
+                self._get_global_setting_conn(conn, "safe_browsing_enabled", "0") == "1"
+            )
+            previous_safe_browsing_api_key = self._get_global_setting_conn(
+                conn,
+                "safe_browsing_api_key",
+                "",
+            )
+            previous_safe_browsing_lists = SafeBrowsingStore.normalize_lists(
+                self._get_global_setting_conn(conn, "safe_browsing_lists", "")
+            )
+
             source = (
                 validate_source_url(source_candidate)
                 if source_candidate
@@ -143,14 +155,21 @@ class WebFilterStore(WebFilterStoreBase):
                 (safe_browsing_api_key or "").strip(),
             )
             self._set(conn, "safe_browsing_lists", ",".join(gsb_lists))
+            safe_browsing_next_run = self._get_global_setting_conn(
+                conn,
+                "safe_browsing_next_run_ts",
+                "0",
+            )
+            safe_browsing_changed = (
+                not previous_safe_browsing_enabled
+                or previous_safe_browsing_api_key
+                != (safe_browsing_api_key or "").strip()
+                or previous_safe_browsing_lists != gsb_lists
+            )
             if safe_browsing_enabled and (
-                not self._get_global_setting_conn(
-                    conn,
-                    "safe_browsing_next_run_ts",
-                    "0",
-                )
-                or self._get_global_setting_conn(conn, "safe_browsing_next_run_ts", "0")
-                == "0"
+                safe_browsing_changed
+                or not safe_browsing_next_run
+                or safe_browsing_next_run == "0"
             ):
                 self._set(conn, "safe_browsing_next_run_ts", str(_now()))
 

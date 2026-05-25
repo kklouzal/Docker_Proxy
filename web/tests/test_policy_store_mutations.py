@@ -259,3 +259,81 @@ def test_webfilter_category_refresh_only_tracks_active_category_policy(
             source_url="http://127.0.0.1/private-feed.tar.gz",
             blocked_categories=["adult"],
         )
+
+
+def test_webfilter_safe_browsing_setting_changes_schedule_immediate_refresh(
+    monkeypatch,
+) -> None:
+    from services import webfilter_store  # type: ignore
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    monkeypatch.setattr(webfilter_store, "_now", lambda: 1000)
+
+    values = {
+        "enabled": "0",
+        "source_url": "",
+        "source_provider": "auto",
+        "safe_browsing_enabled": "1",
+        "safe_browsing_api_key": "old-key",
+        "safe_browsing_lists": "mw-4b",
+        "safe_browsing_next_run_ts": "2000",
+    }
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    store = WebFilterStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConn)
+    monkeypatch.setattr(
+        store,
+        "_get",
+        lambda _conn, key, default="": values.get(key, default),
+    )
+    monkeypatch.setattr(
+        store,
+        "_get_global_setting_conn",
+        lambda _conn, key, default="": values.get(key, default),
+    )
+    monkeypatch.setattr(
+        store,
+        "_set",
+        lambda _conn, key, value: values.__setitem__(key, value),
+    )
+    monkeypatch.setattr(store, "_category_build_needed_conn", lambda _conn: False)
+    monkeypatch.setattr(store, "_clear_refresh_requested_conn", lambda _conn: None)
+
+    store.set_settings(
+        enabled=False,
+        source_url="",
+        blocked_categories=[],
+        safe_browsing_enabled=True,
+        safe_browsing_api_key="old-key",
+        safe_browsing_lists=["mw-4b"],
+    )
+    assert values["safe_browsing_next_run_ts"] == "2000"
+
+    store.set_settings(
+        enabled=False,
+        source_url="",
+        blocked_categories=[],
+        safe_browsing_enabled=True,
+        safe_browsing_api_key="new-key",
+        safe_browsing_lists=["mw-4b"],
+    )
+    assert values["safe_browsing_next_run_ts"] == "1000"
+
+    values["safe_browsing_next_run_ts"] = "3000"
+    store.set_settings(
+        enabled=False,
+        source_url="",
+        blocked_categories=[],
+        safe_browsing_enabled=True,
+        safe_browsing_api_key="new-key",
+        safe_browsing_lists=["mw-4b", "se-4b"],
+    )
+    assert values["safe_browsing_next_run_ts"] == "1000"
