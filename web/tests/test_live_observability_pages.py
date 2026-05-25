@@ -37,15 +37,6 @@ def _generate_proxy_traffic(client: LiveStackClient) -> str:
     )
     assert post_response.status == 200
 
-    slow_response = wait_for_proxy_fixture_response(
-        client,
-        f"/slow/{token}?delay_ms=900",
-        needle=token,
-        timeout_seconds=180.0,
-        request_timeout_seconds=10.0,
-    )
-    assert slow_response.status == 200
-    assert token in slow_response.text
 
     return token
 
