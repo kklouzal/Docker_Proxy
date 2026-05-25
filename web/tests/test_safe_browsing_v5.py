@@ -182,6 +182,38 @@ def test_safe_browsing_checker_continues_after_negative_prefix_cache(
     )
 
 
+def test_safe_browsing_cache_marks_prefix_negative_after_positive_response() -> None:
+    target = b"a" * 32
+    prefix = target[:4]
+    executed = []
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    checker._connect = FakeConn
+    checker._cache_search_response(
+        prefix,
+        [
+            {
+                "fullHash": base64.urlsafe_b64encode(target).decode("ascii").rstrip("="),
+                "fullHashDetails": [{"threatType": "MALWARE"}],
+            }
+        ],
+        300,
+    )
+
+    assert any("safe_browsing_full_hash_cache" in sql for sql, _params in executed)
+    assert any("safe_browsing_negative_cache" in sql for sql, _params in executed)
+
+
 def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
     from tools import safe_browsing_acl
 
