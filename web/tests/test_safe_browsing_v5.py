@@ -125,6 +125,37 @@ def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
     )
 
 
+def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> None:
+    from services import safe_browsing_v5
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size):
+            assert size == 1025
+            return b"x" * 1025
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 30
+        assert "hashLists:batchGet" in request.full_url
+        return FakeResponse()
+
+    monkeypatch.setenv("SAFE_BROWSING_MAX_RESPONSE_BYTES", "1024")
+    monkeypatch.setattr(safe_browsing_v5.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        SafeBrowsingStore()._request_json("/hashLists:batchGet", "key", [])
+    except ValueError as exc:
+        assert "SAFE_BROWSING_MAX_RESPONSE_BYTES (1024 bytes)" in str(exc)
+    else:
+        msg = "oversized Safe Browsing responses should fail with a clear error"
+        raise AssertionError(msg)
+
+
 def test_safe_browsing_prefix_miss_cache_uses_short_ttl(monkeypatch) -> None:
     from services import safe_browsing_v5
 

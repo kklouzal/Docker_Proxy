@@ -494,15 +494,20 @@ class SafeBrowsingStore:
             f"{_API_BASE}{path}?{query}",
             headers={"Accept": "application/json"},
         )
+        max_response_bytes = _env_int(
+            "SAFE_BROWSING_MAX_RESPONSE_BYTES",
+            64 * 1024 * 1024,
+            minimum=1024,
+            maximum=256 * 1024 * 1024,
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read(
-                _env_int(
-                    "SAFE_BROWSING_MAX_RESPONSE_BYTES",
-                    64 * 1024 * 1024,
-                    minimum=1024,
-                    maximum=256 * 1024 * 1024,
-                ),
+            data = resp.read(max_response_bytes + 1)
+        if len(data) > max_response_bytes:
+            msg = (
+                "Google Safe Browsing response exceeded "
+                f"SAFE_BROWSING_MAX_RESPONSE_BYTES ({max_response_bytes} bytes)"
             )
+            raise ValueError(msg)
         return json.loads(data.decode("utf-8")) if data else {}
 
     def update_lists(self, settings: SafeBrowsingSettings) -> tuple[bool, str, int]:
