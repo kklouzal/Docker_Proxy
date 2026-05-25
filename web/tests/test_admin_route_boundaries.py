@@ -894,7 +894,6 @@ def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
     with client.session_transaction() as sess:
         assert "active_proxy_id" not in sess
 
-
     recovered = client.get("/recover", follow_redirects=False)
     assert recovered.status_code in {302, 303}
     assert recovered.headers["Location"].startswith("/?recovered=1")
@@ -989,6 +988,7 @@ def test_recover_route_skips_proxy_registry_when_selection_is_stale(monkeypatch,
     assert response.headers["Location"].startswith("/?recovered=1")
     with client.session_transaction() as sess:
         assert "active_proxy_id" not in sess
+
 
 def test_webfilter_page_does_not_render_stored_safe_browsing_key(
     monkeypatch, tmp_path
