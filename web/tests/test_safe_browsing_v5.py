@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import hashlib
 from typing import NoReturn
 
@@ -57,7 +57,7 @@ def test_safe_browsing_canonicalization_normalizes_controls_path_ip_and_idn() ->
         canonicalize_url("http://0300.0250.0001.0001/a//b/../c#frag")
         == "http://192.168.1.1/a/c"
     )
-    assert canonicalize_url("http://?.example/%2525") == "http://xn--n3h.example/%25"
+    assert canonicalize_url("http://☃.example/%2525") == "http://xn--n3h.example/%25"
 
 
 def test_safe_browsing_hashes_are_sha256_expression_hashes() -> None:
