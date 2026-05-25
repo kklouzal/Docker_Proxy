@@ -269,6 +269,10 @@ def test_repo_template_includes_cache_first_defaults() -> None:
     assert "store_avg_object_size 13 KB" in text
     assert "store_objects_per_bucket 20" in text
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
+    assert "%{Content-Type}<h" in text
+    assert "%{Server}<h" in text
+    assert "%{Cf-Mitigated}<h" in text
+    assert "%{Alt-Svc}<h" in text
 
 
 def test_squid_controller_normalize_config_text_adds_default_observability_lines() -> (
@@ -293,6 +297,10 @@ http_access allow all
     )
 
     assert "logformat diagnostic" in text
+    assert "%{Content-Type}<h" in text
+    assert "%{Server}<h" in text
+    assert "%{Cf-Mitigated}<h" in text
+    assert "%{Alt-Svc}<h" in text
     assert "logformat icapobserve" in text
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
     assert "/var/log/squid/access.log" not in text
