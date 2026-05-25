@@ -247,3 +247,45 @@ def test_append_bounded_pending_row_drops_oldest_rows(monkeypatch) -> None:
     assert pending == [("old-2",), ("new",)]
     assert drop_state["dropped"] == 0
     assert drop_state["last_log_ts"] > 300.0
+
+
+def test_request_parser_captures_remediation_response_metadata() -> None:
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+
+    fields = [
+        "1710000010",
+        "42",
+        "10.0.0.8",
+        "GET",
+        "https://example.com/",
+        "TCP_MISS/403",
+        "512",
+        "tx-meta",
+        "DIRECT",
+        "bump",
+        "example.com",
+        "TLSv1.3",
+        "TLS_AES_256_GCM_SHA384",
+        "TLSv1.3",
+        "TLS_AES_128_GCM_SHA256",
+        "example.com",
+        "pytest/1.0",
+        "-",
+        "",
+        "",
+        "",
+        "",
+        "text/html",
+        "cloudflare",
+        "challenge",
+        'h3=":443"; ma=86400',
+    ]
+    line = "\t".join(fields)
+
+    parsed = DiagnosticStore()._parse_request_log_line(line)
+
+    assert parsed is not None
+    assert parsed["response_content_type"] == "text/html"
+    assert parsed["response_server"] == "cloudflare"
+    assert parsed["response_cf_mitigated"] == "challenge"
+    assert parsed["response_alt_svc"].startswith("h3=")

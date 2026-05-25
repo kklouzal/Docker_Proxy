@@ -60,6 +60,7 @@
   <a class="btn {{ 'primary' if pane == 'ssl' else 'ghost' }}" href="{{ url_for('observability', pane='ssl', window=window, limit=limit, q=search) }}">SSL</a>
   <a class="btn {{ 'primary' if pane == 'security' else 'ghost' }}" href="{{ url_for('observability', pane='security', window=window, limit=limit, q=search) }}">Security</a>
   <a class="btn {{ 'primary' if pane == 'performance' else 'ghost' }}" href="{{ url_for('observability', pane='performance', window=window, limit=limit) }}">Performance</a>
+  <a class="btn {{ 'primary' if pane == 'remediation' else 'ghost' }}" href="{{ url_for('observability', pane='remediation', window=window, limit=limit, q=search, sort=sort) }}">Remediation</a>
   <a class="btn {{ 'primary' if pane == 'reports' else 'ghost' }}" href="{{ url_for('observability', pane='reports', window=window, limit=limit, q=search, resolve_hostnames=('1' if resolve_hostnames else '0'), privacy=('1' if privacy else '0')) }}">Reports</a>
   <a class="btn {{ 'primary' if pane == 'settings' else 'ghost' }}" href="{{ url_for('observability', pane='settings', window=window) }}">Settings</a>
 </div>
@@ -144,7 +145,32 @@
     <form class="form" method="get" action="{{ url_for('observability') }}">
       <input type="hidden" name="pane" value="{{ pane }}" />
 
-      {% if pane in ['destinations', 'clients', 'cache'] %}
+      {% if pane == 'remediation' %}
+      <div class="row-2">
+        <div>
+          <label for="sort">Sort</label>
+          <select id="sort" name="sort">
+            <option value="confidence" {% if sort == 'confidence' %}selected{% endif %}>Highest confidence</option>
+            <option value="count" {% if sort == 'count' %}selected{% endif %}>Most observed</option>
+            <option value="recent" {% if sort == 'recent' %}selected{% endif %}>Newest activity</option>
+          </select>
+        </div>
+        <div>
+          <label for="limit">Limit</label>
+          <input id="limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
+        </div>
+      </div>
+      <div class="row-2">
+        <div>
+          <label for="window">Time window (seconds)</label>
+          <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+        </div>
+        <div>
+          <label for="q">Search</label>
+          <input id="q" name="q" type="text" placeholder="filter this pane..." value="{{ search }}" />
+        </div>
+      </div>
+      {% elif pane in ['destinations', 'clients', 'cache'] %}
       <div class="row-2">
         <div>
           <label for="sort">Sort</label>
@@ -185,7 +211,7 @@
       </div>
       {% endif %}
 
-      {% if pane in ['destinations', 'clients', 'cache', 'overview', 'ssl', 'security', 'reports'] %}
+      {% if pane != 'remediation' and pane in ['destinations', 'clients', 'cache', 'overview', 'ssl', 'security', 'reports'] %}
       <div class="row-2">
         {% if pane in ['destinations', 'clients', 'cache'] %}
         <div>
@@ -280,6 +306,7 @@
       <div class="stat compact-stat"><div class="stat-k">SSL buckets</div><div class="stat-v">{{ payload.ssl.summary.bucket_count }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Potential AV findings</div><div class="stat-v">{{ payload.security.summary.potential_findings }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Content-control blocks</div><div class="stat-v">{{ payload.security.summary.combined_blocks }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Remediation observations</div><div class="stat-v">{{ payload.remediation.summary.observations }}</div></div>
     </div>
     <div class="surface-note small">This snapshot is intentionally opinionated: it highlights the traffic, incidents, and enforcement signals administrators usually care about first before drilling into a specialist page.</div>
   </div>
@@ -618,6 +645,53 @@
   </div>
 </section>
 
+{% elif pane == 'remediation' %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Remediation suggestions</h2><span class="badge">{{ payload.summary.suggestions }} active</span></div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Suggestions</div><div class="stat-v">{{ payload.summary.suggestions }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">High confidence</div><div class="stat-v">{{ payload.summary.high_confidence }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Observed events</div><div class="stat-v">{{ payload.summary.observations }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Domains</div><div class="stat-v">{{ payload.summary.domains }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">HTTP/3 candidates</div><div class="stat-v">{{ payload.summary.http3_candidates }}</div></div>
+    </div>
+    <div class="hero-badges">
+      {% for row in payload.top_components %}<span class="badge" title="{{ row.full_label }}">{{ row.label }} &middot; {{ row.count }}</span>{% endfor %}
+      {% if not payload.top_components %}<span class="small">No remediation components matched this window.</span>{% endif %}
+    </div>
+  </div>
+</section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title">HTTP/3 / QUIC handling</h2><span class="badge">operator control</span></div>
+  <div class="card-body content-stack">
+    {% for note in payload.quic_guidance %}<div class="surface-note small">{{ note }}</div>{% endfor %}
+  </div>
+</section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Observed issues</h2><span class="badge">{{ payload.rows|length }} rows</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Issue</th><th>Component</th><th>Subject</th><th class="num">Count</th><th class="num">Clients</th><th>Confidence</th><th>Evidence</th><th>Suggested remediation</th><th class="num">Actions</th></tr></thead>
+      <tbody>
+      {% for row in payload.rows %}
+      <tr>
+        <td><div class="stack-sm"><span class="badge">{{ row.severity }}</span><strong>{{ row.title }}</strong><span class="small">{{ row.kind }}</span></div></td>
+        <td>{{ row.component }}</td>
+        <td class="mono">{{ row.subject }}</td>
+        <td class="num">{{ row.count }}</td>
+        <td class="num">{{ row.clients }}</td>
+        <td>{{ row.confidence }}</td>
+        <td class="small text-break">{{ row.evidence }}</td>
+        <td class="small text-break">{{ row.recommended_action }}</td>
+        <td class="num"><div class="table-action-stack">{% if row.subject %}<a class="btn" href="{{ url_for('observability', pane='destinations', q=row.subject, window=window) }}">Destination</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.subject, window=window) }}">SSL</a>{% endif %}<a class="btn" href="{{ url_for('sslfilter', domain=row.subject) }}">SSL Filtering</a></div></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if not payload.rows %}<div class="surface-note small">No confident remediation suggestions matched this window.</div>{% endif %}
+</section>
 {% elif pane == 'reports' %}
 <section class="card">
   <div class="card-header"><h2 class="card-title">Reporting overview</h2><span class="badge">{{ payload.privacy.mode }}</span></div>

@@ -209,6 +209,7 @@ _OBSERVABILITY_PANES = (
     "ssl",
     "security",
     "performance",
+    "remediation",
     "reports",
     "settings",
 )
@@ -220,6 +221,7 @@ _OBSERVABILITY_SORT_DEFAULTS = {
     "ssl": "recent",
     "security": "recent",
     "performance": "recent",
+    "remediation": "confidence",
     "reports": "bandwidth",
     "settings": "recent",
 }
@@ -231,6 +233,7 @@ _OBSERVABILITY_SORT_OPTIONS = {
     "ssl": ("recent",),
     "security": ("recent",),
     "performance": ("recent",),
+    "remediation": ("confidence", "count", "recent"),
     "reports": ("bandwidth",),
     "settings": ("recent",),
 }
@@ -290,6 +293,17 @@ _OBSERVABILITY_EMPTY_EXPORT_HEADERS = {
     ],
     "security": ["source", "timestamp", "client", "target", "detail", "status"],
     "performance": ["type", "timestamp", "subject", "metric", "detail"],
+    "remediation": [
+        "severity",
+        "component",
+        "issue",
+        "subject",
+        "observations",
+        "confidence",
+        "last_seen",
+        "recommended_action",
+        "evidence",
+    ],
     "reports": [
         "section",
         "subject",
@@ -493,9 +507,10 @@ def _cached_proxy_health(
     *,
     timeout_seconds: float,
     ttl_seconds: float = _PROXY_HEALTH_TTL_SECONDS,
+    full: bool = False,
 ) -> dict[str, Any]:
     """Short-lived per-process health cache for navigation-time UI snapshots."""
-    key = (str(proxy_id or ""), float(timeout_seconds))
+    key = (str(proxy_id or ""), float(timeout_seconds), bool(full))
     now = time.monotonic()
     cached = _PROXY_HEALTH_CACHE.get(key)
     if cached is not None:
@@ -506,6 +521,7 @@ def _cached_proxy_health(
         payload = get_proxy_client().get_health(
             proxy_id,
             timeout_seconds=timeout_seconds,
+            full=full,
         )
     except ProxyClientError as exc:
         if cached is not None:
@@ -858,6 +874,42 @@ def _empty_observability_summary() -> dict[str, Any]:
     }
 
 
+def _database_remediation_payload(exc: BaseException, *, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    detail = public_error_message(exc, default="Observability data could not be loaded.")
+    now = int(time.time())
+    row = {
+        "kind": "mysql_unreachable",
+        "component": "MySQL / observability ingestion",
+        "severity": "high",
+        "title": "Observability database query failed",
+        "subject": get_proxy_id(),
+        "count": 1,
+        "clients": 0,
+        "last_seen": now,
+        "confidence": "high",
+        "recommended_action": "Check MySQL service health, credentials, connection pool limits, schema locks, and pending tailer flush queues before trusting current remediation coverage.",
+        "evidence": detail[:240],
+    }
+    return {
+        "summary": {
+            "suggestions": 1,
+            "high_confidence": 1,
+            "observations": 1,
+            "domains": 0,
+            "latest": now,
+            "http3_candidates": 0,
+        },
+        "rows": [row],
+        "top_components": [{"label": row["component"], "full_label": row["component"], "count": 1}],
+        "top_kinds": [{"label": row["kind"], "full_label": row["kind"], "count": 1}],
+        "quic_guidance": [
+            "PAC files can steer HTTP/HTTPS proxy use, but they cannot force UDP/443 QUIC through an HTTP proxy.",
+            "Restore database ingestion before treating the absence of HTTP/3 or remediation rows as evidence of clean traffic.",
+        ],
+        "summary_source": summary or _empty_observability_summary(),
+    }
+
+
 def _empty_observability_payload(
     pane: str,
     *,
@@ -908,6 +960,21 @@ def _empty_observability_payload(
         "top_tls_server_versions": [],
         "top_policy_tags": [],
     }
+    remediation_payload = {
+        "summary": {
+            "suggestions": 0,
+            "high_confidence": 0,
+            "observations": 0,
+            "domains": 0,
+            "latest": 0,
+            "http3_candidates": 0,
+        },
+        "rows": [],
+        "top_components": [],
+        "top_kinds": [],
+        "quic_guidance": [],
+        "summary_source": base_summary,
+    }
 
     if pane == "overview":
         return {
@@ -918,6 +985,7 @@ def _empty_observability_payload(
             "ssl": ssl_payload,
             "security": security_payload,
             "performance": performance_payload,
+            "remediation": remediation_payload,
         }
     if pane in {"destinations", "clients", "cache"}:
         return {"rows": []}
@@ -927,6 +995,8 @@ def _empty_observability_payload(
         return security_payload
     if pane == "performance":
         return performance_payload
+    if pane == "remediation":
+        return remediation_payload
     if pane == "reports":
         return {
             "summary": base_summary,
@@ -2589,6 +2659,33 @@ def observability():
             pane_payload = _empty_observability_payload(pane, summary=summary)
             if isinstance(performance_payload, dict):
                 pane_payload.update(performance_payload)
+        elif pane == "remediation":
+            runtime_health = _cached_proxy_health(
+                get_proxy_id(),
+                timeout_seconds=max(3.0, _proxy_health_timeout_seconds()),
+                full=True,
+            )
+            pane_payload = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    pane,
+                    get_proxy_id(),
+                    window_i,
+                    search,
+                    limit,
+                    sort,
+                    int(runtime_health.get("timestamp") or 0),
+                    runtime_health.get("status") or "",
+                ),
+                lambda: queries.remediation_overview(
+                    since=since_ts,
+                    search=search,
+                    limit=limit,
+                    sort=sort,
+                    summary=summary,
+                    runtime_health=runtime_health,
+                ),
+            )
         elif pane == "reports":
             pane_payload = _cached_observability_result(
                 _observability_result_cache_key(
@@ -2636,14 +2733,17 @@ def observability():
                     ),
                 },
             )
-    except Exception:
+    except Exception as exc:
         log_exception_throttled(
             app.logger,
             f"web.app.observability.pane.{pane}",
             interval_seconds=30.0,
             message="Failed to load observability pane; rendering empty state",
         )
-        pane_payload = _empty_observability_payload(pane, summary=summary)
+        if pane == "remediation":
+            pane_payload = _database_remediation_payload(exc, summary=summary)
+        else:
+            pane_payload = _empty_observability_payload(pane, summary=summary)
     pane_payload = _merge_observability_payload_defaults(
         pane,
         pane_payload,
@@ -3240,6 +3340,40 @@ def observability_export():
                         row.get("result", ""),
                     ],
                 )
+            return _observability_export_response(headers, rows, export_format)
+
+        if pane == "remediation":
+            try:
+                runtime_health = _cached_proxy_health(
+                    get_proxy_id(),
+                    timeout_seconds=max(3.0, _proxy_health_timeout_seconds()),
+                    full=True,
+                )
+            except Exception:
+                runtime_health = {}
+            payload = queries.remediation_overview(
+                since=since_ts,
+                search=search,
+                limit=limit,
+                sort=sort,
+                summary=summary_data or {},
+                runtime_health=runtime_health,
+            )
+            headers = _OBSERVABILITY_EMPTY_EXPORT_HEADERS["remediation"]
+            rows = [
+                [
+                    row.get("severity", ""),
+                    row.get("component", ""),
+                    row.get("title", ""),
+                    row.get("subject", ""),
+                    row.get("count", 0),
+                    row.get("confidence", ""),
+                    row.get("last_seen", 0),
+                    row.get("recommended_action", ""),
+                    row.get("evidence", ""),
+                ]
+                for row in payload.get("rows", [])
+            ]
             return _observability_export_response(headers, rows, export_format)
 
         if pane == "performance":

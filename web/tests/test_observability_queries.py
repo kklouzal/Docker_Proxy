@@ -26,6 +26,10 @@ def _request_line(
     bytes_sent: int = 0,
     master_xaction: str = "",
     bump_mode: str = "bump",
+    response_content_type: str = "",
+    response_server: str = "",
+    response_cf_mitigated: str = "",
+    response_alt_svc: str = "",
 ) -> str:
     fields = [
         str(ts),
@@ -50,6 +54,10 @@ def _request_line(
         "",
         "",
         "",
+        response_content_type,
+        response_server,
+        response_cf_mitigated,
+        response_alt_svc,
     ]
     return "\t".join(fields)
 
@@ -732,3 +740,86 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
         row["name"] == "Scheduled email" and row["status"] == "configured"
         for row in payload["export_contracts"]
     )
+
+
+def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(tmp_path) -> None:
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "observability-remediation")
+
+    from services import observability_queries  # type: ignore
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    queries = observability_queries.ObservabilityQueries()
+
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=3000,
+            client_ip="192.0.2.10",
+            method="GET",
+            url="https://video.example/watch",
+            result_code="TCP_MISS/403",
+            master_xaction="tx-cf",
+            response_server="cloudflare",
+            response_cf_mitigated="challenge",
+            response_alt_svc='h3=":443"; ma=86400',
+        ),
+    )
+    for offset in range(3):
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=3010 + offset,
+                client_ip="192.0.2.10",
+                method="GET",
+                url=f"https://cdn.example/video/seg-000{offset}.m4s",
+                result_code="TCP_MISS_ABORTED/200",
+                master_xaction=f"tx-media-{offset}",
+                response_content_type="video/iso.segment",
+            ),
+        )
+    _insert_icap(
+        diag_store,
+        _icap_line(
+            ts=3020,
+            master_xaction="tx-icap",
+            client_ip="192.0.2.10",
+            method="GET",
+            url="https://scan.example/file.bin",
+            icap_time_ms=1500,
+            adapt_summary="virus_scan RESPMOD timeout",
+            adapt_details="clamd timeout bypassed",
+        ),
+    )
+
+    payload = queries.remediation_overview(
+        since=2990,
+        limit=20,
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 3030,
+            "services": {"clamd": {"ok": False, "detail": "clamd unreachable"}},
+            "stats": {
+                "memory": {
+                    "used_percent": 91.5,
+                    "available_bytes": 128 * 1024 * 1024,
+                },
+            },
+            "state_errors": ["MySQL lock wait timeout while reading policy state"],
+        },
+    )
+    kinds = {row["kind"]: row for row in payload["rows"]}
+
+    assert kinds["cloudflare_challenge"]["count"] == 1
+    assert kinds["http3_alt_svc"]["subject"] == "video.example"
+    assert kinds["aborted_media_segments"]["count"] == 3
+    assert kinds["slow_icap"]["component"] == "ICAP av"
+    assert kinds["icap_degraded"]["confidence"] == "high"
+    assert kinds["runtime_icap_degraded"]["subject"] == "livingroom"
+    assert kinds["memory_pressure"]["component"] == "Proxy runtime resources"
+    assert kinds["mysql_degraded"]["component"] == "MySQL / observability ingestion"
+    assert payload["summary"]["observations"] >= 10
+    assert payload["summary"]["http3_candidates"] == 1

@@ -439,6 +439,10 @@ class DiagnosticStore:
                                 ssl_exception VARCHAR(64) NOT NULL,
                                 webfilter_allow VARCHAR(64) NOT NULL,
                                 cache_bypass VARCHAR(64) NOT NULL,
+                                response_content_type VARCHAR(255) NOT NULL DEFAULT '',
+                                response_server VARCHAR(255) NOT NULL DEFAULT '',
+                                response_cf_mitigated VARCHAR(64) NOT NULL DEFAULT '',
+                                response_alt_svc VARCHAR(512) NOT NULL DEFAULT '',
                                 raw TEXT NOT NULL,
                                 created_ts BIGINT NOT NULL,
                                 UNIQUE KEY idx_diagnostic_requests_proxy_event (proxy_id, event_key),
@@ -486,6 +490,43 @@ class DiagnosticStore:
                             )
                             """,
                         )
+                        for column_name, ddl in (
+                            (
+                                "response_content_type",
+                                "ALTER TABLE diagnostic_requests ADD COLUMN response_content_type VARCHAR(255) NOT NULL DEFAULT '' AFTER cache_bypass",
+                            ),
+                            (
+                                "response_server",
+                                "ALTER TABLE diagnostic_requests ADD COLUMN response_server VARCHAR(255) NOT NULL DEFAULT '' AFTER response_content_type",
+                            ),
+                            (
+                                "response_cf_mitigated",
+                                "ALTER TABLE diagnostic_requests ADD COLUMN response_cf_mitigated VARCHAR(64) NOT NULL DEFAULT '' AFTER response_server",
+                            ),
+                            (
+                                "response_alt_svc",
+                                "ALTER TABLE diagnostic_requests ADD COLUMN response_alt_svc VARCHAR(512) NOT NULL DEFAULT '' AFTER response_cf_mitigated",
+                            ),
+                        ):
+                            try:
+                                exists = conn.execute(
+                                    """
+                                    SELECT 1
+                                    FROM information_schema.columns
+                                    WHERE table_schema = DATABASE()
+                                      AND table_name = 'diagnostic_requests'
+                                      AND column_name = %s
+                                    LIMIT 1
+                                    """,
+                                    (column_name,),
+                                ).fetchone()
+                                if not exists:
+                                    conn.execute(ddl)
+                            except Exception:
+                                logger.warning(
+                                    "Failed to ensure diagnostic_requests column %s",
+                                    column_name,
+                                )
                         for table, index_name, ddl in (
                             (
                                 "diagnostic_requests",
@@ -501,6 +542,11 @@ class DiagnosticStore:
                                 "diagnostic_requests",
                                 "idx_diagnostic_requests_proxy_result_ts",
                                 "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)",
+                            ),
+                            (
+                                "diagnostic_requests",
+                                "idx_diagnostic_requests_proxy_cf_ts",
+                                "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_cf_ts (proxy_id, response_cf_mitigated, ts)",
                             ),
                             (
                                 "diagnostic_icap_events",
@@ -842,6 +888,10 @@ class DiagnosticStore:
         ssl_exception = _safe_text(row[19], max_len=64)
         webfilter_allow = _safe_text(row[20], max_len=64)
         cache_bypass = _safe_text(row[21], max_len=64)
+        response_content_type = _safe_text(row[22] if len(row) > 22 else "", max_len=255)
+        response_server = _safe_text(row[23] if len(row) > 23 else "", max_len=255)
+        response_cf_mitigated = _safe_text(row[24] if len(row) > 24 else "", max_len=64)
+        response_alt_svc = _safe_text(row[25] if len(row) > 25 else "", max_len=512)
         domain = _extract_domain(url, host=host, sni=sni)
         http_status = _parse_status(result_code)
 
@@ -870,6 +920,10 @@ class DiagnosticStore:
             "ssl_exception": ssl_exception,
             "webfilter_allow": webfilter_allow,
             "cache_bypass": cache_bypass,
+            "response_content_type": response_content_type,
+            "response_server": response_server,
+            "response_cf_mitigated": response_cf_mitigated,
+            "response_alt_svc": response_alt_svc,
             "raw": (line or "").strip("\r\n")[:4000],
         }
 
@@ -915,6 +969,10 @@ class DiagnosticStore:
             str(row["ssl_exception"]),
             str(row["webfilter_allow"]),
             str(row["cache_bypass"]),
+            str(row["response_content_type"]),
+            str(row["response_server"]),
+            str(row["response_cf_mitigated"]),
+            str(row["response_alt_svc"]),
             str(row["raw"]),
             int(_now()),
         )
@@ -1010,8 +1068,9 @@ class DiagnosticStore:
                 proxy_id, event_key, ts, duration_ms, client_ip, method, url, domain, result_code, http_status,
                 bytes, master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                 tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule, ssl_exception,
-                webfilter_allow, cache_bypass, raw, created_ts
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                webfilter_allow, cache_bypass, response_content_type, response_server, response_cf_mitigated,
+                response_alt_svc, raw, created_ts
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             rows,
         )

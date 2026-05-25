@@ -1439,6 +1439,404 @@ class ObservabilityQueries:
             for row in rows
         ]
 
+    @staticmethod
+    def _suggestion_row(
+        *,
+        kind: str,
+        component: str,
+        severity: str,
+        title: str,
+        subject: str,
+        count: int,
+        clients: int,
+        last_seen: int,
+        confidence: str,
+        recommended_action: str,
+        evidence: str,
+    ) -> dict[str, Any]:
+        return {
+            "kind": kind,
+            "component": component,
+            "severity": severity,
+            "title": title,
+            "subject": subject,
+            "count": int(count or 0),
+            "clients": int(clients or 0),
+            "last_seen": int(last_seen or 0),
+            "confidence": confidence,
+            "recommended_action": recommended_action,
+            "evidence": evidence,
+        }
+
+    @staticmethod
+    def _runtime_health_suggestions(runtime_health: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not isinstance(runtime_health, dict) or not runtime_health:
+            return []
+
+        proxy_id = str(runtime_health.get("proxy_id") or get_proxy_id())
+        observed_at = int(runtime_health.get("timestamp") or time.time())
+        rows: list[dict[str, Any]] = []
+
+        def add(
+            *,
+            kind: str,
+            component: str,
+            severity: str,
+            title: str,
+            count: int,
+            confidence: str,
+            recommended_action: str,
+            evidence: str,
+        ) -> None:
+            rows.append(
+                ObservabilityQueries._suggestion_row(
+                    kind=kind,
+                    component=component,
+                    severity=severity,
+                    title=title,
+                    subject=proxy_id,
+                    count=count,
+                    clients=0,
+                    last_seen=observed_at,
+                    confidence=confidence,
+                    recommended_action=recommended_action,
+                    evidence=evidence[:240],
+                ),
+            )
+
+        detail_text = " ".join(
+            str(runtime_health.get(key) or "")
+            for key in ("detail", "health_cache_detail", "proxy_status")
+        ).strip()
+        state_errors = [str(item or "") for item in runtime_health.get("state_errors") or []]
+        services = runtime_health.get("services") if isinstance(runtime_health.get("services"), dict) else {}
+        stats = runtime_health.get("stats") if isinstance(runtime_health.get("stats"), dict) else {}
+
+        if runtime_health.get("_unavailable_cached") or runtime_health.get("status") in {"offline", "unavailable"}:
+            add(
+                kind="proxy_health_unreachable",
+                component="Proxy runtime health",
+                severity="high",
+                title="Selected proxy runtime health is unreachable",
+                count=1,
+                confidence="medium",
+                recommended_action="Verify the proxy management URL, management token, container state, and network path before trusting traffic-level conclusions.",
+                evidence=detail_text or "Proxy health request returned an unavailable runtime payload.",
+            )
+
+        db_text = " ".join([detail_text, *state_errors]).lower()
+        if any(token in db_text for token in ("mysql", "database", "db pool", "pool exhausted", "too many connections", "lock wait")):
+            add(
+                kind="mysql_degraded",
+                component="MySQL / observability ingestion",
+                severity="high",
+                title="Database or ingestion degradation observed",
+                count=1,
+                confidence="medium",
+                recommended_action="Check MySQL health, credentials, connection limits, DB_POOL_SIZE, tailer pending-row warnings, and ingestion queue pressure before relying on trend data.",
+                evidence="; ".join([detail_text, *state_errors]).strip() or "Runtime health referenced database degradation.",
+            )
+
+        for service_name, service in services.items():
+            if not isinstance(service, dict) or service.get("ok", True):
+                continue
+            service_detail = str(service.get("detail") or service_name)
+            lowered = f"{service_name} {service_detail}".lower()
+            if any(token in lowered for token in ("icap", "clamd", "clamav", "c-icap")):
+                add(
+                    kind="runtime_icap_degraded",
+                    component="ICAP / ClamAV health",
+                    severity="high",
+                    title="ICAP or ClamAV runtime health is degraded",
+                    count=1,
+                    confidence="high",
+                    recommended_action="Check supervisor state, c-icap listeners, clamd reachability, scan timeouts, fail-open/fail-closed policy, and memory pressure.",
+                    evidence=f"{service_name}: {service_detail}",
+                )
+
+        memory = stats.get("memory") if isinstance(stats.get("memory"), dict) else {}
+        used_percent = memory.get("used_percent")
+        available_bytes = memory.get("available_bytes")
+        try:
+            used_value = float(used_percent) if used_percent is not None else None
+        except Exception:
+            used_value = None
+        try:
+            available_value = int(available_bytes) if available_bytes is not None else None
+        except Exception:
+            available_value = None
+        if (used_value is not None and used_value >= 85.0) or (
+            available_value is not None and available_value < 256 * 1024 * 1024
+        ):
+            evidence_parts = []
+            if used_value is not None:
+                evidence_parts.append(f"memory used {used_value:.1f}%")
+            if available_value is not None:
+                evidence_parts.append(f"available {available_value // (1024 * 1024)} MiB")
+            add(
+                kind="memory_pressure",
+                component="Proxy runtime resources",
+                severity="high" if used_value is not None and used_value >= 92.0 else "medium",
+                title="Proxy runtime memory pressure observed",
+                count=1,
+                confidence="medium",
+                recommended_action="Increase the container memory cap, reduce Squid/ICAP/cache concurrency, or move side workloads off the constrained host before increasing inspection depth.",
+                evidence=", ".join(evidence_parts) or "Runtime memory availability is low.",
+            )
+
+        return rows
+
+    @staticmethod
+    def _remediation_sort_key(row: dict[str, Any], sort: str) -> tuple[Any, ...]:
+        severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(
+            str(row.get("severity") or "").lower(),
+            4,
+        )
+        confidence_rank = {"high": 0, "medium": 1, "low": 2}.get(
+            str(row.get("confidence") or "").lower(),
+            3,
+        )
+        if sort == "count":
+            return (-int(row.get("count") or 0), severity_rank, confidence_rank)
+        if sort == "recent":
+            return (-int(row.get("last_seen") or 0), severity_rank, confidence_rank)
+        return (
+            confidence_rank,
+            severity_rank,
+            -int(row.get("count") or 0),
+            -int(row.get("last_seen") or 0),
+        )
+
+    def remediation_overview(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+        sort: str = "confidence",
+        summary: dict[str, Any] | None = None,
+        runtime_health: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        proxy_id = get_proxy_id()
+        lim = max(10, min(200, int(limit or 50)))
+        search_value = (search or "").strip().lower()
+        where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
+        params: list[Any] = [proxy_id, int(since)]
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append(
+                "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\')",
+            )
+            params.extend([like, like, like, like])
+        where_sql = "WHERE " + " AND ".join(where)
+        suggestions: list[dict[str, Any]] = self._runtime_health_suggestions(runtime_health)
+
+        with self._connect() as conn:
+            cf_rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
+                       MAX(COALESCE(response_server, '')) AS sample_server
+                FROM diagnostic_requests
+                {where_sql}
+                  AND (
+                    LOWER(COALESCE(response_cf_mitigated, '')) = 'challenge'
+                    OR (http_status = 403 AND LOWER(COALESCE(response_server, '')) LIKE '%%cloudflare%%')
+                  )
+                GROUP BY domain
+                ORDER BY observations DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (*params, lim),
+            ).fetchall()
+            h3_rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
+                       MAX(COALESCE(response_alt_svc, '')) AS sample_alt_svc
+                FROM diagnostic_requests
+                {where_sql}
+                  AND LOWER(COALESCE(response_alt_svc, '')) REGEXP '(^|[^a-z0-9])h3[-=]'
+                GROUP BY domain
+                ORDER BY observations DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (*params, lim),
+            ).fetchall()
+            aborted_rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
+                       MAX(COALESCE(response_content_type, '')) AS sample_type
+                FROM diagnostic_requests
+                {where_sql}
+                  AND result_code LIKE 'TCP_MISS_ABORTED/%%'
+                  AND (
+                    LOWER(COALESCE(response_content_type, '')) REGEXP 'video|audio|mpegurl|dash'
+                    OR LOWER(url) REGEXP '\\\\.(m4s|mp4|m3u8|mpd|ts)(\\\\?|$)'
+                  )
+                GROUP BY domain
+                HAVING observations >= 3
+                ORDER BY observations DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (*params, lim),
+            ).fetchall()
+            slow_icap_rows = conn.execute(
+                """
+                SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                       MAX(ts) AS last_seen, MAX(icap_time_ms) AS max_icap_ms
+                FROM diagnostic_icap_events
+                WHERE proxy_id = %s AND ts >= %s AND domain <> '' AND icap_time_ms >= 1000
+                GROUP BY domain, service_family
+                ORDER BY observations DESC, max_icap_ms DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (proxy_id, int(since), lim),
+            ).fetchall()
+            icap_failure_rows = conn.execute(
+                """
+                SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                       MAX(ts) AS last_seen, MAX(adapt_summary) AS sample_summary
+                FROM diagnostic_icap_events
+                WHERE proxy_id = %s AND ts >= %s AND domain <> ''
+                  AND LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, ''))) REGEXP 'fail|error|timeout|unreachable|bypass'
+                GROUP BY domain, service_family
+                ORDER BY observations DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (proxy_id, int(since), lim),
+            ).fetchall()
+
+        suggestions.extend(
+            self._suggestion_row(
+                kind="cloudflare_challenge",
+                component="SSL inspection / upstream bot mitigation",
+                severity="high",
+                title="Cloudflare challenge observed through proxy",
+                subject=str(row[0] or ""),
+                count=int(row[1] or 0),
+                clients=int(row[2] or 0),
+                last_seen=int(row[3] or 0),
+                confidence="high",
+                recommended_action="Add a no-bump/splice rule for the domain and consider PAC DIRECT if the client app still fails.",
+                evidence=f"HTTP 403 with Cloudflare mitigation metadata; sample server={row[4] or 'unknown'}",
+            )
+            for row in cf_rows
+        )
+        suggestions.extend(
+            self._suggestion_row(
+                kind="http3_alt_svc",
+                component="HTTP/3 / QUIC routing",
+                severity="medium",
+                title="Origin advertises HTTP/3 over QUIC",
+                subject=str(row[0] or ""),
+                count=int(row[1] or 0),
+                clients=int(row[2] or 0),
+                last_seen=int(row[3] or 0),
+                confidence="medium",
+                recommended_action="Block or steer UDP/443 at the gateway for managed clients, then verify the browser/app is using the PAC/proxy path.",
+                evidence=f"Alt-Svc advertises h3; sample={row[4] or 'not captured'}",
+            )
+            for row in h3_rows
+        )
+        suggestions.extend(
+            self._suggestion_row(
+                kind="aborted_media_segments",
+                component="SSL inspection / media streaming",
+                severity="medium",
+                title="Repeated aborted media segment downloads",
+                subject=str(row[0] or ""),
+                count=int(row[1] or 0),
+                clients=int(row[2] or 0),
+                last_seen=int(row[3] or 0),
+                confidence="medium",
+                recommended_action="Consider no-bump/splice and cache-bypass for this media/CDN domain; use PAC DIRECT if the application is sensitive to inspection.",
+                evidence=f"Repeated TCP_MISS_ABORTED media responses; sample type={row[4] or 'unknown'}",
+            )
+            for row in aborted_rows
+        )
+        for row in slow_icap_rows:
+            service = str(row[1] or "icap")
+            suggestions.append(
+                self._suggestion_row(
+                    kind="slow_icap",
+                    component=f"ICAP {service}",
+                    severity="medium",
+                    title="Slow ICAP adaptation observed",
+                    subject=str(row[0] or ""),
+                    count=int(row[2] or 0),
+                    clients=int(row[3] or 0),
+                    last_seen=int(row[4] or 0),
+                    confidence="medium",
+                    recommended_action="Check c-icap/clamd latency, tune scan policy by MIME/size/domain, or add an exclusion for latency-sensitive traffic.",
+                    evidence=f"Max ICAP latency {int(row[5] or 0)} ms",
+                ),
+            )
+        for row in icap_failure_rows:
+            service = str(row[1] or "icap")
+            suggestions.append(
+                self._suggestion_row(
+                    kind="icap_degraded",
+                    component=f"ICAP {service}",
+                    severity="high",
+                    title="ICAP degradation or bypass signal observed",
+                    subject=str(row[0] or ""),
+                    count=int(row[2] or 0),
+                    clients=int(row[3] or 0),
+                    last_seen=int(row[4] or 0),
+                    confidence="high",
+                    recommended_action="Check c-icap listener health, clamd reachability, fail-open/fail-closed policy, and proxy memory pressure.",
+                    evidence=str(row[5] or "ICAP trace contained failure/bypass language")[:240],
+                ),
+            )
+
+        try:
+            ssl_payload = self.ssl_overview(since=since, search=search, limit=lim)
+            for row in ssl_payload.get("exclusion_candidates", [])[:lim]:
+                domain = str(row.get("domain") or "")
+                if not domain:
+                    continue
+                suggestions.append(
+                    self._suggestion_row(
+                        kind="ssl_exclusion_candidate",
+                        component="SSL inspection",
+                        severity="high" if int(row.get("count") or 0) >= 5 else "medium",
+                        title="Repeated TLS/SSL errors indicate likely inspection incompatibility",
+                        subject=domain,
+                        count=int(row.get("count") or 0),
+                        clients=0,
+                        last_seen=int(row.get("last_seen") or 0),
+                        confidence="high",
+                        recommended_action="Add a no-bump/splice rule for this domain, then retest the affected client workflow.",
+                        evidence=str(row.get("reason") or row.get("category_label") or "SSL error bucket"),
+                    ),
+                )
+        except Exception:
+            pass
+
+        suggestions.sort(key=lambda row: self._remediation_sort_key(row, sort))
+        rows = suggestions[:lim]
+        by_component = Counter(str(row.get("component") or "Other") for row in rows)
+        by_kind = Counter(str(row.get("kind") or "other") for row in rows)
+        return {
+            "summary": {
+                "suggestions": len(rows),
+                "high_confidence": sum(1 for row in rows if row.get("confidence") == "high"),
+                "observations": sum(int(row.get("count") or 0) for row in rows),
+                "domains": len({str(row.get("subject") or "") for row in rows if row.get("subject")}),
+                "latest": max([int(row.get("last_seen") or 0) for row in rows] or [0]),
+                "http3_candidates": sum(1 for row in rows if row.get("kind") == "http3_alt_svc"),
+            },
+            "rows": rows,
+            "top_components": _badge_rows(by_component, limit=6),
+            "top_kinds": _badge_rows(by_kind, limit=6),
+            "quic_guidance": [
+                "PAC files can steer HTTP/HTTPS proxy use, but they cannot force a browser or app to send UDP/443 QUIC traffic through an HTTP proxy.",
+                "On MikroTik/RouterOS, enforce managed-client QUIC policy with explicit forward-chain UDP/443 drop or reject rules for client subnets that must traverse the proxy.",
+                "Client verification should include browser HTTP/3 disabled/blocked checks, PAC/WPAD assignment checks, and proof that the same domain appears in proxy observability after UDP/443 is blocked.",
+                "Observed Alt-Svc h3 response headers are environment-derived candidates only; Docker Proxy does not ship an arbitrary static site list.",
+            ],
+            "summary_source": summary or self.summary(since=since),
+        }
+
     def reporting_overview(
         self,
         *,
@@ -1562,6 +1960,12 @@ class ObservabilityQueries:
             "security": self.security_overview(since=since, search=search, limit=lim),
             "performance": self.performance_overview(
                 since=since,
+                limit=lim,
+                summary=summary_payload,
+            ),
+            "remediation": self.remediation_overview(
+                since=since,
+                search=search,
                 limit=lim,
                 summary=summary_payload,
             ),

@@ -491,6 +491,22 @@ class FakeObservabilityQueries:
     def performance_overview(self, **_kwargs: Any) -> dict[str, Any]:
         return {"slow_requests": [], "slow_icap_events": []}
 
+    def remediation_overview(self, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "summary": {
+                "suggestions": 0,
+                "high_confidence": 0,
+                "observations": 0,
+                "domains": 0,
+                "latest": 0,
+                "http3_candidates": 0,
+            },
+            "rows": [],
+            "top_components": [],
+            "top_kinds": [],
+            "quic_guidance": [],
+        }
+
     def top_destinations(self, **_kwargs: Any) -> list[Any]:
         return []
 

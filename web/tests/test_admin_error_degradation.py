@@ -100,6 +100,12 @@ def test_observability_route_and_export_degrade_to_empty_payloads(
     assert page.status_code == 200
     assert "db password" not in page.get_data(as_text=True).lower()
 
+    remediation = client.get("/observability?pane=remediation&q=db-password")
+    assert remediation.status_code == 200
+    remediation_body = remediation.get_data(as_text=True).lower()
+    assert "observability database query failed" in remediation_body
+    assert "db password" not in remediation_body
+
     export = client.get("/observability/export?pane=ssl&limit=10")
     assert export.status_code == 200
     assert export.headers.get("Content-Type", "").startswith("text/csv")
