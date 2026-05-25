@@ -4,6 +4,7 @@ import pytest
 
 from .admin_route_test_utils import (
     FakeRegistry,
+    FakeWebfilterStore,
     csrf_token,
     load_admin_app,
     login_client,
@@ -893,6 +894,7 @@ def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
     with client.session_transaction() as sess:
         assert "active_proxy_id" not in sess
 
+
     recovered = client.get("/recover", follow_redirects=False)
     assert recovered.status_code in {302, 303}
     assert recovered.headers["Location"].startswith("/?recovered=1")
@@ -987,3 +989,77 @@ def test_recover_route_skips_proxy_registry_when_selection_is_stale(monkeypatch,
     assert response.headers["Location"].startswith("/?recovered=1")
     with client.session_transaction() as sess:
         assert "active_proxy_id" not in sess
+
+def test_webfilter_page_does_not_render_stored_safe_browsing_key(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeWebfilterStore()
+    store.settings.safe_browsing_api_key = "stored-secret"
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/webfilter")
+
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert "stored-secret" not in text
+    assert 'name="safe_browsing_clear_key"' in text
+    assert "Configured - enter a new key to replace" in text
+
+
+def test_webfilter_save_preserves_stored_safe_browsing_key_when_blank(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeWebfilterStore()
+    store.settings.safe_browsing_api_key = "stored-secret"
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/webfilter?tab=categories",
+        data={
+            "csrf_token": csrf_token(client, "/webfilter"),
+            "tab": "categories",
+            "action": "save",
+            "source_url": "https://example.com/categories.csv",
+            "source_provider": "csv",
+            "safe_browsing_enabled": "on",
+            "safe_browsing_api_key": "",
+            "safe_browsing_lists": ["se-4b", "mw-4b"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert store.last_set_settings["safe_browsing_api_key"] == "stored-secret"
+
+
+def test_webfilter_save_clears_stored_safe_browsing_key_when_requested(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeWebfilterStore()
+    store.settings.safe_browsing_api_key = "stored-secret"
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/webfilter?tab=categories",
+        data={
+            "csrf_token": csrf_token(client, "/webfilter"),
+            "tab": "categories",
+            "action": "save",
+            "source_url": "https://example.com/categories.csv",
+            "source_provider": "csv",
+            "safe_browsing_enabled": "on",
+            "safe_browsing_api_key": "",
+            "safe_browsing_clear_key": "on",
+            "safe_browsing_lists": ["se-4b", "mw-4b"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert store.last_set_settings["safe_browsing_api_key"] == ""

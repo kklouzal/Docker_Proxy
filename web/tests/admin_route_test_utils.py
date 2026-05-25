@@ -606,6 +606,7 @@ class FakeWebfilterStore:
             "source_provider": source_provider,
             "blocked_categories": blocked_categories,
             "safe_browsing_enabled": safe_browsing_enabled,
+            "safe_browsing_api_key": safe_browsing_api_key,
             "safe_browsing_lists": safe_browsing_lists,
         }
 

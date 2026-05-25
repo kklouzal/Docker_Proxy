@@ -210,7 +210,13 @@
               Enable Google Safe Browsing cached/local-list checks
             </label>
             <label class="label" for="safe-browsing-api-key">API key</label>
-            <input id="safe-browsing-api-key" class="input" type="password" name="safe_browsing_api_key" value="{{ settings.safe_browsing_api_key or '' }}" autocomplete="off" placeholder="AIza...">
+            <input id="safe-browsing-api-key" class="input" type="password" name="safe_browsing_api_key" value="" autocomplete="new-password" placeholder="{{ 'Configured - enter a new key to replace' if settings.safe_browsing_api_key else 'AIza...' }}">
+            {% if settings.safe_browsing_api_key %}
+              <label class="checkbox-row">
+                <input type="checkbox" name="safe_browsing_clear_key" value="on">
+                Clear stored API key
+              </label>
+            {% endif %}
             <div class="help">Stored in the local control database and used by the updater/full-hash confirmation path. This feature is intentionally cached-only; there is no live lookup mode.</div>
             <div class="form-row">
               <div class="label">Threat lists</div>

@@ -1827,6 +1827,20 @@ def _handle_webfilter_post(store: Any, tab: str):
             for c in request.form.getlist("safe_browsing_lists")
             if (c or "").strip()
         ]
+        safe_browsing_clear_key = request.form.get("safe_browsing_clear_key") == "on"
+        if not safe_browsing_api_key and not safe_browsing_clear_key:
+            try:
+                current_settings = store.get_settings()
+                if isinstance(current_settings, dict):
+                    safe_browsing_api_key = str(
+                        current_settings.get("safe_browsing_api_key") or "",
+                    )
+                else:
+                    safe_browsing_api_key = str(
+                        getattr(current_settings, "safe_browsing_api_key", "") or "",
+                    )
+            except Exception:
+                safe_browsing_api_key = ""
 
         if enabled and categories and not source_url:
             return _redirect_to("webfilter", tab="categories", err_source="1")
