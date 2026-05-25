@@ -29,6 +29,7 @@ def test_build_template_options_clamps_workers_and_preserves_zero_values() -> No
         {
             "workers": 999,
             "minimum_object_size_kb": 0,
+            "maximum_object_size_in_memory_kb": 0,
             "collapsed_forwarding": False,
             "range_offset_limit": 0,
             "memory_pools": False,
@@ -38,6 +39,7 @@ def test_build_template_options_clamps_workers_and_preserves_zero_values() -> No
 
     assert options["workers"] == 4
     assert options["minimum_object_size_kb"] == 0
+    assert options["maximum_object_size_in_memory_kb"] == 0
     assert options["collapsed_forwarding_on"] is False
     assert options["range_cache_on"] is False
     assert options["memory_pools_on"] is False

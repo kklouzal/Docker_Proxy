@@ -142,7 +142,11 @@ def _field(
 def _tunable_or_default(key: str, default: Any) -> OptionResolver:
     def resolve(tunables: TunableMap, _max_workers: int) -> Any:
         value = tunables.get(key)
-        return value or default
+        if value is None:
+            return default
+        if isinstance(value, str) and value.strip() == "":
+            return default
+        return value
 
     return resolve
 
