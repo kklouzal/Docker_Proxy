@@ -143,6 +143,24 @@ class FakeRegistry:
                 return str(proxy.proxy_id)
         return str(self.ensure_default_proxy().proxy_id)
 
+    def rename_proxy(
+        self,
+        old_proxy_id: object | None,
+        new_proxy_id: object | None,
+        *,
+        display_name: str | None = None,
+    ) -> Any:
+        proxy = self.get_proxy(old_proxy_id)
+        if proxy is None:
+            msg = "proxy not found"
+            raise ValueError(msg)
+        if self.get_proxy(new_proxy_id) is not None:
+            msg = "target exists"
+            raise ValueError(msg)
+        proxy.proxy_id = str(new_proxy_id or "default")
+        proxy.display_name = display_name or proxy.proxy_id
+        return proxy
+
     def mark_apply_result(self, *_args: Any, **_kwargs: Any) -> Any:
         return self.ensure_default_proxy()
 

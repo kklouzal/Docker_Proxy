@@ -217,11 +217,20 @@ def _set_database_name(database_name: str) -> None:
 
 
 def _purge_runtime_modules() -> None:
+    purged: list[str] = []
     for module_name in list(sys.modules):
         if module_name in _MODULES_TO_PURGE_EXACT or module_name.startswith(
             _MODULES_TO_PURGE_PREFIXES
         ):
             sys.modules.pop(module_name, None)
+            purged.append(module_name)
+    for module_name in purged:
+        if "." not in module_name:
+            continue
+        package_name, attr_name = module_name.rsplit(".", 1)
+        package = sys.modules.get(package_name)
+        if package is not None and getattr(package, attr_name, None) is not None:
+            delattr(package, attr_name)
 
 
 def configure_test_mysql_env(

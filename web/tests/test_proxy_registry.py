@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from .mysql_test_utils import configure_test_mysql_env
+
 
 def _add_web_to_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
@@ -216,3 +218,76 @@ def test_init_db_tolerates_concurrent_column_add_race() -> None:
 
     assert registry._schema_ready is True
     assert any("ADD COLUMN public_host" in statement for statement in conn.statements)
+
+
+def test_register_local_proxy_reconciles_stale_identity_by_management_url(
+    monkeypatch, tmp_path
+):
+    configure_test_mysql_env(tmp_path / "proxy-identity-reconcile")
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy(
+        "Proxy-P",
+        display_name="Proxy-P",
+        hostname="proxy-pr",
+        management_url="http://proxy-pr:5000",
+        public_host="proxy-pr",
+    )
+    registry.ensure_proxy("Proxy-IT", management_url="http://proxy-it:5000")
+
+    monkeypatch.setenv("PROXY_INSTANCE_ID", "Proxy-PR")
+    monkeypatch.setenv("PROXY_DISPLAY_NAME", "Proxy-PR")
+    monkeypatch.setenv("PROXY_MANAGEMENT_URL", "http://proxy-pr:5000")
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", "proxy-pr")
+
+    registered = registry.register_local_proxy()
+
+    assert registered.proxy_id == "Proxy-PR"
+    assert registered.display_name == "Proxy-PR"
+    assert registry.get_proxy("Proxy-P") is None
+    assert registry.get_proxy("Proxy-PR") is not None
+
+
+def test_rename_proxy_rewrites_other_proxy_id_tables(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-identity-rename")
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.init_db()
+    registry.ensure_proxy("Proxy-P", display_name="Proxy-P")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS proxy_identity_test_rows (proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO proxy_identity_test_rows(proxy_id, value) VALUES(%s,%s)",
+            ("Proxy-P", "kept"),
+        )
+
+    renamed = registry.rename_proxy("Proxy-P", "Proxy-PR", display_name="Proxy-PR")
+
+    assert renamed.proxy_id == "Proxy-PR"
+    assert registry.get_proxy("Proxy-P") is None
+    with registry._connect() as conn:
+        row = conn.execute(
+            "SELECT proxy_id FROM proxy_identity_test_rows WHERE value=%s",
+            ("kept",),
+        ).fetchone()
+    assert row["proxy_id"] == "Proxy-PR"
+
+
+def test_resolve_proxy_id_honors_rename_alias(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-identity-alias")
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("Proxy-P", display_name="Proxy-P")
+
+    registry.rename_proxy("Proxy-P", "Proxy-PR", display_name="Proxy-PR")
+
+    assert registry.resolve_proxy_id("Proxy-P") == "Proxy-PR"
+    assert registry.resolve_proxy_id("Proxy-PR") == "Proxy-PR"

@@ -135,6 +135,18 @@
                                     <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
                                     <button class="btn" type="submit">Clear cache</button>
                                 </form>
+                                <details class="inline-details">
+                                    <summary class="btn ghost">Rename ID</summary>
+                                    <form action="{{ url_for('reconcile_proxy_identity') }}" method="post" class="stack-sm">
+                                        {{ csrf_field() }}
+                                        <input type="hidden" name="old_proxy_id" value="{{ proxy.proxy_id }}">
+                                        <label class="small">Correct proxy ID</label>
+                                        <input type="text" name="new_proxy_id" value="{{ proxy.proxy_id }}" required>
+                                        <label class="small">Display name</label>
+                                        <input type="text" name="display_name" value="{{ proxy.display_name or proxy.proxy_id }}" required>
+                                        <button class="btn primary" type="submit">Reconcile</button>
+                                    </form>
+                                </details>
                             </div>
                         </td>
                     </tr>

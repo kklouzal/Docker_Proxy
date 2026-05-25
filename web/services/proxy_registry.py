@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import re
@@ -16,6 +16,10 @@ from services.db import (
     run_mysql_operation_with_retry,
 )
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+
+
+def _quote_mysql_identifier(value: str) -> str:
+    return "`" + str(value).replace("`", "``") + "`"
 
 
 def _mysql_error_code(exc: BaseException) -> int | None:
@@ -246,6 +250,17 @@ class ProxyRegistry:
                                     if not _is_mysql_error_code(exc, {1091}):
                                         raise
                         conn.execute("DROP TABLE IF EXISTS socks_events")
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS proxy_id_aliases (
+                                alias_proxy_id VARCHAR(64) PRIMARY KEY,
+                                proxy_id VARCHAR(64) NOT NULL,
+                                created_ts BIGINT NOT NULL,
+                                updated_ts BIGINT NOT NULL,
+                                KEY idx_proxy_id_aliases_proxy_id (proxy_id)
+                            )
+                            """,
+                        )
                         self._columns_cache.pop("proxy_instances", None)
                         self._columns_cache["proxy_instances"] = self._existing_columns(
                             conn,
@@ -452,12 +467,150 @@ class ProxyRegistry:
         instances = [self._row_to_instance(row) for row in rows]
         return [instance for instance in instances if instance is not None]
 
+    def _proxy_id_tables(self, conn) -> list[str]:
+        rows = conn.execute(
+            """
+            SELECT c.table_name AS table_name
+            FROM information_schema.columns c
+            JOIN information_schema.tables t
+              ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+            WHERE c.table_schema = DATABASE()
+              AND c.column_name = 'proxy_id'
+              AND t.table_type = 'BASE TABLE'
+            ORDER BY c.table_name ASC
+            """,
+        ).fetchall()
+        return [str(row["table_name"] or "") for row in rows if row["table_name"]]
+
+    def rename_proxy(
+        self,
+        old_proxy_id: object | None,
+        new_proxy_id: object | None,
+        *,
+        display_name: str | None = None,
+    ) -> ProxyInstance:
+        self.init_db()
+        old_key = normalize_proxy_id(old_proxy_id)
+        new_key = normalize_proxy_id(new_proxy_id)
+        if old_key == new_key:
+            instance = self.get_proxy(new_key)
+            if instance is None:
+                msg = f"Proxy {new_key!r} is not registered."
+                raise ValueError(msg)
+            return instance
+
+        now = int(time.time())
+
+        def _rename() -> None:
+            with self._connect() as conn:
+                with mysql_advisory_lock(
+                    conn,
+                    "docker_proxy:proxy_registry:rename",
+                    mysql_schema_lock_timeout_seconds(),
+                ):
+                    old_row = conn.execute(
+                        f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                        (old_key,),
+                    ).fetchone()
+                    if old_row is None:
+                        msg = f"Proxy {old_key!r} is not registered."
+                        raise ValueError(msg)
+                    new_row = conn.execute(
+                        "SELECT proxy_id FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                        (new_key,),
+                    ).fetchone()
+                    if new_row is not None:
+                        msg = f"Proxy {new_key!r} is already registered."
+                        raise ValueError(msg)
+
+                    tables = self._proxy_id_tables(conn)
+                    for table_name in tables:
+                        if table_name == "proxy_instances":
+                            continue
+                        conn.execute(
+                            f"UPDATE {_quote_mysql_identifier(table_name)} SET proxy_id=%s WHERE proxy_id=%s",
+                            (new_key, old_key),
+                        )
+                    conn.execute(
+                        """
+                        UPDATE proxy_instances
+                        SET proxy_id=%s, display_name=%s, updated_ts=%s
+                        WHERE proxy_id=%s
+                        """,
+                        (
+                            new_key,
+                            (display_name or old_row["display_name"] or new_key).strip()
+                            or new_key,
+                            now,
+                            old_key,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO proxy_id_aliases(alias_proxy_id, proxy_id, created_ts, updated_ts)
+                        VALUES(%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE proxy_id=VALUES(proxy_id), updated_ts=VALUES(updated_ts)
+                        """,
+                        (old_key, new_key, now, now),
+                    )
+
+        run_mysql_operation_with_retry(_rename)
+        refreshed = self.get_proxy(new_key)
+        assert refreshed is not None
+        return refreshed
+
+    def find_reconcile_candidate(
+        self,
+        proxy_id: object | None,
+        *,
+        management_url: str = "",
+        public_host: str = "",
+    ) -> ProxyInstance | None:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        checks: list[str] = ["proxy_id <> %s"]
+        params: list[object] = [proxy_key]
+        match_clauses: list[str] = []
+        if management_url.strip():
+            match_clauses.append("management_url = %s")
+            params.append(management_url.strip())
+        if public_host.strip():
+            match_clauses.append("public_host = %s")
+            params.append(public_host.strip())
+        if not match_clauses:
+            return None
+        checks.append("(" + " OR ".join(match_clauses) + ")")
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {self._SELECT_COLUMNS}
+                FROM proxy_instances
+                WHERE {" AND ".join(checks)}
+                ORDER BY last_heartbeat DESC, updated_ts DESC
+                LIMIT 2
+                """,
+                tuple(params),
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        return self._row_to_instance(rows[0])
+
     def resolve_proxy_id(self, preferred: object | None = None) -> str:
         if preferred:
             proxy_key = normalize_proxy_id(preferred)
             existing = self.get_proxy(proxy_key)
             if existing is not None:
                 return existing.proxy_id
+            self.init_db()
+            with self._connect() as conn:
+                alias = conn.execute(
+                    "SELECT proxy_id FROM proxy_id_aliases WHERE alias_proxy_id=%s LIMIT 1",
+                    (proxy_key,),
+                ).fetchone()
+            if alias is not None:
+                target = self.get_proxy(alias["proxy_id"])
+                if target is not None:
+                    return target.proxy_id
         proxies = self.list_proxies()
         if proxies:
             return proxies[0].proxy_id
@@ -581,6 +734,18 @@ class ProxyRegistry:
             public_fields.get("public_host"),
         )
         existing = self.get_proxy(proxy_id)
+        if existing is None:
+            candidate = self.find_reconcile_candidate(
+                proxy_id,
+                management_url=management_url,
+                public_host=str(public_fields["public_host"] or ""),
+            )
+            if candidate is not None:
+                existing = self.rename_proxy(
+                    candidate.proxy_id,
+                    proxy_id,
+                    display_name=display_name,
+                )
         return self.ensure_proxy(
             proxy_id,
             display_name=display_name,

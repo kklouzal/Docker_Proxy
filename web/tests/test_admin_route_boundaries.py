@@ -300,6 +300,32 @@ def test_invalid_proxy_id_falls_back_to_registry_default(monkeypatch, tmp_path) 
         assert sess["active_proxy_id"] == "default"
 
 
+def test_proxy_reconcile_route_renames_active_proxy_and_updates_session(monkeypatch, tmp_path) -> None:
+    registry = FakeRegistry(proxy_ids=["Proxy-P", "Proxy-IT"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies?proxy_id=Proxy-P")
+
+    response = client.post(
+        "/proxies/reconcile",
+        data={
+            "csrf_token": token,
+            "old_proxy_id": "Proxy-P",
+            "new_proxy_id": "Proxy-PR",
+            "display_name": "Proxy-PR",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert "proxy_id=Proxy-PR" in response.headers["Location"]
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "Proxy-PR"
+    assert registry.get_proxy("Proxy-P") is None
+    assert registry.get_proxy("Proxy-PR") is not None
+
+
 def test_post_routes_reject_missing_csrf_after_login(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()

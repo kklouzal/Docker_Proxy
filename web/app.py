@@ -1304,6 +1304,7 @@ def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
 
     preferred = session.get("active_proxy_id") or get_default_proxy_id()
     registry = get_proxy_registry()
+    preferred = registry.resolve_proxy_id(preferred)
     proxies = registry.list_proxies()
     if not proxies:
         proxies = [registry.ensure_default_proxy()]
@@ -2346,6 +2347,27 @@ def health():
 def api_squid_config():
     cfg = _current_managed_config()
     return app.response_class(cfg, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/proxies/reconcile", methods=["POST"])
+def reconcile_proxy_identity():
+    old_proxy_id = (request.form.get("old_proxy_id") or "").strip()
+    new_proxy_id = (request.form.get("new_proxy_id") or "").strip()
+    display_name = (request.form.get("display_name") or "").strip()
+    try:
+        renamed = get_proxy_registry().rename_proxy(
+            old_proxy_id,
+            new_proxy_id,
+            display_name=display_name or new_proxy_id,
+        )
+    except Exception as exc:
+        return _redirect_to("proxies", error="1", msg=public_error_message(exc))
+    if session.get("active_proxy_id") == normalize_proxy_id(old_proxy_id):
+        session["active_proxy_id"] = renamed.proxy_id
+    _PROXY_HEALTH_CACHE.clear()
+    _OBSERVABILITY_SUMMARY_CACHE.clear()
+    _OBSERVABILITY_RESULT_CACHE.clear()
+    return _redirect_to("proxies", saved="1", proxy_id=renamed.proxy_id)
 
 
 @app.route("/proxies", methods=["GET"])

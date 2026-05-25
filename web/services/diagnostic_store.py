@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import contextlib
 import csv
@@ -30,6 +30,15 @@ from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
+
+
+def _mysql_error_code(exc: BaseException) -> int | None:
+    try:
+        if getattr(exc, "args", None):
+            return int(exc.args[0])
+    except Exception:
+        return None
+    return None
 
 
 _INTERNAL_NETWORK_CACHE: tuple[float, tuple[Any, ...]] = (0.0, ())
@@ -508,25 +517,23 @@ class DiagnosticStore:
                                 "ALTER TABLE diagnostic_requests ADD COLUMN response_alt_svc VARCHAR(512) NOT NULL DEFAULT '' AFTER response_cf_mitigated",
                             ),
                         ):
-                            try:
-                                exists = conn.execute(
-                                    """
-                                    SELECT 1
-                                    FROM information_schema.columns
-                                    WHERE table_schema = DATABASE()
-                                      AND table_name = 'diagnostic_requests'
-                                      AND column_name = %s
-                                    LIMIT 1
-                                    """,
-                                    (column_name,),
-                                ).fetchone()
-                                if not exists:
+                            exists = conn.execute(
+                                """
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_schema = DATABASE()
+                                  AND table_name = 'diagnostic_requests'
+                                  AND column_name = %s
+                                LIMIT 1
+                                """,
+                                (column_name,),
+                            ).fetchone()
+                            if not exists:
+                                try:
                                     conn.execute(ddl)
-                            except Exception:
-                                logger.warning(
-                                    "Failed to ensure diagnostic_requests column %s",
-                                    column_name,
-                                )
+                                except DATABASE_ERRORS as exc:
+                                    if _mysql_error_code(exc) != 1060:
+                                        raise
                         for table, index_name, ddl in (
                             (
                                 "diagnostic_requests",
