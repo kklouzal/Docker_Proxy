@@ -125,6 +125,50 @@ def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
     )
 
 
+def test_safe_browsing_prefix_miss_cache_uses_short_ttl(monkeypatch) -> None:
+    from services import safe_browsing_v5
+
+    now = [100.0]
+    rows_by_call = [[], [("mw-4b",)]]
+    calls = []
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            calls.append((sql, params))
+            return Result(rows_by_call[min(len(calls) - 1, len(rows_by_call) - 1)])
+
+    checker = SafeBrowsingLocalChecker(
+        api_key="test",
+        prefix_hit_ttl_seconds=3600,
+        prefix_miss_ttl_seconds=10,
+    )
+    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(checker, "_connect", FakeConn)
+
+    assert checker._local_lists_for_prefix(b"abcd") == ()
+    now[0] = 105.0
+    assert checker._local_lists_for_prefix(b"abcd") == ()
+    assert len(calls) == 1
+    now[0] = 111.0
+    assert checker._local_lists_for_prefix(b"abcd") == ("mw-4b",)
+    now[0] = 120.0
+    assert checker._local_lists_for_prefix(b"abcd") == ("mw-4b",)
+    assert len(calls) == 2
+
+
 def test_safe_browsing_checker_continues_after_negative_prefix_cache(
     monkeypatch,
 ) -> None:

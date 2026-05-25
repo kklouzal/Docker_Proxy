@@ -741,6 +741,8 @@ class SafeBrowsingLocalChecker:
         self,
         *,
         api_key: str = "",
+        prefix_hit_ttl_seconds: int | None = None,
+        prefix_miss_ttl_seconds: int | None = None,
         cache_max_entries: int | None = None,
     ) -> None:
         self.api_key = api_key
@@ -753,6 +755,26 @@ class SafeBrowsingLocalChecker:
             200000,
             minimum=1000,
             maximum=1000000,
+        )
+        self._prefix_hit_ttl = (
+            int(prefix_hit_ttl_seconds)
+            if prefix_hit_ttl_seconds is not None
+            else _env_int(
+                "SAFE_BROWSING_HELPER_PREFIX_HIT_TTL_SECONDS",
+                3600,
+                minimum=60,
+                maximum=86400,
+            )
+        )
+        self._prefix_miss_ttl = (
+            int(prefix_miss_ttl_seconds)
+            if prefix_miss_ttl_seconds is not None
+            else _env_int(
+                "SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS",
+                60,
+                minimum=5,
+                maximum=3600,
+            )
         )
 
     def _connect(self):
@@ -808,7 +830,8 @@ class SafeBrowsingLocalChecker:
         except Exception:
             self.close()
             lists = ()
-        self._prefix_cache[prefix] = (now_mono + 3600, lists)
+        ttl = self._prefix_hit_ttl if lists else self._prefix_miss_ttl
+        self._prefix_cache[prefix] = (now_mono + ttl, lists)
         if len(self._prefix_cache) > self._cache_max:
             self._prefix_cache.clear()
         return lists
