@@ -37,7 +37,6 @@ def _generate_proxy_traffic(client: LiveStackClient) -> str:
     )
     assert post_response.status == 200
 
-
     return token
 
 
