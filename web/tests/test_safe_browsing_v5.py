@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import hashlib
 from typing import NoReturn
 
@@ -57,7 +57,7 @@ def test_safe_browsing_canonicalization_normalizes_controls_path_ip_and_idn() ->
         canonicalize_url("http://0300.0250.0001.0001/a//b/../c#frag")
         == "http://192.168.1.1/a/c"
     )
-    assert canonicalize_url("http://☃.example/%2525") == "http://xn--n3h.example/%25"
+    assert canonicalize_url("http://?.example/%2525") == "http://xn--n3h.example/%25"
 
 
 def test_safe_browsing_hashes_are_sha256_expression_hashes() -> None:
@@ -542,3 +542,46 @@ def test_safe_browsing_update_lists_releases_db_before_network_fetch(monkeypatch
     assert wait == 3600
     assert closed_before_request == [True]
     assert events == ["enter", "exit", "enter", "apply", "exit"]
+
+
+def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    target = expression_hashes("http://bad-android.example/")[0]
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("uwsa-4b",) if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        lambda prefix, response, cache_duration: None,
+    )
+    monkeypatch.setattr(
+        checker._store,
+        "search_hashes",
+        lambda api_key, prefixes: (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(target)
+                    .decode("ascii")
+                    .rstrip("="),
+                    "fullHashDetails": [
+                        {"threatType": "UNWANTED_SOFTWARE_ANDROID"}
+                    ],
+                }
+            ],
+            300,
+        ),
+    )
+
+    verdict = checker.check_url("http://bad-android.example/")
+
+    assert verdict == SafeBrowsingVerdict(
+        "unsafe",
+        "UNWANTED_SOFTWARE_ANDROID",
+        "uwsa-4b",
+        False,
+        "confirmed by hashes.search",
+    )
