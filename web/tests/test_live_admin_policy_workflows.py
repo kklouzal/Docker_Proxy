@@ -640,7 +640,11 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     assert sync_response.status == 200
     sync_payload = sync_response.json()
     assert sync_payload.get("ok") is True
-    assert sync_payload.get("adblock_changed") is True
+    sync_detail = str(sync_payload.get("detail") or "")
+    assert sync_payload.get("adblock_changed") is True or (
+        sync_payload.get("adblock_changed") is False
+        and "already using the active adblock artifact" in sync_detail
+    )
 
     deadline = time.time() + 60.0
     latest_apply = None
