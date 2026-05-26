@@ -589,10 +589,6 @@ class AdblockStore:
             http_url = parts[7] if len(parts) > 7 else ""
             http_resp_line = parts[8] if len(parts) > 8 else ""
 
-        blocked = "403" in (http_resp_line or "")
-        if not blocked:
-            return None
-
         try:
             ts = int(float(ts_s))
         except Exception:
@@ -610,13 +606,15 @@ class AdblockStore:
             if re.fullmatch(r"[A-Z]{3,10}", m or ""):
                 method = m
 
-        http_status = 403
+        http_status = 0
         try:
             toks = (http_resp_line or "").split()
             if len(toks) >= 2 and toks[1].isdigit():
                 http_status = int(toks[1])
         except Exception:
-            http_status = 403
+            http_status = 0
+        if http_status != 403:
+            return None
 
         try:
             icap_status = (

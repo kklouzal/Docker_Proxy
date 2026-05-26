@@ -383,3 +383,42 @@ def test_adblock_download_rejects_redirect_to_internal_host(
     assert "internal/localhost" in err
     assert bytes_read == 0
     assert rules == 0
+
+
+def test_adblock_cicap_access_parser_requires_http_403_status(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import services.adblock_store as store_module  # type: ignore
+
+    importlib.reload(store_module)
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    line = (
+        "1700000000\t192.0.2.10\t198.51.100.20\tREQMOD\t/adblockreq\t200\t"
+        "GET http://ads.example/ HTTP/1.1\thttp://ads.example/\t"
+        "HTTP/1.1 403 Forbidden\t-"
+    )
+
+    blocked = store._parse_cicap_access_line(line)
+
+    assert blocked is not None
+    assert blocked["ts"] == 1700000000
+    assert blocked["src_ip"] == "192.0.2.10"
+    assert blocked["method"] == "GET"
+    assert blocked["url"] == "http://ads.example/"
+    assert blocked["http_status"] == 403
+    assert blocked["icap_status"] == 200
+
+    for response_line in (
+        "HTTP/1.1 200 upstream note 403",
+        "HTTP/1.1 not-a-code 403",
+    ):
+        assert (
+            store._parse_cicap_access_line(
+                line.replace("HTTP/1.1 403 Forbidden", response_line),
+            )
+            is None
+        )
