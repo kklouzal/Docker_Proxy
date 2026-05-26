@@ -33,9 +33,13 @@ def _parse_line(line: str) -> tuple[str | None, str, str]:
     channel_id: str | None = None
     if parts and parts[0].isdigit():
         channel_id = parts.pop(0)
-    # external_acl_type passes %SRC %DST %URI. Prefer URI; fall back to DST.
+    # external_acl_type passes %SRC %DST %URI. Prefer URI; fall back to DST
+    # when Squid supplies a placeholder for CONNECT-style traffic.
     if len(parts) >= 3:
-        return channel_id, parts[0], parts[2]
+        url = parts[2]
+        if url in {"", "-"}:
+            url = parts[1]
+        return channel_id, parts[0], url
     if len(parts) >= 2:
         return channel_id, parts[0], parts[1]
     if parts:

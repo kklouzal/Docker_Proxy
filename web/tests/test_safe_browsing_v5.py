@@ -672,6 +672,14 @@ def test_safe_browsing_legacy_negative_cache_does_not_skip_selected_lookup(
 def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
     from tools import safe_browsing_acl
 
+    assert safe_browsing_acl._parse_line(
+        "7 192.0.2.10 bad.example -\n",
+    ) == (
+        "7",
+        "192.0.2.10",
+        "bad.example",
+    )
+
     inserted = []
 
     class FakeLogDb:
