@@ -1442,7 +1442,7 @@ class ProxyRuntime:
             except Exception:
                 applied = None
             if applied is None:
-                with suppress(Exception):
+                try:
                     applied = self.adblock_artifacts.record_apply_result(
                         self.proxy_id,
                         revision_meta.revision_id,
@@ -1451,6 +1451,23 @@ class ProxyRuntime:
                         applied_by="proxy",
                         artifact_sha256=revision_meta.artifact_sha256,
                     )
+                except Exception as exc:
+                    detail = public_error_message(
+                        exc,
+                        default="Failed to record adblock artifact application.",
+                    )
+                    return {
+                        "ok": False,
+                        "proxy_id": self.proxy_id,
+                        "changed": False,
+                        "adblock_changed": False,
+                        "artifact_changed": False,
+                        "squid_regex_changed": bool(squid_regex_changed),
+                        "cache_flushed": False,
+                        "revision_id": revision_meta.revision_id,
+                        "artifact_sha256": revision_meta.artifact_sha256,
+                        "detail": detail,
+                    }
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,

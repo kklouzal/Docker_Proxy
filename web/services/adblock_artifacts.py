@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from services.db import connect
+from services.db import DATABASE_ERRORS, connect
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 _ARTIFACT_SHA_FILENAME = ".artifact-sha256"
 _DEFAULT_COMPILED_DIR = "/var/lib/squid-flask-proxy/adblock/compiled"
 _DEFAULT_SETTINGS_FILENAME = "settings.json"
+
+
+def _mysql_error_code(exc: BaseException) -> int | None:
+    args = getattr(exc, "args", ())
+    if args:
+        try:
+            return int(args[0])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 @dataclass(frozen=True)
@@ -134,6 +144,24 @@ class AdblockArtifactStore:
                 )
                 """,
             )
+            artifact_column = conn.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'proxy_adblock_artifact_applications'
+                  AND column_name = 'artifact_sha256'
+                LIMIT 1
+                """,
+            ).fetchone()
+            if not artifact_column:
+                try:
+                    conn.execute(
+                        "ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+                    )
+                except DATABASE_ERRORS as exc:
+                    if _mysql_error_code(exc) != 1060:
+                        raise
 
     def _row_to_revision(self, row: object | None) -> AdblockArtifactRevision | None:
         if not row:

@@ -1055,6 +1055,38 @@ def test_sync_adblock_state_records_missing_apply_for_current_artifact() -> None
     ]
 
 
+def test_sync_adblock_state_reports_missing_apply_record_failure() -> None:
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def latest_apply(self, _proxy_id, *, revision_id=None):
+            assert revision_id == 42
+
+        def record_apply_result(self, *_args, **_kwargs):
+            msg = "db unavailable"
+            raise RuntimeError(msg)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is False
+    assert result["revision_id"] == 42
+    assert result["artifact_sha256"] == "same-sha"
+    assert result["detail"] == "Failed to record adblock artifact application."
+
+
 def test_sync_adblock_state_reports_squid_regex_refresh_failure() -> None:
     recorded = []
 
