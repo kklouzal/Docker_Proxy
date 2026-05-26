@@ -240,16 +240,6 @@ class ProxyRegistry:
                                 except DATABASE_ERRORS as exc:
                                     if not _is_mysql_error_code(exc, {1060}):
                                         raise
-                        for column_name in ("public_socks_enabled", "public_socks_proxy_port"):
-                            if column_name in columns:
-                                try:
-                                    conn.execute(
-                                        f"ALTER TABLE proxy_instances DROP COLUMN {column_name}",
-                                    )
-                                except DATABASE_ERRORS as exc:
-                                    if not _is_mysql_error_code(exc, {1091}):
-                                        raise
-                        conn.execute("DROP TABLE IF EXISTS socks_events")
                         conn.execute(
                             """
                             CREATE TABLE IF NOT EXISTS proxy_id_aliases (

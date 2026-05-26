@@ -291,3 +291,76 @@ def test_resolve_proxy_id_honors_rename_alias(tmp_path):
 
     assert registry.resolve_proxy_id("Proxy-P") == "Proxy-PR"
     assert registry.resolve_proxy_id("Proxy-PR") == "Proxy-PR"
+
+
+def test_init_db_preserves_retired_socks_storage() -> None:
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    required_columns = {
+        "proxy_id",
+        "display_name",
+        "hostname",
+        "management_url",
+        "public_host",
+        "public_pac_scheme",
+        "public_pac_port",
+        "public_http_proxy_port",
+        "status",
+        "last_heartbeat",
+        "last_apply_ts",
+        "last_apply_ok",
+        "current_config_sha",
+        "detail",
+        "created_ts",
+        "updated_ts",
+        "public_socks_enabled",
+        "public_socks_proxy_port",
+    }
+
+    class Result:
+        def __init__(self, rows=None):
+            self._rows = rows or []
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return {"acquired": 1}
+
+    class Conn:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, sql, params=None):
+            statement = str(sql)
+            self.statements.append(statement)
+            if "information_schema.columns" in statement:
+                return Result(
+                    [{"column_name": column} for column in sorted(required_columns)]
+                )
+            return Result()
+
+    class Context:
+        def __init__(self, conn: Conn) -> None:
+            self.conn = conn
+
+        def __enter__(self) -> Conn:
+            return self.conn
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    conn = Conn()
+    registry = proxy_registry.ProxyRegistry()
+    registry._connect = lambda: Context(conn)  # type: ignore[method-assign]
+
+    registry.init_db()
+
+    destructive_statements = [
+        statement
+        for statement in conn.statements
+        if "DROP COLUMN public_socks" in statement
+        or "DROP TABLE IF EXISTS socks_events" in statement
+    ]
+    assert destructive_statements == []
