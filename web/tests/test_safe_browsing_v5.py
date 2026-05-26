@@ -474,7 +474,7 @@ def test_safe_browsing_unselected_cached_threat_does_not_skip_selected_lookup(
     assert remote_calls == [(target[:4],)]
 
 
-def test_safe_browsing_cache_marks_prefix_negative_after_positive_response() -> None:
+def test_safe_browsing_cache_does_not_write_prefix_negative_after_positive_response() -> None:
     target = b"a" * 32
     prefix = target[:4]
     executed = []
@@ -516,7 +516,75 @@ def test_safe_browsing_cache_marks_prefix_negative_after_positive_response() -> 
         full_hash_insert[-1],
     )
     assert any("safe_browsing_full_hash_cache" in sql for sql, _params in executed)
-    assert any("safe_browsing_negative_cache" in sql for sql, _params in executed)
+    assert not any("safe_browsing_negative_cache" in sql for sql, _params in executed)
+
+
+def test_safe_browsing_legacy_negative_cache_does_not_skip_selected_lookup(
+    monkeypatch,
+) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("se-4b",))
+    target = expression_hashes("http://social.example/")[0]
+    remote_calls = []
+
+    class Result:
+        def __init__(self, rows=(), row=None) -> None:
+            self.rows = list(rows)
+            self.row = row
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.row
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            if sql.startswith("DELETE FROM"):
+                return Result()
+            if "safe_browsing_full_hash_cache WHERE prefix" in sql:
+                return Result([])
+            if "safe_browsing_negative_cache WHERE prefix" in sql:
+                return Result(row=(999999,))
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("se-4b",) if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(checker, "_connect", FakeConn)
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        _ignore_cache_response,
+    )
+
+    def search_hashes(api_key, prefixes):
+        remote_calls.append(tuple(prefixes))
+        return (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(target)
+                    .decode("ascii")
+                    .rstrip("="),
+                    "fullHashDetails": [{"threatType": "SOCIAL_ENGINEERING"}],
+                }
+            ],
+            300,
+        )
+
+    monkeypatch.setattr(checker._store, "search_hashes", search_hashes)
+
+    assert checker.check_url("http://social.example/") == SafeBrowsingVerdict(
+        "unsafe", "SOCIAL_ENGINEERING", "se-4b", False, "confirmed by hashes.search"
+    )
+    assert remote_calls == [(target[:4],)]
 
 
 def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:

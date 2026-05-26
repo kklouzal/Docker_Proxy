@@ -944,16 +944,11 @@ class SafeBrowsingLocalChecker:
                             True,
                             "cached full-hash match",
                         )
-                neg = conn.execute(
-                    "SELECT expires_ts FROM safe_browsing_negative_cache WHERE prefix=%s AND expires_ts >= %s",
-                    (prefix, now),
-                ).fetchone()
-                if neg:
-                    return SafeBrowsingVerdict(
-                        "safe",
-                        cache_hit=True,
-                        reason="cached negative full-hash response",
-                    )
+                # Do not use persistent negative prefix cache for verdicts. The
+                # legacy table is keyed only by prefix, while selected Safe
+                # Browsing lists are mutable. A miss for one list set must not
+                # suppress full-hash confirmation after operators enable another
+                # list that happens to share the same 4-byte prefix.
         except Exception:
             self.close()
             return None
@@ -985,10 +980,6 @@ class SafeBrowsingLocalChecker:
                         "ON DUPLICATE KEY UPDATE threat_type=incoming.threat_type, list_name=incoming.list_name, expires_ts=incoming.expires_ts",
                         (prefix, full, threat, list_name, expires),
                     )
-                conn.execute(
-                    "INSERT INTO safe_browsing_negative_cache(prefix, expires_ts) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE expires_ts=incoming.expires_ts",
-                    (prefix, expires),
-                )
         except Exception:
             self.close()
 
