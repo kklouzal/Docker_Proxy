@@ -15,6 +15,10 @@ from services.safe_browsing_v5 import (
 )
 
 
+def _ignore_cache_response(_prefix, _response, _cache_duration, local_lists=None):
+    return None
+
+
 def test_safe_browsing_url_expressions_include_host_suffix_path_prefixes() -> None:
     expressions = url_expressions("HTTPS://Sub.Example.COM/a/b/c?x=1#frag")
     assert "sub.example.com/a/b/c?x=1" in expressions
@@ -102,7 +106,7 @@ def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
     )
     monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
     monkeypatch.setattr(
-        checker, "_cache_search_response", lambda prefix, response, cache_duration: None
+        checker, "_cache_search_response", _ignore_cache_response
     )
     monkeypatch.setattr(
         checker._store,
@@ -124,6 +128,45 @@ def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
         "unsafe", "MALWARE", "mw-4b", False, "confirmed by hashes.search"
     )
 
+
+def test_safe_browsing_checker_reports_matching_list_for_threat(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(
+        api_key="test",
+        selected_lists=("se-4b", "mw-4b"),
+    )
+    target = expression_hashes("http://bad.example/")[0]
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("se-4b", "mw-4b") if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        _ignore_cache_response,
+    )
+    monkeypatch.setattr(
+        checker._store,
+        "search_hashes",
+        lambda api_key, prefixes: (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(target)
+                    .decode("ascii")
+                    .rstrip("="),
+                    "fullHashDetails": [{"threatType": "MALWARE"}],
+                }
+            ],
+            300,
+        ),
+    )
+
+    verdict = checker.check_url("http://bad.example/")
+
+    assert verdict == SafeBrowsingVerdict(
+        "unsafe", "MALWARE", "mw-4b", False, "confirmed by hashes.search"
+    )
 
 def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> None:
     from services import safe_browsing_v5
@@ -246,7 +289,7 @@ def test_safe_browsing_checker_ignores_unselected_threat_response(monkeypatch) -
     monkeypatch.setattr(
         checker,
         "_cache_search_response",
-        lambda prefix, response, cache_duration: None,
+        _ignore_cache_response,
     )
     monkeypatch.setattr(
         checker._store,
@@ -301,7 +344,7 @@ def test_safe_browsing_checker_continues_after_negative_prefix_cache(
     monkeypatch.setattr(
         checker,
         "_cache_search_response",
-        lambda prefix, response, cache_duration: None,
+        _ignore_cache_response,
     )
     monkeypatch.setattr(
         checker._store,
@@ -352,8 +395,21 @@ def test_safe_browsing_cache_marks_prefix_negative_after_positive_response() -> 
             }
         ],
         300,
+        local_lists=("se-4b", "mw-4b"),
     )
 
+    full_hash_insert = next(
+        params
+        for sql, params in executed
+        if "safe_browsing_full_hash_cache" in sql
+    )
+    assert full_hash_insert == (
+        prefix,
+        target,
+        "MALWARE",
+        "mw-4b",
+        full_hash_insert[-1],
+    )
     assert any("safe_browsing_full_hash_cache" in sql for sql, _params in executed)
     assert any("safe_browsing_negative_cache" in sql for sql, _params in executed)
 
@@ -546,7 +602,7 @@ def test_safe_browsing_ignores_canary_full_hash_detail(monkeypatch) -> None:
     )
     monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
     monkeypatch.setattr(
-        checker, "_cache_search_response", lambda prefix, response, cache_duration: None
+        checker, "_cache_search_response", _ignore_cache_response
     )
     monkeypatch.setattr(
         checker._store,
@@ -625,7 +681,7 @@ def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
     monkeypatch.setattr(
         checker,
         "_cache_search_response",
-        lambda prefix, response, cache_duration: None,
+        _ignore_cache_response,
     )
     monkeypatch.setattr(
         checker._store,

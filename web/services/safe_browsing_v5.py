@@ -383,6 +383,12 @@ def _threat_type_for_list(name: str) -> str:
 def _threat_types_for_lists(names: Sequence[str]) -> set[str]:
     return {_threat_type_for_list(name) for name in names if name}
 
+def _list_name_for_threat(names: Sequence[str], threat: str) -> str:
+    for name in names:
+        if _threat_type_for_list(name) == threat:
+            return name
+    return str(names[0]) if names else ""
+
 
 @dataclass(frozen=True)
 class SafeBrowsingSettings:
@@ -940,6 +946,7 @@ class SafeBrowsingLocalChecker:
         prefix: bytes,
         response: Sequence[dict[str, object]],
         cache_duration: int,
+        local_lists: Sequence[str] | None = None,
     ) -> None:
         expires = _now() + max(60, min(24 * 60 * 60, int(cache_duration or 300)))
         try:
@@ -951,10 +958,11 @@ class SafeBrowsingLocalChecker:
                     threat = _enforceable_threat(item.get("fullHashDetails") or [])
                     if not threat:
                         continue
+                    list_name = _list_name_for_threat(local_lists or (), threat)
                     conn.execute(
                         "INSERT INTO safe_browsing_full_hash_cache(prefix, full_hash, threat_type, list_name, expires_ts) VALUES(%s,%s,%s,%s,%s) AS incoming "
                         "ON DUPLICATE KEY UPDATE threat_type=incoming.threat_type, list_name=incoming.list_name, expires_ts=incoming.expires_ts",
-                        (prefix, full, threat, "hashes.search", expires),
+                        (prefix, full, threat, list_name, expires),
                     )
                 conn.execute(
                     "INSERT INTO safe_browsing_negative_cache(prefix, expires_ts) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE expires_ts=incoming.expires_ts",
@@ -1002,7 +1010,7 @@ class SafeBrowsingLocalChecker:
                     )
                 else:
                     response, duration = self._store.search_hashes(api_key, [prefix])
-                    self._cache_search_response(prefix, response, duration)
+                    self._cache_search_response(prefix, response, duration, local_lists)
                     verdict = SafeBrowsingVerdict(
                         "safe",
                         reason="full hash not returned",
@@ -1022,7 +1030,7 @@ class SafeBrowsingLocalChecker:
                             verdict = SafeBrowsingVerdict(
                                 "unsafe",
                                 threat,
-                                local_lists[0],
+                                _list_name_for_threat(local_lists, threat),
                                 False,
                                 "confirmed by hashes.search",
                             )
