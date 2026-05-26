@@ -18,7 +18,7 @@ from typing import Any
 
 from services.db import DATABASE_ERRORS, connect
 from services.errors import public_error_message
-from services.logutil import log_exception_throttled
+from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
@@ -513,7 +513,6 @@ class AdblockArtifactStore:
         with self._lock:
             if self._started:
                 return
-            self.init_db()
             thread = threading.Thread(
                 target=self._loop,
                 name="adblock-artifact-builder",
@@ -580,6 +579,13 @@ class AdblockArtifactStore:
                         if bool(result.get("changed")):
                             nudge_registered_proxies(force=False)
                         sleep_seconds = 5.0
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    "adblock_artifacts.loop.db_unavailable",
+                    "Adblock artifact builder deferred database work while MySQL is unavailable",
+                    exc,
+                )
             except Exception:
                 log_exception_throttled(
                     logger,

@@ -3,8 +3,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
@@ -19,58 +17,104 @@ def _noop_init_schema(_conn) -> None:
     return None
 
 
-def test_adblock_artifact_background_start_does_not_latch_on_init_failure(monkeypatch) -> None:
+def test_adblock_artifact_background_start_defers_database_init(monkeypatch) -> None:
     _add_repo_paths()
-    from services.adblock_artifacts import AdblockArtifactStore  # type: ignore
+    from services import adblock_artifacts  # type: ignore
 
-    store = AdblockArtifactStore()
+    store = adblock_artifacts.AdblockArtifactStore()
+    started: list[bool] = []
+    targets: list[object] = []
 
-    def fail_init() -> None:
-        msg = "db unavailable"
-        raise RuntimeError(msg)
+    def fail_if_called() -> None:  # pragma: no cover - should never run here
+        msg = "start_background should defer database initialization to the worker thread"
+        raise AssertionError(msg)
 
-    monkeypatch.setattr(store, "init_db", fail_init)
+    class FakeThread:
+        def __init__(self, *, target, name, daemon) -> None:
+            targets.append(target)
+            assert name == "adblock-artifact-builder"
+            assert daemon is True
 
-    with pytest.raises(RuntimeError, match="db unavailable"):
-        store.start_background()
+        def start(self) -> None:
+            started.append(True)
 
-    assert store._started is False
+    monkeypatch.setattr(store, "init_db", fail_if_called)
+    monkeypatch.setattr(adblock_artifacts.threading, "Thread", FakeThread)
+
+    store.start_background()
+
+    assert store._started is True
+    assert started == [True]
+    assert len(targets) == 1
 
 
-def test_webfilter_background_start_does_not_latch_on_init_failure(monkeypatch) -> None:
+def test_webfilter_background_start_defers_database_init(monkeypatch) -> None:
     _add_repo_paths()
-    from services.webfilter_store import WebFilterStore  # type: ignore
+    from services import safe_browsing_v5, webfilter_store  # type: ignore
 
-    store = WebFilterStore()
+    store = webfilter_store.WebFilterStore()
+    started: list[bool] = []
+    targets: list[object] = []
+    safe_browsing_started: list[bool] = []
 
-    def fail_init() -> None:
-        msg = "db unavailable"
-        raise RuntimeError(msg)
+    def fail_if_called() -> None:  # pragma: no cover - should never run here
+        msg = "start_background should defer database initialization to the worker thread"
+        raise AssertionError(msg)
 
-    monkeypatch.setattr(store, "init_db", fail_init)
+    class FakeThread:
+        def __init__(self, *, target, name, daemon) -> None:
+            targets.append(target)
+            assert name == "webfilter-updater"
+            assert daemon is True
 
-    with pytest.raises(RuntimeError, match="db unavailable"):
-        store.start_background()
+        def start(self) -> None:
+            started.append(True)
 
-    assert store._started is False
+    monkeypatch.setattr(store, "init_db", fail_if_called)
+    monkeypatch.setattr(webfilter_store.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        safe_browsing_v5.SafeBrowsingStore,
+        "start_background",
+        lambda self, *_args: safe_browsing_started.append(True),
+    )
+
+    store.start_background()
+
+    assert store._started is True
+    assert started == [True]
+    assert safe_browsing_started == [True]
+    assert len(targets) == 1
 
 
-def test_safe_browsing_background_start_does_not_latch_on_init_failure(monkeypatch) -> None:
+def test_safe_browsing_background_start_defers_database_init(monkeypatch) -> None:
     _add_repo_paths()
-    from services.safe_browsing_v5 import SafeBrowsingStore  # type: ignore
+    from services import safe_browsing_v5  # type: ignore
 
-    store = SafeBrowsingStore()
+    store = safe_browsing_v5.SafeBrowsingStore()
+    started: list[bool] = []
+    targets: list[object] = []
 
-    def fail_init() -> None:
-        msg = "db unavailable"
-        raise RuntimeError(msg)
+    def fail_if_called() -> None:  # pragma: no cover - should never run here
+        msg = "start_background should defer database initialization to the worker thread"
+        raise AssertionError(msg)
 
-    monkeypatch.setattr(store, "init_db", fail_init)
+    class FakeThread:
+        def __init__(self, *, target, args, name, daemon) -> None:
+            targets.append((target, args))
+            assert name == "safe-browsing-updater"
+            assert daemon is True
 
-    with pytest.raises(RuntimeError, match="db unavailable"):
-        store.start_background(lambda: None, lambda *_args: None)
+        def start(self) -> None:
+            started.append(True)
 
-    assert store._started is False
+    monkeypatch.setattr(store, "init_db", fail_if_called)
+    monkeypatch.setattr(safe_browsing_v5.threading, "Thread", FakeThread)
+
+    store.start_background(lambda: None, lambda *_args: None)
+
+    assert store._started is True
+    assert started == [True]
+    assert len(targets) == 1
 
 
 def test_safe_browsing_local_checker_close_releases_cached_connection(monkeypatch) -> None:

@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import ipaddress
 import json
+import logging
 import posixpath
 import re
 import threading
@@ -14,9 +15,10 @@ import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from services.db import connect
+from services.db import DATABASE_ERRORS, connect
 from services.domain_normalization import normalize_domain as _norm_domain
 from services.errors import public_error_message
+from services.logutil import log_database_unavailable
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 
@@ -42,6 +44,7 @@ _VALID_THREAT_TYPES = {
 }
 _IGNORED_THREAT_ATTRIBUTES = {"THREAT_ATTRIBUTE_UNSPECIFIED", "CANARY", "FRAME_ONLY"}
 _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
+logger = logging.getLogger(__name__)
 
 
 def parse_duration_seconds(value: object, default: int = 0) -> int:
@@ -733,7 +736,6 @@ class SafeBrowsingStore:
         with self._lock:
             if self._started:
                 return
-            self.init_db()
             thread = threading.Thread(
                 target=self._loop,
                 args=(get_settings, set_status),
@@ -756,6 +758,13 @@ class SafeBrowsingStore:
                 ):
                     ok, err, wait = self.update_lists(settings)
                     set_status(ok, err, now + max(60, int(wait or 1800)))
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    "safe_browsing.loop.db_unavailable",
+                    "Safe Browsing updater deferred database work while MySQL is unavailable",
+                    exc,
+                )
             except Exception:
                 pass
             time.sleep(poll)

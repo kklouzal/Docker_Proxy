@@ -6,8 +6,9 @@ import time
 from subprocess import run
 from typing import ClassVar
 
+from services.db import DATABASE_ERRORS
 from services.errors import public_error_message
-from services.logutil import log_exception_throttled
+from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.safe_browsing_v5 import (
     DEFAULT_SAFE_BROWSING_LISTS,
@@ -491,7 +492,6 @@ class WebFilterStore(WebFilterStoreBase):
         with self._lock:
             if self._started:
                 return
-            self.init_db()
             thread = threading.Thread(
                 target=self._loop,
                 name="webfilter-updater",
@@ -600,6 +600,13 @@ class WebFilterStore(WebFilterStoreBase):
                             self._clear_refresh_requested_conn(conn)
                         self._set_next_run_conn(conn, ts=next_after)
                     sleep_seconds = 5.0
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    "webfilter_store.loop.db_unavailable",
+                    "Webfilter background updater deferred database work while MySQL is unavailable",
+                    exc,
+                )
             except Exception:
                 log_exception_throttled(
                     logger,
