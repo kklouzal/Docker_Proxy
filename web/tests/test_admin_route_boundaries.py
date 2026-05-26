@@ -300,6 +300,25 @@ def test_invalid_proxy_id_falls_back_to_registry_default(monkeypatch, tmp_path) 
         assert sess["active_proxy_id"] == "default"
 
 
+def test_existing_proxy_selection_ignores_stale_alias_resolution(monkeypatch, tmp_path) -> None:
+    class StaleAliasRegistry(FakeRegistry):
+        def resolve_proxy_id(self, preferred: object | None = None) -> str:
+            if preferred == "Proxy-PR":
+                return "default"
+            return super().resolve_proxy_id(preferred)
+
+    registry = StaleAliasRegistry(["default", "Proxy-PR"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config?proxy_id=Proxy-PR")
+
+    assert response.status_code == 200
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "Proxy-PR"
+
+
 def test_proxy_reconcile_route_renames_active_proxy_and_updates_session(monkeypatch, tmp_path) -> None:
     registry = FakeRegistry(proxy_ids=["Proxy-P", "Proxy-IT"])
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)

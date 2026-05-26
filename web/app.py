@@ -1302,16 +1302,18 @@ def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
     if requested_proxy is not None:
         session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
 
-    preferred = session.get("active_proxy_id") or get_default_proxy_id()
+    preferred = normalize_proxy_id(session.get("active_proxy_id") or get_default_proxy_id())
     registry = get_proxy_registry()
-    preferred = registry.resolve_proxy_id(preferred)
     proxies = registry.list_proxies()
     if not proxies:
         proxies = [registry.ensure_default_proxy()]
-    active_proxy = next(
-        (proxy for proxy in proxies if proxy.proxy_id == normalize_proxy_id(preferred)),
-        proxies[0],
-    )
+    active_proxy = next((proxy for proxy in proxies if proxy.proxy_id == preferred), None)
+    if active_proxy is None:
+        resolved = registry.resolve_proxy_id(preferred)
+        active_proxy = next(
+            (proxy for proxy in proxies if proxy.proxy_id == normalize_proxy_id(resolved)),
+            proxies[0],
+        )
     session["active_proxy_id"] = active_proxy.proxy_id
     return active_proxy.proxy_id, active_proxy, proxies
 
