@@ -156,5 +156,5 @@ def test_safe_browsing_local_checker_discards_cached_connection_on_db_error(monk
     checker = safe_browsing_v5.SafeBrowsingLocalChecker(api_key="test")
 
     assert checker._local_lists_for_prefix(b"abcd") == ()
-    assert closed == [True]
+    assert closed == [True, True]
     assert checker._conn is None
