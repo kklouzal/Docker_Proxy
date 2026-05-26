@@ -274,6 +274,46 @@ def test_webfilter_init_clears_disabled_legacy_default_block_categories(
     assert conn.settings["default", "blocked_categories"] == ""
 
 
+def test_webfilter_materialized_helper_name_tracks_safe_browsing_key(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
+        whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
+    )
+    monkeypatch.setattr(store, "_resolve_category_aliases", lambda categories: categories)
+    monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
+
+    def render_for_key(api_key: str) -> str:
+        settings = module.WebFilterSettings(
+            enabled=True,
+            source_url="",
+            blocked_categories=["adult"],
+            whitelist_domains=[],
+            last_success=0,
+            last_attempt=0,
+            last_error="",
+            next_run_ts=0,
+            safe_browsing_enabled=True,
+            safe_browsing_api_key=api_key,
+            safe_browsing_lists=["mw-4b"],
+        )
+        monkeypatch.setattr(store, "get_settings", lambda: settings)
+        return store.render_materialized_state().include_text
+
+    first = render_for_key("first-secret")
+    second = render_for_key("second-secret")
+
+    assert first != second
+    assert "first-secret" not in first
+    assert "second-secret" not in second
+    assert "/app/tools/safe_browsing_acl.py" in first
+    assert "/app/tools/safe_browsing_acl.py" in second
+
+
 def test_webfilter_materialized_helpers_honor_fail_mode_env(tmp_path, monkeypatch) -> None:
     module = _import_webfilter_core_module()
     store = module.ProxyWebFilterStore(

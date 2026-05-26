@@ -538,6 +538,12 @@ class WebFilterStoreBase:
             ",".join(settings.whitelist_domains or []),
             str(self._webcat_built_ts()),
             str(int(bool(settings.safe_browsing_enabled))),
+            hashlib.sha256(
+                str(settings.safe_browsing_api_key or "").encode(
+                    "utf-8",
+                    errors="replace",
+                ),
+            ).hexdigest(),
             ",".join(settings.safe_browsing_lists or []),
             str(settings.safe_browsing_last_success or 0),
         ):
