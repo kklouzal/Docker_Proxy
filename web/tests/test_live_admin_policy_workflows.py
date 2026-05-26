@@ -184,7 +184,8 @@ def _write_live_adblock_artifact(
     domains_block: str = "",
     domains_allow: str = "",
     enabled: bool = True,
-) -> None:
+) -> int:
+    settings_version = _adblock_store().get_settings_version()
     directory.mkdir(parents=True, exist_ok=True)
     for name, content in {
         "domains_allow.txt": domains_allow,
@@ -199,7 +200,7 @@ def _write_live_adblock_artifact(
                 "enabled": enabled,
                 "cache_ttl": 120,
                 "cache_max": 1000,
-                "settings_version": 2,
+                "settings_version": settings_version,
                 "enabled_lists": ["live-fixture"] if enabled else [],
             },
             sort_keys=True,
@@ -223,6 +224,8 @@ def _write_live_adblock_artifact(
         + "\n",
         encoding="utf-8",
     )
+
+    return settings_version
 
 
 def test_live_pac_profile_create_update_delete_updates_rendered_pac(
@@ -578,6 +581,7 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     admin_client: LiveStackClient, tmp_path
 ) -> None:
     artifact_dir = tmp_path / "adblock-artifact"
+    settings_version = _adblock_store().get_settings_version()
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / "domains_allow.txt").write_text(
         "allow-live-artifact.example\n", encoding="utf-8"
@@ -595,7 +599,7 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
                 "enabled": False,
                 "cache_ttl": 120,
                 "cache_max": 1000,
-                "settings_version": 2,
+                "settings_version": settings_version,
                 "enabled_lists": ["live-fixture"],
             },
             indent=2,
@@ -622,7 +626,7 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
 
     revision = _adblock_artifacts_store().create_revision_from_directory(
         artifact_dir,
-        settings_version=2,
+        settings_version=settings_version,
         enabled_lists=["live-fixture"],
         created_by="live-tests",
         source_kind="live-fixture",
@@ -803,14 +807,14 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(
     allowed_path = f"/ads/{allowed_token}.json"
 
     artifact_dir = tmp_path / "adblock-artifact"
-    _write_live_adblock_artifact(
+    settings_version = _write_live_adblock_artifact(
         artifact_dir,
         regex_block=f"/.*{blocked_token}[.]json.*/\n/.*{allowed_token}[.]json.*/\n",
         regex_allow=f"/.*{allowed_token}[.]json.*/\n",
     )
     revision = artifacts.create_revision_from_directory(
         artifact_dir,
-        settings_version=2,
+        settings_version=settings_version,
         enabled_lists=["live-fixture"],
         created_by="live-tests",
         source_kind="live_enforcement",
