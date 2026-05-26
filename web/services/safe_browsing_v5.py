@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import contextlib
@@ -357,15 +357,23 @@ def _checksum_for_prefixes(prefixes: Sequence[bytes]) -> bytes:
     return digest.digest()
 
 
-def _enforceable_threat(details: object, fallback: str = "") -> str:
+def _enforceable_threat(
+    details: object,
+    fallback: str = "",
+    allowed: set[str] | None = None,
+) -> str:
     if not isinstance(details, list):
-        return fallback if fallback in _VALID_THREAT_TYPES else ""
+        if fallback in _VALID_THREAT_TYPES and (allowed is None or fallback in allowed):
+            return fallback
+        return ""
     for detail in details:
         if not isinstance(detail, dict):
             continue
         threat = str(detail.get("threatType") or "")
         attrs = {str(a or "") for a in (detail.get("attributes") or [])}
         if threat not in _VALID_THREAT_TYPES:
+            continue
+        if allowed is not None and threat not in allowed:
             continue
         if attrs & _IGNORED_THREAT_ATTRIBUTES:
             continue
@@ -956,7 +964,10 @@ class SafeBrowsingLocalChecker:
                     full = _decode_b64(item.get("fullHash"))
                     if len(full) != 32:
                         continue
-                    threat = _enforceable_threat(item.get("fullHashDetails") or [])
+                    threat = _enforceable_threat(
+                        item.get("fullHashDetails") or [],
+                        allowed=_threat_types_for_lists(local_lists) if local_lists else None,
+                    )
                     if not threat:
                         continue
                     list_name = _list_name_for_threat(local_lists or (), threat)
@@ -1010,9 +1021,10 @@ class SafeBrowsingLocalChecker:
                     cached_verdict.verdict == "unsafe"
                     and cached_verdict.threat_type not in selected_threat_types
                 ):
-                    continue
-                verdict = cached_verdict
-            else:
+                    cached_verdict = None
+                else:
+                    verdict = cached_verdict
+            if cached_verdict is None:
                 api_key = self._api_key_from_settings()
                 if not api_key:
                     verdict = SafeBrowsingVerdict(
@@ -1032,6 +1044,7 @@ class SafeBrowsingLocalChecker:
                             threat = _enforceable_threat(
                                 item.get("fullHashDetails") or [],
                                 _threat_type_for_list(local_lists[0]),
+                                selected_threat_types,
                             )
                             if (
                                 not threat
