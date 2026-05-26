@@ -768,7 +768,7 @@ class SafeBrowsingLocalChecker:
         self._conn = None
         self._store = SafeBrowsingStore()
         self._prefix_cache: dict[tuple[bytes, tuple[str, ...]], tuple[float, tuple[str, ...]]] = {}
-        self._verdict_cache: dict[str, tuple[float, SafeBrowsingVerdict]] = {}
+        self._verdict_cache: dict[tuple[str, tuple[str, ...]], tuple[float, SafeBrowsingVerdict]] = {}
         self._cache_max = cache_max_entries or _env_int(
             "SAFE_BROWSING_HELPER_CACHE_ENTRIES",
             200000,
@@ -972,11 +972,22 @@ class SafeBrowsingLocalChecker:
         except Exception:
             self.close()
 
+    def _cache_verdict(
+        self,
+        key: tuple[str, tuple[str, ...]],
+        verdict: SafeBrowsingVerdict,
+    ) -> None:
+        self._verdict_cache[key] = (time.monotonic() + 300, verdict)
+        if len(self._verdict_cache) > self._cache_max:
+            self._verdict_cache.clear()
+
     def check_url(self, url: str) -> SafeBrowsingVerdict:
         canonical = canonicalize_url(url)
         if not canonical:
             return SafeBrowsingVerdict("safe", reason="invalid or empty url")
-        cached = self._verdict_cache.get(canonical)
+        selected_lists = self._selected_lists_for_lookup()
+        cache_key = (canonical, selected_lists)
+        cached = self._verdict_cache.get(cache_key)
         if cached and cached[0] > time.monotonic():
             return cached[1]
         hashes = expression_hashes(canonical)
@@ -986,7 +997,6 @@ class SafeBrowsingLocalChecker:
             "safe",
             reason="no local hash-prefix match",
         )
-        selected_lists = self._selected_lists_for_lookup()
         selected_threat_types = _threat_types_for_lists(selected_lists)
         for full_hash in hashes:
             prefix = full_hash[:4]
@@ -1037,7 +1047,7 @@ class SafeBrowsingLocalChecker:
                             )
                             break
             if verdict.verdict == "unsafe":
-                self._verdict_cache[canonical] = (time.monotonic() + 300, verdict)
+                self._cache_verdict(cache_key, verdict)
                 return verdict
             last_safe_verdict = verdict
         verdict = (
@@ -1045,5 +1055,5 @@ class SafeBrowsingLocalChecker:
             if saw_local_match
             else SafeBrowsingVerdict("safe", reason="no local hash-prefix match")
         )
-        self._verdict_cache[canonical] = (time.monotonic() + 300, verdict)
+        self._cache_verdict(cache_key, verdict)
         return verdict

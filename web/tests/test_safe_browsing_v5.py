@@ -370,6 +370,55 @@ def test_safe_browsing_checker_continues_after_negative_prefix_cache(
     )
 
 
+def test_safe_browsing_verdict_cache_scopes_to_selected_lists(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    target = expression_hashes("http://social.example/")[0]
+    remote_calls = []
+
+    def selected_lists():
+        if remote_calls:
+            return ("se-4b",)
+        return ("mw-4b",)
+
+    monkeypatch.setattr(checker, "_selected_lists_for_lookup", selected_lists)
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b", "se-4b") if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        _ignore_cache_response,
+    )
+
+    def search_hashes(api_key, prefixes):
+        remote_calls.append(tuple(prefixes))
+        return (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(target)
+                    .decode("ascii")
+                    .rstrip("="),
+                    "fullHashDetails": [{"threatType": "SOCIAL_ENGINEERING"}],
+                }
+            ],
+            300,
+        )
+
+    monkeypatch.setattr(checker._store, "search_hashes", search_hashes)
+
+    assert checker.check_url("http://social.example/") == SafeBrowsingVerdict(
+        "safe",
+        reason="full hash not returned",
+    )
+    assert checker.check_url("http://social.example/") == SafeBrowsingVerdict(
+        "unsafe", "SOCIAL_ENGINEERING", "se-4b", False, "confirmed by hashes.search"
+    )
+    assert remote_calls == [(target[:4],), (target[:4],)]
+
+
 def test_safe_browsing_cache_marks_prefix_negative_after_positive_response() -> None:
     target = b"a" * 32
     prefix = target[:4]
