@@ -383,6 +383,7 @@ def _threat_type_for_list(name: str) -> str:
 def _threat_types_for_lists(names: Sequence[str]) -> set[str]:
     return {_threat_type_for_list(name) for name in names if name}
 
+
 def _list_name_for_threat(names: Sequence[str], threat: str) -> str:
     for name in names:
         if _threat_type_for_list(name) == threat:

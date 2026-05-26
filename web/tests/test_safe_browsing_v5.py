@@ -168,6 +168,7 @@ def test_safe_browsing_checker_reports_matching_list_for_threat(monkeypatch) -> 
         "unsafe", "MALWARE", "mw-4b", False, "confirmed by hashes.search"
     )
 
+
 def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> None:
     from services import safe_browsing_v5
 
