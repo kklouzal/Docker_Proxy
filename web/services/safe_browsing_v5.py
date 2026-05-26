@@ -380,6 +380,10 @@ def _threat_type_for_list(name: str) -> str:
     )
 
 
+def _threat_types_for_lists(names: Sequence[str]) -> set[str]:
+    return {_threat_type_for_list(name) for name in names if name}
+
+
 @dataclass(frozen=True)
 class SafeBrowsingSettings:
     enabled: bool
@@ -750,11 +754,13 @@ class SafeBrowsingLocalChecker:
         prefix_hit_ttl_seconds: int | None = None,
         prefix_miss_ttl_seconds: int | None = None,
         cache_max_entries: int | None = None,
+        selected_lists: Sequence[str] | str | None = None,
+        selected_lists_ttl_seconds: int | None = None,
     ) -> None:
         self.api_key = api_key
         self._conn = None
         self._store = SafeBrowsingStore()
-        self._prefix_cache: dict[bytes, tuple[float, tuple[str, ...]]] = {}
+        self._prefix_cache: dict[tuple[bytes, tuple[str, ...]], tuple[float, tuple[str, ...]]] = {}
         self._verdict_cache: dict[str, tuple[float, SafeBrowsingVerdict]] = {}
         self._cache_max = cache_max_entries or _env_int(
             "SAFE_BROWSING_HELPER_CACHE_ENTRIES",
@@ -777,6 +783,22 @@ class SafeBrowsingLocalChecker:
             if prefix_miss_ttl_seconds is not None
             else _env_int(
                 "SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS",
+                60,
+                minimum=5,
+                maximum=3600,
+            )
+        )
+        self._configured_selected_lists = (
+            SafeBrowsingStore.normalize_lists(selected_lists)
+            if selected_lists is not None
+            else None
+        )
+        self._selected_lists_cache: tuple[float, tuple[str, ...]] | None = None
+        self._selected_lists_ttl = (
+            int(selected_lists_ttl_seconds)
+            if selected_lists_ttl_seconds is not None
+            else _env_int(
+                "SAFE_BROWSING_SELECTED_LISTS_TTL_SECONDS",
                 60,
                 minimum=5,
                 maximum=3600,
@@ -821,23 +843,50 @@ class SafeBrowsingLocalChecker:
             self.close()
             return ""
 
+    def _selected_lists_for_lookup(self) -> tuple[str, ...]:
+        if self._configured_selected_lists is not None:
+            return self._configured_selected_lists
+        now_mono = time.monotonic()
+        cached = self._selected_lists_cache
+        if cached and cached[0] > now_mono:
+            return cached[1]
+        lists = SafeBrowsingStore.normalize_lists(None)
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT v FROM webfilter_settings WHERE proxy_id=%s AND k=%s",
+                    ("__global__", "safe_browsing_lists"),
+                ).fetchone()
+            if row and row[0] is not None:
+                lists = SafeBrowsingStore.normalize_lists(str(row[0] or ""))
+        except Exception:
+            self.close()
+            if cached:
+                lists = cached[1]
+        self._selected_lists_cache = (now_mono + self._selected_lists_ttl, lists)
+        return lists
+
     def _local_lists_for_prefix(self, prefix: bytes) -> tuple[str, ...]:
-        cached = self._prefix_cache.get(prefix)
+        selected_lists = self._selected_lists_for_lookup()
+        cache_key = (prefix, selected_lists)
+        cached = self._prefix_cache.get(cache_key)
         now_mono = time.monotonic()
         if cached and cached[0] > now_mono:
             return cached[1]
         try:
+            placeholders = ",".join(["%s"] * len(selected_lists))
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT list_name FROM safe_browsing_hash_prefixes WHERE prefix=%s",
-                    (prefix,),
+                    "SELECT list_name FROM safe_browsing_hash_prefixes "
+                    f"WHERE prefix=%s AND list_name IN ({placeholders})",
+                    (prefix, *selected_lists),
                 ).fetchall()
             lists = tuple(str(row[0]) for row in rows if row and row[0])
         except Exception:
             self.close()
             lists = ()
         ttl = self._prefix_hit_ttl if lists else self._prefix_miss_ttl
-        self._prefix_cache[prefix] = (now_mono + ttl, lists)
+        self._prefix_cache[cache_key] = (now_mono + ttl, lists)
         if len(self._prefix_cache) > self._cache_max:
             self._prefix_cache.clear()
         return lists
@@ -928,6 +977,8 @@ class SafeBrowsingLocalChecker:
             "safe",
             reason="no local hash-prefix match",
         )
+        selected_lists = self._selected_lists_for_lookup()
+        selected_threat_types = _threat_types_for_lists(selected_lists)
         for full_hash in hashes:
             prefix = full_hash[:4]
             local_lists = self._local_lists_for_prefix(prefix)
@@ -936,6 +987,11 @@ class SafeBrowsingLocalChecker:
             saw_local_match = True
             cached_verdict = self._cache_lookup(prefix, full_set)
             if cached_verdict is not None:
+                if (
+                    cached_verdict.verdict == "unsafe"
+                    and cached_verdict.threat_type not in selected_threat_types
+                ):
+                    continue
                 verdict = cached_verdict
             else:
                 api_key = self._api_key_from_settings()
@@ -958,7 +1014,10 @@ class SafeBrowsingLocalChecker:
                                 item.get("fullHashDetails") or [],
                                 _threat_type_for_list(local_lists[0]),
                             )
-                            if not threat:
+                            if (
+                                not threat
+                                or threat not in selected_threat_types
+                            ):
                                 continue
                             verdict = SafeBrowsingVerdict(
                                 "unsafe",

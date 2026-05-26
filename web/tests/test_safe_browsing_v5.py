@@ -185,6 +185,7 @@ def test_safe_browsing_prefix_miss_cache_uses_short_ttl(monkeypatch) -> None:
         api_key="test",
         prefix_hit_ttl_seconds=3600,
         prefix_miss_ttl_seconds=10,
+        selected_lists=("mw-4b",),
     )
     monkeypatch.setattr(safe_browsing_v5.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(checker, "_connect", FakeConn)
@@ -198,6 +199,74 @@ def test_safe_browsing_prefix_miss_cache_uses_short_ttl(monkeypatch) -> None:
     now[0] = 120.0
     assert checker._local_lists_for_prefix(b"abcd") == ("mw-4b",)
     assert len(calls) == 2
+
+
+def test_safe_browsing_prefix_lookup_filters_to_selected_lists(monkeypatch) -> None:
+    from services import safe_browsing_v5
+
+    calls = []
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            calls.append((sql, params))
+            assert "list_name IN" in sql
+            assert params == (b"abcd", "mw-4b")
+            return Result([])
+
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
+    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(checker, "_connect", FakeConn)
+
+    assert checker._local_lists_for_prefix(b"abcd") == ()
+    assert len(calls) == 1
+
+
+def test_safe_browsing_checker_ignores_unselected_threat_response(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
+    target = expression_hashes("http://social.example/")[0]
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        lambda prefix, response, cache_duration: None,
+    )
+    monkeypatch.setattr(
+        checker._store,
+        "search_hashes",
+        lambda api_key, prefixes: (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(target)
+                    .decode("ascii")
+                    .rstrip("="),
+                    "fullHashDetails": [{"threatType": "SOCIAL_ENGINEERING"}],
+                }
+            ],
+            300,
+        ),
+    )
+
+    verdict = checker.check_url("http://social.example/")
+
+    assert verdict == SafeBrowsingVerdict("safe", reason="full hash not returned")
 
 
 def test_safe_browsing_checker_continues_after_negative_prefix_cache(
@@ -545,7 +614,7 @@ def test_safe_browsing_update_lists_releases_db_before_network_fetch(monkeypatch
 
 
 def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
-    checker = SafeBrowsingLocalChecker(api_key="test")
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("uwsa-4b",))
     target = expression_hashes("http://bad-android.example/")[0]
     monkeypatch.setattr(
         checker,
