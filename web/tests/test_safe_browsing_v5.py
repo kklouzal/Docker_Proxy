@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import hashlib
 from typing import NoReturn
 
@@ -104,10 +104,10 @@ def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
         "_local_lists_for_prefix",
         lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
     )
-    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
     monkeypatch.setattr(
-        checker, "_cache_search_response", _ignore_cache_response
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
     )
+    monkeypatch.setattr(checker, "_cache_search_response", _ignore_cache_response)
     monkeypatch.setattr(
         checker._store,
         "search_hashes",
@@ -140,7 +140,9 @@ def test_safe_browsing_checker_reports_matching_list_for_threat(monkeypatch) -> 
         "_local_lists_for_prefix",
         lambda prefix: ("se-4b", "mw-4b") if prefix == target[:4] else (),
     )
-    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
     monkeypatch.setattr(
         checker,
         "_cache_search_response",
@@ -286,7 +288,9 @@ def test_safe_browsing_checker_ignores_unselected_threat_response(monkeypatch) -
         "_local_lists_for_prefix",
         lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
     )
-    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
     monkeypatch.setattr(
         checker,
         "_cache_search_response",
@@ -332,7 +336,7 @@ def test_safe_browsing_checker_continues_after_negative_prefix_cache(
         lambda prefix: ("mw-4b",) if prefix in {first[:4], second[:4]} else (),
     )
 
-    def cache_lookup(prefix, full_hashes):
+    def cache_lookup(prefix, full_hashes, local_lists=None):
         if prefix == first[:4]:
             return SafeBrowsingVerdict(
                 "safe",
@@ -384,9 +388,11 @@ def test_safe_browsing_verdict_cache_scopes_to_selected_lists(monkeypatch) -> No
     monkeypatch.setattr(
         checker,
         "_local_lists_for_prefix",
-        lambda prefix: ("mw-4b", "se-4b") if prefix == target[:4] else (),
+        lambda prefix: selected_lists() if prefix == target[:4] else (),
     )
-    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
     monkeypatch.setattr(
         checker,
         "_cache_search_response",
@@ -435,7 +441,7 @@ def test_safe_browsing_unselected_cached_threat_does_not_skip_selected_lookup(
     monkeypatch.setattr(
         checker,
         "_cache_lookup",
-        lambda _prefix, _full_hashes: SafeBrowsingVerdict(
+        lambda _prefix, _full_hashes, local_lists=None: SafeBrowsingVerdict(
             "unsafe",
             "MALWARE",
             "mw-4b",
@@ -474,7 +480,83 @@ def test_safe_browsing_unselected_cached_threat_does_not_skip_selected_lookup(
     assert remote_calls == [(target[:4],)]
 
 
-def test_safe_browsing_cache_does_not_write_prefix_negative_after_positive_response() -> None:
+def test_safe_browsing_cached_threat_must_match_local_prefix_list(
+    monkeypatch,
+) -> None:
+    from services import safe_browsing_v5
+
+    checker = SafeBrowsingLocalChecker(
+        api_key="test",
+        selected_lists=("se-4b", "mw-4b"),
+    )
+    target = expression_hashes("http://multi-list.example/")[0]
+    prefix = target[:4]
+    remote_calls = []
+
+    class Result:
+        def __init__(self, rows=()) -> None:
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            if sql.startswith("DELETE FROM"):
+                return Result()
+            if "safe_browsing_full_hash_cache" in sql:
+                assert "list_name IN" in sql
+                assert params == (prefix, 100, "se-4b")
+                return Result([])
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 100)
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda matched_prefix: ("se-4b",) if matched_prefix == prefix else (),
+    )
+    monkeypatch.setattr(checker, "_connect", FakeConn)
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        _ignore_cache_response,
+    )
+
+    def search_hashes(api_key, prefixes):
+        remote_calls.append(tuple(prefixes))
+        return (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(target)
+                    .decode("ascii")
+                    .rstrip("="),
+                    "fullHashDetails": [
+                        {"threatType": "MALWARE"},
+                        {"threatType": "SOCIAL_ENGINEERING"},
+                    ],
+                }
+            ],
+            300,
+        )
+
+    monkeypatch.setattr(checker._store, "search_hashes", search_hashes)
+
+    assert checker.check_url("http://multi-list.example/") == SafeBrowsingVerdict(
+        "unsafe", "SOCIAL_ENGINEERING", "se-4b", False, "confirmed by hashes.search"
+    )
+    assert remote_calls == [(prefix,)]
+
+
+def test_safe_browsing_cache_does_not_write_prefix_negative_after_positive_response() -> (
+    None
+):
     target = b"a" * 32
     prefix = target[:4]
     executed = []
@@ -495,7 +577,9 @@ def test_safe_browsing_cache_does_not_write_prefix_negative_after_positive_respo
         prefix,
         [
             {
-                "fullHash": base64.urlsafe_b64encode(target).decode("ascii").rstrip("="),
+                "fullHash": base64.urlsafe_b64encode(target)
+                .decode("ascii")
+                .rstrip("="),
                 "fullHashDetails": [{"threatType": "MALWARE"}],
             }
         ],
@@ -504,9 +588,7 @@ def test_safe_browsing_cache_does_not_write_prefix_negative_after_positive_respo
     )
 
     full_hash_insert = next(
-        params
-        for sql, params in executed
-        if "safe_browsing_full_hash_cache" in sql
+        params for sql, params in executed if "safe_browsing_full_hash_cache" in sql
     )
     assert full_hash_insert == (
         prefix,
@@ -773,10 +855,10 @@ def test_safe_browsing_ignores_canary_full_hash_detail(monkeypatch) -> None:
         "_local_lists_for_prefix",
         lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
     )
-    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
     monkeypatch.setattr(
-        checker, "_cache_search_response", _ignore_cache_response
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
     )
+    monkeypatch.setattr(checker, "_cache_search_response", _ignore_cache_response)
     monkeypatch.setattr(
         checker._store,
         "search_hashes",
@@ -797,7 +879,9 @@ def test_safe_browsing_ignores_canary_full_hash_detail(monkeypatch) -> None:
     assert checker.check_url("http://bad.example/").verdict == "safe"
 
 
-def test_safe_browsing_update_lists_releases_db_before_network_fetch(monkeypatch) -> None:
+def test_safe_browsing_update_lists_releases_db_before_network_fetch(
+    monkeypatch,
+) -> None:
     closed_before_request: list[bool] = []
     events: list[str] = []
 
@@ -823,7 +907,9 @@ def test_safe_browsing_update_lists_releases_db_before_network_fetch(monkeypatch
     store = SafeBrowsingStore()
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", FakeConn)
-    monkeypatch.setattr(store, "_apply_hash_list", lambda _conn, _item: events.append("apply"))
+    monkeypatch.setattr(
+        store, "_apply_hash_list", lambda _conn, _item: events.append("apply")
+    )
 
     def fake_request_json(*_args, **_kwargs):
         closed_before_request.append(events == ["enter", "exit"])
@@ -832,7 +918,15 @@ def test_safe_browsing_update_lists_releases_db_before_network_fetch(monkeypatch
     monkeypatch.setattr(store, "_request_json", fake_request_json)
 
     ok, err, wait = store.update_lists(
-        SafeBrowsingSettings(enabled=True, api_key="key", lists=("mw-4b",), last_success=0, last_attempt=0, last_error="", next_run_ts=0),
+        SafeBrowsingSettings(
+            enabled=True,
+            api_key="key",
+            lists=("mw-4b",),
+            last_success=0,
+            last_attempt=0,
+            last_error="",
+            next_run_ts=0,
+        ),
     )
 
     assert ok is True
@@ -850,7 +944,9 @@ def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
         "_local_lists_for_prefix",
         lambda prefix: ("uwsa-4b",) if prefix == target[:4] else (),
     )
-    monkeypatch.setattr(checker, "_cache_lookup", lambda prefix, full_hashes: None)
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
     monkeypatch.setattr(
         checker,
         "_cache_search_response",
@@ -865,9 +961,7 @@ def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
                     "fullHash": base64.urlsafe_b64encode(target)
                     .decode("ascii")
                     .rstrip("="),
-                    "fullHashDetails": [
-                        {"threatType": "UNWANTED_SOFTWARE_ANDROID"}
-                    ],
+                    "fullHashDetails": [{"threatType": "UNWANTED_SOFTWARE_ANDROID"}],
                 }
             ],
             300,

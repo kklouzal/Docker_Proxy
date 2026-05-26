@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import contextlib
@@ -784,8 +784,12 @@ class SafeBrowsingLocalChecker:
         self.api_key = api_key
         self._conn = None
         self._store = SafeBrowsingStore()
-        self._prefix_cache: dict[tuple[bytes, tuple[str, ...]], tuple[float, tuple[str, ...]]] = {}
-        self._verdict_cache: dict[tuple[str, tuple[str, ...]], tuple[float, SafeBrowsingVerdict]] = {}
+        self._prefix_cache: dict[
+            tuple[bytes, tuple[str, ...]], tuple[float, tuple[str, ...]]
+        ] = {}
+        self._verdict_cache: dict[
+            tuple[str, tuple[str, ...]], tuple[float, SafeBrowsingVerdict]
+        ] = {}
         self._cache_max = cache_max_entries or _env_int(
             "SAFE_BROWSING_HELPER_CACHE_ENTRIES",
             200000,
@@ -919,6 +923,7 @@ class SafeBrowsingLocalChecker:
         self,
         prefix: bytes,
         full_hashes: set[bytes],
+        local_lists: Sequence[str] | None = None,
     ) -> SafeBrowsingVerdict | None:
         now = _now()
         try:
@@ -931,9 +936,20 @@ class SafeBrowsingLocalChecker:
                     "DELETE FROM safe_browsing_negative_cache WHERE expires_ts < %s",
                     (now,),
                 )
+                params: tuple[object, ...] = (prefix, now)
+                list_filter = ""
+                if local_lists:
+                    lists = SafeBrowsingStore.normalize_lists(local_lists)
+                    if lists:
+                        placeholders = ",".join(["%s"] * len(lists))
+                        list_filter = f" AND list_name IN ({placeholders})"
+                        params = (prefix, now, *lists)
                 rows = conn.execute(
-                    "SELECT full_hash, threat_type, list_name FROM safe_browsing_full_hash_cache WHERE prefix=%s AND expires_ts >= %s",
-                    (prefix, now),
+                    "SELECT full_hash, threat_type, list_name "
+                    "FROM safe_browsing_full_hash_cache "
+                    "WHERE prefix=%s AND expires_ts >= %s"
+                    f"{list_filter}",
+                    params,
                 ).fetchall()
                 for row in rows:
                     if bytes(row[0]) in full_hashes:
@@ -970,7 +986,9 @@ class SafeBrowsingLocalChecker:
                         continue
                     threat = _enforceable_threat(
                         item.get("fullHashDetails") or [],
-                        allowed=_threat_types_for_lists(local_lists) if local_lists else None,
+                        allowed=_threat_types_for_lists(local_lists)
+                        if local_lists
+                        else None,
                     )
                     if not threat:
                         continue
@@ -1008,18 +1026,18 @@ class SafeBrowsingLocalChecker:
             "safe",
             reason="no local hash-prefix match",
         )
-        selected_threat_types = _threat_types_for_lists(selected_lists)
         for full_hash in hashes:
             prefix = full_hash[:4]
             local_lists = self._local_lists_for_prefix(prefix)
             if not local_lists:
                 continue
+            local_threat_types = _threat_types_for_lists(local_lists)
             saw_local_match = True
-            cached_verdict = self._cache_lookup(prefix, full_set)
+            cached_verdict = self._cache_lookup(prefix, full_set, local_lists)
             if cached_verdict is not None:
                 if (
                     cached_verdict.verdict == "unsafe"
-                    and cached_verdict.threat_type not in selected_threat_types
+                    and cached_verdict.threat_type not in local_threat_types
                 ):
                     cached_verdict = None
                 else:
@@ -1044,12 +1062,9 @@ class SafeBrowsingLocalChecker:
                             threat = _enforceable_threat(
                                 item.get("fullHashDetails") or [],
                                 _threat_type_for_list(local_lists[0]),
-                                selected_threat_types,
+                                local_threat_types,
                             )
-                            if (
-                                not threat
-                                or threat not in selected_threat_types
-                            ):
+                            if not threat or threat not in local_threat_types:
                                 continue
                             verdict = SafeBrowsingVerdict(
                                 "unsafe",
