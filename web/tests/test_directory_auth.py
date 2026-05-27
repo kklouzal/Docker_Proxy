@@ -4,6 +4,8 @@ import sys
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from services.directory_auth import DirectoryAuthResult, DirectoryAuthStore
 
 
@@ -90,6 +92,44 @@ def test_profile_save_clears_stale_connection_test_status_when_settings_change(
     assert updated.last_test_ts == 0
     assert "Configuration changed" in updated.last_test_detail
 
+
+def test_profile_requires_successful_connection_test_before_enable(tmp_path) -> None:
+    from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path
+
+    configure_test_mysql_env(tmp_path / "directory-auth-enable-test")
+    ensure_web_import_path()
+    from services.directory_auth import DirectoryAuthStore as RuntimeDirectoryAuthStore
+
+    store = RuntimeDirectoryAuthStore(lambda: "stable-secret")
+    store.ensure_default_profiles()
+
+    payload = {
+        "enabled": "1",
+        "server_urls": "ldaps://ldap.example.org:636",
+        "bind_dn": "cn=bind,dc=example,dc=org",
+        "bind_password": "secret",
+        "base_dn": "dc=example,dc=org",
+        "user_filter": "(uid={username})",
+        "user_attribute": "uid",
+        "group_filter": "(member={user_dn})",
+        "required_admin_group": "cn=admins,dc=example,dc=org",
+        "timeout_seconds": "5",
+        "verify_tls": "1",
+    }
+    with pytest.raises(ValueError, match="successfully before enabling"):
+        store.save_profile("ldap", payload)
+
+    disabled = dict(payload)
+    disabled["enabled"] = "0"
+    store.save_profile("ldap", disabled)
+    store.record_test("ldap", ok=True, detail="Directory bind and base search succeeded.")
+    tested = store.get_profile("ldap")
+    store.save_profile("ldap", {**payload, "bind_password": ""})
+
+    active = store.get_profile("ldap")
+    assert active.enabled is True
+    assert active.last_test_ok is True
+    assert active.bind_password == tested.bind_password
 
 def test_directory_auth_result_keeps_provider_and_groups() -> None:
     result = DirectoryAuthResult(

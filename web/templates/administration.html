@@ -194,6 +194,7 @@
                         <option value="0" {{ 'selected' if not profile.enabled else '' }}>Disabled</option>
                         <option value="1" {{ 'selected' if profile.enabled else '' }}>Make {{ profile.label }} active</option>
                     </select>
+                    <div class="surface-note small">A provider must have a fresh successful connection test before it can become active.</div>
                 </div>
                 <div>
                     <label for="{{ current_tab }}-timeout">Timeout seconds</label>

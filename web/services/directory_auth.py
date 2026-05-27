@@ -244,8 +244,11 @@ class DirectoryAuthStore:
         current = self.get_profile(provider)
         enabled = self._truthy(payload.get("enabled"))
         bind_password = str(payload.get("bind_password") or "")
+        current_bind_password = self._decrypt(current.bind_password)
         stored_password = (
-            self._encrypt(bind_password)
+            current.bind_password
+            if bind_password and bind_password == current_bind_password
+            else self._encrypt(bind_password)
             if bind_password
             else current.bind_password
             if current.provider == provider
@@ -315,9 +318,13 @@ class DirectoryAuthStore:
             last_test_detail=last_test_detail,
             updated_ts=int(time.time()),
         )
-        if profile.enabled and not self._decrypt(profile.bind_password):
-            msg = "Bind password is required before enabling a directory provider."
-            raise ValueError(msg)
+        if profile.enabled:
+            if not self._decrypt(profile.bind_password):
+                msg = "Bind password is required before enabling a directory provider."
+                raise ValueError(msg)
+            if not profile.last_test_ok:
+                msg = "Test the directory provider successfully before enabling it."
+                raise ValueError(msg)
         self.ensure_default_profiles()
         with self._connect() as conn:
             if profile.enabled:

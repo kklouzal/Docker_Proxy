@@ -116,6 +116,7 @@ def test_administration_exposes_directory_tabs(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert "Authentication status" not in body
     assert "LDAP provider" in body
+    assert "fresh successful connection test" in body
     assert "Active Directory" in client.get("/administration?tab=status").get_data(
         as_text=True
     )
