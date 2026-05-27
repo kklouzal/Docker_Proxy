@@ -306,7 +306,9 @@ def test_webfilter_safe_browsing_setting_changes_schedule_immediate_refresh(
         "_set",
         lambda _conn, key, value: values.__setitem__(key, value),
     )
-    monkeypatch.setattr(store, "_category_build_needed_conn", lambda _conn: False)
+    monkeypatch.setattr(
+        store, "_category_build_needed_conn", lambda _conn, **_kwargs: False
+    )
     monkeypatch.setattr(store, "_clear_refresh_requested_conn", lambda _conn: None)
 
     store.set_settings(
@@ -368,7 +370,9 @@ def test_webfilter_safe_browsing_requires_selected_threat_list(monkeypatch) -> N
         )
 
 
-def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(monkeypatch) -> None:
+def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(
+    monkeypatch,
+) -> None:
     from services import webfilter_store  # type: ignore
     from services.safe_browsing_v5 import SafeBrowsingVerdict  # type: ignore
     from services.webfilter_store import WebFilterStore  # type: ignore
@@ -414,3 +418,59 @@ def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(monkeypat
     assert result["blocked_by"] == "google-safe-browsing/social-engineering"
     assert result["matched_blocked"] == []
     assert result["safe_browsing"]["threat_type"] == "SOCIAL_ENGINEERING"
+
+
+def test_webfilter_restoring_disabled_settings_does_not_revalidate_old_global_source(
+    monkeypatch,
+) -> None:
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    values = {
+        "enabled": "1",
+        "source_url": "http://127.0.0.1/private-feed.tar.gz",
+        "source_provider": "auto",
+        "blocked_categories": "adult",
+    }
+
+    class FakeRows:
+        def fetchall(self):
+            return [
+                ("default", "enabled", "1"),
+                ("default", "blocked_categories", "adult"),
+            ]
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            return FakeRows()
+
+    store = WebFilterStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConn)
+    monkeypatch.setattr(
+        store, "_get", lambda _conn, key, default="": values.get(key, default)
+    )
+    monkeypatch.setattr(
+        store,
+        "_get_global_setting_conn",
+        lambda _conn, key, default="": values.get(key, default),
+    )
+    monkeypatch.setattr(
+        store, "_set", lambda _conn, key, value: values.__setitem__(key, value)
+    )
+    monkeypatch.setattr(store, "_clear_refresh_requested_conn", lambda _conn: None)
+
+    store.set_settings(
+        enabled=False,
+        source_url="http://127.0.0.1/private-feed.tar.gz",
+        blocked_categories=[],
+    )
+
+    assert values["enabled"] == "0"
+    assert values["source_url"] == "http://127.0.0.1/private-feed.tar.gz"
+    assert values["blocked_categories"] == ""

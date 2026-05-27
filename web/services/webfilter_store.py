@@ -147,10 +147,15 @@ class WebFilterStore(WebFilterStoreBase):
                 self._get_global_setting_conn(conn, "safe_browsing_lists", "")
             )
 
+            category_build_needed = self._category_build_needed_conn(
+                conn,
+                override_proxy_id=get_proxy_id(),
+                override_enabled=enabled,
+                override_blocked_categories=categories_csv,
+            )
             source = (
                 validate_source_url(source_candidate)
-                if source_candidate
-                and (enabled or self._category_build_needed_conn(conn))
+                if source_candidate and (enabled or category_build_needed)
                 else source_candidate
             )
 
@@ -187,7 +192,6 @@ class WebFilterStore(WebFilterStoreBase):
             ):
                 self._set(conn, "safe_browsing_next_run_ts", str(_now()))
 
-            category_build_needed = self._category_build_needed_conn(conn)
             if (
                 category_build_needed
                 and source
@@ -429,7 +433,14 @@ class WebFilterStore(WebFilterStoreBase):
     def _refresh_requested_conn(self, conn) -> bool:
         return self._get_meta(conn, "refresh_requested", "0") == "1"
 
-    def _category_build_needed_conn(self, conn) -> bool:
+    def _category_build_needed_conn(
+        self,
+        conn,
+        *,
+        override_proxy_id: object | None = None,
+        override_enabled: bool | None = None,
+        override_blocked_categories: str | None = None,
+    ) -> bool:
         rows = conn.execute(
             f"SELECT proxy_id, k, v FROM {self._table('settings')} WHERE proxy_id<>%s AND k IN ('enabled','blocked_categories')",
             (_GLOBAL_SCOPE,),
@@ -440,6 +451,14 @@ class WebFilterStore(WebFilterStoreBase):
             key = str(row[1] or "")
             value = str(row[2]) if row[2] is not None else ""
             by_proxy.setdefault(proxy_id, {})[key] = value
+
+        if override_proxy_id is not None:
+            override_id = str(override_proxy_id or "").strip() or "default"
+            values = by_proxy.setdefault(override_id, {})
+            if override_enabled is not None:
+                values["enabled"] = "1" if override_enabled else "0"
+            if override_blocked_categories is not None:
+                values["blocked_categories"] = override_blocked_categories
 
         for values in by_proxy.values():
             if values.get("enabled") != "1":
