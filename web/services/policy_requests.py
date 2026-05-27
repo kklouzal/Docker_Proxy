@@ -18,6 +18,10 @@ REVOKED = "revoked"
 REQ_STATUS = {PENDING, APPROVED, REJECTED, CLOSED}
 BLOCK_TYPES = {"webfilter", "adblock", "clamav", "download", "mime"}
 _SAFE = re.compile(r"[^a-z0-9_.:-]+", re.IGNORECASE)
+_HOST_LABEL = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+    re.IGNORECASE,
+)
 
 
 def _norm_domain(value: object) -> str:
@@ -40,7 +44,7 @@ def _looks_like_host(value: object) -> bool:
     if any(ch.isspace() for ch in host):
         return False
     parts = host.split(".")
-    if not all(re.fullmatch(r"[a-z0-9-]{1,63}", part or "") for part in parts):
+    if not all(_HOST_LABEL.fullmatch(part or "") for part in parts):
         return False
     # Single-label DNS names are valid inside container and private networks
     # (for example Docker Compose service names such as ``traffic-fixture``).

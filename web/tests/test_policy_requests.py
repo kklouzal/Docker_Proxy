@@ -275,6 +275,9 @@ def test_policy_request_store_rejects_invalid_scope_and_filters_active_exception
     assert normalize_domain("traffic-fixture") == "traffic-fixture"
     assert normalize_domain("", request_url="http://proxy:5000/path") == "proxy"
     assert normalize_domain("12345") == ""
+    assert normalize_domain("-bad.example") == ""
+    assert normalize_domain("bad-.example") == ""
+    assert normalize_domain("bad.-example") == ""
     assert normalize_block_type("unknown<script>") == "webfilter"
     for kwargs in (
         {"client_ip": "192.168.1.44", "domain": "not a host"},
