@@ -475,7 +475,7 @@ class SafeBrowsingStore:
         )
 
     @staticmethod
-    def normalize_lists(values: Sequence[str] | str | None) -> tuple[str, ...]:
+    def selected_lists(values: Sequence[str] | str | None) -> tuple[str, ...]:
         if isinstance(values, str):
             raw = values.replace("\n", ",").split(",")
         else:
@@ -485,6 +485,11 @@ class SafeBrowsingStore:
             name = (item or "").strip().lower()
             if name in SAFE_BROWSING_LISTS and name not in out:
                 out.append(name)
+        return tuple(out)
+
+    @staticmethod
+    def normalize_lists(values: Sequence[str] | str | None) -> tuple[str, ...]:
+        out = SafeBrowsingStore.selected_lists(values)
         return tuple(out or DEFAULT_SAFE_BROWSING_LISTS)
 
     @staticmethod

@@ -1915,6 +1915,11 @@ def _handle_webfilter_post(store: Any, tab: str):
             except Exception:
                 safe_browsing_api_key = ""
 
+        if safe_browsing_enabled and not safe_browsing_lists:
+            return _redirect_to(
+                "webfilter", tab="categories", err_safe_browsing_lists="1"
+            )
+
         if enabled and categories and not source_url:
             return _redirect_to("webfilter", tab="categories", err_source="1")
 
@@ -3827,6 +3832,9 @@ def webfilter():
         window=window_i,
         window_label=_window_label(window_i),
         err_source=(request.args.get("err_source") == "1"),
+        err_safe_browsing_lists=(
+            request.args.get("err_safe_browsing_lists") == "1"
+        ),
         wl_ok=(request.args.get("wl_ok") == "1"),
         wl_err=(request.args.get("wl_err") or ""),
     )

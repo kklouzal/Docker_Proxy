@@ -113,9 +113,18 @@ class WebFilterStore(WebFilterStoreBase):
         ]
         categories = self._resolve_category_aliases(categories)
         categories_csv = ",".join(sorted(set(categories)))
-        gsb_lists = SafeBrowsingStore.normalize_lists(
-            safe_browsing_lists or DEFAULT_SAFE_BROWSING_LISTS,
-        )
+        if safe_browsing_lists is None:
+            gsb_lists = SafeBrowsingStore.normalize_lists(DEFAULT_SAFE_BROWSING_LISTS)
+        else:
+            gsb_lists = SafeBrowsingStore.selected_lists(safe_browsing_lists)
+        if safe_browsing_enabled and not gsb_lists:
+            msg = (
+                "At least one valid Google Safe Browsing threat list is required "
+                "when Safe Browsing is enabled."
+            )
+            raise ValueError(msg)
+        if not gsb_lists:
+            gsb_lists = SafeBrowsingStore.normalize_lists(DEFAULT_SAFE_BROWSING_LISTS)
 
         with self._connect() as conn:
             previous_enabled = self._get(conn, "enabled", "0") == "1"

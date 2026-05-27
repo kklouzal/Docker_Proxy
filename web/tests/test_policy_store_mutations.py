@@ -341,6 +341,33 @@ def test_webfilter_safe_browsing_setting_changes_schedule_immediate_refresh(
     assert values["safe_browsing_next_run_ts"] == "1000"
 
 
+def test_webfilter_safe_browsing_requires_selected_threat_list(monkeypatch) -> None:
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    store = WebFilterStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+
+    with pytest.raises(ValueError, match="threat list"):
+        store.set_settings(
+            enabled=False,
+            source_url="",
+            blocked_categories=[],
+            safe_browsing_enabled=True,
+            safe_browsing_api_key="test-key",
+            safe_browsing_lists=[],
+        )
+
+    with pytest.raises(ValueError, match="threat list"):
+        store.set_settings(
+            enabled=False,
+            source_url="",
+            blocked_categories=[],
+            safe_browsing_enabled=True,
+            safe_browsing_api_key="test-key",
+            safe_browsing_lists=["not-a-list"],
+        )
+
+
 def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(monkeypatch) -> None:
     from services import webfilter_store  # type: ignore
     from services.safe_browsing_v5 import SafeBrowsingVerdict  # type: ignore

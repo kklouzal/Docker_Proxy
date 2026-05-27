@@ -137,6 +137,11 @@
               A valid shared category source URL is required before web filtering can be enabled.
             </div>
           {% endif %}
+          {% if err_safe_browsing_lists %}
+            <div class="alert error">
+              Select at least one Google Safe Browsing threat list before enabling Safe Browsing.
+            </div>
+          {% endif %}
 
           <section class="surface-panel">
             <div class="section-header-row">
