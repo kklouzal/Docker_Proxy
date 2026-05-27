@@ -109,7 +109,8 @@ def _install_failing_first_ldap(monkeypatch):
         def open(self) -> None:
             calls.append(("open", self.server.url))
             if "bad" in self.server.url:
-                raise RuntimeError("connection failed")
+                msg = "connection failed"
+                raise RuntimeError(msg)
 
         def start_tls(self) -> None:
             calls.append(("start_tls", self.server.url))
@@ -124,11 +125,14 @@ def _install_failing_first_ldap(monkeypatch):
         def unbind(self) -> None:
             calls.append(("unbind", self.server.url))
 
+    def fake_tls(**kwargs):
+        return SimpleNamespace(kwargs=kwargs)
+
     fake_ldap3 = SimpleNamespace(
         NONE=0,
         Server=FakeServer,
         Connection=FakeConnection,
-        Tls=lambda **kwargs: SimpleNamespace(kwargs=kwargs),
+        Tls=fake_tls,
     )
     monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
     return calls
