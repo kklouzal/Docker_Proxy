@@ -24,7 +24,12 @@ class FakeDirectoryAuthStore:
                 detail="Directory authentication succeeded.",
                 groups=("cn=admins,dc=example,dc=org",),
             )
-        return SimpleNamespace(ok=False, provider="ldap", username=username, detail="no")
+        return SimpleNamespace(
+            ok=False,
+            provider="local",
+            username=username,
+            detail="No active directory provider.",
+        )
 
     def get_status(self):
         ldap = SimpleNamespace(
@@ -182,6 +187,43 @@ def test_directory_auth_failure_falls_back_to_local_login(monkeypatch, tmp_path)
     with client.session_transaction() as sess:
         assert sess["user"] == "admin"
         assert sess["auth_provider"] == "local"
+
+
+class RejectingActiveDirectoryAuthStore(FakeDirectoryAuthStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.login_ok = True
+
+    def authenticate_admin(self, username: str, password: str):
+        return SimpleNamespace(
+            ok=False,
+            provider="ldap",
+            username=username,
+            detail="User is not in the required admin group.",
+        )
+
+
+def test_active_directory_rejection_does_not_fall_back_to_local_login(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        directory_auth_store=RejectingActiveDirectoryAuthStore(),
+    )
+    client = loaded.module.app.test_client()
+    token = csrf_token(client, "/login")
+
+    response = client.post(
+        "/login",
+        data={"username": "admin", "password": "admin", "csrf_token": token},
+    )
+
+    assert response.status_code == 200
+    assert "Invalid username or password." in response.get_data(as_text=True)
+    with client.session_transaction() as sess:
+        assert "user" not in sess
 
 
 class StatusFailingDirectoryAuthStore(FakeDirectoryAuthStore):

@@ -1381,9 +1381,19 @@ def login():
             app.logger.exception("Directory authentication failed before local fallback")
             directory_result = None
         directory_ok = bool(getattr(directory_result, "ok", False))
-        local_ok = False if directory_ok else _auth_store.verify_user(username, password)
+        directory_provider = (
+            getattr(directory_result, "provider", "local")
+            if directory_result
+            else "local"
+        )
+        directory_attempted = directory_provider != "local"
+        local_ok = (
+            False
+            if directory_ok or directory_attempted
+            else _auth_store.verify_user(username, password)
+        )
         if directory_ok or local_ok:
-            login_provider = getattr(directory_result, "provider", "local") if directory_ok else "local"
+            login_provider = directory_provider if directory_ok else "local"
             login_username = getattr(directory_result, "username", username) if directory_ok else username
             # Prevent session fixation by clearing any existing session data.
             prev_csrf = session.get("_csrf_token")
