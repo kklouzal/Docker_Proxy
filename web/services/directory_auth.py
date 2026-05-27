@@ -252,35 +252,67 @@ class DirectoryAuthStore:
             else ""
         )
         timeout_seconds = self._bounded_int(payload.get("timeout_seconds"), 1, 30, 5)
+        server_urls = self._clean_required(payload.get("server_urls"), "Server URL")
+        use_starttls = self._truthy(payload.get("use_starttls"))
+        verify_tls = self._truthy(payload.get("verify_tls"), default=current.verify_tls)
+        ca_bundle = str(payload.get("ca_bundle") or "").strip()
+        bind_dn = self._clean_required(payload.get("bind_dn"), "Bind DN/user")
+        base_dn = self._clean_required(payload.get("base_dn"), "Base DN")
+        user_search_base = str(payload.get("user_search_base") or "").strip()
+        user_filter = self._clean_required(payload.get("user_filter"), "User filter")
+        user_attribute = self._clean_required(
+            payload.get("user_attribute"), "User attribute"
+        )
+        group_search_base = str(payload.get("group_search_base") or "").strip()
+        group_filter = self._clean_required(payload.get("group_filter"), "Group filter")
+        required_admin_group = self._clean_required(
+            payload.get("required_admin_group"),
+            "Required admin group",
+        )
+        connection_changed = self._connection_settings_changed(
+            current,
+            server_urls=server_urls,
+            use_starttls=use_starttls,
+            verify_tls=verify_tls,
+            ca_bundle=ca_bundle,
+            bind_dn=bind_dn,
+            bind_password=stored_password,
+            base_dn=base_dn,
+            user_search_base=user_search_base,
+            user_filter=user_filter,
+            user_attribute=user_attribute,
+            group_search_base=group_search_base,
+            group_filter=group_filter,
+            required_admin_group=required_admin_group,
+            timeout_seconds=timeout_seconds,
+        )
+        last_test_ok = current.last_test_ok and not connection_changed
+        last_test_ts = current.last_test_ts if not connection_changed else 0
+        last_test_detail = (
+            current.last_test_detail
+            if not connection_changed
+            else "Configuration changed since the last successful test."
+        )
         profile = DirectoryProfile(
             provider=provider,
             enabled=enabled,
-            server_urls=self._clean_required(payload.get("server_urls"), "Server URL"),
-            use_starttls=self._truthy(payload.get("use_starttls")),
-            verify_tls=self._truthy(
-                payload.get("verify_tls"), default=current.verify_tls
-            ),
-            ca_bundle=str(payload.get("ca_bundle") or "").strip(),
-            bind_dn=self._clean_required(payload.get("bind_dn"), "Bind DN/user"),
+            server_urls=server_urls,
+            use_starttls=use_starttls,
+            verify_tls=verify_tls,
+            ca_bundle=ca_bundle,
+            bind_dn=bind_dn,
             bind_password=stored_password,
-            base_dn=self._clean_required(payload.get("base_dn"), "Base DN"),
-            user_search_base=str(payload.get("user_search_base") or "").strip(),
-            user_filter=self._clean_required(payload.get("user_filter"), "User filter"),
-            user_attribute=self._clean_required(
-                payload.get("user_attribute"), "User attribute"
-            ),
-            group_search_base=str(payload.get("group_search_base") or "").strip(),
-            group_filter=self._clean_required(
-                payload.get("group_filter"), "Group filter"
-            ),
-            required_admin_group=self._clean_required(
-                payload.get("required_admin_group"),
-                "Required admin group",
-            ),
+            base_dn=base_dn,
+            user_search_base=user_search_base,
+            user_filter=user_filter,
+            user_attribute=user_attribute,
+            group_search_base=group_search_base,
+            group_filter=group_filter,
+            required_admin_group=required_admin_group,
             timeout_seconds=timeout_seconds,
-            last_test_ok=current.last_test_ok,
-            last_test_ts=current.last_test_ts,
-            last_test_detail=current.last_test_detail,
+            last_test_ok=last_test_ok,
+            last_test_ts=last_test_ts,
+            last_test_detail=last_test_detail,
             updated_ts=int(time.time()),
         )
         if profile.enabled and not self._decrypt(profile.bind_password):
@@ -302,7 +334,8 @@ class DirectoryAuthStore:
                        user_filter = %s, user_attribute = %s,
                        group_search_base = %s, group_filter = %s,
                        required_admin_group = %s, timeout_seconds = %s,
-                       updated_ts = %s
+                       last_test_ok = %s, last_test_ts = %s,
+                       last_test_detail = %s, updated_ts = %s
                  WHERE provider = %s
                 """,
                 (
@@ -321,6 +354,9 @@ class DirectoryAuthStore:
                     profile.group_filter,
                     profile.required_admin_group,
                     profile.timeout_seconds,
+                    int(profile.last_test_ok),
+                    profile.last_test_ts,
+                    profile.last_test_detail,
                     profile.updated_ts,
                     profile.provider,
                 ),
@@ -618,6 +654,11 @@ class DirectoryAuthStore:
             )
         except InvalidToken:
             return ""
+
+    def _connection_settings_changed(
+        self, current: DirectoryProfile, **values: Any
+    ) -> bool:
+        return any(getattr(current, key) != value for key, value in values.items())
 
     def _validate_provider(self, provider: str) -> str:
         provider = (provider or "").strip()

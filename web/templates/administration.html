@@ -84,6 +84,8 @@
                         <td class="small">
                             {% if profile.last_test_ts %}
                                 {{ 'OK' if profile.last_test_ok else 'Failed' }} - {{ profile.last_test_detail }}
+                            {% elif profile.last_test_detail %}
+                                Retest required - {{ profile.last_test_detail }}
                             {% else %}
                                 Not tested
                             {% endif %}
@@ -272,6 +274,8 @@
             Last test:
             {% if profile.last_test_ts %}
                 {{ 'OK' if profile.last_test_ok else 'Failed' }} - {{ profile.last_test_detail }}
+            {% elif profile.last_test_detail %}
+                Retest required - {{ profile.last_test_detail }}
             {% else %}
                 Not tested
             {% endif %}

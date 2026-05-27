@@ -16,7 +16,10 @@ class MemoryDirectoryAuthStore(DirectoryAuthStore):
         return None
 
     def ensure_default_profiles(self) -> None:
-        for provider in self.default_profile("ldap").provider, self.default_profile("active_directory").provider:
+        for provider in (
+            self.default_profile("ldap").provider,
+            self.default_profile("active_directory").provider,
+        ):
             self.rows.setdefault(provider, self.default_profile(provider))
 
     def list_profiles(self):
@@ -36,6 +39,56 @@ def test_bind_password_encryption_round_trips_without_plaintext() -> None:
     assert encrypted.startswith("enc:v1:")
     assert "super-secret" not in encrypted
     assert store._decrypt(encrypted) == "super-secret"
+
+
+def test_profile_save_clears_stale_connection_test_status_when_settings_change(
+    tmp_path,
+) -> None:
+    from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path
+
+    configure_test_mysql_env(tmp_path / "directory-auth-stale-test")
+    ensure_web_import_path()
+    from services.directory_auth import DirectoryAuthStore as RuntimeDirectoryAuthStore
+
+    store = RuntimeDirectoryAuthStore(lambda: "stable-secret")
+    store.ensure_default_profiles()
+    profile = store.save_profile(
+        "ldap",
+        {
+            "server_urls": "ldaps://ldap.example.org:636",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+    store.record_test(
+        "ldap", ok=True, detail="Directory bind and base search succeeded."
+    )
+
+    updated = store.save_profile(
+        "ldap",
+        {
+            "server_urls": "ldaps://new.example.org:636",
+            "bind_dn": profile.bind_dn,
+            "base_dn": profile.base_dn,
+            "user_filter": profile.user_filter,
+            "user_attribute": profile.user_attribute,
+            "group_filter": profile.group_filter,
+            "required_admin_group": profile.required_admin_group,
+            "timeout_seconds": str(profile.timeout_seconds),
+            "verify_tls": "1",
+        },
+    )
+
+    assert updated.last_test_ok is False
+    assert updated.last_test_ts == 0
+    assert "Configuration changed" in updated.last_test_detail
 
 
 def test_directory_auth_result_keeps_provider_and_groups() -> None:
@@ -81,11 +134,15 @@ def test_plain_ldap_user_bind_does_not_require_tls(monkeypatch) -> None:
         NONE=0,
         Server=lambda *args, **kwargs: SimpleNamespace(args=args, kwargs=kwargs),
         Connection=FakeConnection,
-        Tls=lambda **kwargs: (_ for _ in ()).throw(AssertionError("TLS should not be configured")),
+        Tls=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("TLS should not be configured")
+        ),
     )
     monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
     store = DirectoryAuthStore(lambda: "stable-secret")
-    profile = replace(store.default_profile("ldap"), server_urls="ldap://ldap.example.org:389")
+    profile = replace(
+        store.default_profile("ldap"), server_urls="ldap://ldap.example.org:389"
+    )
 
     assert store._user_bind(profile, "uid=alice,dc=example,dc=org", "secret") is True
     assert ("start_tls", None) not in calls

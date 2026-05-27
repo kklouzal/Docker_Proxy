@@ -52,7 +52,11 @@ class FakeDirectoryAuthStore:
             timeout_seconds=5,
             last_test_ok=False,
             last_test_ts=0,
-            last_test_detail="",
+            last_test_detail=(
+                "Configuration changed since the last successful test."
+                if self.login_ok
+                else ""
+            ),
         )
         ad = SimpleNamespace(
             provider="active_directory",
@@ -90,7 +94,11 @@ class FakeDirectoryAuthStore:
 
     def test_connection(self, provider):
         self.tested.append(provider)
-        return SimpleNamespace(ok=True, provider=provider, detail="Directory bind and base search succeeded.")
+        return SimpleNamespace(
+            ok=True,
+            provider=provider,
+            detail="Directory bind and base search succeeded.",
+        )
 
     def disable_provider(self, provider):
         self.disabled.append(provider)
@@ -108,7 +116,24 @@ def test_administration_exposes_directory_tabs(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert "Authentication status" not in body
     assert "LDAP provider" in body
-    assert "Active Directory" in client.get("/administration?tab=status").get_data(as_text=True)
+    assert "Active Directory" in client.get("/administration?tab=status").get_data(
+        as_text=True
+    )
+
+
+def test_administration_surfaces_retest_required_after_directory_config_change(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    directory_store.login_ok = True
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    body = client.get("/administration?tab=ldap").get_data(as_text=True)
+
+    assert "Retest required" in body
+    assert "Configuration changed since the last successful test." in body
 
 
 def test_login_accepts_active_directory_provider(monkeypatch, tmp_path) -> None:
@@ -169,7 +194,9 @@ class RaisingDirectoryAuthStore(FakeDirectoryAuthStore):
         raise RuntimeError(msg)
 
 
-def test_directory_auth_failure_falls_back_to_local_login(monkeypatch, tmp_path) -> None:
+def test_directory_auth_failure_falls_back_to_local_login(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
