@@ -163,4 +163,3 @@ def test_user_bind_falls_back_to_next_server_url(monkeypatch) -> None:
     assert ("open", "ldaps://bad.example.org:636") in calls
     assert ("bind", "ldaps://good.example.org:636") in calls
     assert ("unbind", "ldaps://good.example.org:636") in calls
-
