@@ -83,6 +83,18 @@ def request_host_from_headers(headers: Any) -> str:
     )
 
 
+def _safe_manifest_file_path(value: object) -> str:
+    rel_path = os.path.normpath(str(value or "").strip()).replace("\\", "/")
+    if not rel_path or rel_path in {".", ".."}:
+        return ""
+    if rel_path.startswith(("/", "../")):
+        return ""
+    first_segment = rel_path.split("/", 1)[0]
+    if ":" in first_segment:
+        return ""
+    return rel_path
+
+
 def default_pac_bytes(request_host: str) -> bytes:
     content = build_emergency_pac()
     return substitute_request_host(content, request_host).encode("utf-8")
@@ -139,14 +151,16 @@ class LocalPacCache:
             return False
 
         files: dict[str, str] = {}
-        fallback_file = str(manifest.get("fallback_file") or "fallback.pac")
+        fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
+        if not fallback_file:
+            fallback_file = "fallback.pac"
         candidates = {fallback_file}
         profiles = manifest.get("profiles")
         if isinstance(profiles, list):
             for entry in profiles:
                 if not isinstance(entry, dict):
                     continue
-                path = str(entry.get("file") or "").strip()
+                path = _safe_manifest_file_path(entry.get("file"))
                 if path:
                     candidates.add(path)
         for rel_path in sorted(candidates):
@@ -176,8 +190,12 @@ class LocalPacCache:
         with self._lock:
             if not self._load_locked():
                 return None
-            selected = select_manifest_file(self._manifest, client_ip)
-            fallback = str(self._manifest.get("fallback_file") or "fallback.pac")
+            selected = _safe_manifest_file_path(
+                select_manifest_file(self._manifest, client_ip)
+            )
+            fallback = _safe_manifest_file_path(self._manifest.get("fallback_file"))
+            if not fallback:
+                fallback = "fallback.pac"
             content = self._files.get(selected) or self._files.get(fallback)
             if not content:
                 return None

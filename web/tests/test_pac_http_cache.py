@@ -78,3 +78,29 @@ def test_client_ip_rejects_invalid_forwarded_headers(monkeypatch) -> None:
         )
         == "192.0.2.10"
     )
+
+
+def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(tmp_path) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (tmp_path / "secret.pac").write_text("SECRET", encoding="utf-8")
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","profiles":[{"client_cidr":"10.0.0.0/8","file":"../secret.pac"}]}""",
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text(
+        "SAFE __PAC_PROXY_HOST__",
+        encoding="utf-8",
+    )
+
+    data = pac_http.LocalPacCache(str(pac_dir)).resolve(
+        client_ip="10.1.2.3",
+        request_host="proxy.example:3128",
+    )
+
+    assert data == b"SAFE proxy.example"
+    assert b"SECRET" not in (data or b"")
