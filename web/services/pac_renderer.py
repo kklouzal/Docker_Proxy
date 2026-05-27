@@ -583,6 +583,8 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
         parsed_ip = None
 
     catch_all = ""
+    best_match = ""
+    best_prefix_len = -1
     for entry in profiles:
         if not isinstance(entry, dict):
             continue
@@ -600,9 +602,14 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
             network = ipaddress.ip_network(client_cidr, strict=False)
         except Exception:
             continue
-        if parsed_ip in network:
-            return file_name
+        if parsed_ip.version != network.version:
+            continue
+        if parsed_ip in network and network.prefixlen > best_prefix_len:
+            best_match = file_name
+            best_prefix_len = int(network.prefixlen)
 
+    if best_match:
+        return best_match
     if catch_all:
         return catch_all
     return str(manifest.get("fallback_file") or "fallback.pac")

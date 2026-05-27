@@ -181,6 +181,25 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
     )
 
 
+def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    manifest = {
+        "fallback_file": "fallback.pac",
+        "profiles": [
+            {"client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+            {"client_cidr": "10.2.3.0/24", "file": "branch.pac"},
+            {"client_cidr": "10.2.3.64/26", "file": "lab.pac"},
+            {"client_cidr": "2001:db8:1::/48", "file": "ipv6-branch.pac"},
+        ],
+    }
+
+    assert pac_renderer.select_manifest_file(manifest, "10.2.3.70") == "lab.pac"
+    assert pac_renderer.select_manifest_file(manifest, "10.2.3.8") == "branch.pac"
+    assert pac_renderer.select_manifest_file(manifest, "2001:db8:1::20") == "ipv6-branch.pac"
+
+
 def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing_payload(
     tmp_path,
 ) -> None:
