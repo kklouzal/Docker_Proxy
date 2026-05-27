@@ -48,6 +48,23 @@ def test_managed_error_page_manifest_has_complete_squid_template_coverage() -> N
         assert "100%" not in text
 
 
+def test_access_denied_page_explains_block_reason() -> None:
+    from services.error_pages import read_template, render_preview
+
+    text = read_template("ERR_ACCESS_DENIED")
+    assert '<div class="reason">' in text
+    assert "<strong>Block reason</strong>" in text
+    assert text.index("<strong>User guidance</strong>") < text.index(
+        "<strong>Block reason</strong>"
+    )
+    assert text.index("<strong>Block reason</strong>") < text.index(
+        'aria-label="Request details"'
+    )
+    assert "%o" in text
+    assert "%m" in text
+    assert "webfilter category: malware" in render_preview("ERR_ACCESS_DENIED")
+
+
 def test_squid_config_uses_branded_error_directory_and_proxy_image_installs_all_templates() -> (
     None
 ):
