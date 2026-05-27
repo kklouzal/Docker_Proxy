@@ -182,3 +182,26 @@ def test_directory_auth_failure_falls_back_to_local_login(monkeypatch, tmp_path)
     with client.session_transaction() as sess:
         assert sess["user"] == "admin"
         assert sess["auth_provider"] == "local"
+
+
+class StatusFailingDirectoryAuthStore(FakeDirectoryAuthStore):
+    def get_status(self):
+        msg = "directory status unavailable"
+        raise RuntimeError(msg)
+
+
+def test_administration_provider_tab_degrades_to_status(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        directory_auth_store=StatusFailingDirectoryAuthStore(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/administration?tab=ldap")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Authentication status" in body
+    assert "LDAP provider" not in body

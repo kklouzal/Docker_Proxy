@@ -4724,10 +4724,12 @@ def administration():
     except Exception:
         users = []
 
+    auth_status_degraded = False
     try:
         auth_status = _directory_auth_store.get_status()
     except Exception:
         app.logger.exception("Failed to load directory authentication status")
+        auth_status_degraded = True
         auth_status = {
             "active_provider": "local",
             "active_label": "Local accounts",
@@ -4736,7 +4738,7 @@ def administration():
             "provider_labels": {},
         }
     auth_tab = (request.args.get("tab") or "status").strip()
-    if auth_tab not in {"status", "ldap", "active_directory"}:
+    if auth_status_degraded or auth_tab not in {"status", "ldap", "active_directory"}:
         auth_tab = "status"
     message = request.args.get("msg")
     message_ok = request.args.get("ok") == "1"

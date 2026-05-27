@@ -203,7 +203,9 @@
                 <div class="surface-note small">One LDAP URI per line. Use LDAPS where possible, for example <span class="mono">ldaps://dc01.example.local:636</span>.</div>
             </div>
             <div class="summary-grid">
+                <input type="hidden" name="use_starttls" value="0">
                 <label class="checkbox-row"><input type="checkbox" name="use_starttls" value="1" {{ 'checked' if profile.use_starttls else '' }}> Use StartTLS</label>
+                <input type="hidden" name="verify_tls" value="0">
                 <label class="checkbox-row"><input type="checkbox" name="verify_tls" value="1" {{ 'checked' if profile.verify_tls else '' }}> Verify server certificate</label>
             </div>
             <div>

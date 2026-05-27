@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import logging
 import re
@@ -256,7 +257,7 @@ class DirectoryAuthStore:
             enabled=enabled,
             server_urls=self._clean_required(payload.get("server_urls"), "Server URL"),
             use_starttls=self._truthy(payload.get("use_starttls")),
-            verify_tls=self._truthy(payload.get("verify_tls"), default=True),
+            verify_tls=self._truthy(payload.get("verify_tls"), default=current.verify_tls),
             ca_bundle=str(payload.get("ca_bundle") or "").strip(),
             bind_dn=self._clean_required(payload.get("bind_dn"), "Bind DN/user"),
             bind_password=stored_password,
@@ -344,12 +345,15 @@ class DirectoryAuthStore:
 
     def test_connection(self, provider: str) -> DirectoryAuthResult:
         profile = self.get_profile(provider)
+        conn = None
         try:
-            self._service_connection(profile)
+            conn, _ldap3 = self._service_connection(profile)
         except Exception as exc:
             detail = self._public_error(exc)
             self.record_test(provider, ok=False, detail=detail)
             return DirectoryAuthResult(False, profile.provider, "", detail=detail)
+        finally:
+            self._safe_unbind(conn)
         detail = "Directory bind and base search succeeded."
         self.record_test(provider, ok=True, detail=detail)
         return DirectoryAuthResult(True, profile.provider, "", detail=detail)
@@ -369,6 +373,7 @@ class DirectoryAuthStore:
         username = (username or "").strip()
         if not username or not password:
             return DirectoryAuthResult(False, profile.provider, username, "Username and password are required.")
+        conn = None
         try:
             conn, ldap3 = self._service_connection(profile)
             escape_filter_chars = ldap3.utils.conv.escape_filter_chars
@@ -407,6 +412,8 @@ class DirectoryAuthStore:
                 message="Directory authentication failed",
             )
             return DirectoryAuthResult(False, profile.provider, username, self._public_error(exc))
+        finally:
+            self._safe_unbind(conn)
 
     def _groups_for_user(
         self,
@@ -439,14 +446,7 @@ class DirectoryAuthStore:
             msg = "ldap3 package is not installed in the admin-ui container."
             raise RuntimeError(msg) from exc
         server_url = self._first_server_url(profile.server_urls)
-        tls = None
-        if server_url.startswith("ldaps://") or profile.use_starttls:
-            import ssl
-
-            tls_kwargs = {"validate": ssl.CERT_REQUIRED if profile.verify_tls else ssl.CERT_NONE}
-            if profile.ca_bundle.strip():
-                tls_kwargs["ca_certs_data"] = profile.ca_bundle
-            tls = ldap3.Tls(**tls_kwargs)
+        tls = self._tls_config(profile, server_url, ldap3)
         server = ldap3.Server(server_url, connect_timeout=profile.timeout_seconds, get_info=ldap3.NONE, tls=tls)
         conn = ldap3.Connection(
             server,
@@ -457,7 +457,7 @@ class DirectoryAuthStore:
             raise_exceptions=True,
         )
         conn.open()
-        if profile.use_starttls:
+        if self._should_start_tls(profile, server_url):
             conn.start_tls()
         conn.bind()
         base_dn = self._join_dn("", profile.base_dn)
@@ -465,18 +465,12 @@ class DirectoryAuthStore:
         return conn, ldap3
 
     def _user_bind(self, profile: DirectoryProfile, user_dn: str, password: str) -> bool:
+        conn = None
         try:
-            import ssl
-
             import ldap3
 
             server_url = self._first_server_url(profile.server_urls)
-            tls = None
-            if server_url.startswith("ldaps://") or profile.use_starttls:
-                tls_kwargs = {"validate": ssl.CERT_REQUIRED if profile.verify_tls else ssl.CERT_NONE}
-            if profile.ca_bundle.strip():
-                tls_kwargs["ca_certs_data"] = profile.ca_bundle
-            tls = ldap3.Tls(**tls_kwargs)
+            tls = self._tls_config(profile, server_url, ldap3)
             server = ldap3.Server(server_url, connect_timeout=profile.timeout_seconds, get_info=ldap3.NONE, tls=tls)
             conn = ldap3.Connection(
                 server,
@@ -487,13 +481,33 @@ class DirectoryAuthStore:
                 raise_exceptions=True,
             )
             conn.open()
-            if profile.use_starttls:
+            if self._should_start_tls(profile, server_url):
                 conn.start_tls()
             conn.bind()
-            conn.unbind()
             return True
         except Exception:
             return False
+        finally:
+            self._safe_unbind(conn)
+
+    def _tls_config(self, profile: DirectoryProfile, server_url: str, ldap3: Any) -> Any:
+        if not (server_url.lower().startswith("ldaps://") or profile.use_starttls):
+            return None
+        import ssl
+
+        tls_kwargs = {"validate": ssl.CERT_REQUIRED if profile.verify_tls else ssl.CERT_NONE}
+        if profile.ca_bundle.strip():
+            tls_kwargs["ca_certs_data"] = profile.ca_bundle
+        return ldap3.Tls(**tls_kwargs)
+
+    def _should_start_tls(self, profile: DirectoryProfile, server_url: str) -> bool:
+        return profile.use_starttls and not server_url.lower().startswith("ldaps://")
+
+    def _safe_unbind(self, conn: Any) -> None:
+        if conn is None:
+            return
+        with contextlib.suppress(Exception):
+            conn.unbind()
 
     def _row_to_profile(self, row: Any) -> DirectoryProfile:
         return DirectoryProfile(

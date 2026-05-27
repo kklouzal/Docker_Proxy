@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+from dataclasses import replace
+from types import SimpleNamespace
+
 from services.directory_auth import DirectoryAuthResult, DirectoryAuthStore
 
 
@@ -46,3 +50,43 @@ def test_directory_auth_result_keeps_provider_and_groups() -> None:
     assert result.ok is True
     assert result.provider == "ldap"
     assert result.groups == ("cn=admins,dc=example,dc=org",)
+
+
+def test_profile_checkbox_false_value_overrides_default_true() -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+
+    assert store._truthy("0", default=True) is False
+
+
+def test_plain_ldap_user_bind_does_not_require_tls(monkeypatch) -> None:
+    calls = []
+
+    class FakeConnection:
+        def __init__(self, *args, **kwargs) -> None:
+            calls.append(("connect", kwargs))
+
+        def open(self) -> None:
+            calls.append(("open", None))
+
+        def start_tls(self) -> None:
+            calls.append(("start_tls", None))
+
+        def bind(self) -> None:
+            calls.append(("bind", None))
+
+        def unbind(self) -> None:
+            calls.append(("unbind", None))
+
+    fake_ldap3 = SimpleNamespace(
+        NONE=0,
+        Server=lambda *args, **kwargs: SimpleNamespace(args=args, kwargs=kwargs),
+        Connection=FakeConnection,
+        Tls=lambda **kwargs: (_ for _ in ()).throw(AssertionError("TLS should not be configured")),
+    )
+    monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(store.default_profile("ldap"), server_urls="ldap://ldap.example.org:389")
+
+    assert store._user_bind(profile, "uid=alice,dc=example,dc=org", "secret") is True
+    assert ("start_tls", None) not in calls
+    assert calls[-1] == ("unbind", None)
