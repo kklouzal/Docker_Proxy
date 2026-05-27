@@ -240,6 +240,7 @@ def configure_test_mysql_env(
     database_name = f"sfp_test_{digest}"
 
     _load_mysql_env_if_needed()
+    _base_connection_params()
     _set_database_name(database_name)
     os.environ["MYSQL_CREATE_DATABASE"] = "1"
     os.environ["DISABLE_BACKGROUND"] = "1"

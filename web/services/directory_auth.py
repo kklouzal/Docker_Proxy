@@ -257,16 +257,22 @@ class DirectoryAuthStore:
             enabled=enabled,
             server_urls=self._clean_required(payload.get("server_urls"), "Server URL"),
             use_starttls=self._truthy(payload.get("use_starttls")),
-            verify_tls=self._truthy(payload.get("verify_tls"), default=current.verify_tls),
+            verify_tls=self._truthy(
+                payload.get("verify_tls"), default=current.verify_tls
+            ),
             ca_bundle=str(payload.get("ca_bundle") or "").strip(),
             bind_dn=self._clean_required(payload.get("bind_dn"), "Bind DN/user"),
             bind_password=stored_password,
             base_dn=self._clean_required(payload.get("base_dn"), "Base DN"),
             user_search_base=str(payload.get("user_search_base") or "").strip(),
             user_filter=self._clean_required(payload.get("user_filter"), "User filter"),
-            user_attribute=self._clean_required(payload.get("user_attribute"), "User attribute"),
+            user_attribute=self._clean_required(
+                payload.get("user_attribute"), "User attribute"
+            ),
             group_search_base=str(payload.get("group_search_base") or "").strip(),
-            group_filter=self._clean_required(payload.get("group_filter"), "Group filter"),
+            group_filter=self._clean_required(
+                payload.get("group_filter"), "Group filter"
+            ),
             required_admin_group=self._clean_required(
                 payload.get("required_admin_group"),
                 "Required admin group",
@@ -361,7 +367,9 @@ class DirectoryAuthStore:
     def authenticate_admin(self, username: str, password: str) -> DirectoryAuthResult:
         profile = self.get_active_profile()
         if profile is None:
-            return DirectoryAuthResult(False, "local", username, "No active directory provider.")
+            return DirectoryAuthResult(
+                False, "local", username, "No active directory provider."
+            )
         return self.authenticate(profile, username, password)
 
     def authenticate(
@@ -372,7 +380,9 @@ class DirectoryAuthStore:
     ) -> DirectoryAuthResult:
         username = (username or "").strip()
         if not username or not password:
-            return DirectoryAuthResult(False, profile.provider, username, "Username and password are required.")
+            return DirectoryAuthResult(
+                False, profile.provider, username, "Username and password are required."
+            )
         conn = None
         try:
             conn, ldap3 = self._service_connection(profile)
@@ -387,16 +397,33 @@ class DirectoryAuthStore:
                 attributes=[profile.user_attribute, "dn"],
                 size_limit=2,
             ):
-                return DirectoryAuthResult(False, profile.provider, username, "Directory user was not found.")
+                return DirectoryAuthResult(
+                    False, profile.provider, username, "Directory user was not found."
+                )
             entries = list(conn.entries)
             if len(entries) != 1:
-                return DirectoryAuthResult(False, profile.provider, username, "Directory user lookup was ambiguous.")
+                return DirectoryAuthResult(
+                    False,
+                    profile.provider,
+                    username,
+                    "Directory user lookup was ambiguous.",
+                )
             user_dn = str(entries[0].entry_dn)
             if not self._user_bind(profile, user_dn, password):
-                return DirectoryAuthResult(False, profile.provider, username, "Directory password check failed.")
+                return DirectoryAuthResult(
+                    False,
+                    profile.provider,
+                    username,
+                    "Directory password check failed.",
+                )
             groups = self._groups_for_user(profile, conn, user_dn, username, ldap3)
             if not self._required_group_matches(profile.required_admin_group, groups):
-                return DirectoryAuthResult(False, profile.provider, username, "User is not in the required admin group.")
+                return DirectoryAuthResult(
+                    False,
+                    profile.provider,
+                    username,
+                    "User is not in the required admin group.",
+                )
             return DirectoryAuthResult(
                 True,
                 profile.provider,
@@ -411,7 +438,9 @@ class DirectoryAuthStore:
                 interval_seconds=300.0,
                 message="Directory authentication failed",
             )
-            return DirectoryAuthResult(False, profile.provider, username, self._public_error(exc))
+            return DirectoryAuthResult(
+                False, profile.provider, username, self._public_error(exc)
+            )
         finally:
             self._safe_unbind(conn)
 
@@ -429,7 +458,12 @@ class DirectoryAuthStore:
             username=escape_filter_chars(username),
         )
         group_base = self._join_dn(profile.group_search_base, profile.base_dn)
-        if not conn.search(group_base, group_filter, attributes=["cn", "distinguishedName", "member"], size_limit=200):
+        if not conn.search(
+            group_base,
+            group_filter,
+            attributes=["cn", "distinguishedName", "member"],
+            size_limit=200,
+        ):
             return []
         groups: list[str] = []
         for entry in conn.entries:
@@ -445,57 +479,89 @@ class DirectoryAuthStore:
         except Exception as exc:
             msg = "ldap3 package is not installed in the admin-ui container."
             raise RuntimeError(msg) from exc
-        server_url = self._first_server_url(profile.server_urls)
-        tls = self._tls_config(profile, server_url, ldap3)
-        server = ldap3.Server(server_url, connect_timeout=profile.timeout_seconds, get_info=ldap3.NONE, tls=tls)
-        conn = ldap3.Connection(
-            server,
-            user=profile.bind_dn,
-            password=self._decrypt(profile.bind_password),
-            auto_bind=False,
-            receive_timeout=profile.timeout_seconds,
-            raise_exceptions=True,
-        )
-        conn.open()
-        if self._should_start_tls(profile, server_url):
-            conn.start_tls()
-        conn.bind()
-        base_dn = self._join_dn("", profile.base_dn)
-        conn.search(base_dn, "(objectClass=*)", attributes=["dn"], size_limit=1)
-        return conn, ldap3
+        last_exc: Exception | None = None
+        for server_url in self._server_urls(profile.server_urls):
+            conn = None
+            try:
+                tls = self._tls_config(profile, server_url, ldap3)
+                server = ldap3.Server(
+                    server_url,
+                    connect_timeout=profile.timeout_seconds,
+                    get_info=ldap3.NONE,
+                    tls=tls,
+                )
+                conn = ldap3.Connection(
+                    server,
+                    user=profile.bind_dn,
+                    password=self._decrypt(profile.bind_password),
+                    auto_bind=False,
+                    receive_timeout=profile.timeout_seconds,
+                    raise_exceptions=True,
+                )
+                conn.open()
+                if self._should_start_tls(profile, server_url):
+                    conn.start_tls()
+                conn.bind()
+                base_dn = self._join_dn("", profile.base_dn)
+                conn.search(base_dn, "(objectClass=*)", attributes=["dn"], size_limit=1)
+                return conn, ldap3
+            except Exception as exc:
+                last_exc = exc
+                self._safe_unbind(conn)
+        if last_exc is not None:
+            msg = f"All configured LDAP server URLs failed; last error: {self._public_error(last_exc)}"
+            raise RuntimeError(msg) from last_exc
+        msg = "At least one LDAP server URL is required."
+        raise ValueError(msg)
 
-    def _user_bind(self, profile: DirectoryProfile, user_dn: str, password: str) -> bool:
-        conn = None
+    def _user_bind(
+        self, profile: DirectoryProfile, user_dn: str, password: str
+    ) -> bool:
         try:
             import ldap3
 
-            server_url = self._first_server_url(profile.server_urls)
-            tls = self._tls_config(profile, server_url, ldap3)
-            server = ldap3.Server(server_url, connect_timeout=profile.timeout_seconds, get_info=ldap3.NONE, tls=tls)
-            conn = ldap3.Connection(
-                server,
-                user=user_dn,
-                password=password,
-                auto_bind=False,
-                receive_timeout=profile.timeout_seconds,
-                raise_exceptions=True,
-            )
-            conn.open()
-            if self._should_start_tls(profile, server_url):
-                conn.start_tls()
-            conn.bind()
-            return True
+            server_urls = self._server_urls(profile.server_urls)
         except Exception:
             return False
-        finally:
-            self._safe_unbind(conn)
+        for server_url in server_urls:
+            conn = None
+            try:
+                tls = self._tls_config(profile, server_url, ldap3)
+                server = ldap3.Server(
+                    server_url,
+                    connect_timeout=profile.timeout_seconds,
+                    get_info=ldap3.NONE,
+                    tls=tls,
+                )
+                conn = ldap3.Connection(
+                    server,
+                    user=user_dn,
+                    password=password,
+                    auto_bind=False,
+                    receive_timeout=profile.timeout_seconds,
+                    raise_exceptions=True,
+                )
+                conn.open()
+                if self._should_start_tls(profile, server_url):
+                    conn.start_tls()
+                conn.bind()
+                return True
+            except Exception:
+                continue
+            finally:
+                self._safe_unbind(conn)
+        return False
 
-    def _tls_config(self, profile: DirectoryProfile, server_url: str, ldap3: Any) -> Any:
+    def _tls_config(
+        self, profile: DirectoryProfile, server_url: str, ldap3: Any
+    ) -> Any:
         if not (server_url.lower().startswith("ldaps://") or profile.use_starttls):
             return None
         import ssl
 
-        tls_kwargs = {"validate": ssl.CERT_REQUIRED if profile.verify_tls else ssl.CERT_NONE}
+        tls_kwargs = {
+            "validate": ssl.CERT_REQUIRED if profile.verify_tls else ssl.CERT_NONE
+        }
         if profile.ca_bundle.strip():
             tls_kwargs["ca_certs_data"] = profile.ca_bundle
         return ldap3.Tls(**tls_kwargs)
@@ -547,7 +613,9 @@ class DirectoryAuthStore:
         if not value.startswith("enc:v1:"):
             return value
         try:
-            return self._fernet().decrypt(value.removeprefix("enc:v1:").encode()).decode()
+            return (
+                self._fernet().decrypt(value.removeprefix("enc:v1:").encode()).decode()
+            )
         except InvalidToken:
             return ""
 
@@ -577,12 +645,15 @@ class DirectoryAuthStore:
             return default
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
-    def _first_server_url(self, value: str) -> str:
-        first = next((line.strip() for line in (value or "").splitlines() if line.strip()), "")
-        if not first:
+    def _server_urls(self, value: str) -> list[str]:
+        urls = [line.strip() for line in (value or "").splitlines() if line.strip()]
+        if not urls:
             msg = "At least one LDAP server URL is required."
             raise ValueError(msg)
-        return first
+        return urls
+
+    def _first_server_url(self, value: str) -> str:
+        return self._server_urls(value)[0]
 
     def _join_dn(self, child: str, base: str) -> str:
         child = (child or "").strip().strip(",")
@@ -600,7 +671,9 @@ class DirectoryAuthStore:
         return any(group.casefold() == required for group in groups)
 
     def _public_error(self, exc: Exception) -> str:
-        detail = re.sub(r"password=[^,\\s]+", "password=<redacted>", str(exc), flags=re.IGNORECASE)
+        detail = re.sub(
+            r"password=[^,\\s]+", "password=<redacted>", str(exc), flags=re.IGNORECASE
+        )
         return detail[:500] or exc.__class__.__name__
 
 

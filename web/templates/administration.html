@@ -43,6 +43,7 @@
     <a class="btn {{ 'primary' if current_tab == 'active_directory' else 'ghost' }}" href="{{ url_for('administration', tab='active_directory') }}">Active Directory</a>
 </div>
 
+<div class="grid sidebar-wide-layout">
 {% if current_tab == 'status' %}
 <section class="card">
     <div class="card-header">
@@ -278,4 +279,5 @@
     </div>
 </section>
 {% endif %}
+</div>
 {% endblock %}
