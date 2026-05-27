@@ -5,7 +5,6 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-
 from services.directory_auth import DirectoryAuthResult, DirectoryAuthStore
 
 
@@ -130,6 +129,7 @@ def test_profile_requires_successful_connection_test_before_enable(tmp_path) -> 
     assert active.enabled is True
     assert active.last_test_ok is True
     assert active.bind_password == tested.bind_password
+
 
 def test_directory_auth_result_keeps_provider_and_groups() -> None:
     result = DirectoryAuthResult(
