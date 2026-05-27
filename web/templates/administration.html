@@ -1,18 +1,21 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}Administration · Docker Proxy{% endblock %}
+{% block title %}Administration - Docker Proxy{% endblock %}
 
 {% block content %}
+{% set active_provider = auth_status.active_provider %}
+{% set profiles = auth_status.profiles %}
+{% set current_tab = auth_tab %}
 <section class="page-heading">
     <div class="page-hero-copy">
         <span class="page-eyebrow">Access control</span>
         <h1 class="page-title">Administration</h1>
-        <p class="page-subtitle">Manage who can sign in to the web panel and rotate operator passwords without leaving the UI.</p>
+        <p class="page-subtitle">Manage local break-glass operators and optional directory authentication for the admin control plane.</p>
         <div class="hero-badges">
             <span class="badge">Signed in as {{ current_user }}</span>
-            <span class="badge">{{ users|length }} user{{ '' if users|length == 1 else 's' }}</span>
-            <span class="badge">Shared accounts</span>
+            <span class="badge">Auth provider: {{ auth_status.active_label }}</span>
+            <span class="badge">{{ users|length }} local user{{ '' if users|length == 1 else 's' }}</span>
         </div>
     </div>
     <div class="page-actions">
@@ -20,8 +23,8 @@
     </div>
 </section>
 
-{% call scope_notice('global', 'Shared control-plane access', 'Admin users are shared across the web control plane, not tied to an individual proxy.') %}
-<div>Changes here affect who can manage shared settings and per-proxy settings from the admin UI.</div>
+{% call scope_notice('global', 'Shared control-plane access', 'Directory integration is optional. Local operator accounts remain available as break-glass access even when LDAP or Active Directory is active.') %}
+<div>Only one external auth provider can be active at a time. Provider groups authorize admin UI login in this first stage; proxy bypass and policy use are reserved for later phases.</div>
 {% endcall %}
 
 {% if message %}
@@ -34,108 +37,243 @@
 </div>
 {% endif %}
 
+<div class="actions page-tabs">
+    <a class="btn {{ 'primary' if current_tab == 'status' else 'ghost' }}" href="{{ url_for('administration', tab='status') }}">Status</a>
+    <a class="btn {{ 'primary' if current_tab == 'ldap' else 'ghost' }}" href="{{ url_for('administration', tab='ldap') }}">LDAP</a>
+    <a class="btn {{ 'primary' if current_tab == 'active_directory' else 'ghost' }}" href="{{ url_for('administration', tab='active_directory') }}">Active Directory</a>
+</div>
+
+{% if current_tab == 'status' %}
 <section class="card">
     <div class="card-header">
-        <h2 class="card-title">Operator account overview</h2>
-        <span class="badge">shared authentication</span>
+        <h2 class="card-title">Authentication status</h2>
+        <span class="badge">{{ auth_status.active_label }}</span>
     </div>
     <div class="card-body">
         <div class="summary-grid">
             <div class="stat compact-stat">
-                <div class="stat-k">Total users</div>
+                <div class="stat-k">Active provider</div>
+                <div class="stat-v">{{ auth_status.active_label }}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Local users</div>
                 <div class="stat-v">{{ users|length }}</div>
             </div>
             <div class="stat compact-stat">
                 <div class="stat-k">Current session</div>
                 <div class="stat-v">{{ current_user }}</div>
             </div>
-            <div class="stat compact-stat">
-                <div class="stat-k">Scope</div>
-                <div class="stat-v">Shared</div>
-            </div>
         </div>
-        <div class="surface-note small">Prefer unique operator accounts over a shared login so password resets and audit events stay attributable to the right human.</div>
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Provider</th>
+                        <th>State</th>
+                        <th>Last test</th>
+                        <th>Admin group</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for provider in auth_status.providers %}
+                    {% set profile = profiles[provider] %}
+                    <tr>
+                        <td>{{ profile.label }}</td>
+                        <td><span class="badge {{ 'ok' if profile.enabled else '' }}">{{ 'Active' if profile.enabled else 'Disabled' }}</span></td>
+                        <td class="small">
+                            {% if profile.last_test_ts %}
+                                {{ 'OK' if profile.last_test_ok else 'Failed' }} - {{ profile.last_test_detail }}
+                            {% else %}
+                                Not tested
+                            {% endif %}
+                        </td>
+                        <td class="mono">{{ profile.required_admin_group }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="surface-note small">The first directory-backed capability is admin UI login based on group membership. Transparent proxy identity, captive portal identity, and block-page bypass are intentionally not enabled by this configuration alone.</div>
     </div>
 </section>
 
-<div class="grid sidebar-wide-layout">
-    <section class="card split-left">
-        <div class="card-header">
-            <h2 class="card-title">Users</h2>
-            <span class="badge">Signed in as {{ current_user }}</span>
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">Local break-glass users</h2>
+        <span class="badge">always available</span>
+    </div>
+    <div class="card-body">
+        <div class="surface-note small">Keep at least one local admin account so directory outages cannot lock operators out of the control plane.</div>
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Created</th>
+                        <th>Updated</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    <tr>
+                        <td>{{ u.username }}</td>
+                        <td class="small">{{ u.created_ts | datetimeformat }}</td>
+                        <td class="small">{{ u.updated_ts | datetimeformat }}</td>
+                        <td>
+                            <div class="stack-sm">
+                                <form action="{{ url_for('administration', tab='status') }}" method="post" class="inline-form">
+                                    {{ csrf_field() }}
+                                    <input type="hidden" name="action" value="set_password">
+                                    <input type="hidden" name="username" value="{{ u.username }}">
+                                    <label class="sr-only" for="new-password-{{ loop.index }}">New password for {{ u.username }}</label>
+                                    <input id="new-password-{{ loop.index }}" class="inline-input" name="new_password" type="password" placeholder="New password" aria-label="New password for {{ u.username }}">
+                                    <button class="btn" type="submit" aria-label="Change password for {{ u.username }}">Change</button>
+                                </form>
+                                <form action="{{ url_for('administration', tab='status') }}" method="post">
+                                    {{ csrf_field() }}
+                                    <input type="hidden" name="action" value="delete_user">
+                                    <input type="hidden" name="username" value="{{ u.username }}">
+                                    {% if u.username|lower == current_user|lower %}
+                                        <span class="small">Current user</span>
+                                    {% else %}
+                                        <button class="btn" type="submit" aria-label="Remove user {{ u.username }}">Remove</button>
+                                    {% endif %}
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
-        <div class="card-body">
-            <div class="surface-note small">Rotate passwords in place from the users table, or remove accounts that no longer need access to the admin control plane.</div>
-            <div class="table-wrap">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Username</th>
-                            <th>Created</th>
-                            <th>Updated</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for u in users %}
-                        <tr>
-                            <td>{{ u.username }}</td>
-                            <td class="small">{{ u.created_ts | datetimeformat }}</td>
-                            <td class="small">{{ u.updated_ts | datetimeformat }}</td>
-                            <td>
-                                <div class="stack-sm">
-                                    <form action="{{ url_for('administration') }}" method="post" class="inline-form">
-                                        {{ csrf_field() }}
-                                        <input type="hidden" name="action" value="set_password">
-                                        <input type="hidden" name="username" value="{{ u.username }}">
-                                        <label class="sr-only" for="new-password-{{ loop.index }}">New password for {{ u.username }}</label>
-                                        <input id="new-password-{{ loop.index }}" class="inline-input" name="new_password" type="password" placeholder="New password" aria-label="New password for {{ u.username }}">
-                                        <button class="btn" type="submit" aria-label="Change password for {{ u.username }}">Change</button>
-                                    </form>
-                                    <form action="{{ url_for('administration') }}" method="post">
-                                        {{ csrf_field() }}
-                                        <input type="hidden" name="action" value="delete_user">
-                                        <input type="hidden" name="username" value="{{ u.username }}">
-                                        {% if u.username|lower == current_user|lower %}
-                                            <span class="small">Current user</span>
-                                        {% else %}
-                                            <button class="btn" type="submit" aria-label="Remove user {{ u.username }}">Remove</button>
-                                        {% endif %}
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </section>
+    </div>
+</section>
 
-    <aside class="card split-right">
-        <div class="card-header">
-            <h2 class="card-title">Add User</h2>
-        </div>
-        <div class="card-body">
-            <form class="form" action="{{ url_for('administration') }}" method="post">
-                {{ csrf_field() }}
-                <input type="hidden" name="action" value="add_user">
-                <div>
-                    <label for="username">Username</label>
-                    <input id="username" name="username" type="text" required>
-                </div>
-                <div>
-                    <label for="password">Password</label>
-                    <input id="password" name="password" type="password" required>
-                </div>
-                <div class="actions">
-                    <button class="btn primary" type="submit">Add</button>
-                </div>
-            </form>
-            <div class="surface-note small">
-                Usernames allow letters, numbers, underscore, dash, dot. Use named operator accounts instead of shared credentials wherever possible.
+<aside class="card">
+    <div class="card-header">
+        <h2 class="card-title">Add local user</h2>
+    </div>
+    <div class="card-body">
+        <form class="form" action="{{ url_for('administration', tab='status') }}" method="post">
+            {{ csrf_field() }}
+            <input type="hidden" name="action" value="add_user">
+            <div>
+                <label for="username">Username</label>
+                <input id="username" name="username" type="text" required>
             </div>
+            <div>
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" required>
+            </div>
+            <div class="actions">
+                <button class="btn primary" type="submit">Add</button>
+            </div>
+        </form>
+    </div>
+</aside>
+{% else %}
+{% set profile = profiles[current_tab] %}
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">{{ profile.label }} provider</h2>
+        <span class="badge {{ 'ok' if profile.enabled else '' }}">{{ 'Active' if profile.enabled else 'Disabled' }}</span>
+    </div>
+    <div class="card-body">
+        <form class="form" action="{{ url_for('administration', tab=current_tab) }}" method="post">
+            {{ csrf_field() }}
+            <input type="hidden" name="action" value="save_auth_provider">
+            <input type="hidden" name="provider" value="{{ current_tab }}">
+            <div class="summary-grid">
+                <div>
+                    <label for="{{ current_tab }}-enabled">Activation</label>
+                    <select id="{{ current_tab }}-enabled" name="enabled">
+                        <option value="0" {{ 'selected' if not profile.enabled else '' }}>Disabled</option>
+                        <option value="1" {{ 'selected' if profile.enabled else '' }}>Make {{ profile.label }} active</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="{{ current_tab }}-timeout">Timeout seconds</label>
+                    <input id="{{ current_tab }}-timeout" name="timeout_seconds" type="number" min="1" max="30" value="{{ profile.timeout_seconds }}">
+                </div>
+            </div>
+            <div>
+                <label for="{{ current_tab }}-server-urls">Server URI(s)</label>
+                <textarea id="{{ current_tab }}-server-urls" name="server_urls" rows="3" required>{{ profile.server_urls }}</textarea>
+                <div class="surface-note small">One LDAP URI per line. Use LDAPS where possible, for example <span class="mono">ldaps://dc01.example.local:636</span>.</div>
+            </div>
+            <div class="summary-grid">
+                <label class="checkbox-row"><input type="checkbox" name="use_starttls" value="1" {{ 'checked' if profile.use_starttls else '' }}> Use StartTLS</label>
+                <label class="checkbox-row"><input type="checkbox" name="verify_tls" value="1" {{ 'checked' if profile.verify_tls else '' }}> Verify server certificate</label>
+            </div>
+            <div>
+                <label for="{{ current_tab }}-ca">CA bundle PEM</label>
+                <textarea id="{{ current_tab }}-ca" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
+            </div>
+            <div class="summary-grid">
+                <div>
+                    <label for="{{ current_tab }}-bind-dn">Bind DN / service user</label>
+                    <input id="{{ current_tab }}-bind-dn" name="bind_dn" type="text" value="{{ profile.bind_dn }}" required>
+                </div>
+                <div>
+                    <label for="{{ current_tab }}-bind-password">Bind password</label>
+                    <input id="{{ current_tab }}-bind-password" name="bind_password" type="password" placeholder="{{ 'Stored; leave blank to keep' if profile.has_bind_password else 'Required before enabling' }}">
+                </div>
+            </div>
+            <div class="summary-grid">
+                <div>
+                    <label for="{{ current_tab }}-base-dn">Base DN</label>
+                    <input id="{{ current_tab }}-base-dn" name="base_dn" type="text" value="{{ profile.base_dn }}" required>
+                </div>
+                <div>
+                    <label for="{{ current_tab }}-admin-group">Required admin group</label>
+                    <input id="{{ current_tab }}-admin-group" name="required_admin_group" type="text" value="{{ profile.required_admin_group }}" required>
+                </div>
+            </div>
+            <div class="summary-grid">
+                <div>
+                    <label for="{{ current_tab }}-user-base">User search base</label>
+                    <input id="{{ current_tab }}-user-base" name="user_search_base" type="text" value="{{ profile.user_search_base }}">
+                </div>
+                <div>
+                    <label for="{{ current_tab }}-user-attribute">User attribute</label>
+                    <input id="{{ current_tab }}-user-attribute" name="user_attribute" type="text" value="{{ profile.user_attribute }}" required>
+                </div>
+            </div>
+            <div>
+                <label for="{{ current_tab }}-user-filter">User filter</label>
+                <input id="{{ current_tab }}-user-filter" name="user_filter" type="text" value="{{ profile.user_filter }}" required>
+            </div>
+            <div>
+                <label for="{{ current_tab }}-group-base">Group search base</label>
+                <input id="{{ current_tab }}-group-base" name="group_search_base" type="text" value="{{ profile.group_search_base }}">
+            </div>
+            <div>
+                <label for="{{ current_tab }}-group-filter">Group filter</label>
+                <input id="{{ current_tab }}-group-filter" name="group_filter" type="text" value="{{ profile.group_filter }}" required>
+            </div>
+            <div class="actions">
+                <button class="btn primary" type="submit">Save provider</button>
+            </div>
+        </form>
+        <form action="{{ url_for('administration', tab=current_tab) }}" method="post" class="inline-form">
+            {{ csrf_field() }}
+            <input type="hidden" name="action" value="test_auth_provider">
+            <input type="hidden" name="provider" value="{{ current_tab }}">
+            <button class="btn" type="submit">Test connection</button>
+            {% if profile.enabled %}
+            <button class="btn" type="submit" name="action" value="disable_auth_provider">Disable provider</button>
+            {% endif %}
+        </form>
+        <div class="surface-note small">
+            Last test:
+            {% if profile.last_test_ts %}
+                {{ 'OK' if profile.last_test_ok else 'Failed' }} - {{ profile.last_test_detail }}
+            {% else %}
+                Not tested
+            {% endif %}
         </div>
-    </aside>
-</div>
+    </div>
+</section>
+{% endif %}
 {% endblock %}

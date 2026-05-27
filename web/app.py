@@ -52,6 +52,7 @@ from services.config_revisions import (
 from services.diagnostic_store import (
     get_diagnostic_store as _default_get_diagnostic_store,
 )
+from services.directory_auth import get_directory_auth_store
 from services.error_pages import (
     list_error_pages,
     read_template,
@@ -603,6 +604,13 @@ except Exception:
 
 # Session security: persist a secret key so login survives container restarts.
 _auth_store = get_auth_store()
+
+
+def _auth_secret_key():
+    return _auth_store.get_or_create_secret_key()
+
+
+_directory_auth_store = get_directory_auth_store(_auth_secret_key)
 _env_secret = (os.environ.get("FLASK_SECRET_KEY") or "").strip()
 if _env_secret:
     app.secret_key = _env_secret
@@ -637,6 +645,10 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=max(1, _session_hours
 # Ensure there is at least one login.
 with contextlib.suppress(Exception):
     _auth_store.ensure_default_admin()
+try:
+    _directory_auth_store.ensure_default_profiles()
+except Exception:
+    app.logger.exception("Failed to initialize directory auth provider profiles")
 
 
 def _is_logged_in() -> bool:
@@ -1363,7 +1375,16 @@ def login():
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         next_url = _safe_next_url(request.form.get("next") or "")
-        if _auth_store.verify_user(username, password):
+        try:
+            directory_result = _directory_auth_store.authenticate_admin(username, password)
+        except Exception:
+            app.logger.exception("Directory authentication failed before local fallback")
+            directory_result = None
+        directory_ok = bool(getattr(directory_result, "ok", False))
+        local_ok = False if directory_ok else _auth_store.verify_user(username, password)
+        if directory_ok or local_ok:
+            login_provider = getattr(directory_result, "provider", "local") if directory_ok else "local"
+            login_username = getattr(directory_result, "username", username) if directory_ok else username
             # Prevent session fixation by clearing any existing session data.
             prev_csrf = session.get("_csrf_token")
             session.clear()
@@ -1374,9 +1395,14 @@ def login():
                 session["_csrf_token"] = prev_csrf
             else:
                 session["_csrf_token"] = secrets.token_urlsafe(32)
-            session["user"] = username
+            session["user"] = login_username
+            session["auth_provider"] = login_provider
             session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
-            _record_audit_event("login_success", ok=True, detail=f"user={username}")
+            _record_audit_event(
+                "login_success",
+                ok=True,
+                detail=f"user={login_username} provider={login_provider}",
+            )
             return redirect(next_url or url_for("index"))
         # Log failed login attempt for security auditing
         _record_audit_event("login_failed", ok=False, detail=f"user={username}")
@@ -2208,6 +2234,8 @@ def _handle_pac_builder_post(store: Any):
 
 def _handle_administration_post(store: Any, current_user: str):
     action = _form_action()
+    if action in {"save_auth_provider", "test_auth_provider", "disable_auth_provider"}:
+        return _handle_auth_provider_post()
     try:
         if action == "add_user":
             username = (request.form.get("username") or "").strip()
@@ -2264,6 +2292,58 @@ def _handle_administration_post(store: Any, current_user: str):
             ok=False,
             msg=public_error_message(e),
         )
+
+
+def _handle_auth_provider_post():
+    action = _form_action()
+    provider = (request.form.get("provider") or "").strip()
+    tab = provider if provider in {"ldap", "active_directory"} else "status"
+    try:
+        if action == "save_auth_provider":
+            _directory_auth_store.save_profile(provider, request.form.to_dict())
+            return _redirect_with_message(
+                "administration",
+                ok=True,
+                msg="Authentication provider saved.",
+                tab=tab,
+            )
+        if action == "test_auth_provider":
+            result = _directory_auth_store.test_connection(provider)
+            return _redirect_with_message(
+                "administration",
+                ok=result.ok,
+                msg=result.detail,
+                tab=tab,
+            )
+        if action == "disable_auth_provider":
+            _directory_auth_store.disable_provider(provider)
+            return _redirect_with_message(
+                "administration",
+                ok=True,
+                msg="Authentication provider disabled.",
+                tab=tab,
+            )
+    except ValueError as e:
+        return _redirect_with_message(
+            "administration",
+            ok=False,
+            msg=public_error_message(e),
+            tab=tab,
+        )
+    except Exception as e:
+        app.logger.exception("Authentication provider action failed")
+        return _redirect_with_message(
+            "administration",
+            ok=False,
+            msg=public_error_message(e),
+            tab=tab,
+        )
+    return _redirect_with_message(
+        "administration",
+        ok=False,
+        msg="Unknown authentication provider action.",
+        tab=tab,
+    )
 
 
 @app.route("/")
@@ -4644,12 +4724,28 @@ def administration():
     except Exception:
         users = []
 
+    try:
+        auth_status = _directory_auth_store.get_status()
+    except Exception:
+        app.logger.exception("Failed to load directory authentication status")
+        auth_status = {
+            "active_provider": "local",
+            "active_label": "Local accounts",
+            "profiles": {},
+            "providers": (),
+            "provider_labels": {},
+        }
+    auth_tab = (request.args.get("tab") or "status").strip()
+    if auth_tab not in {"status", "ldap", "active_directory"}:
+        auth_tab = "status"
     message = request.args.get("msg")
     message_ok = request.args.get("ok") == "1"
     return render_template(
         "administration.html",
         users=users,
         current_user=current_user,
+        auth_status=auth_status,
+        auth_tab=auth_tab,
         message=message,
         message_ok=message_ok,
     )

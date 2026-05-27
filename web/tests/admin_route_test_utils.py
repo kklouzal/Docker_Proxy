@@ -991,6 +991,27 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
 
     monkeypatch.setattr(admin_app, "_auth_store", fake_auth)
     monkeypatch.setattr(
+        admin_app,
+        "_directory_auth_store",
+        overrides.get("directory_auth_store")
+        or SimpleNamespace(
+            ensure_default_profiles=lambda: None,
+            authenticate_admin=lambda username, password: SimpleNamespace(
+                ok=False,
+                provider="local",
+                username=username,
+                detail="No active directory provider.",
+            ),
+            get_status=lambda: {
+                "active_provider": "local",
+                "active_label": "Local accounts",
+                "profiles": {},
+                "providers": (),
+                "provider_labels": {},
+            },
+        ),
+    )
+    monkeypatch.setattr(
         admin_app, "get_operation_ledger", lambda: fake_operation_ledger
     )
     from services import proxy_sync
