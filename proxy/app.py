@@ -175,11 +175,14 @@ def public_policy_request() -> Any:
     if not _is_public_listener_request():
         abort(404)
     form = request.form
+    client_ip = client_ip_from_headers(request.headers, request.remote_addr) or (
+        form.get("client_ip") or ""
+    )
     try:
         req = get_policy_request_store().create_request(
             proxy_id=get_proxy_id(),
             block_type=form.get("block_type") or "webfilter",
-            client_ip=request.remote_addr or form.get("client_ip") or "",
+            client_ip=client_ip,
             request_url=form.get("request_url") or "",
             domain=form.get("domain") or form.get("destination") or "",
             category=form.get("category") or "",
