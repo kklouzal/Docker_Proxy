@@ -35,6 +35,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/clamav_config_forms.py \
 	web/services/config_revisions.py \
 	web/services/diagnostic_store.py \
+	web/services/directory_auth.py \
 	web/services/db.py \
 	web/services/domain_normalization.py \
 	web/services/errors.py \
