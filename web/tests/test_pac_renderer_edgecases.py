@@ -87,7 +87,7 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
     assert "isInNet(ip, '10.20.0.0', '255.255.0.0')" in rendered
     assert "isInNet(ip, '192.168.0.0', '255.255.0.0')" in rendered
     assert "2001:db8" not in rendered
-    assert "return 'PROXY proxy.example:3128; DIRECT';" in rendered
+    assert 'return "PROXY proxy.example:3128; DIRECT";' in rendered
 
 
 def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
@@ -129,7 +129,7 @@ def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> 
         == "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080"
     )
     assert (
-        "return 'PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080';"
+        'return "PROXY proxy.example:3128; PROXY backup-a.example:3128; PROXY [2001:db8::20]:8080";'
         in pac_renderer._render_fallback_pac(target, include_private=False)
     )
 
@@ -277,7 +277,7 @@ def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rul
     assert "fragile.example" not in rendered
     assert "192.0.2.0" not in rendered
     assert "isInNet(ip, '10.0.0.0', '255.0.0.0')" in rendered
-    assert "return 'PROXY proxy.example:3128; DIRECT';" in rendered
+    assert 'return "PROXY proxy.example:3128; DIRECT";' in rendered
 
 
 def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(
@@ -404,3 +404,26 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
         manifest["proxy_chain"] == "PROXY proxy.example:3128; PROXY backup.example:8080"
     )
     assert manifest["direct_enabled"] is False
+
+
+def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_fallback_pac(
+        pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy'host.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+            backup_proxies=(("backup'host.example", 8080),),
+        ),
+        include_private=False,
+    )
+
+    assert (
+        'return "PROXY proxy\'host.example:3128; PROXY backup\'host.example:8080; DIRECT";'
+        in rendered
+    )
+    assert "return 'PROXY" not in rendered

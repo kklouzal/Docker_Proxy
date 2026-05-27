@@ -346,7 +346,7 @@ def _render_pac(
             ),
         )
 
-    lines.extend((f"  return '{proxy_chain}';", "}"))
+    lines.extend((f"  return {json.dumps(str(proxy_chain or ''))};", "}"))
     return "\n".join(lines) + "\n"
 
 
