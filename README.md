@@ -182,7 +182,8 @@ one default admin UI stay well inside the 160-connection budget.
 
 ### PAC, WPAD, and client routing
 
-- Per-proxy PAC profiles selected by client IPv4 CIDR.
+- Per-proxy PAC profiles selected by client IP/CIDR.
+- Forwarded client IP headers are ignored unless the immediate peer is listed in `PAC_TRUSTED_PROXY_CIDRS`, preventing clients from spoofing PAC profile selection.
 - Direct-domain and direct-destination-network rules for fragile applications or local routes.
 - Runtime-rendered PAC files served by the selected proxy, not by the admin UI.
 - WPAD-compatible `/wpad.dat` and direct `/proxy.pac` endpoints.
@@ -240,7 +241,7 @@ The Compose files expose the common production knobs as environment variables. T
 | Security | `FLASK_SECRET_KEY`, `SESSION_COOKIE_SECURE`, `SESSION_TIMEOUT_HOURS`, `PROXY_MANAGEMENT_TOKEN`, `DISABLE_CSRF` for controlled test/dev bypasses |
 | Runtime health | `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_UI_CACHE_TTL_SECONDS`, `PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` |
 | Proxy identity | `DEFAULT_PROXY_ID`, `PROXY_INSTANCE_ID`, `PROXY_DISPLAY_NAME`, `PROXY_MANAGEMENT_URL`, `PROXY_PUBLIC_HOST`, `PROXY_PUBLIC_PAC_URL` |
-| Public ports | `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`, `PROXY_PUBLIC_HTTP_PROXY_PORT`, `SQUID_HTTP_PORT`, `SQUID_INTERCEPT_ENABLED`, `SQUID_INTERCEPT_PORT`, `PROXY_PUBLIC_INTERCEPT_PORT` |
+| Public ports | `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`, `PROXY_PUBLIC_HTTP_PROXY_PORT`, `PAC_TRUSTED_PROXY_CIDRS`, `SQUID_HTTP_PORT`, `SQUID_INTERCEPT_ENABLED`, `SQUID_INTERCEPT_PORT`, `PROXY_PUBLIC_INTERCEPT_PORT` |
 | Squid sizing | `SQUID_WORKERS`, `SQUID_CACHE_MEM_MB`, `PROXY_SHM_SIZE`, `SQUID_SSLCRTD_CHILDREN`, `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`, `SQUID_MAX_FILEDESCRIPTORS`, `ULIMIT_NOFILE` |
 | ICAP and AV | `CICAP_PORT`, `CICAP_AV_PORT`, `CLAMD_HOST`, `CLAMD_PORT` |
 | Web filtering | `WEBFILTER_HELPERS`, `SAFE_BROWSING_POLL_SECONDS`, `SAFE_BROWSING_HELPER_CACHE_ENTRIES`, `SAFE_BROWSING_HELPER_PREFIX_HIT_TTL_SECONDS`, `SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS`, `SAFE_BROWSING_FAIL` |

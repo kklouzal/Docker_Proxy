@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import threading
@@ -26,17 +27,52 @@ def pac_render_dir() -> str:
     ).strip() or PAC_RENDER_DIR
 
 
+def _trusted_pac_header_networks() -> tuple[
+    ipaddress.IPv4Network | ipaddress.IPv6Network, ...
+]:
+    raw = (os.environ.get("PAC_TRUSTED_PROXY_CIDRS") or "").strip()
+    if not raw:
+        return ()
+
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for item in raw.replace(";", ",").split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(candidate, strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+def _remote_addr_trusts_forwarded_headers(remote_addr: str | None) -> bool:
+    try:
+        remote_ip = ipaddress.ip_address((remote_addr or "").strip())
+    except ValueError:
+        return False
+    return any(remote_ip in network for network in _trusted_pac_header_networks())
+
+
+def _first_forwarded_ip(value: object | None) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    first = (candidate.split(",")[0] or "").strip()
+    try:
+        return str(ipaddress.ip_address(first))
+    except ValueError:
+        return ""
+
+
 def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
-    xff = str(
-        (headers.get("X-Forwarded-For") if headers is not None else "") or "",
-    ).strip()
-    if xff:
-        candidate = (xff.split(",")[0] or "").strip()
-        if candidate:
-            return candidate
-    xri = str((headers.get("X-Real-IP") if headers is not None else "") or "").strip()
-    if xri:
-        return xri
+    if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
+        xff = _first_forwarded_ip(headers.get("X-Forwarded-For"))
+        if xff:
+            return xff
+        xri = _first_forwarded_ip(headers.get("X-Real-IP"))
+        if xri:
+            return xri
     return str(remote_addr or "").strip()
 
 
