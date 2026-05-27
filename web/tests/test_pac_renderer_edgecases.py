@@ -39,6 +39,36 @@ def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() 
     )
 
 
+def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    assert (
+        pac_renderer.format_proxy_host("http://proxy.example:8080/proxy.pac")
+        == "proxy.example"
+    )
+    assert (
+        pac_renderer.format_proxy_host("https://[2001:db8::10]:8443/proxy.pac")
+        == "[2001:db8::10]"
+    )
+    assert (
+        pac_renderer._build_pac_url(
+            scheme="http", host="http://proxy.example:8080/proxy.pac", port=80
+        )
+        == "http://proxy.example/proxy.pac"
+    )
+    assert (
+        pac_renderer.ProxyPacTarget(
+            "default",
+            "http://proxy.example:8080",
+            "http",
+            80,
+            3128,
+        ).proxy_chain
+        == "PROXY proxy.example:3128; DIRECT"
+    )
+
+
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

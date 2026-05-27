@@ -158,6 +158,13 @@ def _request_host_only(raw_host: str) -> str:
     candidate = (raw_host or "").strip()
     if not candidate:
         return "127.0.0.1"
+    if "://" in candidate:
+        try:
+            parsed = urlsplit(candidate)
+            if parsed.hostname:
+                return parsed.hostname
+        except Exception:
+            pass
     if candidate.count(":") > 1 and not candidate.startswith("["):
         return candidate
     try:
