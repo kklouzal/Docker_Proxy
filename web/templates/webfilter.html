@@ -143,6 +143,12 @@
             </div>
           {% endif %}
 
+          {% if err_safe_browsing_key %}
+            <div class="alert error">
+              Enter a Google Safe Browsing API key before enabling Safe Browsing, or leave Safe Browsing disabled.
+            </div>
+          {% endif %}
+
           <section class="surface-panel">
             <div class="section-header-row">
               <div>
