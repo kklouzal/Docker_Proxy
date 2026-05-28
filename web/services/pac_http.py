@@ -155,6 +155,7 @@ class LocalPacCache:
         self._state_sha = ""
         self._manifest: dict[str, object] = {}
         self._files: dict[str, str] = {}
+        self._state_signatures: tuple[tuple[str, int, int], ...] = ()
 
     def _read_state_sha(self) -> str:
         try:
@@ -166,11 +167,25 @@ class LocalPacCache:
         except Exception:
             return ""
 
+    def _state_file_signatures(self) -> tuple[tuple[str, int, int], ...]:
+        signatures: list[tuple[str, int, int]] = []
+        for rel_path in (PAC_STATE_SHA_FILENAME, PAC_MANIFEST_FILENAME):
+            path = self.pac_dir / rel_path
+            try:
+                stat = path.stat()
+            except OSError:
+                signatures.append((rel_path, -1, -1))
+                continue
+            signatures.append((rel_path, int(stat.st_mtime_ns), int(stat.st_size)))
+        return tuple(signatures)
+
     def _load_locked(self) -> bool:
         state_sha = self._read_state_sha()
+        state_signatures = self._state_file_signatures()
         if (
             state_sha
             and state_sha == self._state_sha
+            and state_signatures == self._state_signatures
             and self._manifest
             and self._files
         ):
@@ -181,6 +196,7 @@ class LocalPacCache:
             self._state_sha = ""
             self._manifest = {}
             self._files = {}
+            self._state_signatures = state_signatures
             return False
 
         try:
@@ -191,11 +207,13 @@ class LocalPacCache:
             self._state_sha = ""
             self._manifest = {}
             self._files = {}
+            self._state_signatures = state_signatures
             return False
         if not isinstance(manifest, dict):
             self._state_sha = ""
             self._manifest = {}
             self._files = {}
+            self._state_signatures = state_signatures
             return False
 
         files: dict[str, str] = {}
@@ -227,11 +245,13 @@ class LocalPacCache:
             self._state_sha = ""
             self._manifest = {}
             self._files = {}
+            self._state_signatures = state_signatures
             return False
 
         self._state_sha = state_sha or str(manifest.get("state_sha256") or "")
         self._manifest = manifest
         self._files = files
+        self._state_signatures = state_signatures
         return True
 
     def public_paths(self) -> frozenset[str]:
