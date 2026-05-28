@@ -86,21 +86,12 @@ def _public_pac_port() -> str:
     return str(port)
 
 
-def _request_ports() -> set[str]:
-    ports: set[str] = set()
-    server_port = str(request.environ.get("SERVER_PORT") or "").strip()
-    if server_port:
-        ports.add(server_port)
-    host = str(request.host or "").strip()
-    if ":" in host:
-        candidate = host.rsplit(":", 1)[1].strip()
-        if candidate.isdigit():
-            ports.add(candidate)
-    return ports
+def _request_server_port() -> str:
+    return str(request.environ.get("SERVER_PORT") or "").strip()
 
 
 def _is_public_listener_request() -> bool:
-    return _public_pac_port() in _request_ports()
+    return _request_server_port() == _public_pac_port()
 
 
 def _is_public_listener_path(

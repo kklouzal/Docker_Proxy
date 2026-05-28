@@ -330,6 +330,29 @@ def test_proxy_public_listener_rejects_management_and_management_listener_reject
     assert _management_get(client, "/wpad.dat").status_code == 404
 
 
+def test_management_listener_ignores_spoofed_public_host_port(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+
+    pac = client.get("/proxy.pac", base_url="http://localhost:5000")
+    spoofed_pac = client.get(
+        "/proxy.pac",
+        base_url="http://localhost:5000",
+        headers={"Host": "localhost:80"},
+    )
+    spoofed_management = client.get(
+        "/api/manage/health",
+        base_url="http://localhost:5000",
+        headers={"Authorization": "Bearer secret", "Host": "localhost:80"},
+    )
+
+    assert pac.status_code == 404
+    assert spoofed_pac.status_code == 404
+    assert spoofed_management.status_code == 200
+
+
 def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in(
     monkeypatch,
 ) -> None:
