@@ -156,7 +156,9 @@ PROXY_MANAGEMENT_URL=http://site-a-proxy-1.example.internal:5000
 Set `DEFAULT_PROXY_ID` only on the admin UI host to choose the initial UI
 selection. Do not reuse the same `PROXY_INSTANCE_ID` on multiple proxy hosts;
 registration, heartbeat, queued operations, PAC metadata, and health status are
-keyed by that ID.
+keyed by that ID. If `PROXY_PUBLIC_PAC_URL` points at a non-default path such as
+`/wpad.dat` or a reverse-proxy route, generated PAC metadata preserves that
+path instead of rewriting it to `/proxy.pac`.
 
 Keep each proxy container's shared-memory allocation at or above the Compose
 default `PROXY_SHM_SIZE=512m` unless you also lower Squid memory cache settings.

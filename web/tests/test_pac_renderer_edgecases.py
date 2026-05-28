@@ -89,7 +89,10 @@ def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
-    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://pac.example:8443/proxy.pac")
+    monkeypatch.setenv(
+        "PROXY_PUBLIC_PAC_URL",
+        "https://pac.example:8443/custom/proxy.pac?profile=default",
+    )
     monkeypatch.setenv("PROXY_PUBLIC_HTTP_PROXY_PORT", "8080")
 
     target = pac_renderer.resolve_proxy_pac_target("default")
@@ -97,8 +100,9 @@ def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
     assert target.public_host == "pac.example"
     assert target.pac_scheme == "https"
     assert target.pac_port == 8443
+    assert target.pac_path == "/custom/proxy.pac?profile=default"
     assert target.http_proxy_port == 8080
-    assert target.pac_url == "https://pac.example:8443/proxy.pac"
+    assert target.pac_url == "https://pac.example:8443/custom/proxy.pac?profile=default"
     assert target.proxy_chain == "PROXY pac.example:8080; DIRECT"
 
 
@@ -143,6 +147,52 @@ def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_
     assert target.pac_url == "https://edge.example/proxy.pac"
 
 
+def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    class _EmptyRegistry:
+        def get_proxy(self, _proxy_id):
+            return None
+
+    class _EmptyPacProfilesStore:
+        def list_profiles(self):
+            return []
+
+        def list_proxy_chain_settings(self):
+            return type(
+                "PacProxyChainSettings",
+                (),
+                {"backup_proxies": [], "direct_enabled": True},
+            )()
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setattr(
+        pac_renderer,
+        "get_sslfilter_store",
+        lambda: type("SslFilterStore", (), {"list_all": lambda self: None})(),
+    )
+    monkeypatch.setenv(
+        "PROXY_PUBLIC_PAC_URL",
+        "https://pac.example/download/wpad.dat?site=lab",
+    )
+
+    state = pac_renderer.build_proxy_pac_state("default")
+    manifest = json.loads(
+        next(
+            item.content
+            for item in state.files
+            if item.relative_path == "manifest.json"
+        )
+    )
+
+    assert manifest["public_pac_url"] == "https://pac.example/download/wpad.dat?site=lab"
+    assert manifest["public_pac_path"] == "/download/wpad.dat?site=lab"
+
+
 def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     monkeypatch,
 ) -> None:
@@ -157,6 +207,7 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
                 public_host="registry.example",
                 public_pac_scheme="http",
                 public_pac_port=8080,
+                public_pac_path="/registered/wpad.dat?site=a",
                 public_http_proxy_port=3128,
             )
 
@@ -179,7 +230,8 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     assert target.pac_scheme == "http"
     assert target.pac_port == 8080
     assert target.http_proxy_port == 3128
-    assert target.pac_url == "http://registry.example:8080/proxy.pac"
+    assert target.pac_path == "/registered/wpad.dat?site=a"
+    assert target.pac_url == "http://registry.example:8080/registered/wpad.dat?site=a"
 
 
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
@@ -518,6 +570,7 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
         manifest["proxy_chain"] == "PROXY proxy.example:3128; PROXY backup.example:8080"
     )
     assert manifest["direct_enabled"] is False
+    assert manifest["public_pac_path"] == "/proxy.pac"
 
 
 def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:

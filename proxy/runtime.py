@@ -2171,6 +2171,7 @@ class ProxyRuntime:
             public_host=str(public_fields.get("public_host") or ""),
             public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
             public_pac_port=int(public_fields.get("public_pac_port") or 80),
+            public_pac_path=str(public_fields.get("public_pac_path") or "/proxy.pac"),
             public_http_proxy_port=int(
                 public_fields.get("public_http_proxy_port") or 3128,
             ),

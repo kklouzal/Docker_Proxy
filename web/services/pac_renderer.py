@@ -35,16 +35,16 @@ def _normalize_pac_scheme(value: object | None) -> str:
     return "http"
 
 
-def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
+def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     candidate = str(raw_url or "").strip()
     if not candidate:
-        return "", "http", 80
+        return "", "http", 80, "/proxy.pac"
     if "://" not in candidate:
         candidate = f"http://{candidate}"
     try:
         parsed = urlsplit(candidate)
     except Exception:
-        return "", "http", 80
+        return "", "http", 80, "/proxy.pac"
     scheme = _normalize_pac_scheme(parsed.scheme)
     host = str(parsed.hostname or "").strip()
     default_port = 443 if scheme == "https" else 80
@@ -52,7 +52,12 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
         parsed_port = parsed.port
     except ValueError:
         parsed_port = None
-    return host, scheme, int(parsed_port or default_port)
+    path = parsed.path or "/proxy.pac"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return host, scheme, int(parsed_port or default_port), path
 
 
 def _coerce_port(value: object | None, default: int) -> int:
@@ -80,14 +85,23 @@ def _coerce_bool(value: object | None, default: bool) -> bool:
     return bool(default)
 
 
-def _build_pac_url(*, scheme: str, host: str, port: int) -> str:
+def _build_pac_url(
+    *,
+    scheme: str,
+    host: str,
+    port: int,
+    path: str = "/proxy.pac",
+) -> str:
     clean_host = format_proxy_host(host)
     if not clean_host:
         return ""
     normalized_scheme = _normalize_pac_scheme(scheme)
     default_port = 443 if normalized_scheme == "https" else 80
     port_part = "" if int(port) == default_port else f":{int(port)}"
-    return f"{normalized_scheme}://{clean_host}{port_part}/proxy.pac"
+    pac_path = str(path or "/proxy.pac")
+    if not pac_path.startswith("/"):
+        pac_path = f"/{pac_path}"
+    return f"{normalized_scheme}://{clean_host}{port_part}{pac_path}"
 
 
 def _normalize_domain_rule(domain: str) -> str:
@@ -113,6 +127,7 @@ class ProxyPacTarget:
     http_proxy_port: int
     backup_proxies: tuple[tuple[str, int], ...] = ()
     direct_enabled: bool = True
+    pac_path: str = "/proxy.pac"
 
     @property
     def uses_request_host_fallback(self) -> bool:
@@ -134,6 +149,7 @@ class ProxyPacTarget:
             scheme=self.pac_scheme,
             host=self.public_host,
             port=self.pac_port,
+            path=self.pac_path,
         )
 
     @property
@@ -216,7 +232,12 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
     except Exception:
         proxy = None
 
-    url_public_host, url_pac_scheme, url_pac_port = _parse_public_pac_url(
+    (
+        url_public_host,
+        url_pac_scheme,
+        url_pac_port,
+        url_pac_path,
+    ) = _parse_public_pac_url(
         os.environ.get("PROXY_PUBLIC_PAC_URL"),
     )
     env_public_host = (
@@ -255,6 +276,10 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         else os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
         env_http_proxy_port,
     )
+    proxy_pac_path = str(getattr(proxy, "public_pac_path", "") or "").strip()
+    pac_path = proxy_pac_path if proxy_owns_public_endpoint else url_pac_path
+    if not pac_path:
+        pac_path = "/proxy.pac"
     backup_proxies: tuple[tuple[str, int], ...] = ()
     direct_enabled = True
     try:
@@ -278,6 +303,7 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         http_proxy_port=http_proxy_port,
         backup_proxies=backup_proxies,
         direct_enabled=direct_enabled,
+        pac_path=pac_path,
     )
 
 
@@ -502,6 +528,7 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
             "public_pac_url": target.pac_url,
             "public_pac_scheme": target.pac_scheme,
             "public_pac_port": target.pac_port,
+            "public_pac_path": target.pac_path,
             "public_http_proxy_port": target.http_proxy_port,
             "uses_request_host_fallback": target.uses_request_host_fallback,
             "proxy_chain": target.proxy_chain_display,

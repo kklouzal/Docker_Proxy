@@ -75,16 +75,16 @@ def _dns_safe_proxy_host(value: object | None) -> str:
     return candidate or "proxy"
 
 
-def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
+def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     candidate = str(raw_url or "").strip()
     if not candidate:
-        return "", "http", 80
+        return "", "http", 80, "/proxy.pac"
     if "://" not in candidate:
         candidate = f"http://{candidate}"
     try:
         parsed = urlsplit(candidate)
     except Exception:
-        return "", "http", 80
+        return "", "http", 80, "/proxy.pac"
     scheme = _normalize_public_scheme(parsed.scheme)
     host = str(parsed.hostname or "").strip()
     default_port = 443 if scheme == "https" else 80
@@ -92,11 +92,16 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
         parsed_port = parsed.port
     except ValueError:
         parsed_port = None
-    return host, scheme, int(parsed_port or default_port)
+    path = parsed.path or "/proxy.pac"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return host, scheme, int(parsed_port or default_port), path
 
 
 def resolve_local_proxy_public_fields() -> dict[str, object]:
-    url_host, url_scheme, url_port = _parse_public_pac_url(
+    url_host, url_scheme, url_port, url_path = _parse_public_pac_url(
         os.environ.get("PROXY_PUBLIC_PAC_URL"),
     )
     public_host = (os.environ.get("PROXY_PUBLIC_HOST") or "").strip() or url_host
@@ -116,6 +121,7 @@ def resolve_local_proxy_public_fields() -> dict[str, object]:
         "public_host": public_host,
         "public_pac_scheme": public_pac_scheme,
         "public_pac_port": public_pac_port,
+        "public_pac_path": url_path,
         "public_http_proxy_port": public_http_proxy_port,
     }
 
@@ -150,6 +156,7 @@ class ProxyInstance:
     public_host: str
     public_pac_scheme: str
     public_pac_port: int
+    public_pac_path: str
     public_http_proxy_port: int
     status: str
     last_heartbeat: int
@@ -162,7 +169,7 @@ class ProxyInstance:
 
 
 class ProxyRegistry:
-    _SELECT_COLUMNS = "proxy_id, display_name, hostname, management_url, public_host, public_pac_scheme, public_pac_port, public_http_proxy_port, status, last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha, detail, created_ts, updated_ts"
+    _SELECT_COLUMNS = "proxy_id, display_name, hostname, management_url, public_host, public_pac_scheme, public_pac_port, public_pac_path, public_http_proxy_port, status, last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha, detail, created_ts, updated_ts"
 
     def __init__(self) -> None:
         self._schema_ready = False
@@ -212,6 +219,7 @@ class ProxyRegistry:
                                 public_host VARCHAR(255) NOT NULL DEFAULT '',
                                 public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http',
                                 public_pac_port INT NOT NULL DEFAULT 80,
+                                public_pac_path VARCHAR(512) NOT NULL DEFAULT '/proxy.pac',
                                 public_http_proxy_port INT NOT NULL DEFAULT 3128,
                                 status VARCHAR(32) NOT NULL DEFAULT 'unknown',
                                 last_heartbeat BIGINT NOT NULL DEFAULT 0,
@@ -231,7 +239,8 @@ class ProxyRegistry:
                             "public_host": "ALTER TABLE proxy_instances ADD COLUMN public_host VARCHAR(255) NOT NULL DEFAULT '' AFTER management_url",
                             "public_pac_scheme": "ALTER TABLE proxy_instances ADD COLUMN public_pac_scheme VARCHAR(16) NOT NULL DEFAULT 'http' AFTER public_host",
                             "public_pac_port": "ALTER TABLE proxy_instances ADD COLUMN public_pac_port INT NOT NULL DEFAULT 80 AFTER public_pac_scheme",
-                            "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_port",
+                            "public_pac_path": "ALTER TABLE proxy_instances ADD COLUMN public_pac_path VARCHAR(512) NOT NULL DEFAULT '/proxy.pac' AFTER public_pac_port",
+                            "public_http_proxy_port": "ALTER TABLE proxy_instances ADD COLUMN public_http_proxy_port INT NOT NULL DEFAULT 3128 AFTER public_pac_path",
                         }
                         for column_name, ddl in required_columns.items():
                             if column_name not in columns:
@@ -271,6 +280,7 @@ class ProxyRegistry:
             public_host=str(row["public_host"] or ""),
             public_pac_scheme=_normalize_public_scheme(row["public_pac_scheme"]),
             public_pac_port=_coerce_port(row["public_pac_port"], 80),
+            public_pac_path=str(row.get("public_pac_path") or "/proxy.pac"),
             public_http_proxy_port=_coerce_port(row["public_http_proxy_port"], 3128),
             status=str(row["status"] or "unknown"),
             last_heartbeat=int(row["last_heartbeat"] or 0),
@@ -292,6 +302,7 @@ class ProxyRegistry:
         public_host: str | None = None,
         public_pac_scheme: str | None = None,
         public_pac_port: int | None = None,
+        public_pac_path: str | None = None,
         public_http_proxy_port: int | None = None,
         status: str | None = None,
         detail: str | None = None,
@@ -309,12 +320,12 @@ class ProxyRegistry:
                     """
                     INSERT INTO proxy_instances(
                         proxy_id, display_name, hostname, management_url,
-                        public_host, public_pac_scheme, public_pac_port,
+                        public_host, public_pac_scheme, public_pac_port, public_pac_path,
                         public_http_proxy_port, status,
                         last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha,
                         detail, created_ts, updated_ts
                     )
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         proxy_key,
@@ -324,6 +335,7 @@ class ProxyRegistry:
                         (public_host or "").strip(),
                         _normalize_public_scheme(public_pac_scheme),
                         _coerce_port(public_pac_port, 80),
+                        (public_pac_path or "/proxy.pac").strip() or "/proxy.pac",
                         _coerce_port(public_http_proxy_port, 3128),
                         (status or "unknown").strip() or "unknown",
                         0,
@@ -343,6 +355,7 @@ class ProxyRegistry:
                     "public_host": (public_host or "").strip(),
                     "public_pac_scheme": _normalize_public_scheme(public_pac_scheme),
                     "public_pac_port": _coerce_port(public_pac_port, 80),
+                    "public_pac_path": (public_pac_path or "/proxy.pac").strip() or "/proxy.pac",
                     "public_http_proxy_port": _coerce_port(
                         public_http_proxy_port,
                         3128,
@@ -376,6 +389,11 @@ class ProxyRegistry:
                     else row["public_pac_port"],
                     80,
                 )
+                next_public_pac_path = (
+                    public_pac_path
+                    if public_pac_path is not None
+                    else row.get("public_pac_path") or "/proxy.pac"
+                ).strip() or "/proxy.pac"
                 next_public_http_proxy_port = _coerce_port(
                     public_http_proxy_port
                     if public_http_proxy_port is not None
@@ -392,7 +410,7 @@ class ProxyRegistry:
                     UPDATE proxy_instances
                     SET display_name=%s, hostname=%s, management_url=%s,
                         public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
-                        public_http_proxy_port=%s, status=%s, detail=%s, updated_ts=%s
+                        public_pac_path=%s, public_http_proxy_port=%s, status=%s, detail=%s, updated_ts=%s
                     WHERE proxy_id=%s
                     """,
                     (
@@ -402,6 +420,7 @@ class ProxyRegistry:
                         next_public_host,
                         next_public_pac_scheme,
                         next_public_pac_port,
+                        next_public_pac_path,
                         next_public_http_proxy_port,
                         next_status,
                         next_detail,
@@ -417,6 +436,7 @@ class ProxyRegistry:
                     "public_host": next_public_host,
                     "public_pac_scheme": next_public_pac_scheme,
                     "public_pac_port": next_public_pac_port,
+                    "public_pac_path": next_public_pac_path,
                     "public_http_proxy_port": next_public_http_proxy_port,
                     "status": next_status,
                     "last_heartbeat": int(row["last_heartbeat"] or 0),
@@ -616,6 +636,7 @@ class ProxyRegistry:
         public_host: str | None = None,
         public_pac_scheme: str | None = None,
         public_pac_port: int | None = None,
+        public_pac_path: str | None = None,
         public_http_proxy_port: int | None = None,
         current_config_sha: str | None = None,
         detail: str | None = None,
@@ -628,6 +649,7 @@ class ProxyRegistry:
             public_host=public_host,
             public_pac_scheme=public_pac_scheme,
             public_pac_port=public_pac_port,
+            public_pac_path=public_pac_path,
             public_http_proxy_port=public_http_proxy_port,
             status=status,
             detail=detail,
@@ -639,7 +661,7 @@ class ProxyRegistry:
                 UPDATE proxy_instances
                 SET status=%s, hostname=%s, management_url=%s,
                     public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
-                    public_http_proxy_port=%s, last_heartbeat=%s,
+                    public_pac_path=%s, public_http_proxy_port=%s, last_heartbeat=%s,
                     current_config_sha=%s, detail=%s, updated_ts=%s
                 WHERE proxy_id=%s
                 """,
@@ -661,6 +683,11 @@ class ProxyRegistry:
                         else instance.public_pac_port,
                         80,
                     ),
+                    (
+                        public_pac_path
+                        if public_pac_path is not None
+                        else instance.public_pac_path
+                    ).strip() or "/proxy.pac",
                     _coerce_port(
                         public_http_proxy_port
                         if public_http_proxy_port is not None
@@ -744,6 +771,7 @@ class ProxyRegistry:
             public_host=str(public_fields["public_host"] or ""),
             public_pac_scheme=str(public_fields["public_pac_scheme"] or "http"),
             public_pac_port=int(public_fields["public_pac_port"] or 80),
+            public_pac_path=str(public_fields.get("public_pac_path") or "/proxy.pac"),
             public_http_proxy_port=int(public_fields["public_http_proxy_port"] or 3128),
             status="starting" if existing is None else None,
         )
