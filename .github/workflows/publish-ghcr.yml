@@ -105,8 +105,6 @@ jobs:
           file: ${{ matrix.dockerfile }}
           load: true
           tags: docker-proxy-${{ matrix.image }}:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   live-tests:
     runs-on: ubuntu-latest
