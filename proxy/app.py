@@ -15,7 +15,7 @@ from services.pac_http import (
     PAC_CONTENT_TYPE,
     client_ip_from_headers,
     pac_content_disposition,
-    public_pac_paths,
+    public_pac_request_allowed,
     request_host_from_headers,
     resolve_pac_bytes,
 )
@@ -103,19 +103,25 @@ def _is_public_listener_request() -> bool:
     return _public_pac_port() in _request_ports()
 
 
-def _is_public_listener_path(path: str) -> bool:
+def _is_public_listener_path(
+    path: str,
+    query_string: object | None = None,
+) -> bool:
     normalized_path = str(path or "/")
     if normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS:
         return True
     try:
-        return normalized_path in public_pac_paths()
+        return public_pac_request_allowed(normalized_path, query_string)
     except Exception:
         return normalized_path in {"/proxy.pac", "/wpad.dat"}
 
 
 @app.before_request
 def _restrict_public_listener() -> None:
-    if _is_public_listener_request() and not _is_public_listener_path(request.path):
+    if _is_public_listener_request() and not _is_public_listener_path(
+        request.path,
+        request.query_string,
+    ):
         abort(404)
 
 

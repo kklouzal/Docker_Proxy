@@ -92,21 +92,43 @@ def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> s
     )
 
 
-def _public_path_from_manifest(value: object) -> str:
+def _public_target_from_manifest(value: object) -> tuple[str, str | None]:
     candidate = str(value or "").strip()
     if not candidate:
-        return ""
+        return "", None
     try:
         parsed = urlsplit(candidate)
     except Exception:
-        return ""
-    path = parsed.path if parsed.scheme or parsed.netloc else candidate.split("?", 1)[0]
+        return "", None
+
+    has_query = "?" in candidate
+    if parsed.scheme or parsed.netloc:
+        path = parsed.path
+        query = parsed.query if has_query else None
+    elif has_query:
+        path, query = candidate.split("?", 1)
+    else:
+        path, query = candidate, None
+
     path = str(path or "").strip()
     if not path:
-        return ""
+        return "", None
     if not path.startswith("/"):
         path = f"/{path}"
+    return path, query
+
+
+def _public_path_from_manifest(value: object) -> str:
+    path, _query = _public_target_from_manifest(value)
     return path
+
+
+def _request_query_text(query_string: object | None) -> str:
+    if query_string is None:
+        return ""
+    if isinstance(query_string, bytes):
+        return query_string.decode("latin-1", errors="replace")
+    return str(query_string)
 
 
 def _safe_manifest_file_path(value: object) -> str:
@@ -217,11 +239,40 @@ class LocalPacCache:
             paths = set(DEFAULT_PUBLIC_PAC_PATHS)
             if not self._load_locked():
                 return frozenset(paths)
-            for key in ("public_pac_path", "public_pac_url"):
-                public_path = _public_path_from_manifest(self._manifest.get(key))
-                if public_path:
-                    paths.add(public_path)
+            for path, _query in self._public_request_targets_locked():
+                if path:
+                    paths.add(path)
             return frozenset(paths)
+
+    def _public_request_targets_locked(self) -> frozenset[tuple[str, str | None]]:
+        targets: set[tuple[str, str | None]] = {
+            (path, None) for path in DEFAULT_PUBLIC_PAC_PATHS
+        }
+        for key in ("public_pac_path", "public_pac_url"):
+            public_path, public_query = _public_target_from_manifest(
+                self._manifest.get(key),
+            )
+            if public_path:
+                targets.add((public_path, public_query))
+        return frozenset(targets)
+
+    def public_request_allowed(
+        self,
+        path: str,
+        query_string: object | None = None,
+    ) -> bool:
+        request_path = str(path or "/")
+        request_query = _request_query_text(query_string)
+        with self._lock:
+            if not self._load_locked():
+                targets = {(path, None) for path in DEFAULT_PUBLIC_PAC_PATHS}
+            else:
+                targets = self._public_request_targets_locked()
+        return any(
+            request_path == public_path
+            and (public_query is None or request_query == public_query)
+            for public_path, public_query in targets
+        )
 
     def resolve(self, *, client_ip: str, request_host: str) -> bytes | None:
         with self._lock:
@@ -255,6 +306,14 @@ def get_pac_cache(pac_dir: str | None = None) -> LocalPacCache:
 
 def public_pac_paths(pac_dir: str | None = None) -> frozenset[str]:
     return get_pac_cache(pac_dir).public_paths()
+
+
+def public_pac_request_allowed(
+    path: str,
+    query_string: object | None = None,
+    pac_dir: str | None = None,
+) -> bool:
+    return get_pac_cache(pac_dir).public_request_allowed(path, query_string)
 
 
 def resolve_pac_bytes(

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -155,6 +155,28 @@ def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path) -> None:
     assert pac_http.LocalPacCache(str(pac_dir)).public_paths() == frozenset(
         {"/proxy.pac", "/wpad.dat", "/download/wpad.dat"}
     )
+
+
+def test_local_pac_cache_requires_configured_public_pac_query(tmp_path) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab"}""",
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
+    assert cache.public_request_allowed("/download/wpad.dat", b"site=lab") is True
+    assert cache.public_request_allowed("/download/wpad.dat", "site=other") is False
+    assert cache.public_request_allowed("/download/wpad.dat", "") is False
+    assert cache.public_request_allowed("/proxy.pac", "any=query") is True
 
 
 def test_pac_content_disposition_uses_requested_filename() -> None:
