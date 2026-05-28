@@ -641,11 +641,18 @@ class WebFilterStoreBase:
             )
         if safe_browsing_ready:
             gsb_helper = helper_name + "_gsb"
+            safe_browsing_args = [
+                "/usr/bin/python3 /app/tools/safe_browsing_acl.py",
+                f"--fail {safe_browsing_fail}",
+            ]
+            for list_name in settings.safe_browsing_lists or DEFAULT_SAFE_BROWSING_LISTS:
+                selected_list = SafeBrowsingStore.selected_lists([str(list_name)])
+                if selected_list:
+                    safe_browsing_args.append(f"--list {selected_list[0]}")
             lines.append(
                 f"external_acl_type {gsb_helper} children={helpers} ttl={ttl} negative_ttl={neg_ttl} %SRC %DST %URI "
-                f"/usr/bin/python3 /app/tools/safe_browsing_acl.py --fail {safe_browsing_fail}",
+                + " ".join(safe_browsing_args),
             )
-
         if whitelist_lines:
             lines.extend(
                 (

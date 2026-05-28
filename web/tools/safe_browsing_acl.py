@@ -60,6 +60,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Squid external ACL helper for Google Safe Browsing v5 cached/local-list checks.",
     )
     ap.add_argument(
+        "--list",
+        dest="selected_lists",
+        action="append",
+        default=[],
+        help="Safe Browsing hash list to enforce. Repeat for each selected list.",
+    )
+    ap.add_argument(
         "--fail",
         choices=["open", "closed"],
         default=os.environ.get("SAFE_BROWSING_FAIL", "open"),
@@ -71,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = ap.parse_args(list(argv) if argv is not None else None)
     fail_open = args.fail == "open"
-    checker = SafeBrowsingLocalChecker()
+    checker = SafeBrowsingLocalChecker(selected_lists=args.selected_lists or None)
     log_db = (
         _BlockedLogDb(max_rows=int(args.log_max_rows))
         if _BlockedLogDb is not None

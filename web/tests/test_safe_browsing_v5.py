@@ -692,7 +692,12 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
         def insert(self, **kwargs) -> None:
             inserted.append(kwargs)
 
+    checker_selected_lists = []
+
     class FakeChecker:
+        def __init__(self, *, selected_lists=None):
+            checker_selected_lists.append(selected_lists)
+
         def check_url(self, url):
             return SafeBrowsingVerdict(
                 "unsafe", "SOCIAL_ENGINEERING", "se-4b", False, "confirmed"
@@ -707,7 +712,8 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
     monkeypatch.setattr(safe_browsing_acl.sys.stdout, "write", outputs.append)
     monkeypatch.setattr(safe_browsing_acl.sys.stdout, "flush", lambda: None)
 
-    assert safe_browsing_acl.main([]) == 0
+    assert safe_browsing_acl.main(["--list", "se-4b", "--list", "uwsa-4b"]) == 0
+    assert checker_selected_lists == [["se-4b", "uwsa-4b"]]
     assert outputs == ["OK\n"]
     assert inserted[0]["src_ip"] == "192.0.2.10"
     assert inserted[0]["url"] == "http://bad.example/"
