@@ -15,6 +15,7 @@ from services.pac_http import (
     PAC_CONTENT_TYPE,
     client_ip_from_headers,
     pac_content_disposition,
+    public_pac_paths,
     request_host_from_headers,
     resolve_pac_bytes,
 )
@@ -31,9 +32,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 app = Flask(__name__)
 install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
-_PUBLIC_LISTENER_PATHS = frozenset(
-    {"/", "/health", "/proxy.pac", "/wpad.dat", "/policy-request"},
-)
+_PUBLIC_LISTENER_NON_PAC_PATHS = frozenset({"/", "/health", "/policy-request"})
 
 
 def _runtime() -> Any:
@@ -104,9 +103,19 @@ def _is_public_listener_request() -> bool:
     return _public_pac_port() in _request_ports()
 
 
+def _is_public_listener_path(path: str) -> bool:
+    normalized_path = str(path or "/")
+    if normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS:
+        return True
+    try:
+        return normalized_path in public_pac_paths()
+    except Exception:
+        return normalized_path in {"/proxy.pac", "/wpad.dat"}
+
+
 @app.before_request
 def _restrict_public_listener() -> None:
-    if _is_public_listener_request() and request.path not in _PUBLIC_LISTENER_PATHS:
+    if _is_public_listener_request() and not _is_public_listener_path(request.path):
         abort(404)
 
 
@@ -155,10 +164,11 @@ def health() -> Any:
 @app.route("/", methods=["GET"])
 @app.route("/proxy.pac", methods=["GET"])
 @app.route("/wpad.dat", methods=["GET"])
-def public_pac() -> Any:
+@app.route("/<path:_pac_path>", methods=["GET"])
+def public_pac(_pac_path: str = "") -> Any:
     if not _is_public_listener_request():
         abort(404)
-    path = request.path if request.path in {"/proxy.pac", "/wpad.dat"} else "/wpad.dat"
+    path = "/wpad.dat" if request.path == "/" else request.path
     data = resolve_pac_bytes(
         client_ip=client_ip_from_headers(request.headers, request.remote_addr),
         request_host=request_host_from_headers(request.headers, request.remote_addr),

@@ -7,6 +7,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from services.pac_renderer import (
     PAC_MANIFEST_FILENAME,
@@ -18,6 +19,7 @@ from services.pac_renderer import (
 )
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
+DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
 
 
 @lru_cache(maxsize=1)
@@ -88,6 +90,23 @@ def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> s
         str((headers.get("Host") if headers is not None else "") or "").strip()
         or "127.0.0.1"
     )
+
+
+def _public_path_from_manifest(value: object) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+    except Exception:
+        return ""
+    path = parsed.path if parsed.scheme or parsed.netloc else candidate.split("?", 1)[0]
+    path = str(path or "").strip()
+    if not path:
+        return ""
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return path
 
 
 def _safe_manifest_file_path(value: object) -> str:
@@ -193,6 +212,17 @@ class LocalPacCache:
         self._files = files
         return True
 
+    def public_paths(self) -> frozenset[str]:
+        with self._lock:
+            paths = set(DEFAULT_PUBLIC_PAC_PATHS)
+            if not self._load_locked():
+                return frozenset(paths)
+            for key in ("public_pac_path", "public_pac_url"):
+                public_path = _public_path_from_manifest(self._manifest.get(key))
+                if public_path:
+                    paths.add(public_path)
+            return frozenset(paths)
+
     def resolve(self, *, client_ip: str, request_host: str) -> bytes | None:
         with self._lock:
             if not self._load_locked():
@@ -223,6 +253,10 @@ def get_pac_cache(pac_dir: str | None = None) -> LocalPacCache:
         return cache
 
 
+def public_pac_paths(pac_dir: str | None = None) -> frozenset[str]:
+    return get_pac_cache(pac_dir).public_paths()
+
+
 def resolve_pac_bytes(
     *,
     client_ip: str,
@@ -239,6 +273,7 @@ def resolve_pac_bytes(
 
 
 def pac_content_disposition(path: str) -> str:
-    if path == "/wpad.dat":
+    name = str(path or "").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if name == "wpad.dat":
         return 'inline; filename="wpad.dat"'
     return 'inline; filename="proxy.pac"'

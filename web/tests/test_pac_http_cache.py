@@ -137,3 +137,35 @@ def test_request_host_uses_trusted_forwarded_host(monkeypatch) -> None:
         )
         == "public-proxy.example:80"
     )
+
+
+def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab"}""",
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
+
+    assert pac_http.LocalPacCache(str(pac_dir)).public_paths() == frozenset(
+        {"/proxy.pac", "/wpad.dat", "/download/wpad.dat"}
+    )
+
+
+def test_pac_content_disposition_uses_requested_filename() -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    assert (
+        pac_http.pac_content_disposition("/download/wpad.dat?site=lab")
+        == 'inline; filename="wpad.dat"'
+    )
+    assert (
+        pac_http.pac_content_disposition("/download/custom.pac")
+        == 'inline; filename="proxy.pac"'
+    )
