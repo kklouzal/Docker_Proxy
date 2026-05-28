@@ -429,6 +429,7 @@ def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
     )
     assert "return 'PROXY" not in rendered
 
+
 def test_pac_profile_match_uses_manifest_specificity_without_database() -> None:
     _add_web_to_path()
     from services import pac_profiles_store  # type: ignore

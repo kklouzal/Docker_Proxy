@@ -475,7 +475,7 @@ class PacProfilesStore:
                 matches.append((int(net.prefixlen), id_key(p), p))
 
         if matches:
-            return sorted(matches, key=lambda item: (-item[0], item[1]))[0][2]
+            return min(matches, key=lambda item: (-item[0], item[1]))[2]
 
         # Fall back to the first catch-all (if any). Keep this behavior for
         # malformed or unavailable client IPs so diagnostics match PAC serving.
