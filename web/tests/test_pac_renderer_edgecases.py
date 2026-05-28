@@ -170,10 +170,15 @@ def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+
+    class _EmptySslFilterStore:
+        def list_all(self):
+            return None
+
     monkeypatch.setattr(
         pac_renderer,
         "get_sslfilter_store",
-        lambda: type("SslFilterStore", (), {"list_all": lambda self: None})(),
+        _EmptySslFilterStore,
     )
     monkeypatch.setenv(
         "PROXY_PUBLIC_PAC_URL",

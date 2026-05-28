@@ -39,6 +39,7 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
         "https://proxy.example:not-a-port/proxy.pac"
     ) == ("proxy.example", "https", 443, "/proxy.pac")
 
+
 def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_url(
     monkeypatch,
 ) -> None:
