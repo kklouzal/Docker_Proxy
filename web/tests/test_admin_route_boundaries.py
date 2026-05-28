@@ -1098,7 +1098,6 @@ def test_webfilter_save_clears_stored_safe_browsing_key_when_requested(
             "action": "save",
             "source_url": "https://example.com/categories.csv",
             "source_provider": "csv",
-            "safe_browsing_enabled": "on",
             "safe_browsing_api_key": "",
             "safe_browsing_clear_key": "on",
             "safe_browsing_lists": ["se-4b", "mw-4b"],
@@ -1107,6 +1106,7 @@ def test_webfilter_save_clears_stored_safe_browsing_key_when_requested(
     )
 
     assert response.status_code in {302, 303}
+    assert store.last_set_settings["safe_browsing_enabled"] is False
     assert store.last_set_settings["safe_browsing_api_key"] == ""
 
 
