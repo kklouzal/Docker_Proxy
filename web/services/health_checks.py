@@ -81,6 +81,22 @@ def check_local_listener(service_name: str, host: str, port: int) -> dict[str, A
     return {"ok": False, "detail": f"{service_name} is not listening on {host}:{port}"}
 
 
+def _recv_status_line(sock: socket.socket, *, max_bytes: int = 512) -> bytes:
+    buf = b""
+    while len(buf) < max_bytes:
+        chunk = sock.recv(min(512, max_bytes - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+        if b"\n" in buf:
+            break
+    return buf.split(b"\r\n", 1)[0].split(b"\n", 1)[0].strip()
+
+
+def _decode_status_line(data: bytes) -> str:
+    return data.decode("ascii", errors="replace") if data else "no data"
+
+
 def check_icap_service(
     host: str,
     port: int,
@@ -102,13 +118,9 @@ def check_icap_service(
         with socket.create_connection((host, int(port)), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(req)
-            data = sock.recv(512)
-        first = (
-            data.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
-            if data
-            else "no data"
-        )
-        if data.startswith(b"ICAP/1.0 200"):
+            status_line = _recv_status_line(sock)
+        first = _decode_status_line(status_line)
+        if status_line.startswith(b"ICAP/1.0 200"):
             return {"ok": True, "detail": success_detail or first}
         return {"ok": False, "detail": first}
     except Exception as exc:
@@ -282,15 +294,11 @@ def send_sample_respmod_to(
         with socket.create_connection((host, int(port)), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(icap_req)
-            response = sock.recv(512)
-        first_line = (
-            response.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
-            if response
-            else "no data"
-        )
+            status_line = _recv_status_line(sock)
+        first_line = _decode_status_line(status_line)
         return {
             "ok": first_line.startswith("ICAP/1.0 20"),
-            "detail": first_line or "no data",
+            "detail": first_line,
         }
     except Exception as exc:
         return {

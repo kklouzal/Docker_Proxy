@@ -96,6 +96,24 @@ def test_recv_clamd_reply_stops_on_null_or_newline() -> None:
     )
 
 
+def test_recv_status_line_handles_fragmented_icap_replies() -> None:
+    _add_web_to_path()
+    from services import health_checks  # type: ignore
+
+    assert (
+        health_checks._recv_status_line(
+            _FakeSocket([b"ICAP/1.0 2", b"00 OK\r\nHeader: value\r\n"]),
+            max_bytes=64,
+        )
+        == b"ICAP/1.0 200 OK"
+    )
+    assert (
+        health_checks._recv_status_line(_FakeSocket([b"ICAP/1.0 404\nbody"]))
+        == b"ICAP/1.0 404"
+    )
+    assert health_checks._recv_status_line(_FakeSocket([])) == b""
+
+
 def test_check_tcp_success_and_failure(monkeypatch) -> None:
     _add_web_to_path()
     from services import health_checks  # type: ignore
@@ -156,6 +174,16 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
     assert "PONG" in clamd["detail"]
     assert clamd_sock.sent == [b"PING\n"]
 
+    sample_sock = _FakeSocket([b"ICAP/1.0 2", b"04 No Content\r\n"])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sample_sock,
+    )
+    assert health_checks.send_sample_respmod_to("127.0.0.1", 14001) == {
+        "ok": True,
+        "detail": "ICAP/1.0 204 No Content",
+    }
     combined = health_checks.build_clamav_health(
         {"ok": True, "detail": "clamd ok"}, {"ok": False, "detail": "icap down"}
     )
