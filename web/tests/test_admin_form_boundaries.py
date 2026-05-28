@@ -254,6 +254,36 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     assert store.direct_enabled is False
 
 
+def test_pac_builder_reports_reconcile_queue_failure(monkeypatch, tmp_path) -> None:
+    store = FakePacProfilesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, pac_profiles_store=store)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "create",
+            "name": "Office LAN",
+            "client_cidr": "192.168.10.0/24",
+            "direct_domains": "internal.example",
+        },
+    ):
+        response = loaded.module._handle_pac_builder_post(store)
+
+    params = _params(response.location)
+    assert params["error"] == ["1"]
+    assert "ok" not in params
+    assert "proxy materialization was not queued" in params["msg"][0]
+    assert loaded.operation_ledger.operations == []
+    assert store.profiles[1].name == "Office LAN"
+
+
 def test_adblock_cache_flush_queues_single_runtime_refresh(
     monkeypatch, tmp_path
 ) -> None:

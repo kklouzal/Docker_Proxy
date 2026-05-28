@@ -1077,7 +1077,14 @@ def _redirect_after_policy_refresh(
 
 
 def _redirect_after_pac_refresh(endpoint: str, **params):
-    _best_effort_refresh_pac_runtime()
+    ok, detail = _queue_pac_runtime_refresh()
+    if not ok:
+        params.pop("ok", None)
+        params["error"] = "1"
+        params["msg"] = (
+            detail
+            or "PAC profile changes were saved, but proxy materialization was not queued."
+        )
     return _redirect_to(endpoint, **params)
 
 
@@ -1815,7 +1822,7 @@ def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> No
         )
 
 
-def _best_effort_refresh_pac_runtime() -> None:
+def _queue_pac_runtime_refresh() -> tuple[bool, str]:
     try:
         operation = request_proxy_reconcile(
             get_proxy_id(),
@@ -1826,23 +1833,37 @@ def _best_effort_refresh_pac_runtime() -> None:
             created_by=str(session.get("user") or ""),
             force=True,
         )
-        if (
-            not getattr(operation, "operation_id", 0)
-            and getattr(operation, "status", "") == "failed"
-        ):
-            raise RuntimeError(
-                str(
-                    getattr(operation, "detail", "")
-                    or "PAC profile refresh was not queued."
-                ),
-            )
-    except Exception:
+    except Exception as exc:
         log_exception_throttled(
             app.logger,
             "web.app.refresh_pac_runtime",
             interval_seconds=30.0,
-            message="Failed to refresh PAC runtime state",
+            message="Failed to queue PAC runtime refresh",
         )
+        return False, public_error_message(
+            exc,
+            default="PAC profile changes were saved, but proxy materialization was not queued.",
+        )
+
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return False, str(
+            getattr(operation, "detail", "")
+            or "PAC profile changes were saved, but proxy materialization was not queued."
+        )
+
+    op_suffix = (
+        f" operation #{operation.operation_id}"
+        if getattr(operation, "operation_id", 0)
+        else ""
+    )
+    return True, f"PAC runtime refresh queued{op_suffix}."
+
+
+def _best_effort_refresh_pac_runtime() -> None:
+    _queue_pac_runtime_refresh()
 
 
 def _queue_adblock_runtime_refresh(*, action: str) -> None:
