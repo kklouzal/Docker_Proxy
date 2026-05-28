@@ -47,16 +47,27 @@ def _normalize_domain(domain: str) -> tuple[str | None, str]:
     return d, ""
 
 
-def _normalize_v4_cidr(cidr: str) -> tuple[str | None, str]:
+def _normalize_client_cidr(cidr: str) -> tuple[str | None, str]:
     c = (cidr or "").strip()
     if not c:
         return "", ""
     try:
         net = ip_network(c, strict=False)
     except Exception:
-        return None, "Invalid CIDR."
+        return None, "Invalid client CIDR."
+    return str(net), ""
+
+
+def _normalize_pac_dst_v4_cidr(cidr: str) -> tuple[str | None, str]:
+    c = (cidr or "").strip()
+    if not c:
+        return "", ""
+    try:
+        net = ip_network(c, strict=False)
+    except Exception:
+        return None, "Invalid destination CIDR."
     if net.version != 4:
-        return None, "Only IPv4 CIDR is supported in PAC rules."
+        return None, "Only IPv4 destination CIDR is supported in PAC DIRECT rules."
     return str(net), ""
 
 
@@ -356,7 +367,7 @@ class PacProfilesStore:
         if not nm:
             return False, "Name is required.", None
 
-        cidr_norm, err = _normalize_v4_cidr(client_cidr)
+        cidr_norm, err = _normalize_client_cidr(client_cidr)
         if cidr_norm is None:
             return False, err, None
 
@@ -372,7 +383,7 @@ class PacProfilesStore:
 
         nets: list[str] = []
         for ln in (direct_dst_nets_text or "").splitlines():
-            c, cerr = _normalize_v4_cidr(ln)
+            c, cerr = _normalize_pac_dst_v4_cidr(ln)
             if c is None:
                 return False, cerr, None
             if not c:

@@ -51,17 +51,29 @@ def test_pac_profiles_validate_scope_dedupe_match_and_delete(tmp_path) -> None:
             "media.example",
         ]
 
-        ok, detail, _ = store.upsert_profile(
+        ok, detail, ipv6_profile_id = store.upsert_profile(
             profile_id=None,
-            name="Bad CIDR",
-            client_cidr="2001:db8::/32",
-            direct_domains_text="",
+            name="IPv6 clients",
+            client_cidr="2001:db8:1::44/64",
+            direct_domains_text="v6.example",
             direct_dst_nets_text="",
         )
+        assert ok is True, detail
+        assert ipv6_profile_id is not None
+        assert store.match_profile_for_client_ip("2001:db8:1::99").id == ipv6_profile_id
+
+        ok, detail, _ = store.upsert_profile(
+            profile_id=None,
+            name="Bad destination CIDR",
+            client_cidr="",
+            direct_domains_text="",
+            direct_dst_nets_text="2001:db8::/32",
+        )
         assert ok is False
-        assert "ipv4" in detail.lower()
+        assert "ipv4 destination cidr" in detail.lower()
 
         store.delete_profile(profile_id)
+        store.delete_profile(ipv6_profile_id)
         assert store.list_profiles() == []
     finally:
         reset_proxy_id(token)

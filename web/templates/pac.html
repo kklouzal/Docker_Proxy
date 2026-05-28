@@ -177,7 +177,7 @@
           </div>
           <div>
             <label for="client_cidr">Client CIDR (who gets this PAC)</label>
-            <input id="client_cidr" name="client_cidr" type="text" placeholder="192.168.10.0/24" />
+            <input id="client_cidr" name="client_cidr" type="text" placeholder="192.168.10.0/24 or 2001:db8::/64" />
             <div class="small">Leave blank to make a catch-all fallback (matched only if no CIDR profile matches).</div>
           </div>
         </div>
@@ -190,7 +190,7 @@
             <textarea id="direct_domains" name="direct_domains" placeholder="example.com\ninternal.corp"></textarea>
           </div>
           <div>
-            <label for="direct_dst_nets">Destination CIDR that go DIRECT (one per line)</label>
+            <label for="direct_dst_nets">IPv4 destination CIDR that go DIRECT (one per line)</label>
             <textarea id="direct_dst_nets" name="direct_dst_nets" placeholder="10.0.0.0/8\n192.168.0.0/16"></textarea>
           </div>
         </div>
@@ -235,7 +235,7 @@
                 </div>
                 <div>
                   <label for="pac-profile-cidr-{{ p.id }}">Client CIDR</label>
-                  <input id="pac-profile-cidr-{{ p.id }}" name="client_cidr" type="text" value="{{ p.client_cidr }}" placeholder="192.168.10.0/24" />
+                  <input id="pac-profile-cidr-{{ p.id }}" name="client_cidr" type="text" value="{{ p.client_cidr }}" placeholder="192.168.10.0/24 or 2001:db8::/64" />
                 </div>
               </div>
 
@@ -247,7 +247,7 @@
                   <textarea id="pac-profile-direct-domains-{{ p.id }}" name="direct_domains">{{ p.direct_domains|join('\n') }}</textarea>
                 </div>
                 <div>
-                  <label for="pac-profile-direct-dst-nets-{{ p.id }}">Destination CIDR that go DIRECT (one per line)</label>
+                  <label for="pac-profile-direct-dst-nets-{{ p.id }}">IPv4 destination CIDR that go DIRECT (one per line)</label>
                   <textarea id="pac-profile-direct-dst-nets-{{ p.id }}" name="direct_dst_nets">{{ p.direct_dst_nets|join('\n') }}</textarea>
                 </div>
               </div>
