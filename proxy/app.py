@@ -175,7 +175,8 @@ def public_pac(_pac_path: str = "") -> Any:
     )
     response = Response(data, content_type=PAC_CONTENT_TYPE)
     response.headers["Content-Disposition"] = pac_content_disposition(path)
-    response.headers["Cache-Control"] = "public, max-age=30"
+    response.headers["Cache-Control"] = "private, max-age=30"
+    response.headers["Vary"] = "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
     response.set_etag(hashlib.sha256(data).hexdigest())
     return response.make_conditional(request)
 

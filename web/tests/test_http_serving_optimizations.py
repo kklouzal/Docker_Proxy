@@ -274,6 +274,7 @@ def test_proxy_pac_responses_have_cache_headers_and_conditional_etag(
     )
 
     assert first.status_code == 200
-    assert first.headers.get("Cache-Control") == "public, max-age=30"
+    assert first.headers.get("Cache-Control") == "private, max-age=30"
+    assert first.headers.get("Vary") == "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
     assert etag
     assert second.status_code == 304
