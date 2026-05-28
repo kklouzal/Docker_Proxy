@@ -35,6 +35,26 @@ def _normalize_pac_scheme(value: object | None) -> str:
     return "http"
 
 
+def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int]:
+    candidate = str(raw_url or "").strip()
+    if not candidate:
+        return "", "http", 80
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    try:
+        parsed = urlsplit(candidate)
+    except Exception:
+        return "", "http", 80
+    scheme = _normalize_pac_scheme(parsed.scheme)
+    host = str(parsed.hostname or "").strip()
+    default_port = 443 if scheme == "https" else 80
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    return host, scheme, int(parsed_port or default_port)
+
+
 def _coerce_port(value: object | None, default: int) -> int:
     try:
         parsed = int(str(value or "").strip() or str(default))
@@ -196,27 +216,44 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
     except Exception:
         proxy = None
 
-    env_public_host = (os.environ.get("PROXY_PUBLIC_HOST") or "").strip()
-    public_host = (
-        str(getattr(proxy, "public_host", "") or "").strip() or env_public_host
+    url_public_host, url_pac_scheme, url_pac_port = _parse_public_pac_url(
+        os.environ.get("PROXY_PUBLIC_PAC_URL"),
     )
+    env_public_host = (
+        (os.environ.get("PROXY_PUBLIC_HOST") or "").strip() or url_public_host
+    )
+    proxy_public_host = str(getattr(proxy, "public_host", "") or "").strip()
+    public_host = proxy_public_host or env_public_host
+
+    env_pac_scheme = _normalize_pac_scheme(
+        os.environ.get("PROXY_PUBLIC_PAC_SCHEME") or url_pac_scheme,
+    )
+    proxy_owns_public_endpoint = bool(proxy_public_host)
     pac_scheme = _normalize_pac_scheme(
         getattr(proxy, "public_pac_scheme", None)
-        if proxy is not None
-        else os.environ.get("PROXY_PUBLIC_PAC_SCHEME"),
+        if proxy is not None and proxy_owns_public_endpoint
+        else env_pac_scheme,
     )
     default_pac_port = 443 if pac_scheme == "https" else 80
+    env_pac_port = _coerce_port(
+        os.environ.get("PROXY_PUBLIC_PAC_PORT"),
+        url_pac_port or default_pac_port,
+    )
     pac_port = _coerce_port(
         getattr(proxy, "public_pac_port", None)
-        if proxy is not None
+        if proxy is not None and proxy_owns_public_endpoint
         else os.environ.get("PROXY_PUBLIC_PAC_PORT"),
-        _coerce_port(os.environ.get("PROXY_PUBLIC_PAC_PORT"), default_pac_port),
+        env_pac_port,
+    )
+    env_http_proxy_port = _coerce_port(
+        os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
+        3128,
     )
     http_proxy_port = _coerce_port(
         getattr(proxy, "public_http_proxy_port", None)
-        if proxy is not None
+        if proxy is not None and proxy_owns_public_endpoint
         else os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
-        _coerce_port(os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"), 3128),
+        env_http_proxy_port,
     )
     backup_proxies: tuple[tuple[str, int], ...] = ()
     direct_enabled = True

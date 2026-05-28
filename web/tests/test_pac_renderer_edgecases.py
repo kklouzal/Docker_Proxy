@@ -69,6 +69,119 @@ def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> No
     )
 
 
+def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    class _EmptyRegistry:
+        def get_proxy(self, _proxy_id):
+            return None
+
+    class _EmptyPacProfilesStore:
+        def list_proxy_chain_settings(self):
+            return type(
+                "PacProxyChainSettings",
+                (),
+                {"backup_proxies": [], "direct_enabled": True},
+            )()
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://pac.example:8443/proxy.pac")
+    monkeypatch.setenv("PROXY_PUBLIC_HTTP_PROXY_PORT", "8080")
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == "pac.example"
+    assert target.pac_scheme == "https"
+    assert target.pac_port == 8443
+    assert target.http_proxy_port == 8080
+    assert target.pac_url == "https://pac.example:8443/proxy.pac"
+    assert target.proxy_chain == "PROXY pac.example:8080; DIRECT"
+
+
+def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_host(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from types import SimpleNamespace
+
+    from services import pac_renderer  # type: ignore
+
+    class _RegistryWithBlankPublicHost:
+        def get_proxy(self, _proxy_id):
+            return SimpleNamespace(
+                public_host="",
+                public_pac_scheme="http",
+                public_pac_port=80,
+                public_http_proxy_port=3128,
+            )
+
+    class _EmptyPacProfilesStore:
+        def list_proxy_chain_settings(self):
+            return type(
+                "PacProxyChainSettings",
+                (),
+                {"backup_proxies": [], "direct_enabled": True},
+            )()
+
+    monkeypatch.setattr(
+        pac_renderer, "get_proxy_registry", _RegistryWithBlankPublicHost
+    )
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://edge.example/proxy.pac")
+    monkeypatch.setenv("PROXY_PUBLIC_HTTP_PROXY_PORT", "8080")
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == "edge.example"
+    assert target.pac_scheme == "https"
+    assert target.pac_port == 443
+    assert target.http_proxy_port == 8080
+    assert target.pac_url == "https://edge.example/proxy.pac"
+
+
+def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from types import SimpleNamespace
+
+    from services import pac_renderer  # type: ignore
+
+    class _RegistryWithPublicHost:
+        def get_proxy(self, _proxy_id):
+            return SimpleNamespace(
+                public_host="registry.example",
+                public_pac_scheme="http",
+                public_pac_port=8080,
+                public_http_proxy_port=3128,
+            )
+
+    class _EmptyPacProfilesStore:
+        def list_proxy_chain_settings(self):
+            return type(
+                "PacProxyChainSettings",
+                (),
+                {"backup_proxies": [], "direct_enabled": True},
+            )()
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _RegistryWithPublicHost)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://env.example/proxy.pac")
+    monkeypatch.setenv("PROXY_PUBLIC_HTTP_PROXY_PORT", "8080")
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == "registry.example"
+    assert target.pac_scheme == "http"
+    assert target.pac_port == 8080
+    assert target.http_proxy_port == 3128
+    assert target.pac_url == "http://registry.example:8080/proxy.pac"
+
+
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
