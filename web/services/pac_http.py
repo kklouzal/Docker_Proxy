@@ -54,11 +54,14 @@ def _remote_addr_trusts_forwarded_headers(remote_addr: str | None) -> bool:
     return any(remote_ip in network for network in _trusted_pac_header_networks())
 
 
+def _first_header_value(value: object | None) -> str:
+    return (str(value or "").split(",")[0] or "").strip()
+
+
 def _first_forwarded_ip(value: object | None) -> str:
-    candidate = str(value or "").strip()
-    if not candidate:
+    first = _first_header_value(value)
+    if not first:
         return ""
-    first = (candidate.split(",")[0] or "").strip()
     try:
         return str(ipaddress.ip_address(first))
     except ValueError:
@@ -76,7 +79,11 @@ def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
     return str(remote_addr or "").strip()
 
 
-def request_host_from_headers(headers: Any) -> str:
+def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> str:
+    if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
+        forwarded_host = _first_header_value(headers.get("X-Forwarded-Host"))
+        if forwarded_host:
+            return forwarded_host
     return (
         str((headers.get("Host") if headers is not None else "") or "").strip()
         or "127.0.0.1"

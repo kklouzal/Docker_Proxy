@@ -161,7 +161,7 @@ def public_pac() -> Any:
     path = request.path if request.path in {"/proxy.pac", "/wpad.dat"} else "/wpad.dat"
     data = resolve_pac_bytes(
         client_ip=client_ip_from_headers(request.headers, request.remote_addr),
-        request_host=request_host_from_headers(request.headers),
+        request_host=request_host_from_headers(request.headers, request.remote_addr),
     )
     response = Response(data, content_type=PAC_CONTENT_TYPE)
     response.headers["Content-Disposition"] = pac_content_disposition(path)

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -104,3 +104,36 @@ def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(tmp_path) -> Non
 
     assert data == b"SAFE proxy.example"
     assert b"SECRET" not in (data or b"")
+
+
+def test_request_host_ignores_untrusted_forwarded_host(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert (
+        pac_http.request_host_from_headers(
+            {"Host": "internal-proxy:5000", "X-Forwarded-Host": "public-proxy"},
+            "203.0.113.10",
+        )
+        == "internal-proxy:5000"
+    )
+
+
+def test_request_host_uses_trusted_forwarded_host(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "internal-proxy:5000",
+                "X-Forwarded-Host": "public-proxy.example:80, internal-proxy:5000",
+            },
+            "198.51.100.10",
+        )
+        == "public-proxy.example:80"
+    )
