@@ -443,11 +443,11 @@ class PacProfilesStore:
             )
 
     def match_profile_for_client_ip(self, client_ip: str) -> PacProfile | None:
-        """Return the first matching profile for client_ip.
+        """Return the effective profile for client_ip.
 
-        Matching order:
-        - profiles with a non-empty client_cidr, in id order
-        - then profiles with empty client_cidr (catch-all), in id order
+        Matching order mirrors the materialized PAC manifest selector:
+        - the matching client_cidr profile with the longest prefix, then lowest id
+        - then the first empty-client_cidr catch-all profile, by id
         """
         profiles = self.list_profiles()
         if not profiles:
@@ -458,26 +458,28 @@ class PacProfilesStore:
         except Exception:
             ip = None
 
-        def sort_key(p: PacProfile) -> tuple[int, int]:
-            return (1 if not p.client_cidr else 0, int(p.id))
+        def id_key(p: PacProfile) -> int:
+            return int(p.id)
 
-        for p in sorted(profiles, key=sort_key):
-            if not p.client_cidr:
-                if ip is None:
-                    continue
-                # catch-all handled after CIDR matches
-                continue
-            if ip is None:
+        matches: list[tuple[int, int, PacProfile]] = []
+        for p in profiles:
+            if not p.client_cidr or ip is None:
                 continue
             try:
                 net = ip_network(p.client_cidr, strict=False)
-                if ip in net:
-                    return p
             except Exception:
                 continue
+            if ip.version != net.version:
+                continue
+            if ip in net:
+                matches.append((int(net.prefixlen), id_key(p), p))
 
-        # fall back to first catch-all (if any)
-        for p in sorted(profiles, key=sort_key):
+        if matches:
+            return sorted(matches, key=lambda item: (-item[0], item[1]))[0][2]
+
+        # Fall back to the first catch-all (if any). Keep this behavior for
+        # malformed or unavailable client IPs so diagnostics match PAC serving.
+        for p in sorted(profiles, key=id_key):
             if not p.client_cidr:
                 return p
 

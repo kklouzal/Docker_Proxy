@@ -195,6 +195,7 @@ def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
         ],
     }
 
+    # Profile diagnostics should mirror this same longest-prefix match behavior.
     assert pac_renderer.select_manifest_file(manifest, "10.2.3.70") == "lab.pac"
     assert pac_renderer.select_manifest_file(manifest, "10.2.3.8") == "branch.pac"
     assert pac_renderer.select_manifest_file(manifest, "2001:db8:1::20") == "ipv6-branch.pac"
@@ -427,3 +428,22 @@ def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
         in rendered
     )
     assert "return 'PROXY" not in rendered
+
+def test_pac_profile_match_uses_manifest_specificity_without_database() -> None:
+    _add_web_to_path()
+    from services import pac_profiles_store  # type: ignore
+
+    store = pac_profiles_store.PacProfilesStore()
+    profiles = [
+        pac_profiles_store.PacProfile(1, "Corp", "10.0.0.0/8", [], [], 1),
+        pac_profiles_store.PacProfile(2, "Branch", "10.2.0.0/16", [], [], 2),
+        pac_profiles_store.PacProfile(3, "Lab", "10.2.3.0/24", [], [], 3),
+        pac_profiles_store.PacProfile(4, "Catch-all", "", [], [], 4),
+    ]
+    store.list_profiles = lambda: profiles  # type: ignore[method-assign]
+
+    assert store.match_profile_for_client_ip("10.2.3.70").name == "Lab"
+    assert store.match_profile_for_client_ip("10.2.4.70").name == "Branch"
+    assert store.match_profile_for_client_ip("10.99.4.70").name == "Corp"
+    assert store.match_profile_for_client_ip("192.0.2.44").name == "Catch-all"
+    assert store.match_profile_for_client_ip("not-an-ip").name == "Catch-all"
