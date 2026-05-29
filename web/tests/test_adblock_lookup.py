@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -156,14 +158,6 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
     )
     assert "plain-ad-token$~stylesheet" in negated_script_candidates
 
-    stylesheet_candidates = _raws(
-        lookup.candidate_rules(
-            "https://static.example/plain-ad-token.css",
-            resource_type="stylesheet",
-        )
-    )
-    assert "plain-ad-token$~stylesheet" not in stylesheet_candidates
-
     websocket_candidates = _raws(
         lookup.candidate_rules(
             "wss://loader.foo.com/ws",
@@ -177,3 +171,89 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
     )
     assert "plain-ad-token$~stylesheet" in generic_candidates
     assert "/tracker[.]example/$third-party" in generic_candidates
+
+
+def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "request_lookup.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE rules(
+                rule_id TEXT PRIMARY KEY,
+                list_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                exception INTEGER NOT NULL,
+                pattern_kind TEXT NOT NULL,
+                raw TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                resource_types_json TEXT NOT NULL,
+                excluded_resource_types_json TEXT NOT NULL,
+                third_party TEXT NOT NULL,
+                behavior_options_json TEXT NOT NULL,
+                value_options_json TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE domain_index(
+                host TEXT NOT NULL,
+                action TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(host, action, rule_id)
+            ) WITHOUT ROWID;
+            CREATE TABLE host_index(host TEXT, action TEXT, rule_id TEXT);
+            CREATE TABLE host_pattern_index(host_pattern TEXT, action TEXT, rule_id TEXT);
+            CREATE TABLE regex_index(action TEXT, rule_id TEXT, regex TEXT);
+            CREATE TABLE generic_index(literal_key TEXT, pattern_kind TEXT, action TEXT, rule_id TEXT);
+            """
+        )
+        conn.execute(
+            "INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "r1",
+                "sample",
+                "block",
+                0,
+                "domain_only",
+                "||ads.example^",
+                "||ads.example^",
+                "{}",
+                "[]",
+                "[]",
+                "any",
+                "[]",
+                "{}",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO domain_index VALUES(?,?,?)", ("ads.example", "block", "r1")
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    (tmp_path / "network_rules.jsonl").write_text(
+        json.dumps(
+            {
+                "id": "r1",
+                "list_key": "sample",
+                "action": "block",
+                "exception": False,
+                "raw": "||ads.example^",
+                "pattern": "||ads.example^",
+                "pattern_kind": "domain_only",
+                "host": "ads.example",
+            },
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _add_web_to_path()
+    from services.adblock_lookup import AdblockLookupIndex
+
+    rules = AdblockLookupIndex(db_path).candidate_rules(
+        "https://sub.ads.example/banner.js"
+    )
+
+    assert rules[0]["host"] == "ads.example"

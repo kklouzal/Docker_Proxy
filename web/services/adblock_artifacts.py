@@ -807,7 +807,8 @@ def _write_empty_request_lookup_db(path: Path) -> None:
                 excluded_resource_types_json TEXT NOT NULL,
                 third_party TEXT NOT NULL,
                 behavior_options_json TEXT NOT NULL,
-                value_options_json TEXT NOT NULL
+                value_options_json TEXT NOT NULL,
+                payload_json TEXT NOT NULL
             ) WITHOUT ROWID;
 
             CREATE TABLE domain_index(
@@ -890,7 +891,7 @@ def _write_empty_request_lookup_db(path: Path) -> None:
             """
         )
         metadata = {
-            "schema_version": "1",
+            "schema_version": "2",
             "count_domain_index": "0",
             "count_domain_scope_index": "0",
             "count_generic_index": "0",

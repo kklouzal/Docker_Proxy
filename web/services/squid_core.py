@@ -380,14 +380,6 @@ class SquidController:
         adblock_token = (self._adblock_icap_revision_token or "").strip()
         if adblock_token:
             adblock_service_name = f"adblock_req_{adblock_token}"
-        adblock_dir = (
-            os.environ.get("ADBLOCK_COMPILED_DIR")
-            or "/var/lib/squid-flask-proxy/adblock/compiled"
-        ).strip() or "/var/lib/squid-flask-proxy/adblock/compiled"
-        regex_allow_path = os.path.join(adblock_dir, "regex_allow_squid.txt")
-        regex_block_path = os.path.join(adblock_dir, "regex_block_squid.txt")
-        regex_allow_has_rules = _file_has_non_comment_lines(regex_allow_path)
-        regex_block_has_rules = _file_has_non_comment_lines(regex_block_path)
         lines = [
             f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
             f"icap_service av_req reqmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
@@ -399,22 +391,6 @@ class SquidController:
             "adaptation_access adblock_req_set allow icap_adblockable",
             "adaptation_access adblock_req_set deny all",
         ]
-        if regex_block_has_rules:
-            if regex_allow_has_rules:
-                lines.append(
-                    f'acl adblock_regex_allow url_regex -i "{regex_allow_path}"'
-                )
-            lines.extend(
-                [
-                    f'acl adblock_regex_block url_regex -i "{regex_block_path}"',
-                    "deny_info ERR_ACCESS_DENIED adblock_regex_block",
-                    (
-                        "http_access deny adblock_regex_block !adblock_regex_allow"
-                        if regex_allow_has_rules
-                        else "http_access deny adblock_regex_block"
-                    ),
-                ],
-            )
         if file_security_policy:
             lines.extend(["", file_security_policy])
         return "\n".join(lines) + "\n"

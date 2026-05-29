@@ -982,14 +982,16 @@ def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path) -> 
     assert "acl webfilter_block_adult external webcat_" in second
 
 
-def test_adblock_req_regex_tables_keep_c_icap_domain_and_legacy_regex_tables() -> None:
-    config = Path("docker/adblock_req.conf").read_text(encoding="utf-8")
+def test_adblock_reqmod_runtime_uses_sqlite_service_not_c_icap_url_check() -> None:
+    dockerfile = Path("docker/Dockerfile.proxy").read_text(encoding="utf-8")
+    entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
+    cicap_config = Path("docker/c-icap.conf").read_text(encoding="utf-8")
 
-    assert "url_check.LookupTableDB adblock_allow domain hash:" in config
-    assert "url_check.LookupTableDB adblock_block domain hash:" in config
-    assert "url_check.LookupTableDB adblock_regex_allow url regex:" in config
-    assert "url_check.LookupTableDB adblock_regex_block url regex:" in config
-    assert " full_url regex:" not in config
+    assert "web/tools/adblock_icap_server.py" in dockerfile
+    assert "COPY docker/adblock_req.conf /etc/adblock_req.conf" not in dockerfile
+    assert "python3 /app/tools/adblock_icap_server.py" in entrypoint
+    assert "request_lookup.sqlite" in entrypoint
+    assert "srv_url_check.so" not in cicap_config
 
 
 def test_proxy_runtime_derives_squid_url_regex_tables_from_c_icap_regex_files(
@@ -1112,7 +1114,7 @@ def test_squid_icap_include_omits_empty_adblock_regex_acls(
     assert "http_access deny adblock_regex_block" not in rendered
 
 
-def test_squid_icap_include_renders_regex_block_without_empty_allow(
+def test_squid_icap_include_never_renders_lossy_regex_shortcut(
     tmp_path, monkeypatch
 ) -> None:
     _add_web_to_path()
@@ -1131,6 +1133,5 @@ def test_squid_icap_include_renders_regex_block_without_empty_allow(
     rendered = controller._render_icap_include("")
 
     assert "adblock_regex_allow" not in rendered
-    assert "acl adblock_regex_block url_regex -i" in rendered
-    assert "http_access deny adblock_regex_block\n" in rendered
-    assert "!adblock_regex_allow" not in rendered
+    assert "adblock_regex_block" not in rendered
+    assert "http_access deny adblock_regex_block" not in rendered

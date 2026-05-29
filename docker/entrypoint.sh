@@ -478,6 +478,17 @@ for ADBLOCK_BUCKET in domains_allow.txt domains_block.txt regex_allow.txt regex_
     ADBLOCK_BUCKET_PATH="/var/lib/squid-flask-proxy/adblock/compiled/${ADBLOCK_BUCKET}"
     [ -f "$ADBLOCK_BUCKET_PATH" ] || : > "$ADBLOCK_BUCKET_PATH"
 done
+if [ ! -f /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite ]; then
+    python3 - <<'PY' || true
+from pathlib import Path
+
+from services.adblock_artifacts import _write_empty_request_lookup_db
+
+_write_empty_request_lookup_db(
+    Path("/var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite")
+)
+PY
+fi
 
 # Ensure squid.conf is based on our template (needed for caching + ssl-bump).
 # If the file already looks like our managed config, keep it.
@@ -997,7 +1008,7 @@ fi
 
 cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'
 [program:cicap_adblock]
-command=/bin/sh -c 'rm -f /var/run/c-icap/c-icap-adblock.pid; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf'
+command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "${CICAP_PORT:-14000}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
 autostart=true
 autorestart=true
 priority=10

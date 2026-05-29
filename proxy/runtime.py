@@ -1445,37 +1445,6 @@ class ProxyRuntime:
         # traffic probes hanging. Cache flush remains an explicit restart trigger.
         artifact_changed = bool(revision_meta.artifact_sha256 != current_sha)
         squid_regex_changed = False
-        squid_regex_error = ""
-        if not artifact_changed and getattr(self, "adblock_compiled_dir", ""):
-            try:
-                squid_regex_changed = self._ensure_squid_adblock_regex_files()
-            except Exception as exc:
-                squid_regex_error = public_error_message(
-                    exc,
-                    default="Failed to refresh Squid adblock regex ACL files.",
-                )
-        if squid_regex_error:
-            applied = self.adblock_artifacts.record_apply_result(
-                self.proxy_id,
-                revision_meta.revision_id,
-                ok=False,
-                detail=squid_regex_error,
-                applied_by="proxy",
-                artifact_sha256=revision_meta.artifact_sha256,
-            )
-            return {
-                "ok": False,
-                "proxy_id": self.proxy_id,
-                "changed": False,
-                "adblock_changed": False,
-                "artifact_changed": False,
-                "squid_regex_changed": False,
-                "cache_flushed": False,
-                "revision_id": revision_meta.revision_id,
-                "application_id": applied.application_id,
-                "artifact_sha256": revision_meta.artifact_sha256,
-                "detail": squid_regex_error,
-            }
         if not artifact_changed and not flush_requested:
             applied = None
             try:
@@ -1506,7 +1475,7 @@ class ProxyRuntime:
                         "changed": False,
                         "adblock_changed": False,
                         "artifact_changed": False,
-                        "squid_regex_changed": bool(squid_regex_changed),
+                        "squid_regex_changed": False,
                         "cache_flushed": False,
                         "revision_id": revision_meta.revision_id,
                         "artifact_sha256": revision_meta.artifact_sha256,
@@ -1515,20 +1484,15 @@ class ProxyRuntime:
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
-                "changed": bool(squid_regex_changed),
-                "adblock_changed": bool(squid_regex_changed),
+                "changed": False,
+                "adblock_changed": False,
                 "artifact_changed": False,
-                "squid_regex_changed": bool(squid_regex_changed),
+                "squid_regex_changed": False,
                 "cache_flushed": False,
                 "revision_id": revision_meta.revision_id,
                 "application_id": getattr(applied, "application_id", None),
                 "artifact_sha256": revision_meta.artifact_sha256,
-                "detail": "Proxy is already using the active adblock artifact."
-                + (
-                    " Squid adblock regex ACL files were refreshed."
-                    if squid_regex_changed
-                    else ""
-                ),
+                "detail": "Proxy is already using the active adblock artifact.",
             }
 
         revision = self.adblock_artifacts.get_active_artifact()
@@ -1552,7 +1516,6 @@ class ProxyRuntime:
                     archive_blob=revision.archive_blob,
                     artifact_sha256=revision.artifact_sha256,
                 )
-                squid_regex_changed = self._ensure_squid_adblock_regex_files()
             except Exception as exc:
                 detail = public_error_message(
                     exc,

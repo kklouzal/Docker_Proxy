@@ -90,6 +90,8 @@ COPY --from=python_deps /python-deps/ ${PYTHON_SITE_PACKAGES}/
 COPY proxy /app/proxy
 COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
+    web/services/adblock_decision.py \
+    web/services/adblock_lookup.py \
     web/services/adblock_store.py \
     web/services/certificate_bundles.py \
     web/services/certificate_core.py \
@@ -125,6 +127,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/webfilter_core.py \
     /app/services/
 COPY web/tools/adblock_compile.py \
+    web/tools/adblock_icap_server.py \
     web/tools/sslfilter_apply.py \
     web/tools/webcat_acl.py \
     web/tools/safe_browsing_acl.py \
@@ -144,7 +147,6 @@ RUN set -eu; \
         ln -s /usr/sbin/c-icap /usr/bin/c-icap; \
     fi
 COPY docker/c-icap.conf /etc/c-icap/c-icap.conf
-COPY docker/adblock_req.conf /etc/adblock_req.conf
 COPY docker/virus_scan.conf /etc/virus_scan.conf
 
 RUN mkdir -p /etc/squid/ssl/certs /var/lib/ssl_db /var/spool/squid \

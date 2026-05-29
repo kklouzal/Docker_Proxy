@@ -4,6 +4,7 @@ import fnmatch
 import json
 import re
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -44,8 +45,23 @@ def _url_literal_tokens(url: str) -> list[str]:
     return sorted(tokens)
 
 
-def _row_to_rule(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+def _row_payload_json(row: sqlite3.Row) -> str:
+    try:
+        return str(row["payload_json"] or "")
+    except Exception:
+        return ""
+
+
+def _row_to_rule(
+    row: sqlite3.Row,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if payload is None:
+        try:
+            payload = json.loads(_row_payload_json(row) or "{}")
+        except Exception:
+            payload = {}
+    rule = {
         "rule_id": row["rule_id"],
         "list_key": row["list_key"],
         "action": row["action"],
@@ -62,6 +78,10 @@ def _row_to_rule(row: sqlite3.Row) -> dict[str, Any]:
         "behavior_options": json.loads(row["behavior_options_json"] or "[]"),
         "value_options": json.loads(row["value_options_json"] or "{}"),
     }
+    if isinstance(payload, dict):
+        rule.update(payload)
+        rule["rule_id"] = row["rule_id"]
+    return rule
 
 
 class AdblockLookupIndex:
@@ -74,10 +94,25 @@ class AdblockLookupIndex:
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self._local = threading.local()
+        self._payloads: dict[str, dict[str, Any]] | None = None
+        self._payloads_lock = threading.Lock()
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
+        return conn
+
+    def _thread_connection(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(
+                f"file:{self.db_path}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+            )
+            conn.row_factory = sqlite3.Row
+            self._local.conn = conn
         return conn
 
     def candidate_rules(
@@ -86,15 +121,40 @@ class AdblockLookupIndex:
         *,
         resource_type: str = "",
     ) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            return [
-                _row_to_rule(row)
-                for row in self._candidate_rule_rows(
-                    conn,
-                    url,
-                    resource_type=resource_type,
-                )
-            ]
+        conn = self._thread_connection()
+        rules: list[dict[str, Any]] = []
+        for row in self._candidate_rule_rows(
+            conn,
+            url,
+            resource_type=resource_type,
+        ):
+            payload: dict[str, Any] | None = None
+            if not _row_payload_json(row):
+                payload = self._payload_by_id().get(str(row["rule_id"] or ""))
+            rules.append(_row_to_rule(row, payload=payload))
+        return rules
+
+    def _payload_by_id(self) -> dict[str, dict[str, Any]]:
+        if self._payloads is not None:
+            return self._payloads
+        with self._payloads_lock:
+            if self._payloads is not None:
+                return self._payloads
+            path = self.db_path.parent / "network_rules.jsonl"
+            payloads: dict[str, dict[str, Any]] = {}
+            try:
+                with path.open(encoding="utf-8", errors="replace") as handle:
+                    for line in handle:
+                        if not line.strip():
+                            continue
+                        rec = json.loads(line)
+                        rule_id = str(rec.get("id") or "")
+                        if rule_id:
+                            payloads[rule_id] = rec
+            except Exception:
+                payloads = {}
+            self._payloads = payloads
+            return payloads
 
     def _candidate_rule_rows(
         self,
@@ -152,37 +212,6 @@ class AdblockLookupIndex:
             )
         )
 
-        if resource_type:
-            resource_type = resource_type.strip().lower()
-            if resource_type:
-                typed_ids = {
-                    str(row["rule_id"])
-                    for row in conn.execute(
-                        """
-                        SELECT rule_id FROM resource_type_index
-                        WHERE resource_type=? AND negated=0
-                        """,
-                        (resource_type,),
-                    )
-                }
-                untyped_ids = rule_ids - {
-                    str(row["rule_id"])
-                    for row in conn.execute(
-                        "SELECT DISTINCT rule_id FROM resource_type_index WHERE negated=0",
-                    )
-                }
-                excluded_ids = {
-                    str(row["rule_id"])
-                    for row in conn.execute(
-                        """
-                        SELECT rule_id FROM resource_type_index
-                        WHERE resource_type=? AND negated=1
-                        """,
-                        (resource_type,),
-                    )
-                }
-                rule_ids = ((rule_ids & typed_ids) | untyped_ids) - excluded_ids
-
         return _rules_by_ids(conn, rule_ids)
 
 
@@ -199,11 +228,16 @@ def _query_by_values(
 
 
 def _rules_by_ids(conn: sqlite3.Connection, rule_ids: set[str]) -> list[sqlite3.Row]:
-    rows: list[sqlite3.Row] = []
-    for rule_id in sorted(rule_ids):
-        row = conn.execute("SELECT * FROM rules WHERE rule_id=?", (rule_id,)).fetchone()
-        if row is not None:
-            rows.append(row)
+    if not rule_ids:
+        return []
+    ordered_ids = sorted(rule_ids)
+    placeholders = ",".join("?" for _ in ordered_ids)
+    rows = list(
+        conn.execute(
+            "SELECT * FROM rules WHERE rule_id IN (" + placeholders + ")",  # noqa: S608
+            tuple(ordered_ids),
+        )
+    )
     return sorted(
         rows,
         key=lambda row: (

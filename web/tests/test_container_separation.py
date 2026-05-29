@@ -24,6 +24,8 @@ def test_proxy_dockerfile_copies_only_proxy_runtime_payload() -> None:
     assert "COPY docker/clamd_mod.conf /etc/clamd_mod.conf" not in text
 
     for required in (
+        "web/services/adblock_decision.py",
+        "web/services/adblock_lookup.py",
         "web/services/certificate_core.py",
         "web/services/clamav_config_forms.py",
         "web/services/diagnostic_store.py",
@@ -32,6 +34,7 @@ def test_proxy_dockerfile_copies_only_proxy_runtime_payload() -> None:
         "web/services/squid_core.py",
         "web/services/webfilter_core.py",
         "web/tools/webfilter_apply.py",
+        "web/tools/adblock_icap_server.py",
         "web/tools/sslfilter_apply.py",
         "web/tools/webcat_acl.py",
         "scripts/generate_ca.sh",
@@ -122,9 +125,7 @@ def test_admin_ui_compose_service_can_run_without_proxy_dependency() -> None:
 def test_proxy_entrypoint_removes_stale_cicap_pidfiles_before_start() -> None:
     text = _read("docker/entrypoint.sh")
 
-    assert (
-        "rm -f /var/run/c-icap/c-icap-adblock.pid; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf"
-        in text
-    )
+    assert "python3 /app/tools/adblock_icap_server.py" in text
+    assert "/var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite" in text
     assert "rm -f /var/run/c-icap/c-icap-av.pid; HOST=" in text
     assert "exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf" in text

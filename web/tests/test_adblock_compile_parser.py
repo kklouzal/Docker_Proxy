@@ -251,6 +251,8 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
             "/tracker[.]example/$third-party",
             "plain-ad-token$~stylesheet",
             "$popup,third-party,domain=example.com",
+            "badfilter-target",
+            "badfilter-target$badfilter",
         ],
     )
 
@@ -266,6 +268,13 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
     conn = sqlite3.connect(str(db_path))
     try:
         assert counts["rules"] == 7
+        assert conn.execute(
+            "SELECT payload_json FROM rules WHERE raw=?",
+            ("||ads.example^",),
+        ).fetchone()[0]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM rules WHERE raw='badfilter-target'"
+        ).fetchone() == (0,)
         assert conn.execute(
             "SELECT action FROM domain_index WHERE host=?",
             ("ads.example",),

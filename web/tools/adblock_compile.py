@@ -1164,6 +1164,16 @@ def _sqlite_scalar_values(value: Any) -> list[str]:
     return [text] if text else []
 
 
+def _badfilter_disable_key(rec: dict[str, Any]) -> tuple[str, str, str]:
+    options = dict(rec.get("options") or {})
+    options.pop("badfilter", None)
+    return (
+        str(rec.get("action") or ""),
+        str(rec.get("pattern") or ""),
+        _json_compact(options),
+    )
+
+
 def _create_lookup_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -1189,7 +1199,8 @@ def _create_lookup_schema(conn: sqlite3.Connection) -> None:
             excluded_resource_types_json TEXT NOT NULL,
             third_party TEXT NOT NULL,
             behavior_options_json TEXT NOT NULL,
-            value_options_json TEXT NOT NULL
+            value_options_json TEXT NOT NULL,
+            payload_json TEXT NOT NULL
         ) WITHOUT ROWID;
 
         CREATE TABLE domain_index(
@@ -1303,7 +1314,7 @@ def _write_request_lookup_index(
         _create_lookup_schema(conn)
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
-            ("schema_version", "1"),
+            ("schema_version", "2"),
         )
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
@@ -1316,167 +1327,178 @@ def _write_request_lookup_index(
             encoding="utf-8",
             errors="replace",
         ) as handle:
-            with conn:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    rec = json.loads(line)
-                    rule_id = str(rec.get("id") or "")
-                    if not rule_id:
-                        continue
-                    action = str(rec.get("action") or "")
-                    pattern_kind = str(rec.get("pattern_kind") or "")
-                    inserted = conn.execute(
-                        """
+            records = [json.loads(line) for line in handle if line.strip()]
+        disabled_by_badfilter = {
+            _badfilter_disable_key(rec)
+            for rec in records
+            if "badfilter" in set(rec.get("behavior_options") or [])
+        }
+        skipped_badfilter = 0
+        with conn:
+            for rec in records:
+                if (
+                    "badfilter" in set(rec.get("behavior_options") or [])
+                    or _badfilter_disable_key(rec) in disabled_by_badfilter
+                ):
+                    skipped_badfilter += 1
+                    continue
+                rule_id = str(rec.get("id") or "")
+                if not rule_id:
+                    continue
+                action = str(rec.get("action") or "")
+                pattern_kind = str(rec.get("pattern_kind") or "")
+                inserted = conn.execute(
+                    """
                         INSERT OR IGNORE INTO rules(
                             rule_id, list_key, action, exception, pattern_kind, raw,
                             pattern, options_json, resource_types_json,
                             excluded_resource_types_json, third_party,
-                            behavior_options_json, value_options_json
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            behavior_options_json, value_options_json, payload_json
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (
-                            rule_id,
-                            str(rec.get("list_key") or ""),
-                            action,
-                            1 if rec.get("exception") else 0,
-                            pattern_kind,
-                            str(rec.get("raw") or ""),
-                            str(rec.get("pattern") or ""),
-                            _json_compact(rec.get("options") or {}),
-                            _json_compact(rec.get("resource_types") or []),
-                            _json_compact(rec.get("excluded_resource_types") or []),
-                            str(rec.get("third_party") or "any"),
-                            _json_compact(rec.get("behavior_options") or []),
-                            _json_compact(rec.get("value_options") or {}),
-                        ),
-                    )
-                    if not inserted.rowcount:
-                        continue
-                    counts["rules"] += 1
+                    (
+                        rule_id,
+                        str(rec.get("list_key") or ""),
+                        action,
+                        1 if rec.get("exception") else 0,
+                        pattern_kind,
+                        str(rec.get("raw") or ""),
+                        str(rec.get("pattern") or ""),
+                        _json_compact(rec.get("options") or {}),
+                        _json_compact(rec.get("resource_types") or []),
+                        _json_compact(rec.get("excluded_resource_types") or []),
+                        str(rec.get("third_party") or "any"),
+                        _json_compact(rec.get("behavior_options") or []),
+                        _json_compact(rec.get("value_options") or {}),
+                        _json_compact(rec),
+                    ),
+                )
+                if not inserted.rowcount:
+                    continue
+                counts["rules"] += 1
 
-                    if pattern_kind == "domain_only" and rec.get("host"):
-                        conn.execute(
-                            "INSERT OR IGNORE INTO domain_index(host, action, rule_id) VALUES(?, ?, ?)",
-                            (str(rec.get("host") or ""), action, rule_id),
-                        )
-                        counts["domain_index"] += 1
-                    elif pattern_kind in {
-                        "absolute_url",
-                        "host_anchored",
-                    } and rec.get("host"):
-                        conn.execute(
-                            """
+                if pattern_kind == "domain_only" and rec.get("host"):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO domain_index(host, action, rule_id) VALUES(?, ?, ?)",
+                        (str(rec.get("host") or ""), action, rule_id),
+                    )
+                    counts["domain_index"] += 1
+                elif pattern_kind in {
+                    "absolute_url",
+                    "host_anchored",
+                } and rec.get("host"):
+                    conn.execute(
+                        """
                             INSERT OR IGNORE INTO host_index(
                                 host, action, rule_id, pattern_kind,
                                 url_scheme_pattern, path_pattern, query_pattern,
                                 suffix_separator_prefix, suffix_separator_suffix
                             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
-                            (
-                                str(rec.get("host") or ""),
-                                action,
-                                rule_id,
-                                pattern_kind,
-                                str(rec.get("url_scheme_pattern") or ""),
-                                str(rec.get("path_pattern") or ""),
-                                str(rec.get("query_pattern") or ""),
-                                1 if rec.get("suffix_separator_prefix") else 0,
-                                1 if rec.get("suffix_separator_suffix") else 0,
-                            ),
-                        )
-                        counts["host_index"] += 1
-                    elif pattern_kind in {
-                        "absolute_url_pattern",
-                        "host_anchored_pattern",
-                    } and rec.get("host_pattern"):
-                        conn.execute(
-                            """
+                        (
+                            str(rec.get("host") or ""),
+                            action,
+                            rule_id,
+                            pattern_kind,
+                            str(rec.get("url_scheme_pattern") or ""),
+                            str(rec.get("path_pattern") or ""),
+                            str(rec.get("query_pattern") or ""),
+                            1 if rec.get("suffix_separator_prefix") else 0,
+                            1 if rec.get("suffix_separator_suffix") else 0,
+                        ),
+                    )
+                    counts["host_index"] += 1
+                elif pattern_kind in {
+                    "absolute_url_pattern",
+                    "host_anchored_pattern",
+                } and rec.get("host_pattern"):
+                    conn.execute(
+                        """
                             INSERT OR IGNORE INTO host_pattern_index(
                                 host_pattern, action, rule_id, pattern_kind,
                                 url_scheme_pattern, path_pattern, query_pattern
                             ) VALUES(?, ?, ?, ?, ?, ?, ?)
                             """,
-                            (
-                                str(rec.get("host_pattern") or ""),
-                                action,
-                                rule_id,
-                                pattern_kind,
-                                str(rec.get("url_scheme_pattern") or ""),
-                                str(rec.get("path_pattern") or ""),
-                                str(rec.get("query_pattern") or ""),
-                            ),
-                        )
-                        counts["host_pattern_index"] += 1
-                    elif pattern_kind == "regex":
-                        conn.execute(
-                            "INSERT OR IGNORE INTO regex_index(action, rule_id, regex) VALUES(?, ?, ?)",
-                            (action, rule_id, str(rec.get("regex") or "")),
-                        )
-                        counts["regex_index"] += 1
-                    elif pattern_kind != "empty":
-                        conn.execute(
-                            """
+                        (
+                            str(rec.get("host_pattern") or ""),
+                            action,
+                            rule_id,
+                            pattern_kind,
+                            str(rec.get("url_scheme_pattern") or ""),
+                            str(rec.get("path_pattern") or ""),
+                            str(rec.get("query_pattern") or ""),
+                        ),
+                    )
+                    counts["host_pattern_index"] += 1
+                elif pattern_kind == "regex":
+                    conn.execute(
+                        "INSERT OR IGNORE INTO regex_index(action, rule_id, regex) VALUES(?, ?, ?)",
+                        (action, rule_id, str(rec.get("regex") or "")),
+                    )
+                    counts["regex_index"] += 1
+                elif pattern_kind != "empty":
+                    conn.execute(
+                        """
                             INSERT OR IGNORE INTO generic_index(
                                 literal_key, pattern_kind, action, rule_id
                             ) VALUES(?, ?, ?, ?)
                             """,
-                            (
-                                _literal_lookup_key(str(rec.get("pattern") or "")),
-                                pattern_kind,
-                                action,
-                                rule_id,
-                            ),
-                        )
-                        counts["generic_index"] += 1
+                        (
+                            _literal_lookup_key(str(rec.get("pattern") or "")),
+                            pattern_kind,
+                            action,
+                            rule_id,
+                        ),
+                    )
+                    counts["generic_index"] += 1
 
-                    options = rec.get("options") or {}
-                    if isinstance(options, dict):
-                        for key, value in options.items():
-                            for item in _sqlite_scalar_values(value):
-                                conn.execute(
-                                    "INSERT OR IGNORE INTO option_index(option_key, option_value, rule_id) VALUES(?, ?, ?)",
-                                    (str(key), item, rule_id),
-                                )
-                                counts["option_index"] += 1
+                options = rec.get("options") or {}
+                if isinstance(options, dict):
+                    for key, value in options.items():
+                        for item in _sqlite_scalar_values(value):
+                            conn.execute(
+                                "INSERT OR IGNORE INTO option_index(option_key, option_value, rule_id) VALUES(?, ?, ?)",
+                                (str(key), item, rule_id),
+                            )
+                            counts["option_index"] += 1
 
-                    for resource_type in rec.get("resource_types") or []:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 0, ?)",
-                            (str(resource_type), rule_id),
-                        )
-                        counts["resource_type_index"] += 1
-                    for resource_type in rec.get("excluded_resource_types") or []:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 1, ?)",
-                            (str(resource_type), rule_id),
-                        )
-                        counts["resource_type_index"] += 1
+                for resource_type in rec.get("resource_types") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 0, ?)",
+                        (str(resource_type), rule_id),
+                    )
+                    counts["resource_type_index"] += 1
+                for resource_type in rec.get("excluded_resource_types") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 1, ?)",
+                        (str(resource_type), rule_id),
+                    )
+                    counts["resource_type_index"] += 1
 
-                    for domain in rec.get("domain_includes") or []:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 0, ?)",
-                            (str(domain), rule_id),
-                        )
-                        counts["domain_scope_index"] += 1
-                    for domain in rec.get("domain_excludes") or []:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 0, ?)",
-                            (str(domain), rule_id),
-                        )
-                        counts["domain_scope_index"] += 1
-                    for domain in rec.get("domain_include_patterns") or []:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 1, ?)",
-                            (str(domain), rule_id),
-                        )
-                        counts["domain_scope_index"] += 1
-                    for domain in rec.get("domain_exclude_patterns") or []:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 1, ?)",
-                            (str(domain), rule_id),
-                        )
-                        counts["domain_scope_index"] += 1
+                for domain in rec.get("domain_includes") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 0, ?)",
+                        (str(domain), rule_id),
+                    )
+                    counts["domain_scope_index"] += 1
+                for domain in rec.get("domain_excludes") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 0, ?)",
+                        (str(domain), rule_id),
+                    )
+                    counts["domain_scope_index"] += 1
+                for domain in rec.get("domain_include_patterns") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 1, ?)",
+                        (str(domain), rule_id),
+                    )
+                    counts["domain_scope_index"] += 1
+                for domain in rec.get("domain_exclude_patterns") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 1, ?)",
+                        (str(domain), rule_id),
+                    )
+                    counts["domain_scope_index"] += 1
 
         _create_lookup_indexes(conn)
         count_queries = {
@@ -1498,6 +1520,10 @@ def _write_request_lookup_index(
                 "INSERT OR REPLACE INTO metadata(key, value) VALUES(?, ?)",
                 (f"count_{key}", str(int(value))),
             )
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES(?, ?)",
+            ("count_skipped_badfilter", str(int(skipped_badfilter))),
+        )
         conn.execute("PRAGMA optimize")
         conn.commit()
     finally:

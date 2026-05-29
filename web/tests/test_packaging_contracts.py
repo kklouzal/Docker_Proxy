@@ -13,7 +13,7 @@ def _read(path: str) -> str:
 
 def _entrypoint_listener_normalizer_script() -> str:
     text = _read("docker/entrypoint.sh")
-    start_marker = 'SQUID_CFG_PATH="$file_path" python3 - <<\'PY\' || true\n'
+    start_marker = "SQUID_CFG_PATH=\"$file_path\" python3 - <<'PY' || true\n"
     start = text.index(start_marker) + len(start_marker)
     end = text.index("\nPY\n}", start)
     return text[start:end]
@@ -54,8 +54,9 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "squid_logs_edge_2:" in live_compose
 
     entrypoint = _read("docker/entrypoint.sh")
+    assert "python3 /app/tools/adblock_icap_server.py" in entrypoint
     assert (
-        "rm -f /var/run/c-icap/c-icap-adblock.pid; exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-adblock.conf"
+        "--db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite"
         in entrypoint
     )
     assert "rm -f /var/run/c-icap/c-icap-av.pid; HOST=" in entrypoint
@@ -109,7 +110,6 @@ def test_linux_container_payloads_are_lf_only() -> None:
         "docker/supervisord.proxy.conf",
         "docker/supervisord.admin.conf",
         "docker/c-icap.conf",
-        "docker/adblock_req.conf",
         "docker/virus_scan.conf",
         "docker/clamd_mod.conf",
     ]
@@ -125,23 +125,22 @@ def test_compose_exposes_https_intercept_listener_knobs() -> None:
     readme = _read("README.md")
 
     assert (
-        "${PROXY_PUBLIC_HTTPS_INTERCEPT_PORT:-3130}:"
-        "${SQUID_HTTPS_INTERCEPT_PORT:-3130}"
+        "${PROXY_PUBLIC_HTTPS_INTERCEPT_PORT:-3130}:${SQUID_HTTPS_INTERCEPT_PORT:-3130}"
     ) in compose
     assert (
-        "SQUID_HTTPS_INTERCEPT_ENABLED: ${SQUID_HTTPS_INTERCEPT_ENABLED:-}"
-        in compose
+        "SQUID_HTTPS_INTERCEPT_ENABLED: ${SQUID_HTTPS_INTERCEPT_ENABLED:-}" in compose
     )
     assert (
-        "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY: "
-        "${SQUID_HTTPS_INTERCEPT_SPLICE_ONLY:-}"
+        "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY: ${SQUID_HTTPS_INTERCEPT_SPLICE_ONLY:-}"
     ) in compose
     assert "# SQUID_HTTPS_INTERCEPT_ENABLED=0" in env_example
     assert "# PROXY_PUBLIC_HTTPS_INTERCEPT_PORT=3130" in env_example
     assert "SQUID_HTTPS_INTERCEPT_ENABLED" in readme
 
 
-def test_proxy_entrypoint_env_can_materialize_https_intercept_listener(tmp_path) -> None:
+def test_proxy_entrypoint_env_can_materialize_https_intercept_listener(
+    tmp_path,
+) -> None:
     config = tmp_path / "squid.conf"
     config.write_text(
         "http_port 0.0.0.0:3128 ssl-bump \\\n"
