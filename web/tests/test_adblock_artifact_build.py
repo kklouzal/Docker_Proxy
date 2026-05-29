@@ -204,6 +204,7 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
         assert revision.enabled_lists == []
 
         with zipfile.ZipFile(io.BytesIO(revision.archive_blob), mode="r") as zf:
+            names = set(zf.namelist())
             settings = json.loads(
                 zf.read("settings.json").decode("utf-8", errors="replace")
             )
@@ -211,6 +212,18 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
                 zf.read("report.json").decode("utf-8", errors="replace")
             )
 
+        assert {
+            "network_rules.jsonl",
+            "network_option_misc.jsonl",
+            "request_index_domain.jsonl",
+            "request_index_host.jsonl",
+            "request_index_regex.jsonl",
+            "request_index_generic.jsonl",
+            "cosmetic_scriptlet.jsonl",
+            "cosmetic_html_filter.jsonl",
+            "network_type_popup.jsonl",
+            "network_type_not_popup.jsonl",
+        } <= names
         assert settings["enabled"] is False
         assert settings["enabled_lists"] == []
         assert report["enabled_lists"] == []

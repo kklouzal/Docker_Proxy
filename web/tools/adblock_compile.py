@@ -20,7 +20,8 @@ if TYPE_CHECKING:
 # - Header line often: [Adblock Plus 2.0]
 # - Cosmetic rules contain selector separators like '##', '#@#', '#?#', '#$#'
 # - Exception rules start with '@@'
-# - Options are appended after '$' (network rules); for first-pass we only trust no-option domain rules.
+# - Options are appended after '$' (network rules); request indexes preserve
+#   full parsed rules while the legacy c-icap tables stay intentionally narrow.
 
 
 _COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
@@ -421,9 +422,7 @@ def _option_groups(opt_parsed: dict[str, Any]) -> set[str]:
     misc = False
     for k in opt_parsed:
         kl = (k or "").lower()
-        if kl == "domain" or kl in {"third-party", "~third-party"}:
-            continue
-        if kl.lstrip("~") in _KNOWN_TYPES:
+        if kl in _ALL_KNOWN_OPTIONS:
             continue
         misc = True
         break

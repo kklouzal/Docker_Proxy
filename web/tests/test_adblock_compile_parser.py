@@ -232,6 +232,7 @@ def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
     assert csp_rule["options"]["csp"].endswith("'unsafe-eval'")
     assert csp_rule["domain_includes"] == ["thumbs.pro"]
     assert csp_rule["misc_options"] == {}
+    assert _read_jsonl(out / "network_option_misc.jsonl") == []
 
 
 def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
