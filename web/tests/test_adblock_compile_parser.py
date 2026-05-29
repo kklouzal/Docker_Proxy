@@ -160,6 +160,7 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
             "@@||youtube.com/get_video_info?$xmlhttprequest,domain=music.youtube.com|tv.youtube.com",
             "||example.com/ad/path|$script,~third-party",
             "|https://left.example/ad^$image",
+            "wss://loader.*.com/ws^$websocket,third-party",
             "ads.js|",
             "plain-ad-token$~stylesheet",
             "||ads.example^$third-party",
@@ -183,11 +184,23 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
     assert by_host["example.com"]["query_pattern"] == ""
     assert by_host["example.com"]["resource_types"] == ["script"]
     assert by_host["example.com"]["third_party"] == "exclude"
+    assert by_host["left.example"]["pattern_kind"] == "absolute_url"
+    assert by_host["left.example"]["url_scheme_pattern"] == "https"
+    assert by_host["left.example"]["url_left_anchored"] is True
+    assert by_host["left.example"]["path_pattern"] == "/ad"
+    assert by_host["left.example"]["suffix_separator_suffix"] is True
     assert by_host["youtube.com"]["action"] == "allow"
     assert by_host["youtube.com"]["domain_includes"] == [
         "music.youtube.com",
         "tv.youtube.com",
     ]
+    absolute_patterns = [
+        rule for rule in host_rules if rule["pattern_kind"] == "absolute_url_pattern"
+    ]
+    assert absolute_patterns[0]["host_pattern"] == "loader.*.com"
+    assert absolute_patterns[0]["path_pattern"] == "/ws"
+    assert absolute_patterns[0]["resource_types"] == ["websocket"]
+    assert absolute_patterns[0]["third_party"] == "only"
 
     domain_rules = _read_jsonl(out / "request_index_domain.jsonl")
     assert any(
@@ -197,7 +210,6 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
 
     generic_rules = _read_jsonl(out / "request_index_generic.jsonl")
     assert {rule["pattern_kind"] for rule in generic_rules} == {
-        "left_anchored",
         "right_anchored",
         "substring",
     }
@@ -244,6 +256,9 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
             "@@||sourcepointcmp.bloomberg.*/mms/get_site_data?$domain=bloomberg.co.jp|bloomberg.com",
             "||[::]^$third-party,domain=~[::1]|~localhost",
             "||api.example.com/path$method=post,denyallow=foo.example|bar.example",
+            "||cdn.example.com/assets/ad.js^$script",
+            "||query.example.com/api?kind=ad^$xmlhttprequest",
+            "@@||consent.truste.com/notice$domain=$domain=fortune.com|hsl.fi",
         ],
     )
 
@@ -284,6 +299,22 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
     assert method["pattern_kind"] == "host_anchored"
     assert method["options"]["method"] == ["POST"]
     assert method["options"]["denyallow"] == ["foo.example", "bar.example"]
+
+    trailing_path_separator = by_raw["||cdn.example.com/assets/ad.js^$script"]
+    assert trailing_path_separator["path_pattern"] == "/assets/ad.js"
+    assert trailing_path_separator["query_pattern"] == ""
+    assert trailing_path_separator["suffix_separator_suffix"] is True
+
+    trailing_query_separator = by_raw["||query.example.com/api?kind=ad^$xmlhttprequest"]
+    assert trailing_query_separator["path_pattern"] == "/api"
+    assert trailing_query_separator["query_pattern"] == "?kind=ad"
+    assert trailing_query_separator["suffix_separator_suffix"] is True
+
+    duplicated_domain = by_raw[
+        "@@||consent.truste.com/notice$domain=$domain=fortune.com|hsl.fi"
+    ]
+    assert duplicated_domain["action"] == "allow"
+    assert duplicated_domain["domain_includes"] == ["fortune.com", "hsl.fi"]
 
 
 def test_cosmetic_parser_splits_scriptlets_and_html_filters(tmp_path: Path) -> None:

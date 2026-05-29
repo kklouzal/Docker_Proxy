@@ -300,6 +300,12 @@ def _normalize_domain_option_value(value: str) -> str:
     raw = (value or "").strip().lower().rstrip(".")
     if not raw:
         return ""
+    if raw.startswith("$") and "=" in raw:
+        key, remainder = raw[1:].split("=", 1)
+        if key.strip().lower() in {"domain", "denyallow"}:
+            raw = remainder.strip().lower().rstrip(".")
+            if not raw:
+                return ""
     negated = raw.startswith("~")
     body = raw[1:].strip().rstrip(".") if negated else raw
     if not body:
@@ -492,11 +498,26 @@ def _host_anchored_pattern_to_regex(host_pattern: str, suffix: str) -> str:
     )
 
 
+def _suffix_fields(suffix: str) -> dict[str, Any]:
+    suffix_right_anchored = suffix.endswith("|")
+    suffix_body = suffix[:-1] if suffix_right_anchored else suffix
+    return {
+        "suffix": suffix,
+        "suffix_body": suffix_body,
+        "suffix_right_anchored": suffix_right_anchored,
+        "suffix_regex": _abp_to_regex(suffix),
+        **_split_suffix_parts(suffix_body),
+    }
+
+
 def _split_suffix_parts(suffix_body: str) -> dict[str, Any]:
     suffix = suffix_body or ""
     separator_prefix = suffix.startswith("^")
     if separator_prefix:
         suffix = suffix[1:]
+    separator_suffix = suffix.endswith("^")
+    if separator_suffix:
+        suffix = suffix[:-1]
 
     fragment_pattern = ""
     if "#" in suffix:
@@ -515,9 +536,57 @@ def _split_suffix_parts(suffix_body: str) -> dict[str, Any]:
 
     return {
         "suffix_separator_prefix": separator_prefix,
+        "suffix_separator_suffix": separator_suffix,
         "path_pattern": path_pattern,
         "query_pattern": query_pattern,
         "fragment_pattern": fragment_pattern,
+    }
+
+
+def _classify_absolute_url_pattern(pattern: str) -> tuple[str, dict[str, Any]] | None:
+    p = (pattern or "").strip()
+    left_anchored = p.startswith("|") and not p.startswith("||")
+    candidate = p[1:] if left_anchored else p
+    if "://" not in candidate:
+        return None
+
+    scheme, rest = candidate.split("://", 1)
+    scheme = scheme.strip().lower()
+    if not scheme or any(ch.isspace() for ch in scheme):
+        return None
+
+    host = rest
+    suffix = ""
+    for i, ch in enumerate(rest):
+        if ch in {"/", "^", "?", "#", "|"}:
+            host = rest[:i]
+            suffix = rest[i:]
+            break
+    if not host:
+        return None
+
+    normalized_host = _normalize_host(host)
+    fields = {
+        "absolute_url": True,
+        "url_left_anchored": left_anchored,
+        "url_scheme_pattern": scheme,
+        "compiled_regex": _abp_to_regex(p),
+        **_suffix_fields(suffix),
+    }
+    if _looks_like_host(normalized_host):
+        return "absolute_url", {
+            "host": normalized_host,
+            "anchor": "absolute_url",
+            **fields,
+        }
+
+    normalized_pattern = _normalize_host(host)
+    return "absolute_url_pattern", {
+        "host": normalized_host,
+        "host_pattern": normalized_pattern,
+        "host_pattern_regex": _host_pattern_to_regex(normalized_pattern),
+        "anchor": "absolute_url_pattern",
+        **fields,
     }
 
 
@@ -552,15 +621,7 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
                 host = normalized_prefix
                 suffix = raw_host[star_index:] + suffix
         host = _normalize_host(host)
-        suffix_right_anchored = suffix.endswith("|")
-        suffix_body = suffix[:-1] if suffix_right_anchored else suffix
-        suffix_fields = {
-            "suffix": suffix,
-            "suffix_body": suffix_body,
-            "suffix_right_anchored": suffix_right_anchored,
-            "suffix_regex": _abp_to_regex(suffix),
-            **_split_suffix_parts(suffix_body),
-        }
+        suffix_fields = _suffix_fields(suffix)
         if _looks_like_host(host):
             if suffix in {"", "^"}:
                 return "domain_only", {"host": host, "anchor": "domain"}
@@ -581,6 +642,9 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
             ),
             **suffix_fields,
         }
+    absolute_url = _classify_absolute_url_pattern(p)
+    if absolute_url is not None:
+        return absolute_url
     if p.startswith("|"):
         return "left_anchored", {"compiled_regex": _abp_to_regex(p)}
     if p.startswith("@@"):
@@ -968,7 +1032,12 @@ def _compile_and_extract_all(
             writers.network_kind_domain_only_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
-        elif pattern_kind in {"host_anchored", "host_anchored_pattern"}:
+        elif pattern_kind in {
+            "absolute_url",
+            "absolute_url_pattern",
+            "host_anchored",
+            "host_anchored_pattern",
+        }:
             writers.network_kind_host_anchored_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
@@ -993,7 +1062,12 @@ def _compile_and_extract_all(
             writers.request_index_domain_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
-        elif pattern_kind in {"host_anchored", "host_anchored_pattern"}:
+        elif pattern_kind in {
+            "absolute_url",
+            "absolute_url_pattern",
+            "host_anchored",
+            "host_anchored_pattern",
+        }:
             writers.request_index_host_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
