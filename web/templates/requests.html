@@ -5,7 +5,7 @@
   <div class="page-hero-copy">
     <span class="page-eyebrow">Policy workflow</span>
     <h1 class="page-title">Policy exception requests</h1>
-    <p class="page-subtitle">Review block-page submissions across all registered proxy containers. Webfilter approvals create a client-IP + domain exception.</p>
+    <p class="page-subtitle">Review block-page submissions for {{ active_proxy.display_name }}. Webfilter approvals create a client-IP + domain exception on the selected proxy only.</p>
   </div>
 </section>
 
@@ -33,6 +33,7 @@
         <td>
           <form method="post" class="stack-sm" aria-label="Review request {{ r.id }} for {{ r.domain }}">
             {{ csrf_field() }}
+            <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}">
             <input type="hidden" name="request_id" value="{{ r.id }}">
             <label for="admin-note-{{ r.id }}" class="small">Admin note</label>
             <textarea id="admin-note-{{ r.id }}" name="admin_note" rows="2" placeholder="Admin note"></textarea>
@@ -80,6 +81,7 @@
           {% if e.status == 'active' %}
           <form method="post" class="stack-sm" aria-label="Revoke exception {{ e.id }} for {{ e.domain }}">
             {{ csrf_field() }}
+            <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}">
             <input type="hidden" name="exception_id" value="{{ e.id }}">
             <label for="revocation-note-{{ e.id }}" class="small">Revocation note</label>
             <input id="revocation-note-{{ e.id }}" name="admin_note" placeholder="Revocation note">

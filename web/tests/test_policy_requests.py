@@ -170,11 +170,11 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
         def init_db(self) -> None:
             pass
 
-        def list_requests(self, *, statuses=None, limit=200):
+        def list_requests(self, *, statuses=None, limit=200, proxy_id=None):
             rows = [
                 PolicyRequest(
                     1,
-                    "edge-a",
+                    "default",
                     "pending",
                     "webfilter",
                     "192.168.1.55",
@@ -194,13 +194,15 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
             ]
             if statuses:
                 rows = [r for r in rows if r.status in statuses]
+            if proxy_id is not None:
+                rows = [r for r in rows if r.proxy_id == proxy_id]
             return rows
 
-        def list_exceptions(self, *, include_inactive=True, limit=200):
-            return [
+        def list_exceptions(self, *, include_inactive=True, limit=200, proxy_id=None):
+            rows = [
                 PolicyException(
                     2,
-                    "edge-a",
+                    "default",
                     "active",
                     "webfilter",
                     "192.168.1.55",
@@ -216,6 +218,9 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
                     1,
                 )
             ]
+            if proxy_id is not None:
+                rows = [r for r in rows if r.proxy_id == proxy_id]
+            return rows
 
         def approve_request(self, request_id, **kwargs):
             self.approved.append((request_id, kwargs))
@@ -253,6 +258,162 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
     assert res.status_code in {302, 303}
     assert store.approved
     assert store.approved[0][0] == 1
+
+
+def test_admin_policy_requests_route_scopes_selected_proxy(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services.policy_requests import PolicyException, PolicyRequest
+
+    from .admin_route_test_utils import FakeRegistry, load_admin_app, login_client
+
+    class Store:
+        def __init__(self) -> None:
+            self.approved: list[tuple[int, dict[str, object]]] = []
+            self.revoked: list[tuple[int, dict[str, object]]] = []
+            self.listed_requests: list[str | None] = []
+            self.listed_exceptions: list[str | None] = []
+
+        def init_db(self) -> None:
+            pass
+
+        def list_requests(self, *, statuses=None, limit=200, proxy_id=None):
+            self.listed_requests.append(proxy_id)
+            rows = [
+                PolicyRequest(
+                    10,
+                    "edge-a",
+                    "pending",
+                    "webfilter",
+                    "192.168.1.55",
+                    "https://edge-a.example/",
+                    "edge-a.example",
+                    "adult",
+                    "GET",
+                    "ERR_ACCESS_DENIED",
+                    "needed",
+                    "",
+                    1,
+                    1,
+                    0,
+                    "",
+                    None,
+                ),
+                PolicyRequest(
+                    20,
+                    "edge-b",
+                    "pending",
+                    "webfilter",
+                    "192.168.1.56",
+                    "https://edge-b.example/",
+                    "edge-b.example",
+                    "adult",
+                    "GET",
+                    "ERR_ACCESS_DENIED",
+                    "needed",
+                    "",
+                    1,
+                    1,
+                    0,
+                    "",
+                    None,
+                ),
+            ]
+            if statuses:
+                rows = [row for row in rows if row.status in statuses]
+            if proxy_id is not None:
+                rows = [row for row in rows if row.proxy_id == proxy_id]
+            return rows
+
+        def list_exceptions(self, *, include_inactive=True, limit=200, proxy_id=None):
+            self.listed_exceptions.append(proxy_id)
+            rows = [
+                PolicyException(
+                    30,
+                    "edge-a",
+                    "active",
+                    "webfilter",
+                    "192.168.1.55",
+                    "edge-a.example",
+                    "adult",
+                    1,
+                    1,
+                    "admin",
+                    "ok",
+                    0,
+                    0,
+                    "",
+                    10,
+                ),
+                PolicyException(
+                    40,
+                    "edge-b",
+                    "active",
+                    "webfilter",
+                    "192.168.1.56",
+                    "edge-b.example",
+                    "adult",
+                    1,
+                    1,
+                    "admin",
+                    "ok",
+                    0,
+                    0,
+                    "",
+                    20,
+                ),
+            ]
+            if proxy_id is not None:
+                rows = [row for row in rows if row.proxy_id == proxy_id]
+            return rows
+
+        def approve_request(self, request_id, **kwargs):
+            self.approved.append((request_id, kwargs))
+            return self.list_exceptions(proxy_id=kwargs.get("proxy_id"))[0]
+
+        def close_request(self, request_id, **kwargs) -> None:
+            pass
+
+        def revoke_exception(self, exception_id, **kwargs) -> None:
+            self.revoked.append((exception_id, kwargs))
+
+    store = Store()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+        policy_request_store=store,
+    )
+    monkeypatch.setattr(
+        loaded.module, "_best_effort_refresh_managed_policy", lambda *a, **k: None
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/requests?proxy_id=edge-b")
+    text = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert "edge-b.example" in text
+    assert "edge-a.example" not in text
+    assert store.listed_requests == ["edge-b", "edge-b"]
+    assert store.listed_exceptions == ["edge-b"]
+
+    token = text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+    res = client.post(
+        "/requests",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-b",
+            "action": "approve",
+            "request_id": "20",
+            "duration_seconds": "3600",
+        },
+    )
+
+    assert res.status_code in {302, 303}
+    assert store.approved[0][0] == 20
+    assert store.approved[0][1]["proxy_id"] == "edge-b"
 
 
 def test_policy_request_store_rejects_invalid_scope_and_filters_active_exceptions(
@@ -331,6 +492,59 @@ def test_policy_request_store_rejects_invalid_scope_and_filters_active_exception
         )
         == []
     )
+
+
+def test_policy_request_store_can_scope_admin_lists_and_mutations(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-admin-scope")
+    ensure_web_import_path()
+    from services.policy_requests import PolicyRequestStore
+
+    store = PolicyRequestStore()
+    store.init_db()
+    edge_req = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.55",
+        request_url="https://edge.example/",
+        domain="edge.example",
+    )
+    other_req = store.create_request(
+        proxy_id="edge-b",
+        client_ip="192.168.1.56",
+        request_url="https://other.example/",
+        domain="other.example",
+    )
+
+    assert [req.id for req in store.list_requests(proxy_id="edge-a")] == [edge_req.id]
+    assert [req.id for req in store.list_requests(proxy_id="edge-b")] == [other_req.id]
+    assert store.list_exceptions(proxy_id="edge-a") == []
+
+    try:
+        store.approve_request(other_req.id, reviewer="admin", proxy_id="edge-a")
+    except ValueError as exc:
+        assert "selected proxy" in str(exc)
+    else:
+        msg = "cross-proxy request approval should be rejected"
+        raise AssertionError(msg)
+
+    exception = store.approve_request(
+        edge_req.id,
+        reviewer="admin",
+        indefinite=True,
+        proxy_id="edge-a",
+    )
+    assert [ex.id for ex in store.list_exceptions(proxy_id="edge-a")] == [exception.id]
+    assert store.list_exceptions(proxy_id="edge-b") == []
+
+    try:
+        store.revoke_exception(exception.id, revoked_by="admin", proxy_id="edge-b")
+    except ValueError as exc:
+        assert "selected proxy" in str(exc)
+    else:
+        msg = "cross-proxy exception revocation should be rejected"
+        raise AssertionError(msg)
+    assert store.active_webfilter_exceptions(proxy_id="edge-a") == [exception]
+    store.revoke_exception(exception.id, revoked_by="admin", proxy_id="edge-a")
+    assert store.active_webfilter_exceptions(proxy_id="edge-a") == []
 
 
 def test_policy_request_store_state_transitions_are_one_way(tmp_path) -> None:

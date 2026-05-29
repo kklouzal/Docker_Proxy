@@ -182,6 +182,8 @@ def test_policy_requests_template_uses_shared_shell_and_table_classes() -> None:
     assert 'class="table"' in html
     assert 'class="checkbox-inline"' in html
     assert 'aria-labelledby="pending-requests-heading"' in html
+    assert 'value="{{ active_proxy_id }}"' in html
+    assert "selected proxy only" in html
     assert 'aria-label="Review request {{ r.id }} for {{ r.domain }}"' in html
     assert 'aria-label="Revoke exception {{ e.id }} for {{ e.domain }}"' in html
 

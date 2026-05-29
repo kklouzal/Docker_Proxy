@@ -287,24 +287,26 @@ class PolicyRequestStore:
         *,
         statuses: list[str] | None = None,
         limit: int = 200,
+        proxy_id: str | None = None,
     ) -> list[PolicyRequest]:
         self.init_db()
         limit = max(1, min(int(limit), 1000))
         statuses = [s for s in (statuses or []) if s in REQ_STATUS]
+        clauses: list[str] = []
+        params: list[object] = []
+        if proxy_id is not None:
+            clauses.append("proxy_id=%s")
+            params.append(normalize_proxy_id(proxy_id).lower())
+        if statuses:
+            ph = ",".join(["%s"] * len(statuses))
+            clauses.append(f"status IN ({ph})")
+            params.extend(statuses)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         with self._connect() as c:
-            if statuses:
-                ph = ",".join(["%s"] * len(statuses))
-                rows = c.execute(
-                    self._rsql(
-                        f"WHERE status IN ({ph}) ORDER BY created_ts DESC,id DESC LIMIT %s",
-                    ),
-                    (*statuses, limit),
-                ).fetchall()
-            else:
-                rows = c.execute(
-                    self._rsql("ORDER BY created_ts DESC,id DESC LIMIT %s"),
-                    (limit,),
-                ).fetchall()
+            rows = c.execute(
+                self._rsql(f"{where}ORDER BY created_ts DESC,id DESC LIMIT %s"),
+                (*params, limit),
+            ).fetchall()
         return [_req(x) for x in rows]
 
     def list_exceptions(
@@ -312,16 +314,23 @@ class PolicyRequestStore:
         *,
         include_inactive: bool = True,
         limit: int = 200,
+        proxy_id: str | None = None,
     ) -> list[PolicyException]:
         self.init_db()
         limit = max(1, min(int(limit), 1000))
-        w = (
-            "ORDER BY updated_ts DESC,id DESC LIMIT %s"
-            if include_inactive
-            else "WHERE status='active' ORDER BY updated_ts DESC,id DESC LIMIT %s"
-        )
+        clauses: list[str] = []
+        params: list[object] = []
+        if proxy_id is not None:
+            clauses.append("proxy_id=%s")
+            params.append(normalize_proxy_id(proxy_id).lower())
+        if not include_inactive:
+            clauses.append("status='active'")
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         with self._connect() as c:
-            rows = c.execute(self._esql(w), (limit,)).fetchall()
+            rows = c.execute(
+                self._esql(f"{where}ORDER BY updated_ts DESC,id DESC LIMIT %s"),
+                (*params, limit),
+            ).fetchall()
         return [_exc(x) for x in rows]
 
     def approve_request(
@@ -332,6 +341,7 @@ class PolicyRequestStore:
         admin_note: object = "",
         duration_seconds: int | None = None,
         indefinite: bool = False,
+        proxy_id: str | None = None,
     ) -> PolicyException:
         self.init_db()
         now = now_ts()
@@ -342,10 +352,25 @@ class PolicyRequestStore:
         )
         reviewer_s = _text(reviewer, 128)
         note = _text(admin_note, 2000, True)
+        scoped_proxy_id = (
+            normalize_proxy_id(proxy_id).lower() if proxy_id is not None else ""
+        )
         with self._connect() as c:
-            row = c.execute(self._rsql("WHERE id=%s"), (int(request_id),)).fetchone()
+            if scoped_proxy_id:
+                row = c.execute(
+                    self._rsql("WHERE id=%s AND proxy_id=%s"),
+                    (int(request_id), scoped_proxy_id),
+                ).fetchone()
+            else:
+                row = c.execute(
+                    self._rsql("WHERE id=%s"), (int(request_id),)
+                ).fetchone()
             if not row:
-                msg = "Request not found."
+                msg = (
+                    "Request not found for selected proxy."
+                    if scoped_proxy_id
+                    else "Request not found."
+                )
                 raise ValueError(msg)
             req = _req(row)
             if req.status != PENDING:
@@ -382,22 +407,35 @@ class PolicyRequestStore:
         reviewer: object = "",
         admin_note: object = "",
         status: str = REJECTED,
+        proxy_id: str | None = None,
     ) -> None:
         self.init_db()
         status = status if status in {REJECTED, CLOSED} else REJECTED
         now = now_ts()
+        scoped_proxy_id = (
+            normalize_proxy_id(proxy_id).lower() if proxy_id is not None else ""
+        )
+        proxy_clause = " AND proxy_id=%s" if scoped_proxy_id else ""
+        params: tuple[object, ...] = (
+            status,
+            _text(admin_note, 2000, True),
+            now,
+            now,
+            _text(reviewer, 128),
+            int(request_id),
+            *((scoped_proxy_id,) if scoped_proxy_id else ()),
+        )
         with self._connect() as c:
-            c.execute(
-                f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending'",
-                (
-                    status,
-                    _text(admin_note, 2000, True),
-                    now,
-                    now,
-                    _text(reviewer, 128),
-                    int(request_id),
-                ),
+            result = c.execute(
+                f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending'{proxy_clause}",
+                params,
             )
+            if (
+                scoped_proxy_id
+                and max(0, int(getattr(result, "rowcount", 0) or 0)) == 0
+            ):
+                msg = "Request not found for selected proxy."
+                raise ValueError(msg)
 
     def revoke_exception(
         self,
@@ -405,15 +443,35 @@ class PolicyRequestStore:
         *,
         revoked_by: object = "",
         admin_note: object = "",
+        proxy_id: str | None = None,
     ) -> None:
         self.init_db()
         now = now_ts()
         note = _text(admin_note, 2000, True)
+        scoped_proxy_id = (
+            normalize_proxy_id(proxy_id).lower() if proxy_id is not None else ""
+        )
+        proxy_clause = " AND proxy_id=%s" if scoped_proxy_id else ""
+        params: tuple[object, ...] = (
+            now,
+            now,
+            _text(revoked_by, 128),
+            note,
+            note,
+            int(exception_id),
+            *((scoped_proxy_id,) if scoped_proxy_id else ()),
+        )
         with self._connect() as c:
-            c.execute(
-                f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'",
-                (now, now, _text(revoked_by, 128), note, note, int(exception_id)),
+            result = c.execute(
+                f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'{proxy_clause}",
+                params,
             )
+            if (
+                scoped_proxy_id
+                and max(0, int(getattr(result, "rowcount", 0) or 0)) == 0
+            ):
+                msg = "Exception not found for selected proxy."
+                raise ValueError(msg)
 
     def active_webfilter_exceptions(
         self,

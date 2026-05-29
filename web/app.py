@@ -3825,6 +3825,7 @@ def observability_metrics():
 def policy_requests():
     store = get_policy_request_store()
     _best_effort_init_store(store, key="policy_requests", description="policy request")
+    proxy_id = get_proxy_id()
     if request.method == "POST":
         action = _form_action(lower=True)
         reviewer = str(session.get("user") or "")
@@ -3838,6 +3839,7 @@ def policy_requests():
                     admin_note=request.form.get("admin_note") or "",
                     duration_seconds=duration,
                     indefinite=indefinite,
+                    proxy_id=proxy_id,
                 )
                 _best_effort_refresh_managed_policy(store, force=True)
                 return _redirect_to("policy_requests", ok="approved")
@@ -3847,6 +3849,7 @@ def policy_requests():
                     reviewer=reviewer,
                     admin_note=request.form.get("admin_note") or "",
                     status=("closed" if action == "close" else "rejected"),
+                    proxy_id=proxy_id,
                 )
                 return _redirect_to("policy_requests", ok=action)
             if action == "revoke":
@@ -3854,6 +3857,7 @@ def policy_requests():
                     int(request.form.get("exception_id") or "0"),
                     revoked_by=reviewer,
                     admin_note=request.form.get("admin_note") or "",
+                    proxy_id=proxy_id,
                 )
                 _best_effort_refresh_managed_policy(store, force=True)
                 return _redirect_to("policy_requests", ok="revoked")
@@ -3861,9 +3865,17 @@ def policy_requests():
             return _redirect_to("policy_requests", error=public_error_message(exc))
         return _redirect_to("policy_requests")
     try:
-        pending_requests = store.list_requests(statuses=["pending"], limit=200)
-        recent_requests = store.list_requests(limit=200)
-        exceptions = store.list_exceptions(include_inactive=True, limit=200)
+        pending_requests = store.list_requests(
+            statuses=["pending"],
+            limit=200,
+            proxy_id=proxy_id,
+        )
+        recent_requests = store.list_requests(limit=200, proxy_id=proxy_id)
+        exceptions = store.list_exceptions(
+            include_inactive=True,
+            limit=200,
+            proxy_id=proxy_id,
+        )
     except Exception:
         log_exception_throttled(
             app.logger,
