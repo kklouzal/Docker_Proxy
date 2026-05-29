@@ -548,6 +548,14 @@ class FakeObservabilityQueries:
         return []
 
 
+class FakeAdblockArtifacts:
+    def __init__(self, summary: Any | None = None) -> None:
+        self.summary = summary
+
+    def get_active_artifact_summary(self) -> Any | None:
+        return self.summary
+
+
 class FakeAdblockStore:
     def __init__(self) -> None:
         self.settings = {"enabled": True, "cache_ttl": 3600, "cache_max": 200000}
@@ -951,6 +959,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     )
     fake_proxy_client = overrides.get("proxy_client") or FakeProxyClient(admin_app)
     fake_certificates = overrides.get("certificate_bundles") or FakeCertificateBundles()
+    fake_adblock_artifacts = overrides.get("adblock_artifacts") or FakeAdblockArtifacts()
     fake_operation_ledger = overrides.get("operation_ledger") or FakeOperationLedger()
 
     services = admin_app.AppRuntimeServices(
@@ -1044,6 +1053,11 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         proxy_sync, "get_operation_ledger", lambda: fake_operation_ledger
     )
     monkeypatch.setattr(admin_app, "_app_runtime_services", lambda: services)
+    monkeypatch.setattr(
+        admin_app,
+        "get_adblock_artifacts",
+        lambda: fake_adblock_artifacts,
+    )
     admin_app.app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
     return SimpleNamespace(
         module=admin_app,
@@ -1054,6 +1068,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         config_revisions=fake_revisions,
         proxy_client=fake_proxy_client,
         certificate_bundles=fake_certificates,
+        adblock_artifacts=fake_adblock_artifacts,
         operation_ledger=fake_operation_ledger,
     )
 

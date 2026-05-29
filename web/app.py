@@ -1516,6 +1516,52 @@ if not _disable_background:
         pass
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except Exception:
+        return int(default)
+
+
+def _present_adblock_artifact_summary(summary: object | None) -> dict[str, Any]:
+    if summary is None:
+        return {
+            "available": False,
+            "revision_id": 0,
+            "artifact_sha256": "",
+            "artifact_short_sha": "",
+            "settings_version": 0,
+            "source_kind": "",
+            "created_by": "",
+            "created_ts": 0,
+            "enabled_lists": [],
+            "counts": {},
+            "breakdowns": {},
+        }
+
+    report = getattr(summary, "report", {}) or {}
+    counts = report.get("counts") if isinstance(report, dict) else {}
+    breakdowns = report.get("breakdowns") if isinstance(report, dict) else {}
+    if not isinstance(counts, dict):
+        counts = {}
+    if not isinstance(breakdowns, dict):
+        breakdowns = {}
+    sha = str(getattr(summary, "artifact_sha256", "") or "")
+    return {
+        "available": True,
+        "revision_id": _safe_int(getattr(summary, "revision_id", 0)),
+        "artifact_sha256": sha,
+        "artifact_short_sha": sha[:12],
+        "settings_version": _safe_int(getattr(summary, "settings_version", 0)),
+        "source_kind": str(getattr(summary, "source_kind", "") or ""),
+        "created_by": str(getattr(summary, "created_by", "") or ""),
+        "created_ts": _safe_int(getattr(summary, "created_ts", 0)),
+        "enabled_lists": list(getattr(summary, "enabled_lists", []) or []),
+        "counts": {str(key): _safe_int(value) for key, value in counts.items()},
+        "breakdowns": breakdowns,
+    }
+
+
 @app.template_filter("datetimeformat")
 def _datetimeformat(ts: object) -> str:
     try:
@@ -4014,6 +4060,19 @@ def adblock():
             "max_icap_time_ms": 0,
         }
 
+    try:
+        active_artifact = _present_adblock_artifact_summary(
+            get_adblock_artifacts().get_active_artifact_summary(),
+        )
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.adblock.artifact_summary",
+            interval_seconds=30.0,
+            message="Failed to load adblock artifact summary; rendering unavailable state",
+        )
+        active_artifact = _present_adblock_artifact_summary(None)
+
     return render_template(
         "adblock.html",
         statuses=status_rows,
@@ -4025,6 +4084,7 @@ def adblock():
         window=window_i,
         window_label=_window_label(window_i),
         adblock_icap_summary=adblock_icap_summary,
+        active_artifact=active_artifact,
     )
 
 

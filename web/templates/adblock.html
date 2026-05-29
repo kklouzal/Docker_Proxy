@@ -152,6 +152,64 @@
     </div>
   </section>
 
+
+  <section class="card split-right">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Compiled artifact</h2>
+        <div class="small">Latest active subscription compile output shared by registered proxies.</div>
+      </div>
+      <div class="actions">
+        {{ scope_chip('global') }}
+        {% if active_artifact.available %}
+          <span class="badge ok">rev {{ active_artifact.revision_id }}</span>
+        {% else %}
+          <span class="badge danger">not built</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="card-body stack-list">
+      {% if active_artifact.available %}
+        <div class="summary-grid">
+          <div class="stat compact-stat">
+            <div class="stat-k">Domain blocks</div>
+            <div class="stat-v">{{ active_artifact.counts.get('domains_block', 0) }}</div>
+          </div>
+          <div class="stat compact-stat">
+            <div class="stat-k">Domain exceptions</div>
+            <div class="stat-v">{{ active_artifact.counts.get('domains_allow', 0) }}</div>
+          </div>
+          <div class="stat compact-stat">
+            <div class="stat-k">Regex blocks</div>
+            <div class="stat-v">{{ active_artifact.counts.get('regex_block', 0) }}</div>
+          </div>
+          <div class="stat compact-stat">
+            <div class="stat-k">Request index rules</div>
+            <div class="stat-v">{{ active_artifact.counts.get('network_rules_total', 0) }}</div>
+          </div>
+          <div class="stat compact-stat">
+            <div class="stat-k">Option-scoped rules</div>
+            <div class="stat-v">{{ active_artifact.counts.get('network_rules_with_options', 0) }}</div>
+          </div>
+          <div class="stat compact-stat">
+            <div class="stat-k">Cosmetic rules</div>
+            <div class="stat-v">{{ active_artifact.counts.get('cosmetic_rules_total', 0) }}</div>
+          </div>
+        </div>
+        <div class="surface-note small">
+          <div><strong>Artifact:</strong> <span class="mono">{{ active_artifact.artifact_short_sha }}</span></div>
+          <div><strong>Built:</strong> {{ fmt_ts(active_artifact.created_ts) if active_artifact.created_ts else 'unknown' }}{% if active_artifact.created_by %} by {{ active_artifact.created_by }}{% endif %} ({{ active_artifact.source_kind or 'compile' }})</div>
+          <div><strong>Settings version:</strong> {{ active_artifact.settings_version }}</div>
+          <div><strong>Compiled lists:</strong> {{ active_artifact.enabled_lists|join(', ') if active_artifact.enabled_lists else 'none' }}</div>
+        </div>
+      {% else %}
+        <div class="surface-note small">
+          No active compiled artifact was found. Save or refresh enabled subscriptions and wait for the background builder before expecting proxies to enforce ad-block updates.
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
   <section class="card split-right">
     <div class="card-header">
       <div>

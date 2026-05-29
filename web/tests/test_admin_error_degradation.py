@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import NoReturn
 
 from .admin_route_test_utils import (
+    FakeAdblockArtifacts,
     FakeProxyClient,
     csrf_token,
     load_admin_app,
@@ -252,3 +254,47 @@ def test_adblock_page_renders_when_init_db_fails(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 200
     assert "Ad Blocking" in response.get_data(as_text=True)
+
+
+def test_adblock_page_shows_active_compiled_artifact_summary(
+    monkeypatch, tmp_path
+) -> None:
+    summary = SimpleNamespace(
+        revision_id=7,
+        artifact_sha256="abcdef1234567890",
+        settings_version=12,
+        source_kind="test",
+        created_by="builder",
+        created_ts=1_700_000_000,
+        enabled_lists=["easylist", "easyprivacy"],
+        report={
+            "counts": {
+                "domains_block": 11,
+                "domains_allow": 2,
+                "regex_block": 3,
+                "network_rules_total": 44,
+                "network_rules_with_options": 5,
+                "cosmetic_rules_total": 6,
+            }
+        },
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_artifacts=FakeAdblockArtifacts(summary),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/adblock")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Compiled artifact" in text
+    assert "rev 7" in text
+    assert "abcdef123456" in text
+    assert "Domain blocks" in text
+    assert "11" in text
+    assert "Request index rules" in text
+    assert "44" in text
+    assert "easylist, easyprivacy" in text

@@ -85,6 +85,37 @@ class AdblockArtifactApplication:
 
 
 @dataclass(frozen=True)
+class AdblockArtifactSummary:
+    revision_id: int
+    artifact_sha256: str
+    report_json: str
+    settings_version: int
+    source_kind: str
+    enabled_lists_json: str
+    created_by: str
+    created_ts: int
+    is_active: bool
+
+    @property
+    def enabled_lists(self) -> list[str]:
+        try:
+            raw = json.loads(self.enabled_lists_json or "[]")
+        except Exception:
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    @property
+    def report(self) -> dict[str, Any]:
+        try:
+            raw = json.loads(self.report_json or "{}")
+        except Exception:
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+
+@dataclass(frozen=True)
 class AdblockArtifactMetadata:
     revision_id: int
     artifact_sha256: str
@@ -210,6 +241,21 @@ class AdblockArtifactStore:
             is_active=bool(int(row["is_active"] or 0)),
         )
 
+    def _row_to_summary(self, row: object | None) -> AdblockArtifactSummary | None:
+        if not row:
+            return None
+        return AdblockArtifactSummary(
+            revision_id=int(row["id"] or 0),
+            artifact_sha256=str(row["artifact_sha256"] or ""),
+            report_json=str(row["report_json"] or "{}"),
+            settings_version=int(row["settings_version"] or 0),
+            source_kind=str(row["source_kind"] or "compile"),
+            enabled_lists_json=str(row["enabled_lists_json"] or "[]"),
+            created_by=str(row["created_by"] or ""),
+            created_ts=int(row["created_ts"] or 0),
+            is_active=bool(int(row["is_active"] or 0)),
+        )
+
     def get_active_artifact(self) -> AdblockArtifactRevision | None:
         self.init_db()
         with self._connect() as conn:
@@ -236,6 +282,20 @@ class AdblockArtifactStore:
                 """,
             ).fetchone()
         return self._row_to_metadata(row)
+
+    def get_active_artifact_summary(self) -> AdblockArtifactSummary | None:
+        self.init_db()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, artifact_sha256, report_json, settings_version, source_kind, enabled_lists_json, created_by, created_ts, is_active
+                FROM adblock_artifact_revisions
+                WHERE is_active=1
+                ORDER BY created_ts DESC, id DESC
+                LIMIT 1
+                """,
+            ).fetchone()
+        return self._row_to_summary(row)
 
     def create_revision(
         self,
