@@ -760,8 +760,10 @@ def _write_empty_output(out_dir: str) -> None:
                 "generic_index": 0,
                 "host_index": 0,
                 "host_pattern_index": 0,
+                "host_pattern_token_index": 0,
                 "option_index": 0,
                 "regex_index": 0,
+                "regex_token_index": 0,
                 "resource_type_index": 0,
                 "rules": 0,
             },
@@ -842,11 +844,23 @@ def _write_empty_request_lookup_db(path: Path) -> None:
                 PRIMARY KEY(host_pattern, action, rule_id)
             ) WITHOUT ROWID;
 
+            CREATE TABLE host_pattern_token_index(
+                literal_key TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(literal_key, rule_id)
+            ) WITHOUT ROWID;
+
             CREATE TABLE regex_index(
                 action TEXT NOT NULL,
                 rule_id TEXT NOT NULL,
                 regex TEXT NOT NULL,
                 PRIMARY KEY(action, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE regex_token_index(
+                literal_key TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(literal_key, rule_id)
             ) WITHOUT ROWID;
 
             CREATE TABLE generic_index(
@@ -883,7 +897,9 @@ def _write_empty_request_lookup_db(path: Path) -> None:
             CREATE INDEX idx_domain_action ON domain_index(action, host);
             CREATE INDEX idx_host_action ON host_index(action, host);
             CREATE INDEX idx_host_pattern_action ON host_pattern_index(action, host_pattern);
+            CREATE INDEX idx_host_pattern_token_rule ON host_pattern_token_index(rule_id);
             CREATE INDEX idx_regex_action ON regex_index(action);
+            CREATE INDEX idx_regex_token_rule ON regex_token_index(rule_id);
             CREATE INDEX idx_generic_kind_key ON generic_index(pattern_kind, literal_key);
             CREATE INDEX idx_option_key ON option_index(option_key, option_value);
             CREATE INDEX idx_resource_type ON resource_type_index(resource_type, negated);
@@ -891,14 +907,16 @@ def _write_empty_request_lookup_db(path: Path) -> None:
             """
         )
         metadata = {
-            "schema_version": "2",
+            "schema_version": "4",
             "count_domain_index": "0",
             "count_domain_scope_index": "0",
             "count_generic_index": "0",
             "count_host_index": "0",
             "count_host_pattern_index": "0",
+            "count_host_pattern_token_index": "0",
             "count_option_index": "0",
             "count_regex_index": "0",
+            "count_regex_token_index": "0",
             "count_resource_type_index": "0",
             "count_rules": "0",
         }

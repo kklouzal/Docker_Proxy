@@ -276,7 +276,7 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
         assert report["enabled_lists"] == []
         assert report["breakdowns"]["lookup_index_counts"]["rules"] == 0
         assert empty_rule_count == 0
-        assert schema_version == "1"
+        assert schema_version == "4"
     finally:
         for key, value in env_backup.items():
             if value is None:

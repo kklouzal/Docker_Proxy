@@ -22,6 +22,7 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             "||api.example.com/path$method=POST,denyallow=allowed.example",
             "CaseSensitive$match-case",
             "modifier-token$redirect=noopjs",
+            "||ads.example.co.uk^$third-party",
         ],
     )
 
@@ -90,6 +91,20 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     assert engine.decide("https://static.example/CaseSensitive.js").blocked is True
     assert engine.decide("https://static.example/casesensitive.js").blocked is False
     assert engine.decide("https://static.example/modifier-token.js").blocked is False
+    assert (
+        engine.decide(
+            "https://ads.example.co.uk/banner.js",
+            headers={"referer": "https://shop.other.co.uk/"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://ads.example.co.uk/banner.js",
+            headers={"referer": "https://shop.example.co.uk/"},
+        ).blocked
+        is False
+    )
 
 
 def _send_icap(port: int, payload: bytes) -> bytes:

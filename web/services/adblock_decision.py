@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -41,6 +43,7 @@ _NON_BLOCKING_MODIFIER_OPTIONS = {
     "removeparam",
     "rewrite",
 }
+_COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,20 @@ def _site_key(host: str) -> str:
     labels = [label for label in normalized.split(".") if label]
     if len(labels) < 2:
         return normalized
+    try:  # pragma: no cover - optional dependency path
+        from publicsuffix2 import get_sld  # type: ignore
+
+        site = get_sld(normalized)
+        if site:
+            return site.lower().rstrip(".")
+    except Exception:
+        pass
+    if (
+        len(labels) >= 3
+        and len(labels[-1]) == 2
+        and labels[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES
+    ):
+        return ".".join(labels[-3:])
     return ".".join(labels[-2:])
 
 
@@ -122,6 +139,15 @@ def _abp_to_regex(pattern: str) -> str:
     if right_anchored:
         body += "$"
     return body
+
+
+@lru_cache(maxsize=50000)
+def _compile_regex(pattern: str, *, ignore_case: bool) -> re.Pattern[str] | None:
+    try:
+        flags = re.IGNORECASE if ignore_case else 0
+        return re.compile(pattern, flags)
+    except re.error:
+        return None
 
 
 def _unescape_abp_literal(pattern: str) -> str:
@@ -179,13 +205,15 @@ class AdblockDecisionEngine:
         *,
         cache_ttl_seconds: int = 3600,
         cache_max: int = 200000,
+        rule_cache_max: int = 50000,
     ) -> None:
-        self.lookup = AdblockLookupIndex(db_path)
+        self.lookup = AdblockLookupIndex(db_path, rule_cache_max=rule_cache_max)
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds or 0))
         self.cache_max = max(0, int(cache_max or 0))
         self._cache: OrderedDict[
             tuple[str, str, str, str], tuple[float, AdblockDecision]
         ] = OrderedDict()
+        self._cache_lock = threading.Lock()
 
     def decide(
         self,
@@ -262,15 +290,16 @@ class AdblockDecisionEngine:
     ) -> AdblockDecision | None:
         if not self.cache_ttl_seconds or not self.cache_max:
             return None
-        hit = self._cache.get(key)
-        if hit is None:
-            return None
-        expires_at, decision = hit
-        if expires_at < time.time():
-            self._cache.pop(key, None)
-            return None
-        self._cache.move_to_end(key)
-        return decision
+        with self._cache_lock:
+            hit = self._cache.get(key)
+            if hit is None:
+                return None
+            expires_at, decision = hit
+            if expires_at < time.time():
+                self._cache.pop(key, None)
+                return None
+            self._cache.move_to_end(key)
+            return decision
 
     def _put_cached(
         self,
@@ -279,10 +308,11 @@ class AdblockDecisionEngine:
     ) -> None:
         if not self.cache_ttl_seconds or not self.cache_max:
             return
-        self._cache[key] = (time.time() + self.cache_ttl_seconds, decision)
-        self._cache.move_to_end(key)
-        while len(self._cache) > self.cache_max:
-            self._cache.popitem(last=False)
+        with self._cache_lock:
+            self._cache[key] = (time.time() + self.cache_ttl_seconds, decision)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self.cache_max:
+                self._cache.popitem(last=False)
 
     def _rule_matches(
         self,
@@ -325,18 +355,18 @@ class AdblockDecisionEngine:
             return self._suffix_matches(rule, _request_suffix(parsed))
         if kind in {"host_anchored_pattern", "absolute_url_pattern"}:
             compiled_regex = str(rule.get("compiled_regex") or "")
-            flags = 0 if case_sensitive else re.IGNORECASE
-            return bool(compiled_regex and re.search(compiled_regex, url, flags))
+            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
+            return bool(compiled and compiled.search(url))
         if kind in {"left_anchored", "right_anchored", "wildcard"}:
             compiled_regex = str(rule.get("compiled_regex") or _abp_to_regex(pattern))
-            flags = 0 if case_sensitive else re.IGNORECASE
-            return bool(compiled_regex and re.search(compiled_regex, url, flags))
+            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
+            return bool(compiled and compiled.search(url))
         if kind == "regex":
-            try:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                return bool(re.search(str(rule.get("regex") or pattern), url, flags))
-            except re.error:
-                return False
+            compiled = _compile_regex(
+                str(rule.get("regex") or pattern),
+                ignore_case=not case_sensitive,
+            )
+            return bool(compiled and compiled.search(url))
         if kind == "substring":
             needle = _unescape_abp_literal(pattern)
             haystack = url or ""
@@ -352,10 +382,8 @@ class AdblockDecisionEngine:
             return True
         suffix_regex = str(rule.get("suffix_regex") or "")
         if suffix_regex:
-            try:
-                return bool(re.match(suffix_regex, suffix, re.IGNORECASE))
-            except re.error:
-                return False
+            compiled = _compile_regex(suffix_regex, ignore_case=True)
+            return bool(compiled and compiled.match(suffix))
         expected = _unescape_abp_literal(
             str(rule.get("path_pattern") or "") + str(rule.get("query_pattern") or "")
         )

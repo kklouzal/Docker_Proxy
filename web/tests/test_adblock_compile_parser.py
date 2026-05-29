@@ -290,7 +290,13 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
         assert conn.execute(
             "SELECT host_pattern FROM host_pattern_index"
         ).fetchone() == ("loader.*.com",)
+        assert conn.execute(
+            "SELECT literal_key FROM host_pattern_token_index"
+        ).fetchone() == ("loader",)
         assert conn.execute("SELECT COUNT(*) FROM regex_index").fetchone() == (1,)
+        assert conn.execute("SELECT literal_key FROM regex_token_index").fetchone() == (
+            "tracker",
+        )
         assert conn.execute(
             "SELECT literal_key FROM generic_index WHERE pattern_kind='substring'"
         ).fetchone() == ("plain-ad-token",)

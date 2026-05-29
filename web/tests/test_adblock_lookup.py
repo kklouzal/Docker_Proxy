@@ -128,6 +128,7 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
             "||ads.example^",
             "@@||allow.example^",
             "||cdn.example.com/assets/ad.js^$script",
+            "||*.example.net/ad^",
             "wss://loader.*.com/ws^$websocket,third-party",
             "/tracker[.]example/$third-party",
             "plain-ad-token$~stylesheet",
@@ -149,6 +150,10 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
         )
     )
     assert "||cdn.example.com/assets/ad.js^$script" in script_candidates
+    wildcard_host_candidates = _raws(
+        lookup.candidate_rules("https://sub.example.net/ad.js")
+    )
+    assert "||*.example.net/ad^" in wildcard_host_candidates
 
     negated_script_candidates = _raws(
         lookup.candidate_rules(
@@ -157,6 +162,13 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
         )
     )
     assert "plain-ad-token$~stylesheet" in negated_script_candidates
+    negated_stylesheet_candidates = _raws(
+        lookup.candidate_rules(
+            "https://static.example/plain-ad-token.css",
+            resource_type="stylesheet",
+        )
+    )
+    assert "plain-ad-token$~stylesheet" not in negated_stylesheet_candidates
 
     websocket_candidates = _raws(
         lookup.candidate_rules(
@@ -170,7 +182,12 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
         lookup.candidate_rules("https://static.example/plain-ad-token.js")
     )
     assert "plain-ad-token$~stylesheet" in generic_candidates
-    assert "/tracker[.]example/$third-party" in generic_candidates
+    assert "/tracker[.]example/$third-party" not in generic_candidates
+
+    regex_candidates = _raws(
+        lookup.candidate_rules("https://cdn.example/tracker.example/pixel")
+    )
+    assert "/tracker[.]example/$third-party" in regex_candidates
 
 
 def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(

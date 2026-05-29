@@ -261,6 +261,13 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("ADBLOCK_CACHE_MAX", "200000") or "200000"),
     )
     parser.add_argument(
+        "--rule-cache-max",
+        type=int,
+        default=int(
+            os.environ.get("ADBLOCK_RULE_CACHE_MAX", "50000") or "50000",
+        ),
+    )
+    parser.add_argument(
         "--max-request-bytes",
         type=int,
         default=int(
@@ -273,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         args.db,
         cache_ttl_seconds=args.cache_ttl,
         cache_max=args.cache_max,
+        rule_cache_max=args.rule_cache_max,
     )
     with _AdblockIcapServer(
         (args.host, int(args.port)),

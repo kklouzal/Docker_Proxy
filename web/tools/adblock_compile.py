@@ -1145,10 +1145,22 @@ def _json_compact(value: Any) -> str:
 
 
 def _literal_lookup_key(pattern: str) -> str:
-    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,}", pattern or "")
+    tokens = [
+        token.strip(".")
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,}", pattern or "")
+        if token.strip(".")
+    ]
     if not tokens:
         return ""
     return max((token.lower() for token in tokens), key=lambda item: (len(item), item))
+
+
+def _regex_lookup_key(pattern: str) -> str:
+    if any(marker in (pattern or "") for marker in ("|", "?")) or "{0" in (
+        pattern or ""
+    ):
+        return ""
+    return _literal_lookup_key(pattern)
 
 
 def _sqlite_scalar_values(value: Any) -> list[str]:
@@ -1234,11 +1246,23 @@ def _create_lookup_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(host_pattern, action, rule_id)
         ) WITHOUT ROWID;
 
+        CREATE TABLE host_pattern_token_index(
+            literal_key TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            PRIMARY KEY(literal_key, rule_id)
+        ) WITHOUT ROWID;
+
         CREATE TABLE regex_index(
             action TEXT NOT NULL,
             rule_id TEXT NOT NULL,
             regex TEXT NOT NULL,
             PRIMARY KEY(action, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE regex_token_index(
+            literal_key TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            PRIMARY KEY(literal_key, rule_id)
         ) WITHOUT ROWID;
 
         CREATE TABLE generic_index(
@@ -1281,7 +1305,9 @@ def _create_lookup_indexes(conn: sqlite3.Connection) -> None:
         CREATE INDEX idx_domain_action ON domain_index(action, host);
         CREATE INDEX idx_host_action ON host_index(action, host);
         CREATE INDEX idx_host_pattern_action ON host_pattern_index(action, host_pattern);
+        CREATE INDEX idx_host_pattern_token_rule ON host_pattern_token_index(rule_id);
         CREATE INDEX idx_regex_action ON regex_index(action);
+        CREATE INDEX idx_regex_token_rule ON regex_token_index(rule_id);
         CREATE INDEX idx_generic_kind_key ON generic_index(pattern_kind, literal_key);
         CREATE INDEX idx_option_key ON option_index(option_key, option_value);
         CREATE INDEX idx_resource_type ON resource_type_index(resource_type, negated);
@@ -1304,7 +1330,9 @@ def _write_request_lookup_index(
         "domain_index": 0,
         "host_index": 0,
         "host_pattern_index": 0,
+        "host_pattern_token_index": 0,
         "regex_index": 0,
+        "regex_token_index": 0,
         "generic_index": 0,
         "option_index": 0,
         "resource_type_index": 0,
@@ -1314,7 +1342,7 @@ def _write_request_lookup_index(
         _create_lookup_schema(conn)
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
-            ("schema_version", "2"),
+            ("schema_version", "4"),
         )
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
@@ -1412,15 +1440,16 @@ def _write_request_lookup_index(
                     "absolute_url_pattern",
                     "host_anchored_pattern",
                 } and rec.get("host_pattern"):
+                    host_pattern = str(rec.get("host_pattern") or "")
                     conn.execute(
                         """
                             INSERT OR IGNORE INTO host_pattern_index(
                                 host_pattern, action, rule_id, pattern_kind,
                                 url_scheme_pattern, path_pattern, query_pattern
                             ) VALUES(?, ?, ?, ?, ?, ?, ?)
-                            """,
+                        """,
                         (
-                            str(rec.get("host_pattern") or ""),
+                            host_pattern,
                             action,
                             rule_id,
                             pattern_kind,
@@ -1430,12 +1459,23 @@ def _write_request_lookup_index(
                         ),
                     )
                     counts["host_pattern_index"] += 1
+                    conn.execute(
+                        "INSERT OR IGNORE INTO host_pattern_token_index(literal_key, rule_id) VALUES(?, ?)",
+                        (_literal_lookup_key(host_pattern), rule_id),
+                    )
+                    counts["host_pattern_token_index"] += 1
                 elif pattern_kind == "regex":
+                    regex = str(rec.get("regex") or "")
                     conn.execute(
                         "INSERT OR IGNORE INTO regex_index(action, rule_id, regex) VALUES(?, ?, ?)",
-                        (action, rule_id, str(rec.get("regex") or "")),
+                        (action, rule_id, regex),
                     )
                     counts["regex_index"] += 1
+                    conn.execute(
+                        "INSERT OR IGNORE INTO regex_token_index(literal_key, rule_id) VALUES(?, ?)",
+                        (_regex_lookup_key(regex), rule_id),
+                    )
+                    counts["regex_token_index"] += 1
                 elif pattern_kind != "empty":
                     conn.execute(
                         """
@@ -1506,7 +1546,9 @@ def _write_request_lookup_index(
             "domain_index": "SELECT COUNT(*) FROM domain_index",
             "host_index": "SELECT COUNT(*) FROM host_index",
             "host_pattern_index": "SELECT COUNT(*) FROM host_pattern_index",
+            "host_pattern_token_index": "SELECT COUNT(*) FROM host_pattern_token_index",
             "regex_index": "SELECT COUNT(*) FROM regex_index",
+            "regex_token_index": "SELECT COUNT(*) FROM regex_token_index",
             "generic_index": "SELECT COUNT(*) FROM generic_index",
             "option_index": "SELECT COUNT(*) FROM option_index",
             "resource_type_index": "SELECT COUNT(*) FROM resource_type_index",
