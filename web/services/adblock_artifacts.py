@@ -961,7 +961,108 @@ def _load_directory_files(directory: str | os.PathLike[str]) -> dict[str, bytes]
             continue
         rel = path.relative_to(root).as_posix()
         file_map[rel] = path.read_bytes()
+    _add_legacy_request_lookup_if_missing(file_map)
     return file_map
+
+
+def _legacy_artifact_lines(file_map: dict[str, bytes], name: str) -> list[str]:
+    try:
+        text = file_map.get(name, b"").decode("utf-8", errors="replace")
+    except Exception:
+        text = ""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _legacy_rule_id(action: str, kind: str, value: str) -> str:
+    digest = hashlib.sha256(f"{action}\0{kind}\0{value}".encode()).hexdigest()
+    return f"legacy-{digest[:24]}"
+
+
+def _legacy_request_records(file_map: dict[str, bytes]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for name, action in (
+        ("domains_allow.txt", "allow"),
+        ("domains_block.txt", "block"),
+    ):
+        for host in _legacy_artifact_lines(file_map, name):
+            normalized = host.lower().rstrip(".")
+            if not normalized or normalized.startswith("#"):
+                continue
+            records.append(
+                {
+                    "id": _legacy_rule_id(action, "domain", normalized),
+                    "list_key": "legacy-artifact",
+                    "action": action,
+                    "exception": action == "allow",
+                    "raw": normalized,
+                    "pattern": f"||{normalized}^",
+                    "pattern_kind": "domain_only",
+                    "host": normalized,
+                    "anchor": "domain",
+                    "options": {},
+                    "resource_types": [],
+                    "excluded_resource_types": [],
+                    "third_party": "any",
+                    "behavior_options": [],
+                    "value_options": {},
+                },
+            )
+    for name, action in (
+        ("regex_allow.txt", "allow"),
+        ("regex_block.txt", "block"),
+    ):
+        for pattern in _legacy_artifact_lines(file_map, name):
+            if pattern.startswith("#"):
+                continue
+            regex = pattern[1:-1] if pattern.startswith("/") and pattern.endswith("/") else pattern
+            if not regex:
+                continue
+            records.append(
+                {
+                    "id": _legacy_rule_id(action, "regex", regex),
+                    "list_key": "legacy-artifact",
+                    "action": action,
+                    "exception": action == "allow",
+                    "raw": pattern,
+                    "pattern": pattern if pattern.startswith("/") else f"/{pattern}/",
+                    "pattern_kind": "regex",
+                    "regex": regex,
+                    "compiled_regex": regex,
+                    "options": {},
+                    "resource_types": [],
+                    "excluded_resource_types": [],
+                    "third_party": "any",
+                    "behavior_options": [],
+                    "value_options": {},
+                },
+            )
+    return records
+
+
+def _add_legacy_request_lookup_if_missing(file_map: dict[str, bytes]) -> None:
+    if "request_lookup.sqlite" in file_map:
+        return
+    records = _legacy_request_records(file_map)
+    with tempfile.TemporaryDirectory(prefix="adblock-legacy-lookup-") as tmp_dir:
+        root = Path(tmp_dir)
+        db_path = root / "request_lookup.sqlite"
+        if not records:
+            _write_empty_request_lookup_db(db_path)
+            file_map["request_lookup.sqlite"] = db_path.read_bytes()
+            return
+        try:
+            from tools import adblock_compile  # type: ignore
+        except Exception as exc:
+            msg = "Unable to synthesize legacy adblock request lookup artifact"
+            raise RuntimeError(msg) from exc
+
+        network_jsonl = root / "network_rules.jsonl"
+        network_jsonl.write_text(
+            "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+            encoding="utf-8",
+        )
+        adblock_compile._write_request_lookup_index(str(db_path), str(network_jsonl))
+        file_map["request_lookup.sqlite"] = db_path.read_bytes()
 
 
 def _calculate_artifact_sha(file_map: dict[str, bytes]) -> str:

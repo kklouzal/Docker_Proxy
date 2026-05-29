@@ -496,3 +496,54 @@ def test_adblock_cicap_access_parser_requires_http_403_status(tmp_path) -> None:
             )
             is None
         )
+
+
+def test_load_legacy_artifact_directory_adds_sqlite_lookup(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import services.adblock_artifacts as artifacts_module  # type: ignore
+
+    artifact_dir = tmp_path / "legacy-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "domains_allow.txt").write_text("allow.example\n", encoding="utf-8")
+    (artifact_dir / "domains_block.txt").write_text("ads.example\n", encoding="utf-8")
+    (artifact_dir / "regex_allow.txt").write_text(
+        "/.*allowed-token[.]json.*/\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "regex_block.txt").write_text(
+        "/.*blocked-token[.]json.*/\n",
+        encoding="utf-8",
+    )
+
+    file_map = artifacts_module._load_directory_files(artifact_dir)
+    db_path = tmp_path / "request_lookup.sqlite"
+    db_path.write_bytes(file_map["request_lookup.sqlite"])
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rule_count = conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
+        domain_actions = {
+            tuple(row)
+            for row in conn.execute(
+                "SELECT host, action FROM domain_index ORDER BY host, action"
+            )
+        }
+        regex_actions = {
+            tuple(row)
+            for row in conn.execute(
+                "SELECT action, regex FROM regex_index ORDER BY action, regex"
+            )
+        }
+    finally:
+        conn.close()
+
+    assert rule_count == 4
+    assert domain_actions == {("ads.example", "block"), ("allow.example", "allow")}
+    assert regex_actions == {
+        ("allow", ".*allowed-token[.]json.*"),
+        ("block", ".*blocked-token[.]json.*"),
+    }
