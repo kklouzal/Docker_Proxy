@@ -22,22 +22,10 @@ if TYPE_CHECKING:
 # - Cosmetic rules contain selector separators like '##', '#@#', '#?#', '#$#'
 # - Exception rules start with '@@'
 # - Options are appended after '$' (network rules); request indexes preserve
-#   full parsed rules while legacy text buckets stay intentionally narrow.
+#   full parsed rules for SQLite-backed request-time lookup.
 
 
 _COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
-
-
-@dataclass(frozen=True)
-class CompileOutput:
-    domains_block: set[str]
-    domains_allow: set[str]
-    regex_block: list[str]
-    network_other: int
-    cosmetic: int
-    comments: int
-    empty: int
-    total: int
 
 
 @dataclass
@@ -94,12 +82,6 @@ class _RuleWriters:
 
 @dataclass
 class _Aggregate:
-    domains_block: set[str]
-    domains_allow: set[str]
-    regex_block: set[str]
-    regex_allow: set[str]
-
-    # Additional buckets for future use.
     network_rules_total: int
     network_rules_by_kind: dict[str, int]
     network_rules_with_options: int
@@ -240,28 +222,6 @@ def _find_regex_delimiter(rule: str) -> int | None:
             if not tail or tail.startswith("$"):
                 return i
     return None
-
-
-def _normalize_regex_for_legacy_text_bucket(pattern: str) -> str:
-    r"""Normalize a regex so it can be stored in the legacy text bucket.
-
-    The former c-icap lookup-table parser treated ':' as a separator, so
-    patterns like 'https?:' were escaped. Keep that encoding stable for
-    compatibility with existing artifact consumers.
-
-    The historical consumer used PCRE2, so '\x3A' is the stable escape.
-    """
-    p = (pattern or "").strip()
-    if not p:
-        return p
-    # The lookup-table parser treats ':' as a separator and does not support
-    # escaping it. Replace scheme/port ':' with a single-character wildcard.
-    #
-    # We do a targeted replacement for the common '://', then fall back to any
-    # remaining ':' characters.
-    p = p.replace(r":\/\/", r".\/\/")
-    p = p.replace("://", ".//")
-    return p.replace(":", ".")
 
 
 def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
@@ -750,74 +710,6 @@ def _extract_domain_only(pattern: str) -> str | None:
     return host
 
 
-def compile_lines(lines: Iterable[str]) -> CompileOutput:
-    domains_block: set[str] = set()
-    domains_allow: set[str] = set()
-    regex_block: list[str] = []
-
-    cosmetic = comments = empty = network_other = 0
-    total = 0
-
-    for raw in lines:
-        total += 1
-        s = (raw or "").strip()
-        if not s:
-            empty += 1
-            continue
-
-        if s.startswith("!") or (s.startswith("[") and s.endswith("]")):
-            comments += 1
-            continue
-
-        if _is_cosmetic(s):
-            cosmetic += 1
-            continue
-
-        is_exception = False
-        if s.startswith("@@"):
-            is_exception = True
-            s = s[2:].strip()
-
-        pattern, opts = _split_options(s)
-        if opts:
-            # For the first-pass domain buckets, ignore option-bearing rules.
-            network_other += 1
-            continue
-
-        # Explicit regex rule.
-        if len(pattern) >= 3 and pattern.startswith("/") and pattern.endswith("/"):
-            if not is_exception:
-                inner = _normalize_regex_for_legacy_text_bucket(pattern[1:-1])
-                if inner:
-                    regex_block.append(f"/{inner}/")
-            else:
-                # Exception regexes exist but are risky without full ABP semantics.
-                network_other += 1
-            continue
-
-        dom = _extract_domain_only(pattern)
-        if dom:
-            if is_exception:
-                domains_allow.add(dom)
-            else:
-                domains_block.add(dom)
-            continue
-
-        network_other += 1
-
-    # Ensure exception overrides are represented (keep both; runtime will check allow first).
-    return CompileOutput(
-        domains_block=domains_block,
-        domains_allow=domains_allow,
-        regex_block=regex_block,
-        network_other=network_other,
-        cosmetic=cosmetic,
-        comments=comments,
-        empty=empty,
-        total=total,
-    )
-
-
 def _compile_and_extract_all(
     *,
     lines: Iterable[str],
@@ -826,14 +718,9 @@ def _compile_and_extract_all(
     writers: _RuleWriters,
 ) -> dict[str, int]:
     # Single pass over a list file that:
-    #  - preserves legacy safe text buckets for artifact compatibility
-    #  - extracts every rule into JSONL buckets for future expansion
+    #  - extracts every parsed rule into JSONL buckets
+    #  - feeds the SQLite request lookup used by the runtime ICAP helper
     # We build counts manually to avoid re-reading.
-    domains_block: set[str] = set()
-    domains_allow: set[str] = set()
-    regex_block: set[str] = set()
-    regex_allow: set[str] = set()
-
     cosmetic = comments = empty = network_other = 0
     total = 0
     network_total = 0
@@ -967,27 +854,19 @@ def _compile_and_extract_all(
         for g in _option_groups(opt_parsed):
             agg.option_group_counts[g] = agg.option_group_counts.get(g, 0) + 1
 
-        # Preserve current safe text buckets.
-        if not opts:
-            if pattern_kind == "regex":
-                regex = (extra.get("regex") or "").strip()
-                if regex:
-                    regex = _normalize_regex_for_legacy_text_bucket(regex)
-                    regex = f"/{regex}/"
-                    if is_exception:
-                        regex_allow.add(regex)
-                    else:
-                        regex_block.add(regex)
-            elif pattern_kind == "domain_only":
-                host = (extra.get("host") or "").strip().lower().rstrip(".")
-                if host:
-                    if is_exception:
-                        domains_allow.add(host)
-                    else:
-                        domains_block.add(host)
-            else:
-                network_other += 1
-        else:
+        if pattern_kind not in {
+            "absolute_url",
+            "absolute_url_pattern",
+            "domain_only",
+            "host_anchored",
+            "host_anchored_pattern",
+            "left_anchored",
+            "option_only",
+            "regex",
+            "right_anchored",
+            "substring",
+            "wildcard",
+        }:
             network_other += 1
 
         # Persist full normalized rule for future use.
@@ -1112,33 +991,15 @@ def _compile_and_extract_all(
                         json.dumps(rec, ensure_ascii=False) + "\n",
                     )
 
-    # Merge into aggregate.
-    agg.domains_allow.update(domains_allow)
-    agg.domains_block.update(domains_block)
-    agg.regex_block.update(regex_block)
-    agg.regex_allow.update(regex_allow)
-
     return {
         "total": total,
         "empty": empty,
         "comments": comments,
         "cosmetic": cosmetic,
         "network_other": network_other,
-        "domains_block": len(domains_block),
-        "domains_allow": len(domains_allow),
-        "regex_block": len(regex_block),
-        "regex_allow": len(regex_allow),
         "network_rules_total": network_total,
         "network_rules_with_options": network_with_opts,
     }
-
-
-def _write_sorted_lines(path: str, items: Iterable[str]) -> None:
-    pathlib.Path(pathlib.Path(path).parent).mkdir(exist_ok=True, parents=True)
-    with pathlib.Path(path).open("w", encoding="utf-8", newline="\n") as f:
-        for s in sorted(set(items)):
-            f.write(s)
-            f.write("\n")
 
 
 def _json_compact(value: Any) -> str:
@@ -1720,10 +1581,6 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     agg = _Aggregate(
-        domains_block=set(),
-        domains_allow=set(),
-        regex_block=set(),
-        regex_allow=set(),
         network_rules_total=0,
         network_rules_by_kind={},
         network_rules_with_options=0,
@@ -2025,21 +1882,12 @@ def main(argv: list[str] | None = None) -> int:
                 writers=writers,
             )
 
-    # Preserve current text buckets.
-    _write_sorted_lines(os.path.join(out_dir, "domains_allow.txt"), agg.domains_allow)
-    _write_sorted_lines(os.path.join(out_dir, "domains_block.txt"), agg.domains_block)
-    _write_sorted_lines(os.path.join(out_dir, "regex_block.txt"), agg.regex_block)
-    _write_sorted_lines(os.path.join(out_dir, "regex_allow.txt"), agg.regex_allow)
     lookup_index_counts = _write_request_lookup_index(
         request_lookup_sqlite_path,
         network_jsonl_path,
     )
 
     merged_counts = {
-        "domains_allow": len(agg.domains_allow),
-        "domains_block": len(agg.domains_block),
-        "regex_block": len(agg.regex_block),
-        "regex_allow": len(agg.regex_allow),
         "network_rules_total": int(agg.network_rules_total),
         "network_rules_with_options": int(agg.network_rules_with_options),
         "network_rules_with_domain_opt": int(agg.network_rules_with_domain_opt),
@@ -2072,10 +1920,6 @@ def main(argv: list[str] | None = None) -> int:
         },
         "per_list": per_list_counts,
         "files": {
-            "domains_allow": os.path.join(out_dir, "domains_allow.txt"),
-            "domains_block": os.path.join(out_dir, "domains_block.txt"),
-            "regex_block": os.path.join(out_dir, "regex_block.txt"),
-            "regex_allow": os.path.join(out_dir, "regex_allow.txt"),
             "network_rules_jsonl": network_jsonl_path,
             "cosmetic_rules_jsonl": cosmetic_jsonl_path,
             "network_no_options_jsonl": os.path.join(
@@ -2196,9 +2040,8 @@ def main(argv: list[str] | None = None) -> int:
             },
         },
         "notes": {
-            "domain_buckets_policy": "Only option-less domain-only rules (||host^) and their @@ exceptions are promoted to legacy domains_*.txt buckets.",
-            "full_extraction": "All parsed network rules and cosmetic rules are emitted to JSONL buckets for future REQMOD/RESPMOD expansion.",
-            "request_indexes": "request_index_*.jsonl contains normalized request-time ABP fields so future enforcement can load domain, host/path, regex, and generic buckets without scanning the raw extraction files.",
+            "full_extraction": "All parsed network rules and cosmetic rules are emitted to JSONL buckets for inspection and future expansion.",
+            "request_indexes": "request_index_*.jsonl contains normalized request-time ABP fields for domain, host/path, regex, and generic buckets.",
             "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to full rule payloads by rule_id.",
         },
     }

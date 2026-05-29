@@ -474,10 +474,6 @@ python3 /app/tools/adblock_compile.py \
     --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
     || true
 mkdir -p /var/lib/squid-flask-proxy/adblock/compiled
-for ADBLOCK_BUCKET in domains_allow.txt domains_block.txt regex_allow.txt regex_block.txt; do
-    ADBLOCK_BUCKET_PATH="/var/lib/squid-flask-proxy/adblock/compiled/${ADBLOCK_BUCKET}"
-    [ -f "$ADBLOCK_BUCKET_PATH" ] || : > "$ADBLOCK_BUCKET_PATH"
-done
 if [ ! -f /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite ]; then
     python3 - <<'PY' || true
 from pathlib import Path

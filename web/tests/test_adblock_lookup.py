@@ -64,10 +64,6 @@ def _build_lookup_db(tmp_path: Path, lines: list[str]) -> Path:
         "cosmetic_non_exception_jsonl": out / "cosmetic_non_exception.jsonl",
     }
     agg = ac._Aggregate(
-        domains_block=set(),
-        domains_allow=set(),
-        regex_block=set(),
-        regex_allow=set(),
         network_rules_total=0,
         network_rules_by_kind={},
         network_rules_with_options=0,

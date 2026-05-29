@@ -179,21 +179,89 @@ def _wait_for_proxy_status(
 def _write_live_adblock_artifact(
     directory,
     *,
-    regex_block: str = "",
-    regex_allow: str = "",
-    domains_block: str = "",
-    domains_allow: str = "",
+    block_regexes: str = "",
+    allow_regexes: str = "",
+    block_domains: str = "",
+    allow_domains: str = "",
     enabled: bool = True,
 ) -> int:
+    from tools import adblock_compile  # type: ignore
+
     settings_version = _adblock_store().get_settings_version()
     directory.mkdir(parents=True, exist_ok=True)
-    for name, content in {
-        "domains_allow.txt": domains_allow,
-        "domains_block.txt": domains_block,
-        "regex_allow.txt": regex_allow,
-        "regex_block.txt": regex_block,
-    }.items():
-        (directory / name).write_text(content, encoding="utf-8")
+
+    def _domain_records(lines: str, *, action: str) -> list[dict]:
+        records = []
+        for idx, raw in enumerate(lines.splitlines(), start=1):
+            host = raw.strip().lower().rstrip(".")
+            if not host or host.startswith("#"):
+                continue
+            records.append(
+                {
+                    "kind": "network",
+                    "id": f"live-domain-{action}-{idx}-{host}",
+                    "list_key": "live-fixture",
+                    "action": action,
+                    "exception": action == "allow",
+                    "raw": f"{'@@' if action == 'allow' else ''}||{host}^",
+                    "pattern": f"||{host}^",
+                    "pattern_kind": "domain_only",
+                    "host": host,
+                    "options_raw": "",
+                    "options": {},
+                    "resource_types": [],
+                    "excluded_resource_types": [],
+                    "third_party": "any",
+                    "behavior_options": [],
+                    "value_options": {},
+                }
+            )
+        return records
+
+    def _regex_records(lines: str, *, action: str) -> list[dict]:
+        records = []
+        for idx, raw in enumerate(lines.splitlines(), start=1):
+            item = raw.strip()
+            if not item or item.startswith("#"):
+                continue
+            regex = item[1:-1] if item.startswith("/") and item.endswith("/") else item
+            records.append(
+                {
+                    "kind": "network",
+                    "id": f"live-regex-{action}-{idx}",
+                    "list_key": "live-fixture",
+                    "action": action,
+                    "exception": action == "allow",
+                    "raw": f"{'@@' if action == 'allow' else ''}/{regex}/",
+                    "pattern": f"/{regex}/",
+                    "pattern_kind": "regex",
+                    "regex": regex,
+                    "options_raw": "",
+                    "options": {},
+                    "resource_types": [],
+                    "excluded_resource_types": [],
+                    "third_party": "any",
+                    "behavior_options": [],
+                    "value_options": {},
+                }
+            )
+        return records
+
+    records = [
+        *_domain_records(block_domains, action="block"),
+        *_domain_records(allow_domains, action="allow"),
+        *_regex_records(block_regexes, action="block"),
+        *_regex_records(allow_regexes, action="allow"),
+    ]
+    network_jsonl = directory / "network_rules.jsonl"
+    network_jsonl.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    lookup_counts = adblock_compile._write_request_lookup_index(
+        str(directory / "request_lookup.sqlite"),
+        str(network_jsonl),
+    )
     (directory / "settings.json").write_text(
         json.dumps(
             {
@@ -213,10 +281,12 @@ def _write_live_adblock_artifact(
             {
                 "enabled_lists": ["live-fixture"] if enabled else [],
                 "counts": {
-                    "domains_block": bool(domains_block.strip()),
-                    "domains_allow": bool(domains_allow.strip()),
-                    "regex_block": bool(regex_block.strip()),
-                    "regex_allow": bool(regex_allow.strip()),
+                    "network_rules_total": len(records),
+                    "network_rules_with_options": 0,
+                    "cosmetic_rules_total": 0,
+                },
+                "breakdowns": {
+                    "lookup_index_counts": lookup_counts,
                 },
             },
             sort_keys=True,
@@ -581,47 +651,12 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     admin_client: LiveStackClient, tmp_path
 ) -> None:
     artifact_dir = tmp_path / "adblock-artifact"
-    settings_version = _adblock_store().get_settings_version()
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / "domains_allow.txt").write_text(
-        "allow-live-artifact.example\n", encoding="utf-8"
-    )
-    (artifact_dir / "domains_block.txt").write_text(
-        "ads-live-artifact.example\n", encoding="utf-8"
-    )
-    (artifact_dir / "regex_allow.txt").write_text("", encoding="utf-8")
-    (artifact_dir / "regex_block.txt").write_text(
-        "/tracker-live-artifact[.]example/\n", encoding="utf-8"
-    )
-    (artifact_dir / "settings.json").write_text(
-        json.dumps(
-            {
-                "enabled": False,
-                "cache_ttl": 120,
-                "cache_max": 1000,
-                "settings_version": settings_version,
-                "enabled_lists": ["live-fixture"],
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (artifact_dir / "report.json").write_text(
-        json.dumps(
-            {
-                "enabled_lists": ["live-fixture"],
-                "counts": {
-                    "domains_block": 1,
-                    "domains_allow": 1,
-                    "regex_block": 1,
-                    "regex_allow": 0,
-                },
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    settings_version = _write_live_adblock_artifact(
+        artifact_dir,
+        allow_domains="allow-live-artifact.example\n",
+        block_domains="ads-live-artifact.example\n",
+        block_regexes="/tracker-live-artifact[.]example/\n",
+        enabled=False,
     )
 
     revision = _adblock_artifacts_store().create_revision_from_directory(
@@ -813,8 +848,8 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(
     artifact_dir = tmp_path / "adblock-artifact"
     settings_version = _write_live_adblock_artifact(
         artifact_dir,
-        regex_block=f"/.*{blocked_token}[.]json.*/\n/.*{allowed_token}[.]json.*/\n",
-        regex_allow=f"/.*{allowed_token}[.]json.*/\n",
+        block_regexes=f"/.*{blocked_token}[.]json.*/\n/.*{allowed_token}[.]json.*/\n",
+        allow_regexes=f"/.*{allowed_token}[.]json.*/\n",
     )
     revision = artifacts.create_revision_from_directory(
         artifact_dir,

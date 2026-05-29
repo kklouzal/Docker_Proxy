@@ -62,7 +62,6 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
             "! comment\n||ads.example^\n@@||allow.example^\n/tracker[.]example/\n",
             encoding="utf-8",
         )
-
         monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
 
         result = artifacts_module.get_adblock_artifacts().build_active_artifact(
@@ -82,9 +81,6 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
         with zipfile.ZipFile(io.BytesIO(revision.archive_blob), mode="r") as zf:
             names = set(zf.namelist())
             assert {
-                "domains_allow.txt",
-                "domains_block.txt",
-                "regex_block.txt",
                 "request_index_domain.jsonl",
                 "request_index_host.jsonl",
                 "request_index_regex.jsonl",
@@ -93,14 +89,10 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
                 "settings.json",
                 "report.json",
             } <= names
-
-            domains_block = zf.read("domains_block.txt").decode(
-                "utf-8", errors="replace"
-            )
-            domains_allow = zf.read("domains_allow.txt").decode(
-                "utf-8", errors="replace"
-            )
-            regex_block = zf.read("regex_block.txt").decode("utf-8", errors="replace")
+            assert "domains_allow.txt" not in names
+            assert "domains_block.txt" not in names
+            assert "regex_allow.txt" not in names
+            assert "regex_block.txt" not in names
             settings = json.loads(
                 zf.read("settings.json").decode("utf-8", errors="replace")
             )
@@ -133,9 +125,6 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
             finally:
                 lookup_conn.close()
 
-        assert domains_block == "ads.example\n"
-        assert domains_allow == "allow.example\n"
-        assert regex_block == "/tracker[.]example/\n"
         assert '"host": "ads.example"' in request_index_domain
         assert '"pattern_kind": "regex"' in request_index_regex
         assert settings == {
@@ -146,9 +135,7 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
             "settings_version": store.get_settings_version(),
         }
         assert report["enabled_lists"] == [selected]
-        assert int(report["counts"]["domains_block"]) == 1
-        assert int(report["counts"]["domains_allow"]) == 1
-        assert int(report["counts"]["regex_block"]) == 1
+        assert int(report["counts"]["network_rules_total"]) == 3
         assert report["breakdowns"]["lookup_index_counts"]["rules"] == 3
         assert lookup_counts == {
             "rules": 3,
@@ -496,54 +483,3 @@ def test_adblock_cicap_access_parser_requires_http_403_status(tmp_path) -> None:
             )
             is None
         )
-
-
-def test_load_legacy_artifact_directory_adds_sqlite_lookup(tmp_path) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (str(repo_root), str(web_root)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-    import services.adblock_artifacts as artifacts_module  # type: ignore
-
-    artifact_dir = tmp_path / "legacy-artifact"
-    artifact_dir.mkdir()
-    (artifact_dir / "domains_allow.txt").write_text("allow.example\n", encoding="utf-8")
-    (artifact_dir / "domains_block.txt").write_text("ads.example\n", encoding="utf-8")
-    (artifact_dir / "regex_allow.txt").write_text(
-        "/.*allowed-token[.]json.*/\n",
-        encoding="utf-8",
-    )
-    (artifact_dir / "regex_block.txt").write_text(
-        "/.*blocked-token[.]json.*/\n",
-        encoding="utf-8",
-    )
-
-    file_map = artifacts_module._load_directory_files(artifact_dir)
-    db_path = tmp_path / "request_lookup.sqlite"
-    db_path.write_bytes(file_map["request_lookup.sqlite"])
-    conn = sqlite3.connect(str(db_path))
-    try:
-        rule_count = conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
-        domain_actions = {
-            tuple(row)
-            for row in conn.execute(
-                "SELECT host, action FROM domain_index ORDER BY host, action"
-            )
-        }
-        regex_actions = {
-            tuple(row)
-            for row in conn.execute(
-                "SELECT action, regex FROM regex_index ORDER BY action, regex"
-            )
-        }
-    finally:
-        conn.close()
-
-    assert rule_count == 4
-    assert domain_actions == {("ads.example", "block"), ("allow.example", "allow")}
-    assert regex_actions == {
-        ("allow", ".*allowed-token[.]json.*"),
-        ("block", ".*blocked-token[.]json.*"),
-    }

@@ -65,10 +65,6 @@ def _compile_sample(tmp_path: Path, lines: list[str]) -> Path:
     }
 
     agg = ac._Aggregate(
-        domains_block=set(),
-        domains_allow=set(),
-        regex_block=set(),
-        regex_allow=set(),
         network_rules_total=0,
         network_rules_by_kind={},
         network_rules_with_options=0,
