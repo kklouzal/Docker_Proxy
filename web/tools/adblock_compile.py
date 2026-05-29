@@ -62,6 +62,13 @@ class _RuleWriters:
     network_block_jsonl: Any
     network_exception_jsonl: Any
 
+    # Request-time index families. These are still line-oriented artifacts so
+    # downstream runtimes can load only the index families they need.
+    request_index_domain_jsonl: Any
+    request_index_host_jsonl: Any
+    request_index_regex_jsonl: Any
+    request_index_generic_jsonl: Any
+
     # Network split by resource-type options (e.g., $script / $~script)
     network_type_pos_jsonl: dict[str, Any]
     network_type_neg_jsonl: dict[str, Any]
@@ -120,6 +127,7 @@ _KNOWN_TYPES: set[str] = {
 
 
 _DOMAIN_ONLY_RE = re.compile(r"^\|\|(?P<host>[a-z0-9.-]+)\^?$", re.IGNORECASE)
+_ABP_SEPARATOR_REGEX = r"(?:[^A-Za-z0-9_.%-]|$)"
 
 
 def _is_comment_or_header(s: str) -> bool:
@@ -137,14 +145,47 @@ def _is_cosmetic(s: str) -> bool:
 
 
 def _split_options(rule: str) -> tuple[str, str]:
-    # Split at first '$' (options suffix). ABP regex rules are like /.../ and may contain '$' inside.
+    # Split the ABP options suffix. Regex rules are /.../$options, and the
+    # regex body can legitimately contain '$' anchors, escaped slashes, and
+    # character classes. For non-regex rules, '$' is the options delimiter.
     s = (rule or "").strip()
-    if len(s) >= 3 and s.startswith("/") and s.endswith("/"):
-        return s, ""
+    if len(s) >= 2 and s.startswith("/"):
+        regex_end = _find_regex_delimiter(s)
+        if regex_end is not None:
+            pattern = s[: regex_end + 1]
+            tail = s[regex_end + 1 :]
+            if not tail:
+                return pattern, ""
+            if tail.startswith("$"):
+                return pattern, tail[1:].strip()
+            return s, ""
     if "$" not in s:
         return s, ""
     pat, opts = s.split("$", 1)
     return pat.strip(), opts.strip()
+
+
+def _find_regex_delimiter(rule: str) -> int | None:
+    escaped = False
+    in_class = False
+    for i, ch in enumerate(rule[1:], start=1):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "[":
+            in_class = True
+            continue
+        if ch == "]" and in_class:
+            in_class = False
+            continue
+        if ch == "/" and not in_class:
+            tail = rule[i + 1 :]
+            if not tail or tail.startswith("$"):
+                return i
+    return None
 
 
 def _normalize_regex_for_cicap_table(pattern: str) -> str:
@@ -182,7 +223,9 @@ def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
             v = v.strip()
             if k == "domain":
                 # ABP domain=example.com|~foo.com
-                parts = [p.strip() for p in v.split("|") if p.strip()]
+                parts = [
+                    p.strip().lower().rstrip(".") for p in v.split("|") if p.strip()
+                ]
                 parsed[k] = parts
             else:
                 parsed[k] = v
@@ -190,6 +233,59 @@ def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
             # flags can be negated: ~third-party, ~script
             parsed[t.strip().lower()] = True
     return tokens, parsed
+
+
+def _option_semantics(
+    tokens: list[str],
+    opt_parsed: dict[str, Any],
+) -> dict[str, Any]:
+    resource_types = sorted(
+        {key for key in opt_parsed if (key or "").lower() in _KNOWN_TYPES},
+    )
+    excluded_resource_types = sorted(
+        {
+            key[1:]
+            for key in opt_parsed
+            if (key or "").startswith("~") and key[1:] in _KNOWN_TYPES
+        },
+    )
+    if "third-party" in opt_parsed:
+        third_party = "only"
+    elif "~third-party" in opt_parsed:
+        third_party = "exclude"
+    else:
+        third_party = "any"
+
+    domain_values = opt_parsed.get("domain") or []
+    domain_includes: list[str] = []
+    domain_excludes: list[str] = []
+    if isinstance(domain_values, list):
+        for item in domain_values:
+            value = str(item or "").strip().lower().rstrip(".")
+            if not value:
+                continue
+            if value.startswith("~"):
+                domain = value[1:].strip().rstrip(".")
+                if domain:
+                    domain_excludes.append(domain)
+            else:
+                domain_includes.append(value)
+
+    standard_keys = {"domain", "third-party", "~third-party"}
+    standard_keys.update(_KNOWN_TYPES)
+    standard_keys.update({f"~{item}" for item in _KNOWN_TYPES})
+    misc_options = {
+        key: value for key, value in opt_parsed.items() if key not in standard_keys
+    }
+    return {
+        "option_tokens": tokens,
+        "resource_types": resource_types,
+        "excluded_resource_types": excluded_resource_types,
+        "third_party": third_party,
+        "domain_includes": sorted(set(domain_includes)),
+        "domain_excludes": sorted(set(domain_excludes)),
+        "misc_options": misc_options,
+    }
 
 
 def _rule_id(list_key: str, raw_line: str, *, exception: bool) -> str:
@@ -246,13 +342,77 @@ def _looks_like_host(s: str) -> bool:
     return _HOST_RE.match(h) is not None
 
 
+def _normalize_host(host: str) -> str:
+    h = (host or "").strip().lower().rstrip(".")
+    if not h:
+        return ""
+    try:
+        return h.encode("idna").decode("ascii").lower().rstrip(".")
+    except Exception:
+        return h
+
+
+def _abp_to_regex(pattern: str) -> str:
+    p = pattern or ""
+    left_anchored = p.startswith("|") and not p.startswith("||")
+    right_anchored = p.endswith("|") and not p.endswith(r"\|")
+    if left_anchored:
+        p = p[1:]
+    if right_anchored:
+        p = p[:-1]
+
+    parts: list[str] = []
+    for ch in p:
+        if ch == "*":
+            parts.append(".*")
+        elif ch == "^":
+            parts.append(_ABP_SEPARATOR_REGEX)
+        else:
+            parts.append(re.escape(ch))
+    body = "".join(parts)
+    if left_anchored:
+        body = "^" + body
+    if right_anchored:
+        body += "$"
+    return body
+
+
+def _split_suffix_parts(suffix_body: str) -> dict[str, Any]:
+    suffix = suffix_body or ""
+    separator_prefix = suffix.startswith("^")
+    if separator_prefix:
+        suffix = suffix[1:]
+
+    fragment_pattern = ""
+    if "#" in suffix:
+        suffix, fragment_pattern = suffix.split("#", 1)
+        fragment_pattern = "#" + fragment_pattern
+
+    path_pattern = ""
+    query_pattern = ""
+    if suffix.startswith("?"):
+        query_pattern = suffix
+    elif "?" in suffix:
+        path_pattern, query = suffix.split("?", 1)
+        query_pattern = "?" + query
+    else:
+        path_pattern = suffix
+
+    return {
+        "suffix_separator_prefix": separator_prefix,
+        "path_pattern": path_pattern,
+        "query_pattern": query_pattern,
+        "fragment_pattern": fragment_pattern,
+    }
+
+
 def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
     # Returns (pattern_kind, extra_fields)
     p = (pattern or "").strip()
     if not p:
         return "empty", {}
     if len(p) >= 3 and p.startswith("/") and p.endswith("/"):
-        return "regex", {"regex": p[1:-1]}
+        return "regex", {"regex": p[1:-1], "compiled_regex": p[1:-1]}
     if p.startswith("||"):
         # host-anchored. May include path.
         rest = p[2:]
@@ -260,25 +420,43 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
         suffix = ""
         # Split host from first delimiter.
         for i, ch in enumerate(rest):
-            if ch in {"/", "^", "?", "#"}:
+            if ch in {"/", "^", "?", "#", "|"}:
                 host = rest[:i]
                 suffix = rest[i:]
                 break
-        host = host.strip()
+        host = _normalize_host(host)
         if _looks_like_host(host):
             if suffix in {"", "^"}:
-                return "domain_only", {"host": host.lower().rstrip(".")}
-            return "host_anchored", {"host": host.lower().rstrip("."), "suffix": suffix}
-        return "host_anchored_other", {"host": host}
+                return "domain_only", {"host": host, "anchor": "domain"}
+            suffix_right_anchored = suffix.endswith("|")
+            suffix_body = suffix[:-1] if suffix_right_anchored else suffix
+            return "host_anchored", {
+                "host": host,
+                "anchor": "domain",
+                "suffix": suffix,
+                "suffix_body": suffix_body,
+                "suffix_right_anchored": suffix_right_anchored,
+                "suffix_regex": _abp_to_regex(suffix),
+                **_split_suffix_parts(suffix_body),
+            }
+        return "host_anchored_other", {
+            "host": host,
+            "compiled_regex": _abp_to_regex(p),
+        }
     if p.startswith("|"):
-        return "left_anchored", {}
+        return "left_anchored", {"compiled_regex": _abp_to_regex(p)}
     if p.startswith("@@"):
         # Should have been stripped earlier; keep classification stable.
         return "exception_prefixed", {}
+    if p.endswith("|") and not p.endswith(r"\|"):
+        return "right_anchored", {
+            "compiled_regex": _abp_to_regex(p),
+            "right_anchored": True,
+        }
     # Generic substring/wildcard network rule.
     if any(ch in p for ch in ("*", "^")):
-        return "wildcard", {}
-    return "substring", {}
+        return "wildcard", {"compiled_regex": _abp_to_regex(p)}
+    return "substring", {"substring": p}
 
 
 def _parse_cosmetic(rule: str) -> dict[str, Any] | None:
@@ -521,7 +699,7 @@ def _compile_and_extract_all(
             s = s[2:].strip()
 
         pattern, opts = _split_options(s)
-        _opt_tokens, opt_parsed = _parse_options(opts)
+        opt_tokens, opt_parsed = _parse_options(opts)
         if opts:
             network_with_opts += 1
 
@@ -572,6 +750,7 @@ def _compile_and_extract_all(
             "kind": "network",
             "id": _rule_id(list_key, raw, exception=is_exception),
             "list_key": list_key,
+            "action": "allow" if is_exception else "block",
             "exception": bool(is_exception),
             "raw": (raw or "").strip(),
             "pattern": pattern,
@@ -579,6 +758,7 @@ def _compile_and_extract_all(
             "options_raw": opts,
             "options": opt_parsed,
         }
+        rec.update(_option_semantics(opt_tokens, opt_parsed))
         if extra:
             rec.update(extra)
         writers.network_jsonl.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -644,6 +824,23 @@ def _compile_and_extract_all(
             )
         else:
             writers.network_kind_substring_jsonl.write(
+                json.dumps(rec, ensure_ascii=False) + "\n",
+            )
+
+        if pattern_kind == "domain_only":
+            writers.request_index_domain_jsonl.write(
+                json.dumps(rec, ensure_ascii=False) + "\n",
+            )
+        elif pattern_kind == "host_anchored":
+            writers.request_index_host_jsonl.write(
+                json.dumps(rec, ensure_ascii=False) + "\n",
+            )
+        elif pattern_kind == "regex":
+            writers.request_index_regex_jsonl.write(
+                json.dumps(rec, ensure_ascii=False) + "\n",
+            )
+        elif pattern_kind != "empty":
+            writers.request_index_generic_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
 
@@ -777,6 +974,17 @@ def main(argv: list[str] | None = None) -> int:
 
     network_block_jsonl_path = os.path.join(out_dir, "network_block.jsonl")
     network_exception_jsonl_path = os.path.join(out_dir, "network_exception.jsonl")
+
+    request_index_domain_jsonl_path = os.path.join(
+        out_dir,
+        "request_index_domain.jsonl",
+    )
+    request_index_host_jsonl_path = os.path.join(out_dir, "request_index_host.jsonl")
+    request_index_regex_jsonl_path = os.path.join(out_dir, "request_index_regex.jsonl")
+    request_index_generic_jsonl_path = os.path.join(
+        out_dir,
+        "request_index_generic.jsonl",
+    )
 
     # Per-resource-type option buckets
     network_type_pos_paths: dict[str, str] = {
@@ -936,6 +1144,35 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
 
+        request_index_domain_f = stack.enter_context(
+            pathlib.Path(request_index_domain_jsonl_path).open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ),
+        )
+        request_index_host_f = stack.enter_context(
+            pathlib.Path(request_index_host_jsonl_path).open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ),
+        )
+        request_index_regex_f = stack.enter_context(
+            pathlib.Path(request_index_regex_jsonl_path).open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ),
+        )
+        request_index_generic_f = stack.enter_context(
+            pathlib.Path(request_index_generic_jsonl_path).open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ),
+        )
+
         net_type_pos_fs: dict[str, Any] = {
             t: stack.enter_context(
                 pathlib.Path(p).open("w", encoding="utf-8", newline="\n"),
@@ -1031,6 +1268,10 @@ def main(argv: list[str] | None = None) -> int:
             network_kind_regex_jsonl=net_kind_regex_f,
             network_block_jsonl=net_block_f,
             network_exception_jsonl=net_exception_f,
+            request_index_domain_jsonl=request_index_domain_f,
+            request_index_host_jsonl=request_index_host_f,
+            request_index_regex_jsonl=request_index_regex_f,
+            request_index_generic_jsonl=request_index_generic_f,
             network_type_pos_jsonl=net_type_pos_fs,
             network_type_neg_jsonl=net_type_neg_fs,
             cosmetic_elemhide_jsonl=cos_elemhide_f,
@@ -1158,6 +1399,22 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "network_block_jsonl": os.path.join(out_dir, "network_block.jsonl"),
             "network_exception_jsonl": os.path.join(out_dir, "network_exception.jsonl"),
+            "request_index_domain_jsonl": os.path.join(
+                out_dir,
+                "request_index_domain.jsonl",
+            ),
+            "request_index_host_jsonl": os.path.join(
+                out_dir,
+                "request_index_host.jsonl",
+            ),
+            "request_index_regex_jsonl": os.path.join(
+                out_dir,
+                "request_index_regex.jsonl",
+            ),
+            "request_index_generic_jsonl": os.path.join(
+                out_dir,
+                "request_index_generic.jsonl",
+            ),
             "cosmetic_elemhide_jsonl": os.path.join(out_dir, "cosmetic_elemhide.jsonl"),
             "cosmetic_elemhide_exception_jsonl": os.path.join(
                 out_dir,
@@ -1199,6 +1456,7 @@ def main(argv: list[str] | None = None) -> int:
         "notes": {
             "domain_buckets_policy": "Only option-less domain-only rules (||host^) and their @@ exceptions are promoted to domains_*.txt for c-icap.",
             "full_extraction": "All parsed network rules and cosmetic rules are emitted to JSONL buckets for future REQMOD/RESPMOD expansion.",
+            "request_indexes": "request_index_*.jsonl contains normalized request-time ABP fields so future enforcement can load domain, host/path, regex, and generic buckets without scanning the raw extraction files.",
         },
     }
     with pathlib.Path(os.path.join(out_dir, "report.json")).open(

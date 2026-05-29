@@ -76,6 +76,10 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
                 "domains_allow.txt",
                 "domains_block.txt",
                 "regex_block.txt",
+                "request_index_domain.jsonl",
+                "request_index_host.jsonl",
+                "request_index_regex.jsonl",
+                "request_index_generic.jsonl",
                 "settings.json",
                 "report.json",
             } <= names
@@ -93,10 +97,18 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
             report = json.loads(
                 zf.read("report.json").decode("utf-8", errors="replace")
             )
+            request_index_domain = zf.read("request_index_domain.jsonl").decode(
+                "utf-8", errors="replace"
+            )
+            request_index_regex = zf.read("request_index_regex.jsonl").decode(
+                "utf-8", errors="replace"
+            )
 
         assert domains_block == "ads.example\n"
         assert domains_allow == "allow.example\n"
         assert regex_block == "/tracker[.]example/\n"
+        assert '"host": "ads.example"' in request_index_domain
+        assert '"pattern_kind": "regex"' in request_index_regex
         assert settings == {
             "cache_max": 4096,
             "cache_ttl": 120,

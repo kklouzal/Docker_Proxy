@@ -618,6 +618,10 @@ def _write_empty_output(out_dir: str) -> None:
         "domains_block.txt",
         "regex_allow.txt",
         "regex_block.txt",
+        "request_index_domain.jsonl",
+        "request_index_host.jsonl",
+        "request_index_regex.jsonl",
+        "request_index_generic.jsonl",
     ):
         (root / filename).write_text("", encoding="utf-8")
     report = {
@@ -641,6 +645,7 @@ def _write_empty_output(out_dir: str) -> None:
         "per_list": {},
         "notes": {
             "empty": "No enabled adblock lists are active, so the materialized artifact contains empty allow/block tables.",
+            "request_indexes": "request_index_*.jsonl files are empty because no adblock lists are enabled.",
         },
     }
     (root / "report.json").write_text(
