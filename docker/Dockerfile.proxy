@@ -70,7 +70,7 @@ FROM alpine:${ALPINE_VERSION}
 ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 # Proxy container responsibilities only:
-# - Squid / c-icap runtime
+# - Squid, SQLite adblock ICAP helper, and AV c-icap runtime
 # - Proxy management API and background sync agent
 # - PAC/WPAD serving and local policy materialization
 # - Certificate / config / adblock application from shared DB state

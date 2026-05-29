@@ -994,34 +994,6 @@ def test_adblock_reqmod_runtime_uses_sqlite_service_not_c_icap_url_check() -> No
     assert "srv_url_check.so" not in cicap_config
 
 
-def test_proxy_runtime_derives_squid_url_regex_tables_from_c_icap_regex_files(
-    tmp_path,
-) -> None:
-    _add_web_to_path()
-    from proxy.runtime import ProxyRuntime  # type: ignore
-
-    compiled = tmp_path / "compiled"
-    compiled.mkdir()
-    (compiled / "regex_allow.txt").write_text(
-        "/.*allow_token[.]js.*/\n# comment\n\n", encoding="utf-8"
-    )
-    (compiled / "regex_block.txt").write_text(
-        "/.*block_token[.]js.*/\nraw_legacy_regex\n", encoding="utf-8"
-    )
-
-    runtime = ProxyRuntime.__new__(ProxyRuntime)
-    runtime.adblock_compiled_dir = str(compiled)
-
-    assert runtime._ensure_squid_adblock_regex_files() is True
-    assert (compiled / "regex_allow_squid.txt").read_text(
-        encoding="utf-8"
-    ) == ".*allow_token[.]js.*\n"
-    assert (compiled / "regex_block_squid.txt").read_text(
-        encoding="utf-8"
-    ) == ".*block_token[.]js.*\nraw_legacy_regex\n"
-    assert runtime._ensure_squid_adblock_regex_files() is False
-
-
 def test_repo_template_orders_generated_policy_includes_before_enforcement_hooks() -> (
     None
 ):

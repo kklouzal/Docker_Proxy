@@ -10,14 +10,14 @@ The project is designed for home labs, small offices, schools, managed LANs, and
 
 ## Highlights
 
-- **Split control plane and runtime**: `admin-ui` manages policy and fleet state; `proxy` runs Squid, c-icap, PAC/WPAD, local policy materialization, and a small management API.
+- **Split control plane and runtime**: `admin-ui` manages policy and fleet state; `proxy` runs Squid, ICAP helpers, PAC/WPAD, local policy materialization, and a small management API.
 - **MySQL-backed source of truth**: configuration revisions, proxy registration, policy state, users, audit events, telemetry, block logs, PAC profiles, and operation status live in MySQL 8+.
 - **Validated configuration workflow**: proxy runtimes validate candidate Squid configs with their own Squid binary/includes before activation and keep a last-known-good rollback path.
 - **Fleet-aware operation ledger**: admin actions queue proxy-scoped operations for config, certificates, PAC refresh, adblock artifacts, cache clears, and manual sync.
 - **PAC/WPAD as a first-class runtime service**: each proxy serves public `/health`, `/proxy.pac`, and `/wpad.dat` without exposing the admin UI on port 80.
 - **TLS inspection controls**: CA generation/upload, SSL-bump policy, compatibility presets, no-bump/no-cache rules, client-CIDR splicing, SSL error analysis, and one-click exclusions.
 - **Web filtering and threat intelligence**: UT1-style category filtering, whitelists, proxy-local SQLite snapshots for request-path lookups, and optional Google Safe Browsing v5 local-hash-prefix checks.
-- **ICAP security services**: EasyList-style ad blocking through c-icap REQMOD and ClamAV response scanning through c-icap RESPMOD with remote `clamd`.
+- **ICAP security services**: EasyList-style ad blocking through a SQLite-backed REQMOD helper and ClamAV response scanning through c-icap RESPMOD with remote `clamd`.
 - **Operational visibility**: live traffic, clients, destinations, cache behavior, ICAP activity, SSL/TLS diagnostics, block events, exports, and maintenance actions.
 - **Multi-architecture images**: GitHub Actions builds and publishes `linux/amd64` and `linux/arm64` images to GHCR after deterministic and live-stack tests pass.
 
@@ -34,7 +34,7 @@ The project is designed for home labs, small offices, schools, managed LANs, and
                 |                             |
        +--------v--------+          +---------v---------+
        |    admin-ui     |          |       proxy       |
-       | Flask/Gunicorn  |          | Squid + c-icap    |
+       | Flask/Gunicorn  |          | Squid + ICAP      |
        | policy + fleet  |<-------->| sync + PAC/WPAD   |
        | port 5000       | mgmt API | ports 80/3128/3129|
        +-----------------+          +-------------------+
@@ -206,8 +206,8 @@ one default admin UI stay well inside the 160-connection budget.
 ### Ad blocking
 
 - EasyList-style subscription download and compilation.
-- c-icap REQMOD service at `icap://127.0.0.1:${CICAP_PORT:-14000}/adblockreq`.
-- Domain and URL-rule artifacts staged locally in the proxy container.
+- SQLite-backed REQMOD service at `icap://127.0.0.1:${CICAP_PORT:-14000}/adblockreq`.
+- Domain, URL-rule, and request-lookup SQLite artifacts staged locally in the proxy container.
 - Block counters, recent event logging, and artifact application tracking.
 
 ### ClamAV scanning
