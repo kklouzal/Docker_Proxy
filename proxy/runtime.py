@@ -293,13 +293,37 @@ def _listener_mode_summary(listeners: object) -> str:
         return ""
 
 
+def _short_sha(value: object) -> str:
+    text = str(value or "").strip()
+    return text[:12] if text else "missing"
+
+
 def _state_drift_detail(label: str, desired_sha: object, current_sha: object) -> str:
     desired = str(desired_sha or "").strip()
     current = str(current_sha or "").strip()
     if not desired or desired == current:
         return ""
-    current_display = current[:12] if current else "missing"
-    return f"{label}: desired {desired[:12]} does not match current {current_display}."
+    return (
+        f"{label}: desired {_short_sha(desired)} does not match "
+        f"current {_short_sha(current)}."
+    )
+
+
+def _state_sync_failure_detail(
+    label: str,
+    base_detail: str,
+    *,
+    desired_sha: object,
+    current_sha: object,
+) -> str:
+    detail = str(base_detail or "").strip()
+    drift = _state_drift_detail(label, desired_sha, current_sha)
+    if not drift:
+        drift = (
+            f"{label}: desired {_short_sha(desired_sha)}; "
+            f"current {_short_sha(current_sha)}."
+        )
+    return "\n".join(part for part in (detail, drift) if part).strip()
 
 
 def _decode_completed(proc: Any) -> str:
@@ -1307,6 +1331,7 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
+                "current_policy_sha": current_sha,
                 "detail": "Proxy is already using the active policy materialization."
                 if snapshot_ok
                 else snapshot_detail,
@@ -1328,9 +1353,15 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "detail": public_error_message(
-                    exc,
-                    default="Failed to materialize policy state.",
+                "current_policy_sha": current_sha,
+                "detail": _state_sync_failure_detail(
+                    "policy",
+                    public_error_message(
+                        exc,
+                        default="Failed to materialize policy state.",
+                    ),
+                    desired_sha=desired.policy_sha256,
+                    current_sha=current_sha,
                 ),
             }
 
@@ -1341,6 +1372,7 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
+                "current_policy_sha": current_sha,
                 "detail": "Policy materialization is already current."
                 if snapshot_ok
                 else snapshot_detail,
@@ -1353,6 +1385,7 @@ class ProxyRuntime:
             "changed": True,
             "reload_required": True,
             "policy_sha256": desired.policy_sha256,
+            "previous_policy_sha": current_sha,
             "detail": f"Updated {len(changed_paths)} local policy file(s)."
             if snapshot_ok
             else f"Updated {len(changed_paths)} local policy file(s); {snapshot_detail}",
@@ -1629,6 +1662,7 @@ class ProxyRuntime:
                 "proxy_id": self.proxy_id,
                 "changed": False,
                 "state_sha256": desired.state_sha256,
+                "current_state_sha256": current_sha,
                 "detail": "Proxy is already using the active PAC materialization.",
             }
 
@@ -1640,9 +1674,15 @@ class ProxyRuntime:
                 "proxy_id": self.proxy_id,
                 "changed": False,
                 "state_sha256": desired.state_sha256,
-                "detail": public_error_message(
-                    exc,
-                    default="Failed to materialize PAC state.",
+                "current_state_sha256": current_sha,
+                "detail": _state_sync_failure_detail(
+                    "PAC",
+                    public_error_message(
+                        exc,
+                        default="Failed to materialize PAC state.",
+                    ),
+                    desired_sha=desired.state_sha256,
+                    current_sha=current_sha,
                 ),
             }
 
@@ -1651,6 +1691,7 @@ class ProxyRuntime:
             "proxy_id": self.proxy_id,
             "changed": True,
             "state_sha256": desired.state_sha256,
+            "previous_state_sha256": current_sha,
             "detail": "PAC state materialized locally.",
         }
 

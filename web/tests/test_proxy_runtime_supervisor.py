@@ -35,6 +35,59 @@ def _cp(returncode: int, stdout: str = "", stderr: str = ""):
     )
 
 
+
+def test_sync_policy_state_failure_reports_desired_and_current_sha(tmp_path) -> None:
+    runtime = _runtime_shell()
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="desired-policy-shaabcdef",
+        files=(SimpleNamespace(path=str(tmp_path / "policy.conf"), content="new\n"),),
+    )
+    runtime._current_policy_sha = lambda: "current-policy-shaxyz"
+    runtime._read_text_file = lambda _path: "old\n"
+    runtime._atomic_write_text = lambda _path, _content: (_ for _ in ()).throw(
+        PermissionError("read-only policy directory")
+    )
+
+    result = runtime.sync_policy_state()
+
+    assert result["ok"] is False
+    assert result["policy_sha256"] == "desired-policy-shaabcdef"
+    assert result["current_policy_sha"] == "current-policy-shaxyz"
+    assert "Failed to materialize policy state." in result["detail"]
+    assert (
+        "policy: desired desired-poli does not match current current-poli."
+        in result["detail"]
+    )
+
+
+def test_sync_pac_state_failure_reports_desired_and_current_sha(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(
+        state_sha256="desired-pac-shaabcdef"
+    )
+    runtime._current_pac_state_sha = lambda: "current-pac-shaxyz"
+    runtime.pac_render_dir = "/unwritable/pac"
+
+    def fail_materialize(*_args, **_kwargs) -> None:
+        msg = "read-only PAC directory"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(runtime_module, "materialize_proxy_pac_state", fail_materialize)
+
+    result = runtime.sync_pac_state()
+
+    assert result["ok"] is False
+    assert result["state_sha256"] == "desired-pac-shaabcdef"
+    assert result["current_state_sha256"] == "current-pac-shaxyz"
+    assert "Failed to materialize PAC state." in result["detail"]
+    assert "PAC: desired desired-pac- does not match current current-pac-." in result[
+        "detail"
+    ]
+
+
 def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_returncode(
     monkeypatch,
 ) -> None:
