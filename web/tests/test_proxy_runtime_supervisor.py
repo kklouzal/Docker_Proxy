@@ -82,9 +82,10 @@ def test_sync_pac_state_failure_reports_desired_and_current_sha(monkeypatch) -> 
     assert result["state_sha256"] == "desired-pac-shaabcdef"
     assert result["current_state_sha256"] == "current-pac-shaxyz"
     assert "Failed to materialize PAC state." in result["detail"]
-    assert "PAC: desired desired-pac- does not match current current-pac-." in result[
-        "detail"
-    ]
+    assert (
+        "PAC: desired desired-pac- does not match current current-pac-."
+        in result["detail"]
+    )
 
 
 def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_returncode(
@@ -221,8 +222,7 @@ def test_navigation_health_cache_refreshes_when_config_sha_changes() -> None:
     assert controller.calls == 1
 
     state["config_text"] = (
-        "http_port 0.0.0.0:3128 ssl-bump\n"
-        "http_port 0.0.0.0:3129 intercept\n"
+        "http_port 0.0.0.0:3128 ssl-bump\nhttp_port 0.0.0.0:3129 intercept\n"
     )
 
     refreshed = runtime.collect_navigation_health()
@@ -1174,9 +1174,12 @@ def test_sync_adblock_state_reports_squid_regex_refresh_failure() -> None:
     runtime._ensure_squid_adblock_regex_files = lambda: (_ for _ in ()).throw(
         RuntimeError("permission denied"),
     )
-    runtime._restart_adblock_service = lambda: restarts.append(True) or (
-        True,
-        "restarted",
+    runtime._restart_adblock_service = lambda: (
+        restarts.append(True)
+        or (
+            True,
+            "restarted",
+        )
     )
 
     result = runtime.sync_adblock_state(force=True)
@@ -1306,7 +1309,9 @@ def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
     runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
         policy_sha256="policy-sha", files=()
     )
-    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(state_sha256="pac-sha")
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(
+        state_sha256="pac-sha"
+    )
 
     result = runtime.collect_health()
 
@@ -1347,8 +1352,12 @@ def test_collect_health_cache_refreshes_when_config_sha_changes() -> None:
             revision_id=7, config_sha256=state["sha"]
         )
     )
-    runtime.certificate_bundles = SimpleNamespace(get_active_bundle_metadata=lambda: None)
-    runtime.adblock_artifacts = SimpleNamespace(get_active_artifact_metadata=lambda: None)
+    runtime.certificate_bundles = SimpleNamespace(
+        get_active_bundle_metadata=lambda: None
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        get_active_artifact_metadata=lambda: None
+    )
     runtime._current_config_sha = lambda: state["sha"]
     runtime._current_certificate_bundle_sha = lambda: ""
     runtime._current_adblock_artifact_sha = lambda: ""
@@ -1357,7 +1366,9 @@ def test_collect_health_cache_refreshes_when_config_sha_changes() -> None:
     runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
         policy_sha256="policy-sha", files=()
     )
-    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(state_sha256="pac-sha")
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(
+        state_sha256="pac-sha"
+    )
 
     first = runtime.collect_health()
     assert runtime.collect_health() is first
@@ -1499,9 +1510,15 @@ def test_packaged_proxy_healthcheck_treats_clamav_as_optional_by_default() -> No
 
     assert "clamav_required()" in healthcheck
     assert "supervisor reports cicap_adblock is not RUNNING" in healthcheck
-    assert "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING" in healthcheck
+    assert (
+        "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING"
+        in healthcheck
+    )
     assert "CLAMAV_REQUIRED is set but remote clamd is not responding" in healthcheck
-    assert "supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av" not in healthcheck
+    assert (
+        "supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av"
+        not in healthcheck
+    )
 
 
 def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
@@ -1747,8 +1764,12 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
 
     runtime = _runtime_shell()
     monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
-    stale = SimpleNamespace(operation_id=5, target_kind="config_revision", target_ref="7")
-    current = SimpleNamespace(operation_id=6, target_kind="config_revision", target_ref="9")
+    stale = SimpleNamespace(
+        operation_id=5, target_kind="config_revision", target_ref="7"
+    )
+    current = SimpleNamespace(
+        operation_id=6, target_kind="config_revision", target_ref="9"
+    )
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:

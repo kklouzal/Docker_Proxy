@@ -621,7 +621,8 @@ class SslErrorsStore:
             with self._connect() as conn:
                 self._ingest_line_with_conn(conn, line)
         except DATABASE_ERRORS as exc:
-            log_database_unavailable(logger,
+            log_database_unavailable(
+                logger,
                 "ssl_errors_store.ingest_direct.db",
                 "SSL errors ingest skipped database work because the database is unavailable",
                 exc,
@@ -863,7 +864,8 @@ class SslErrorsStore:
                                 if ingest_line(line):
                                     pending += 1
                             except DATABASE_ERRORS as exc:
-                                log_database_unavailable(logger,
+                                log_database_unavailable(
+                                    logger,
                                     "ssl_errors_store.ingest.db",
                                     "SSL errors tailer skipped database ingest because the database is unavailable",
                                     exc,
@@ -893,7 +895,8 @@ class SslErrorsStore:
                                 if flush_pending():
                                     pending = 0
                             except DATABASE_ERRORS as exc:
-                                log_database_unavailable(logger,
+                                log_database_unavailable(
+                                    logger,
                                     "ssl_errors_store.idle_commit.db",
                                     "SSL errors tailer deferred a pending SSL error flush because the database is unavailable",
                                     exc,
@@ -936,7 +939,8 @@ class SslErrorsStore:
                             try:
                                 flush_pending()
                             except DATABASE_ERRORS as exc:
-                                log_database_unavailable(logger,
+                                log_database_unavailable(
+                                    logger,
                                     "ssl_errors_store.commit.rotate.db",
                                     "SSL errors tailer deferred final rotation flush because the database is unavailable",
                                     exc,
@@ -952,7 +956,8 @@ class SslErrorsStore:
 
                         time.sleep(poll_interval)
             except DATABASE_ERRORS as exc:
-                log_database_unavailable(logger,
+                log_database_unavailable(
+                    logger,
                     "ssl_errors_store.loop.db",
                     "SSL errors tailer deferred database work while MySQL is unavailable",
                     exc,

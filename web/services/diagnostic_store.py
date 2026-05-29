@@ -895,7 +895,9 @@ class DiagnosticStore:
         ssl_exception = _safe_text(row[19], max_len=64)
         webfilter_allow = _safe_text(row[20], max_len=64)
         cache_bypass = _safe_text(row[21], max_len=64)
-        response_content_type = _safe_text(row[22] if len(row) > 22 else "", max_len=255)
+        response_content_type = _safe_text(
+            row[22] if len(row) > 22 else "", max_len=255
+        )
         response_server = _safe_text(row[23] if len(row) > 23 else "", max_len=255)
         response_cf_mitigated = _safe_text(row[24] if len(row) > 24 else "", max_len=64)
         response_alt_svc = _safe_text(row[25] if len(row) > 25 else "", max_len=512)

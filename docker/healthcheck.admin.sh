@@ -2,6 +2,7 @@
 
 set -eu
 
+# shellcheck disable=SC2009
 if ! ps | grep -E '[g]unicorn.*wsgi:app' >/dev/null 2>&1; then
     exit 1
 fi

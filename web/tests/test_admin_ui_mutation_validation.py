@@ -394,7 +394,9 @@ def test_admin_apply_actions_redirect_when_reconcile_queue_raises(
     assert expected_location_fragment in response.headers.get("Location", "")
 
 
-def test_revert_operation_redirects_when_revert_queue_fails(monkeypatch, tmp_path) -> None:
+def test_revert_operation_redirects_when_revert_queue_fails(
+    monkeypatch, tmp_path
+) -> None:
     loaded, client = _loaded(monkeypatch, tmp_path)
     operation = loaded.operation_ledger.create_operation(
         "default",
@@ -456,7 +458,9 @@ def test_pac_refresh_queues_only_without_direct_proxy_sync(monkeypatch, tmp_path
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-pac"
 
 
-def test_cache_clear_queues_operation_without_direct_proxy_client(monkeypatch, tmp_path):
+def test_cache_clear_queues_operation_without_direct_proxy_client(
+    monkeypatch, tmp_path
+):
     loaded, client = _loaded(monkeypatch, tmp_path)
     monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-cache")
 

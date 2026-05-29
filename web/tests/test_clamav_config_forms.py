@@ -76,7 +76,10 @@ def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
         },
     )
 
-    assert options["file_security_risky_extensions"] == "exe dll msi bat cmd com scr ps1 vbs jar apk"
+    assert (
+        options["file_security_risky_extensions"]
+        == "exe dll msi bat cmd com scr ps1 vbs jar apk"
+    )
 
 
 def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:

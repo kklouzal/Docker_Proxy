@@ -26,7 +26,9 @@ def test_adblock_artifact_background_start_defers_database_init(monkeypatch) -> 
     targets: list[object] = []
 
     def fail_if_called() -> None:  # pragma: no cover - should never run here
-        msg = "start_background should defer database initialization to the worker thread"
+        msg = (
+            "start_background should defer database initialization to the worker thread"
+        )
         raise AssertionError(msg)
 
     class FakeThread:
@@ -58,7 +60,9 @@ def test_webfilter_background_start_defers_database_init(monkeypatch) -> None:
     safe_browsing_started: list[bool] = []
 
     def fail_if_called() -> None:  # pragma: no cover - should never run here
-        msg = "start_background should defer database initialization to the worker thread"
+        msg = (
+            "start_background should defer database initialization to the worker thread"
+        )
         raise AssertionError(msg)
 
     class FakeThread:
@@ -95,7 +99,9 @@ def test_safe_browsing_background_start_defers_database_init(monkeypatch) -> Non
     targets: list[object] = []
 
     def fail_if_called() -> None:  # pragma: no cover - should never run here
-        msg = "start_background should defer database initialization to the worker thread"
+        msg = (
+            "start_background should defer database initialization to the worker thread"
+        )
         raise AssertionError(msg)
 
     class FakeThread:
@@ -117,7 +123,9 @@ def test_safe_browsing_background_start_defers_database_init(monkeypatch) -> Non
     assert len(targets) == 1
 
 
-def test_safe_browsing_local_checker_close_releases_cached_connection(monkeypatch) -> None:
+def test_safe_browsing_local_checker_close_releases_cached_connection(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     from services import safe_browsing_v5  # type: ignore
 
@@ -169,7 +177,9 @@ def test_safe_browsing_local_checker_context_manager_closes(monkeypatch) -> None
     assert checker._conn is None
 
 
-def test_safe_browsing_local_checker_discards_cached_connection_on_db_error(monkeypatch) -> None:
+def test_safe_browsing_local_checker_discards_cached_connection_on_db_error(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     from services import safe_browsing_v5  # type: ignore
 

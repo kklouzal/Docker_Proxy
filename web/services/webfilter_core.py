@@ -645,7 +645,9 @@ class WebFilterStoreBase:
                 "/usr/bin/python3 /app/tools/safe_browsing_acl.py",
                 f"--fail {safe_browsing_fail}",
             ]
-            for list_name in settings.safe_browsing_lists or DEFAULT_SAFE_BROWSING_LISTS:
+            for list_name in (
+                settings.safe_browsing_lists or DEFAULT_SAFE_BROWSING_LISTS
+            ):
                 selected_list = SafeBrowsingStore.selected_lists([str(list_name)])
                 if selected_list:
                     safe_browsing_args.append(f"--list {selected_list[0]}")

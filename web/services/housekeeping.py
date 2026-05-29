@@ -136,7 +136,9 @@ def run_housekeeping_once(
         maintenance: dict[str, Any] | None = None
         if analyze or optimize:
             maintenance = _run_with_db_lock_retry(
-                lambda: maintain_observability_tables(analyze=analyze, optimize=optimize),
+                lambda: maintain_observability_tables(
+                    analyze=analyze, optimize=optimize
+                ),
             )
         maintenance_ok = bool(maintenance.get("ok", True)) if maintenance else True
         result = {
@@ -152,7 +154,9 @@ def run_housekeeping_once(
             "maintenance": maintenance or {},
         }
         with contextlib.suppress(Exception):
-            record_observability_maintenance_run(run_type=resolved_run_type, result=result)
+            record_observability_maintenance_run(
+                run_type=resolved_run_type, result=result
+            )
         return result
     except Exception as exc:
         failed = {
@@ -169,7 +173,9 @@ def run_housekeeping_once(
             "detail": str(exc)[:300],
         }
         with contextlib.suppress(Exception):
-            record_observability_maintenance_run(run_type=resolved_run_type, result=failed)
+            record_observability_maintenance_run(
+                run_type=resolved_run_type, result=failed
+            )
         raise
     finally:
         with contextlib.suppress(Exception):

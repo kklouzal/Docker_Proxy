@@ -1921,7 +1921,8 @@ class ProxyRuntime:
                     < self.health_cache_ttl_seconds
                     and (
                         not current_config_sha
-                        or str(cached.get("current_config_sha") or "") == current_config_sha
+                        or str(cached.get("current_config_sha") or "")
+                        == current_config_sha
                     )
                 ):
                     return cached
@@ -1983,9 +1984,11 @@ class ProxyRuntime:
             current_config_sha_for_cache = ""
 
         def cache_matches_current_config(cached_value: dict[str, Any]) -> bool:
-            return not current_config_sha_for_cache or str(
-                cached_value.get("current_config_sha") or ""
-            ) == current_config_sha_for_cache
+            return (
+                not current_config_sha_for_cache
+                or str(cached_value.get("current_config_sha") or "")
+                == current_config_sha_for_cache
+            )
 
         if not force and self.health_cache_ttl_seconds > 0:
             with self._health_cache_lock:
@@ -2106,7 +2109,9 @@ class ProxyRuntime:
                     message="Failed to collect proxy PAC health state",
                 )
 
-            active_revision_sha = active_revision.config_sha256 if active_revision else ""
+            active_revision_sha = (
+                active_revision.config_sha256 if active_revision else ""
+            )
             active_certificate_sha = (
                 active_certificate.bundle_sha256 if active_certificate else ""
             )
@@ -2129,7 +2134,9 @@ class ProxyRuntime:
                         active_adblock_sha,
                         current_adblock_sha,
                     ),
-                    _state_drift_detail("policy", desired_policy_sha, current_policy_sha),
+                    _state_drift_detail(
+                        "policy", desired_policy_sha, current_policy_sha
+                    ),
                     _state_drift_detail("PAC", desired_pac_sha, current_pac_sha),
                 )
                 if drift_detail
@@ -2384,7 +2391,9 @@ class ProxyRuntime:
                 return {
                     "ok": False,
                     "detail": detail,
-                    "changed": bool(cert_changed or policy_changed or adblock_changed or pac_changed),
+                    "changed": bool(
+                        cert_changed or policy_changed or adblock_changed or pac_changed
+                    ),
                     "cache_cleared": False,
                     "certificate_changed": cert_changed,
                     "policy_changed": policy_changed,

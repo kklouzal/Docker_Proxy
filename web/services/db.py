@@ -288,7 +288,9 @@ def mysql_advisory_lock(
 ):
     lock_name = str(name or "docker_proxy:schema")[:64]
     timeout = max(1, int(timeout_seconds or 30))
-    row = conn.execute("SELECT GET_LOCK(%s, %s) AS acquired", (lock_name, timeout)).fetchone()
+    row = conn.execute(
+        "SELECT GET_LOCK(%s, %s) AS acquired", (lock_name, timeout)
+    ).fetchone()
     acquired = row["acquired"] if row is not None else 0
     if int(acquired or 0) != 1:
         msg = f"Timed out waiting for MySQL advisory lock {lock_name!r}"

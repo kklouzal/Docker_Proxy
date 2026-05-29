@@ -134,7 +134,7 @@ supervisor_program_running() {
 }
 
 env_enabled() {
-    case "$(printf '%s' "${1:-0}" | tr 'A-Z' 'a-z')" in
+    case "$(printf '%s' "${1:-0}" | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on|required|strict) return 0 ;;
         *) return 1 ;;
     esac

@@ -2,24 +2,25 @@
 
 set -eu
 
+# shellcheck source=/dev/null
 . /usr/local/bin/load-env.sh
 
 IPV6_DISABLED=0
-case "$(printf '%s' "${DISABLE_IPV6:-0}" | tr 'A-Z' 'a-z')" in
+case "$(printf '%s' "${DISABLE_IPV6:-0}" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on)
         IPV6_DISABLED=1
         ;;
 esac
 
 TEST_MODE_ENABLED=0
-case "$(printf '%s' "${ENABLE_TEST_MODE:-0}" | tr 'A-Z' 'a-z')" in
+case "$(printf '%s' "${ENABLE_TEST_MODE:-0}" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on)
         TEST_MODE_ENABLED=1
         ;;
 esac
 
 env_enabled() {
-    case "$(printf '%s' "${1:-0}" | tr 'A-Z' 'a-z')" in
+    case "$(printf '%s' "${1:-0}" | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on|required|strict) return 0 ;;
         *) return 1 ;;
     esac
@@ -436,17 +437,20 @@ fi
 if [ -n "$EXPLICIT_SQUID_SSLCRTD_CHILDREN" ]; then
     export SQUID_SSLCRTD_CHILDREN="$EXPLICIT_SQUID_SSLCRTD_CHILDREN"
 elif [ -z "${SQUID_SSLCRTD_CHILDREN:-}" ]; then
-    export SQUID_SSLCRTD_CHILDREN="$(recommend_sslcrtd_children "$WORKERS")"
+    SQUID_SSLCRTD_CHILDREN="$(recommend_sslcrtd_children "$WORKERS")"
+    export SQUID_SSLCRTD_CHILDREN
 fi
 if [ -n "$EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB" ]; then
     export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB"
 elif [ -z "${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ]; then
-    export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(recommend_dynamic_cert_cache_mb "$WORKERS")"
+    SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(recommend_dynamic_cert_cache_mb "$WORKERS")"
+    export SQUID_DYNAMIC_CERT_MEM_CACHE_MB
 fi
 if [ -n "$EXPLICIT_SQUID_MAX_FILEDESCRIPTORS" ]; then
     export SQUID_MAX_FILEDESCRIPTORS="$EXPLICIT_SQUID_MAX_FILEDESCRIPTORS"
 elif [ -z "${SQUID_MAX_FILEDESCRIPTORS:-}" ]; then
-    export SQUID_MAX_FILEDESCRIPTORS="$(recommend_nofile "$WORKERS")"
+    SQUID_MAX_FILEDESCRIPTORS="$(recommend_nofile "$WORKERS")"
+    export SQUID_MAX_FILEDESCRIPTORS
 fi
 if [ -z "${ULIMIT_NOFILE:-}" ]; then
     export ULIMIT_NOFILE="$SQUID_MAX_FILEDESCRIPTORS"
@@ -460,10 +464,12 @@ if [ -z "${WEB_THREADS:-}" ]; then
     export WEB_THREADS=2
 fi
 if [ -z "${WEBFILTER_HELPERS:-}" ]; then
-    export WEBFILTER_HELPERS="$(recommend_webfilter_helpers "$WORKERS")"
+    WEBFILTER_HELPERS="$(recommend_webfilter_helpers "$WORKERS")"
+    export WEBFILTER_HELPERS
 fi
 if [ -z "${DB_POOL_SIZE:-}" ]; then
-    export DB_POOL_SIZE="$(recommend_db_pool_size "$WORKERS")"
+    DB_POOL_SIZE="$(recommend_db_pool_size "$WORKERS")"
+    export DB_POOL_SIZE
 fi
 
 # Squid 6/7 expects logfile paths to be prefixed with a module name.
@@ -638,9 +644,11 @@ fi
 # Ensure we keep a bounded number of rotated log files.
 # Even if the user persists/edits squid.conf via the UI, add a safe default if missing.
 if [ -f /etc/squid/squid.conf ] && ! grep -q "^\s*logfile_rotate\b" /etc/squid/squid.conf 2>/dev/null; then
-    echo "" >> /etc/squid/squid.conf
-    echo "# Default log retention for squid -k rotate (daily via supervisor)." >> /etc/squid/squid.conf
-    echo "logfile_rotate 10" >> /etc/squid/squid.conf
+    {
+        echo ""
+        echo "# Default log retention for squid -k rotate (daily via supervisor)."
+        echo "logfile_rotate 10"
+    } >> /etc/squid/squid.conf
 fi
 
 # Restore current UI defaults if older persisted configs predate these directives.
@@ -712,7 +720,7 @@ python3 /app/tools/webfilter_apply.py || true
 # It should appear after 'ssl_bump peek step1' and before any 'ssl_bump bump' rule.
 if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/10-sslfilter.conf" /etc/squid/squid.conf 2>/dev/null; then
     TMP="/tmp/squid.conf.$$"
-    awk '
+    if awk '
         BEGIN{inserted=0}
         /^ssl_bump peek step1$/ && !inserted {
             print;
@@ -736,13 +744,17 @@ if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/10-sslfilter.con
                 print "include /etc/squid/conf.d/10-sslfilter.conf";
             }
         }
-    ' /etc/squid/squid.conf > "$TMP" && mv "$TMP" /etc/squid/squid.conf || rm -f "$TMP"
+    ' /etc/squid/squid.conf > "$TMP"; then
+        mv "$TMP" /etc/squid/squid.conf
+    else
+        rm -f "$TMP"
+    fi
 fi
 
 # Ensure web-filter HTTP access policy is evaluated before broad http_access rules.
 if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/30-webfilter.conf" /etc/squid/squid.conf 2>/dev/null; then
     TMP="/tmp/squid-webfilter.conf.$$"
-    awk '
+    if awk '
         BEGIN{inserted=0}
         /^[[:space:]]*http_access[[:space:]]+/ && !inserted {
             print "# Web filtering (category/domain policy). Safe if empty.";
@@ -757,7 +769,11 @@ if [ -f /etc/squid/squid.conf ] && ! grep -q "/etc/squid/conf.d/30-webfilter.con
                 print "include /etc/squid/conf.d/30-webfilter.conf";
             }
         }
-    ' /etc/squid/squid.conf > "$TMP" && mv "$TMP" /etc/squid/squid.conf || rm -f "$TMP"
+    ' /etc/squid/squid.conf > "$TMP"; then
+        mv "$TMP" /etc/squid/squid.conf
+    else
+        rm -f "$TMP"
+    fi
 fi
 
 WORKERS=""
@@ -955,6 +971,7 @@ fi
 # (Affects all processes started by this entrypoint.)
 ULIMIT_NOFILE_RAW="${ULIMIT_NOFILE:-}"
 if [ -n "$ULIMIT_NOFILE_RAW" ]; then
+    # shellcheck disable=SC3045
     case "$ULIMIT_NOFILE_RAW" in
         ''|*[!0-9]*) : ;;
         *) ulimit -n "$ULIMIT_NOFILE_RAW" 2>/dev/null || true ;;

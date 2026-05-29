@@ -389,7 +389,13 @@ class FakeOperationLedger:
         return list(reversed(rows))[:limit]
 
     def counts_by_status(self, proxy_id: object) -> dict[str, int]:
-        counts = {"pending": 0, "applying": 0, "applied": 0, "superseded": 0, "failed": 0}
+        counts = {
+            "pending": 0,
+            "applying": 0,
+            "applied": 0,
+            "superseded": 0,
+            "failed": 0,
+        }
         for op in self.operations:
             if op.proxy_id == str(proxy_id) and op.status in counts:
                 counts[op.status] += 1
@@ -994,7 +1000,12 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         set_observability_retention_settings=overrides.get(
             "set_observability_retention_settings"
         )
-        or (lambda *, retention_days: {"retention_days": int(retention_days), "updated_ts": 1}),
+        or (
+            lambda *, retention_days: {
+                "retention_days": int(retention_days),
+                "updated_ts": 1,
+            }
+        ),
         check_icap_adblock=lambda: {"ok": True, "detail": "ok"},
         check_icap_av=lambda: {"ok": True, "detail": "ok"},
         check_clamd=lambda: {"ok": True, "detail": "ok"},

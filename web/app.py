@@ -907,8 +907,12 @@ def _empty_observability_summary() -> dict[str, Any]:
     }
 
 
-def _database_remediation_payload(exc: BaseException, *, summary: dict[str, Any] | None = None) -> dict[str, Any]:
-    detail = public_error_message(exc, default="Observability data could not be loaded.")
+def _database_remediation_payload(
+    exc: BaseException, *, summary: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    detail = public_error_message(
+        exc, default="Observability data could not be loaded."
+    )
     now = int(time.time())
     row = {
         "kind": "mysql_unreachable",
@@ -933,7 +937,9 @@ def _database_remediation_payload(exc: BaseException, *, summary: dict[str, Any]
             "http3_candidates": 0,
         },
         "rows": [row],
-        "top_components": [{"label": row["component"], "full_label": row["component"], "count": 1}],
+        "top_components": [
+            {"label": row["component"], "full_label": row["component"], "count": 1}
+        ],
         "top_kinds": [{"label": row["kind"], "full_label": row["kind"], "count": 1}],
         "quic_guidance": [
             "PAC files can steer HTTP/HTTPS proxy use, but they cannot force UDP/443 QUIC through an HTTP proxy.",
@@ -1342,16 +1348,24 @@ def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
     if requested_proxy is not None:
         session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
 
-    preferred = normalize_proxy_id(session.get("active_proxy_id") or get_default_proxy_id())
+    preferred = normalize_proxy_id(
+        session.get("active_proxy_id") or get_default_proxy_id()
+    )
     registry = get_proxy_registry()
     proxies = registry.list_proxies()
     if not proxies:
         proxies = [registry.ensure_default_proxy()]
-    active_proxy = next((proxy for proxy in proxies if proxy.proxy_id == preferred), None)
+    active_proxy = next(
+        (proxy for proxy in proxies if proxy.proxy_id == preferred), None
+    )
     if active_proxy is None:
         resolved = registry.resolve_proxy_id(preferred)
         active_proxy = next(
-            (proxy for proxy in proxies if proxy.proxy_id == normalize_proxy_id(resolved)),
+            (
+                proxy
+                for proxy in proxies
+                if proxy.proxy_id == normalize_proxy_id(resolved)
+            ),
             proxies[0],
         )
     session["active_proxy_id"] = active_proxy.proxy_id
@@ -1421,9 +1435,13 @@ def login():
         password = request.form.get("password") or ""
         next_url = _safe_next_url(request.form.get("next") or "")
         try:
-            directory_result = _directory_auth_store.authenticate_admin(username, password)
+            directory_result = _directory_auth_store.authenticate_admin(
+                username, password
+            )
         except Exception:
-            app.logger.exception("Directory authentication failed before local fallback")
+            app.logger.exception(
+                "Directory authentication failed before local fallback"
+            )
             directory_result = None
         directory_ok = bool(getattr(directory_result, "ok", False))
         directory_provider = (
@@ -1439,7 +1457,11 @@ def login():
         )
         if directory_ok or local_ok:
             login_provider = directory_provider if directory_ok else "local"
-            login_username = getattr(directory_result, "username", username) if directory_ok else username
+            login_username = (
+                getattr(directory_result, "username", username)
+                if directory_ok
+                else username
+            )
             # Prevent session fixation by clearing any existing session data.
             prev_csrf = session.get("_csrf_token")
             session.clear()
@@ -4041,7 +4063,9 @@ def webfilter():
         available = []
     selected = set(
         getattr(settings, "blocked_categories", None)
-        or (settings.get("blocked_categories", []) if isinstance(settings, dict) else [])
+        or (
+            settings.get("blocked_categories", []) if isinstance(settings, dict) else []
+        )
     )
     try:
         whitelist_rows = store.list_whitelist()
@@ -4064,9 +4088,7 @@ def webfilter():
         window=window_i,
         window_label=_window_label(window_i),
         err_source=(request.args.get("err_source") == "1"),
-        err_safe_browsing_lists=(
-            request.args.get("err_safe_browsing_lists") == "1"
-        ),
+        err_safe_browsing_lists=(request.args.get("err_safe_browsing_lists") == "1"),
         err_safe_browsing_key=(request.args.get("err_safe_browsing_key") == "1"),
         wl_ok=(request.args.get("wl_ok") == "1"),
         wl_err=(request.args.get("wl_err") or ""),

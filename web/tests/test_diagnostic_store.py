@@ -1,4 +1,4 @@
-﻿import ipaddress
+import ipaddress
 
 from services.diagnostic_store import DiagnosticStore
 

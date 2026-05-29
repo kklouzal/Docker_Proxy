@@ -114,10 +114,7 @@ def test_relevant_ui_pages_warn_that_http3_quic_uses_udp_443() -> None:
 def test_templates_do_not_force_full_width_with_inline_styles() -> None:
     for template in TEMPLATES.glob("*.html"):
         html = template.read_text(encoding="utf-8")
-        assert (
-            ' style='
-            not in html
-        ), template.name
+        assert " style=" not in html, template.name
 
 
 def test_login_page_does_not_advertise_default_credentials_or_fixed_port() -> None:

@@ -401,7 +401,9 @@ class SquidController:
         ]
         if regex_block_has_rules:
             if regex_allow_has_rules:
-                lines.append(f'acl adblock_regex_allow url_regex -i "{regex_allow_path}"')
+                lines.append(
+                    f'acl adblock_regex_allow url_regex -i "{regex_allow_path}"'
+                )
             lines.extend(
                 [
                     f'acl adblock_regex_block url_regex -i "{regex_block_path}"',

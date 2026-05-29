@@ -216,7 +216,9 @@ def test_fleet_page_shows_explicit_and_intercept_listeners(
     assert "intercept 3129" in text
 
 
-def test_layout_links_to_fleet_preserve_active_proxy_context(monkeypatch, tmp_path) -> None:
+def test_layout_links_to_fleet_preserve_active_proxy_context(
+    monkeypatch, tmp_path
+) -> None:
     registry = FakeRegistry(["default", "edge-2"])
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
     client = loaded.module.app.test_client()
@@ -245,7 +247,10 @@ def test_remove_proxy_requires_exact_confirmation(monkeypatch, tmp_path) -> None
 
     assert response.status_code in {302, 303}
     assert "error=1" in response.headers["Location"]
-    assert [proxy.proxy_id for proxy in registry.list_proxies()] == ["default", "edge-2"]
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == [
+        "default",
+        "edge-2",
+    ]
     assert not any(
         record["kind"] == "proxy_remove" and record["ok"]
         for record in loaded.audit_store.records
@@ -263,7 +268,10 @@ def test_remove_proxy_requires_exact_confirmation(monkeypatch, tmp_path) -> None
 
     assert response.status_code in {302, 303}
     assert "error=1" in response.headers["Location"]
-    assert [proxy.proxy_id for proxy in registry.list_proxies()] == ["default", "edge-2"]
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == [
+        "default",
+        "edge-2",
+    ]
 
     response = client.post(
         "/proxies/remove",
@@ -368,7 +376,9 @@ def test_invalid_proxy_id_falls_back_to_registry_default(monkeypatch, tmp_path) 
         assert sess["active_proxy_id"] == "default"
 
 
-def test_existing_proxy_selection_ignores_stale_alias_resolution(monkeypatch, tmp_path) -> None:
+def test_existing_proxy_selection_ignores_stale_alias_resolution(
+    monkeypatch, tmp_path
+) -> None:
     class StaleAliasRegistry(FakeRegistry):
         def resolve_proxy_id(self, preferred: object | None = None) -> str:
             if preferred == "Proxy-PR":
@@ -387,7 +397,9 @@ def test_existing_proxy_selection_ignores_stale_alias_resolution(monkeypatch, tm
         assert sess["active_proxy_id"] == "Proxy-PR"
 
 
-def test_proxy_reconcile_route_renames_active_proxy_and_updates_session(monkeypatch, tmp_path) -> None:
+def test_proxy_reconcile_route_renames_active_proxy_and_updates_session(
+    monkeypatch, tmp_path
+) -> None:
     registry = FakeRegistry(proxy_ids=["Proxy-P", "Proxy-IT"])
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
     client = loaded.module.app.test_client()
@@ -413,7 +425,9 @@ def test_proxy_reconcile_route_renames_active_proxy_and_updates_session(monkeypa
     assert registry.get_proxy("Proxy-PR") is not None
 
 
-def test_proxy_remove_route_deletes_proxy_and_moves_active_session(monkeypatch, tmp_path) -> None:
+def test_proxy_remove_route_deletes_proxy_and_moves_active_session(
+    monkeypatch, tmp_path
+) -> None:
     registry = FakeRegistry(proxy_ids=["default", "edge-2"])
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
     client = loaded.module.app.test_client()
@@ -835,9 +849,7 @@ def test_fleet_observability_summary_is_not_repeated_per_proxy(
     assert diagnostic_store.activity_calls == 1
 
 
-def test_observability_hostnames_are_resolved_by_default(
-    monkeypatch, tmp_path
-) -> None:
+def test_observability_hostnames_are_resolved_by_default(monkeypatch, tmp_path) -> None:
     class RecordingObservabilityQueries:
         def __init__(self) -> None:
             self.top_client_calls = []
@@ -962,7 +974,12 @@ class SslPaneRowsObservability:
             "clients": [],
             "cache_reasons": [],
             "ssl": self._ssl_payload(),
-            "security": {"summary": {}, "av_rows": [], "adblock_rows": [], "webfilter_rows": []},
+            "security": {
+                "summary": {},
+                "av_rows": [],
+                "adblock_rows": [],
+                "webfilter_rows": [],
+            },
             "performance": {"summary": {}, "slow_requests": [], "slow_icap_events": []},
         }
 
@@ -1014,7 +1031,9 @@ class UnavailableWebfilterStore:
         raise RuntimeError(msg)
 
 
-def test_observability_ssl_pane_links_to_sslfilter_without_template_error(monkeypatch, tmp_path) -> None:
+def test_observability_ssl_pane_links_to_sslfilter_without_template_error(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
@@ -1030,7 +1049,9 @@ def test_observability_ssl_pane_links_to_sslfilter_without_template_error(monkey
     assert "/sslfilter?domain=broken.example" in text
 
 
-def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(monkeypatch, tmp_path) -> None:
+def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path, registry=FakeRegistry(["proxy-p"]))
     loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
 
@@ -1057,7 +1078,9 @@ def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
     assert recovered.headers["Location"].startswith("/?recovered=1")
 
 
-def test_observability_overview_merges_partial_payload_defaults(monkeypatch, tmp_path) -> None:
+def test_observability_overview_merges_partial_payload_defaults(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
@@ -1074,7 +1097,9 @@ def test_observability_overview_merges_partial_payload_defaults(monkeypatch, tmp
     assert "Potential AV findings" in text
 
 
-def test_policy_requests_page_renders_empty_state_when_store_unavailable(monkeypatch, tmp_path) -> None:
+def test_policy_requests_page_renders_empty_state_when_store_unavailable(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
     client = loaded.module.app.test_client()
@@ -1086,7 +1111,9 @@ def test_policy_requests_page_renders_empty_state_when_store_unavailable(monkeyp
     assert "Internal Server Error" not in response.get_data(as_text=True)
 
 
-def test_webfilter_page_renders_empty_state_when_store_unavailable(monkeypatch, tmp_path) -> None:
+def test_webfilter_page_renders_empty_state_when_store_unavailable(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
@@ -1131,7 +1158,9 @@ def test_webfilter_page_renders_editable_shared_source_controls(
     assert 'value="csv"' in text
 
 
-def test_recover_route_skips_proxy_registry_when_selection_is_stale(monkeypatch, tmp_path) -> None:
+def test_recover_route_skips_proxy_registry_when_selection_is_stale(
+    monkeypatch, tmp_path
+) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path, registry=RegistryListRaises())
     loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
     client = loaded.module.app.test_client()

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Self
 
@@ -186,13 +186,25 @@ def test_observability_retention_settings_round_trip(monkeypatch) -> None:
     assert initial["retention_days"] == 30
     assert saved == {"retention_days": 45, "updated_ts": 1234}
     assert loaded == {"retention_days": 45, "updated_ts": 1234}
-    assert any("CREATE TABLE IF NOT EXISTS observability_settings" in sql for sql in conn.statements)
+    assert any(
+        "CREATE TABLE IF NOT EXISTS observability_settings" in sql
+        for sql in conn.statements
+    )
 
 
 def test_observability_retention_days_are_bounded() -> None:
-    assert maintenance.normalize_retention_days("0") == maintenance.MIN_OBSERVABILITY_RETENTION_DAYS
-    assert maintenance.normalize_retention_days("999999") == maintenance.MAX_OBSERVABILITY_RETENTION_DAYS
-    assert maintenance.normalize_retention_days("not-a-number") == maintenance.DEFAULT_OBSERVABILITY_RETENTION_DAYS
+    assert (
+        maintenance.normalize_retention_days("0")
+        == maintenance.MIN_OBSERVABILITY_RETENTION_DAYS
+    )
+    assert (
+        maintenance.normalize_retention_days("999999")
+        == maintenance.MAX_OBSERVABILITY_RETENTION_DAYS
+    )
+    assert (
+        maintenance.normalize_retention_days("not-a-number")
+        == maintenance.DEFAULT_OBSERVABILITY_RETENTION_DAYS
+    )
 
 
 def test_observability_advisory_lock_uses_unpooled_connection(monkeypatch) -> None:

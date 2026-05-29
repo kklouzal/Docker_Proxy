@@ -194,7 +194,9 @@ def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
         )
     )
 
-    assert manifest["public_pac_url"] == "https://pac.example/download/wpad.dat?site=lab"
+    assert (
+        manifest["public_pac_url"] == "https://pac.example/download/wpad.dat?site=lab"
+    )
     assert manifest["public_pac_path"] == "/download/wpad.dat?site=lab"
 
 
@@ -368,7 +370,10 @@ def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
     # Profile diagnostics should mirror this same longest-prefix match behavior.
     assert pac_renderer.select_manifest_file(manifest, "10.2.3.70") == "lab.pac"
     assert pac_renderer.select_manifest_file(manifest, "10.2.3.8") == "branch.pac"
-    assert pac_renderer.select_manifest_file(manifest, "2001:db8:1::20") == "ipv6-branch.pac"
+    assert (
+        pac_renderer.select_manifest_file(manifest, "2001:db8:1::20")
+        == "ipv6-branch.pac"
+    )
 
 
 def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing_payload(
@@ -595,7 +600,7 @@ def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
     )
 
     assert (
-        'return "PROXY proxy\'host.example:3128; PROXY backup\'host.example:8080; DIRECT";'
+        "return \"PROXY proxy'host.example:3128; PROXY backup'host.example:8080; DIRECT\";"
         in rendered
     )
     assert "return 'PROXY" not in rendered

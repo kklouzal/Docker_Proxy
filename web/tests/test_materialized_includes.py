@@ -180,10 +180,7 @@ def test_webfilter_defaults_do_not_preselect_block_categories(
             self.settings: dict[tuple[str, str], str] = {}
 
         def execute(self, sql: str, params=()):
-            if (
-                "INSERT IGNORE INTO webfilter_settings" in sql
-                and len(params) == 3
-            ):
+            if "INSERT IGNORE INTO webfilter_settings" in sql and len(params) == 3:
                 proxy_id, key, value = params
                 self.settings.setdefault((str(proxy_id), str(key)), str(value))
                 return _Result()
@@ -243,10 +240,7 @@ def test_webfilter_init_clears_disabled_legacy_default_block_categories(
             }
 
         def execute(self, sql: str, params=()):
-            if (
-                "INSERT IGNORE INTO webfilter_settings" in sql
-                and len(params) == 3
-            ):
+            if "INSERT IGNORE INTO webfilter_settings" in sql and len(params) == 3:
                 proxy_id, key, value = params
                 self.settings.setdefault((str(proxy_id), str(key)), str(value))
                 return _Result()
@@ -284,7 +278,9 @@ def test_webfilter_materialized_helper_name_tracks_safe_browsing_key(
         ),
         whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
     )
-    monkeypatch.setattr(store, "_resolve_category_aliases", lambda categories: categories)
+    monkeypatch.setattr(
+        store, "_resolve_category_aliases", lambda categories: categories
+    )
     monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
 
     def render_for_key(api_key: str) -> str:
@@ -314,7 +310,9 @@ def test_webfilter_materialized_helper_name_tracks_safe_browsing_key(
     assert "/app/tools/safe_browsing_acl.py" in second
 
 
-def test_webfilter_materialized_helpers_honor_fail_mode_env(tmp_path, monkeypatch) -> None:
+def test_webfilter_materialized_helpers_honor_fail_mode_env(
+    tmp_path, monkeypatch
+) -> None:
     module = _import_webfilter_core_module()
     store = module.ProxyWebFilterStore(
         squid_include_path=str(
@@ -337,7 +335,9 @@ def test_webfilter_materialized_helpers_honor_fail_mode_env(tmp_path, monkeypatc
     monkeypatch.setenv("WEBFILTER_FAIL", "closed")
     monkeypatch.setenv("SAFE_BROWSING_FAIL", "closed")
     monkeypatch.setattr(store, "get_settings", lambda: settings)
-    monkeypatch.setattr(store, "_resolve_category_aliases", lambda categories: categories)
+    monkeypatch.setattr(
+        store, "_resolve_category_aliases", lambda categories: categories
+    )
     monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
 
     rendered = store.render_materialized_state().include_text
@@ -370,7 +370,9 @@ def test_webfilter_materialized_safe_browsing_helper_receives_selected_lists(
         safe_browsing_lists=["se-4b", "invalid-list", "uwsa-4b"],
     )
     monkeypatch.setattr(store, "get_settings", lambda: settings)
-    monkeypatch.setattr(store, "_resolve_category_aliases", lambda categories: categories)
+    monkeypatch.setattr(
+        store, "_resolve_category_aliases", lambda categories: categories
+    )
     monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
 
     rendered = store.render_materialized_state().include_text

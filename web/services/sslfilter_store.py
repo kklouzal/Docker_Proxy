@@ -354,7 +354,9 @@ class SslFilterStore:
                 no_bump_src_nets=self._list_src_conn(conn, "nobump"),
                 no_cache_src_nets=self._list_src_conn(conn, "nocache"),
                 exclude_private_nets=(
-                    True if exclude_private_nets is None else (exclude_private_nets == "1")
+                    True
+                    if exclude_private_nets is None
+                    else (exclude_private_nets == "1")
                 ),
                 inspection_enabled=(
                     True if inspection_enabled is None else (inspection_enabled == "1")

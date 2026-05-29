@@ -139,7 +139,12 @@ def test_ssl_errors_tailer_ignores_irrelevant_lines_without_database(
         ),
     )
 
-    assert store.ingest_line("2026/05/20 12:00:00 kid1| storeDirWriteCleanLogs: Starting...") is None
+    assert (
+        store.ingest_line(
+            "2026/05/20 12:00:00 kid1| storeDirWriteCleanLogs: Starting..."
+        )
+        is None
+    )
 
 
 def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
@@ -164,7 +169,9 @@ def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
         store._blocklog_tail_loop()
 
 
-def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(monkeypatch) -> None:
+def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     from services import adblock_store  # type: ignore
 
@@ -204,7 +211,9 @@ def test_adblock_proxy_meta_insert_duplicate_falls_back_to_update(monkeypatch) -
 
     class DuplicateKeyError(Exception):
         def __init__(self) -> None:
-            super().__init__(1062, "Duplicate entry 'proxy-a-cache_current_size' for key 'PRIMARY'")
+            super().__init__(
+                1062, "Duplicate entry 'proxy-a-cache_current_size' for key 'PRIMARY'"
+            )
 
     calls: list[tuple[str, tuple[object, ...]]] = []
 
@@ -247,7 +256,9 @@ def test_adblock_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None
 
     class DuplicateKeyError(Exception):
         def __init__(self) -> None:
-            super().__init__(1062, "Duplicate entry 'refresh_requested' for key 'PRIMARY'")
+            super().__init__(
+                1062, "Duplicate entry 'refresh_requested' for key 'PRIMARY'"
+            )
 
     calls: list[tuple[str, tuple[object, ...]]] = []
 
@@ -371,7 +382,9 @@ def test_live_stats_tailer_logs_database_outage_without_traceback(
             self.calls += 1
             return "access line\n" if self.calls == 1 else ""
 
-    monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: Handle())
+    monkeypatch.setattr(
+        live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: Handle()
+    )
 
     with pytest.raises(StopLoop):
         store._tail_loop()

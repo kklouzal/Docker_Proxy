@@ -256,8 +256,7 @@ def test_build_active_artifact_preserves_previous_when_enabled_list_missing(
         assert result["download_pending"] is True
         assert result["revision"].revision_id == previous_revision.revision_id
         assert (
-            artifacts.get_active_artifact().revision_id
-            == previous_revision.revision_id
+            artifacts.get_active_artifact().revision_id == previous_revision.revision_id
         )
     finally:
         for key, value in env_backup.items():

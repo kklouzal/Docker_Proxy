@@ -362,7 +362,8 @@ class ProxyRegistry:
                     "public_host": (public_host or "").strip(),
                     "public_pac_scheme": _normalize_public_scheme(public_pac_scheme),
                     "public_pac_port": _coerce_port(public_pac_port, 80),
-                    "public_pac_path": (public_pac_path or "/proxy.pac").strip() or "/proxy.pac",
+                    "public_pac_path": (public_pac_path or "/proxy.pac").strip()
+                    or "/proxy.pac",
                     "public_http_proxy_port": _coerce_port(
                         public_http_proxy_port,
                         3128,
@@ -754,7 +755,8 @@ class ProxyRegistry:
                         public_pac_path
                         if public_pac_path is not None
                         else instance.public_pac_path
-                    ).strip() or "/proxy.pac",
+                    ).strip()
+                    or "/proxy.pac",
                     _coerce_port(
                         public_http_proxy_port
                         if public_http_proxy_port is not None

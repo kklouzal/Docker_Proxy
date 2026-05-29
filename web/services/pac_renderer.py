@@ -241,8 +241,8 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         os.environ.get("PROXY_PUBLIC_PAC_URL"),
     )
     env_public_host = (
-        (os.environ.get("PROXY_PUBLIC_HOST") or "").strip() or url_public_host
-    )
+        os.environ.get("PROXY_PUBLIC_HOST") or ""
+    ).strip() or url_public_host
     proxy_public_host = str(getattr(proxy, "public_host", "") or "").strip()
     public_host = proxy_public_host or env_public_host
 

@@ -593,7 +593,9 @@ def test_connect_unpooled_does_not_register_pool_slot(monkeypatch) -> None:
         def close(self):
             return None
 
-    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d", create_database=False)
+    cfg = db.DatabaseConfig(
+        host="db", user="u", password="p", database="d", create_database=False
+    )
     monkeypatch.setattr(db, "_open_native_connection", lambda _cfg: NativeConnection())
 
     conn = db.connect_unpooled(cfg)

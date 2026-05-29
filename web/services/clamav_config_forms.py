@@ -8,7 +8,9 @@ from typing import Any
 FormMap = Mapping[str, Any]
 CLAMAV_SETTINGS_START = "# BEGIN SQUID-UI CLAMAV SETTINGS"
 CLAMAV_SETTINGS_END = "# END SQUID-UI CLAMAV SETTINGS"
-LEGACY_RISKY_EXTENSIONS_WITH_WEB_ASSETS = "exe dll msi bat cmd com scr ps1 vbs js jar apk"
+LEGACY_RISKY_EXTENSIONS_WITH_WEB_ASSETS = (
+    "exe dll msi bat cmd com scr ps1 vbs js jar apk"
+)
 
 DEFAULTS: dict[str, Any] = {
     "clamav_fail_mode": "open",

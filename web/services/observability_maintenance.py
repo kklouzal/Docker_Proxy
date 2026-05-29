@@ -329,7 +329,9 @@ def record_observability_maintenance_run(
     finished_ts = int(result.get("finished_ts") or started_ts)
     duration_ms = max(0, int(result.get("duration_ms") or 0))
     status_value = str(
-        status or result.get("status") or ("ok" if result.get("ok", True) else "failed"),
+        status
+        or result.get("status")
+        or ("ok" if result.get("ok", True) else "failed"),
     )[:16]
 
     def save() -> None:

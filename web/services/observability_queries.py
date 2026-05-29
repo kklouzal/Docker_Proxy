@@ -1469,7 +1469,9 @@ class ObservabilityQueries:
         }
 
     @staticmethod
-    def _runtime_health_suggestions(runtime_health: dict[str, Any] | None) -> list[dict[str, Any]]:
+    def _runtime_health_suggestions(
+        runtime_health: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
         if not isinstance(runtime_health, dict) or not runtime_health:
             return []
 
@@ -1508,11 +1510,23 @@ class ObservabilityQueries:
             str(runtime_health.get(key) or "")
             for key in ("detail", "health_cache_detail", "proxy_status")
         ).strip()
-        state_errors = [str(item or "") for item in runtime_health.get("state_errors") or []]
-        services = runtime_health.get("services") if isinstance(runtime_health.get("services"), dict) else {}
-        stats = runtime_health.get("stats") if isinstance(runtime_health.get("stats"), dict) else {}
+        state_errors = [
+            str(item or "") for item in runtime_health.get("state_errors") or []
+        ]
+        services = (
+            runtime_health.get("services")
+            if isinstance(runtime_health.get("services"), dict)
+            else {}
+        )
+        stats = (
+            runtime_health.get("stats")
+            if isinstance(runtime_health.get("stats"), dict)
+            else {}
+        )
 
-        if runtime_health.get("_unavailable_cached") or runtime_health.get("status") in {"offline", "unavailable"}:
+        if runtime_health.get("_unavailable_cached") or runtime_health.get(
+            "status"
+        ) in {"offline", "unavailable"}:
             add(
                 kind="proxy_health_unreachable",
                 component="Proxy runtime health",
@@ -1521,11 +1535,22 @@ class ObservabilityQueries:
                 count=1,
                 confidence="medium",
                 recommended_action="Verify the proxy management URL, management token, container state, and network path before trusting traffic-level conclusions.",
-                evidence=detail_text or "Proxy health request returned an unavailable runtime payload.",
+                evidence=detail_text
+                or "Proxy health request returned an unavailable runtime payload.",
             )
 
         db_text = " ".join([detail_text, *state_errors]).lower()
-        if any(token in db_text for token in ("mysql", "database", "db pool", "pool exhausted", "too many connections", "lock wait")):
+        if any(
+            token in db_text
+            for token in (
+                "mysql",
+                "database",
+                "db pool",
+                "pool exhausted",
+                "too many connections",
+                "lock wait",
+            )
+        ):
             add(
                 kind="mysql_degraded",
                 component="MySQL / observability ingestion",
@@ -1534,7 +1559,8 @@ class ObservabilityQueries:
                 count=1,
                 confidence="medium",
                 recommended_action="Check MySQL health, credentials, connection limits, DB_POOL_SIZE, tailer pending-row warnings, and ingestion queue pressure before relying on trend data.",
-                evidence="; ".join([detail_text, *state_errors]).strip() or "Runtime health referenced database degradation.",
+                evidence="; ".join([detail_text, *state_errors]).strip()
+                or "Runtime health referenced database degradation.",
             )
 
         for service_name, service in services.items():
@@ -1562,7 +1588,9 @@ class ObservabilityQueries:
         except Exception:
             used_value = None
         try:
-            available_value = int(available_bytes) if available_bytes is not None else None
+            available_value = (
+                int(available_bytes) if available_bytes is not None else None
+            )
         except Exception:
             available_value = None
         if (used_value is not None and used_value >= 85.0) or (
@@ -1572,16 +1600,21 @@ class ObservabilityQueries:
             if used_value is not None:
                 evidence_parts.append(f"memory used {used_value:.1f}%")
             if available_value is not None:
-                evidence_parts.append(f"available {available_value // (1024 * 1024)} MiB")
+                evidence_parts.append(
+                    f"available {available_value // (1024 * 1024)} MiB"
+                )
             add(
                 kind="memory_pressure",
                 component="Proxy runtime resources",
-                severity="high" if used_value is not None and used_value >= 92.0 else "medium",
+                severity="high"
+                if used_value is not None and used_value >= 92.0
+                else "medium",
                 title="Proxy runtime memory pressure observed",
                 count=1,
                 confidence="medium",
                 recommended_action="Increase the container memory cap, reduce Squid/ICAP/cache concurrency, or move side workloads off the constrained host before increasing inspection depth.",
-                evidence=", ".join(evidence_parts) or "Runtime memory availability is low.",
+                evidence=", ".join(evidence_parts)
+                or "Runtime memory availability is low.",
             )
 
         return rows
@@ -1629,7 +1662,9 @@ class ObservabilityQueries:
             )
             params.extend([like, like, like, like])
         where_sql = "WHERE " + " AND ".join(where)
-        suggestions: list[dict[str, Any]] = self._runtime_health_suggestions(runtime_health)
+        suggestions: list[dict[str, Any]] = self._runtime_health_suggestions(
+            runtime_health
+        )
 
         with self._connect() as conn:
             cf_rows = conn.execute(
@@ -1784,7 +1819,9 @@ class ObservabilityQueries:
                     last_seen=int(row[4] or 0),
                     confidence="high",
                     recommended_action="Check c-icap listener health, clamd reachability, fail-open/fail-closed policy, and proxy memory pressure.",
-                    evidence=str(row[5] or "ICAP trace contained failure/bypass language")[:240],
+                    evidence=str(
+                        row[5] or "ICAP trace contained failure/bypass language"
+                    )[:240],
                 ),
             )
 
@@ -1798,7 +1835,9 @@ class ObservabilityQueries:
                     self._suggestion_row(
                         kind="ssl_exclusion_candidate",
                         component="SSL inspection",
-                        severity="high" if int(row.get("count") or 0) >= 5 else "medium",
+                        severity="high"
+                        if int(row.get("count") or 0) >= 5
+                        else "medium",
                         title="Repeated TLS/SSL errors indicate likely inspection incompatibility",
                         subject=domain,
                         count=int(row.get("count") or 0),
@@ -1806,7 +1845,11 @@ class ObservabilityQueries:
                         last_seen=int(row.get("last_seen") or 0),
                         confidence="high",
                         recommended_action="Add a no-bump/splice rule for this domain, then retest the affected client workflow.",
-                        evidence=str(row.get("reason") or row.get("category_label") or "SSL error bucket"),
+                        evidence=str(
+                            row.get("reason")
+                            or row.get("category_label")
+                            or "SSL error bucket"
+                        ),
                     ),
                 )
         except Exception:
@@ -1819,11 +1862,21 @@ class ObservabilityQueries:
         return {
             "summary": {
                 "suggestions": len(rows),
-                "high_confidence": sum(1 for row in rows if row.get("confidence") == "high"),
+                "high_confidence": sum(
+                    1 for row in rows if row.get("confidence") == "high"
+                ),
                 "observations": sum(int(row.get("count") or 0) for row in rows),
-                "domains": len({str(row.get("subject") or "") for row in rows if row.get("subject")}),
+                "domains": len(
+                    {
+                        str(row.get("subject") or "")
+                        for row in rows
+                        if row.get("subject")
+                    }
+                ),
                 "latest": max([int(row.get("last_seen") or 0) for row in rows] or [0]),
-                "http3_candidates": sum(1 for row in rows if row.get("kind") == "http3_alt_svc"),
+                "http3_candidates": sum(
+                    1 for row in rows if row.get("kind") == "http3_alt_svc"
+                ),
             },
             "rows": rows,
             "top_components": _badge_rows(by_component, limit=6),

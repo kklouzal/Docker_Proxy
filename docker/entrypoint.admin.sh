@@ -2,6 +2,7 @@
 
 set -eu
 
+# shellcheck source=/dev/null
 . /usr/local/bin/load-env.sh
 
 export DISABLE_BACKGROUND="${DISABLE_BACKGROUND:-0}"

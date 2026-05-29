@@ -23,18 +23,18 @@ def _import_webcat_build():
 
 def _allow_public_example_dns(webcat_build, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
-        assert host == 'public.example'
+        assert host == "public.example"
         return [
             (
                 webcat_build.socket.AF_INET,
                 webcat_build.socket.SOCK_STREAM,
                 0,
-                '',
-                ('93.184.216.34', 0),
+                "",
+                ("93.184.216.34", 0),
             ),
         ]
 
-    monkeypatch.setattr(webcat_build.socket, 'getaddrinfo', fake_getaddrinfo)
+    monkeypatch.setattr(webcat_build.socket, "getaddrinfo", fake_getaddrinfo)
 
 
 def test_ut1_tar_gz_lowercase_blacklists_detected() -> None:
@@ -217,23 +217,23 @@ def test_download_rejects_hostname_when_dns_cannot_be_verified(
     webcat_build = _import_webcat_build()
 
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
-        assert host == 'public.example'
-        msg = 'resolver unavailable'
+        assert host == "public.example"
+        msg = "resolver unavailable"
         raise webcat_build.socket.gaierror(msg)
 
-    monkeypatch.setattr(webcat_build.socket, 'getaddrinfo', fake_getaddrinfo)
+    monkeypatch.setattr(webcat_build.socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
         webcat_build.urllib.request,
-        'build_opener',
+        "build_opener",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError('download should not open when DNS cannot be verified')
+            AssertionError("download should not open when DNS cannot be verified")
         ),
     )
 
-    with tempfile.TemporaryDirectory(prefix='webcat_dns_fail_') as td:
-        with pytest.raises(ValueError, match='internal/localhost'):
+    with tempfile.TemporaryDirectory(prefix="webcat_dns_fail_") as td:
+        with pytest.raises(ValueError, match="internal/localhost"):
             webcat_build._download(
-                'https://public.example/feed.csv', Path(td) / 'feed.csv'
+                "https://public.example/feed.csv", Path(td) / "feed.csv"
             )
 
 
