@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 # - Options are appended after '$' (network rules); for first-pass we only trust no-option domain rules.
 
 
-_COSMETIC_MARKERS = ("##", "#@#", "#?#", "#$#", "#%#")
+_COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,9 @@ class _RuleWriters:
     cosmetic_elemhide_jsonl: Any
     cosmetic_elemhide_exception_jsonl: Any
     cosmetic_extended_css_jsonl: Any
+    cosmetic_extended_css_exception_jsonl: Any
+    cosmetic_html_filter_jsonl: Any
+    cosmetic_html_filter_exception_jsonl: Any
     cosmetic_scriptlet_jsonl: Any
     cosmetic_scriptlet_exception_jsonl: Any
 
@@ -121,9 +124,41 @@ _KNOWN_TYPES: set[str] = {
     "media",
     "object",
     "ping",
+    "popup",
     "websocket",
     "other",
 }
+
+_VALUE_OPTIONS: set[str] = {
+    "csp",
+    "denyallow",
+    "domain",
+    "header",
+    "method",
+    "permissions",
+    "redirect",
+    "redirect-rule",
+    "removeparam",
+    "rewrite",
+}
+
+_BEHAVIOR_OPTIONS: set[str] = {
+    "badfilter",
+    "elemhide",
+    "genericblock",
+    "generichide",
+    "important",
+    "match-case",
+}
+
+_ALL_KNOWN_OPTIONS = (
+    _KNOWN_TYPES
+    | _VALUE_OPTIONS
+    | _BEHAVIOR_OPTIONS
+    | {"third-party", "~third-party"}
+    | {f"~{item}" for item in _KNOWN_TYPES}
+    | {f"~{item}" for item in _BEHAVIOR_OPTIONS}
+)
 
 
 _DOMAIN_ONLY_RE = re.compile(r"^\|\|(?P<host>[a-z0-9.-]+)\^?$", re.IGNORECASE)
@@ -214,7 +249,7 @@ def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
     if not raw:
         return [], {}
 
-    tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    tokens = _split_option_tokens(raw)
     parsed: dict[str, Any] = {}
     for t in tokens:
         if "=" in t:
@@ -224,15 +259,55 @@ def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
             if k == "domain":
                 # ABP domain=example.com|~foo.com
                 parts = [
-                    p.strip().lower().rstrip(".") for p in v.split("|") if p.strip()
+                    _normalize_domain_option_value(p) for p in v.split("|") if p.strip()
                 ]
                 parsed[k] = parts
+            elif k in {"denyallow", "method"}:
+                parsed[k] = [
+                    _normalize_domain_option_value(p)
+                    if k == "denyallow"
+                    else p.strip().upper()
+                    for p in v.split("|")
+                    if p.strip()
+                ]
             else:
                 parsed[k] = v
         else:
             # flags can be negated: ~third-party, ~script
             parsed[t.strip().lower()] = True
     return tokens, parsed
+
+
+def _split_option_tokens(raw: str) -> list[str]:
+    tokens: list[str] = []
+    for part in (raw or "").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        key = item.split("=", 1)[0].strip().lower()
+        if tokens and key not in _ALL_KNOWN_OPTIONS:
+            # Some valued ABP options, especially CSP/header-style options, can
+            # contain commas. Preserve the whole value instead of inventing a
+            # bogus option key from the continuation.
+            tokens[-1] = f"{tokens[-1]},{item}"
+            continue
+        tokens.append(item)
+    return tokens
+
+
+def _normalize_domain_option_value(value: str) -> str:
+    raw = (value or "").strip().lower().rstrip(".")
+    if not raw:
+        return ""
+    negated = raw.startswith("~")
+    body = raw[1:].strip().rstrip(".") if negated else raw
+    if not body:
+        return ""
+    if body in {"local", "localhost"} or "*" in body or body.startswith("["):
+        normalized = body
+    else:
+        normalized = _normalize_host(body)
+    return f"~{normalized}" if negated else normalized
 
 
 def _option_semantics(
@@ -259,6 +334,8 @@ def _option_semantics(
     domain_values = opt_parsed.get("domain") or []
     domain_includes: list[str] = []
     domain_excludes: list[str] = []
+    domain_include_patterns: list[str] = []
+    domain_exclude_patterns: list[str] = []
     if isinstance(domain_values, list):
         for item in domain_values:
             value = str(item or "").strip().lower().rstrip(".")
@@ -267,15 +344,33 @@ def _option_semantics(
             if value.startswith("~"):
                 domain = value[1:].strip().rstrip(".")
                 if domain:
-                    domain_excludes.append(domain)
+                    is_pattern = "*" in domain or domain.startswith("[")
+                    if is_pattern:
+                        domain_exclude_patterns.append(domain)
+                    else:
+                        domain_excludes.append(domain)
+            elif "*" in value or value.startswith("["):
+                domain_include_patterns.append(value)
             else:
                 domain_includes.append(value)
 
     standard_keys = {"domain", "third-party", "~third-party"}
     standard_keys.update(_KNOWN_TYPES)
     standard_keys.update({f"~{item}" for item in _KNOWN_TYPES})
+    standard_keys.update(_VALUE_OPTIONS)
+    standard_keys.update(_BEHAVIOR_OPTIONS)
+    standard_keys.update({f"~{item}" for item in _BEHAVIOR_OPTIONS})
     misc_options = {
         key: value for key, value in opt_parsed.items() if key not in standard_keys
+    }
+    behavior_options = sorted(
+        key
+        for key in opt_parsed
+        if key in _BEHAVIOR_OPTIONS
+        or (key.startswith("~") and key[1:] in _BEHAVIOR_OPTIONS)
+    )
+    value_options = {
+        key: value for key, value in opt_parsed.items() if key in _VALUE_OPTIONS
     }
     return {
         "option_tokens": tokens,
@@ -284,6 +379,10 @@ def _option_semantics(
         "third_party": third_party,
         "domain_includes": sorted(set(domain_includes)),
         "domain_excludes": sorted(set(domain_excludes)),
+        "domain_include_patterns": sorted(set(domain_include_patterns)),
+        "domain_exclude_patterns": sorted(set(domain_exclude_patterns)),
+        "behavior_options": behavior_options,
+        "value_options": value_options,
         "misc_options": misc_options,
     }
 
@@ -377,6 +476,23 @@ def _abp_to_regex(pattern: str) -> str:
     return body
 
 
+def _host_pattern_to_regex(host_pattern: str) -> str:
+    host = (host_pattern or "").strip().lower().rstrip(".")
+    if not host:
+        return ""
+    return _abp_to_regex(host)
+
+
+def _host_anchored_pattern_to_regex(host_pattern: str, suffix: str) -> str:
+    host_regex = _host_pattern_to_regex(host_pattern)
+    suffix_regex = _abp_to_regex(suffix)
+    if not host_regex:
+        return suffix_regex
+    return (
+        r"^[a-z][a-z0-9+.-]*://(?:[^/?#@]*@)?(?:[^/?#]*\.)?" + host_regex + suffix_regex
+    )
+
+
 def _split_suffix_parts(suffix_body: str) -> dict[str, Any]:
     suffix = suffix_body or ""
     separator_prefix = suffix.startswith("^")
@@ -410,7 +526,7 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
     # Returns (pattern_kind, extra_fields)
     p = (pattern or "").strip()
     if not p:
-        return "empty", {}
+        return "option_only", {"applies_without_url_pattern": True}
     if len(p) >= 3 and p.startswith("/") and p.endswith("/"):
         return "regex", {"regex": p[1:-1], "compiled_regex": p[1:-1]}
     if p.startswith("||"):
@@ -424,24 +540,47 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
                 host = rest[:i]
                 suffix = rest[i:]
                 break
+        raw_host = host
+        if "*" in raw_host:
+            star_index = raw_host.find("*")
+            prefix = raw_host[:star_index]
+            normalized_prefix = _normalize_host(prefix)
+            if (
+                prefix
+                and not prefix.endswith(".")
+                and _looks_like_host(normalized_prefix)
+            ):
+                host = normalized_prefix
+                suffix = raw_host[star_index:] + suffix
         host = _normalize_host(host)
+        suffix_right_anchored = suffix.endswith("|")
+        suffix_body = suffix[:-1] if suffix_right_anchored else suffix
+        suffix_fields = {
+            "suffix": suffix,
+            "suffix_body": suffix_body,
+            "suffix_right_anchored": suffix_right_anchored,
+            "suffix_regex": _abp_to_regex(suffix),
+            **_split_suffix_parts(suffix_body),
+        }
         if _looks_like_host(host):
             if suffix in {"", "^"}:
                 return "domain_only", {"host": host, "anchor": "domain"}
-            suffix_right_anchored = suffix.endswith("|")
-            suffix_body = suffix[:-1] if suffix_right_anchored else suffix
             return "host_anchored", {
                 "host": host,
                 "anchor": "domain",
-                "suffix": suffix,
-                "suffix_body": suffix_body,
-                "suffix_right_anchored": suffix_right_anchored,
-                "suffix_regex": _abp_to_regex(suffix),
-                **_split_suffix_parts(suffix_body),
+                **suffix_fields,
             }
-        return "host_anchored_other", {
+        normalized_pattern = _normalize_host(raw_host)
+        return "host_anchored_pattern", {
             "host": host,
-            "compiled_regex": _abp_to_regex(p),
+            "host_pattern": normalized_pattern,
+            "host_pattern_regex": _host_pattern_to_regex(normalized_pattern),
+            "anchor": "domain_pattern",
+            "compiled_regex": _host_anchored_pattern_to_regex(
+                normalized_pattern,
+                suffix,
+            ),
+            **suffix_fields,
         }
     if p.startswith("|"):
         return "left_anchored", {"compiled_regex": _abp_to_regex(p)}
@@ -479,14 +618,24 @@ def _parse_cosmetic(rule: str) -> dict[str, Any] | None:
 
         kind = "cosmetic"
         if marker == "##":
-            kind = "elemhide"
+            kind = "scriptlet" if right.startswith("+js(") else "elemhide"
         elif marker == "#@#":
-            kind = "elemhide_exception"
+            kind = (
+                "scriptlet_exception"
+                if right.startswith("+js(")
+                else "elemhide_exception"
+            )
         elif marker == "#?#":
             kind = "extended_css"
+        elif marker == "#@?#":
+            kind = "extended_css_exception"
         elif marker == "#$#":
-            kind = "scriptlet"
+            kind = "html_filter"
+        elif marker == "#@$#":
+            kind = "html_filter_exception"
         elif marker == "#%#":
+            kind = "scriptlet"
+        elif marker == "#@%#":
             kind = "scriptlet_exception"
 
         return {
@@ -625,6 +774,8 @@ def _compile_and_extract_all(
             if parsed is not None:
                 is_cosmetic_exception = parsed.get("kind") in {
                     "elemhide_exception",
+                    "extended_css_exception",
+                    "html_filter_exception",
                     "scriptlet_exception",
                 }
                 parsed["exception"] = bool(is_cosmetic_exception)
@@ -651,6 +802,18 @@ def _compile_and_extract_all(
                     )
                 elif k == "extended_css":
                     writers.cosmetic_extended_css_jsonl.write(
+                        json.dumps(parsed, ensure_ascii=False) + "\n",
+                    )
+                elif k == "extended_css_exception":
+                    writers.cosmetic_extended_css_exception_jsonl.write(
+                        json.dumps(parsed, ensure_ascii=False) + "\n",
+                    )
+                elif k == "html_filter":
+                    writers.cosmetic_html_filter_jsonl.write(
+                        json.dumps(parsed, ensure_ascii=False) + "\n",
+                    )
+                elif k == "html_filter_exception":
+                    writers.cosmetic_html_filter_exception_jsonl.write(
                         json.dumps(parsed, ensure_ascii=False) + "\n",
                     )
                 elif k == "scriptlet":
@@ -806,7 +969,7 @@ def _compile_and_extract_all(
             writers.network_kind_domain_only_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
-        elif pattern_kind in {"host_anchored", "host_anchored_other"}:
+        elif pattern_kind in {"host_anchored", "host_anchored_pattern"}:
             writers.network_kind_host_anchored_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
@@ -831,7 +994,7 @@ def _compile_and_extract_all(
             writers.request_index_domain_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
-        elif pattern_kind == "host_anchored":
+        elif pattern_kind in {"host_anchored", "host_anchored_pattern"}:
             writers.request_index_host_jsonl.write(
                 json.dumps(rec, ensure_ascii=False) + "\n",
             )
@@ -1004,6 +1167,17 @@ def main(argv: list[str] | None = None) -> int:
     cosmetic_extended_css_jsonl_path = os.path.join(
         out_dir,
         "cosmetic_extended_css.jsonl",
+    )
+    cosmetic_extended_css_exception_jsonl_path = os.path.join(
+        out_dir,
+        "cosmetic_extended_css_exception.jsonl",
+    )
+    cosmetic_html_filter_jsonl_path = os.path.join(
+        out_dir, "cosmetic_html_filter.jsonl"
+    )
+    cosmetic_html_filter_exception_jsonl_path = os.path.join(
+        out_dir,
+        "cosmetic_html_filter_exception.jsonl",
     )
     cosmetic_scriptlet_jsonl_path = os.path.join(out_dir, "cosmetic_scriptlet.jsonl")
     cosmetic_scriptlet_exception_jsonl_path = os.path.join(
@@ -1207,6 +1381,27 @@ def main(argv: list[str] | None = None) -> int:
                 newline="\n",
             ),
         )
+        cos_extended_css_exception_f = stack.enter_context(
+            pathlib.Path(cosmetic_extended_css_exception_jsonl_path).open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ),
+        )
+        cos_html_filter_f = stack.enter_context(
+            pathlib.Path(cosmetic_html_filter_jsonl_path).open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ),
+        )
+        cos_html_filter_exception_f = stack.enter_context(
+            pathlib.Path(cosmetic_html_filter_exception_jsonl_path).open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ),
+        )
         cos_scriptlet_f = stack.enter_context(
             pathlib.Path(cosmetic_scriptlet_jsonl_path).open(
                 "w",
@@ -1277,6 +1472,9 @@ def main(argv: list[str] | None = None) -> int:
             cosmetic_elemhide_jsonl=cos_elemhide_f,
             cosmetic_elemhide_exception_jsonl=cos_elemhide_exception_f,
             cosmetic_extended_css_jsonl=cos_extended_css_f,
+            cosmetic_extended_css_exception_jsonl=cos_extended_css_exception_f,
+            cosmetic_html_filter_jsonl=cos_html_filter_f,
+            cosmetic_html_filter_exception_jsonl=cos_html_filter_exception_f,
             cosmetic_scriptlet_jsonl=cos_scriptlet_f,
             cosmetic_scriptlet_exception_jsonl=cos_scriptlet_exception_f,
             cosmetic_scoped_jsonl=cos_scoped_f,
@@ -1423,6 +1621,18 @@ def main(argv: list[str] | None = None) -> int:
             "cosmetic_extended_css_jsonl": os.path.join(
                 out_dir,
                 "cosmetic_extended_css.jsonl",
+            ),
+            "cosmetic_extended_css_exception_jsonl": os.path.join(
+                out_dir,
+                "cosmetic_extended_css_exception.jsonl",
+            ),
+            "cosmetic_html_filter_jsonl": os.path.join(
+                out_dir,
+                "cosmetic_html_filter.jsonl",
+            ),
+            "cosmetic_html_filter_exception_jsonl": os.path.join(
+                out_dir,
+                "cosmetic_html_filter_exception.jsonl",
             ),
             "cosmetic_scriptlet_jsonl": os.path.join(
                 out_dir,

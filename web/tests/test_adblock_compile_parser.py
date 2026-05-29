@@ -49,6 +49,11 @@ def _compile_sample(tmp_path: Path, lines: list[str]) -> Path:
         "cosmetic_elemhide_jsonl": out / "cosmetic_elemhide.jsonl",
         "cosmetic_elemhide_exception_jsonl": out / "cosmetic_elemhide_exception.jsonl",
         "cosmetic_extended_css_jsonl": out / "cosmetic_extended_css.jsonl",
+        "cosmetic_extended_css_exception_jsonl": out
+        / "cosmetic_extended_css_exception.jsonl",
+        "cosmetic_html_filter_jsonl": out / "cosmetic_html_filter.jsonl",
+        "cosmetic_html_filter_exception_jsonl": out
+        / "cosmetic_html_filter_exception.jsonl",
         "cosmetic_scriptlet_jsonl": out / "cosmetic_scriptlet.jsonl",
         "cosmetic_scriptlet_exception_jsonl": out
         / "cosmetic_scriptlet_exception.jsonl",
@@ -200,3 +205,120 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
         rule["excluded_resource_types"] == ["stylesheet"] for rule in generic_rules
     )
     assert any(rule.get("right_anchored") is True for rule in generic_rules)
+
+
+def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
+    out = _compile_sample(
+        tmp_path,
+        [
+            "$popup,third-party,domain=example.com|~excluded.example",
+            "$csp=script-src 'self' data: 'unsafe-inline' 'unsafe-hashes' 'unsafe-eval',domain=thumbs.pro",
+        ],
+    )
+
+    generic_rules = _read_jsonl(out / "request_index_generic.jsonl")
+    by_option = {rule["options_raw"].split("=", 1)[0]: rule for rule in generic_rules}
+
+    popup_rule = by_option["popup,third-party,domain"]
+    assert popup_rule["pattern_kind"] == "option_only"
+    assert popup_rule["applies_without_url_pattern"] is True
+    assert popup_rule["resource_types"] == ["popup"]
+    assert popup_rule["third_party"] == "only"
+    assert popup_rule["domain_includes"] == ["example.com"]
+    assert popup_rule["domain_excludes"] == ["excluded.example"]
+
+    csp_rule = by_option["csp"]
+    assert csp_rule["pattern_kind"] == "option_only"
+    assert csp_rule["options"]["csp"].endswith("'unsafe-eval'")
+    assert csp_rule["domain_includes"] == ["thumbs.pro"]
+    assert csp_rule["misc_options"] == {}
+
+
+def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
+    out = _compile_sample(
+        tmp_path,
+        [
+            "||google.*/pagead/lvz?$script",
+            "||betvictor.com*&utm_campaign=$popup",
+            "@@||sourcepointcmp.bloomberg.*/mms/get_site_data?$domain=bloomberg.co.jp|bloomberg.com",
+            "||[::]^$third-party,domain=~[::1]|~localhost",
+            "||api.example.com/path$method=post,denyallow=foo.example|bar.example",
+        ],
+    )
+
+    host_rules = _read_jsonl(out / "request_index_host.jsonl")
+    by_raw = {rule["raw"]: rule for rule in host_rules}
+
+    wildcard = by_raw["||google.*/pagead/lvz?$script"]
+    assert wildcard["pattern_kind"] == "host_anchored_pattern"
+    assert wildcard["host_pattern"] == "google.*"
+    assert wildcard["path_pattern"] == "/pagead/lvz"
+    assert wildcard["query_pattern"] == "?"
+    assert wildcard["resource_types"] == ["script"]
+    assert r"\|\|" not in wildcard["compiled_regex"]
+    assert "google\\..*" in wildcard["compiled_regex"]
+
+    host_with_wildcard_suffix = by_raw["||betvictor.com*&utm_campaign=$popup"]
+    assert host_with_wildcard_suffix["pattern_kind"] == "host_anchored"
+    assert host_with_wildcard_suffix["host"] == "betvictor.com"
+    assert host_with_wildcard_suffix["suffix"] == "*&utm_campaign="
+    assert host_with_wildcard_suffix["resource_types"] == ["popup"]
+
+    exception = by_raw[
+        "@@||sourcepointcmp.bloomberg.*/mms/get_site_data?$domain=bloomberg.co.jp|bloomberg.com"
+    ]
+    assert exception["action"] == "allow"
+    assert exception["host_pattern"] == "sourcepointcmp.bloomberg.*"
+    assert exception["domain_includes"] == ["bloomberg.co.jp", "bloomberg.com"]
+
+    ipv6 = by_raw["||[::]^$third-party,domain=~[::1]|~localhost"]
+    assert ipv6["pattern_kind"] == "host_anchored_pattern"
+    assert ipv6["host_pattern"] == "[::]"
+    assert ipv6["domain_exclude_patterns"] == ["[::1]"]
+    assert ipv6["domain_excludes"] == ["localhost"]
+
+    method = by_raw[
+        "||api.example.com/path$method=post,denyallow=foo.example|bar.example"
+    ]
+    assert method["pattern_kind"] == "host_anchored"
+    assert method["options"]["method"] == ["POST"]
+    assert method["options"]["denyallow"] == ["foo.example", "bar.example"]
+
+
+def test_cosmetic_parser_splits_scriptlets_and_html_filters(tmp_path: Path) -> None:
+    out = _compile_sample(
+        tmp_path,
+        [
+            "madewell.com##+js(cookie-remover, dns_cookie)",
+            "example.com#@#+js(set, foo, noopFunc)",
+            'history.com#?#[data-sentry-component="Box"]:has-text(Privacy)',
+            "example.com#@?#.notice:has-text(Privacy)",
+            "podleze-piekielko.pl#$#abort-on-property-read cookieman",
+            "example.com#@$#abort-on-property-read cookieman",
+            "plain.example##.ad-unit",
+        ],
+    )
+
+    scriptlets = _read_jsonl(out / "cosmetic_scriptlet.jsonl")
+    assert scriptlets[0]["kind"] == "scriptlet"
+    assert scriptlets[0]["marker"] == "##"
+    assert scriptlets[0]["selector"].startswith("+js(")
+
+    scriptlet_exceptions = _read_jsonl(out / "cosmetic_scriptlet_exception.jsonl")
+    assert scriptlet_exceptions[0]["kind"] == "scriptlet_exception"
+    assert scriptlet_exceptions[0]["exception"] is True
+
+    extended_css = _read_jsonl(out / "cosmetic_extended_css.jsonl")
+    assert extended_css[0]["kind"] == "extended_css"
+    extended_css_exceptions = _read_jsonl(out / "cosmetic_extended_css_exception.jsonl")
+    assert extended_css_exceptions[0]["kind"] == "extended_css_exception"
+    assert extended_css_exceptions[0]["exception"] is True
+
+    html_filters = _read_jsonl(out / "cosmetic_html_filter.jsonl")
+    assert html_filters[0]["kind"] == "html_filter"
+    html_filter_exceptions = _read_jsonl(out / "cosmetic_html_filter_exception.jsonl")
+    assert html_filter_exceptions[0]["kind"] == "html_filter_exception"
+    assert html_filter_exceptions[0]["exception"] is True
+
+    elemhide = _read_jsonl(out / "cosmetic_elemhide.jsonl")
+    assert elemhide[0]["kind"] == "elemhide"
