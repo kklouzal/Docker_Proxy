@@ -20,6 +20,12 @@
 <div>Selecting a proxy updates the pinned context for the next page you open, while existing tabs keep their current target.</div>
 {% endcall %}
 
+{% if request.args.get('removed') %}
+<div class="banner success"><span class="badge ok">Removed</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Proxy removed.' }}</span></div></div>
+{% elif request.args.get('error') %}
+<div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Request failed.' }}</span></div></div>
+{% endif %}
+
 {% set ns = namespace(healthy=0) %}
 {% for proxy in proxies %}
     {% set health = live_health.get(proxy.proxy_id, {}) %}
@@ -145,6 +151,17 @@
                                         <label class="small">Display name</label>
                                         <input type="text" name="display_name" value="{{ proxy.display_name or proxy.proxy_id }}" required>
                                         <button class="btn primary" type="submit">Reconcile</button>
+                                    </form>
+                                </details>
+                                <details class="inline-details">
+                                    <summary class="btn danger">Remove</summary>
+                                    <form action="{{ url_for('remove_proxy') }}" method="post" class="stack-sm">
+                                        {{ csrf_field() }}
+                                        <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
+                                        <div class="surface-note small">Deletes this proxy registration and all MySQL rows scoped to <span class="mono">{{ proxy.proxy_id }}</span>. A running container with the same ID can register again on its next heartbeat.</div>
+                                        <label class="small">Type proxy ID to confirm</label>
+                                        <input type="text" name="confirm_proxy_id" autocomplete="off" required>
+                                        <button class="btn danger" type="submit" data-confirm-message="Remove {{ proxy.display_name }} and delete all MySQL data scoped to {{ proxy.proxy_id }}?" data-pending-label="Removing...">Remove proxy</button>
                                     </form>
                                 </details>
                             </div>

@@ -660,8 +660,18 @@ def _query_flag(value: bool) -> str | None:
     return "1" if value else None
 
 
+_FLEET_MANAGEMENT_ENDPOINTS = frozenset(
+    {"proxies", "remove_proxy", "reconcile_proxy_identity"},
+)
 _NON_PROXY_ENDPOINTS = frozenset(
-    {"static", "login", "logout", "health", "recover_admin_session"},
+    {
+        "static",
+        "login",
+        "logout",
+        "health",
+        "recover_admin_session",
+        *_FLEET_MANAGEMENT_ENDPOINTS,
+    },
 )
 
 
@@ -1367,6 +1377,23 @@ def _inject_proxy_context():
     get_proxy_id()
     active_proxy = getattr(g, "_active_proxy", None)
     proxies = getattr(g, "_proxy_inventory", None)
+    if request.endpoint in _FLEET_MANAGEMENT_ENDPOINTS:
+        requested_proxy = request.form.get("proxy_id") or request.args.get("proxy_id")
+        if requested_proxy is not None:
+            session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
+        proxies = get_proxy_registry().list_proxies()
+        preferred = normalize_proxy_id(
+            session.get("active_proxy_id") or get_default_proxy_id(),
+        )
+        active_proxy = next(
+            (proxy for proxy in proxies if proxy.proxy_id == preferred),
+            proxies[0] if proxies else None,
+        )
+        return {
+            "active_proxy_id": active_proxy.proxy_id if active_proxy else None,
+            "active_proxy": active_proxy,
+            "proxy_inventory": proxies,
+        }
     if active_proxy is None or proxies is None:
         _active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
     return {
@@ -2516,6 +2543,51 @@ def reconcile_proxy_identity():
     return _redirect_to("proxies", saved="1", proxy_id=renamed.proxy_id)
 
 
+@app.route("/proxies/remove", methods=["POST"])
+def remove_proxy():
+    proxy_id = (request.form.get("proxy_id") or "").strip()
+    confirmation = (request.form.get("confirm_proxy_id") or "").strip()
+    normalized_proxy_id = normalize_proxy_id(proxy_id)
+    if normalize_proxy_id(confirmation) != normalized_proxy_id:
+        return _redirect_to(
+            "proxies",
+            error="1",
+            msg="Type the proxy ID to confirm removal.",
+        )
+    try:
+        result = get_proxy_registry().remove_proxy(normalized_proxy_id)
+    except Exception as exc:
+        _record_audit_event(
+            "proxy_remove",
+            ok=False,
+            detail=f"proxy_id={normalized_proxy_id} error={public_error_message(exc)}",
+        )
+        return _redirect_to("proxies", error="1", msg=public_error_message(exc))
+
+    remaining = get_proxy_registry().list_proxies()
+    if session.get("active_proxy_id") in {None, normalized_proxy_id}:
+        if remaining:
+            session["active_proxy_id"] = remaining[0].proxy_id
+        else:
+            session.pop("active_proxy_id", None)
+    _PROXY_HEALTH_CACHE.clear()
+    _OBSERVABILITY_SUMMARY_CACHE.clear()
+    _OBSERVABILITY_RESULT_CACHE.clear()
+    _record_audit_event(
+        "proxy_remove",
+        ok=True,
+        detail=(
+            f"proxy_id={result.proxy_id} deleted_rows={result.deleted_rows} "
+            f"tables={','.join(result.table_counts)}"
+        ),
+    )
+    return _redirect_to(
+        "proxies",
+        removed="1",
+        msg=f"Removed {result.proxy_id} and deleted {result.deleted_rows} scoped MySQL rows.",
+    )
+
+
 @app.route("/proxies", methods=["GET"])
 def proxies():
     registry = get_proxy_registry()
@@ -2531,7 +2603,11 @@ def proxies():
         }
         for proxy in proxies
     }
-    active_proxy_id = get_proxy_id()
+    active_proxy_id = normalize_proxy_id(
+        session.get("active_proxy_id") or get_default_proxy_id(),
+    )
+    if active_proxy_id not in live_health:
+        active_proxy_id = proxies[0].proxy_id if proxies else ""
     if active_proxy_id in live_health:
         try:
             live_health[active_proxy_id] = _cached_proxy_health(

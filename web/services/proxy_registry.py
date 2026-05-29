@@ -168,6 +168,13 @@ class ProxyInstance:
     updated_ts: int
 
 
+@dataclass(frozen=True)
+class ProxyRemovalResult:
+    proxy_id: str
+    deleted_rows: int
+    table_counts: dict[str, int]
+
+
 class ProxyRegistry:
     _SELECT_COLUMNS = "proxy_id, display_name, hostname, management_url, public_host, public_pac_scheme, public_pac_port, public_pac_path, public_http_proxy_port, status, last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha, detail, created_ts, updated_ts"
 
@@ -568,6 +575,66 @@ class ProxyRegistry:
         refreshed = self.get_proxy(new_key)
         assert refreshed is not None
         return refreshed
+
+    def remove_proxy(self, proxy_id: object | None) -> ProxyRemovalResult:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        table_counts: dict[str, int] = {}
+
+        def _remove() -> None:
+            with self._connect() as conn:
+                with mysql_advisory_lock(
+                    conn,
+                    "docker_proxy:proxy_registry:remove",
+                    mysql_schema_lock_timeout_seconds(),
+                ):
+                    row = conn.execute(
+                        "SELECT proxy_id FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                        (proxy_key,),
+                    ).fetchone()
+                    if row is None:
+                        msg = f"Proxy {proxy_key!r} is not registered."
+                        raise ValueError(msg)
+
+                    for table_name in self._proxy_id_tables(conn):
+                        if table_name == "proxy_instances":
+                            continue
+                        result = conn.execute(
+                            f"DELETE FROM {_quote_mysql_identifier(table_name)} WHERE proxy_id=%s",
+                            (proxy_key,),
+                        )
+                        deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
+                        if deleted:
+                            table_counts[table_name] = deleted
+
+                    result = conn.execute(
+                        "DELETE FROM proxy_id_aliases WHERE alias_proxy_id=%s",
+                        (proxy_key,),
+                    )
+                    deleted_aliases = max(0, int(getattr(result, "rowcount", 0) or 0))
+                    if deleted_aliases:
+                        table_counts["proxy_id_aliases.alias_proxy_id"] = (
+                            table_counts.get("proxy_id_aliases.alias_proxy_id", 0)
+                            + deleted_aliases
+                        )
+
+                    result = conn.execute(
+                        "DELETE FROM proxy_instances WHERE proxy_id=%s",
+                        (proxy_key,),
+                    )
+                    deleted_instance = max(
+                        0,
+                        int(getattr(result, "rowcount", 0) or 0),
+                    )
+                    if deleted_instance:
+                        table_counts["proxy_instances"] = deleted_instance
+
+        run_mysql_operation_with_retry(_remove)
+        return ProxyRemovalResult(
+            proxy_id=proxy_key,
+            deleted_rows=sum(table_counts.values()),
+            table_counts=dict(sorted(table_counts.items())),
+        )
 
     def find_reconcile_candidate(
         self,

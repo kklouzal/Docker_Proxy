@@ -161,6 +161,19 @@ class FakeRegistry:
         proxy.display_name = display_name or proxy.proxy_id
         return proxy
 
+    def remove_proxy(self, proxy_id: object | None) -> Any:
+        key = str(proxy_id or "default")
+        proxy = self.get_proxy(key)
+        if proxy is None:
+            msg = "proxy not found"
+            raise ValueError(msg)
+        self.proxies = [item for item in self.proxies if item.proxy_id != key]
+        return SimpleNamespace(
+            proxy_id=key,
+            deleted_rows=3,
+            table_counts={"proxy_instances": 1, "diagnostic_requests": 2},
+        )
+
     def mark_apply_result(self, *_args: Any, **_kwargs: Any) -> Any:
         return self.ensure_default_proxy()
 

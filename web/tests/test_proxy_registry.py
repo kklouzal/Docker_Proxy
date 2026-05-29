@@ -297,6 +297,69 @@ def test_resolve_proxy_id_honors_rename_alias(tmp_path):
     assert registry.resolve_proxy_id("Proxy-PR") == "Proxy-PR"
 
 
+def test_remove_proxy_deletes_registry_aliases_and_proxy_scoped_rows(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-remove")
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-2", display_name="Edge")
+    registry.rename_proxy("edge-2", "edge-live", display_name="Edge")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS proxy_removal_test_rows (proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO proxy_id_aliases(alias_proxy_id, proxy_id, created_ts, updated_ts) VALUES(%s,%s,%s,%s)",
+            ("edge-live", "other-proxy", 1, 1),
+        )
+        conn.execute(
+            "INSERT INTO proxy_removal_test_rows(proxy_id, value) VALUES(%s,%s),(%s,%s)",
+            ("edge-live", "removed", "other-proxy", "kept"),
+        )
+
+    removed = registry.remove_proxy("edge-live")
+
+    assert removed.proxy_id == "edge-live"
+    assert removed.table_counts["proxy_instances"] == 1
+    assert removed.table_counts["proxy_removal_test_rows"] == 1
+    assert removed.table_counts["proxy_id_aliases"] == 1
+    assert removed.table_counts["proxy_id_aliases.alias_proxy_id"] == 1
+    assert registry.get_proxy("edge-live") is None
+    with registry._connect() as conn:
+        removed_row = conn.execute(
+            "SELECT proxy_id FROM proxy_removal_test_rows WHERE value=%s",
+            ("removed",),
+        ).fetchone()
+        kept_row = conn.execute(
+            "SELECT proxy_id FROM proxy_removal_test_rows WHERE value=%s",
+            ("kept",),
+        ).fetchone()
+        alias_row = conn.execute(
+            "SELECT proxy_id FROM proxy_id_aliases WHERE alias_proxy_id=%s OR proxy_id=%s",
+            ("edge-2", "edge-live"),
+        ).fetchone()
+    assert removed_row is None
+    assert kept_row["proxy_id"] == "other-proxy"
+    assert alias_row is None
+
+
+def test_remove_proxy_rejects_unknown_proxy(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-remove-missing")
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("default")
+
+    try:
+        registry.remove_proxy("missing")
+    except ValueError as exc:
+        assert "not registered" in str(exc)
+    else:
+        raise AssertionError("remove_proxy should reject unknown proxies")
+
+
 def test_init_db_preserves_retired_socks_storage() -> None:
     _add_web_to_path()
     from services import proxy_registry  # type: ignore

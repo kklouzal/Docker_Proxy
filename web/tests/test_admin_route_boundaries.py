@@ -345,6 +345,51 @@ def test_proxy_reconcile_route_renames_active_proxy_and_updates_session(monkeypa
     assert registry.get_proxy("Proxy-PR") is not None
 
 
+def test_proxy_remove_route_deletes_proxy_and_moves_active_session(monkeypatch, tmp_path) -> None:
+    registry = FakeRegistry(proxy_ids=["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies?proxy_id=edge-2")
+
+    response = client.post(
+        "/proxies/remove",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-2",
+            "confirm_proxy_id": "edge-2",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert registry.get_proxy("edge-2") is None
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "default"
+
+
+def test_proxy_remove_route_requires_typed_proxy_id(monkeypatch, tmp_path) -> None:
+    registry = FakeRegistry(proxy_ids=["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies")
+
+    response = client.post(
+        "/proxies/remove",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-2",
+            "confirm_proxy_id": "wrong",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert "Type+the+proxy+ID" in response.headers["Location"]
+    assert registry.get_proxy("edge-2") is not None
+
+
 def test_post_routes_reject_missing_csrf_after_login(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
