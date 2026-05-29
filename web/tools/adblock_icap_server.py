@@ -84,8 +84,9 @@ def _block_response(url: str, raw_rule: str) -> bytes:
     escaped_url = html.escape(url or "", quote=True)
     escaped_rule = html.escape(raw_rule or "adblock rule", quote=True)
     body = (
-        "<!doctype html><html><head><title>Blocked</title></head>"
-        "<body><h1>Blocked by proxy adblock</h1>"
+        "<!doctype html><html><head><title>Access Denied</title></head>"
+        "<body><h1>Access Denied</h1>"
+        "<p>Blocked by proxy adblock.</p>"
         f"<p>{escaped_url}</p><p>Rule: {escaped_rule}</p></body></html>"
     ).encode()
     http_headers = (
