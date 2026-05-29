@@ -216,6 +216,20 @@ def test_fleet_page_shows_explicit_and_intercept_listeners(
     assert "intercept 3129" in text
 
 
+def test_layout_links_to_fleet_preserve_active_proxy_context(monkeypatch, tmp_path) -> None:
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/webfilter?proxy_id=edge-2")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert 'href="/proxies?proxy_id=edge-2"' in text
+    assert 'href="/logout?proxy_id=edge-2"' not in text
+
+
 def test_remove_proxy_requires_exact_confirmation(monkeypatch, tmp_path) -> None:
     registry = FakeRegistry(["default", "edge-2"])
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)

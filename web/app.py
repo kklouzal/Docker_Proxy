@@ -663,7 +663,7 @@ def _query_flag(value: bool) -> str | None:
 _FLEET_MANAGEMENT_ENDPOINTS = frozenset(
     {"proxies", "remove_proxy", "reconcile_proxy_identity"},
 )
-_NON_PROXY_ENDPOINTS = frozenset(
+_NON_PROXY_CONTEXT_ENDPOINTS = frozenset(
     {
         "static",
         "login",
@@ -673,6 +673,17 @@ _NON_PROXY_ENDPOINTS = frozenset(
         *_FLEET_MANAGEMENT_ENDPOINTS,
     },
 )
+_NON_PROXY_LINK_ENDPOINTS = frozenset(
+    {
+        "static",
+        "login",
+        "logout",
+        "health",
+        "recover_admin_session",
+        "remove_proxy",
+        "reconcile_proxy_identity",
+    },
+)
 
 
 def _filter_none_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -680,7 +691,7 @@ def _filter_none_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _should_preserve_proxy(endpoint: str, params: dict[str, Any] | None = None) -> bool:
-    if endpoint in _NON_PROXY_ENDPOINTS:
+    if endpoint in _NON_PROXY_LINK_ENDPOINTS:
         return False
     return not (params and params.get("proxy_id") is not None)
 
@@ -1321,7 +1332,7 @@ def _require_login_guard():
 
 
 def _request_needs_proxy_context() -> bool:
-    if request.endpoint in {None, *_NON_PROXY_ENDPOINTS}:
+    if request.endpoint in {None, *_NON_PROXY_CONTEXT_ENDPOINTS}:
         return False
     return _is_logged_in()
 
