@@ -2548,11 +2548,17 @@ def remove_proxy():
     proxy_id = (request.form.get("proxy_id") or "").strip()
     confirmation = (request.form.get("confirm_proxy_id") or "").strip()
     normalized_proxy_id = normalize_proxy_id(proxy_id)
-    if normalize_proxy_id(confirmation) != normalized_proxy_id:
+    if not proxy_id or proxy_id != normalized_proxy_id:
         return _redirect_to(
             "proxies",
             error="1",
-            msg="Type the proxy ID to confirm removal.",
+            msg="Proxy removal requires an exact registered proxy ID.",
+        )
+    if confirmation != normalized_proxy_id:
+        return _redirect_to(
+            "proxies",
+            error="1",
+            msg="Type the proxy ID exactly to confirm removal.",
         )
     try:
         result = get_proxy_registry().remove_proxy(normalized_proxy_id)

@@ -357,7 +357,8 @@ def test_remove_proxy_rejects_unknown_proxy(tmp_path):
     except ValueError as exc:
         assert "not registered" in str(exc)
     else:
-        raise AssertionError("remove_proxy should reject unknown proxies")
+        msg = "remove_proxy should reject unknown proxies"
+        raise AssertionError(msg)
 
 
 def test_init_db_preserves_retired_socks_storage() -> None:

@@ -216,6 +216,60 @@ def test_fleet_page_shows_explicit_and_intercept_listeners(
     assert "intercept 3129" in text
 
 
+def test_remove_proxy_requires_exact_confirmation(monkeypatch, tmp_path) -> None:
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies")
+
+    response = client.post(
+        "/proxies/remove",
+        data={"csrf_token": token, "proxy_id": "default", "confirm_proxy_id": ""},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "error=1" in response.headers["Location"]
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == ["default", "edge-2"]
+    assert not any(
+        record["kind"] == "proxy_remove" and record["ok"]
+        for record in loaded.audit_store.records
+    )
+
+    response = client.post(
+        "/proxies/remove",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-2",
+            "confirm_proxy_id": "edge 2",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "error=1" in response.headers["Location"]
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == ["default", "edge-2"]
+
+    response = client.post(
+        "/proxies/remove",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-2",
+            "confirm_proxy_id": "edge-2",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "removed=1" in response.headers["Location"]
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == ["default"]
+    assert any(
+        record["kind"] == "proxy_remove" and record["ok"]
+        for record in loaded.audit_store.records
+    )
+
+
 def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
