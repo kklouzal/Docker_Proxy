@@ -172,16 +172,16 @@
       {% if active_artifact.available %}
         <div class="summary-grid">
           <div class="stat compact-stat">
-            <div class="stat-k">Domain blocks</div>
-            <div class="stat-v">{{ active_artifact.counts.get('domains_block', 0) }}</div>
+            <div class="stat-k">Domain index rows</div>
+            <div class="stat-v">{{ active_artifact.breakdowns.get('lookup_index_counts', {}).get('domain_index', 0) }}</div>
           </div>
           <div class="stat compact-stat">
-            <div class="stat-k">Domain exceptions</div>
-            <div class="stat-v">{{ active_artifact.counts.get('domains_allow', 0) }}</div>
+            <div class="stat-k">Host index rows</div>
+            <div class="stat-v">{{ active_artifact.breakdowns.get('lookup_index_counts', {}).get('host_index', 0) }}</div>
           </div>
           <div class="stat compact-stat">
-            <div class="stat-k">Regex blocks</div>
-            <div class="stat-v">{{ active_artifact.counts.get('regex_block', 0) }}</div>
+            <div class="stat-k">Regex index rows</div>
+            <div class="stat-v">{{ active_artifact.breakdowns.get('lookup_index_counts', {}).get('regex_index', 0) }}</div>
           </div>
           <div class="stat compact-stat">
             <div class="stat-k">Request index rules</div>

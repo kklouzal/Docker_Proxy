@@ -939,7 +939,7 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
     compiled = tmp_path / "compiled"
     compiled.mkdir()
     (compiled / ".artifact-sha256").write_text("old-sha", encoding="utf-8")
-    (compiled / "domains_block.txt").write_text("old.example\n", encoding="utf-8")
+    (compiled / "request_lookup.sqlite").write_bytes(b"old-db")
     recorded: list[dict[str, object]] = []
     restarts = iter([(False, "cicap_adblock BACKOFF"), (True, "cicap_adblock RUNNING")])
 
@@ -979,7 +979,7 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
         (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
-        (root / "domains_block.txt").write_text("bad.example\n", encoding="utf-8")
+        (root / "request_lookup.sqlite").write_bytes(b"bad-db")
 
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "old-sha")
@@ -998,9 +998,7 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
     assert result["artifact_rolled_back"] is True
     assert "Restored previous adblock compiled artifact" in result["detail"]
     assert (compiled / ".artifact-sha256").read_text(encoding="utf-8") == "old-sha"
-    assert (compiled / "domains_block.txt").read_text(
-        encoding="utf-8"
-    ) == "old.example\n"
+    assert (compiled / "request_lookup.sqlite").read_bytes() == b"old-db"
     assert recorded[-1]["ok"] is False
 
 

@@ -269,13 +269,17 @@ def test_adblock_page_shows_active_compiled_artifact_summary(
         enabled_lists=["easylist", "easyprivacy"],
         report={
             "counts": {
-                "domains_block": 11,
-                "domains_allow": 2,
-                "regex_block": 3,
                 "network_rules_total": 44,
                 "network_rules_with_options": 5,
                 "cosmetic_rules_total": 6,
-            }
+            },
+            "breakdowns": {
+                "lookup_index_counts": {
+                    "domain_index": 11,
+                    "host_index": 2,
+                    "regex_index": 3,
+                },
+            },
         },
     )
     loaded = load_admin_app(
@@ -293,7 +297,7 @@ def test_adblock_page_shows_active_compiled_artifact_summary(
     assert "Compiled artifact" in text
     assert "rev 7" in text
     assert "abcdef123456" in text
-    assert "Domain blocks" in text
+    assert "Domain index rows" in text
     assert "11" in text
     assert "Request index rules" in text
     assert "44" in text
