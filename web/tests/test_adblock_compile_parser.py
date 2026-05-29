@@ -148,6 +148,21 @@ def test_abp_regex_options_split_after_closing_delimiter() -> None:
     assert parsed["domain"] == ["~amazon.com"]
 
 
+def test_abp_options_split_ignores_escaped_literal_dollars() -> None:
+    _add_web_to_path()
+    from tools import adblock_compile as ac  # type: ignore
+
+    assert ac._split_options(r"plain\$literal") == (r"plain\$literal", "")
+    assert ac._split_options(r"||shop.example/path\$price^$script") == (
+        r"||shop.example/path\$price^",
+        "script",
+    )
+    assert ac._split_options(r"||shop.example/path\\$script") == (
+        r"||shop.example/path\\",
+        "script",
+    )
+
+
 def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
     out = _compile_sample(
         tmp_path,
@@ -162,6 +177,8 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
             "|https://left.example/ad^$image",
             "wss://loader.*.com/ws^$websocket,third-party",
             "ads.js|",
+            r"price\$literal",
+            r"||shop.example/path\$price^$script",
             "plain-ad-token$~stylesheet",
             "||ads.example^$third-party",
         ],
@@ -194,6 +211,8 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
         "music.youtube.com",
         "tv.youtube.com",
     ]
+    assert by_host["shop.example"]["suffix"] == r"/path\$price^"
+    assert by_host["shop.example"]["resource_types"] == ["script"]
     absolute_patterns = [
         rule for rule in host_rules if rule["pattern_kind"] == "absolute_url_pattern"
     ]
@@ -213,6 +232,7 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
         "right_anchored",
         "substring",
     }
+    assert any(rule["pattern"] == r"price\$literal" for rule in generic_rules)
     assert any(
         rule["excluded_resource_types"] == ["stylesheet"] for rule in generic_rules
     )

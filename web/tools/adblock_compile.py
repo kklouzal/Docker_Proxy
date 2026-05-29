@@ -183,7 +183,8 @@ def _is_cosmetic(s: str) -> bool:
 def _split_options(rule: str) -> tuple[str, str]:
     # Split the ABP options suffix. Regex rules are /.../$options, and the
     # regex body can legitimately contain '$' anchors, escaped slashes, and
-    # character classes. For non-regex rules, '$' is the options delimiter.
+    # character classes. For non-regex rules, only an unescaped '$' starts the
+    # options suffix; '\$' is a literal URL-pattern dollar.
     s = (rule or "").strip()
     if len(s) >= 2 and s.startswith("/"):
         regex_end = _find_regex_delimiter(s)
@@ -195,10 +196,26 @@ def _split_options(rule: str) -> tuple[str, str]:
             if tail.startswith("$"):
                 return pattern, tail[1:].strip()
             return s, ""
-    if "$" not in s:
+    delimiter = _find_options_delimiter(s)
+    if delimiter is None:
         return s, ""
-    pat, opts = s.split("$", 1)
+    pat = s[:delimiter]
+    opts = s[delimiter + 1 :]
     return pat.strip(), opts.strip()
+
+
+def _find_options_delimiter(rule: str) -> int | None:
+    for index, ch in enumerate(rule or ""):
+        if ch != "$":
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and rule[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2 == 0:
+            return index
+    return None
 
 
 def _find_regex_delimiter(rule: str) -> int | None:
