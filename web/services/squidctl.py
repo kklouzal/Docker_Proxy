@@ -1115,6 +1115,15 @@ class SquidController(_CoreSquidController):
     def _default_intercept_port(self, explicit_port: int) -> int:
         return explicit_port + 1 if explicit_port < 65535 else 3129
 
+    def _first_available_port(self, preferred: int, used_ports: set[int]) -> int:
+        candidate = self._coerce_port(preferred, 3130)
+        for _ in range(65535):
+            if candidate not in used_ports:
+                return candidate
+            candidate = 1 if candidate >= 65535 else candidate + 1
+        msg = "No available TCP listener ports remain."
+        raise ValueError(msg)
+
     def _logical_config_lines(self, text: str) -> list[tuple[list[str], str]]:
         logical: list[tuple[list[str], str]] = []
         pending: list[str] = []
@@ -1258,8 +1267,10 @@ class SquidController(_CoreSquidController):
             if intercept_port == explicit_port:
                 intercept_port = 3129 if explicit_port != 3129 else 3130
         used_ports = {explicit_port, intercept_port if intercept_enabled else None}
-        while https_intercept_port in used_ports:
-            https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
+        https_intercept_port = self._first_available_port(
+            https_intercept_port,
+            used_ports,
+        )
 
         rendered_lines: list[str] = []
         replaced_explicit = False

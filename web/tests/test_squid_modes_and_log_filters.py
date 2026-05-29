@@ -660,6 +660,39 @@ def test_squid_controller_generate_config_adds_optional_https_intercept_listener
     )
 
 
+def test_squid_controller_resolves_three_way_listener_port_collision(tmp_path) -> None:
+    _add_web_to_path()
+
+    from services.squid_config_forms import build_template_options  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text(
+        (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+    options = build_template_options(
+        {
+            "explicit_proxy_port": 3130,
+            "intercept_enabled": True,
+            "intercept_port": 3131,
+            "https_intercept_enabled": True,
+            "https_intercept_port": 3131,
+        },
+        max_workers=4,
+    )
+
+    rendered = ctl.generate_config_from_template(options)
+
+    assert "http_port 0.0.0.0:3130 ssl-bump" in rendered
+    assert "http_port 0.0.0.0:3131 intercept" in rendered
+    assert "https_port 0.0.0.0:3132 intercept ssl-bump" in rendered
+
+
 def test_squid_controller_https_intercept_listener_does_not_splice_by_default(
     tmp_path,
 ) -> None:

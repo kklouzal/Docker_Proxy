@@ -250,8 +250,29 @@ def test_build_template_options_from_form_supports_intercept_listener_controls()
     assert options["intercept_enabled_on"] is True
     assert options["intercept_port"] == 8081
     assert options["https_intercept_enabled_on"] is True
-    assert options["https_intercept_port"] == 3130
+    assert options["https_intercept_port"] == 8082
     assert options["https_intercept_splice_only_on"] is True
+
+
+def test_build_template_options_from_form_resolves_three_way_listener_port_collision() -> (
+    None
+):
+    options = build_template_options_from_form(
+        {},
+        {
+            "explicit_proxy_port": "3130",
+            "intercept_enabled_on": "on",
+            "intercept_port": "3131",
+            "https_intercept_enabled_on": "on",
+            "https_intercept_port": "3131",
+        },
+        form_kind="network",
+        max_workers=4,
+    )
+
+    assert options["explicit_proxy_port"] == 3130
+    assert options["intercept_port"] == 3131
+    assert options["https_intercept_port"] == 3132
 
 
 def test_build_template_options_from_form_blank_optional_values_do_not_override() -> (

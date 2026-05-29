@@ -190,6 +190,15 @@ def default_intercept_port(explicit_port):
     return explicit_port + 1 if explicit_port < 65535 else 3129
 
 
+def first_available_port(preferred, used_ports):
+    candidate = coerce_port(preferred, 3130)
+    for _ in range(65535):
+        if candidate not in used_ports:
+            return candidate
+        candidate = 1 if candidate >= 65535 else candidate + 1
+    raise ValueError('No available TCP listener ports remain.')
+
+
 def enabled(value):
     return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
@@ -407,8 +416,7 @@ for physical, logical in logical_lines(text):
             if intercept_on is True or (intercept_on is None and intercept_port_env):
                 rendered.extend(intercept_block(intercept_port))
                 used_ports.add(intercept_port)
-            while https_intercept_port in used_ports:
-                https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
+            https_intercept_port = first_available_port(https_intercept_port, used_ports)
             if https_intercept_on is True or (https_intercept_on is None and https_intercept_port_env):
                 rendered.extend(https_intercept_block(https_intercept_port, dynamic_cache_mb))
             replaced_explicit = True
@@ -422,8 +430,7 @@ if not replaced_explicit:
     if intercept_on is True or (intercept_on is None and intercept_port_env):
         prefix.extend(intercept_block(intercept_port))
         used_ports.add(intercept_port)
-    while https_intercept_port in used_ports:
-        https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
+    https_intercept_port = first_available_port(https_intercept_port, used_ports)
     if https_intercept_on is True or (https_intercept_on is None and https_intercept_port_env):
         prefix.extend(https_intercept_block(https_intercept_port, dynamic_cache_mb))
     rendered = prefix + [''] + rendered

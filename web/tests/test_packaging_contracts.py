@@ -222,24 +222,26 @@ def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -
 
 def test_proxy_entrypoint_env_avoids_listener_port_collisions(tmp_path) -> None:
     config = tmp_path / "squid.conf"
-    config.write_text("http_port 0.0.0.0:3128 ssl-bump\n", encoding="utf-8")
+    config.write_text("http_port 0.0.0.0:3130 ssl-bump\n", encoding="utf-8")
 
     env = os.environ.copy()
     env.update(
         {
             "SQUID_CFG_PATH": str(config),
             "SQUID_INTERCEPT_ENABLED": "1",
-            "SQUID_INTERCEPT_PORT": "3130",
+            "SQUID_INTERCEPT_PORT": "3131",
             "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
-            "SQUID_HTTPS_INTERCEPT_PORT": "3130",
+            "SQUID_HTTPS_INTERCEPT_PORT": "3131",
         },
     )
     subprocess.run(
         [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
         check=True,
         env=env,
+        timeout=5,
     )
 
     rendered = config.read_text(encoding="utf-8")
-    assert "http_port 0.0.0.0:3130 intercept" in rendered
-    assert "https_port 0.0.0.0:3131 intercept ssl-bump" in rendered
+    assert "http_port 0.0.0.0:3130 ssl-bump" in rendered
+    assert "http_port 0.0.0.0:3131 intercept" in rendered
+    assert "https_port 0.0.0.0:3132 intercept ssl-bump" in rendered
