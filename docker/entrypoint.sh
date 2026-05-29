@@ -917,10 +917,9 @@ export SQUID_WORKERS="$WORKERS"
 mkdir -p /etc/supervisor.d
 rm -f /etc/supervisor.d/icap.conf || true
 
-# Run c-icap for adblock REQMOD (no ClamAV dependency) and AV (remote ClamAV backend).
-# We start an adblock-only c-icap instance immediately so Squid's ICAP OPTIONS checks succeed
-# quickly. A second c-icap instance (AV) can wait for the remote clamd backend
-# without impacting adblock.
+# Run the SQLite-backed adblock ICAP helper immediately so Squid's ICAP
+# OPTIONS checks succeed quickly. AV still runs through c-icap and can wait
+# for the remote clamd backend without impacting adblock.
 CICAP_PORT_RAW="${CICAP_PORT:-14000}"
 case "$CICAP_PORT_RAW" in
     ''|*[!0-9]*) CICAP_PORT=14000 ;;
@@ -962,48 +961,27 @@ EOF
 
 mkdir -p /var/run/c-icap
 
-# Generate per-instance c-icap configs from the base image config.
-# - adblock instance: no clamd_mod / virus_scan
-# - av instance: full config (waits for remote clamd health before starting)
+# Generate the AV c-icap config from the base image config. Adblock uses the
+# Python ICAP helper below and does not consume a c-icap service config.
 if [ -f /etc/c-icap/c-icap.conf ]; then
     cp /etc/c-icap/c-icap.conf /etc/c-icap/c-icap-av.conf
-    cp /etc/c-icap/c-icap.conf /etc/c-icap/c-icap-adblock.conf
 
-    # Ensure distinct pidfiles for multiple instances.
+    # Ensure AV uses its own pidfile.
     if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
         sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile /var/run/c-icap/c-icap-av.pid#I" /etc/c-icap/c-icap-av.conf
     else
         echo "PidFile /var/run/c-icap/c-icap-av.pid" >> /etc/c-icap/c-icap-av.conf
     fi
 
-    if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" /etc/c-icap/c-icap-adblock.conf 2>/dev/null; then
-        sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile /var/run/c-icap/c-icap-adblock.pid#I" /etc/c-icap/c-icap-adblock.conf
-    else
-        echo "PidFile /var/run/c-icap/c-icap-adblock.pid" >> /etc/c-icap/c-icap-adblock.conf
-    fi
-
-    # Keep the adblock instance access log (used by the UI/database ingestion),
-    # but disable AV per-transaction logging because nothing in-product reads it.
+    # Disable AV per-transaction logging because nothing in-product reads it.
     sed -i -E '/^[[:space:]]*AccessLog[[:space:]]+/d' /etc/c-icap/c-icap-av.conf || true
 
-    # Set ports
+    # Set the AV c-icap port.
     if grep -qiE "^[[:space:]]*Port[[:space:]]+" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
         sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${CICAP_AV_PORT}#I" /etc/c-icap/c-icap-av.conf
     else
         echo "Port 127.0.0.1:${CICAP_AV_PORT}" >> /etc/c-icap/c-icap-av.conf
     fi
-
-    if grep -qiE "^[[:space:]]*Port[[:space:]]+" /etc/c-icap/c-icap-adblock.conf 2>/dev/null; then
-        sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${CICAP_PORT}#I" /etc/c-icap/c-icap-adblock.conf
-    else
-        echo "Port 127.0.0.1:${CICAP_PORT}" >> /etc/c-icap/c-icap-adblock.conf
-    fi
-
-    # Strip AV-related bits from the adblock-only instance.
-    sed -i -E '\#^[[:space:]]*Include[[:space:]]+/etc/clamd_mod\.conf([[:space:]]|$)#d' /etc/c-icap/c-icap-adblock.conf
-    sed -i -E '/^[[:space:]]*Service[[:space:]]+virus_scan([[:space:]]|$)/d' /etc/c-icap/c-icap-adblock.conf
-    sed -i -E '/^[[:space:]]*ServiceAlias[[:space:]]+avrespmod([[:space:]]|$)/d' /etc/c-icap/c-icap-adblock.conf
-    sed -i -E '\#^[[:space:]]*Include[[:space:]]+/etc/virus_scan\.conf([[:space:]]|$)#d' /etc/c-icap/c-icap-adblock.conf
 fi
 
 cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'

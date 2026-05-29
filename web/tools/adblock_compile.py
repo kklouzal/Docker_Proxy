@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # - Cosmetic rules contain selector separators like '##', '#@#', '#?#', '#$#'
 # - Exception rules start with '@@'
 # - Options are appended after '$' (network rules); request indexes preserve
-#   full parsed rules while the legacy c-icap tables stay intentionally narrow.
+#   full parsed rules while legacy text buckets stay intentionally narrow.
 
 
 _COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
@@ -243,12 +243,13 @@ def _find_regex_delimiter(rule: str) -> int | None:
 
 
 def _normalize_regex_for_cicap_table(pattern: str) -> str:
-    r"""Normalize a regex so it can be used as a c-icap lookup-table key.
+    r"""Normalize a regex so it can be stored in the legacy text bucket.
 
-    The lookup table file parser treats ':' as a separator, so patterns like
-    'https?:' must not contain a literal ':' character.
+    The former c-icap lookup-table parser treated ':' as a separator, so
+    patterns like 'https?:' were escaped. Keep that encoding stable for
+    compatibility with existing artifact consumers.
 
-    c-icap is linked against PCRE2 in this image, so we can safely use '\x3A'.
+    The historical consumer used PCRE2, so '\x3A' is the stable escape.
     """
     p = (pattern or "").strip()
     if not p:
@@ -825,7 +826,7 @@ def _compile_and_extract_all(
     writers: _RuleWriters,
 ) -> dict[str, int]:
     # Single pass over a list file that:
-    #  - preserves current “safe” buckets for c-icap
+    #  - preserves legacy safe text buckets for artifact compatibility
     #  - extracts every rule into JSONL buckets for future expansion
     # We build counts manually to avoid re-reading.
     domains_block: set[str] = set()
@@ -966,7 +967,7 @@ def _compile_and_extract_all(
         for g in _option_groups(opt_parsed):
             agg.option_group_counts[g] = agg.option_group_counts.get(g, 0) + 1
 
-        # Preserve current safe c-icap buckets.
+        # Preserve current safe text buckets.
         if not opts:
             if pattern_kind == "regex":
                 regex = (extra.get("regex") or "").strip()
@@ -1575,7 +1576,7 @@ def _write_request_lookup_index(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Compile EasyList-style adblock lists into c-icap friendly buckets",
+        description="Compile EasyList-style adblock lists into request lookup artifacts",
     )
     ap.add_argument(
         "--lists-dir",
@@ -2024,7 +2025,7 @@ def main(argv: list[str] | None = None) -> int:
                 writers=writers,
             )
 
-    # Preserve current c-icap buckets.
+    # Preserve current text buckets.
     _write_sorted_lines(os.path.join(out_dir, "domains_allow.txt"), agg.domains_allow)
     _write_sorted_lines(os.path.join(out_dir, "domains_block.txt"), agg.domains_block)
     _write_sorted_lines(os.path.join(out_dir, "regex_block.txt"), agg.regex_block)
@@ -2195,7 +2196,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         },
         "notes": {
-            "domain_buckets_policy": "Only option-less domain-only rules (||host^) and their @@ exceptions are promoted to domains_*.txt for c-icap.",
+            "domain_buckets_policy": "Only option-less domain-only rules (||host^) and their @@ exceptions are promoted to legacy domains_*.txt buckets.",
             "full_extraction": "All parsed network rules and cosmetic rules are emitted to JSONL buckets for future REQMOD/RESPMOD expansion.",
             "request_indexes": "request_index_*.jsonl contains normalized request-time ABP fields so future enforcement can load domain, host/path, regex, and generic buckets without scanning the raw extraction files.",
             "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to full rule payloads by rule_id.",

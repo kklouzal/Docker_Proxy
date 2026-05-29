@@ -985,13 +985,13 @@ def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path) -> 
 def test_adblock_reqmod_runtime_uses_sqlite_service_not_c_icap_url_check() -> None:
     dockerfile = Path("docker/Dockerfile.proxy").read_text(encoding="utf-8")
     entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
-    cicap_config = Path("docker/c-icap.conf").read_text(encoding="utf-8")
 
     assert "web/tools/adblock_icap_server.py" in dockerfile
     assert "COPY docker/adblock_req.conf /etc/adblock_req.conf" not in dockerfile
     assert "python3 /app/tools/adblock_icap_server.py" in entrypoint
     assert "request_lookup.sqlite" in entrypoint
-    assert "srv_url_check.so" not in cicap_config
+    assert "c-icap-adblock.conf" not in entrypoint
+    assert "srv_url_check.so" not in entrypoint
 
 
 def test_repo_template_orders_generated_policy_includes_before_enforcement_hooks() -> (
@@ -1065,40 +1065,9 @@ def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
     assert "http_access deny adblock_regex_block" not in versioned
 
 
-def test_squid_icap_include_omits_empty_adblock_regex_acls(
-    tmp_path, monkeypatch
-) -> None:
+def test_squid_icap_include_never_renders_legacy_regex_shortcut() -> None:
     _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
-
-    compiled = tmp_path / "compiled"
-    compiled.mkdir()
-    (compiled / "regex_allow_squid.txt").write_text("", encoding="utf-8")
-    (compiled / "regex_block_squid.txt").write_text("# empty\n", encoding="utf-8")
-    monkeypatch.setenv("ADBLOCK_COMPILED_DIR", str(compiled))
-
-    controller = SquidController.__new__(SquidController)
-    controller._adblock_icap_revision_token = ""
-    rendered = controller._render_icap_include("")
-
-    assert "adblock_regex_allow" not in rendered
-    assert "adblock_regex_block" not in rendered
-    assert "http_access deny adblock_regex_block" not in rendered
-
-
-def test_squid_icap_include_never_renders_lossy_regex_shortcut(
-    tmp_path, monkeypatch
-) -> None:
-    _add_web_to_path()
-    from services.squid_core import SquidController  # type: ignore
-
-    compiled = tmp_path / "compiled"
-    compiled.mkdir()
-    (compiled / "regex_allow_squid.txt").write_text("", encoding="utf-8")
-    (compiled / "regex_block_squid.txt").write_text(
-        "tracker[.]example\n", encoding="utf-8"
-    )
-    monkeypatch.setenv("ADBLOCK_COMPILED_DIR", str(compiled))
 
     controller = SquidController.__new__(SquidController)
     controller._adblock_icap_revision_token = ""
