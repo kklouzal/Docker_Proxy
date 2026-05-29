@@ -1451,6 +1451,41 @@ input.check{
   min-width: 0;
 }
 
+.directory-setup-band,
+.directory-setup-section{
+  display:grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,.03);
+}
+
+.section-heading-row{
+  display:flex;
+  gap: 12px;
+  align-items:flex-start;
+  justify-content:space-between;
+  flex-wrap:wrap;
+}
+
+.directory-advanced{
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,.025);
+}
+
+.directory-advanced summary{
+  cursor:pointer;
+  color: var(--muted-2);
+  font-weight: 700;
+}
+
+.directory-advanced[open] summary{
+  margin-bottom: 12px;
+}
+
 .filter-bar{
   display:flex;
   gap: 10px;

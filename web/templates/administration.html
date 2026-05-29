@@ -183,11 +183,12 @@
         <span class="badge {{ 'ok' if profile.enabled else '' }}">{{ 'Active' if profile.enabled else 'Disabled' }}</span>
     </div>
     <div class="card-body">
-        <form class="form" action="{{ url_for('administration', tab=current_tab) }}" method="post">
+        {% set presets = auth_status.presets[current_tab] if auth_status.presets is defined and current_tab in auth_status.presets else {} %}
+        <form class="form" action="{{ url_for('administration', tab=current_tab) }}" method="post" enctype="multipart/form-data">
             {{ csrf_field() }}
             <input type="hidden" name="action" value="save_auth_provider">
             <input type="hidden" name="provider" value="{{ current_tab }}">
-            <div class="summary-grid">
+            <div class="directory-setup-band">
                 <div>
                     <label for="{{ current_tab }}-enabled">Activation</label>
                     <select id="{{ current_tab }}-enabled" name="enabled">
@@ -201,21 +202,38 @@
                     <input id="{{ current_tab }}-timeout" name="timeout_seconds" type="number" min="1" max="30" value="{{ profile.timeout_seconds }}">
                 </div>
             </div>
-            <div>
-                <label for="{{ current_tab }}-server-urls">Server URI(s)</label>
-                <textarea id="{{ current_tab }}-server-urls" name="server_urls" rows="3" required>{{ profile.server_urls }}</textarea>
-                <div class="surface-note small">One LDAP URI per line. Use LDAPS where possible, for example <span class="mono">ldaps://dc01.example.local:636</span>.</div>
-            </div>
-            <div class="summary-grid">
-                <input type="hidden" name="use_starttls" value="0">
-                <label class="checkbox-row"><input type="checkbox" name="use_starttls" value="1" {{ 'checked' if profile.use_starttls else '' }}> Use StartTLS</label>
-                <input type="hidden" name="verify_tls" value="0">
-                <label class="checkbox-row"><input type="checkbox" name="verify_tls" value="1" {{ 'checked' if profile.verify_tls else '' }}> Verify server certificate</label>
-            </div>
-            <div>
-                <label for="{{ current_tab }}-ca">CA bundle PEM</label>
-                <textarea id="{{ current_tab }}-ca" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
-            </div>
+            <section class="directory-setup-section">
+                <div class="section-heading-row">
+                    <div>
+                        <h3 class="page-section-title">Directory servers and TLS</h3>
+                        <div class="surface-note small">Use one URI per line. LDAPS is preferred; StartTLS is available for plain LDAP listeners that upgrade in place.</div>
+                    </div>
+                    <span class="badge">{{ 'CA stored' if profile.ca_bundle else 'System trust' }}</span>
+                </div>
+                <div>
+                    <label for="{{ current_tab }}-server-urls">Server URI(s)</label>
+                    <textarea id="{{ current_tab }}-server-urls" name="server_urls" rows="3" required>{{ profile.server_urls }}</textarea>
+                </div>
+                <div class="summary-grid">
+                    <input type="hidden" name="use_starttls" value="0">
+                    <label class="checkbox-row"><input type="checkbox" name="use_starttls" value="1" {{ 'checked' if profile.use_starttls else '' }}> Use StartTLS</label>
+                    <input type="hidden" name="verify_tls" value="0">
+                    <label class="checkbox-row"><input type="checkbox" name="verify_tls" value="1" {{ 'checked' if profile.verify_tls else '' }}> Verify server certificate</label>
+                </div>
+                <div class="summary-grid">
+                    <div>
+                        <label for="{{ current_tab }}-ca-file">CA certificate upload</label>
+                        <input id="{{ current_tab }}-ca-file" name="ca_bundle_file" type="file" accept=".pem,.crt,.cer,application/x-pem-file,application/pkix-cert">
+                        <div class="field-note">PEM or DER X.509 certificates are validated and stored with the provider profile.</div>
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-clear-ca">Stored CA</label>
+                        <input type="hidden" name="clear_ca_bundle" value="0">
+                        <label id="{{ current_tab }}-clear-ca" class="checkbox-row"><input type="checkbox" name="clear_ca_bundle" value="1"> Clear stored CA bundle</label>
+                        <div class="field-note">Leave unchecked to keep the stored certificate when no new file is uploaded.</div>
+                    </div>
+                </div>
+            </section>
             <div class="summary-grid">
                 <div>
                     <label for="{{ current_tab }}-bind-dn">Bind DN / service user</label>
@@ -226,47 +244,106 @@
                     <input id="{{ current_tab }}-bind-password" name="bind_password" type="password" placeholder="{{ 'Stored; leave blank to keep' if profile.has_bind_password else 'Required before enabling' }}">
                 </div>
             </div>
-            <div class="summary-grid">
-                <div>
-                    <label for="{{ current_tab }}-base-dn">Base DN</label>
-                    <input id="{{ current_tab }}-base-dn" name="base_dn" type="text" value="{{ profile.base_dn }}" required>
+            <section class="directory-setup-section">
+                <div class="section-heading-row">
+                    <div>
+                        <h3 class="page-section-title">Directory locations</h3>
+                        <div class="surface-note small">After saving connection details, scan the directory to populate selectable Base DN, search base, and admin group choices.</div>
+                    </div>
                 </div>
-                <div>
-                    <label for="{{ current_tab }}-admin-group">Required admin group</label>
-                    <input id="{{ current_tab }}-admin-group" name="required_admin_group" type="text" value="{{ profile.required_admin_group }}" required>
+                <datalist id="{{ current_tab }}-base-dn-options">
+                    {% for dn in auth_scan.get('base_dns', []) %}<option value="{{ dn }}"></option>{% endfor %}
+                </datalist>
+                <datalist id="{{ current_tab }}-search-base-options">
+                    {% for dn in auth_scan.get('user_search_bases', []) %}<option value="{{ dn }}"></option>{% endfor %}
+                    {% for dn in auth_scan.get('group_search_bases', []) %}<option value="{{ dn }}"></option>{% endfor %}
+                </datalist>
+                <datalist id="{{ current_tab }}-group-options">
+                    {% for dn in auth_scan.get('admin_groups', []) %}<option value="{{ dn }}"></option>{% endfor %}
+                </datalist>
+                <div class="summary-grid">
+                    <div>
+                        <label for="{{ current_tab }}-base-dn">Base DN</label>
+                        <input id="{{ current_tab }}-base-dn" name="base_dn" type="text" value="{{ profile.base_dn }}" list="{{ current_tab }}-base-dn-options" required>
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-admin-group">Required admin group</label>
+                        <input id="{{ current_tab }}-admin-group" name="required_admin_group" type="text" value="{{ profile.required_admin_group }}" list="{{ current_tab }}-group-options" required>
+                    </div>
                 </div>
-            </div>
-            <div class="summary-grid">
-                <div>
-                    <label for="{{ current_tab }}-user-base">User search base</label>
-                    <input id="{{ current_tab }}-user-base" name="user_search_base" type="text" value="{{ profile.user_search_base }}">
+                <div class="summary-grid">
+                    <div>
+                        <label for="{{ current_tab }}-user-base">User search base</label>
+                        <input id="{{ current_tab }}-user-base" name="user_search_base" type="text" value="{{ profile.user_search_base }}" list="{{ current_tab }}-search-base-options">
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-group-base">Group search base</label>
+                        <input id="{{ current_tab }}-group-base" name="group_search_base" type="text" value="{{ profile.group_search_base }}" list="{{ current_tab }}-search-base-options">
+                    </div>
                 </div>
-                <div>
-                    <label for="{{ current_tab }}-user-attribute">User attribute</label>
-                    <input id="{{ current_tab }}-user-attribute" name="user_attribute" type="text" value="{{ profile.user_attribute }}" required>
+            </section>
+            <section class="directory-setup-section">
+                <h3 class="page-section-title">Login matching</h3>
+                <div class="summary-grid">
+                    <div>
+                        <label for="{{ current_tab }}-user-attribute-preset">Login attribute</label>
+                        <select id="{{ current_tab }}-user-attribute-preset" name="user_attribute_preset">
+                            <option value="custom">Custom raw value below</option>
+                            {% for value, label in presets.get('user_attribute', []) %}
+                            <option value="{{ value }}" {{ 'selected' if value == profile.user_attribute else '' }}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-user-filter-preset">User lookup</label>
+                        <select id="{{ current_tab }}-user-filter-preset" name="user_filter_preset">
+                            <option value="custom">Custom raw filter below</option>
+                            {% for value, label in presets.get('user_filter', []) %}
+                            <option value="{{ value }}" {{ 'selected' if value == profile.user_filter else '' }}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-group-filter-preset">Group lookup</label>
+                        <select id="{{ current_tab }}-group-filter-preset" name="group_filter_preset">
+                            <option value="custom">Custom raw filter below</option>
+                            {% for value, label in presets.get('group_filter', []) %}
+                            <option value="{{ value }}" {{ 'selected' if value == profile.group_filter else '' }}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
                 </div>
-            </div>
-            <div>
-                <label for="{{ current_tab }}-user-filter">User filter</label>
-                <input id="{{ current_tab }}-user-filter" name="user_filter" type="text" value="{{ profile.user_filter }}" required>
-            </div>
-            <div>
-                <label for="{{ current_tab }}-group-base">Group search base</label>
-                <input id="{{ current_tab }}-group-base" name="group_search_base" type="text" value="{{ profile.group_search_base }}">
-            </div>
-            <div>
-                <label for="{{ current_tab }}-group-filter">Group filter</label>
-                <input id="{{ current_tab }}-group-filter" name="group_filter" type="text" value="{{ profile.group_filter }}" required>
-            </div>
+            </section>
+            <details class="directory-advanced">
+                <summary>Advanced raw LDAP fields</summary>
+                <div class="stack-md">
+                    <div>
+                        <label for="{{ current_tab }}-ca">CA bundle PEM</label>
+                        <textarea id="{{ current_tab }}-ca" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-user-attribute">User attribute</label>
+                        <input id="{{ current_tab }}-user-attribute" name="user_attribute" type="text" value="{{ profile.user_attribute }}" required>
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-user-filter">User filter</label>
+                        <input id="{{ current_tab }}-user-filter" name="user_filter" type="text" value="{{ profile.user_filter }}" required>
+                    </div>
+                    <div>
+                        <label for="{{ current_tab }}-group-filter">Group filter</label>
+                        <input id="{{ current_tab }}-group-filter" name="group_filter" type="text" value="{{ profile.group_filter }}" required>
+                    </div>
+                </div>
+            </details>
             <div class="actions">
                 <button class="btn primary" type="submit">Save provider</button>
             </div>
         </form>
         <form action="{{ url_for('administration', tab=current_tab) }}" method="post" class="inline-form">
             {{ csrf_field() }}
-            <input type="hidden" name="action" value="test_auth_provider">
             <input type="hidden" name="provider" value="{{ current_tab }}">
-            <button class="btn" type="submit">Test connection</button>
+            <button class="btn" type="submit" name="action" value="scan_auth_provider">Scan directory</button>
+            <button class="btn" type="submit" name="action" value="test_auth_provider">Test connection</button>
             {% if profile.enabled %}
             <button class="btn" type="submit" name="action" value="disable_auth_provider">Disable provider</button>
             {% endif %}

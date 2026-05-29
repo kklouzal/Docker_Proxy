@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from cryptography import x509
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import serialization
 
 from services.db import connect
 from services.logutil import log_exception_throttled
@@ -25,6 +27,51 @@ DIRECTORY_PROVIDERS = (PROVIDER_LDAP, PROVIDER_ACTIVE_DIRECTORY)
 PROVIDER_LABELS = {
     PROVIDER_LDAP: "LDAP",
     PROVIDER_ACTIVE_DIRECTORY: "Active Directory",
+}
+DIRECTORY_PRESETS = {
+    PROVIDER_LDAP: {
+        "user_attribute": (
+            ("uid", "OpenLDAP uid"),
+            ("mail", "Email address"),
+            ("cn", "Common name"),
+        ),
+        "user_filter": (
+            ("(uid={username})", "OpenLDAP uid"),
+            ("(mail={username})", "Email address"),
+            ("(|(uid={username})(mail={username}))", "UID or email"),
+        ),
+        "group_filter": (
+            (
+                "(|(member={user_dn})(uniqueMember={user_dn})(memberUid={username}))",
+                "OpenLDAP groups",
+            ),
+            ("(member={user_dn})", "groupOfNames"),
+            ("(uniqueMember={user_dn})", "groupOfUniqueNames"),
+            ("(memberUid={username})", "posixGroup"),
+        ),
+    },
+    PROVIDER_ACTIVE_DIRECTORY: {
+        "user_attribute": (
+            ("sAMAccountName", "Windows logon name"),
+            ("userPrincipalName", "User principal name"),
+            ("mail", "Email address"),
+        ),
+        "user_filter": (
+            (
+                "(|(sAMAccountName={username})(userPrincipalName={username}))",
+                "Logon name or UPN",
+            ),
+            ("(sAMAccountName={username})", "Windows logon name"),
+            ("(userPrincipalName={username})", "User principal name"),
+        ),
+        "group_filter": (
+            (
+                "(member:1.2.840.113556.1.4.1941:={user_dn})",
+                "Nested AD groups",
+            ),
+            ("(member={user_dn})", "Direct AD group member"),
+        ),
+    },
 }
 
 
@@ -67,6 +114,16 @@ class DirectoryAuthResult:
     username: str
     detail: str = ""
     groups: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DirectoryScanResult:
+    provider: str
+    base_dns: tuple[str, ...]
+    user_search_bases: tuple[str, ...]
+    group_search_bases: tuple[str, ...]
+    admin_groups: tuple[str, ...]
+    detail: str
 
 
 class DirectoryAuthStore:
@@ -237,6 +294,7 @@ class DirectoryAuthStore:
             "profiles": profiles,
             "providers": DIRECTORY_PROVIDERS,
             "provider_labels": PROVIDER_LABELS,
+            "presets": DIRECTORY_PRESETS,
         }
 
     def save_profile(self, provider: str, payload: dict[str, Any]) -> DirectoryProfile:
@@ -258,16 +316,32 @@ class DirectoryAuthStore:
         server_urls = self._clean_required(payload.get("server_urls"), "Server URL")
         use_starttls = self._truthy(payload.get("use_starttls"))
         verify_tls = self._truthy(payload.get("verify_tls"), default=current.verify_tls)
-        ca_bundle = str(payload.get("ca_bundle") or "").strip()
+        ca_bundle = self._ca_bundle_from_payload(payload, current.ca_bundle)
         bind_dn = self._clean_required(payload.get("bind_dn"), "Bind DN/user")
         base_dn = self._clean_required(payload.get("base_dn"), "Base DN")
         user_search_base = str(payload.get("user_search_base") or "").strip()
-        user_filter = self._clean_required(payload.get("user_filter"), "User filter")
-        user_attribute = self._clean_required(
-            payload.get("user_attribute"), "User attribute"
+        user_filter = self._preset_or_required(
+            provider,
+            "user_filter",
+            payload.get("user_filter_preset"),
+            payload.get("user_filter"),
+            "User filter",
+        )
+        user_attribute = self._preset_or_required(
+            provider,
+            "user_attribute",
+            payload.get("user_attribute_preset"),
+            payload.get("user_attribute"),
+            "User attribute",
         )
         group_search_base = str(payload.get("group_search_base") or "").strip()
-        group_filter = self._clean_required(payload.get("group_filter"), "Group filter")
+        group_filter = self._preset_or_required(
+            provider,
+            "group_filter",
+            payload.get("group_filter_preset"),
+            payload.get("group_filter"),
+            "Group filter",
+        )
         required_admin_group = self._clean_required(
             payload.get("required_admin_group"),
             "Required admin group",
@@ -406,6 +480,52 @@ class DirectoryAuthStore:
         detail = "Directory bind and base search succeeded."
         self.record_test(provider, ok=True, detail=detail)
         return DirectoryAuthResult(True, profile.provider, "", detail=detail)
+
+    def scan_directory(self, provider: str) -> DirectoryScanResult:
+        profile = self.get_profile(provider)
+        conn = None
+        try:
+            conn, _ldap3 = self._service_connection(profile)
+            base_dn = self._join_dn("", profile.base_dn)
+            ous = self._scan_dns(
+                conn,
+                base_dn,
+                "(objectClass=organizationalUnit)",
+                ("ou", "distinguishedName"),
+                200,
+            )
+            containers = self._scan_dns(
+                conn,
+                base_dn,
+                "(objectClass=container)",
+                ("cn", "distinguishedName"),
+                100,
+            )
+            groups = self._scan_dns(
+                conn,
+                base_dn,
+                "(|(objectClass=group)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames)(objectClass=posixGroup))",
+                ("cn", "distinguishedName"),
+                300,
+            )
+        finally:
+            self._safe_unbind(conn)
+        search_bases = tuple(self._relative_dn(item, base_dn) for item in ous)
+        group_bases = tuple(
+            self._relative_dn(item, base_dn) for item in (*ous, *containers)
+        )
+        detail = (
+            f"Directory scan found {len(search_bases)} OU/container choices and "
+            f"{len(groups)} group choices under {base_dn}."
+        )
+        return DirectoryScanResult(
+            provider=profile.provider,
+            base_dns=(base_dn,),
+            user_search_bases=tuple(dict.fromkeys(filter(None, search_bases))),
+            group_search_bases=tuple(dict.fromkeys(filter(None, group_bases))),
+            admin_groups=groups,
+            detail=detail,
+        )
 
     def authenticate_admin(self, username: str, password: str) -> DirectoryAuthResult:
         profile = self.get_active_profile()
@@ -681,6 +801,79 @@ class DirectoryAuthStore:
             raise ValueError(msg)
         return cleaned
 
+    def _ca_bundle_from_payload(
+        self, payload: dict[str, Any], current_ca_bundle: str
+    ) -> str:
+        uploaded = payload.get("ca_bundle_upload")
+        if isinstance(uploaded, bytes) and uploaded:
+            return self.normalize_ca_bundle(uploaded)
+        text = str(payload.get("ca_bundle") or "").strip()
+        if text:
+            return self.normalize_ca_bundle(text.encode())
+        if self._truthy(payload.get("clear_ca_bundle")):
+            return ""
+        return current_ca_bundle
+
+    def _preset_or_required(
+        self,
+        provider: str,
+        preset_group: str,
+        selected: Any,
+        fallback: Any,
+        label: str,
+    ) -> str:
+        selected_value = str(selected or "").strip()
+        allowed = {
+            value
+            for value, _label in DIRECTORY_PRESETS.get(provider, {}).get(
+                preset_group, ()
+            )
+        }
+        if selected_value and selected_value != "custom":
+            if selected_value not in allowed:
+                msg = f"Unknown {label.lower()} preset."
+                raise ValueError(msg)
+            return selected_value
+        return self._clean_required(fallback, label)
+
+    def _scan_dns(
+        self,
+        conn: Any,
+        base_dn: str,
+        search_filter: str,
+        attributes: tuple[str, ...],
+        size_limit: int,
+    ) -> tuple[str, ...]:
+        try:
+            found = conn.search(
+                base_dn,
+                search_filter,
+                attributes=list(attributes),
+                size_limit=size_limit,
+            )
+        except Exception:
+            return ()
+        if not found:
+            return ()
+        dns = []
+        for entry in getattr(conn, "entries", ()):
+            dn = str(getattr(entry, "entry_dn", "") or "").strip()
+            if dn:
+                dns.append(dn)
+        return tuple(sorted(dict.fromkeys(dns), key=str.casefold))
+
+    def _relative_dn(self, dn: str, base_dn: str) -> str:
+        dn = (dn or "").strip().strip(",")
+        base_dn = (base_dn or "").strip().strip(",")
+        if not dn or not base_dn:
+            return dn
+        suffix = "," + base_dn
+        if dn.casefold().endswith(suffix.casefold()):
+            return dn[: -len(suffix)]
+        if dn.casefold() == base_dn.casefold():
+            return ""
+        return dn
+
     def _bounded_int(self, value: Any, low: int, high: int, default: int) -> int:
         try:
             parsed = int(str(value or "").strip())
@@ -723,6 +916,34 @@ class DirectoryAuthStore:
             r"password=[^,\\s]+", "password=<redacted>", str(exc), flags=re.IGNORECASE
         )
         return detail[:500] or exc.__class__.__name__
+
+    @staticmethod
+    def normalize_ca_bundle(raw_bytes: bytes) -> str:
+        if not raw_bytes:
+            msg = "Uploaded CA certificate file was empty."
+            raise ValueError(msg)
+        blocks = []
+        text = raw_bytes.decode("utf-8", errors="ignore")
+        for match in re.finditer(
+            r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----",
+            text,
+            flags=re.DOTALL,
+        ):
+            block = match.group(0).strip().encode()
+            cert = x509.load_pem_x509_certificate(block)
+            blocks.append(
+                cert.public_bytes(serialization.Encoding.PEM).decode().strip()
+            )
+        if not blocks:
+            try:
+                cert = x509.load_der_x509_certificate(raw_bytes)
+            except Exception as exc:
+                msg = "Uploaded CA certificate must be PEM or DER X.509 material."
+                raise ValueError(msg) from exc
+            blocks.append(
+                cert.public_bytes(serialization.Encoding.PEM).decode().strip()
+            )
+        return "\n".join(blocks) + "\n"
 
 
 _directory_auth_store: DirectoryAuthStore | None = None

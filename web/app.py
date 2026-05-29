@@ -2270,7 +2270,12 @@ def _handle_pac_builder_post(store: Any):
 
 def _handle_administration_post(store: Any, current_user: str):
     action = _form_action()
-    if action in {"save_auth_provider", "test_auth_provider", "disable_auth_provider"}:
+    if action in {
+        "save_auth_provider",
+        "test_auth_provider",
+        "scan_auth_provider",
+        "disable_auth_provider",
+    }:
         return _handle_auth_provider_post()
     try:
         if action == "add_user":
@@ -2336,7 +2341,11 @@ def _handle_auth_provider_post():
     tab = provider if provider in {"ldap", "active_directory"} else "status"
     try:
         if action == "save_auth_provider":
-            _directory_auth_store.save_profile(provider, request.form.to_dict())
+            payload = request.form.to_dict()
+            ca_upload = request.files.get("ca_bundle_file")
+            if ca_upload is not None and ca_upload.filename:
+                payload["ca_bundle_upload"] = ca_upload.read()
+            _directory_auth_store.save_profile(provider, payload)
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -2348,6 +2357,20 @@ def _handle_auth_provider_post():
             return _redirect_with_message(
                 "administration",
                 ok=result.ok,
+                msg=result.detail,
+                tab=tab,
+            )
+        if action == "scan_auth_provider":
+            result = _directory_auth_store.scan_directory(provider)
+            session[f"directory_scan_{provider}"] = {
+                "base_dns": list(result.base_dns),
+                "user_search_bases": list(result.user_search_bases),
+                "group_search_bases": list(result.group_search_bases),
+                "admin_groups": list(result.admin_groups),
+            }
+            return _redirect_with_message(
+                "administration",
+                ok=True,
                 msg=result.detail,
                 tab=tab,
             )
@@ -4779,12 +4802,18 @@ def administration():
         auth_tab = "status"
     message = request.args.get("msg")
     message_ok = request.args.get("ok") == "1"
+    auth_scan = (
+        session.get(f"directory_scan_{auth_tab}")
+        if auth_tab in {"ldap", "active_directory"}
+        else None
+    )
     return render_template(
         "administration.html",
         users=users,
         current_user=current_user,
         auth_status=auth_status,
         auth_tab=auth_tab,
+        auth_scan=auth_scan or {},
         message=message,
         message_ok=message_ok,
     )

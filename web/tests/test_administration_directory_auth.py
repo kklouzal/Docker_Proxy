@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 
 from .admin_route_test_utils import csrf_token, load_admin_app, login_client
@@ -86,6 +87,20 @@ class FakeDirectoryAuthStore:
             "profiles": {"ldap": ldap, "active_directory": ad},
             "providers": ("ldap", "active_directory"),
             "provider_labels": {"ldap": "LDAP", "active_directory": "Active Directory"},
+            "presets": {
+                "ldap": {
+                    "user_attribute": (("uid", "OpenLDAP uid"),),
+                    "user_filter": (("(uid={username})", "OpenLDAP uid"),),
+                    "group_filter": (("(member={user_dn})", "groupOfNames"),),
+                },
+                "active_directory": {
+                    "user_attribute": (("sAMAccountName", "Windows logon name"),),
+                    "user_filter": (
+                        ("(sAMAccountName={username})", "Windows logon name"),
+                    ),
+                    "group_filter": (("(member={user_dn})", "Direct AD group member"),),
+                },
+            },
         }
 
     def save_profile(self, provider, payload):
@@ -103,6 +118,16 @@ class FakeDirectoryAuthStore:
     def disable_provider(self, provider):
         self.disabled.append(provider)
 
+    def scan_directory(self, provider):
+        return SimpleNamespace(
+            provider=provider,
+            base_dns=("dc=example,dc=org",),
+            user_search_bases=("ou=people",),
+            group_search_bases=("ou=groups",),
+            admin_groups=("cn=admins,ou=groups,dc=example,dc=org",),
+            detail="Directory scan found 1 OU/container choices and 1 group choices.",
+        )
+
 
 def test_administration_exposes_directory_tabs(monkeypatch, tmp_path) -> None:
     directory_store = FakeDirectoryAuthStore()
@@ -117,6 +142,8 @@ def test_administration_exposes_directory_tabs(monkeypatch, tmp_path) -> None:
     assert "Authentication status" not in body
     assert "LDAP provider" in body
     assert "fresh successful connection test" in body
+    assert "CA certificate upload" in body
+    assert "Login matching" in body
     assert "Active Directory" in client.get("/administration?tab=status").get_data(
         as_text=True
     )
@@ -187,6 +214,63 @@ def test_auth_provider_save_is_scoped_to_one_provider(monkeypatch, tmp_path) -> 
     assert response.status_code in {302, 303}
     assert directory_store.saved[0][0] == "ldap"
     assert directory_store.saved[0][1]["enabled"] == "1"
+
+
+def test_auth_provider_certificate_upload_is_passed_to_store(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "save_auth_provider",
+            "provider": "ldap",
+            "enabled": "0",
+            "server_urls": "ldaps://ldap.example.org:636",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+            "ca_bundle_file": (io.BytesIO(b"cert-bytes"), "ca.crt"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.saved[0][1]["ca_bundle_upload"] == b"cert-bytes"
+
+
+def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "scan_auth_provider",
+            "provider": "ldap",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    body = client.get("/administration?tab=ldap").get_data(as_text=True)
+    assert "ou=people" in body
+    assert "cn=admins,ou=groups,dc=example,dc=org" in body
 
 
 class RaisingDirectoryAuthStore(FakeDirectoryAuthStore):

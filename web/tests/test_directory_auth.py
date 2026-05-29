@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 from services.directory_auth import DirectoryAuthResult, DirectoryAuthStore
 
 
@@ -31,6 +36,25 @@ class MemoryDirectoryAuthStore(DirectoryAuthStore):
         profile = super().save_profile(provider, payload)
         self.rows[provider] = profile
         return profile
+
+
+def _test_ca_pem() -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Docker Proxy Test CA")]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(days=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
 def test_bind_password_encryption_round_trips_without_plaintext() -> None:
@@ -121,7 +145,9 @@ def test_profile_requires_successful_connection_test_before_enable(tmp_path) -> 
     disabled = dict(payload)
     disabled["enabled"] = "0"
     store.save_profile("ldap", disabled)
-    store.record_test("ldap", ok=True, detail="Directory bind and base search succeeded.")
+    store.record_test(
+        "ldap", ok=True, detail="Directory bind and base search succeeded."
+    )
     tested = store.get_profile("ldap")
     store.save_profile("ldap", {**payload, "bind_password": ""})
 
@@ -149,6 +175,73 @@ def test_profile_checkbox_false_value_overrides_default_true() -> None:
     store = DirectoryAuthStore(lambda: "stable-secret")
 
     assert store._truthy("0", default=True) is False
+
+
+def test_normalize_ca_bundle_validates_uploaded_certificate() -> None:
+    pem = _test_ca_pem()
+
+    normalized = DirectoryAuthStore.normalize_ca_bundle(pem.encode())
+
+    assert normalized.startswith("-----BEGIN CERTIFICATE-----")
+    assert normalized.endswith("-----END CERTIFICATE-----\n")
+
+
+def test_filter_presets_replace_raw_filter_fields() -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+
+    assert (
+        store._preset_or_required(
+            "active_directory",
+            "group_filter",
+            "(member:1.2.840.113556.1.4.1941:={user_dn})",
+            "",
+            "Group filter",
+        )
+        == "(member:1.2.840.113556.1.4.1941:={user_dn})"
+    )
+
+
+def test_scan_directory_returns_ou_and_group_choices(monkeypatch) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("ldap"),
+        base_dn="dc=example,dc=org",
+    )
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def search(self, _base, search_filter, **_kwargs):
+            if "organizationalUnit" in search_filter:
+                self.entries = [
+                    SimpleNamespace(entry_dn="ou=people,dc=example,dc=org"),
+                    SimpleNamespace(entry_dn="ou=groups,dc=example,dc=org"),
+                ]
+            elif "objectClass=container" in search_filter:
+                self.entries = [SimpleNamespace(entry_dn="cn=Users,dc=example,dc=org")]
+            elif "objectClass=group" in search_filter:
+                self.entries = [
+                    SimpleNamespace(entry_dn="cn=admins,ou=groups,dc=example,dc=org")
+                ]
+            else:
+                self.entries = []
+            return bool(self.entries)
+
+        def unbind(self):
+            return None
+
+    monkeypatch.setattr(store, "get_profile", lambda _provider: profile)
+    monkeypatch.setattr(
+        store, "_service_connection", lambda _profile: (FakeConn(), None)
+    )
+
+    result = store.scan_directory("ldap")
+
+    assert result.base_dns == ("dc=example,dc=org",)
+    assert "ou=people" in result.user_search_bases
+    assert "cn=Users" in result.group_search_bases
+    assert result.admin_groups == ("cn=admins,ou=groups,dc=example,dc=org",)
 
 
 def test_plain_ldap_user_bind_does_not_require_tls(monkeypatch) -> None:
