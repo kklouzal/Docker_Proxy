@@ -69,6 +69,7 @@ services:
       - "0.0.0.0:80:80"           # Proxy public health + WPAD/PAC listener
       - "0.0.0.0:3128:3128"       # HTTP proxy
       - "0.0.0.0:${PROXY_PUBLIC_INTERCEPT_PORT:-3129}:${SQUID_INTERCEPT_PORT:-3129}" # HTTP NAT intercept listener (optional)
+      - "0.0.0.0:${PROXY_PUBLIC_HTTPS_INTERCEPT_PORT:-3130}:${SQUID_HTTPS_INTERCEPT_PORT:-3130}" # HTTPS NAT intercept listener (optional)
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
       - ./squid/ssl/certs:/etc/squid/ssl/certs
@@ -93,6 +94,9 @@ services:
       SQUID_HTTP_PORT: ${SQUID_HTTP_PORT:-}
       SQUID_INTERCEPT_ENABLED: ${SQUID_INTERCEPT_ENABLED:-}
       SQUID_INTERCEPT_PORT: ${SQUID_INTERCEPT_PORT:-}
+      SQUID_HTTPS_INTERCEPT_ENABLED: ${SQUID_HTTPS_INTERCEPT_ENABLED:-}
+      SQUID_HTTPS_INTERCEPT_PORT: ${SQUID_HTTPS_INTERCEPT_PORT:-}
+      SQUID_HTTPS_INTERCEPT_SPLICE_ONLY: ${SQUID_HTTPS_INTERCEPT_SPLICE_ONLY:-}
       DISABLE_IPV6: ${DISABLE_IPV6:-1}
       SQUID_WORKERS: ${SQUID_WORKERS:-}
       SQUID_CACHE_MEM_MB: ${SQUID_CACHE_MEM_MB:-}

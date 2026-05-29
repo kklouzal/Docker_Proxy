@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 from .mysql_test_utils import REPO_ROOT
 
 
 def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _entrypoint_listener_normalizer_script() -> str:
+    text = _read("docker/entrypoint.sh")
+    start_marker = 'SQUID_CFG_PATH="$file_path" python3 - <<\'PY\' || true\n'
+    start = text.index(start_marker) + len(start_marker)
+    end = text.index("\nPY\n}", start)
+    return text[start:end]
 
 
 def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
@@ -105,3 +117,129 @@ def test_linux_container_payloads_are_lf_only() -> None:
     offenders = [path for path in paths if b"\r\n" in (REPO_ROOT / path).read_bytes()]
 
     assert offenders == []
+
+
+def test_compose_exposes_https_intercept_listener_knobs() -> None:
+    compose = _read("docker-compose.common.yml")
+    env_example = _read("config/app.env.example")
+    readme = _read("README.md")
+
+    assert (
+        "${PROXY_PUBLIC_HTTPS_INTERCEPT_PORT:-3130}:"
+        "${SQUID_HTTPS_INTERCEPT_PORT:-3130}"
+    ) in compose
+    assert (
+        "SQUID_HTTPS_INTERCEPT_ENABLED: ${SQUID_HTTPS_INTERCEPT_ENABLED:-}"
+        in compose
+    )
+    assert (
+        "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY: "
+        "${SQUID_HTTPS_INTERCEPT_SPLICE_ONLY:-}"
+    ) in compose
+    assert "# SQUID_HTTPS_INTERCEPT_ENABLED=0" in env_example
+    assert "# PROXY_PUBLIC_HTTPS_INTERCEPT_PORT=3130" in env_example
+    assert "SQUID_HTTPS_INTERCEPT_ENABLED" in readme
+
+
+def test_proxy_entrypoint_env_can_materialize_https_intercept_listener(tmp_path) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text(
+        "http_port 0.0.0.0:3128 ssl-bump \\\n"
+        "\tcert=/etc/squid/ssl/certs/ca.crt \\\n"
+        "\tkey=/etc/squid/ssl/certs/ca.key \\\n"
+        "\tgenerate-host-certificates=on \\\n"
+        "\tdynamic_cert_mem_cache_size=256MB\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "SQUID_CFG_PATH": str(config),
+            "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
+            "SQUID_HTTPS_INTERCEPT_PORT": "3130",
+        },
+    )
+    subprocess.run(
+        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
+        check=True,
+        env=env,
+    )
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" in rendered
+    assert "https_port 0.0.0.0:3130 intercept ssl-bump" in rendered
+    assert "name=https_intercept" in rendered
+
+
+def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text(
+        "http_port 0.0.0.0:3128 ssl-bump\n"
+        "ssl_bump peek step1\n"
+        "include /etc/squid/conf.d/10-sslfilter.conf\n"
+        "ssl_bump stare step2\n"
+        "ssl_bump bump step3\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "SQUID_CFG_PATH": str(config),
+            "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
+            "SQUID_HTTPS_INTERCEPT_PORT": "3130",
+            "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": "1",
+        },
+    )
+    subprocess.run(
+        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
+        check=True,
+        env=env,
+    )
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "ssl_bump peek step1" in rendered
+    assert "acl https_intercept_listener myportname https_intercept" in rendered
+    assert "ssl_bump splice https_intercept_listener" in rendered
+    assert rendered.index("ssl_bump peek step1") < rendered.index(
+        "ssl_bump splice https_intercept_listener",
+    )
+    assert rendered.index("ssl_bump splice https_intercept_listener") < rendered.index(
+        "include /etc/squid/conf.d/10-sslfilter.conf",
+    )
+
+    env["SQUID_HTTPS_INTERCEPT_SPLICE_ONLY"] = "0"
+    subprocess.run(
+        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
+        check=True,
+        env=env,
+    )
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "ssl_bump splice https_intercept_listener" not in rendered
+
+
+def test_proxy_entrypoint_env_avoids_listener_port_collisions(tmp_path) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text("http_port 0.0.0.0:3128 ssl-bump\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "SQUID_CFG_PATH": str(config),
+            "SQUID_INTERCEPT_ENABLED": "1",
+            "SQUID_INTERCEPT_PORT": "3130",
+            "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
+            "SQUID_HTTPS_INTERCEPT_PORT": "3130",
+        },
+    )
+    subprocess.run(
+        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
+        check=True,
+        env=env,
+    )
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "http_port 0.0.0.0:3130 intercept" in rendered
+    assert "https_port 0.0.0.0:3131 intercept ssl-bump" in rendered

@@ -257,6 +257,74 @@ def intercept_block(port):
     ]
 
 
+def https_intercept_block(port, dynamic_cache_mb):
+    return [
+        '# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER',
+        '# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.',
+        f'https_port 0.0.0.0:{port} intercept ssl-bump \\',
+        '\tname=https_intercept \\',
+        '\tcert=/etc/squid/ssl/certs/ca.crt \\',
+        '\tkey=/etc/squid/ssl/certs/ca.key \\',
+        '\tgenerate-host-certificates=on \\',
+        f'	dynamic_cert_mem_cache_size={max(0, int(dynamic_cache_mb))}MB',
+        '# END SQUID-UI HTTPS INTERCEPT LISTENER',
+    ]
+
+
+def https_intercept_splice_block():
+    return [
+        '# BEGIN SQUID-UI HTTPS INTERCEPT SPLICE',
+        '# Splice all traffic arriving on the dedicated HTTPS NAT intercept listener.',
+        'acl https_intercept_listener myportname https_intercept',
+        'ssl_bump splice https_intercept_listener',
+        '# END SQUID-UI HTTPS INTERCEPT SPLICE',
+    ]
+
+
+def strip_managed_https_splice(lines):
+    stripped = []
+    skipping = False
+    managed_exact = {
+        'acl https_intercept_listener myportname https_intercept',
+        'ssl_bump splice https_intercept_listener',
+    }
+    for line in lines:
+        if '# BEGIN SQUID-UI HTTPS INTERCEPT SPLICE' in line:
+            skipping = True
+            continue
+        if skipping:
+            if '# END SQUID-UI HTTPS INTERCEPT SPLICE' in line:
+                skipping = False
+            continue
+        if line.strip() in managed_exact:
+            continue
+        stripped.append(line)
+    return stripped
+
+
+def insert_https_splice_block(lines):
+    block = https_intercept_splice_block()
+    for index, line in enumerate(lines):
+        if line.strip().lower() == 'ssl_bump peek step1':
+            return lines[: index + 1] + block + lines[index + 1 :]
+    for index, line in enumerate(lines):
+        if line.strip().lower().startswith('include /etc/squid/conf.d/10-sslfilter.conf'):
+            return lines[:index] + block + lines[index:]
+    return lines + [''] + block
+
+
+def config_has_https_intercept(text):
+    for _physical, logical in logical_lines(text):
+        stripped = logical.strip()
+        if not stripped or stripped.startswith('#') or not stripped.lower().startswith('https_port '):
+            continue
+        parts = stripped.split()
+        modes = {part.strip().lower() for part in parts[2:]}
+        if 'intercept' in modes:
+            return True
+    return False
+
+
 def first_explicit_port(text):
     for _physical, logical in logical_lines(text):
         stripped = logical.strip()
@@ -279,15 +347,25 @@ text = path.read_text(encoding='utf-8')
 explicit_env = str(os.environ.get('SQUID_HTTP_PORT') or '').strip()
 intercept_env = str(os.environ.get('SQUID_INTERCEPT_ENABLED') or '').strip()
 intercept_port_env = str(os.environ.get('SQUID_INTERCEPT_PORT') or '').strip()
-if not explicit_env and not intercept_env and not intercept_port_env:
+https_intercept_env = str(os.environ.get('SQUID_HTTPS_INTERCEPT_ENABLED') or '').strip()
+https_intercept_port_env = str(os.environ.get('SQUID_HTTPS_INTERCEPT_PORT') or '').strip()
+https_intercept_splice_env = str(os.environ.get('SQUID_HTTPS_INTERCEPT_SPLICE_ONLY') or '').strip()
+if not any((explicit_env, intercept_env, intercept_port_env, https_intercept_env, https_intercept_port_env, https_intercept_splice_env)):
     raise SystemExit(0)
 
 explicit_env_set = bool(explicit_env)
 intercept_env_set = bool(intercept_env)
+https_intercept_env_set = bool(https_intercept_env)
+https_intercept_splice_env_set = bool(https_intercept_splice_env)
 intercept_on = enabled(intercept_env) if intercept_env_set else None
+https_intercept_on = enabled(https_intercept_env) if https_intercept_env_set else None
+https_intercept_splice_on = enabled(https_intercept_splice_env) if https_intercept_splice_env_set else None
 explicit_port = coerce_port(explicit_env, first_explicit_port(text) or 3128)
 intercept_port = coerce_port(intercept_port_env, default_intercept_port(explicit_port))
+https_intercept_port = coerce_port(https_intercept_port_env, 3130 if explicit_port != 3130 else 3131)
 dynamic_cache_mb = extract_dynamic_cache_mb(text)
+existing_https_intercept = config_has_https_intercept(text)
+https_intercept_effective = https_intercept_on is True or (https_intercept_on is None and (https_intercept_port_env or existing_https_intercept))
 
 rendered = []
 replaced_explicit = False
@@ -299,8 +377,14 @@ for physical, logical in logical_lines(text):
         else:
             rendered.extend(physical)
             continue
+    if any('# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER' in line for line in physical):
+        if https_intercept_env_set or https_intercept_port_env:
+            skipping_intercept = True
+        else:
+            rendered.extend(physical)
+            continue
     if skipping_intercept:
-        if any('# END SQUID-UI INTERCEPT LISTENER' in line for line in physical):
+        if any('# END SQUID-UI INTERCEPT LISTENER' in line for line in physical) or any('# END SQUID-UI HTTPS INTERCEPT LISTENER' in line for line in physical):
             skipping_intercept = False
         continue
 
@@ -319,8 +403,14 @@ for physical, logical in logical_lines(text):
                 intercept_port = default_intercept_port(current_explicit_port)
                 if intercept_port == current_explicit_port:
                     intercept_port = 3129 if current_explicit_port != 3129 else 3130
+            used_ports = {current_explicit_port}
             if intercept_on is True or (intercept_on is None and intercept_port_env):
                 rendered.extend(intercept_block(intercept_port))
+                used_ports.add(intercept_port)
+            while https_intercept_port in used_ports:
+                https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
+            if https_intercept_on is True or (https_intercept_on is None and https_intercept_port_env):
+                rendered.extend(https_intercept_block(https_intercept_port, dynamic_cache_mb))
             replaced_explicit = True
             continue
 
@@ -328,9 +418,20 @@ for physical, logical in logical_lines(text):
 
 if not replaced_explicit:
     prefix = explicit_lines(explicit_port, dynamic_cache_mb)
+    used_ports = {explicit_port}
     if intercept_on is True or (intercept_on is None and intercept_port_env):
         prefix.extend(intercept_block(intercept_port))
+        used_ports.add(intercept_port)
+    while https_intercept_port in used_ports:
+        https_intercept_port = 3130 if https_intercept_port != 3130 else 3131
+    if https_intercept_on is True or (https_intercept_on is None and https_intercept_port_env):
+        prefix.extend(https_intercept_block(https_intercept_port, dynamic_cache_mb))
     rendered = prefix + [''] + rendered
+
+if https_intercept_splice_env_set:
+    rendered = strip_managed_https_splice(rendered)
+    if https_intercept_splice_on is True and https_intercept_effective:
+        rendered = insert_https_splice_block(rendered)
 
 path.write_text('\n'.join(rendered) + ('\n' if text.endswith('\n') else ''), encoding='utf-8')
 PY
