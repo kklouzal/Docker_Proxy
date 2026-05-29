@@ -19,7 +19,7 @@ while :; do
   # after a runtime rotate, which makes the Admin UI tailers miss explicit and
   # intercept listener traffic.  Copytruncate keeps the active path stable; the
   # tailers detect the truncation (file size < position) and seek to the start.
-  for logfile in /var/log/squid/access-observe.log /var/log/squid/icap.log /var/log/cicap-access.log /var/log/cicap-access-av.log; do
+  for logfile in /var/log/squid/access-observe.log /var/log/squid/icap.log /var/log/cicap-access.log; do
     if [ -f "$logfile" ]; then
       cp -- "$logfile" "${logfile}.1" 2>/dev/null || true
       : > "$logfile" 2>/dev/null || true

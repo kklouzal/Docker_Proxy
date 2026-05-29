@@ -268,7 +268,7 @@ class AdblockLookupIndex:
         resource_type: str = "",
     ) -> set[str]:
         parsed = urlsplit(url or "")
-        host = _normalize_host(parsed.netloc or parsed.hostname or "")
+        host = _normalize_host(parsed.hostname or parsed.netloc or "")
         rule_ids: set[str] = set()
 
         rule_ids.update(

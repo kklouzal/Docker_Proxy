@@ -275,7 +275,7 @@ def build_local_runtime_services(
     }
     return {
         "icap": results.get("icap")
-        or {"ok": False, "detail": "c-icap adblock health unavailable"},
+        or {"ok": False, "detail": "adblock ICAP health unavailable"},
         "av_icap": av_icap,
         "clamd": clamd,
         "clamav": build_clamav_health(clamd, av_icap),
@@ -854,8 +854,7 @@ class ProxyRuntime:
             last_health = _check_icap_adblock(timeout=1.0, error_formatter=str)
             if bool(last_health.get("ok")):
                 health_detail = str(
-                    last_health.get("detail")
-                    or "cicap_adblock ICAP health check passed.",
+                    last_health.get("detail") or "adblock ICAP health check passed.",
                 )
                 return True, "\n".join(
                     part for part in (detail, health_detail) if str(part or "").strip()
@@ -863,7 +862,7 @@ class ProxyRuntime:
             time.sleep(0.5)
         health_detail = str(
             last_health.get("detail")
-            or "cicap_adblock ICAP health check did not pass after restart.",
+            or "adblock ICAP health check did not pass after restart.",
         )
         return False, "\n".join(
             part for part in (detail, health_detail) if str(part or "").strip()
@@ -972,7 +971,7 @@ class ProxyRuntime:
                 ok = False
                 icap_detail = str(
                     last_icap.get("detail")
-                    or "cicap_adblock ICAP health check did not pass after policy reload.",
+                    or "adblock ICAP health check did not pass after policy reload.",
                 )
                 detail = "\n".join(
                     part for part in (detail, icap_detail) if str(part or "").strip()
@@ -1080,7 +1079,7 @@ class ProxyRuntime:
                 "ok": True,
                 "proxy_id": self.proxy_id,
                 "changed": False,
-                "detail": status_detail or "cicap_adblock is healthy.",
+                "detail": status_detail or "adblock ICAP helper is healthy.",
             }
 
         ok_restart, restart_detail = self._restart_adblock_service()
@@ -1503,7 +1502,7 @@ class ProxyRuntime:
         if not ok_restart and artifact_changed and snapshot_root:
             rollback_detail_parts = [
                 restart_detail.strip()
-                or "cicap_adblock failed after adblock artifact materialization.",
+                or "adblock ICAP helper failed after adblock artifact materialization.",
             ]
             try:
                 self._restore_adblock_compiled_snapshot(snapshot_root)
@@ -1515,7 +1514,7 @@ class ProxyRuntime:
                     rollback_detail_parts.append(rollback_restart_detail.strip())
                 if not rollback_ok:
                     rollback_detail_parts.append(
-                        "Previous adblock artifact was restored, but cicap_adblock still did not stay running.",
+                        "Previous adblock artifact was restored, but the adblock ICAP helper still did not stay running.",
                     )
             except Exception as exc:
                 rollback_detail_parts.append(

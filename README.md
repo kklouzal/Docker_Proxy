@@ -222,7 +222,7 @@ one default admin UI stay well inside the 160-connection budget.
 
 - Fleet page with registered proxies, live health, and per-proxy observability status.
 - Live traffic pages for clients, domains, cache behavior, transactions, and ICAP activity.
-- Diagnostic ingestion from Squid and c-icap logs into MySQL-backed rollups.
+- Diagnostic ingestion from Squid and ICAP helper logs into MySQL-backed rollups.
 - SSL error store, block logs, CSV-style exports, and log maintenance actions.
 - Operations page for queued, applying, applied, and failed proxy operations, including rollback support when a failed operation has a rollback target.
 - Policy request workflow for users to submit unblock/review requests from custom block pages.

@@ -32,6 +32,7 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
 
     assert engine.decide("https://sub.ads.example/banner.js").blocked is True
+    assert engine.decide("https://user:pass@sub.ads.example/banner.js").blocked is True
     exception = engine.decide(
         "https://ads.example/allowed.js",
         headers={"accept": "application/javascript"},

@@ -143,6 +143,9 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
     assert "||ads.example^" in _raws(
         lookup.candidate_rules("https://sub.ads.example/banner.js")
     )
+    assert "||ads.example^" in _raws(
+        lookup.candidate_rules("https://user:pass@sub.ads.example/banner.js")
+    )
     script_candidates = _raws(
         lookup.candidate_rules(
             "https://cdn.example.com/assets/ad.js?slot=1",

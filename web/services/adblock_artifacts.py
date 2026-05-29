@@ -1081,14 +1081,14 @@ def _restart_local_adblock_service() -> tuple[bool, str]:
     except Exception as exc:
         return False, public_error_message(
             exc,
-            default="Failed to restart cicap_adblock.",
+            default="Failed to restart the adblock ICAP helper.",
         )
 
     stdout = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
     stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
     detail = (
         "\n".join(part for part in (stdout, stderr) if part).strip()
-        or "cicap_adblock restarted."
+        or "Adblock ICAP helper restarted."
     )
     return proc.returncode == 0, detail
 

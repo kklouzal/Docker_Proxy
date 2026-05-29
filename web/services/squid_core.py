@@ -358,9 +358,9 @@ class SquidController:
 
     def _render_icap_include(self, config_text: str | None = None) -> str:
         try:
-            cicap_adblock_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
+            adblock_icap_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
         except Exception:
-            cicap_adblock_port = 14000
+            adblock_icap_port = 14000
         try:
             cicap_av_port = int((os.environ.get("CICAP_AV_PORT") or "14001").strip())
         except Exception:
@@ -372,16 +372,16 @@ class SquidController:
             clamav_options,
         ).strip()
         # Version the Squid ICAP service name with the active artifact while
-        # keeping the c-icap service URI stable. Squid tracks ICAP service health
+        # keeping the adblock ICAP helper URI stable. Squid tracks ICAP service health
         # and persistent connections by service object; changing the local service
-        # name after a c-icap artifact reload prevents stale bypass/broken-service
-        # state without sending c-icap an unsupported query-string service path.
+        # name after an artifact reload prevents stale bypass/broken-service state
+        # without sending the helper an unsupported query-string service path.
         adblock_service_name = "adblock_req"
         adblock_token = (self._adblock_icap_revision_token or "").strip()
         if adblock_token:
             adblock_service_name = f"adblock_req_{adblock_token}"
         lines = [
-            f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{cicap_adblock_port}/adblockreq bypass=on",
+            f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port}/adblockreq bypass=on",
             f"icap_service av_req reqmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
             f"adaptation_service_set adblock_req_set {adblock_service_name}",

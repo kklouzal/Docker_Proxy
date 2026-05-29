@@ -960,7 +960,9 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     )
     fake_proxy_client = overrides.get("proxy_client") or FakeProxyClient(admin_app)
     fake_certificates = overrides.get("certificate_bundles") or FakeCertificateBundles()
-    fake_adblock_artifacts = overrides.get("adblock_artifacts") or FakeAdblockArtifacts()
+    fake_adblock_artifacts = (
+        overrides.get("adblock_artifacts") or FakeAdblockArtifacts()
+    )
     fake_operation_ledger = overrides.get("operation_ledger") or FakeOperationLedger()
 
     services = admin_app.AppRuntimeServices(

@@ -242,7 +242,7 @@ def _find_regex_delimiter(rule: str) -> int | None:
     return None
 
 
-def _normalize_regex_for_cicap_table(pattern: str) -> str:
+def _normalize_regex_for_legacy_text_bucket(pattern: str) -> str:
     r"""Normalize a regex so it can be stored in the legacy text bucket.
 
     The former c-icap lookup-table parser treated ':' as a separator, so
@@ -787,7 +787,7 @@ def compile_lines(lines: Iterable[str]) -> CompileOutput:
         # Explicit regex rule.
         if len(pattern) >= 3 and pattern.startswith("/") and pattern.endswith("/"):
             if not is_exception:
-                inner = _normalize_regex_for_cicap_table(pattern[1:-1])
+                inner = _normalize_regex_for_legacy_text_bucket(pattern[1:-1])
                 if inner:
                     regex_block.append(f"/{inner}/")
             else:
@@ -972,7 +972,7 @@ def _compile_and_extract_all(
             if pattern_kind == "regex":
                 regex = (extra.get("regex") or "").strip()
                 if regex:
-                    regex = _normalize_regex_for_cicap_table(regex)
+                    regex = _normalize_regex_for_legacy_text_bucket(regex)
                     regex = f"/{regex}/"
                     if is_exception:
                         regex_allow.add(regex)
