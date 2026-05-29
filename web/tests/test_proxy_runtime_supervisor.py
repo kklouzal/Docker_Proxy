@@ -35,7 +35,6 @@ def _cp(returncode: int, stdout: str = "", stderr: str = ""):
     )
 
 
-
 def test_sync_policy_state_failure_reports_desired_and_current_sha(tmp_path) -> None:
     runtime = _runtime_shell()
     runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
