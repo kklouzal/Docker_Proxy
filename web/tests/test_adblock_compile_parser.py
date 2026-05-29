@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -237,6 +238,64 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
         rule["excluded_resource_types"] == ["stylesheet"] for rule in generic_rules
     )
     assert any(rule.get("right_anchored") is True for rule in generic_rules)
+
+
+def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> None:
+    out = _compile_sample(
+        tmp_path,
+        [
+            "||ads.example^",
+            "@@||allow.example^",
+            "||example.com/ad/path|$script,~third-party",
+            "wss://loader.*.com/ws^$websocket,third-party",
+            "/tracker[.]example/$third-party",
+            "plain-ad-token$~stylesheet",
+            "$popup,third-party,domain=example.com",
+        ],
+    )
+
+    _add_web_to_path()
+    from tools import adblock_compile as ac  # type: ignore
+
+    db_path = out / "request_lookup.sqlite"
+    counts = ac._write_request_lookup_index(
+        str(db_path),
+        str(out / "network_rules.jsonl"),
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert counts["rules"] == 7
+        assert conn.execute(
+            "SELECT action FROM domain_index WHERE host=?",
+            ("ads.example",),
+        ).fetchone() == ("block",)
+        assert conn.execute(
+            "SELECT action FROM domain_index WHERE host=?",
+            ("allow.example",),
+        ).fetchone() == ("allow",)
+        assert conn.execute(
+            "SELECT path_pattern FROM host_index WHERE host=?",
+            ("example.com",),
+        ).fetchone() == ("/ad/path",)
+        assert conn.execute(
+            "SELECT host_pattern FROM host_pattern_index"
+        ).fetchone() == ("loader.*.com",)
+        assert conn.execute("SELECT COUNT(*) FROM regex_index").fetchone() == (1,)
+        assert conn.execute(
+            "SELECT literal_key FROM generic_index WHERE pattern_kind='substring'"
+        ).fetchone() == ("plain-ad-token",)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM option_index WHERE option_key='popup'"
+        ).fetchone() == (1,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM resource_type_index WHERE resource_type='websocket'"
+        ).fetchone() == (1,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM domain_scope_index WHERE domain='example.com'"
+        ).fetchone() == (1,)
+    finally:
+        conn.close()
 
 
 def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:

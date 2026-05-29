@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -735,6 +736,7 @@ def _write_empty_output(out_dir: str) -> None:
             "",
             encoding="utf-8",
         )
+    _write_empty_request_lookup_db(root / "request_lookup.sqlite")
     report = {
         "enabled_lists": [],
         "counts": {
@@ -752,6 +754,17 @@ def _write_empty_output(out_dir: str) -> None:
             "cosmetic_by_marker": {},
             "option_key_counts": {},
             "option_group_counts": {},
+            "lookup_index_counts": {
+                "domain_index": 0,
+                "domain_scope_index": 0,
+                "generic_index": 0,
+                "host_index": 0,
+                "host_pattern_index": 0,
+                "option_index": 0,
+                "regex_index": 0,
+                "resource_type_index": 0,
+                "rules": 0,
+            },
         },
         "per_list": {},
         "notes": {
@@ -763,6 +776,138 @@ def _write_empty_output(out_dir: str) -> None:
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_empty_request_lookup_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(FileNotFoundError):
+        path.unlink()
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+
+            CREATE TABLE metadata(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+
+            CREATE TABLE rules(
+                rule_id TEXT PRIMARY KEY,
+                list_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                exception INTEGER NOT NULL,
+                pattern_kind TEXT NOT NULL,
+                raw TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                resource_types_json TEXT NOT NULL,
+                excluded_resource_types_json TEXT NOT NULL,
+                third_party TEXT NOT NULL,
+                behavior_options_json TEXT NOT NULL,
+                value_options_json TEXT NOT NULL
+            ) WITHOUT ROWID;
+
+            CREATE TABLE domain_index(
+                host TEXT NOT NULL,
+                action TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(host, action, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE host_index(
+                host TEXT NOT NULL,
+                action TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                pattern_kind TEXT NOT NULL,
+                url_scheme_pattern TEXT NOT NULL,
+                path_pattern TEXT NOT NULL,
+                query_pattern TEXT NOT NULL,
+                suffix_separator_prefix INTEGER NOT NULL,
+                suffix_separator_suffix INTEGER NOT NULL,
+                PRIMARY KEY(host, action, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE host_pattern_index(
+                host_pattern TEXT NOT NULL,
+                action TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                pattern_kind TEXT NOT NULL,
+                url_scheme_pattern TEXT NOT NULL,
+                path_pattern TEXT NOT NULL,
+                query_pattern TEXT NOT NULL,
+                PRIMARY KEY(host_pattern, action, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE regex_index(
+                action TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                regex TEXT NOT NULL,
+                PRIMARY KEY(action, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE generic_index(
+                literal_key TEXT NOT NULL,
+                pattern_kind TEXT NOT NULL,
+                action TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(literal_key, pattern_kind, action, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE option_index(
+                option_key TEXT NOT NULL,
+                option_value TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(option_key, option_value, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE resource_type_index(
+                resource_type TEXT NOT NULL,
+                negated INTEGER NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(resource_type, negated, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE domain_scope_index(
+                domain TEXT NOT NULL,
+                excluded INTEGER NOT NULL,
+                pattern INTEGER NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY(domain, excluded, pattern, rule_id)
+            ) WITHOUT ROWID;
+
+            CREATE INDEX idx_rules_kind_action ON rules(pattern_kind, action);
+            CREATE INDEX idx_domain_action ON domain_index(action, host);
+            CREATE INDEX idx_host_action ON host_index(action, host);
+            CREATE INDEX idx_host_pattern_action ON host_pattern_index(action, host_pattern);
+            CREATE INDEX idx_regex_action ON regex_index(action);
+            CREATE INDEX idx_generic_kind_key ON generic_index(pattern_kind, literal_key);
+            CREATE INDEX idx_option_key ON option_index(option_key, option_value);
+            CREATE INDEX idx_resource_type ON resource_type_index(resource_type, negated);
+            CREATE INDEX idx_domain_scope ON domain_scope_index(domain, excluded, pattern);
+            """
+        )
+        metadata = {
+            "schema_version": "1",
+            "count_domain_index": "0",
+            "count_domain_scope_index": "0",
+            "count_generic_index": "0",
+            "count_host_index": "0",
+            "count_host_pattern_index": "0",
+            "count_option_index": "0",
+            "count_regex_index": "0",
+            "count_resource_type_index": "0",
+            "count_rules": "0",
+        }
+        conn.executemany(
+            "INSERT INTO metadata(key, value) VALUES(?, ?)",
+            sorted(metadata.items()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _write_settings_file(

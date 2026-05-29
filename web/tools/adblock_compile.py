@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import re
+import sqlite3
 import sys
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
@@ -1139,6 +1140,371 @@ def _write_sorted_lines(path: str, items: Iterable[str]) -> None:
             f.write("\n")
 
 
+def _json_compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _literal_lookup_key(pattern: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,}", pattern or "")
+    if not tokens:
+        return ""
+    return max((token.lower() for token in tokens), key=lambda item: (len(item), item))
+
+
+def _sqlite_scalar_values(value: Any) -> list[str]:
+    if value is True:
+        return ["1"]
+    if value is False or value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item or "").strip()]
+    if isinstance(value, dict):
+        return [_json_compact(value)]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _create_lookup_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        PRAGMA journal_mode=OFF;
+        PRAGMA synchronous=OFF;
+        PRAGMA temp_store=MEMORY;
+
+        CREATE TABLE metadata(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        ) WITHOUT ROWID;
+
+        CREATE TABLE rules(
+            rule_id TEXT PRIMARY KEY,
+            list_key TEXT NOT NULL,
+            action TEXT NOT NULL,
+            exception INTEGER NOT NULL,
+            pattern_kind TEXT NOT NULL,
+            raw TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            options_json TEXT NOT NULL,
+            resource_types_json TEXT NOT NULL,
+            excluded_resource_types_json TEXT NOT NULL,
+            third_party TEXT NOT NULL,
+            behavior_options_json TEXT NOT NULL,
+            value_options_json TEXT NOT NULL
+        ) WITHOUT ROWID;
+
+        CREATE TABLE domain_index(
+            host TEXT NOT NULL,
+            action TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            PRIMARY KEY(host, action, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE host_index(
+            host TEXT NOT NULL,
+            action TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            pattern_kind TEXT NOT NULL,
+            url_scheme_pattern TEXT NOT NULL,
+            path_pattern TEXT NOT NULL,
+            query_pattern TEXT NOT NULL,
+            suffix_separator_prefix INTEGER NOT NULL,
+            suffix_separator_suffix INTEGER NOT NULL,
+            PRIMARY KEY(host, action, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE host_pattern_index(
+            host_pattern TEXT NOT NULL,
+            action TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            pattern_kind TEXT NOT NULL,
+            url_scheme_pattern TEXT NOT NULL,
+            path_pattern TEXT NOT NULL,
+            query_pattern TEXT NOT NULL,
+            PRIMARY KEY(host_pattern, action, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE regex_index(
+            action TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            regex TEXT NOT NULL,
+            PRIMARY KEY(action, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE generic_index(
+            literal_key TEXT NOT NULL,
+            pattern_kind TEXT NOT NULL,
+            action TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            PRIMARY KEY(literal_key, pattern_kind, action, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE option_index(
+            option_key TEXT NOT NULL,
+            option_value TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            PRIMARY KEY(option_key, option_value, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE resource_type_index(
+            resource_type TEXT NOT NULL,
+            negated INTEGER NOT NULL,
+            rule_id TEXT NOT NULL,
+            PRIMARY KEY(resource_type, negated, rule_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE domain_scope_index(
+            domain TEXT NOT NULL,
+            excluded INTEGER NOT NULL,
+            pattern INTEGER NOT NULL,
+            rule_id TEXT NOT NULL,
+            PRIMARY KEY(domain, excluded, pattern, rule_id)
+        ) WITHOUT ROWID;
+        """
+    )
+
+
+def _create_lookup_indexes(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE INDEX idx_rules_kind_action ON rules(pattern_kind, action);
+        CREATE INDEX idx_domain_action ON domain_index(action, host);
+        CREATE INDEX idx_host_action ON host_index(action, host);
+        CREATE INDEX idx_host_pattern_action ON host_pattern_index(action, host_pattern);
+        CREATE INDEX idx_regex_action ON regex_index(action);
+        CREATE INDEX idx_generic_kind_key ON generic_index(pattern_kind, literal_key);
+        CREATE INDEX idx_option_key ON option_index(option_key, option_value);
+        CREATE INDEX idx_resource_type ON resource_type_index(resource_type, negated);
+        CREATE INDEX idx_domain_scope ON domain_scope_index(domain, excluded, pattern);
+        """
+    )
+
+
+def _write_request_lookup_index(
+    sqlite_path: str,
+    network_jsonl_path: str,
+) -> dict[str, int]:
+    path = pathlib.Path(sqlite_path)
+    path.parent.mkdir(exist_ok=True, parents=True)
+    with suppress(FileNotFoundError):
+        path.unlink()
+    conn = sqlite3.connect(str(path))
+    counts: dict[str, int] = {
+        "rules": 0,
+        "domain_index": 0,
+        "host_index": 0,
+        "host_pattern_index": 0,
+        "regex_index": 0,
+        "generic_index": 0,
+        "option_index": 0,
+        "resource_type_index": 0,
+        "domain_scope_index": 0,
+    }
+    try:
+        _create_lookup_schema(conn)
+        conn.execute(
+            "INSERT INTO metadata(key, value) VALUES(?, ?)",
+            ("schema_version", "1"),
+        )
+        conn.execute(
+            "INSERT INTO metadata(key, value) VALUES(?, ?)",
+            (
+                "lookup_strategy",
+                "domain suffix candidates -> domain_index; exact host -> host_index; small host-pattern/regex sets; generic literal-key prefilter before payload verification",
+            ),
+        )
+        with pathlib.Path(network_jsonl_path).open(
+            encoding="utf-8",
+            errors="replace",
+        ) as handle:
+            with conn:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line)
+                    rule_id = str(rec.get("id") or "")
+                    if not rule_id:
+                        continue
+                    action = str(rec.get("action") or "")
+                    pattern_kind = str(rec.get("pattern_kind") or "")
+                    inserted = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO rules(
+                            rule_id, list_key, action, exception, pattern_kind, raw,
+                            pattern, options_json, resource_types_json,
+                            excluded_resource_types_json, third_party,
+                            behavior_options_json, value_options_json
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rule_id,
+                            str(rec.get("list_key") or ""),
+                            action,
+                            1 if rec.get("exception") else 0,
+                            pattern_kind,
+                            str(rec.get("raw") or ""),
+                            str(rec.get("pattern") or ""),
+                            _json_compact(rec.get("options") or {}),
+                            _json_compact(rec.get("resource_types") or []),
+                            _json_compact(rec.get("excluded_resource_types") or []),
+                            str(rec.get("third_party") or "any"),
+                            _json_compact(rec.get("behavior_options") or []),
+                            _json_compact(rec.get("value_options") or {}),
+                        ),
+                    )
+                    if not inserted.rowcount:
+                        continue
+                    counts["rules"] += 1
+
+                    if pattern_kind == "domain_only" and rec.get("host"):
+                        conn.execute(
+                            "INSERT OR IGNORE INTO domain_index(host, action, rule_id) VALUES(?, ?, ?)",
+                            (str(rec.get("host") or ""), action, rule_id),
+                        )
+                        counts["domain_index"] += 1
+                    elif pattern_kind in {
+                        "absolute_url",
+                        "host_anchored",
+                    } and rec.get("host"):
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO host_index(
+                                host, action, rule_id, pattern_kind,
+                                url_scheme_pattern, path_pattern, query_pattern,
+                                suffix_separator_prefix, suffix_separator_suffix
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                str(rec.get("host") or ""),
+                                action,
+                                rule_id,
+                                pattern_kind,
+                                str(rec.get("url_scheme_pattern") or ""),
+                                str(rec.get("path_pattern") or ""),
+                                str(rec.get("query_pattern") or ""),
+                                1 if rec.get("suffix_separator_prefix") else 0,
+                                1 if rec.get("suffix_separator_suffix") else 0,
+                            ),
+                        )
+                        counts["host_index"] += 1
+                    elif pattern_kind in {
+                        "absolute_url_pattern",
+                        "host_anchored_pattern",
+                    } and rec.get("host_pattern"):
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO host_pattern_index(
+                                host_pattern, action, rule_id, pattern_kind,
+                                url_scheme_pattern, path_pattern, query_pattern
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                str(rec.get("host_pattern") or ""),
+                                action,
+                                rule_id,
+                                pattern_kind,
+                                str(rec.get("url_scheme_pattern") or ""),
+                                str(rec.get("path_pattern") or ""),
+                                str(rec.get("query_pattern") or ""),
+                            ),
+                        )
+                        counts["host_pattern_index"] += 1
+                    elif pattern_kind == "regex":
+                        conn.execute(
+                            "INSERT OR IGNORE INTO regex_index(action, rule_id, regex) VALUES(?, ?, ?)",
+                            (action, rule_id, str(rec.get("regex") or "")),
+                        )
+                        counts["regex_index"] += 1
+                    elif pattern_kind != "empty":
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO generic_index(
+                                literal_key, pattern_kind, action, rule_id
+                            ) VALUES(?, ?, ?, ?)
+                            """,
+                            (
+                                _literal_lookup_key(str(rec.get("pattern") or "")),
+                                pattern_kind,
+                                action,
+                                rule_id,
+                            ),
+                        )
+                        counts["generic_index"] += 1
+
+                    options = rec.get("options") or {}
+                    if isinstance(options, dict):
+                        for key, value in options.items():
+                            for item in _sqlite_scalar_values(value):
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO option_index(option_key, option_value, rule_id) VALUES(?, ?, ?)",
+                                    (str(key), item, rule_id),
+                                )
+                                counts["option_index"] += 1
+
+                    for resource_type in rec.get("resource_types") or []:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 0, ?)",
+                            (str(resource_type), rule_id),
+                        )
+                        counts["resource_type_index"] += 1
+                    for resource_type in rec.get("excluded_resource_types") or []:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 1, ?)",
+                            (str(resource_type), rule_id),
+                        )
+                        counts["resource_type_index"] += 1
+
+                    for domain in rec.get("domain_includes") or []:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 0, ?)",
+                            (str(domain), rule_id),
+                        )
+                        counts["domain_scope_index"] += 1
+                    for domain in rec.get("domain_excludes") or []:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 0, ?)",
+                            (str(domain), rule_id),
+                        )
+                        counts["domain_scope_index"] += 1
+                    for domain in rec.get("domain_include_patterns") or []:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 1, ?)",
+                            (str(domain), rule_id),
+                        )
+                        counts["domain_scope_index"] += 1
+                    for domain in rec.get("domain_exclude_patterns") or []:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 1, ?)",
+                            (str(domain), rule_id),
+                        )
+                        counts["domain_scope_index"] += 1
+
+        _create_lookup_indexes(conn)
+        count_queries = {
+            "rules": "SELECT COUNT(*) FROM rules",
+            "domain_index": "SELECT COUNT(*) FROM domain_index",
+            "host_index": "SELECT COUNT(*) FROM host_index",
+            "host_pattern_index": "SELECT COUNT(*) FROM host_pattern_index",
+            "regex_index": "SELECT COUNT(*) FROM regex_index",
+            "generic_index": "SELECT COUNT(*) FROM generic_index",
+            "option_index": "SELECT COUNT(*) FROM option_index",
+            "resource_type_index": "SELECT COUNT(*) FROM resource_type_index",
+            "domain_scope_index": "SELECT COUNT(*) FROM domain_scope_index",
+        }
+        for table_name, query in count_queries.items():
+            row = conn.execute(query).fetchone()
+            counts[table_name] = int(row[0] or 0) if row else 0
+        for key, value in sorted(counts.items()):
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES(?, ?)",
+                (f"count_{key}", str(int(value))),
+            )
+        conn.execute("PRAGMA optimize")
+        conn.commit()
+    finally:
+        conn.close()
+    return counts
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Compile EasyList-style adblock lists into c-icap friendly buckets",
@@ -1238,6 +1604,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir,
         "request_index_generic.jsonl",
     )
+    request_lookup_sqlite_path = os.path.join(out_dir, "request_lookup.sqlite")
 
     # Per-resource-type option buckets
     network_type_pos_paths: dict[str, str] = {
@@ -1594,6 +1961,10 @@ def main(argv: list[str] | None = None) -> int:
     _write_sorted_lines(os.path.join(out_dir, "domains_block.txt"), agg.domains_block)
     _write_sorted_lines(os.path.join(out_dir, "regex_block.txt"), agg.regex_block)
     _write_sorted_lines(os.path.join(out_dir, "regex_allow.txt"), agg.regex_allow)
+    lookup_index_counts = _write_request_lookup_index(
+        request_lookup_sqlite_path,
+        network_jsonl_path,
+    )
 
     merged_counts = {
         "domains_allow": len(agg.domains_allow),
@@ -1628,6 +1999,7 @@ def main(argv: list[str] | None = None) -> int:
             "option_group_counts": dict(
                 sorted(agg.option_group_counts.items(), key=lambda kv: (-kv[1], kv[0])),
             ),
+            "lookup_index_counts": lookup_index_counts,
         },
         "per_list": per_list_counts,
         "files": {
@@ -1703,6 +2075,7 @@ def main(argv: list[str] | None = None) -> int:
                 out_dir,
                 "request_index_generic.jsonl",
             ),
+            "request_lookup_sqlite": request_lookup_sqlite_path,
             "cosmetic_elemhide_jsonl": os.path.join(out_dir, "cosmetic_elemhide.jsonl"),
             "cosmetic_elemhide_exception_jsonl": os.path.join(
                 out_dir,
@@ -1757,6 +2130,7 @@ def main(argv: list[str] | None = None) -> int:
             "domain_buckets_policy": "Only option-less domain-only rules (||host^) and their @@ exceptions are promoted to domains_*.txt for c-icap.",
             "full_extraction": "All parsed network rules and cosmetic rules are emitted to JSONL buckets for future REQMOD/RESPMOD expansion.",
             "request_indexes": "request_index_*.jsonl contains normalized request-time ABP fields so future enforcement can load domain, host/path, regex, and generic buckets without scanning the raw extraction files.",
+            "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to full rule payloads by rule_id.",
         },
     }
     with pathlib.Path(os.path.join(out_dir, "report.json")).open(

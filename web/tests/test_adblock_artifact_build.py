@@ -4,6 +4,7 @@ import importlib
 import io
 import json
 import os
+import sqlite3
 import sys
 import zipfile
 from email.message import Message
@@ -28,6 +29,14 @@ def _import_artifact_modules(tmp_path: Path):
     importlib.reload(store_module)
     importlib.reload(artifacts_module)
     return store_module, artifacts_module
+
+
+def _read_zipped_sqlite(
+    zf: zipfile.ZipFile, name: str, tmp_path: Path
+) -> sqlite3.Connection:
+    db_path = tmp_path / name
+    db_path.write_bytes(zf.read(name))
+    return sqlite3.connect(str(db_path))
 
 
 def test_build_active_artifact_packages_compiled_lists_and_settings(
@@ -80,6 +89,7 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
                 "request_index_host.jsonl",
                 "request_index_regex.jsonl",
                 "request_index_generic.jsonl",
+                "request_lookup.sqlite",
                 "settings.json",
                 "report.json",
             } <= names
@@ -103,6 +113,25 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
             request_index_regex = zf.read("request_index_regex.jsonl").decode(
                 "utf-8", errors="replace"
             )
+            lookup_conn = _read_zipped_sqlite(zf, "request_lookup.sqlite", tmp_path)
+            try:
+                lookup_counts = {
+                    "rules": lookup_conn.execute(
+                        "SELECT COUNT(*) FROM rules"
+                    ).fetchone()[0],
+                    "domain_index": lookup_conn.execute(
+                        "SELECT COUNT(*) FROM domain_index"
+                    ).fetchone()[0],
+                    "regex_index": lookup_conn.execute(
+                        "SELECT COUNT(*) FROM regex_index"
+                    ).fetchone()[0],
+                }
+                indexed_host = lookup_conn.execute(
+                    "SELECT action FROM domain_index WHERE host=?",
+                    ("ads.example",),
+                ).fetchone()
+            finally:
+                lookup_conn.close()
 
         assert domains_block == "ads.example\n"
         assert domains_allow == "allow.example\n"
@@ -120,6 +149,13 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
         assert int(report["counts"]["domains_block"]) == 1
         assert int(report["counts"]["domains_allow"]) == 1
         assert int(report["counts"]["regex_block"]) == 1
+        assert report["breakdowns"]["lookup_index_counts"]["rules"] == 3
+        assert lookup_counts == {
+            "rules": 3,
+            "domain_index": 2,
+            "regex_index": 1,
+        }
+        assert indexed_host == ("block",)
     finally:
         for key, value in env_backup.items():
             if value is None:
@@ -211,6 +247,16 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
             report = json.loads(
                 zf.read("report.json").decode("utf-8", errors="replace")
             )
+            lookup_conn = _read_zipped_sqlite(zf, "request_lookup.sqlite", tmp_path)
+            try:
+                empty_rule_count = lookup_conn.execute(
+                    "SELECT COUNT(*) FROM rules"
+                ).fetchone()[0]
+                schema_version = lookup_conn.execute(
+                    "SELECT value FROM metadata WHERE key='schema_version'"
+                ).fetchone()[0]
+            finally:
+                lookup_conn.close()
 
         assert {
             "network_rules.jsonl",
@@ -219,6 +265,7 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
             "request_index_host.jsonl",
             "request_index_regex.jsonl",
             "request_index_generic.jsonl",
+            "request_lookup.sqlite",
             "cosmetic_scriptlet.jsonl",
             "cosmetic_html_filter.jsonl",
             "network_type_popup.jsonl",
@@ -227,6 +274,9 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
         assert settings["enabled"] is False
         assert settings["enabled_lists"] == []
         assert report["enabled_lists"] == []
+        assert report["breakdowns"]["lookup_index_counts"]["rules"] == 0
+        assert empty_rule_count == 0
+        assert schema_version == "1"
     finally:
         for key, value in env_backup.items():
             if value is None:
