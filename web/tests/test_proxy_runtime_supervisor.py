@@ -1521,6 +1521,16 @@ def test_packaged_proxy_healthcheck_treats_clamav_as_optional_by_default() -> No
     )
 
 
+def test_packaged_proxy_healthcheck_checks_https_intercept_listeners() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
+        encoding="utf-8",
+    )
+
+    assert "lower.startswith(('http_port ', 'https_port '))" in healthcheck
+    assert "Squid listener(s) not accepting connections" in healthcheck
+
+
 def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(

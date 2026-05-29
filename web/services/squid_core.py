@@ -594,11 +594,10 @@ class SquidController:
                 line.rstrip().rstrip("\\").strip() for line in pending
             ).strip()
             pending.clear()
-            if (
-                not logical
-                or logical.startswith("#")
-                or not logical.lower().startswith("http_port ")
-            ):
+            if not logical or logical.startswith("#"):
+                return
+            lower = logical.lower()
+            if not lower.startswith(("http_port ", "https_port ")):
                 return
             parts = logical.split()
             if len(parts) < 2:
@@ -616,12 +615,13 @@ class SquidController:
             if not (1 <= port <= 65535):
                 return
             modes = {part.strip().lower() for part in parts[2:]}
+            is_https_port = lower.startswith("https_port ")
             if "intercept" in modes:
-                mode = "intercept"
+                mode = "https-intercept" if is_https_port else "intercept"
             elif "tproxy" in modes:
-                mode = "tproxy"
+                mode = "https-tproxy" if is_https_port else "tproxy"
             else:
-                mode = "explicit"
+                mode = "https" if is_https_port else "explicit"
             if not any(int(item.get("port") or 0) == port for item in listeners):
                 listeners.append({"port": port, "mode": mode})
 

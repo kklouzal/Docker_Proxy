@@ -692,6 +692,33 @@ def test_squid_controller_https_intercept_listener_does_not_splice_by_default(
     assert "ssl_bump splice https_intercept_listener" not in rendered
 
 
+def test_squid_controller_health_details_include_https_intercept_listener() -> None:
+    _add_web_to_path()
+
+    from services.squid_core import SquidController  # type: ignore
+
+    config_text = """
+http_port 0.0.0.0:3128 ssl-bump \\
+    cert=/etc/squid/ssl/certs/ca.crt \\
+    key=/etc/squid/ssl/certs/ca.key
+# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER
+https_port 0.0.0.0:3130 intercept ssl-bump \\
+    name=https_intercept \\
+    cert=/etc/squid/ssl/certs/ca.crt \\
+    key=/etc/squid/ssl/certs/ca.key
+# END SQUID-UI HTTPS INTERCEPT LISTENER
+"""
+
+    controller = SquidController.__new__(SquidController)
+
+    listeners = controller._http_listener_details(config_text)
+
+    assert listeners == (
+        {"port": 3128, "mode": "explicit"},
+        {"port": 3130, "mode": "https-intercept"},
+    )
+
+
 def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-candidates")

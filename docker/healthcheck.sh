@@ -105,7 +105,10 @@ except FileNotFoundError:
 ports = []
 for logical in logical_lines(text):
     stripped = logical.strip()
-    if not stripped or stripped.startswith('#') or not stripped.lower().startswith('http_port '):
+    if not stripped or stripped.startswith('#'):
+        continue
+    lower = stripped.lower()
+    if not lower.startswith(('http_port ', 'https_port ')):
         continue
     parts = stripped.split()
     if len(parts) < 2:

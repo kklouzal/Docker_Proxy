@@ -108,7 +108,7 @@
                                 {% if health and health.listener_details %}
                                     <div>
                                         {% for listener in health.listener_details %}
-                                            <span class="badge {{ 'warn' if listener.mode == 'intercept' else 'ok' }}">{{ listener.mode }} {{ listener.port }}</span>
+                                            <span class="badge {{ 'warn' if 'intercept' in listener.mode else 'ok' }}">{{ listener.mode }} {{ listener.port }}</span>
                                         {% endfor %}
                                     </div>
                                     {% if health.services and health.services.squid_listeners %}<div>{{ health.services.squid_listeners.detail }}</div>{% endif %}
