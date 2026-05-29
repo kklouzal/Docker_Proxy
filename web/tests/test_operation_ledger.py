@@ -44,6 +44,7 @@ def _operation_row(**overrides):
         "started_ts": 0,
         "completed_ts": 0,
         "updated_ts": 123,
+        "force_sync": 0,
     }
     base.update(overrides)
     return base
@@ -77,6 +78,7 @@ class _Connection:
                 "started_ts": 2,
                 "completed_ts": 0,
                 "updated_ts": 2,
+                "force_sync": 0,
             }
             return _Result(
                 [dict(base, id=7, created_ts=1), dict(base, id=8, created_ts=2)],
@@ -131,6 +133,22 @@ def test_claim_pending_can_target_single_operation_id(monkeypatch) -> None:
     assert select_params == ("edge-a", 7, 1)
 
 
+def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    claimed = ledger.claim_pending("edge-a", limit=2)
+
+    assert claimed
+    assert [op.force for op in claimed] == [False, False]
+
+
 def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
     _add_repo_paths()
     from services.operation_ledger import OperationLedger
@@ -175,12 +193,16 @@ def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
         target_ref=42,
         request_hash="abc123",
         created_by="admin",
+        force=True,
     )
 
     insert_sql, insert_params = conn.queries[0]
     assert "request_key" in insert_sql
+    assert "force_sync" in insert_sql
     assert "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)" in insert_sql
+    assert "force_sync=GREATEST(force_sync, VALUES(force_sync))" in insert_sql
     assert len(insert_params[9]) == 64
+    assert insert_params[-1] == 1
     assert op.operation_id == 11
     assert conn.committed is True
 

@@ -1768,6 +1768,42 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
     ]
 
 
+def test_sync_from_db_honors_force_flag_from_claimed_operations(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(operation_id=5, target_kind="", target_ref="", force=True)
+    observed: list[bool] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, *_args, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+
+    def sync_unlocked(*, force=False, operations=None):
+        observed.append(bool(force))
+        assert operations == [op]
+        return {"ok": True, "detail": "runtime reconciled"}
+
+    runtime._sync_from_db_unlocked = sync_unlocked
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert observed == [True]
+
+
 def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

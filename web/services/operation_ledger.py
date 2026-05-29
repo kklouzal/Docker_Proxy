@@ -32,6 +32,7 @@ class ProxyOperation:
     started_ts: int
     completed_ts: int
     updated_ts: int
+    force: bool = False
 
     @property
     def can_revert(self) -> bool:
@@ -56,12 +57,13 @@ class ProxyOperation:
             "started_ts": self.started_ts,
             "completed_ts": self.completed_ts,
             "updated_ts": self.updated_ts,
+            "force": self.force,
             "can_revert": self.can_revert,
         }
 
 
 class OperationLedger:
-    _SELECT_COLUMNS = "id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts"
+    _SELECT_COLUMNS = "id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts, force_sync"
 
     def __init__(self) -> None:
         self._schema_ready = False
@@ -140,6 +142,7 @@ class OperationLedger:
                     started_ts BIGINT NOT NULL DEFAULT 0,
                     completed_ts BIGINT NOT NULL DEFAULT 0,
                     updated_ts BIGINT NOT NULL,
+                    force_sync TINYINT(1) NOT NULL DEFAULT 0,
                     KEY idx_proxy_operations_proxy_status (proxy_id, status, created_ts),
                     KEY idx_proxy_operations_proxy_updated (proxy_id, updated_ts),
                     KEY idx_proxy_operations_status_updated (status, updated_ts)
@@ -149,6 +152,10 @@ class OperationLedger:
                 if not self._column_exists(conn, "proxy_operations", "request_key"):
                     conn.execute(
                         "ALTER TABLE proxy_operations ADD COLUMN request_key CHAR(64) NULL DEFAULT NULL AFTER request_hash",
+                    )
+                if not self._column_exists(conn, "proxy_operations", "force_sync"):
+                    conn.execute(
+                        "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER updated_ts",
                     )
                 if not self._index_exists(
                     conn,
@@ -181,6 +188,7 @@ class OperationLedger:
             started_ts=int(row["started_ts"] or 0),
             completed_ts=int(row["completed_ts"] or 0),
             updated_ts=int(row["updated_ts"] or 0),
+            force=bool(int(row["force_sync"] or 0)),
         )
 
     def create_operation(
@@ -197,6 +205,7 @@ class OperationLedger:
         request_hash: str = "",
         detail: str = "",
         created_by: str = "",
+        force: bool = False,
     ) -> ProxyOperation:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
@@ -211,6 +220,7 @@ class OperationLedger:
         request_hash_text = (request_hash or "")[:64]
         detail_text = (detail or "")[:4000]
         created_by_text = (created_by or "")[:255]
+        force_requested = bool(force)
         request_key = self._request_key(
             operation_type=op_type,
             subject=subject_text,
@@ -221,9 +231,9 @@ class OperationLedger:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts)
-                VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
+                INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts,force_sync)
+                VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), force_sync=GREATEST(force_sync, VALUES(force_sync))
                 """,
                 (
                     proxy_key,
@@ -240,6 +250,7 @@ class OperationLedger:
                     created_by_text,
                     now,
                     now,
+                    1 if force_requested else 0,
                 ),
             )
             row = conn.execute(
@@ -293,7 +304,7 @@ class OperationLedger:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts FROM proxy_operations
+                SELECT id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts, force_sync FROM proxy_operations
                 WHERE proxy_id=%s AND (updated_ts>%s OR (updated_ts=%s AND id>%s))
                 ORDER BY updated_ts ASC, id ASC LIMIT %s
                 """,

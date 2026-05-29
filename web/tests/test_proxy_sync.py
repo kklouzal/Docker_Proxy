@@ -84,6 +84,7 @@ def test_nudge_registered_proxies_counts_only_queued_ledger_operations(
 
     assert proxy_sync.nudge_registered_proxies(force=True) == (3, 2)
     assert [op.proxy_id for op in ledger.operations] == ["live", "edge-false"]
+    assert [op.force for op in ledger.operations] == [True, True]
 
 
 def test_request_proxy_reconcile_does_not_fall_back_to_direct_sync_when_ledger_fails(
@@ -104,8 +105,10 @@ def test_request_proxy_reconcile_does_not_fall_back_to_direct_sync_when_ledger_f
         subject="Squid config",
         summary="Apply config",
         detail="Revision saved.",
+        force=True,
     )
 
     assert operation.operation_id == 0
     assert operation.status == "failed"
+    assert operation.force is True
     assert "operation ledger is unavailable" in operation.detail

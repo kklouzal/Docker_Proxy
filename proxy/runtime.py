@@ -74,6 +74,17 @@ def _int_or_none(value: object) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _operation_requests_force(operation: Any) -> bool:
+    value = getattr(operation, "force", None)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "force"}
+    return bool(value)
+
+
+def _operations_request_force(operations: list[Any] | None) -> bool:
+    return any(_operation_requests_force(operation) for operation in operations or [])
+
+
 def _operation_completion_status(
     operation: Any,
     *,
@@ -2250,7 +2261,7 @@ class ProxyRuntime:
                 ledger = None
             try:
                 result = self._sync_from_db_unlocked(
-                    force=force,
+                    force=bool(force or _operations_request_force(claimed_operations)),
                     operations=claimed_operations,
                 )
             except Exception as exc:

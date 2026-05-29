@@ -19,6 +19,7 @@ def _ephemeral_operation(
     request_hash: str = "",
     detail: str = "",
     created_by: str = "",
+    force: bool = False,
 ) -> ProxyOperation:
     """Build an in-memory operation for paths that cannot create a DB ledger row."""
     import time
@@ -42,6 +43,7 @@ def _ephemeral_operation(
         started_ts=0,
         completed_ts=now if status in {"applied", "failed"} else 0,
         updated_ts=now,
+        force=bool(force),
     )
 
 
@@ -67,7 +69,6 @@ def request_proxy_reconcile(
     If the ledger cannot be written, return a failed ephemeral operation so the
     caller can surface that the reconcile was not queued.
     """
-    del force
     try:
         ledger = get_operation_ledger()
         op = ledger.create_operation(
@@ -82,6 +83,7 @@ def request_proxy_reconcile(
             request_hash=request_hash,
             detail=detail,
             created_by=created_by,
+            force=force,
         )
     except Exception as exc:
         failure_detail = f"Proxy reconcile was not queued because the operation ledger is unavailable: {exc}"
@@ -100,6 +102,7 @@ def request_proxy_reconcile(
             request_hash=request_hash,
             detail=failure_detail,
             created_by=created_by,
+            force=force,
         )
     return op
 

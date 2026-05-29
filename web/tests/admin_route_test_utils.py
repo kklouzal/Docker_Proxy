@@ -373,6 +373,7 @@ class FakeOperationLedger:
             started_ts=0,
             completed_ts=0,
             updated_ts=now,
+            force=bool(kwargs.get("force")),
         )
         op.can_revert = bool(op.rollback_kind and op.rollback_ref)
         op.to_dict = lambda op=op: dict(op.__dict__)
