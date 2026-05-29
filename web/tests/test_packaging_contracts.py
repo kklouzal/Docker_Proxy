@@ -220,6 +220,49 @@ def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -
     assert "ssl_bump splice https_intercept_listener" not in rendered
 
 
+def test_proxy_entrypoint_env_disabling_https_intercept_removes_managed_splice(
+    tmp_path,
+) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text(
+        "http_port 0.0.0.0:3128 ssl-bump\n"
+        "ssl_bump peek step1\n"
+        "# BEGIN SQUID-UI HTTPS INTERCEPT SPLICE\n"
+        "# Splice all traffic arriving on the dedicated HTTPS NAT intercept listener.\n"
+        "acl https_intercept_listener myportname https_intercept\n"
+        "ssl_bump splice https_intercept_listener\n"
+        "# END SQUID-UI HTTPS INTERCEPT SPLICE\n"
+        "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER\n"
+        "# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.\n"
+        "https_port 0.0.0.0:3130 intercept ssl-bump \\\n"
+        "\tname=https_intercept \\\n"
+        "\tcert=/etc/squid/ssl/certs/ca.crt \\\n"
+        "\tkey=/etc/squid/ssl/certs/ca.key \\\n"
+        "\tgenerate-host-certificates=on \\\n"
+        "\tdynamic_cert_mem_cache_size=128MB\n"
+        "# END SQUID-UI HTTPS INTERCEPT LISTENER\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "SQUID_CFG_PATH": str(config),
+            "SQUID_HTTPS_INTERCEPT_ENABLED": "0",
+        },
+    )
+    subprocess.run(
+        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
+        check=True,
+        env=env,
+    )
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" not in rendered
+    assert "# BEGIN SQUID-UI HTTPS INTERCEPT SPLICE" not in rendered
+    assert "https_intercept_listener" not in rendered
+
+
 def test_proxy_entrypoint_env_avoids_listener_port_collisions(tmp_path) -> None:
     config = tmp_path / "squid.conf"
     config.write_text("http_port 0.0.0.0:3130 ssl-bump\n", encoding="utf-8")

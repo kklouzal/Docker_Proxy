@@ -435,7 +435,7 @@ if not replaced_explicit:
         prefix.extend(https_intercept_block(https_intercept_port, dynamic_cache_mb))
     rendered = prefix + [''] + rendered
 
-if https_intercept_splice_env_set:
+if https_intercept_splice_env_set or https_intercept_on is False:
     rendered = strip_managed_https_splice(rendered)
     if https_intercept_splice_on is True and https_intercept_effective:
         rendered = insert_https_splice_block(rendered)
