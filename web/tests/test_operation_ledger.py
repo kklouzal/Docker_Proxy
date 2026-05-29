@@ -200,6 +200,7 @@ def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
     assert "request_key" in insert_sql
     assert "force_sync" in insert_sql
     assert "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)" in insert_sql
+    assert "updated_ts=VALUES(updated_ts)" in insert_sql
     assert "force_sync=GREATEST(force_sync, VALUES(force_sync))" in insert_sql
     assert len(insert_params[9]) == 64
     assert insert_params[-1] == 1
