@@ -54,7 +54,7 @@ The admin UI can run with local or remote proxy runtimes. Each proxy registers i
 Put database and management-token settings in a root `.env` file or your launch environment:
 
 ```dotenv
-MYSQL_HOST=192.168.1.10
+MYSQL_HOST=mysql.example.internal
 MYSQL_PORT=3306
 MYSQL_USER=docker_proxy
 MYSQL_PASSWORD=replace_with_the_database_password
@@ -132,14 +132,7 @@ Run only the admin UI when proxy runtimes are deployed elsewhere:
 docker compose up -d --build admin-ui
 ```
 
-The admin UI still requires MySQL. Proxy-specific actions become available after proxy runtimes register management URLs and public PAC/proxy metadata.
-
-Server-002 is an admin-UI-only host. Use the Server-002 deployment compose file for updates there so redeploys do not recreate the local proxy container:
-
-```powershell
-docker compose -f docker-compose.server002.yml pull admin-ui
-docker compose -f docker-compose.server002.yml up -d --remove-orphans admin-ui
-```
+The admin UI still requires MySQL. Proxy-specific actions become available after proxy runtimes register management URLs and public PAC/proxy metadata. On admin-UI-only hosts, keep the proxy service out of the active Compose project and use `--remove-orphans` during updates so an old local proxy container is not recreated accidentally.
 
 ### Multi-proxy deployments
 
@@ -197,6 +190,7 @@ one default admin UI stay well inside the 160-connection budget.
 - Self-signed CA generation and certificate download.
 - PKCS#12 and certificate/key upload validation.
 - SSL-bump policy management with domain and client-CIDR no-bump/no-cache rules.
+- Dedicated HTTPS NAT intercept listener controls, including an optional splice-only mode for redirected TCP/443 traffic that should be tunneled without decryption.
 - Source-backed compatibility presets for common SaaS, identity, update, collaboration, and device ecosystems that are poor candidates for TLS break-and-inspect.
 - SSL/TLS error aggregation, export, and exclusion workflows.
 
@@ -295,6 +289,7 @@ Published ports in the default Compose configuration:
 - `80/tcp`: public proxy health, PAC, and WPAD only.
 - `3128/tcp`: explicit HTTP proxy.
 - `3129/tcp`: plain-HTTP NAT intercept listener, useful only when intercept mode is enabled and client traffic is redirected by the surrounding network.
+- `3130/tcp`: HTTPS NAT intercept listener, useful only when HTTPS intercept mode is enabled and client TCP/443 traffic is redirected by the surrounding network.
 
 Destination-port policy:
 
@@ -309,7 +304,14 @@ Operational guidance:
 - Set `FLASK_SECRET_KEY` when you want host-managed session-secret rotation instead of the MySQL-backed generated secret.
 - Use `SESSION_COOKIE_SECURE=1` when the UI is served over HTTPS by a reverse proxy.
 - Treat SSL-bump as managed-device infrastructure: clients must trust the proxy CA, and applications with certificate pinning should be spliced.
-- HTTP NAT intercept mode requires external router or host firewall rules; the container listens on the intercept port but does not install topology-specific redirect rules.
+- HTTP and HTTPS NAT intercept modes require external router or host firewall rules; the container listens on the intercept ports but does not install topology-specific redirect rules.
+- Interception only covers TCP flows. If proxy enforcement matters for managed clients, block or reject UDP/443 at the network edge so HTTP/3/QUIC-capable applications fall back to TCP.
+
+## Current boundaries
+
+Docker Proxy is intended to be operated as managed network infrastructure, not as a drop-in desktop privacy tool or a turnkey firewall. It does not install router rules, enroll client trust stores, run a local `clamd` daemon, or make TLS interception safe for unmanaged devices automatically.
+
+The project requires a MySQL 8+ backend today. SQLite and ad-hoc local state are not supported runtime modes. The default Compose stack publishes useful LAN-facing ports for testing and appliance deployment, but operators remain responsible for host firewalls, management-network exposure, database backups, certificate distribution, legal/organizational consent for inspection, and any compliance controls around retained logs.
 
 ## Testing and release gates
 
@@ -378,6 +380,13 @@ Common issues:
 - **AV health is red**: verify `CLAMD_HOST:CLAMD_PORT`; the proxy container expects a remote `clamd` service.
 - **Modern SaaS or meeting apps break under TLS inspection**: splice the vendor domains, use the compatibility presets, and prefer PAC-based routing for clients that need DIRECT fallbacks.
 - **Transparent HTTP interception loops**: exempt the proxy host/container source traffic before redirecting client TCP/80 to the intercept listener.
+- **HTTPS interception appears bypassed for some apps**: check for HTTP/3/QUIC over UDP/443 and enforce TCP fallback at the router/firewall if those clients must traverse Squid policy.
+
+## Contributing and support
+
+The most useful contributions are reproducible bug reports, focused fixes, documentation corrections, deployment notes from real networks, and tests that cover proxy/runtime behavior without hiding operational risk. Before sending a pull request, run the smallest relevant deterministic test locally and explain what was not covered.
+
+There is not yet a dedicated funding link in this repository. If a public sponsorship channel is added later, support should go toward appliance polish, documentation, security hardening, multi-architecture validation, live-stack coverage, and the operational work needed to make proxy deployments safer to run.
 
 ## License
 
