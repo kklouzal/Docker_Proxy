@@ -679,10 +679,17 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
     return str(manifest.get("fallback_file") or "fallback.pac")
 
 
+def _pac_string_literal_fragment(value: str) -> str:
+    # PAC artifacts place the placeholder inside JavaScript string literals.
+    # Replace it with the JSON/JavaScript-escaped payload without adding a
+    # second pair of quotes, so malformed Host headers cannot break PAC syntax.
+    return json.dumps(str(value or ""))[1:-1]
+
+
 def substitute_request_host(content: str, request_host: str) -> str:
     return str(content or "").replace(
         PAC_HOST_PLACEHOLDER,
-        format_proxy_host(request_host),
+        _pac_string_literal_fragment(format_proxy_host(request_host)),
     )
 
 

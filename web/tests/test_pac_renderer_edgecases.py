@@ -410,6 +410,36 @@ def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> 
     )
 
 
+def test_substitute_request_host_escapes_javascript_string_content() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    content = (
+        f'var proxyHost = "{pac_renderer.PAC_HOST_PLACEHOLDER}";\n'
+        f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
+    )
+
+    rendered = pac_renderer.substitute_request_host(content, 'bad"; alert(1); //')
+
+    assert 'bad\\"; alert(1);' in rendered
+    assert 'bad"; alert(1);' not in rendered
+    assert 'var proxyHost = "bad\\"; alert(1); ";' in rendered
+    assert 'return "PROXY bad\\"; alert(1); :3128; DIRECT";' in rendered
+
+
+def test_render_proxy_pac_for_request_escapes_request_host_in_generated_pac() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer.substitute_request_host(
+        pac_renderer.build_emergency_pac(),
+        'bad"; alert(1); //',
+    )
+
+    assert 'var proxyHost = "bad\\"; alert(1); ";' in rendered
+    assert 'return "PROXY bad\\"; alert(1); :3128; DIRECT";' in rendered
+
+
 class _FakeSslfilterStore:
     def __init__(self, rules) -> None:
         self._rules = rules
