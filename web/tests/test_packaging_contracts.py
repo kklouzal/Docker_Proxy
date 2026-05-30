@@ -48,6 +48,10 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "- squid_logs:/var/log/squid" in proxy_block
     assert "squid_logs:" in _read("docker-compose.yml")
     assert "squid_logs:" in _read("docker-compose.ghcr.yml")
+    assert (
+        "--max-allowed-packet=${MYSQL_MAX_ALLOWED_PACKET:-256M}"
+        in _read("docker-compose.mysql.yml")
+    )
 
     live_compose = _read("docker-compose.live-tests.yml")
     assert "- squid_logs_edge_2:/var/log/squid" in live_compose

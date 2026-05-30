@@ -166,6 +166,11 @@
         {% else %}
           <span class="badge danger">not built</span>
         {% endif %}
+        {% if artifact_build.last_failed %}
+          <span class="badge danger">build failed</span>
+        {% elif artifact_build.pending %}
+          <span class="badge warn">build pending</span>
+        {% endif %}
       </div>
     </div>
     <div class="card-body stack-list">
@@ -201,10 +206,27 @@
           <div><strong>Built:</strong> {{ fmt_ts(active_artifact.created_ts) if active_artifact.created_ts else 'unknown' }}{% if active_artifact.created_by %} by {{ active_artifact.created_by }}{% endif %} ({{ active_artifact.source_kind or 'compile' }})</div>
           <div><strong>Settings version:</strong> {{ active_artifact.settings_version }}</div>
           <div><strong>Compiled lists:</strong> {{ active_artifact.enabled_lists|join(', ') if active_artifact.enabled_lists else 'none' }}</div>
+          {% if artifact_build.archive_bytes %}<div><strong>Archive size:</strong> {{ (artifact_build.archive_bytes / 1048576)|round(1) }} MiB</div>{% endif %}
         </div>
       {% else %}
         <div class="surface-note small">
           No active compiled artifact was found. Save or refresh enabled subscriptions and wait for the background builder before expecting proxies to enforce ad-block updates.
+        </div>
+      {% endif %}
+      {% if artifact_build.last_failed or artifact_build.pending or artifact_build.version_stale or artifact_build.lists_stale %}
+        <div class="surface-note small">
+          {% if artifact_build.last_failed %}
+            <div><strong>Last build failed:</strong> {{ artifact_build.last_detail or 'builder failed before reporting detail' }}</div>
+          {% endif %}
+          {% if artifact_build.pending %}
+            <div><strong>Build state:</strong> pending refresh{% if artifact_build.refresh_requested %} requested at {{ fmt_ts(artifact_build.refresh_requested) }}{% endif %}.</div>
+          {% endif %}
+          {% if artifact_build.version_stale %}
+            <div><strong>Stale settings:</strong> artifact version {{ active_artifact.settings_version }} does not match current settings version {{ artifact_build.settings_version }}.</div>
+          {% endif %}
+          {% if artifact_build.lists_stale %}
+            <div><strong>Stale lists:</strong> active artifact has {{ artifact_build.active_lists|join(', ') if artifact_build.active_lists else 'none' }}; enabled lists are {{ artifact_build.enabled_lists|join(', ') if artifact_build.enabled_lists else 'none' }}.</div>
+          {% endif %}
         </div>
       {% endif %}
     </div>

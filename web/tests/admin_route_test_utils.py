@@ -597,6 +597,15 @@ class FakeAdblockStore:
     def request_cache_flush(self) -> None:
         self.cache_flush_requested += 1
 
+    def get_settings_version(self) -> int:
+        return 1
+
+    def get_refresh_requested(self) -> int:
+        return int(self.refresh_requested)
+
+    def get_artifact_build_status(self) -> dict[str, Any]:
+        return {}
+
     def stats(self) -> dict[str, Any]:
         return {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
 

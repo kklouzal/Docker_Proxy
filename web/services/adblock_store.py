@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import ipaddress
+import json
 import logging
 import os
 import pathlib
@@ -826,6 +827,35 @@ class AdblockStore:
                 return int(row[0]) if row else 0
             except Exception:
                 return 0
+
+    def record_artifact_build_result(
+        self,
+        *,
+        ok: bool,
+        detail: str = "",
+        revision_id: int | None = None,
+        artifact_sha256: str = "",
+        archive_bytes: int | None = None,
+    ) -> None:
+        payload = {
+            "ok": bool(ok),
+            "detail": str(detail or "")[:2000],
+            "revision_id": int(revision_id or 0),
+            "artifact_sha256": str(artifact_sha256 or "")[:64],
+            "archive_bytes": int(archive_bytes or 0),
+            "ts": _now(),
+        }
+        with self._connect() as conn:
+            self._set_meta(conn, "artifact_build_status", json.dumps(payload))
+
+    def get_artifact_build_status(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            raw = self._get_meta(conn, "artifact_build_status", "")
+        try:
+            data = json.loads(raw or "{}")
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def get_cache_flush_requested(self) -> int:
         with self._connect() as conn:

@@ -383,6 +383,10 @@ class AdblockArtifactStore:
             activate=activate,
         )
 
+    def estimate_archive_size(self, directory: str | os.PathLike[str]) -> int:
+        file_map = _load_directory_files(directory)
+        return len(_build_deterministic_archive(file_map))
+
     def record_apply_result(
         self,
         proxy_id: object | None,
@@ -510,6 +514,13 @@ class AdblockArtifactStore:
                     "Enabled adblock subscription lists could not be downloaded and "
                     "no cached lists are available."
                 )
+            with contextlib.suppress(Exception):
+                store.record_artifact_build_result(
+                    ok=False,
+                    detail=detail,
+                    revision_id=getattr(previous, "revision_id", 0),
+                    artifact_sha256=getattr(previous, "artifact_sha256", ""),
+                )
             return {
                 "ok": False,
                 "detail": detail,
@@ -539,14 +550,23 @@ class AdblockArtifactStore:
                     source_kind=source_kind,
                     activate=True,
                 )
+                archive_bytes = self.estimate_archive_size(out_dir)
         except Exception as exc:
             logger.exception("adblock artifact build failed")
+            detail = public_error_message(
+                exc,
+                default="Adblock artifact build failed.",
+            )
+            with contextlib.suppress(Exception):
+                store.record_artifact_build_result(
+                    ok=False,
+                    detail=detail,
+                    revision_id=getattr(previous, "revision_id", 0),
+                    artifact_sha256=getattr(previous, "artifact_sha256", ""),
+                )
             return {
                 "ok": False,
-                "detail": public_error_message(
-                    exc,
-                    default="Adblock artifact build failed.",
-                ),
+                "detail": detail,
                 "revision": None,
                 "changed": False,
                 "downloaded": any_downloaded,
@@ -561,6 +581,14 @@ class AdblockArtifactStore:
         detail = "Adblock artifact is already current."
         if changed:
             detail = f"Activated adblock artifact revision {revision.revision_id}."
+        with contextlib.suppress(Exception):
+            store.record_artifact_build_result(
+                ok=True,
+                detail=detail,
+                revision_id=revision.revision_id,
+                artifact_sha256=revision.artifact_sha256,
+                archive_bytes=archive_bytes,
+            )
         return {
             "ok": True,
             "detail": detail,

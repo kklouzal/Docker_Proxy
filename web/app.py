@@ -1562,6 +1562,71 @@ def _present_adblock_artifact_summary(summary: object | None) -> dict[str, Any]:
     }
 
 
+def _present_adblock_build_state(
+    store: Any,
+    *,
+    active_artifact: dict[str, Any],
+    statuses: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        settings_version = _safe_int(store.get_settings_version())
+    except Exception:
+        settings_version = 0
+    try:
+        refresh_requested = _safe_int(store.get_refresh_requested())
+    except Exception:
+        refresh_requested = 0
+    try:
+        raw_status = store.get_artifact_build_status()
+    except Exception:
+        raw_status = {}
+    if not isinstance(raw_status, dict):
+        raw_status = {}
+
+    enabled_lists = sorted(
+        str(row.get("key") or "").strip()
+        for row in statuses
+        if row.get("enabled") and str(row.get("key") or "").strip()
+    )
+    active_lists = sorted(
+        str(item).strip()
+        for item in (active_artifact.get("enabled_lists") or [])
+        if str(item).strip()
+    )
+    artifact_available = bool(active_artifact.get("available"))
+    version_stale = bool(
+        artifact_available
+        and settings_version
+        and _safe_int(active_artifact.get("settings_version")) != settings_version
+    )
+    lists_stale = bool(artifact_available and active_lists != enabled_lists)
+    missing_enabled_artifact = bool(enabled_lists and not artifact_available)
+    pending = bool(
+        refresh_requested
+        or version_stale
+        or lists_stale
+        or missing_enabled_artifact
+    )
+
+    ok_value = raw_status.get("ok")
+    return {
+        "pending": pending,
+        "refresh_requested": refresh_requested,
+        "settings_version": settings_version,
+        "enabled_lists": enabled_lists,
+        "active_lists": active_lists,
+        "version_stale": version_stale,
+        "lists_stale": lists_stale,
+        "missing_enabled_artifact": missing_enabled_artifact,
+        "last_ok": ok_value is True,
+        "last_failed": ok_value is False,
+        "last_detail": str(raw_status.get("detail") or ""),
+        "last_ts": _safe_int(raw_status.get("ts")),
+        "last_revision_id": _safe_int(raw_status.get("revision_id")),
+        "archive_bytes": _safe_int(raw_status.get("archive_bytes")),
+    }
+
+
 @app.template_filter("datetimeformat")
 def _datetimeformat(ts: object) -> str:
     try:
@@ -4072,6 +4137,11 @@ def adblock():
             message="Failed to load adblock artifact summary; rendering unavailable state",
         )
         active_artifact = _present_adblock_artifact_summary(None)
+    artifact_build = _present_adblock_build_state(
+        store,
+        active_artifact=active_artifact,
+        statuses=status_rows,
+    )
 
     return render_template(
         "adblock.html",
@@ -4085,6 +4155,7 @@ def adblock():
         window_label=_window_label(window_i),
         adblock_icap_summary=adblock_icap_summary,
         active_artifact=active_artifact,
+        artifact_build=artifact_build,
     )
 
 

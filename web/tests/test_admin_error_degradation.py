@@ -5,6 +5,7 @@ from typing import NoReturn
 
 from .admin_route_test_utils import (
     FakeAdblockArtifacts,
+    FakeAdblockStore,
     FakeProxyClient,
     csrf_token,
     load_admin_app,
@@ -302,3 +303,59 @@ def test_adblock_page_shows_active_compiled_artifact_summary(
     assert "Request index rules" in text
     assert "44" in text
     assert "easylist, easyprivacy" in text
+
+
+def test_adblock_page_surfaces_stale_or_failed_artifact_build(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeAdblockStore()
+    store.refresh_requested = 1_700_000_100
+    summary = SimpleNamespace(
+        revision_id=7,
+        artifact_sha256="abcdef1234567890",
+        settings_version=0,
+        source_kind="test",
+        created_by="builder",
+        created_ts=1_700_000_000,
+        enabled_lists=[],
+        report={
+            "counts": {
+                "network_rules_total": 0,
+                "network_rules_with_options": 0,
+                "cosmetic_rules_total": 0,
+            },
+            "breakdowns": {
+                "lookup_index_counts": {
+                    "domain_index": 0,
+                    "host_index": 0,
+                    "regex_index": 0,
+                },
+            },
+        },
+    )
+    store.get_artifact_build_status = lambda: {
+        "ok": False,
+        "detail": "MySQL server has gone away",
+        "revision_id": 7,
+        "artifact_sha256": "abcdef1234567890",
+        "archive_bytes": 68_211_868,
+        "ts": 1_700_000_101,
+    }
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_store=store,
+        adblock_artifacts=FakeAdblockArtifacts(summary),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/adblock")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "build failed" in text
+    assert "Last build failed" in text
+    assert "MySQL server has gone away" in text
+    assert "Stale lists" in text
+    assert "Archive size" in text
