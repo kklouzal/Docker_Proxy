@@ -1015,7 +1015,7 @@ EOF
     echo "adaptation_service_set adblock_req_set adblock_req"
     echo "adaptation_service_set av_req_set av_req"
     echo "adaptation_service_set av_resp_set av_resp"
-    echo "acl icap_adblockable method GET HEAD"
+    echo "acl icap_adblockable method GET HEAD CONNECT"
     echo "adaptation_access adblock_req_set allow icap_adblockable"
     echo "adaptation_access adblock_req_set deny all"
     echo "acl file_security_upload_methods method POST PUT PATCH"

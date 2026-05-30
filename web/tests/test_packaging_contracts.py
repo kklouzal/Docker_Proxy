@@ -92,11 +92,11 @@ def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:
     assert "socket.create_connection" in healthcheck
 
 
-def test_adblock_icap_only_adapts_browsing_methods() -> None:
+def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
     entrypoint = _read("docker/entrypoint.sh")
 
     assert "adaptation_access adblock_req_set allow all" not in entrypoint
-    assert "acl icap_adblockable method GET HEAD" in entrypoint
+    assert "acl icap_adblockable method GET HEAD CONNECT" in entrypoint
     assert "adaptation_access adblock_req_set allow icap_adblockable" in entrypoint
     assert "adaptation_access adblock_req_set deny all" in entrypoint
 

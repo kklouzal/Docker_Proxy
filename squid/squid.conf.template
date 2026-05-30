@@ -233,10 +233,10 @@ icap_log stdio:/var/log/squid/icap.log icapobserve
 cache_store_log none
 
 # ICAP policy:
-# - Only inspect HTTP requests with URLs (GET/HEAD).
-# - Do NOT adapt CONNECT: CONNECT only carries host:port and lacks context
-#   (third-party/resource type), so domain-only decisions can overblock.
-acl icap_adblockable method GET HEAD
+# - Inspect browsing requests plus CONNECT tunnel setup so request-time
+#   adblock rules can stop blocked domains before TLS sessions are established.
+#   The packaged helper normalizes CONNECT authority-form requests to HTTPS URLs.
+acl icap_adblockable method GET HEAD CONNECT
 acl icap_av_scanable method GET
 acl icap_range_request req_header Range .+
 acl icap_partial_response http_status 206
