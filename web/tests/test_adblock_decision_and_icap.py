@@ -390,6 +390,7 @@ def test_adblock_icap_reads_preview_zero_chunk_before_responding() -> None:
     message, pending, force_close = _read_icap_message(
         sock,
         max_bytes=65536,
+        max_body_drain_bytes=65536,
         timeout_seconds=5.0,
     )
 
@@ -720,7 +721,7 @@ def test_adblock_icap_server_handles_coalesced_persistent_transactions(
         server.server_close()
 
 
-def test_adblock_icap_server_closes_after_unpreviewed_request_body(
+def test_adblock_icap_server_drains_and_closes_after_unpreviewed_request_body(
     tmp_path: Path,
 ) -> None:
     db_path = _build_lookup_db(tmp_path, [])
@@ -752,6 +753,7 @@ def test_adblock_icap_server_closes_after_unpreviewed_request_body(
             + str(len(http)).encode("ascii")
             + b"\r\n\r\n"
             + http
+            + b"7\r\npayload\r\n0\r\n\r\n"
         )
         response = _send_icap(port, req)
 

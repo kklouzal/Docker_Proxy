@@ -201,10 +201,62 @@ def _preview_body_end(rest: bytes, body_offset: int) -> int | None:
         cursor += len(_CRLF)
 
 
+def _drain_chunked_body(
+    sock: Any,
+    body: bytes,
+    *,
+    max_drain_bytes: int,
+) -> bool:
+    max_drain_bytes = max(0, int(max_drain_bytes or 0))
+    data = bytearray(body)
+    cursor = 0
+
+    def ensure(size: int) -> bool:
+        while len(data) < size and len(data) < max_drain_bytes:
+            try:
+                chunk = sock.recv(min(8192, max_drain_bytes - len(data)))
+            except (TimeoutError, OSError):
+                return False
+            if not chunk:
+                return False
+            data.extend(chunk)
+        return len(data) >= size
+
+    while len(data) <= max_drain_bytes:
+        line_end = data.find(_CRLF, cursor)
+        while line_end < 0:
+            if len(data) >= max_drain_bytes or not ensure(len(data) + 1):
+                return False
+            line_end = data.find(_CRLF, cursor)
+        size_token = data[cursor:line_end].split(b";", 1)[0].strip()
+        try:
+            chunk_size = int(size_token or b"0", 16)
+        except ValueError:
+            return False
+        cursor = line_end + len(_CRLF)
+        if chunk_size == 0:
+            while True:
+                trailers_end = data.find(_CRLF + _CRLF, cursor)
+                if trailers_end >= 0:
+                    return True
+                if data[cursor : cursor + len(_CRLF)] == _CRLF:
+                    return True
+                if len(data) >= max_drain_bytes or not ensure(len(data) + 1):
+                    return False
+        if not ensure(cursor + chunk_size + len(_CRLF)):
+            return False
+        cursor += chunk_size
+        if data[cursor : cursor + len(_CRLF)] != _CRLF:
+            return False
+        cursor += len(_CRLF)
+    return False
+
+
 def _read_icap_message(
     sock: Any,
     *,
     max_bytes: int,
+    max_body_drain_bytes: int,
     timeout_seconds: float,
     pending: bytes = b"",
 ) -> tuple[bytes, bytes, bool]:
@@ -278,6 +330,15 @@ def _read_icap_message(
         return bytes(data[:message_end]), bytes(data[message_end:]), force_close
 
     if "req-body" in offsets:
+        body_offset = int(offsets.get("req-body", 0) or 0)
+        if body_offset < 0 or len(rest) < body_offset:
+            return bytes(data), b"", True
+        if not _drain_chunked_body(
+            sock,
+            rest[body_offset:],
+            max_drain_bytes=max_body_drain_bytes,
+        ):
+            force_close = True
         force_close = True
 
     message_end = len(header_blob) + len(b"\r\n\r\n") + required_rest_bytes
@@ -308,6 +369,9 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
 
     def handle(self) -> None:
         max_request_bytes = int(getattr(self.server, "max_request_bytes", 262144))
+        max_body_drain_bytes = int(
+            getattr(self.server, "max_body_drain_bytes", 8388608),
+        )
         timeout_seconds = float(getattr(self.server, "request_timeout_seconds", 5.0))
         max_keepalive_requests = max(
             1,
@@ -319,6 +383,7 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
             data, pending, read_close = _read_icap_message(
                 self.request,
                 max_bytes=max_request_bytes,
+                max_body_drain_bytes=max_body_drain_bytes,
                 timeout_seconds=timeout_seconds,
                 pending=pending,
             )
@@ -401,6 +466,7 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         engine: AdblockDecisionEngine,
         access_log_path: str,
         max_request_bytes: int,
+        max_body_drain_bytes: int = 8388608,
         request_timeout_seconds: float = 5.0,
         max_keepalive_requests: int = 1000,
         block_recorder: Any | None = None,
@@ -410,6 +476,7 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         self.engine = engine
         self.access_log_path = access_log_path
         self.max_request_bytes = max_request_bytes
+        self.max_body_drain_bytes = max(8192, int(max_body_drain_bytes or 8192))
         self.request_timeout_seconds = max(0.1, float(request_timeout_seconds or 0))
         self.max_keepalive_requests = max(1, int(max_keepalive_requests or 1))
         self.block_recorder = block_recorder
@@ -509,6 +576,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--max-body-drain-bytes",
+        type=int,
+        default=int(
+            os.environ.get("ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES", "8388608")
+            or "8388608"
+        ),
+    )
+    parser.add_argument(
         "--request-timeout",
         type=float,
         default=float(os.environ.get("ADBLOCK_ICAP_REQUEST_TIMEOUT", "5") or "5"),
@@ -549,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
         port=int(args.port),
         db=args.db,
         max_request_bytes=max(8192, int(args.max_request_bytes)),
+        max_body_drain_bytes=max(8192, int(args.max_body_drain_bytes)),
         request_timeout_seconds=max(0.1, float(args.request_timeout)),
         max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
     )
@@ -557,6 +633,7 @@ def main(argv: list[str] | None = None) -> int:
         engine=engine,
         access_log_path=args.access_log,
         max_request_bytes=max(8192, int(args.max_request_bytes)),
+        max_body_drain_bytes=max(8192, int(args.max_body_drain_bytes)),
         request_timeout_seconds=max(0.1, float(args.request_timeout)),
         max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
         block_recorder=block_recorder,
