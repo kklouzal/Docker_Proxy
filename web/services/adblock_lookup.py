@@ -309,7 +309,9 @@ class AdblockLookupIndex:
             )
         )
 
-        return _filter_by_resource_type(conn, rule_ids, resource_type)
+        if _table_exists(conn, "resource_type_index"):
+            return _filter_by_resource_type(conn, rule_ids, resource_type)
+        return rule_ids
 
     def _matching_host_pattern_ids(
         self,

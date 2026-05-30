@@ -224,6 +224,9 @@ def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
             CREATE TABLE generic_index(literal_key TEXT, pattern_kind TEXT, action TEXT, rule_id TEXT);
             """
         )
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_type_index'"
+        ).fetchone()
         conn.execute(
             "INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -268,8 +271,12 @@ def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
     _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
-    rules = AdblockLookupIndex(db_path).candidate_rules(
-        "https://sub.ads.example/banner.js"
+    lookup = AdblockLookupIndex(db_path)
+
+    rules = lookup.candidate_rules(
+        "https://sub.ads.example/banner.js",
+        resource_type="script",
     )
 
     assert rules[0]["host"] == "ads.example"
+    assert rules[0]["raw"] == "||ads.example^"
