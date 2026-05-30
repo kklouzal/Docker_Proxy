@@ -287,33 +287,57 @@ class AdblockDecisionEngine:
                 source_url=effective_source_url,
             )
         ]
-        allow = next((rule for rule in matches if rule.get("action") == "allow"), None)
-        if allow is not None:
+        important_block = next(
+            (
+                rule
+                for rule in matches
+                if rule.get("action") == "block"
+                and "important" in set(rule.get("behavior_options") or [])
+            ),
+            None,
+        )
+        if important_block is not None:
             decision = AdblockDecision(
-                blocked=False,
-                rule_id=str(allow.get("rule_id") or allow.get("id") or ""),
-                raw=str(allow.get("raw") or ""),
-                action="allow",
-                reason="exception",
-                list_key=str(allow.get("list_key") or ""),
+                blocked=True,
+                rule_id=str(
+                    important_block.get("rule_id") or important_block.get("id") or "",
+                ),
+                raw=str(important_block.get("raw") or ""),
+                action="block",
+                reason="important-rule-match",
+                list_key=str(important_block.get("list_key") or ""),
             )
         else:
-            block = next(
-                (rule for rule in matches if rule.get("action") == "block"),
+            allow = next(
+                (rule for rule in matches if rule.get("action") == "allow"),
                 None,
             )
-            decision = (
-                AdblockDecision(
-                    blocked=True,
-                    rule_id=str(block.get("rule_id") or block.get("id") or ""),
-                    raw=str(block.get("raw") or ""),
-                    action="block",
-                    reason="rule-match",
-                    list_key=str(block.get("list_key") or ""),
+            if allow is not None:
+                decision = AdblockDecision(
+                    blocked=False,
+                    rule_id=str(allow.get("rule_id") or allow.get("id") or ""),
+                    raw=str(allow.get("raw") or ""),
+                    action="allow",
+                    reason="exception",
+                    list_key=str(allow.get("list_key") or ""),
                 )
-                if block is not None
-                else AdblockDecision(blocked=False)
-            )
+            else:
+                block = next(
+                    (rule for rule in matches if rule.get("action") == "block"),
+                    None,
+                )
+                decision = (
+                    AdblockDecision(
+                        blocked=True,
+                        rule_id=str(block.get("rule_id") or block.get("id") or ""),
+                        raw=str(block.get("raw") or ""),
+                        action="block",
+                        reason="rule-match",
+                        list_key=str(block.get("list_key") or ""),
+                    )
+                    if block is not None
+                    else AdblockDecision(blocked=False)
+                )
         self._put_cached(cache_key, decision)
         return decision
 

@@ -77,6 +77,8 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             "||api.example.com/path$method=POST,denyallow=allowed.example",
             "||api.example.com/ads^$xmlhttprequest",
             "||static.example/frame^$subdocument",
+            "@@||important.example/ads^",
+            "||important.example/ads^$important",
             "CaseSensitive$match-case",
             "modifier-token$redirect=noopjs",
             "||ads.example.co.uk^$third-party",
@@ -166,6 +168,9 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
         ).blocked
         is True
     )
+    important = engine.decide("https://important.example/ads/banner.js")
+    assert important.blocked is True
+    assert important.reason == "important-rule-match"
     assert (
         engine.decide(
             "https://allowed.example/path",
