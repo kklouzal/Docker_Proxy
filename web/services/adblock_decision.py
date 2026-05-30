@@ -54,6 +54,7 @@ class AdblockDecision:
     raw: str = ""
     action: str = "allow"
     reason: str = "no-match"
+    list_key: str = ""
 
 
 def _normalize_host(host: str) -> str:
@@ -294,6 +295,7 @@ class AdblockDecisionEngine:
                 raw=str(allow.get("raw") or ""),
                 action="allow",
                 reason="exception",
+                list_key=str(allow.get("list_key") or ""),
             )
         else:
             block = next(
@@ -307,6 +309,7 @@ class AdblockDecisionEngine:
                     raw=str(block.get("raw") or ""),
                     action="block",
                     reason="rule-match",
+                    list_key=str(block.get("list_key") or ""),
                 )
                 if block is not None
                 else AdblockDecision(blocked=False)

@@ -243,17 +243,20 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
+    recorded_blocks: list[str] = []
 
     _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+    assert engine.decide("http://ads.example/banner.js").list_key == "sample"
     server = _AdblockIcapServer(
         ("127.0.0.1", 0),
         engine=engine,
         access_log_path=str(log_path),
         max_request_bytes=65536,
+        block_recorder=recorded_blocks.append,
     )
     port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -286,7 +289,10 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         response = _send_icap(port, req)
         assert response.startswith(b"ICAP/1.0 200")
         assert b"HTTP/1.1 403 Forbidden" in response
-        assert "ads.example/banner.js" in log_path.read_text(encoding="utf-8")
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "ads.example/banner.js" in log_text
+        assert "\tsample\t" in log_text
+        assert recorded_blocks == ["sample"]
     finally:
         server.shutdown()
         server.server_close()

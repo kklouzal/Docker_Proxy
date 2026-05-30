@@ -16,7 +16,10 @@ app_root = Path(os.path.join(here, "..")).resolve()
 if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
-from services.adblock_decision import AdblockDecisionEngine  # noqa: E402
+from services.adblock_decision import (  # noqa: E402
+    AdblockDecision,
+    AdblockDecisionEngine,
+)
 
 _CRLF = b"\r\n"
 
@@ -47,6 +50,17 @@ def _parse_http_request(data: bytes) -> tuple[str, str, dict[str, str]]:
         scheme = "https" if headers.get("x-forwarded-proto") == "https" else "http"
         target = f"{scheme}://{host}{target}" if host else target
     return method, target, headers
+
+
+def _decision_list_key(decision: AdblockDecision) -> str:
+    list_key = "".join(
+        ch
+        for ch in str(getattr(decision, "list_key", "") or "").strip()
+        if ch.isalnum() or ch in {"-", "_", "."}
+    )
+    if list_key:
+        return list_key[:64]
+    return "matched" if str(getattr(decision, "raw", "") or "").strip() else "unknown"
 
 
 def _icap_response(status: str, headers: dict[str, str] | None = None) -> bytes:
@@ -171,6 +185,7 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
             headers=http_headers,
         )
         if decision.blocked:
+            list_key = _decision_list_key(decision)
             self.server.log_access(
                 client_ip=self.client_address[0],
                 method=http_method,
@@ -178,7 +193,10 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                 icap_status=200,
                 http_status=403,
                 http_resp_line="HTTP/1.1 403 Forbidden",
+                list_key=list_key,
+                rule_id=decision.rule_id,
             )
+            self.server.record_block(list_key)
             self.request.sendall(_block_response(url, decision.raw))
         else:
             self.request.sendall(_allow_response())
@@ -195,11 +213,13 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         engine: AdblockDecisionEngine,
         access_log_path: str,
         max_request_bytes: int,
+        block_recorder: Any | None = None,
     ) -> None:
         super().__init__(server_address, _AdblockIcapHandler)
         self.engine = engine
         self.access_log_path = access_log_path
         self.max_request_bytes = max_request_bytes
+        self.block_recorder = block_recorder
 
     def log_access(
         self,
@@ -210,6 +230,8 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         icap_status: int,
         http_status: int,
         http_resp_line: str,
+        list_key: str = "",
+        rule_id: str = "",
     ) -> None:
         line = "\t".join(
             [
@@ -222,12 +244,23 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
                 f"{method or '-'} {url or '-'} HTTP/1.1",
                 url or "-",
                 http_resp_line if http_status else "-",
+                list_key or "-",
+                rule_id or "-",
             ],
         )
         try:
             Path(self.access_log_path).parent.mkdir(parents=True, exist_ok=True)
             with Path(self.access_log_path).open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
+        except Exception:
+            pass
+
+    def record_block(self, list_key: str) -> None:
+        recorder = self.block_recorder
+        if recorder is None:
+            return
+        try:
+            recorder(list_key or "unknown")
         except Exception:
             pass
 
@@ -283,11 +316,25 @@ def main(argv: list[str] | None = None) -> int:
         cache_max=args.cache_max,
         rule_cache_max=args.rule_cache_max,
     )
+    block_recorder = None
+    try:
+        from services.adblock_store import get_adblock_store  # type: ignore
+
+        adblock_store = get_adblock_store()
+        try:
+            adblock_store.init_db()
+        except Exception:
+            pass
+        block_recorder = adblock_store.record_block
+    except Exception:
+        block_recorder = None
+
     with _AdblockIcapServer(
         (args.host, int(args.port)),
         engine=engine,
         access_log_path=args.access_log,
         max_request_bytes=max(8192, int(args.max_request_bytes)),
+        block_recorder=block_recorder,
     ) as server:
         sys.stdout.write(
             f"adblock sqlite ICAP listening on {args.host}:{args.port} using {args.db}\n",
