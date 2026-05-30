@@ -172,6 +172,26 @@ def infer_resource_type(
     if lower_headers.get("upgrade", "").lower() == "websocket":
         return "websocket"
 
+    fetch_dest = lower_headers.get("sec-fetch-dest", "").strip().lower()
+    fetch_mode = lower_headers.get("sec-fetch-mode", "").strip().lower()
+    fetch_dest_types = {
+        "document": "document",
+        "font": "font",
+        "image": "image",
+        "object": "object",
+        "script": "script",
+        "style": "stylesheet",
+        "worker": "script",
+    }
+    if fetch_dest in fetch_dest_types:
+        return fetch_dest_types[fetch_dest]
+    if fetch_dest == "iframe":
+        return "subdocument"
+    if fetch_mode in {"cors", "same-origin"} and fetch_dest in {"", "empty"}:
+        return "xmlhttprequest"
+    if lower_headers.get("x-requested-with", "").lower() == "xmlhttprequest":
+        return "xmlhttprequest"
+
     path = urlsplit(url or "").path.lower()
     for resource_type, extensions in _RESOURCE_EXTENSIONS.items():
         if any(path.endswith(ext) for ext in extensions):

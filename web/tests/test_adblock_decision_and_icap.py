@@ -5,7 +5,62 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 from .test_adblock_lookup import _add_web_to_path, _build_lookup_db
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "headers", "expected"),
+    [
+        (
+            "GET",
+            "https://api.example.com/data",
+            {"Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors"},
+            "xmlhttprequest",
+        ),
+        (
+            "GET",
+            "https://api.example.com/data",
+            {"X-Requested-With": "XMLHttpRequest"},
+            "xmlhttprequest",
+        ),
+        (
+            "GET",
+            "https://static.example/frame.html",
+            {"Sec-Fetch-Dest": "iframe"},
+            "subdocument",
+        ),
+        (
+            "GET",
+            "https://static.example/app-worker",
+            {"Sec-Fetch-Dest": "worker"},
+            "script",
+        ),
+        (
+            "GET",
+            "https://static.example/styles",
+            {"Sec-Fetch-Dest": "style"},
+            "stylesheet",
+        ),
+        (
+            "GET",
+            "https://static.example/font",
+            {"Sec-Fetch-Dest": "font"},
+            "font",
+        ),
+    ],
+)
+def test_infer_resource_type_uses_browser_fetch_metadata(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    expected: str,
+) -> None:
+    _add_web_to_path()
+    from services.adblock_decision import infer_resource_type
+
+    assert infer_resource_type(method, url, headers) == expected
 
 
 def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> None:
@@ -20,6 +75,8 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             "/tracker[.]example/$third-party",
             "plain-ad-token$domain=source.example",
             "||api.example.com/path$method=POST,denyallow=allowed.example",
+            "||api.example.com/ads^$xmlhttprequest",
+            "||static.example/frame^$subdocument",
             "CaseSensitive$match-case",
             "modifier-token$redirect=noopjs",
             "||ads.example.co.uk^$third-party",
@@ -79,6 +136,31 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
         engine.decide(
             "https://api.example.com/path",
             method="POST",
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://api.example.com/ads/data",
+            headers={
+                "accept": "application/json",
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+            },
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://api.example.com/ads/data",
+            headers={"accept": "application/json"},
+        ).blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://static.example/frame/ad.html",
+            headers={"sec-fetch-dest": "iframe"},
         ).blocked
         is True
     )
