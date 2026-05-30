@@ -409,7 +409,11 @@ class AdblockDecisionEngine:
                     scheme_pattern,
                 ):
                     return False
-            return self._suffix_matches(rule, _request_suffix(parsed))
+            return self._suffix_matches(
+                rule,
+                _request_suffix(parsed),
+                case_sensitive=case_sensitive,
+            )
         if kind in {"host_anchored_pattern", "absolute_url_pattern"}:
             compiled_regex = str(rule.get("compiled_regex") or "")
             compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
@@ -433,18 +437,28 @@ class AdblockDecisionEngine:
             return needle in haystack
         return False
 
-    def _suffix_matches(self, rule: dict[str, Any], suffix: str) -> bool:
+    def _suffix_matches(
+        self,
+        rule: dict[str, Any],
+        suffix: str,
+        *,
+        case_sensitive: bool = False,
+    ) -> bool:
         raw_suffix = str(rule.get("suffix") or "")
         if not raw_suffix:
             return True
         suffix_regex = str(rule.get("suffix_regex") or "")
         if suffix_regex:
-            compiled = _compile_regex(suffix_regex, ignore_case=True)
+            compiled = _compile_regex(suffix_regex, ignore_case=not case_sensitive)
             return bool(compiled and compiled.match(suffix))
         expected = _unescape_abp_literal(
             str(rule.get("path_pattern") or "") + str(rule.get("query_pattern") or "")
         )
-        return bool(expected and suffix.startswith(expected))
+        haystack = suffix or ""
+        if not case_sensitive:
+            expected = expected.lower()
+            haystack = haystack.lower()
+        return bool(expected and haystack.startswith(expected))
 
     def _options_match(
         self,

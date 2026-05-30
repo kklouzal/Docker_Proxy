@@ -45,7 +45,13 @@ def _parse_http_request(data: bytes) -> tuple[str, str, dict[str, str]]:
     method = parts[0].upper() if parts else ""
     target = parts[1] if len(parts) > 1 else ""
     headers = _parse_headers(lines[1:])
-    if target.startswith("/"):
+    if method == "CONNECT" and target and "://" not in target:
+        # Squid sends CONNECT requests to REQMOD helpers in authority form
+        # ("host:port") rather than absolute-form.  Normalize it to an HTTPS
+        # URL so the SQLite decision engine can apply domain and URL rules to
+        # tunnel setup requests instead of silently allowing every CONNECT.
+        target = f"https://{target}/"
+    elif target.startswith("/"):
         host = headers.get("host", "")
         scheme = "https" if headers.get("x-forwarded-proto") == "https" else "http"
         target = f"{scheme}://{host}{target}" if host else target

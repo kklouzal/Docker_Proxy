@@ -80,6 +80,7 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             "@@||important.example/ads^",
             "||important.example/ads^$important",
             "CaseSensitive$match-case",
+            "||static.example/CasePath^$match-case",
             "modifier-token$redirect=noopjs",
             "||ads.example.co.uk^$third-party",
             "||adserver.local^$third-party",
@@ -180,6 +181,8 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     )
     assert engine.decide("https://static.example/CaseSensitive.js").blocked is True
     assert engine.decide("https://static.example/casesensitive.js").blocked is False
+    assert engine.decide("https://static.example/CasePath/banner.js").blocked is True
+    assert engine.decide("https://static.example/casepath/banner.js").blocked is False
     assert engine.decide("https://static.example/modifier-token.js").blocked is False
     assert (
         engine.decide(
@@ -241,6 +244,62 @@ def _send_icap(port: int, payload: bytes) -> bytes:
             if b"\r\n\r\n" in b"".join(chunks):
                 break
         return b"".join(chunks)
+
+
+def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_http_request
+
+    method, url, headers = _parse_http_request(
+        b"CONNECT ads.example:443 HTTP/1.1\r\n"
+        b"Host: ads.example:443\r\n"
+        b"User-Agent: probe\r\n\r\n",
+    )
+
+    assert method == "CONNECT"
+    assert url == "https://ads.example:443/"
+    assert headers["host"] == "ads.example:443"
+
+
+def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        http = (
+            b"CONNECT ads.example:443 HTTP/1.1\r\n"
+            b"Host: ads.example:443\r\n"
+            b"User-Agent: proxy-probe\r\n\r\n"
+        )
+        req = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: req-hdr=0, null-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+        )
+        response = _send_icap(port, req)
+        assert response.startswith(b"ICAP/1.0 200")
+        assert b"HTTP/1.1 403 Forbidden" in response
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "CONNECT https://ads.example:443/ HTTP/1.1" in log_text
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
