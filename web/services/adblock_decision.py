@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import re
 import threading
 import time
@@ -88,8 +89,17 @@ def _domain_matches(host: str, domain: str) -> bool:
 
 def _site_key(host: str) -> str:
     normalized = _normalize_host(host)
+    if not normalized:
+        return ""
+    try:
+        return ipaddress.ip_address(normalized.strip("[]")).compressed.lower()
+    except ValueError:
+        pass
+
     labels = [label for label in normalized.split(".") if label]
     if len(labels) < 2:
+        return normalized
+    if all(label.isdigit() for label in labels):
         return normalized
     try:  # pragma: no cover - optional dependency path
         from publicsuffix2 import get_sld  # type: ignore

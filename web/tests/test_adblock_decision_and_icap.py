@@ -80,6 +80,8 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             "CaseSensitive$match-case",
             "modifier-token$redirect=noopjs",
             "||ads.example.co.uk^$third-party",
+            "||adserver.local^$third-party",
+            "https://192.168.1.20/banner.js$third-party",
         ],
     )
 
@@ -185,6 +187,34 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
         engine.decide(
             "https://ads.example.co.uk/banner.js",
             headers={"referer": "https://shop.example.co.uk/"},
+        ).blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://adserver.local/banner.js",
+            headers={"referer": "https://intranet.local/"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://adserver.local/banner.js",
+            headers={"referer": "https://adserver.local/"},
+        ).blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://192.168.1.20/banner.js",
+            headers={"referer": "https://192.168.1.10/"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://192.168.1.20/banner.js",
+            headers={"referer": "https://192.168.1.20/"},
         ).blocked
         is False
     )
