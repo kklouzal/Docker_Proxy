@@ -37,12 +37,17 @@ _RESOURCE_EXTENSIONS = {
 }
 _NON_BLOCKING_MODIFIER_OPTIONS = {
     "csp",
+    "elemhide",
+    "genericblock",
+    "generichide",
     "header",
+    "jsinject",
     "permissions",
     "redirect",
     "redirect-rule",
     "removeparam",
     "rewrite",
+    "specifichide",
 }
 _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 
@@ -142,6 +147,14 @@ def _is_third_party(request_host: str, source_host: str) -> bool | None:
     if not request_site or not source_site:
         return None
     return request_site != source_site
+
+
+def _header_value(headers: dict[str, str], key: str) -> str:
+    key_lower = key.lower()
+    for candidate, value in headers.items():
+        if str(candidate).lower() == key_lower:
+            return str(value).strip()
+    return ""
 
 
 def _abp_to_regex(pattern: str) -> str:
@@ -260,10 +273,20 @@ def infer_resource_type(
 def source_url_from_headers(headers: dict[str, str] | None) -> str:
     headers = headers or {}
     for key in ("referer", "referrer", "origin"):
-        value = str(headers.get(key) or headers.get(key.title()) or "").strip()
+        value = _header_value(headers, key)
         if value:
             return value
     return ""
+
+
+def third_party_hint_from_headers(headers: dict[str, str] | None) -> bool | None:
+    headers = headers or {}
+    fetch_site = _header_value(headers, "sec-fetch-site").lower()
+    if fetch_site == "cross-site":
+        return True
+    if fetch_site in {"same-origin", "same-site", "none"}:
+        return False
+    return None
 
 
 class AdblockDecisionEngine:
@@ -279,7 +302,7 @@ class AdblockDecisionEngine:
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds or 0))
         self.cache_max = max(0, int(cache_max or 0))
         self._cache: OrderedDict[
-            tuple[str, str, str, str], tuple[float, AdblockDecision]
+            tuple[str, str, str, str, str], tuple[float, AdblockDecision]
         ] = OrderedDict()
         self._cache_lock = threading.Lock()
 
@@ -299,11 +322,13 @@ class AdblockDecisionEngine:
             else infer_resource_type(method, url, headers)
         )
         effective_source_url = source_url or source_url_from_headers(headers)
+        effective_third_party_hint = third_party_hint_from_headers(headers)
         cache_key = (
             (method or "").strip().upper(),
             url or "",
             effective_resource_type,
             effective_source_url,
+            str(effective_third_party_hint),
         )
         cached = self._get_cached(cache_key)
         if cached is not None:
@@ -322,6 +347,7 @@ class AdblockDecisionEngine:
                 method=method,
                 resource_type=effective_resource_type,
                 source_url=effective_source_url,
+                third_party_hint=effective_third_party_hint,
             )
         ]
         important_block = next(
@@ -380,7 +406,7 @@ class AdblockDecisionEngine:
 
     def _get_cached(
         self,
-        key: tuple[str, str, str, str],
+        key: tuple[str, str, str, str, str],
     ) -> AdblockDecision | None:
         if not self.cache_ttl_seconds or not self.cache_max:
             return None
@@ -397,7 +423,7 @@ class AdblockDecisionEngine:
 
     def _put_cached(
         self,
-        key: tuple[str, str, str, str],
+        key: tuple[str, str, str, str, str],
         decision: AdblockDecision,
     ) -> None:
         if not self.cache_ttl_seconds or not self.cache_max:
@@ -416,6 +442,7 @@ class AdblockDecisionEngine:
         method: str,
         resource_type: str,
         source_url: str,
+        third_party_hint: bool | None,
     ) -> bool:
         parsed = urlsplit(url or "")
         request_host = _normalize_host(parsed.hostname or parsed.netloc or "")
@@ -426,6 +453,7 @@ class AdblockDecisionEngine:
             resource_type=resource_type,
             request_host=request_host,
             source_host=source_host,
+            third_party_hint=third_party_hint,
         ):
             return False
 
@@ -505,6 +533,7 @@ class AdblockDecisionEngine:
         resource_type: str,
         request_host: str,
         source_host: str,
+        third_party_hint: bool | None,
     ) -> bool:
         method_values = (rule.get("value_options") or {}).get("method") or []
         if method_values and (method or "").strip().upper() not in {
@@ -523,6 +552,8 @@ class AdblockDecisionEngine:
 
         third_party = str(rule.get("third_party") or "any")
         third_party_state = _is_third_party(request_host, source_host)
+        if third_party_state is None and third_party_hint is not None:
+            third_party_state = bool(third_party_hint)
         if third_party == "only" and third_party_state is not True:
             return False
         if third_party == "exclude" and third_party_state is True:
@@ -541,7 +572,9 @@ class AdblockDecisionEngine:
         value_options = set((rule.get("value_options") or {}).keys())
         if "badfilter" in behavior_options:
             return False
-        return not bool(value_options & _NON_BLOCKING_MODIFIER_OPTIONS)
+        return not bool(
+            (behavior_options | value_options) & _NON_BLOCKING_MODIFIER_OPTIONS
+        )
 
     def _domain_scope_matches(self, rule: dict[str, Any], source_host: str) -> bool:
         includes = [_normalize_host(str(item)) for item in rule.get("domain_includes") or []]
@@ -554,6 +587,11 @@ class AdblockDecisionEngine:
             _normalize_host(str(item))
             for item in rule.get("domain_exclude_patterns") or []
         ]
+        has_domain_scope = bool(
+            includes or include_patterns or excludes or exclude_patterns
+        )
+        if has_domain_scope and not source_host:
+            return False
         if any(_domain_matches(source_host, item) for item in excludes):
             return False
         if any(

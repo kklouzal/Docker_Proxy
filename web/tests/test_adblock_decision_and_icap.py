@@ -106,6 +106,11 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             "CaseSensitive$match-case",
             "||static.example/CasePath^$match-case",
             "modifier-token$redirect=noopjs",
+            "@@||tiktok.com^$generichide",
+            "||analytics.tiktok.com^",
+            "||fetchsite.example^$third-party",
+            "||scoped-fetchsite.example^$third-party,domain=source.example",
+            "||excluded-scope.example^$third-party,domain=~excluded.example",
             "||ads.example.co.uk^$third-party",
             "||adserver.local^$third-party",
             "https://192.168.1.20/banner.js$third-party",
@@ -209,6 +214,58 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     assert engine.decide("https://static.example/CasePath/banner.js").blocked is True
     assert engine.decide("https://static.example/casepath/banner.js").blocked is False
     assert engine.decide("https://static.example/modifier-token.js").blocked is False
+    analytics_tiktok = engine.decide("https://analytics.tiktok.com/i18n/pixel/events.js")
+    assert analytics_tiktok.blocked is True
+    assert analytics_tiktok.raw == "||analytics.tiktok.com^"
+    assert (
+        engine.decide(
+            "https://fetchsite.example/ads.js",
+            headers={"Sec-Fetch-Site": "cross-site"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://fetchsite.example/ads.js",
+            headers={"Sec-Fetch-Site": "same-site"},
+        ).blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://scoped-fetchsite.example/ads.js",
+            headers={"Sec-Fetch-Site": "cross-site"},
+        ).blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://scoped-fetchsite.example/ads.js",
+            headers={"Referer": "https://source.example/page"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://excluded-scope.example/ads.js",
+            headers={"Sec-Fetch-Site": "cross-site"},
+        ).blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://excluded-scope.example/ads.js",
+            headers={"Referer": "https://other.example/page"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://excluded-scope.example/ads.js",
+            headers={"Referer": "https://excluded.example/page"},
+        ).blocked
+        is False
+    )
     assert (
         engine.decide(
             "https://ads.example.co.uk/banner.js",
