@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -324,21 +325,24 @@ def _option_semantics(
     domain_exclude_patterns: list[str] = []
     if isinstance(domain_values, list):
         for item in domain_values:
-            value = str(item or "").strip().lower().rstrip(".")
-            if not value:
+            raw_value = str(item or "").strip().lower().rstrip(".")
+            if not raw_value:
                 continue
-            if value.startswith("~"):
-                domain = value[1:].strip().rstrip(".")
-                if domain:
-                    is_pattern = "*" in domain or domain.startswith("[")
-                    if is_pattern:
-                        domain_exclude_patterns.append(domain)
-                    else:
-                        domain_excludes.append(domain)
-            elif "*" in value or value.startswith("["):
-                domain_include_patterns.append(value)
+            excluded = raw_value.startswith("~")
+            domain = raw_value[1:].strip().rstrip(".") if excluded else raw_value
+            domain = _normalize_host(domain)
+            if not domain:
+                continue
+            is_pattern = "*" in domain
+            if excluded:
+                if is_pattern:
+                    domain_exclude_patterns.append(domain)
+                else:
+                    domain_excludes.append(domain)
+            elif is_pattern:
+                domain_include_patterns.append(domain)
             else:
-                domain_includes.append(value)
+                domain_includes.append(domain)
 
     standard_keys = {"domain", "third-party", "~third-party"}
     standard_keys.update(_KNOWN_TYPES)
@@ -417,10 +421,15 @@ def _option_groups(opt_parsed: dict[str, Any]) -> set[str]:
 
 
 def _looks_like_host(s: str) -> bool:
-    h = (s or "").strip().lower().rstrip(".")
-    if not h or "." not in h:
+    h = _normalize_host(s)
+    if not h:
         return False
-    if ".." in h:
+    try:
+        ipaddress.ip_address(h.strip("[]"))
+        return True
+    except ValueError:
+        pass
+    if "." not in h or ".." in h:
         return False
     return _HOST_RE.match(h) is not None
 
@@ -429,6 +438,27 @@ def _normalize_host(host: str) -> str:
     h = (host or "").strip().lower().rstrip(".")
     if not h:
         return ""
+    if h.startswith("[") and "]" in h:
+        literal = h[1:].split("]", 1)[0].strip()
+        try:
+            ip = ipaddress.ip_address(literal)
+            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        except ValueError:
+            return h.split("]", 1)[0] + "]"
+    if ":" in h:
+        try:
+            ip = ipaddress.ip_address(h)
+            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        except ValueError:
+            if h.count(":") == 1:
+                h = h.split(":", 1)[0]
+            else:
+                return h
+    try:
+        ip = ipaddress.ip_address(h)
+        return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+    except ValueError:
+        pass
     try:
         return h.encode("idna").decode("ascii").lower().rstrip(".")
     except Exception:

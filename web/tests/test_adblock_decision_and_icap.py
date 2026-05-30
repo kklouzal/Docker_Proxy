@@ -85,6 +85,7 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             "||ads.example.co.uk^$third-party",
             "||adserver.local^$third-party",
             "https://192.168.1.20/banner.js$third-party",
+            "||[2001:db8::20]^$third-party,domain=~[2001:db8::20]",
         ],
     )
 
@@ -223,6 +224,20 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
         engine.decide(
             "https://192.168.1.20/banner.js",
             headers={"referer": "https://192.168.1.20/"},
+        ).blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://[2001:db8::20]/banner.js",
+            headers={"referer": "https://[2001:db8::10]/"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://[2001:db8::20]/banner.js",
+            headers={"referer": "https://[2001:db8:0:0:0:0:0:20]/"},
         ).blocked
         is False
     )

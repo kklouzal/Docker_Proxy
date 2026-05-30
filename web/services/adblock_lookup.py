@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import json
 import re
 import sqlite3
@@ -41,9 +42,26 @@ def _normalize_host(host: str) -> str:
     if not value:
         return ""
     if value.startswith("[") and "]" in value:
-        return value.split("]", 1)[0] + "]"
+        literal = value[1:].split("]", 1)[0].strip()
+        try:
+            ip = ipaddress.ip_address(literal)
+            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        except ValueError:
+            return value.split("]", 1)[0] + "]"
     if ":" in value:
-        value = value.split(":", 1)[0]
+        try:
+            ip = ipaddress.ip_address(value)
+            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        except ValueError:
+            if value.count(":") == 1:
+                value = value.split(":", 1)[0]
+            else:
+                return value
+    try:
+        ip = ipaddress.ip_address(value)
+        return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+    except ValueError:
+        pass
     try:
         return value.encode("idna").decode("ascii").lower().rstrip(".")
     except Exception:

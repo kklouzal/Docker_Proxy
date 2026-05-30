@@ -345,6 +345,7 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
             "||betvictor.com*&utm_campaign=$popup",
             "@@||sourcepointcmp.bloomberg.*/mms/get_site_data?$domain=bloomberg.co.jp|bloomberg.com",
             "||[::]^$third-party,domain=~[::1]|~localhost",
+            "||[2001:db8::20]^$third-party,domain=~[2001:db8::10]",
             "||api.example.com/path$method=post,denyallow=foo.example|bar.example",
             "||cdn.example.com/assets/ad.js^$script",
             "||query.example.com/api?kind=ad^$xmlhttprequest",
@@ -377,11 +378,22 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
     assert exception["host_pattern"] == "sourcepointcmp.bloomberg.*"
     assert exception["domain_includes"] == ["bloomberg.co.jp", "bloomberg.com"]
 
-    ipv6 = by_raw["||[::]^$third-party,domain=~[::1]|~localhost"]
-    assert ipv6["pattern_kind"] == "host_anchored_pattern"
-    assert ipv6["host_pattern"] == "[::]"
-    assert ipv6["domain_exclude_patterns"] == ["[::1]"]
-    assert ipv6["domain_excludes"] == ["localhost"]
+    domain_rules = _read_jsonl(out / "request_index_domain.jsonl")
+    domain_by_raw = {rule["raw"]: rule for rule in domain_rules}
+
+    unspecified_ipv6 = domain_by_raw["||[::]^$third-party,domain=~[::1]|~localhost"]
+    assert unspecified_ipv6["pattern_kind"] == "domain_only"
+    assert unspecified_ipv6["host"] == "[::]"
+    assert unspecified_ipv6["domain_exclude_patterns"] == []
+    assert unspecified_ipv6["domain_excludes"] == ["[::1]", "localhost"]
+
+    literal_ipv6 = domain_by_raw[
+        "||[2001:db8::20]^$third-party,domain=~[2001:db8::10]"
+    ]
+    assert literal_ipv6["pattern_kind"] == "domain_only"
+    assert literal_ipv6["host"] == "[2001:db8::20]"
+    assert literal_ipv6["domain_exclude_patterns"] == []
+    assert literal_ipv6["domain_excludes"] == ["[2001:db8::10]"]
 
     method = by_raw[
         "||api.example.com/path$method=post,denyallow=foo.example|bar.example"

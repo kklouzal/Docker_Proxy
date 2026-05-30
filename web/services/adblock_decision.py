@@ -62,9 +62,26 @@ def _normalize_host(host: str) -> str:
     if not value:
         return ""
     if value.startswith("[") and "]" in value:
-        return value.split("]", 1)[0] + "]"
+        literal = value[1:].split("]", 1)[0].strip()
+        try:
+            ip = ipaddress.ip_address(literal)
+            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        except ValueError:
+            return value.split("]", 1)[0] + "]"
     if ":" in value:
-        value = value.split(":", 1)[0]
+        try:
+            ip = ipaddress.ip_address(value)
+            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        except ValueError:
+            if value.count(":") == 1:
+                value = value.split(":", 1)[0]
+            else:
+                return value
+    try:
+        ip = ipaddress.ip_address(value)
+        return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+    except ValueError:
+        pass
     try:
         return value.encode("idna").decode("ascii").lower().rstrip(".")
     except Exception:
@@ -507,13 +524,15 @@ class AdblockDecisionEngine:
         return not bool(value_options & _NON_BLOCKING_MODIFIER_OPTIONS)
 
     def _domain_scope_matches(self, rule: dict[str, Any], source_host: str) -> bool:
-        includes = [str(item) for item in rule.get("domain_includes") or []]
+        includes = [_normalize_host(str(item)) for item in rule.get("domain_includes") or []]
         include_patterns = [
-            str(item) for item in rule.get("domain_include_patterns") or []
+            _normalize_host(str(item))
+            for item in rule.get("domain_include_patterns") or []
         ]
-        excludes = [str(item) for item in rule.get("domain_excludes") or []]
+        excludes = [_normalize_host(str(item)) for item in rule.get("domain_excludes") or []]
         exclude_patterns = [
-            str(item) for item in rule.get("domain_exclude_patterns") or []
+            _normalize_host(str(item))
+            for item in rule.get("domain_exclude_patterns") or []
         ]
         if any(_domain_matches(source_host, item) for item in excludes):
             return False
