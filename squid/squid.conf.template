@@ -233,10 +233,11 @@ icap_log stdio:/var/log/squid/icap.log icapobserve
 cache_store_log none
 
 # ICAP policy:
-# - Inspect browsing requests plus CONNECT tunnel setup so request-time
-#   adblock rules can stop blocked domains before TLS sessions are established.
-#   The packaged helper normalizes CONNECT authority-form requests to HTTPS URLs.
-acl icap_adblockable method GET HEAD CONNECT
+# - Inspect browsing requests, common API methods, and CONNECT tunnel setup so
+#   request-time adblock rules can stop blocked domains before TLS sessions are
+#   established. The packaged helper normalizes CONNECT authority-form requests
+#   to HTTPS URLs and makes header-only decisions for request methods with bodies.
+acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE
 acl icap_av_scanable method GET
 acl icap_range_request req_header Range .+
 acl icap_partial_response http_status 206

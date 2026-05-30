@@ -261,6 +261,43 @@ def _send_icap(port: int, payload: bytes) -> bytes:
         return b"".join(chunks)
 
 
+def _recv_icap_headers(sock: socket.socket) -> bytes:
+    chunks: list[bytes] = []
+    while b"\r\n\r\n" not in b"".join(chunks):
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _recv_icap_response_count(sock: socket.socket, count: int) -> bytes:
+    chunks: list[bytes] = []
+    while b"".join(chunks).count(b"ICAP/1.0 ") < count:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+class _ChunkedSocket:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    def settimeout(self, _timeout: float) -> None:
+        return
+
+    def recv(self, n: int) -> bytes:
+        if not self._chunks:
+            return b""
+        chunk = self._chunks.pop(0)
+        if len(chunk) <= n:
+            return chunk
+        self._chunks.insert(0, chunk[n:])
+        return chunk[:n]
+
+
 def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
@@ -274,6 +311,67 @@ def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
     assert method == "CONNECT"
     assert url == "https://ads.example:443/"
     assert headers["host"] == "ads.example:443"
+
+
+def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import (
+        _encapsulated_http_request,
+        _parse_http_request,
+    )
+
+    http = (
+        b"POST http://ads.example/collect HTTP/1.1\r\n"
+        b"Host: ads.example\r\n"
+        b"Content-Length: 7\r\n\r\n"
+    )
+    body = b"7\r\npayload\r\n0\r\n\r\n"
+    icap = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n\r\n"
+        + http
+        + body
+    )
+
+    method, url, headers = _parse_http_request(_encapsulated_http_request(icap))
+
+    assert method == "POST"
+    assert url == "http://ads.example/collect"
+    assert headers["host"] == "ads.example"
+    assert headers["content-length"] == "7"
+
+
+def test_adblock_icap_reads_preview_zero_chunk_before_responding() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _read_icap_message
+
+    http = (
+        b"POST http://ads.example/collect HTTP/1.1\r\n"
+        b"Host: ads.example\r\n"
+        b"Content-Length: 7\r\n\r\n"
+    )
+    headers = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Preview: 0\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n\r\n"
+    )
+    sock = _ChunkedSocket([headers[:32], headers[32:] + http[:10], http[10:], b"0\r\n\r\n"])
+
+    message, pending, force_close = _read_icap_message(
+        sock,
+        max_bytes=65536,
+        timeout_seconds=5.0,
+    )
+
+    assert message.endswith(b"0\r\n\r\n")
+    assert pending == b""
+    assert force_close is False
 
 
 def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -> None:
@@ -309,9 +407,61 @@ def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -
         )
         response = _send_icap(port, req)
         assert response.startswith(b"ICAP/1.0 200")
+        icap_header = response.split(b"\r\n\r\n", 1)[0]
+        assert b"Connection: close" not in icap_header
         assert b"HTTP/1.1 403 Forbidden" in response
         log_text = log_path.read_text(encoding="utf-8")
         assert "CONNECT https://ads.example:443/ HTTP/1.1" in log_text
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^$method=post"])
+    log_path = tmp_path / "cicap-access.log"
+    recorded_blocks: list[str] = []
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+        block_recorder=recorded_blocks.append,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        http = (
+            b"POST http://ads.example/collect HTTP/1.1\r\n"
+            b"Host: ads.example\r\n"
+            b"Content-Length: 7\r\n\r\n"
+        )
+        req = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Preview: 0\r\n"
+            b"Encapsulated: req-hdr=0, req-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+            + b"0\r\n\r\n"
+        )
+        response = _send_icap(port, req)
+        assert response.startswith(b"ICAP/1.0 200")
+        icap_header = response.split(b"\r\n\r\n", 1)[0]
+        assert b"Connection: close" not in icap_header
+        assert b"HTTP/1.1 403 Forbidden" in response
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "POST http://ads.example/collect HTTP/1.1" in log_text
+        assert recorded_blocks == ["sample"]
     finally:
         server.shutdown()
         server.server_close()
@@ -351,6 +501,8 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         )
         assert options.startswith(b"ICAP/1.0 200")
         assert b"Methods: REQMOD" in options
+        assert b"Preview: 0" in options
+        assert b"Connection: close" not in options
 
         http = (
             b"GET http://ads.example/banner.js HTTP/1.1\r\n"
@@ -372,6 +524,215 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         assert "ads.example/banner.js" in log_text
         assert "\tsample\t" in log_text
         assert recorded_blocks == ["sample"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_handles_persistent_transactions(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+            sock.settimeout(2.0)
+            sock.sendall(
+                b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n",
+            )
+            options = _recv_icap_headers(sock)
+            assert options.startswith(b"ICAP/1.0 200")
+            assert b"Connection: close" not in options
+
+            http = (
+                b"GET http://allowed.example/page.html HTTP/1.1\r\n"
+                b"Host: allowed.example\r\n\r\n"
+            )
+            sock.sendall(
+                b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Encapsulated: req-hdr=0, null-body="
+                + str(len(http)).encode("ascii")
+                + b"\r\n\r\n"
+                + http,
+            )
+            allowed = _recv_icap_headers(sock)
+            assert allowed.startswith(b"ICAP/1.0 204")
+            assert b"Connection: close" not in allowed
+
+            sock.sendall(
+                b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Connection: close\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n",
+            )
+            closing = _recv_icap_headers(sock)
+            assert closing.startswith(b"ICAP/1.0 200")
+            assert b"Connection: close" in closing
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_honors_connection_close_token_lists(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, [])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        response = _send_icap(
+            port,
+            (
+                b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Connection: keep-alive, close\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n"
+            ),
+        )
+        assert response.startswith(b"ICAP/1.0 200")
+        assert b"Connection: close" in response
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_caps_keepalive_transactions(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, [])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+        max_keepalive_requests=2,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+            sock.settimeout(2.0)
+            for expected_close in (False, True):
+                sock.sendall(
+                    b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+                    b"Host: 127.0.0.1\r\n"
+                    b"Encapsulated: null-body=0\r\n\r\n",
+                )
+                response = _recv_icap_headers(sock)
+                assert response.startswith(b"ICAP/1.0 200")
+                assert (b"Connection: close" in response) is expected_close
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_handles_coalesced_persistent_transactions(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, [])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = (
+            b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: null-body=0\r\n\r\n"
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+            sock.settimeout(2.0)
+            sock.sendall(req + req)
+            responses = _recv_icap_response_count(sock, 2)
+
+        assert responses.count(b"ICAP/1.0 200") == 2
+        assert b"Connection: close" not in responses
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_closes_after_unpreviewed_request_body(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, [])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        http = (
+            b"POST http://allowed.example/collect HTTP/1.1\r\n"
+            b"Host: allowed.example\r\n"
+            b"Content-Length: 7\r\n\r\n"
+        )
+        req = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: req-hdr=0, req-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+        )
+        response = _send_icap(port, req)
+
+        assert response.startswith(b"ICAP/1.0 204")
+        assert b"Connection: close" in response
     finally:
         server.shutdown()
         server.server_close()

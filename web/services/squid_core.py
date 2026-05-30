@@ -27,6 +27,9 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 
+_ADBLOCK_ICAP_METHODS = "GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
+
+
 def _file_has_non_comment_lines(path: str) -> bool:
     try:
         with Path(path).open(encoding="utf-8", errors="replace") as handle:
@@ -393,7 +396,7 @@ class SquidController:
             f"adaptation_service_set adblock_req_set {adblock_service_name}",
             "adaptation_service_set av_req_set av_req",
             "adaptation_service_set av_resp_set av_resp",
-            "acl icap_adblockable method GET HEAD CONNECT",
+            f"acl icap_adblockable method {_ADBLOCK_ICAP_METHODS}",
             "adaptation_access adblock_req_set allow icap_adblockable",
             "adaptation_access adblock_req_set deny all",
         ]

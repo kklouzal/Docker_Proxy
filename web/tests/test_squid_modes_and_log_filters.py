@@ -209,11 +209,28 @@ def test_render_icap_include_uses_single_endpoint_services_without_identity_rewr
     assert "icap_service av_resp_0" not in out
     assert "icap://127.0.0.1:24000/adblockreq" in out
     assert "icap://127.0.0.1:24001/avrespmod" in out
-    assert "acl icap_adblockable method GET HEAD CONNECT" in out
+    assert "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE" in out
     assert "adaptation_access adblock_req_set allow icap_adblockable" in out
     assert "adaptation_access adblock_req_set deny all" in out
     assert "adaptation_access adblock_req_set allow all" not in out
     assert "Accept-Encoding identity" not in out
+
+
+def test_render_icap_include_keeps_body_methods_when_preview_is_disabled() -> None:
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+    out = ctl._render_icap_include("icap_preview_enable off\n")
+
+    adblock_acl = next(
+        line for line in out.splitlines() if line.startswith("acl icap_adblockable method ")
+    )
+    assert (
+        adblock_acl
+        == "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
+    )
 
 
 def test_repo_template_includes_cache_first_defaults() -> None:
@@ -222,6 +239,8 @@ def test_repo_template_includes_cache_first_defaults() -> None:
 
     assert "# BEGIN SQUID-UI MANAGED SETTINGS" in text
     assert "# END SQUID-UI MANAGED SETTINGS" in text
+    assert "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE" in text
+    assert "acl icap_adblockable method GET HEAD CONNECT\n" not in text
     assert "hopeless_kid_revival_delay 3600 seconds" in text
     assert "cache_dir rock /var/spool/squid 10000 slot-size=32768" in text
     assert "store_dir_select_algorithm least-load" in text
@@ -347,7 +366,7 @@ def test_squid_controller_normalize_config_text_migrates_legacy_inline_icap_serv
     text = ctl.normalize_config_text(
         """
 icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on
-acl icap_adblockable method GET HEAD CONNECT
+acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE
 adaptation_access adblock_req_set allow icap_adblockable
 adaptation_access adblock_req_set deny all
 http_access allow all
@@ -1003,6 +1022,7 @@ def test_repo_template_orders_generated_policy_includes_before_enforcement_hooks
 
     assert template.count("include /etc/squid/conf.d/20-icap.conf") == 1
     assert template.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
+    assert "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE" in template
     assert template.index("include /etc/squid/conf.d/20-icap.conf") < template.index(
         "adaptation_access adblock_req_set allow icap_adblockable"
     )
@@ -1065,7 +1085,7 @@ def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
         in versioned
     )
     assert "adblockreq?rev=" not in versioned
-    assert "acl icap_adblockable method GET HEAD CONNECT" in versioned
+    assert "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE" in versioned
     assert "acl adblock_regex_allow url_regex -i" not in versioned
     assert "acl adblock_regex_block url_regex -i" not in versioned
     assert "http_access deny adblock_regex_block" not in versioned

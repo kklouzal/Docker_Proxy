@@ -96,7 +96,7 @@ def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
     entrypoint = _read("docker/entrypoint.sh")
 
     assert "adaptation_access adblock_req_set allow all" not in entrypoint
-    assert "acl icap_adblockable method GET HEAD CONNECT" in entrypoint
+    assert "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE" in entrypoint
     assert "adaptation_access adblock_req_set allow icap_adblockable" in entrypoint
     assert "adaptation_access adblock_req_set deny all" in entrypoint
 

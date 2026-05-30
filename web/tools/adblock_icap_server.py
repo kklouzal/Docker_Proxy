@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import html
 import os
+import socket
 import socketserver
 import sys
 import time
@@ -32,6 +33,38 @@ def _parse_headers(lines: list[str]) -> dict[str, str]:
         key, value = line.split(":", 1)
         headers[key.strip().lower()] = value.strip()
     return headers
+
+
+def _parse_encapsulated_offsets(value: str) -> dict[str, int]:
+    offsets: dict[str, int] = {}
+    for item in (value or "").split(","):
+        if "=" not in item:
+            continue
+        name, raw_offset = item.split("=", 1)
+        name = name.strip().lower()
+        try:
+            offset = int(raw_offset.strip())
+        except ValueError:
+            continue
+        if name and offset >= 0:
+            offsets[name] = offset
+    return offsets
+
+
+def _encapsulated_http_request(data: bytes) -> bytes:
+    header_blob, _, rest = data.partition(b"\r\n\r\n")
+    headers = _parse_headers(
+        header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
+    )
+    offsets = _parse_encapsulated_offsets(headers.get("encapsulated", ""))
+    start = int(offsets.get("req-hdr", 0) or 0)
+    end_candidates = [
+        int(offsets[name])
+        for name in ("req-body", "null-body")
+        if name in offsets and int(offsets[name]) >= start
+    ]
+    end = min(end_candidates) if end_candidates else len(rest)
+    return rest[start:end]
 
 
 def _parse_http_request(data: bytes) -> tuple[str, str, dict[str, str]]:
@@ -69,14 +102,21 @@ def _decision_list_key(decision: AdblockDecision) -> str:
     return "matched" if str(getattr(decision, "raw", "") or "").strip() else "unknown"
 
 
-def _icap_response(status: str, headers: dict[str, str] | None = None) -> bytes:
+def _icap_response(
+    status: str,
+    headers: dict[str, str] | None = None,
+    *,
+    close: bool = False,
+) -> bytes:
     lines = [f"ICAP/1.0 {status}"]
-    for key, value in (headers or {}).items():
+    response_headers = {"Connection": "close"} if close else {}
+    response_headers.update(headers or {})
+    for key, value in response_headers.items():
         lines.append(f"{key}: {value}")
     return ("\r\n".join(lines) + "\r\n\r\n").encode("ascii", errors="replace")
 
 
-def _options_response() -> bytes:
+def _options_response(*, close: bool = False) -> bytes:
     return _icap_response(
         "200 OK",
         {
@@ -88,19 +128,21 @@ def _options_response() -> bytes:
             "Options-TTL": "300",
             "Encapsulated": "null-body=0",
         },
+        close=close,
     )
 
 
-def _allow_response() -> bytes:
+def _allow_response(*, close: bool = False) -> bytes:
     return _icap_response(
         "204 No Content",
         {
             "ISTag": '"adblock-sqlite"',
         },
+        close=close,
     )
 
 
-def _block_response(url: str, raw_rule: str) -> bytes:
+def _block_response(url: str, raw_rule: str, *, close: bool = False) -> bytes:
     escaped_url = html.escape(url or "", quote=True)
     escaped_rule = html.escape(raw_rule or "adblock rule", quote=True)
     body = (
@@ -116,10 +158,12 @@ def _block_response(url: str, raw_rule: str) -> bytes:
         "Connection: close\r\n"
         "\r\n"
     ).encode("ascii")
+    close_header = "Connection: close\r\n" if close else ""
     # ICAP encapsulated HTTP bodies are chunked.
     icap_headers = (
         "ICAP/1.0 200 OK\r\n"
         'ISTag: "adblock-sqlite"\r\n'
+        f"{close_header}"
         f"Encapsulated: res-hdr=0, res-body={len(http_headers)}\r\n"
         "\r\n"
     ).encode("ascii")
@@ -127,85 +171,216 @@ def _block_response(url: str, raw_rule: str) -> bytes:
     return icap_headers + http_headers + chunk
 
 
-def _read_icap_message(sock: Any, *, max_bytes: int) -> bytes:
-    sock.settimeout(5.0)
-    data = b""
+def _preview_body_end(rest: bytes, body_offset: int) -> int | None:
+    if body_offset < 0 or len(rest) < body_offset:
+        return None
+    cursor = body_offset
+    while True:
+        line_end = rest.find(_CRLF, cursor)
+        if line_end < 0:
+            return None
+        size_token = rest[cursor:line_end].split(b";", 1)[0].strip()
+        try:
+            chunk_size = int(size_token or b"0", 16)
+        except ValueError:
+            return None
+        cursor = line_end + len(_CRLF)
+        if chunk_size == 0:
+            trailers_end = rest.find(_CRLF + _CRLF, cursor)
+            if trailers_end >= 0:
+                return trailers_end + len(_CRLF + _CRLF)
+            if rest[cursor : cursor + len(_CRLF)] == _CRLF:
+                return cursor + len(_CRLF)
+            return None
+        cursor += chunk_size
+        if len(rest) < cursor + len(_CRLF):
+            return None
+        if rest[cursor : cursor + len(_CRLF)] != _CRLF:
+            return None
+        cursor += len(_CRLF)
+
+
+def _read_icap_message(
+    sock: Any,
+    *,
+    max_bytes: int,
+    timeout_seconds: float,
+    pending: bytes = b"",
+) -> tuple[bytes, bytes, bool]:
+    sock.settimeout(max(0.1, float(timeout_seconds or 0)))
+    data = bytearray(pending)
+    force_close = False
     while b"\r\n\r\n" not in data and len(data) < max_bytes:
-        chunk = sock.recv(min(8192, max_bytes - len(data)))
+        try:
+            chunk = sock.recv(min(8192, max_bytes - len(data)))
+        except (TimeoutError, OSError):
+            return bytes(data), b"", True
         if not chunk:
             break
-        data += chunk
+        data.extend(chunk)
     if b"\r\n\r\n" not in data:
-        return data
-    header_blob, rest = data.split(b"\r\n\r\n", 1)
+        return bytes(data), b"", True
+    header_blob, rest = bytes(data).split(b"\r\n\r\n", 1)
     headers = _parse_headers(
         header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
     )
-    encapsulated = headers.get("encapsulated", "")
-    if "req-hdr=" not in encapsulated:
-        return data
-    while b"\r\n\r\n" not in rest and len(data) < max_bytes:
-        chunk = sock.recv(min(8192, max_bytes - len(data)))
+    offsets = _parse_encapsulated_offsets(headers.get("encapsulated", ""))
+    if "req-hdr" not in offsets:
+        header_end = len(header_blob) + len(b"\r\n\r\n")
+        return bytes(data[:header_end]), bytes(data[header_end:]), False
+
+    req_hdr_offset = int(offsets.get("req-hdr", 0) or 0)
+    end_candidates = [
+        int(offsets[name])
+        for name in ("req-body", "null-body")
+        if name in offsets and int(offsets[name]) >= req_hdr_offset
+    ]
+    required_rest_bytes = min(end_candidates) if end_candidates else len(rest)
+
+    while len(rest) < required_rest_bytes and len(data) < max_bytes:
+        try:
+            chunk = sock.recv(min(8192, max_bytes - len(data)))
+        except (TimeoutError, OSError):
+            force_close = True
+            break
         if not chunk:
             break
-        data += chunk
+        data.extend(chunk)
         rest += chunk
-    return data
+    while not end_candidates and b"\r\n\r\n" not in rest and len(data) < max_bytes:
+        try:
+            chunk = sock.recv(min(8192, max_bytes - len(data)))
+        except (TimeoutError, OSError):
+            force_close = True
+            break
+        if not chunk:
+            break
+        data.extend(chunk)
+        rest += chunk
+
+    if "preview" in headers and "req-body" in offsets:
+        body_offset = int(offsets.get("req-body", 0) or 0)
+        while _preview_body_end(rest, body_offset) is None and len(data) < max_bytes:
+            try:
+                chunk = sock.recv(min(8192, max_bytes - len(data)))
+            except (TimeoutError, OSError):
+                force_close = True
+                break
+            if not chunk:
+                break
+            data.extend(chunk)
+            rest += chunk
+        body_end = _preview_body_end(rest, body_offset)
+        if body_end is None:
+            return bytes(data), b"", True
+        message_end = len(header_blob) + len(b"\r\n\r\n") + body_end
+        return bytes(data[:message_end]), bytes(data[message_end:]), force_close
+
+    if "req-body" in offsets:
+        force_close = True
+
+    message_end = len(header_blob) + len(b"\r\n\r\n") + required_rest_bytes
+    return bytes(data[:message_end]), bytes(data[message_end:]), force_close
+
+
+def _connection_close_requested(header_blob: bytes) -> bool:
+    headers = _parse_headers(
+        header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
+    )
+    tokens = {
+        item.strip().lower()
+        for item in headers.get("connection", "").split(",")
+        if item.strip()
+    }
+    return "close" in tokens
 
 
 class _AdblockIcapHandler(socketserver.BaseRequestHandler):
     server: _AdblockIcapServer
 
+    def setup(self) -> None:
+        super().setup()
+        try:
+            self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+
     def handle(self) -> None:
-        data = _read_icap_message(
-            self.request,
-            max_bytes=int(getattr(self.server, "max_request_bytes", 262144)),
+        max_request_bytes = int(getattr(self.server, "max_request_bytes", 262144))
+        timeout_seconds = float(getattr(self.server, "request_timeout_seconds", 5.0))
+        max_keepalive_requests = max(
+            1,
+            int(getattr(self.server, "max_keepalive_requests", 1000)),
         )
-        if not data:
-            return
-        header_blob, _, rest = data.partition(b"\r\n\r\n")
-        lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()
-        request_line = lines[0] if lines else ""
-        parts = request_line.split()
-        method = parts[0].upper() if parts else ""
-        if method == "OPTIONS":
-            self.request.sendall(_options_response())
-            return
-        if method != "REQMOD":
-            self.request.sendall(
-                _icap_response(
-                    "405 Method Not Allowed",
-                    {"Encapsulated": "null-body=0"},
-                ),
+        request_count = 0
+        pending = b""
+        while request_count < max_keepalive_requests:
+            data, pending, read_close = _read_icap_message(
+                self.request,
+                max_bytes=max_request_bytes,
+                timeout_seconds=timeout_seconds,
+                pending=pending,
             )
-            return
+            if not data:
+                return
+            request_count += 1
+            header_blob, _, _rest = data.partition(b"\r\n\r\n")
+            close = read_close or _connection_close_requested(header_blob) or (
+                request_count >= max_keepalive_requests
+            )
+            lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()
+            request_line = lines[0] if lines else ""
+            parts = request_line.split()
+            method = parts[0].upper() if parts else ""
+            if method == "OPTIONS":
+                self.request.sendall(_options_response(close=close))
+                if close:
+                    return
+                continue
+            if method != "REQMOD":
+                self.request.sendall(
+                    _icap_response(
+                        "405 Method Not Allowed",
+                        {"Encapsulated": "null-body=0"},
+                        close=close,
+                    ),
+                )
+                if close:
+                    return
+                continue
 
-        http_method, url, http_headers = _parse_http_request(rest)
-        if not url:
-            self.request.sendall(_allow_response())
-            return
+            http_method, url, http_headers = _parse_http_request(
+                _encapsulated_http_request(data),
+            )
+            if not url:
+                self.request.sendall(_allow_response(close=close))
+                if close:
+                    return
+                continue
 
-        decision = self.server.engine.decide(
-            url,
-            method=http_method,
-            headers=http_headers,
-        )
-        if decision.blocked:
-            list_key = _decision_list_key(decision)
-            self.server.log_access(
-                client_ip=self.client_address[0],
+            decision = self.server.engine.decide(
+                url,
                 method=http_method,
-                url=url,
-                icap_status=200,
-                http_status=403,
-                http_resp_line="HTTP/1.1 403 Forbidden",
-                list_key=list_key,
-                rule_id=decision.rule_id,
+                headers=http_headers,
             )
-            self.server.record_block(list_key)
-            self.request.sendall(_block_response(url, decision.raw))
-        else:
-            self.request.sendall(_allow_response())
+            if decision.blocked:
+                list_key = _decision_list_key(decision)
+                self.server.log_access(
+                    client_ip=self.client_address[0],
+                    method=http_method,
+                    url=url,
+                    icap_status=200,
+                    http_status=403,
+                    http_resp_line="HTTP/1.1 403 Forbidden",
+                    list_key=list_key,
+                    rule_id=decision.rule_id,
+                )
+                self.server.record_block(list_key)
+                self.request.sendall(_block_response(url, decision.raw, close=close))
+            else:
+                self.request.sendall(_allow_response(close=close))
+            if close:
+                return
 
 
 class _AdblockIcapServer(socketserver.ThreadingTCPServer):
@@ -219,12 +394,16 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         engine: AdblockDecisionEngine,
         access_log_path: str,
         max_request_bytes: int,
+        request_timeout_seconds: float = 5.0,
+        max_keepalive_requests: int = 1000,
         block_recorder: Any | None = None,
     ) -> None:
         super().__init__(server_address, _AdblockIcapHandler)
         self.engine = engine
         self.access_log_path = access_log_path
         self.max_request_bytes = max_request_bytes
+        self.request_timeout_seconds = max(0.1, float(request_timeout_seconds or 0))
+        self.max_keepalive_requests = max(1, int(max_keepalive_requests or 1))
         self.block_recorder = block_recorder
 
     def log_access(
@@ -314,6 +493,18 @@ def main(argv: list[str] | None = None) -> int:
             os.environ.get("ADBLOCK_ICAP_MAX_REQUEST_BYTES", "262144") or "262144"
         ),
     )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=float(os.environ.get("ADBLOCK_ICAP_REQUEST_TIMEOUT", "5") or "5"),
+    )
+    parser.add_argument(
+        "--max-keepalive-requests",
+        type=int,
+        default=int(
+            os.environ.get("ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS", "1000") or "1000"
+        ),
+    )
     args = parser.parse_args(argv)
 
     engine = AdblockDecisionEngine(
@@ -340,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         engine=engine,
         access_log_path=args.access_log,
         max_request_bytes=max(8192, int(args.max_request_bytes)),
+        request_timeout_seconds=max(0.1, float(args.request_timeout)),
+        max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
         block_recorder=block_recorder,
     ) as server:
         sys.stdout.write(

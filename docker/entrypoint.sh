@@ -1007,7 +1007,7 @@ EOF
 
 {
     # One ICAP service per function.
-    # Duplicating multiple `icap_service` entries pointing at the same URI (same local c-icap instance)
+    # Duplicating multiple `icap_service` entries pointing at the same URI
     # triggers Squid warnings about duplicate URIs and provides no scaling benefit.
     echo "icap_service adblock_req reqmod_precache icap://127.0.0.1:${CICAP_PORT}/adblockreq bypass=on"
     echo "icap_service av_req reqmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
@@ -1015,7 +1015,7 @@ EOF
     echo "adaptation_service_set adblock_req_set adblock_req"
     echo "adaptation_service_set av_req_set av_req"
     echo "adaptation_service_set av_resp_set av_resp"
-    echo "acl icap_adblockable method GET HEAD CONNECT"
+    echo "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
     echo "adaptation_access adblock_req_set allow icap_adblockable"
     echo "adaptation_access adblock_req_set deny all"
     echo "acl file_security_upload_methods method POST PUT PATCH"

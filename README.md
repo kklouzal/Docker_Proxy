@@ -207,6 +207,7 @@ one default admin UI stay well inside the 160-connection budget.
 
 - EasyList-style subscription download and compilation.
 - SQLite-backed REQMOD service at `icap://127.0.0.1:${CICAP_PORT:-14000}/adblockreq`.
+- Header-only adblock decisions for browsing, CONNECT tunnel setup, and common API methods.
 - Domain, URL-rule, and request-lookup SQLite artifacts staged locally in the proxy container.
 - Block counters, recent event logging, and artifact application tracking.
 

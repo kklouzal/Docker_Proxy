@@ -163,7 +163,7 @@ def check_adblock_icap_health(
         default_port=14000,
     )
     return _check_icap_target(
-        "c-icap",
+        "adblock ICAP helper",
         "/adblockreq",
         host=resolved_host,
         port=resolved_port,
