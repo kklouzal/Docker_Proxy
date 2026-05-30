@@ -8,7 +8,6 @@ import sqlite3
 import sys
 import threading
 import time
-from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,6 +20,13 @@ import contextlib  # noqa: E402
 
 from services.db import connect  # noqa: E402
 from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
+from services.helper_runtime import (  # noqa: E402
+    HelperStats,
+    TtlLruCache,
+    helper_event,
+    split_acl_channel,
+    write_acl_response,
+)
 from services.proxy_context import (  # noqa: E402
     get_default_proxy_id,
     normalize_proxy_id,
@@ -66,7 +72,14 @@ class _Db:
             minimum=0.1,
             maximum=3600.0,
         )
-        self._cache: OrderedDict[str, tuple[float, tuple[str, ...]]] = OrderedDict()
+        self._cache = TtlLruCache(
+            max_entries=self._cache_max_entries,
+            ttl_seconds=self._cache_ttl,
+        )
+        self._negative_cache = TtlLruCache(
+            max_entries=self._cache_max_entries,
+            ttl_seconds=self._cache_negative_ttl,
+        )
         self._snapshot_dir = Path(
             (
                 os.environ.get("WEBFILTER_SNAPSHOT_DIR")
@@ -118,23 +131,20 @@ class _Db:
                 conn.close()
 
     def _cache_get(self, domain: str) -> set[str] | None:
-        entry = self._cache.get(domain)
-        if entry is None:
-            return None
-        expires_at, values = entry
-        if time.monotonic() >= expires_at:
-            self._cache.pop(domain, None)
-            return None
-        self._cache.move_to_end(domain)
-        return set(values)
+        positive = self._cache.get(domain)
+        if positive is not None:
+            return set(positive)
+        negative = self._negative_cache.get(domain)
+        if negative is not None:
+            return set()
+        return None
 
     def _cache_put(self, domain: str, values: set[str]) -> set[str]:
-        ttl = self._cache_ttl if values else self._cache_negative_ttl
         frozen = tuple(sorted(values))
-        self._cache[domain] = (time.monotonic() + ttl, frozen)
-        self._cache.move_to_end(domain)
-        while len(self._cache) > self._cache_max_entries:
-            self._cache.popitem(last=False)
+        if values:
+            self._cache.put(domain, frozen)
+        else:
+            self._negative_cache.put(domain, frozen)
         return set(frozen)
 
     def start(self) -> None:
@@ -224,6 +234,7 @@ class _Db:
             self._local_snapshot_mtime_ns = int(mtime_ns or 0)
         if int(built_ts or 0) != int(previous_built_ts or 0):
             self._cache.clear()
+            self._negative_cache.clear()
         if old_conn is not None:
             with contextlib.suppress(Exception):
                 old_conn.close()
@@ -637,17 +648,9 @@ def _parse_line(
       - "<src_ip> <domain> <url> <category>"
       - "<channel> <src_ip> <domain> <url> <category>"
     """
-    t = (line or "").strip()
-    if not t:
-        return None, None, None, None, None
-    parts = t.split()
+    channel_id, parts = split_acl_channel(line)
     if not parts:
         return None, None, None, None, None
-
-    channel_id: str | None = None
-    if parts and parts[0].isdigit():
-        channel_id = parts[0]
-        parts = parts[1:]
 
     # New format: src, dst, uri, category
     if len(parts) >= 4:
@@ -661,11 +664,7 @@ def _parse_line(
 
 
 def _write_response(channel_id: str | None, ok: bool) -> None:
-    if channel_id is not None:
-        sys.stdout.write(f"{channel_id} {'OK' if ok else 'ERR'}\n")
-    else:
-        sys.stdout.write(f"{'OK' if ok else 'ERR'}\n")
-    sys.stdout.flush()
+    write_acl_response(channel_id, ok)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -688,6 +687,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_db = _BlockedLogDb(max_rows=int(args.log_max_rows))
     log_db.start()
     fail_open = args.fail == "open"
+    stats = HelperStats("webcat_acl")
+    helper_event(
+        "webcat_acl",
+        "startup",
+        fail_mode=args.fail,
+        log_max_rows=int(args.log_max_rows),
+    )
 
     for raw in sys.stdin:
         ch, src_ip, domain, url, category = _parse_line(raw)
@@ -697,19 +703,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 domain = url_domain
         if not domain or not category:
             # Fail-open: do not match the ACL (allow). Fail-closed: match (block).
+            stats.increment("parse_miss")
             _write_response(ch, not fail_open)
+            stats.emit_if_due()
             continue
 
         cats = db.lookup_categories(domain)
+        stats.increment("requests")
         if not cats:
             # Unknown domain: do not match the ACL (allow) unless fail-closed.
+            stats.increment("misses")
             _write_response(ch, not fail_open)
+            stats.emit_if_due()
             continue
 
         # External ACL semantics: return OK when the ACL *matches*.
         # For blocking ACLs, we match when the destination is in the named category.
         match = category.lower() in cats
         if match:
+            stats.increment("matches")
             # Best-effort: record the event so the admin UI can show a blocked log.
             # This helper is invoked only for requests that reach the deny ACL chain.
             log_db.insert(
@@ -719,7 +731,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 category=(category or ""),
             )
         _write_response(ch, match)
+        stats.emit_if_due()
 
+    stats.emit_if_due(force=True)
     return 0
 
 

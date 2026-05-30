@@ -203,12 +203,16 @@ def infer_resource_type(
     fetch_dest = lower_headers.get("sec-fetch-dest", "").strip().lower()
     fetch_mode = lower_headers.get("sec-fetch-mode", "").strip().lower()
     fetch_dest_types = {
+        "audio": "media",
         "document": "document",
+        "embed": "object",
         "font": "font",
         "image": "image",
         "object": "object",
+        "track": "media",
         "script": "script",
         "style": "stylesheet",
+        "video": "media",
         "worker": "script",
     }
     if fetch_dest in fetch_dest_types:
@@ -219,6 +223,8 @@ def infer_resource_type(
         return "xmlhttprequest"
     if lower_headers.get("x-requested-with", "").lower() == "xmlhttprequest":
         return "xmlhttprequest"
+    if lower_headers.get("ping-to") or lower_headers.get("ping-from"):
+        return "ping"
 
     path = urlsplit(url or "").path.lower()
     for resource_type, extensions in _RESOURCE_EXTENSIONS.items():
@@ -226,12 +232,26 @@ def infer_resource_type(
             return resource_type
 
     accept = lower_headers.get("accept", "").lower()
+    content_type = lower_headers.get("content-type", "").lower()
+    if "text/ping" in content_type or (
+        "ping" in content_type and normalized_method == "POST"
+    ):
+        return "ping"
     if "text/css" in accept:
         return "stylesheet"
     if "javascript" in accept or "ecmascript" in accept:
         return "script"
     if accept.startswith("image/") or "image/" in accept:
         return "image"
+    if accept.startswith(("audio/", "video/")):
+        return "media"
+    if "font/" in accept:
+        return "font"
+    if (
+        normalized_method not in {"GET", "HEAD"}
+        and ("json" in accept or "xml" in accept)
+    ):
+        return "xmlhttprequest"
     if "text/html" in accept and normalized_method in {"GET", "HEAD"}:
         return "document"
     return "other"

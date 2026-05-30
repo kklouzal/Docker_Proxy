@@ -14,6 +14,12 @@ if APP_ROOT not in sys.path:
 
 import contextlib  # noqa: E402
 
+from services.helper_runtime import (  # noqa: E402
+    HelperStats,
+    helper_event,
+    split_acl_channel,
+    write_acl_response,
+)
 from services.safe_browsing_v5 import SafeBrowsingLocalChecker  # noqa: E402
 
 if TYPE_CHECKING:
@@ -26,13 +32,9 @@ except Exception:  # pragma: no cover - logging is best-effort in helper startup
 
 
 def _parse_line(line: str) -> tuple[str | None, str, str]:
-    text = (line or "").strip()
-    if not text:
+    channel_id, parts = split_acl_channel(line)
+    if not parts:
         return None, "", ""
-    parts = text.split()
-    channel_id: str | None = None
-    if parts and parts[0].isdigit():
-        channel_id = parts.pop(0)
     # external_acl_type passes %SRC %DST %URI. Prefer URI; fall back to DST
     # when Squid supplies a placeholder for CONNECT-style traffic.
     if len(parts) >= 3:
@@ -45,14 +47,6 @@ def _parse_line(line: str) -> tuple[str | None, str, str]:
     if parts:
         return channel_id, "", parts[0]
     return channel_id, "", ""
-
-
-def _write(channel_id: str | None, ok: bool) -> None:
-    if channel_id is not None:
-        sys.stdout.write(f"{channel_id} {'OK' if ok else 'ERR'}\n")
-    else:
-        sys.stdout.write(f"{'OK' if ok else 'ERR'}\n")
-    sys.stdout.flush()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -79,6 +73,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = ap.parse_args(list(argv) if argv is not None else None)
     fail_open = args.fail == "open"
     checker = SafeBrowsingLocalChecker(selected_lists=args.selected_lists or None)
+    stats = HelperStats("safe_browsing_acl")
+    helper_event(
+        "safe_browsing_acl",
+        "startup",
+        fail_mode=args.fail,
+        selected_lists=",".join(args.selected_lists or []),
+    )
     log_db = (
         _BlockedLogDb(max_rows=int(args.log_max_rows))
         if _BlockedLogDb is not None
@@ -89,12 +90,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     for raw in sys.stdin:
         channel_id, src_ip, url = _parse_line(raw)
         if not url:
-            _write(channel_id, not fail_open)
+            stats.increment("parse_miss")
+            write_acl_response(channel_id, not fail_open)
+            stats.emit_if_due()
             continue
         try:
             verdict = checker.check_url(url)
             unsafe = verdict.verdict == "unsafe"
+            stats.increment("requests")
             if unsafe and log_db is not None:
+                stats.increment("unsafe")
                 category = "google-safe-browsing"
                 if verdict.threat_type:
                     category += "/" + verdict.threat_type.lower().replace("_", "-")
@@ -105,9 +110,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         url=url,
                         category=category,
                     )
-            _write(channel_id, unsafe)
+            write_acl_response(channel_id, unsafe)
         except Exception:
-            _write(channel_id, not fail_open)
+            stats.increment("errors")
+            write_acl_response(channel_id, not fail_open)
+        stats.emit_if_due()
+    stats.emit_if_due(force=True)
     return 0
 
 

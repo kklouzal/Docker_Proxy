@@ -49,6 +49,30 @@ from .test_adblock_lookup import _add_web_to_path, _build_lookup_db
             {"Sec-Fetch-Dest": "font"},
             "font",
         ),
+        (
+            "GET",
+            "https://static.example/movie",
+            {"Sec-Fetch-Dest": "video"},
+            "media",
+        ),
+        (
+            "POST",
+            "https://metrics.example/ping",
+            {"Ping-To": "https://target.example/"},
+            "ping",
+        ),
+        (
+            "POST",
+            "https://api.example.com/data",
+            {"Accept": "application/json"},
+            "xmlhttprequest",
+        ),
+        (
+            "GET",
+            "https://fonts.example/font",
+            {"Accept": "font/woff2"},
+            "font",
+        ),
     ],
 )
 def test_infer_resource_type_uses_browser_fetch_metadata(

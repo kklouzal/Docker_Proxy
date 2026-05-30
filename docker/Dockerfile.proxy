@@ -102,6 +102,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/domain_normalization.py \
     web/services/errors.py \
     web/services/health_checks.py \
+    web/services/helper_runtime.py \
     web/services/http_optimizations.py \
     web/services/live_stats.py \
     web/services/materialized_files.py \

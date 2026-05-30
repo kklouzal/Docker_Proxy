@@ -21,6 +21,7 @@ from services.adblock_decision import (  # noqa: E402
     AdblockDecision,
     AdblockDecisionEngine,
 )
+from services.helper_runtime import HelperStats, helper_event  # noqa: E402
 
 _CRLF = b"\r\n"
 
@@ -333,11 +334,13 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
             parts = request_line.split()
             method = parts[0].upper() if parts else ""
             if method == "OPTIONS":
+                self.server.increment_stat("options")
                 self.request.sendall(_options_response(close=close))
                 if close:
                     return
                 continue
             if method != "REQMOD":
+                self.server.increment_stat("method_not_allowed")
                 self.request.sendall(
                     _icap_response(
                         "405 Method Not Allowed",
@@ -353,17 +356,20 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                 _encapsulated_http_request(data),
             )
             if not url:
+                self.server.increment_stat("parse_miss")
                 self.request.sendall(_allow_response(close=close))
                 if close:
                     return
                 continue
 
+            self.server.increment_stat("reqmod")
             decision = self.server.engine.decide(
                 url,
                 method=http_method,
                 headers=http_headers,
             )
             if decision.blocked:
+                self.server.increment_stat("blocked")
                 list_key = _decision_list_key(decision)
                 self.server.log_access(
                     client_ip=self.client_address[0],
@@ -378,6 +384,7 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                 self.server.record_block(list_key)
                 self.request.sendall(_block_response(url, decision.raw, close=close))
             else:
+                self.server.increment_stat("allowed")
                 self.request.sendall(_allow_response(close=close))
             if close:
                 return
@@ -397,6 +404,7 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         request_timeout_seconds: float = 5.0,
         max_keepalive_requests: int = 1000,
         block_recorder: Any | None = None,
+        stats: HelperStats | None = None,
     ) -> None:
         super().__init__(server_address, _AdblockIcapHandler)
         self.engine = engine
@@ -405,6 +413,13 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         self.request_timeout_seconds = max(0.1, float(request_timeout_seconds or 0))
         self.max_keepalive_requests = max(1, int(max_keepalive_requests or 1))
         self.block_recorder = block_recorder
+        self.stats = stats
+
+    def increment_stat(self, key: str, amount: int = 1) -> None:
+        if self.stats is None:
+            return
+        self.stats.increment(key, amount)
+        self.stats.emit_if_due()
 
     def log_access(
         self,
@@ -526,6 +541,17 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         block_recorder = None
 
+    stats = HelperStats("adblock_icap")
+    helper_event(
+        "adblock_icap",
+        "startup",
+        host=args.host,
+        port=int(args.port),
+        db=args.db,
+        max_request_bytes=max(8192, int(args.max_request_bytes)),
+        request_timeout_seconds=max(0.1, float(args.request_timeout)),
+        max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
+    )
     with _AdblockIcapServer(
         (args.host, int(args.port)),
         engine=engine,
@@ -534,12 +560,16 @@ def main(argv: list[str] | None = None) -> int:
         request_timeout_seconds=max(0.1, float(args.request_timeout)),
         max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
         block_recorder=block_recorder,
+        stats=stats,
     ) as server:
         sys.stdout.write(
             f"adblock sqlite ICAP listening on {args.host}:{args.port} using {args.db}\n",
         )
         sys.stdout.flush()
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            stats.emit_if_due(force=True)
     return 0
 
 
