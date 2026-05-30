@@ -1567,6 +1567,7 @@ def _present_adblock_build_state(
     *,
     active_artifact: dict[str, Any],
     statuses: list[dict[str, Any]],
+    settings: Any,
 ) -> dict[str, Any]:
     try:
         settings_version = _safe_int(store.get_settings_version())
@@ -1583,10 +1584,22 @@ def _present_adblock_build_state(
     if not isinstance(raw_status, dict):
         raw_status = {}
 
-    enabled_lists = sorted(
-        str(row.get("key") or "").strip()
-        for row in statuses
-        if row.get("enabled") and str(row.get("key") or "").strip()
+    try:
+        settings_enabled = bool(
+            settings.get("enabled", True)
+            if isinstance(settings, dict)
+            else getattr(settings, "enabled", True)
+        )
+    except Exception:
+        settings_enabled = True
+    enabled_lists = (
+        sorted(
+            str(row.get("key") or "").strip()
+            for row in statuses
+            if row.get("enabled") and str(row.get("key") or "").strip()
+        )
+        if settings_enabled
+        else []
     )
     active_lists = sorted(
         str(item).strip()
@@ -4141,6 +4154,7 @@ def adblock():
         store,
         active_artifact=active_artifact,
         statuses=status_rows,
+        settings=settings,
     )
 
     return render_template(
