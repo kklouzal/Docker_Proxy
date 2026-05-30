@@ -50,6 +50,11 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "- squid_logs:/var/log/squid" in proxy_block
     assert "squid_logs:" in _read("docker-compose.yml")
     assert "squid_logs:" in _read("docker-compose.ghcr.yml")
+    assert "ADBLOCK_CACHE_TTL: ${ADBLOCK_CACHE_TTL:-}" in proxy_block
+    assert (
+        "ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES: "
+        "${ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES:-}"
+    ) in proxy_block
     assert (
         "--max-allowed-packet=${MYSQL_MAX_ALLOWED_PACKET:-256M}"
         in _read("docker-compose.mysql.yml")
@@ -66,6 +71,11 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         in entrypoint
     )
     assert "rm -f /var/run/c-icap/c-icap-av.pid; HOST=" in entrypoint
+
+    env_example = _read("config/app.env.example")
+    assert "# ADBLOCK_CACHE_TTL=3600" in env_example
+    assert "# ADBLOCK_RULE_CACHE_MAX=50000" in env_example
+    assert "# ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES=8388608" in env_example
 
 
 def test_repo_does_not_ship_stale_squid_mime_override() -> None:
