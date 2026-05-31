@@ -4121,7 +4121,16 @@ def adblock():
             )
             return _redirect_to("adblock", error="1", msg=public_error_message(exc))
 
-    statuses = store.list_statuses()
+    try:
+        statuses = store.list_statuses()
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.adblock.statuses",
+            interval_seconds=30.0,
+            message="Failed to load adblock list statuses; rendering empty state",
+        )
+        statuses = []
     try:
         settings = store.get_settings()
     except Exception:
@@ -4130,7 +4139,10 @@ def adblock():
         stats = store.stats()
     except Exception:
         stats = {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
-    interval = store.get_update_interval_seconds()
+    try:
+        interval = store.get_update_interval_seconds()
+    except Exception:
+        interval = 6 * 60 * 60
     window_i = _query_int_arg(
         "window",
         default=3600,

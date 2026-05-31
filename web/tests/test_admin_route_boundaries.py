@@ -1090,6 +1090,40 @@ class UnavailableWebfilterStore:
         raise RuntimeError(msg)
 
 
+class UnavailableAdblockStore:
+    def init_db(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+    def list_statuses(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+    def get_settings(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+    def stats(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+    def get_update_interval_seconds(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+    def get_settings_version(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+    def get_refresh_requested(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+    def get_artifact_build_status(self):
+        msg = "adblock unavailable"
+        raise RuntimeError(msg)
+
+
 def test_observability_ssl_pane_links_to_sslfilter_without_template_error(
     monkeypatch, tmp_path
 ) -> None:
@@ -1165,6 +1199,24 @@ def test_policy_requests_page_renders_empty_state_when_store_unavailable(
     login_client(client)
 
     response = client.get("/requests")
+
+    assert response.status_code == 200
+    assert "Internal Server Error" not in response.get_data(as_text=True)
+
+
+def test_adblock_page_renders_empty_state_when_store_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_store=UnavailableAdblockStore(),
+    )
+    loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/adblock")
 
     assert response.status_code == 200
     assert "Internal Server Error" not in response.get_data(as_text=True)
