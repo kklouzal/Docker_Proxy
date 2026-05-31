@@ -1,6 +1,8 @@
 services:
   mysql-test:
     image: mysql:8.4
+    command:
+      - --max-allowed-packet=${LIVE_TEST_MYSQL_MAX_ALLOWED_PACKET:-256M}
     environment:
       MYSQL_ROOT_PASSWORD: ${LIVE_TEST_MYSQL_ROOT_PASSWORD:-squid-live-tests}
       MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}

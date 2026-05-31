@@ -63,6 +63,10 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     live_compose = _read("docker-compose.live-tests.yml")
     assert "- squid_logs_edge_2:/var/log/squid" in live_compose
     assert "squid_logs_edge_2:" in live_compose
+    assert (
+        "--max-allowed-packet=${LIVE_TEST_MYSQL_MAX_ALLOWED_PACKET:-256M}"
+        in live_compose
+    )
 
     entrypoint = _read("docker/entrypoint.sh")
     assert "python3 /app/tools/adblock_icap_server.py" in entrypoint
