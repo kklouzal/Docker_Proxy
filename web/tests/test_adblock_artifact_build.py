@@ -278,7 +278,7 @@ def test_background_build_detects_enabled_list_drift_without_version_change(
 ) -> None:
     _store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
-    active = SimpleNamespace(enabled_lists=["easylist"])
+    active = SimpleNamespace(enabled_lists=["easylist"], source_kind="background")
 
     assert (
         artifacts_module._active_enabled_lists_drift(
@@ -293,7 +293,10 @@ def test_background_build_detects_enabled_list_drift_without_version_change(
     )
     assert (
         artifacts_module._active_enabled_lists_drift(
-            SimpleNamespace(enabled_lists=["easyprivacy", "easylist"]),
+            SimpleNamespace(
+                enabled_lists=["easyprivacy", "easylist"],
+                source_kind="background",
+            ),
             settings_enabled=True,
             enabled_statuses=[
                 SimpleNamespace(key="easylist", enabled=True),
@@ -312,8 +315,16 @@ def test_background_build_detects_enabled_list_drift_without_version_change(
     )
     assert (
         artifacts_module._active_enabled_lists_drift(
-            SimpleNamespace(enabled_lists=[]),
+            SimpleNamespace(enabled_lists=[], source_kind="background"),
             settings_enabled=False,
+            enabled_statuses=[SimpleNamespace(key="easylist", enabled=True)],
+        )
+        is False
+    )
+    assert (
+        artifacts_module._active_enabled_lists_drift(
+            SimpleNamespace(enabled_lists=["live-fixture"], source_kind="live_fixture"),
+            settings_enabled=True,
             enabled_statuses=[SimpleNamespace(key="easylist", enabled=True)],
         )
         is False

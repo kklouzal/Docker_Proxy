@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _ARTIFACT_SHA_FILENAME = ".artifact-sha256"
 _DEFAULT_COMPILED_DIR = "/var/lib/squid-flask-proxy/adblock/compiled"
 _DEFAULT_SETTINGS_FILENAME = "settings.json"
+_BUILDER_SOURCE_KINDS = {"background", "compile"}
 
 
 def _mysql_error_code(exc: BaseException) -> int | None:
@@ -726,6 +727,9 @@ def _active_enabled_lists_drift(
     enabled_statuses: list[Any],
 ) -> bool:
     if active is None:
+        return False
+    source_kind = str(getattr(active, "source_kind", "") or "compile").strip()
+    if source_kind not in _BUILDER_SOURCE_KINDS:
         return False
     expected = (
         sorted(
