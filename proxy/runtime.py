@@ -2601,6 +2601,72 @@ class ProxyRuntime:
                 )
             return result
 
+        revision = None
+        normalized_revision_text = ""
+        normalized_revision_sha = ""
+        normalized_config_current = False
+        if (
+            not force
+            and current_sha
+            and revision_meta.config_sha256
+            and revision_meta.config_sha256 != current_sha
+        ):
+            try:
+                revision = self.revisions.get_active_revision(self.proxy_id)
+                if revision is not None:
+                    normalized_revision_text = self.controller.normalize_config_text(
+                        revision.config_text,
+                    )
+                    normalized_revision_sha = hashlib.sha256(
+                        normalized_revision_text.encode("utf-8", errors="replace"),
+                    ).hexdigest()
+                    normalized_config_current = normalized_revision_sha == current_sha
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "proxy_runtime.sync_from_db.config_revision_normalize",
+                    interval_seconds=30.0,
+                    message="Failed to normalize active config revision for sync comparison",
+                )
+
+        if normalized_config_current:
+            reload_ok = True
+            if policy_reload_required or adblock_changed or clamav_runtime_changed:
+                reload_ok, reload_detail = self._reload_for_policy_update()
+                if reload_detail:
+                    detail_parts.append(reload_detail)
+            detail = "Proxy is already using the active config revision."
+            if detail_parts:
+                detail_parts.append(detail)
+                detail = "\n".join(detail_parts).strip()
+            if (
+                policy_reload_required or adblock_changed or clamav_runtime_changed
+            ) and not reload_ok:
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=False,
+                    detail=detail,
+                    current_config_sha=current_sha,
+                )
+            return {
+                "ok": reload_ok,
+                "proxy_id": self.proxy_id,
+                "revision_id": revision_meta.revision_id,
+                "changed": cert_changed
+                or policy_changed
+                or adblock_changed
+                or pac_changed
+                or clamav_runtime_changed
+                or policy_config_changed,
+                "certificate_changed": cert_changed,
+                "policy_changed": policy_changed,
+                "adblock_changed": adblock_changed,
+                "pac_changed": pac_changed,
+                "cache_cleared": cache_cleared,
+                "config_changed": bool(policy_config_changed),
+                "detail": detail,
+            }
+
         latest_apply = None
         try:
             latest_apply = self.revisions.latest_apply(self.proxy_id)
@@ -2681,7 +2747,8 @@ class ProxyRuntime:
                 "detail": detail,
             }
 
-        revision = self.revisions.get_active_revision(self.proxy_id)
+        if revision is None:
+            revision = self.revisions.get_active_revision(self.proxy_id)
         if revision is None:
             detail = "Active config revision metadata was present, but the full config text could not be loaded."
             self.registry.mark_apply_result(
@@ -2708,12 +2775,13 @@ class ProxyRuntime:
                 "detail": detail,
             }
 
-        normalized_revision_text = self.controller.normalize_config_text(
-            revision.config_text,
-        )
-        normalized_revision_sha = hashlib.sha256(
-            normalized_revision_text.encode("utf-8", errors="replace"),
-        ).hexdigest()
+        if not normalized_revision_text:
+            normalized_revision_text = self.controller.normalize_config_text(
+                revision.config_text,
+            )
+            normalized_revision_sha = hashlib.sha256(
+                normalized_revision_text.encode("utf-8", errors="replace"),
+            ).hexdigest()
 
         ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
         self._invalidate_health_cache()

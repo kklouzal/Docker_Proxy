@@ -618,6 +618,74 @@ def test_sync_from_db_quarantines_previously_failed_active_revision_without_retr
     assert marked == [(False, result["detail"], "last-good-sha")]
 
 
+def test_sync_from_db_accepts_normalized_active_revision_before_failed_apply_quarantine() -> (
+    None
+):
+    active_config = "http_port 3128\nacl icap_adblockable method GET HEAD\n"
+    normalized_config = (
+        "http_port 3128\ninclude /etc/squid/conf.d/20-icap.conf\n"
+    )
+    active_sha = hashlib.sha256(active_config.encode()).hexdigest()
+    normalized_sha = hashlib.sha256(normalized_config.encode()).hexdigest()
+
+    def normalize_config_text(text: str) -> str:
+        if "acl icap_adblockable" in text:
+            return normalized_config
+        return text
+
+    runtime = _runtime_shell()
+    runtime.controller = SimpleNamespace(
+        get_current_config=lambda: normalized_config,
+        normalize_config_text=normalize_config_text,
+        apply_config_text=lambda _text: (_ for _ in ()).throw(
+            AssertionError("normalized active revision should not be reapplied"),
+        ),
+    )
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256=active_sha)
+
+        def get_active_revision(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_text=active_config)
+
+        def latest_apply(self, _proxy_id) -> NoReturn:
+            msg = "normalized current config should bypass failed apply quarantine"
+            raise AssertionError(msg)
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs) -> NoReturn:
+            msg = "no apply result should be marked for an already-current config"
+            raise AssertionError(msg)
+
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: normalized_sha
+    runtime._reload_for_policy_update = lambda: (_ for _ in ()).throw(
+        AssertionError("no policy reload should be needed"),
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert active_sha != normalized_sha
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["config_changed"] is False
+    assert result["revision_id"] == 9
+    assert result["detail"] == "Proxy is already using the active config revision."
+
+
 def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None:
     runtime = _runtime_shell()
     reloads: list[bool] = []
