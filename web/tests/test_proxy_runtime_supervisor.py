@@ -2115,3 +2115,55 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
     assert calls[0][0:2] == (5, "superseded")
     assert "queued target revision 7 was not applied" in calls[0][2]
     assert calls[1] == (6, "applied", "runtime reconciled")
+
+
+def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    cleared: list[bool] = []
+
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime._invalidate_health_cache = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "artifact-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
+    runtime.controller = SimpleNamespace(
+        clear_disk_cache=lambda: (
+            cleared.append(True) or (True, "Proxy disk cache cleared.")
+        ),
+    )
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id):
+            return None
+
+    runtime.revisions = Revisions()
+
+    result = runtime._sync_from_db_unlocked(
+        operations=[SimpleNamespace(operation_type="cache_clear")],
+    )
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["cache_cleared"] is True
+    assert cleared == [True]
+    assert "Proxy disk cache cleared." in result["detail"]

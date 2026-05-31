@@ -2465,6 +2465,18 @@ class ProxyRuntime:
 
         current_sha = self._current_config_sha()
         clamav_runtime_changed = False
+
+        def changed_since_sync_start(*, policy_config_changed: bool = False) -> bool:
+            return bool(
+                cert_changed
+                or policy_changed
+                or adblock_changed
+                or pac_changed
+                or cache_cleared
+                or clamav_runtime_changed
+                or policy_config_changed
+            )
+
         controller = getattr(self, "controller", None)
         set_adblock_icap_revision_token = getattr(
             controller,
@@ -2517,10 +2529,7 @@ class ProxyRuntime:
                 return {
                     "ok": False,
                     "proxy_id": self.proxy_id,
-                    "changed": cert_changed
-                    or policy_changed
-                    or adblock_changed
-                    or pac_changed,
+                    "changed": changed_since_sync_start(),
                     "certificate_changed": cert_changed,
                     "policy_changed": policy_changed,
                     "adblock_changed": adblock_changed,
@@ -2548,10 +2557,9 @@ class ProxyRuntime:
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed
-                or policy_changed
-                or adblock_changed
-                or pac_changed,
+                "changed": changed_since_sync_start(
+                    policy_config_changed=bool(policy_config_changed),
+                ),
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -2576,12 +2584,9 @@ class ProxyRuntime:
             result = {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed
-                or policy_changed
-                or adblock_changed
-                or pac_changed
-                or clamav_runtime_changed
-                or policy_config_changed,
+                "changed": changed_since_sync_start(
+                    policy_config_changed=bool(policy_config_changed),
+                ),
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -2652,12 +2657,9 @@ class ProxyRuntime:
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed
-                or policy_changed
-                or adblock_changed
-                or pac_changed
-                or clamav_runtime_changed
-                or policy_config_changed,
+                "changed": changed_since_sync_start(
+                    policy_config_changed=bool(policy_config_changed),
+                ),
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -2693,12 +2695,9 @@ class ProxyRuntime:
                 "ok": False,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed
-                or policy_changed
-                or adblock_changed
-                or pac_changed
-                or clamav_runtime_changed
-                or policy_config_changed,
+                "changed": changed_since_sync_start(
+                    policy_config_changed=bool(policy_config_changed),
+                ),
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -2732,12 +2731,9 @@ class ProxyRuntime:
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": cert_changed
-                or policy_changed
-                or adblock_changed
-                or pac_changed
-                or clamav_runtime_changed
-                or policy_config_changed,
+                "changed": changed_since_sync_start(
+                    policy_config_changed=bool(policy_config_changed),
+                ),
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
@@ -2760,12 +2756,9 @@ class ProxyRuntime:
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "changed": cert_changed
-                or policy_changed
-                or adblock_changed
-                or pac_changed
-                or clamav_runtime_changed
-                or policy_config_changed,
+                "changed": changed_since_sync_start(
+                    policy_config_changed=bool(policy_config_changed),
+                ),
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
