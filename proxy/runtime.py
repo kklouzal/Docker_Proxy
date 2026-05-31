@@ -1570,8 +1570,19 @@ class ProxyRuntime:
                     exc,
                     default="Failed to materialize adblock artifact.",
                 )
+                rollback_detail = ""
+                try:
+                    self._restore_adblock_compiled_snapshot(snapshot_root)
+                    rollback_detail = "Restored previous adblock compiled artifact."
+                except Exception as rollback_exc:
+                    rollback_detail = public_error_message(
+                        rollback_exc,
+                        default="Failed to restore previous adblock artifact.",
+                    )
                 with suppress(Exception):
                     shutil.rmtree(snapshot_root, ignore_errors=True)
+                if rollback_detail:
+                    detail = f"{detail}\n{rollback_detail}"
                 applied = self.adblock_artifacts.record_apply_result(
                     self.proxy_id,
                     revision.revision_id,

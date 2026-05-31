@@ -1016,6 +1016,102 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
     assert recorded[-1]["ok"] is False
 
 
+def test_sync_adblock_state_rolls_back_when_materialized_artifact_fails_integrity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / ".artifact-sha256").write_text("old-sha", encoding="utf-8")
+    (compiled / "request_lookup.sqlite").write_bytes(b"old-db")
+    recorded: list[dict[str, object]] = []
+    restarts: list[bool] = []
+
+    class Artifacts:
+        compiled_dir = str(compiled)
+
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="new-sha")
+
+        def get_active_artifact_summary(self):
+            return SimpleNamespace(
+                report={
+                    "breakdowns": {
+                        "lookup_index_counts": {
+                            "rules": 12,
+                        },
+                    },
+                },
+            )
+
+        def get_active_artifact(self):
+            return SimpleNamespace(
+                revision_id=42,
+                artifact_sha256="new-sha",
+                archive_blob=b"new",
+            )
+
+        def record_apply_result(
+            self, proxy_id, revision_id, *, ok, detail, applied_by, artifact_sha256
+        ):
+            recorded.append(
+                {
+                    "proxy_id": proxy_id,
+                    "revision_id": revision_id,
+                    "ok": ok,
+                    "detail": detail,
+                    "artifact_sha256": artifact_sha256,
+                },
+            )
+            return SimpleNamespace(application_id=77)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
+        (root / "request_lookup.sqlite").unlink(missing_ok=True)
+        _write_adblock_lookup_metadata(root / "request_lookup.sqlite", count_rules=3)
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=None)
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime.adblock_compiled_dir = str(compiled)
+    runtime._restart_adblock_service = lambda: (
+        restarts.append(True)
+        or (
+            True,
+            "cicap_adblock RUNNING",
+        )
+    )
+
+    monkeypatch.setattr(
+        runtime_module,
+        "materialize_archive_to_directory",
+        fake_materialize,
+    )
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is False
+    assert restarts == []
+    assert "Failed to materialize adblock artifact" in result["detail"]
+    assert "Restored previous adblock compiled artifact" in result["detail"]
+    assert (compiled / ".artifact-sha256").read_text(encoding="utf-8") == "old-sha"
+    assert (compiled / "request_lookup.sqlite").read_bytes() == b"old-db"
+    assert recorded[-1]["ok"] is False
+
+
 def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() -> None:
     class Artifacts:
         def get_active_artifact_metadata(self):
