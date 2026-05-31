@@ -16,6 +16,10 @@ log_error_verbosity=2
 # this much connection headroom for the same topology.
 max_connections=160
 
+# Adblock artifacts and policy snapshots can exceed MySQL's small upstream
+# packet default during subscription compiles.
+max_allowed_packet=256M
+
 # Bound redo growth on small/edge deployments.
 innodb_redo_log_capacity=256M
 

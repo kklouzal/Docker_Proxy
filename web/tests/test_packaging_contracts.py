@@ -59,6 +59,9 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         "--max-allowed-packet=${MYSQL_MAX_ALLOWED_PACKET:-256M}"
         in _read("docker-compose.mysql.yml")
     )
+    mysql_conf = _read("config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf")
+    assert "max_connections=160" in mysql_conf
+    assert "max_allowed_packet=256M" in mysql_conf
 
     live_compose = _read("docker-compose.live-tests.yml")
     assert "- squid_logs_edge_2:/var/log/squid" in live_compose
@@ -80,6 +83,7 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "# ADBLOCK_CACHE_TTL=3600" in env_example
     assert "# ADBLOCK_RULE_CACHE_MAX=50000" in env_example
     assert "# ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES=8388608" in env_example
+    assert "MYSQL_MAX_ALLOWED_PACKET=256M" in env_example
 
 
 def test_repo_does_not_ship_stale_squid_mime_override() -> None:
