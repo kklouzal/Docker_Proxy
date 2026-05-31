@@ -158,6 +158,48 @@ def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> No
     assert proxy_client.health_calls == [("default", 1.5)]
 
 
+def test_fleet_query_selects_proxy_for_live_health(monkeypatch, tmp_path) -> None:
+    proxy_client = RecordingProxyClient()
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, proxy_client=proxy_client, registry=registry
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies?proxy_id=edge-2")
+
+    assert response.status_code == 200
+    assert proxy_client.health_calls == [("edge-2", 1.5)]
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "edge-2"
+
+
+def test_fleet_query_resolves_proxy_alias_for_live_health(
+    monkeypatch, tmp_path
+) -> None:
+    class AliasRegistry(FakeRegistry):
+        def resolve_proxy_id(self, preferred: object | None = None) -> str:
+            if preferred == "Proxy-P":
+                return "Proxy-PR"
+            return super().resolve_proxy_id(preferred)
+
+    proxy_client = RecordingProxyClient()
+    registry = AliasRegistry(["default", "Proxy-PR"])
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, proxy_client=proxy_client, registry=registry
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies?proxy_id=Proxy-P")
+
+    assert response.status_code == 200
+    assert proxy_client.health_calls == [("Proxy-PR", 1.5)]
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "Proxy-PR"
+
+
 def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()

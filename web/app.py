@@ -1343,6 +1343,31 @@ def _request_needs_proxy_context() -> bool:
     return _is_logged_in()
 
 
+def _proxy_inventory_or_default(registry: Any) -> list[Any]:
+    proxies = registry.list_proxies()
+    if not proxies:
+        proxies = [registry.ensure_default_proxy()]
+    return proxies
+
+
+def _resolve_proxy_from_inventory(
+    registry: Any,
+    proxies: list[Any],
+    preferred: object | None,
+) -> Any | None:
+    preferred_key = normalize_proxy_id(preferred)
+    active_proxy = next(
+        (proxy for proxy in proxies if proxy.proxy_id == preferred_key),
+        None,
+    )
+    if active_proxy is not None:
+        return active_proxy
+
+    resolved = registry.resolve_proxy_id(preferred_key)
+    resolved_key = normalize_proxy_id(resolved)
+    return next((proxy for proxy in proxies if proxy.proxy_id == resolved_key), None)
+
+
 def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
     requested_proxy = request.form.get("proxy_id") or request.args.get("proxy_id")
     if requested_proxy is not None:
@@ -1352,22 +1377,10 @@ def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
         session.get("active_proxy_id") or get_default_proxy_id()
     )
     registry = get_proxy_registry()
-    proxies = registry.list_proxies()
-    if not proxies:
-        proxies = [registry.ensure_default_proxy()]
-    active_proxy = next(
-        (proxy for proxy in proxies if proxy.proxy_id == preferred), None
-    )
+    proxies = _proxy_inventory_or_default(registry)
+    active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
     if active_proxy is None:
-        resolved = registry.resolve_proxy_id(preferred)
-        active_proxy = next(
-            (
-                proxy
-                for proxy in proxies
-                if proxy.proxy_id == normalize_proxy_id(resolved)
-            ),
-            proxies[0],
-        )
+        active_proxy = proxies[0]
     session["active_proxy_id"] = active_proxy.proxy_id
     return active_proxy.proxy_id, active_proxy, proxies
 
@@ -1406,14 +1419,16 @@ def _inject_proxy_context():
         requested_proxy = request.form.get("proxy_id") or request.args.get("proxy_id")
         if requested_proxy is not None:
             session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
-        proxies = get_proxy_registry().list_proxies()
+        registry = get_proxy_registry()
+        proxies = _proxy_inventory_or_default(registry)
         preferred = normalize_proxy_id(
             session.get("active_proxy_id") or get_default_proxy_id(),
         )
-        active_proxy = next(
-            (proxy for proxy in proxies if proxy.proxy_id == preferred),
-            proxies[0] if proxies else None,
-        )
+        active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
+        if active_proxy is None:
+            active_proxy = proxies[0] if proxies else None
+        if active_proxy is not None:
+            session["active_proxy_id"] = active_proxy.proxy_id
         return {
             "active_proxy_id": active_proxy.proxy_id if active_proxy else None,
             "active_proxy": active_proxy,
@@ -2754,7 +2769,10 @@ def remove_proxy():
 @app.route("/proxies", methods=["GET"])
 def proxies():
     registry = get_proxy_registry()
-    proxies = registry.list_proxies()
+    requested_proxy = request.args.get("proxy_id")
+    if requested_proxy is not None:
+        session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
+    proxies = _proxy_inventory_or_default(registry)
     live_health = {
         proxy.proxy_id: {
             "ok": str(proxy.status or "").lower() == "healthy",
@@ -2769,8 +2787,12 @@ def proxies():
     active_proxy_id = normalize_proxy_id(
         session.get("active_proxy_id") or get_default_proxy_id(),
     )
-    if active_proxy_id not in live_health:
-        active_proxy_id = proxies[0].proxy_id if proxies else ""
+    active_proxy = _resolve_proxy_from_inventory(registry, proxies, active_proxy_id)
+    if active_proxy is None:
+        active_proxy = proxies[0] if proxies else None
+    active_proxy_id = active_proxy.proxy_id if active_proxy else ""
+    if active_proxy_id:
+        session["active_proxy_id"] = active_proxy_id
     if active_proxy_id in live_health:
         try:
             live_health[active_proxy_id] = _cached_proxy_health(
