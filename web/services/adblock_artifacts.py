@@ -533,7 +533,11 @@ class AdblockArtifactStore:
         try:
             with tempfile.TemporaryDirectory(prefix="adblock-build-") as out_dir:
                 if settings_enabled and available_enabled_statuses:
-                    _compile_current_lists(lists_dir=store.lists_dir, out_dir=out_dir)
+                    _compile_current_lists(
+                        lists_dir=store.lists_dir,
+                        out_dir=out_dir,
+                        enabled_lists=effective_enabled_lists,
+                    )
                 else:
                     _write_empty_output(out_dir)
                 _write_settings_file(
@@ -686,13 +690,22 @@ class AdblockArtifactStore:
             time.sleep(sleep_seconds)
 
 
-def _compile_current_lists(*, lists_dir: str, out_dir: str) -> None:
+def _compile_current_lists(
+    *,
+    lists_dir: str,
+    out_dir: str,
+    enabled_lists: list[str],
+) -> None:
     from tools import adblock_compile  # type: ignore
 
+    args = ["--lists-dir", str(lists_dir), "--out-dir", str(out_dir)]
+    for key in enabled_lists:
+        cleaned = str(key).strip()
+        if cleaned:
+            args.extend(["--enabled-list", cleaned])
+
     rc = int(
-        adblock_compile.main(
-            ["--lists-dir", str(lists_dir), "--out-dir", str(out_dir)]
-        ),
+        adblock_compile.main(args),
     )
     if rc != 0:
         msg = f"adblock_compile failed with exit code {rc}"

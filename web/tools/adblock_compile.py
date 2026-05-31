@@ -1479,6 +1479,16 @@ def main(argv: list[str] | None = None) -> int:
         default="/var/lib/squid-flask-proxy/adblock/compiled",
         help="Output directory for compiled buckets",
     )
+    ap.add_argument(
+        "--enabled-list",
+        action="append",
+        dest="enabled_lists",
+        default=[],
+        help=(
+            "Subscription list key to compile. Repeat for multiple lists. "
+            "When omitted, enabled lists are read from the configured database."
+        ),
+    )
     ns = ap.parse_args(argv)
 
     # Import AdblockStore from the app codebase.
@@ -1497,14 +1507,25 @@ def main(argv: list[str] | None = None) -> int:
     with suppress(Exception):
         store.init_db()
 
+    explicit_enabled_lists = [
+        str(item).strip() for item in (ns.enabled_lists or []) if str(item).strip()
+    ]
     enabled_paths: list[tuple[str, str]] = []
-    try:
-        for st in store.list_statuses():
-            if not st.enabled:
+    if explicit_enabled_lists:
+        seen: set[str] = set()
+        for key in explicit_enabled_lists:
+            if key in seen:
                 continue
-            enabled_paths.append((st.key, store.list_path(st.key)))
-    except Exception:
-        pass
+            seen.add(key)
+            enabled_paths.append((key, store.list_path(key)))
+    else:
+        try:
+            for st in store.list_statuses():
+                if not st.enabled:
+                    continue
+                enabled_paths.append((st.key, store.list_path(st.key)))
+        except Exception:
+            pass
 
     out_dir = str(ns.out_dir)
     pathlib.Path(out_dir).mkdir(exist_ok=True, parents=True)

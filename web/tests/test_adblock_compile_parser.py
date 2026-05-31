@@ -124,6 +124,40 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     ]
 
 
+def test_main_compiles_explicit_enabled_lists_without_database_state(
+    tmp_path: Path,
+) -> None:
+    _add_web_to_path()
+    from tools import adblock_compile as ac  # type: ignore
+
+    lists = tmp_path / "lists"
+    out = tmp_path / "compiled"
+    lists.mkdir()
+    (lists / "easylist.txt").write_text("||ads.example^\n", encoding="utf-8")
+    (lists / "disabled.txt").write_text("||disabled.example^\n", encoding="utf-8")
+
+    rc = ac.main(
+        [
+            "--lists-dir",
+            str(lists),
+            "--out-dir",
+            str(out),
+            "--enabled-list",
+            "easylist",
+        ],
+    )
+
+    assert rc == 0
+    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report["enabled_lists"] == ["easylist"]
+    assert "ads.example" in (out / "request_index_domain.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "disabled.example" not in (out / "request_index_domain.jsonl").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_abp_regex_options_split_after_closing_delimiter() -> None:
     _add_web_to_path()
     from tools import adblock_compile as ac  # type: ignore
