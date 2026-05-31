@@ -2148,6 +2148,30 @@ class ProxyRuntime:
             active_revision_sha = (
                 active_revision.config_sha256 if active_revision else ""
             )
+            if active_revision_sha and active_revision_sha != current_sha:
+                try:
+                    active_revision_full = self.revisions.get_active_revision(
+                        self.proxy_id,
+                    )
+                    if active_revision_full is not None:
+                        normalized_active_config = self.controller.normalize_config_text(
+                            active_revision_full.config_text or "",
+                        )
+                        normalized_active_sha = hashlib.sha256(
+                            normalized_active_config.encode(
+                                "utf-8",
+                                errors="replace",
+                            ),
+                        ).hexdigest()
+                        if normalized_active_sha == current_sha:
+                            active_revision_sha = normalized_active_sha
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "proxy_runtime.collect_health.config_revision_normalize",
+                        interval_seconds=30.0,
+                        message="Failed to normalize active config revision for health drift comparison",
+                    )
             active_certificate_sha = (
                 active_certificate.bundle_sha256 if active_certificate else ""
             )

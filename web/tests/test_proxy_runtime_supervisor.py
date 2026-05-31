@@ -1577,6 +1577,79 @@ def test_collect_health_degrades_when_desired_runtime_state_drifts() -> None:
     ]
 
 
+def test_collect_health_accepts_normalized_active_config_revision() -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    controller = SquidController("/tmp/nonexistent-squid.conf")
+    active_config = """http_port 3128
+include /etc/squid/conf.d/30-webfilter.conf
+acl icap_adblockable method GET HEAD
+include /etc/squid/conf.d/20-icap.conf
+adaptation_access adblock_req_set allow icap_adblockable
+adaptation_access adblock_req_set deny all
+http_access deny all
+"""
+    normalized_config = controller.normalize_config_text(active_config)
+    active_sha = hashlib.sha256(active_config.encode()).hexdigest()
+    normalized_sha = hashlib.sha256(normalized_config.encode()).hexdigest()
+
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 0.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._health_refresh_lock = threading.Lock()
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+        normalize_config_text=controller.normalize_config_text,
+    )
+    runtime.stats_provider = dict
+    runtime.runtime_services_builder = lambda **_kwargs: {"icap": {"ok": True}}
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=7,
+            config_sha256=active_sha,
+        ),
+        get_active_revision=lambda _proxy_id: SimpleNamespace(
+            revision_id=7,
+            config_sha256=active_sha,
+            config_text=active_config,
+        ),
+    )
+    runtime.certificate_bundles = SimpleNamespace(
+        get_active_bundle_metadata=lambda: None,
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        get_active_artifact_metadata=lambda: None,
+    )
+    runtime._current_config_sha = lambda: normalized_sha
+    runtime._current_certificate_bundle_sha = lambda: ""
+    runtime._current_adblock_artifact_sha = lambda: ""
+    runtime._current_policy_sha = lambda: "policy-sha"
+    runtime._current_pac_state_sha = lambda: "pac-sha"
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="policy-sha",
+        files=(),
+    )
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(
+        state_sha256="pac-sha",
+    )
+
+    result = runtime.collect_health(force=True)
+
+    assert active_sha != normalized_sha
+    assert result["ok"] is True
+    assert result["active_revision_sha"] == normalized_sha
+    assert result["current_config_sha"] == normalized_sha
+    assert result["state_errors"] == []
+
+
 def test_local_runtime_service_health_checks_run_in_parallel(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
