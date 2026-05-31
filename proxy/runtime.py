@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import pathlib
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -476,6 +478,77 @@ class ProxyRuntime:
         if self.services.current_adblock_sha_reader is not None:
             return str(self.services.current_adblock_sha_reader() or "")
         return read_materialized_artifact_sha(self.adblock_compiled_dir)
+
+    def _active_adblock_lookup_rule_count(self) -> int | None:
+        try:
+            summary = self.adblock_artifacts.get_active_artifact_summary()
+        except Exception:
+            return None
+        if summary is None:
+            return None
+        report: dict[str, Any]
+        try:
+            raw_report = getattr(summary, "report", None)
+            if isinstance(raw_report, dict):
+                report = raw_report
+            else:
+                report = json.loads(str(getattr(summary, "report_json", "") or "{}"))
+        except Exception:
+            return None
+        try:
+            lookup_counts = (report.get("breakdowns") or {}).get(
+                "lookup_index_counts",
+            ) or {}
+            return max(0, int(lookup_counts.get("rules") or 0))
+        except Exception:
+            return None
+
+    def _adblock_materialization_integrity(
+        self,
+        expected_sha: str,
+        *,
+        current_sha: str | None = None,
+    ) -> tuple[bool, str]:
+        current = (
+            str(current_sha or "").strip()
+            if current_sha is not None
+            else self._current_adblock_artifact_sha()
+        )
+        expected = str(expected_sha or "").strip()
+        if current != expected:
+            return False, "adblock artifact marker does not match the active artifact."
+
+        expected_rules = self._active_adblock_lookup_rule_count()
+        if expected_rules is None:
+            return True, ""
+
+        lookup_path = pathlib.Path(self.adblock_compiled_dir) / "request_lookup.sqlite"
+        if not lookup_path.exists():
+            return False, "adblock request lookup database is missing."
+        try:
+            conn = sqlite3.connect(str(lookup_path))
+            try:
+                row = conn.execute(
+                    "SELECT value FROM metadata WHERE key='count_rules'",
+                ).fetchone()
+            finally:
+                conn.close()
+        except Exception as exc:
+            detail = public_error_message(
+                exc,
+                default="adblock request lookup database could not be inspected.",
+            )
+            return False, detail
+        try:
+            actual_rules = int(row[0]) if row else 0
+        except Exception:
+            actual_rules = 0
+        if actual_rules != expected_rules:
+            return (
+                False,
+                f"adblock request lookup rule count {actual_rules} does not match active artifact count {expected_rules}.",
+            )
+        return True, ""
 
     def _current_pac_state_sha(self) -> str:
         if self.services.current_pac_sha_reader is not None:
@@ -1400,6 +1473,17 @@ class ProxyRuntime:
         # cicap_adblock on every no-op sync can starve Squid/admin requests and leave
         # traffic probes hanging. Cache flush remains an explicit restart trigger.
         artifact_changed = bool(revision_meta.artifact_sha256 != current_sha)
+        integrity_detail = ""
+        if (
+            not artifact_changed
+            and not flush_requested
+            and self.services.current_adblock_sha_reader is None
+        ):
+            integrity_ok, integrity_detail = self._adblock_materialization_integrity(
+                revision_meta.artifact_sha256,
+                current_sha=current_sha,
+            )
+            artifact_changed = not integrity_ok
         if not artifact_changed and not flush_requested:
             applied = None
             try:
@@ -1469,6 +1553,18 @@ class ProxyRuntime:
                     archive_blob=revision.archive_blob,
                     artifact_sha256=revision.artifact_sha256,
                 )
+                integrity_ok, post_apply_detail = (
+                    self._adblock_materialization_integrity(
+                        revision.artifact_sha256,
+                        current_sha=revision.artifact_sha256,
+                    )
+                )
+                if not integrity_ok:
+                    msg = (
+                        "Materialized adblock artifact failed validation: "
+                        f"{post_apply_detail}"
+                    )
+                    raise RuntimeError(msg)
             except Exception as exc:
                 detail = public_error_message(
                     exc,
@@ -1554,7 +1650,12 @@ class ProxyRuntime:
         if ok_restart and flush_requested:
             with suppress(Exception):
                 store.mark_cache_flushed(size=0)
-        detail = restart_detail.strip() or "Adblock artifact applied."
+        detail_parts = [restart_detail.strip() or "Adblock artifact applied."]
+        if integrity_detail.strip():
+            detail_parts.append(
+                f"Reapplied artifact because local materialization was stale: {integrity_detail.strip()}",
+            )
+        detail = "\n".join(part for part in detail_parts if part).strip()
         applied = self.adblock_artifacts.record_apply_result(
             self.proxy_id,
             revision.revision_id,
