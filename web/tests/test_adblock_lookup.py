@@ -280,3 +280,24 @@ def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
 
     assert rules[0]["host"] == "ads.example"
     assert rules[0]["raw"] == "||ads.example^"
+
+
+def test_adblock_lookup_chunks_large_sqlite_in_queries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [f"sharedtoken/path{index}" for index in range(8)],
+    )
+
+    _add_web_to_path()
+    import services.adblock_lookup as lookup_module
+
+    monkeypatch.setattr(lookup_module, "_SQLITE_IN_CHUNK_SIZE", 3)
+    lookup = lookup_module.AdblockLookupIndex(db_path)
+
+    rules = lookup.candidate_rules("https://static.example/sharedtoken/path3")
+
+    assert "sharedtoken/path3" in _raws(rules)
+    assert len(rules) == 8

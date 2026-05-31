@@ -15,6 +15,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}", re.IGNORECASE)
 _DEFAULT_SQLITE_CACHE_KIB = 32768
 _DEFAULT_SQLITE_MMAP_BYTES = 256 * 1024 * 1024
 _DEFAULT_RULE_CACHE_MAX = 50000
+_SQLITE_IN_CHUNK_SIZE = 500
 
 
 class _RegexCandidate:
@@ -490,8 +491,13 @@ def _query_by_values(
     filtered = [value for value in values if value]
     if not filtered:
         return []
-    placeholders = ",".join("?" for _ in filtered)
-    return list(conn.execute(sql_prefix + "(" + placeholders + ")", tuple(filtered)))
+    rows: list[sqlite3.Row] = []
+    chunk_size = max(1, int(_SQLITE_IN_CHUNK_SIZE))
+    for index in range(0, len(filtered), chunk_size):
+        chunk = filtered[index : index + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(conn.execute(sql_prefix + "(" + placeholders + ")", tuple(chunk)))
+    return rows
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -506,12 +512,10 @@ def _rules_by_ids(conn: sqlite3.Connection, rule_ids: set[str]) -> list[sqlite3.
     if not rule_ids:
         return []
     ordered_ids = sorted(rule_ids)
-    placeholders = ",".join("?" for _ in ordered_ids)
-    rows = list(
-        conn.execute(
-            "SELECT * FROM rules WHERE rule_id IN (" + placeholders + ")",  # noqa: S608
-            tuple(ordered_ids),
-        )
+    rows = _query_by_values(
+        conn,
+        "SELECT * FROM rules WHERE rule_id IN ",
+        ordered_ids,
     )
     return sorted(
         rows,
