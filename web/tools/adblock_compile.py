@@ -1495,8 +1495,9 @@ def main(argv: list[str] | None = None) -> int:
     # This script lives in /app/tools; add /app to sys.path.
     here = pathlib.Path(pathlib.Path(__file__).parent).resolve()
     app_root = pathlib.Path(os.path.join(here, "..")).resolve()
-    if app_root not in sys.path:
-        sys.path.insert(0, app_root)
+    app_root_str = str(app_root)
+    if app_root_str not in sys.path:
+        sys.path.insert(0, app_root_str)
 
     try:
         from services.adblock_store import AdblockStore  # type: ignore

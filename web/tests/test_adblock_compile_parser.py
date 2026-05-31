@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -156,6 +157,39 @@ def test_main_compiles_explicit_enabled_lists_without_database_state(
     assert "disabled.example" not in (out / "request_index_domain.jsonl").read_text(
         encoding="utf-8"
     )
+
+
+def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    script = repo_root / "web" / "tools" / "adblock_compile.py"
+    lists = tmp_path / "lists"
+    out = tmp_path / "compiled"
+    lists.mkdir()
+    (lists / "easylist.txt").write_text("||script-entry.example^\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--lists-dir",
+            str(lists),
+            "--out-dir",
+            str(out),
+            "--enabled-list",
+            "easylist",
+        ],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "script-entry.example" in (
+        out / "request_index_domain.jsonl"
+    ).read_text(encoding="utf-8")
 
 
 def test_abp_regex_options_split_after_closing_delimiter() -> None:
