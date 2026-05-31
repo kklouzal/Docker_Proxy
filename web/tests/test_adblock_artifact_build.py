@@ -273,6 +273,53 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
                 os.environ[key] = value
 
 
+def test_background_build_detects_enabled_list_drift_without_version_change(
+    tmp_path,
+) -> None:
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+
+    active = SimpleNamespace(enabled_lists=["easylist"])
+
+    assert (
+        artifacts_module._active_enabled_lists_drift(
+            active,
+            settings_enabled=True,
+            enabled_statuses=[
+                SimpleNamespace(key="easylist", enabled=True),
+                SimpleNamespace(key="easyprivacy", enabled=True),
+            ],
+        )
+        is True
+    )
+    assert (
+        artifacts_module._active_enabled_lists_drift(
+            SimpleNamespace(enabled_lists=["easyprivacy", "easylist"]),
+            settings_enabled=True,
+            enabled_statuses=[
+                SimpleNamespace(key="easylist", enabled=True),
+                SimpleNamespace(key="easyprivacy", enabled=True),
+            ],
+        )
+        is False
+    )
+    assert (
+        artifacts_module._active_enabled_lists_drift(
+            active,
+            settings_enabled=False,
+            enabled_statuses=[SimpleNamespace(key="easylist", enabled=True)],
+        )
+        is True
+    )
+    assert (
+        artifacts_module._active_enabled_lists_drift(
+            SimpleNamespace(enabled_lists=[]),
+            settings_enabled=False,
+            enabled_statuses=[SimpleNamespace(key="easylist", enabled=True)],
+        )
+        is False
+    )
+
+
 def test_manual_refresh_downloads_enabled_lists_even_when_adblock_disabled(
     tmp_path, monkeypatch
 ) -> None:

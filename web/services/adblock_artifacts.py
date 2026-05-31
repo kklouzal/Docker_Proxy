@@ -640,7 +640,13 @@ class AdblockArtifactStore:
                 enabled_statuses = [status for status in statuses if status.enabled]
                 refresh_requested = bool(store.get_refresh_requested())
                 settings_version = store.get_settings_version()
-                due_download = bool(settings.get("enabled")) and any(
+                settings_enabled = bool(settings.get("enabled"))
+                active_lists_drift = _active_enabled_lists_drift(
+                    active,
+                    settings_enabled=settings_enabled,
+                    enabled_statuses=enabled_statuses,
+                )
+                due_download = settings_enabled and any(
                     (
                         not Path(store.list_path(status.key)).exists()
                         or store.should_update(status, _now(), False)
@@ -654,6 +660,7 @@ class AdblockArtifactStore:
                         active is not None
                         and active.settings_version != settings_version
                     )
+                    or active_lists_drift
                     or due_download
                 )
                 if needs_build:
@@ -710,6 +717,29 @@ def _compile_current_lists(
     if rc != 0:
         msg = f"adblock_compile failed with exit code {rc}"
         raise RuntimeError(msg)
+
+
+def _active_enabled_lists_drift(
+    active: AdblockArtifactRevision | None,
+    *,
+    settings_enabled: bool,
+    enabled_statuses: list[Any],
+) -> bool:
+    if active is None:
+        return False
+    expected = (
+        sorted(
+            str(getattr(status, "key", "") or "").strip()
+            for status in enabled_statuses
+            if str(getattr(status, "key", "") or "").strip()
+        )
+        if settings_enabled
+        else []
+    )
+    current = sorted(
+        str(item).strip() for item in active.enabled_lists if str(item).strip()
+    )
+    return current != expected
 
 
 def _write_empty_output(out_dir: str) -> None:
