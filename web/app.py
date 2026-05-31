@@ -19,6 +19,7 @@ from flask import (
     Response,
     abort,
     g,
+    has_request_context,
     jsonify,
     redirect,
     render_template,
@@ -696,10 +697,23 @@ def _should_preserve_proxy(endpoint: str, params: dict[str, Any] | None = None) 
     return not (params and params.get("proxy_id") is not None)
 
 
+def _link_proxy_id() -> str:
+    if has_request_context():
+        active_proxy = getattr(g, "_active_proxy", None)
+        active_proxy_id = getattr(active_proxy, "proxy_id", None)
+        if active_proxy_id:
+            return normalize_proxy_id(active_proxy_id)
+        if _is_logged_in():
+            session_proxy_id = session.get("active_proxy_id")
+            if session_proxy_id:
+                return normalize_proxy_id(session_proxy_id)
+    return get_proxy_id()
+
+
 def _endpoint_url(endpoint: str, **params: Any) -> str:
     values = _filter_none_params(params)
     if _should_preserve_proxy(endpoint, values):
-        values["proxy_id"] = get_proxy_id()
+        values["proxy_id"] = _link_proxy_id()
     return url_for(endpoint, **values)
 
 

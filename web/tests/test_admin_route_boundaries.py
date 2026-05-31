@@ -175,6 +175,23 @@ def test_fleet_query_selects_proxy_for_live_health(monkeypatch, tmp_path) -> Non
         assert sess["active_proxy_id"] == "edge-2"
 
 
+def test_fleet_query_preserves_selected_proxy_in_scoped_links(
+    monkeypatch, tmp_path
+) -> None:
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies?proxy_id=edge-2")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert 'href="/?proxy_id=edge-2"' in body
+    assert 'href="/operations?proxy_id=edge-2"' in body
+    assert 'href="/observability?proxy_id=edge-2"' in body
+
+
 def test_fleet_query_resolves_proxy_alias_for_live_health(
     monkeypatch, tmp_path
 ) -> None:
