@@ -482,7 +482,7 @@ class AdblockArtifactStore:
         any_downloaded = False
         download_pending = False
 
-        if settings_enabled and enabled_statuses:
+        if enabled_statuses and (settings_enabled or refresh_lists):
             now_ts = _now()
             for status in enabled_statuses:
                 list_path = store.list_path(status.key)

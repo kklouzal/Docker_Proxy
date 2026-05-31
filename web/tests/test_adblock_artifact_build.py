@@ -9,6 +9,7 @@ import sys
 import zipfile
 from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
 
 from .mysql_test_utils import configure_test_mysql_env
 
@@ -270,6 +271,118 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_manual_refresh_downloads_enabled_lists_even_when_adblock_disabled(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import services.adblock_artifacts as artifacts_module  # type: ignore
+    import services.adblock_store as store_module  # type: ignore
+
+    importlib.reload(artifacts_module)
+
+    lists_dir = tmp_path / "lists"
+    lists_dir.mkdir(parents=True, exist_ok=True)
+    selected = "easylist"
+    downloaded: list[str] = []
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.lists_dir = str(lists_dir)
+
+        def init_db(self) -> None:
+            return None
+
+        def get_settings(self) -> dict[str, object]:
+            return {"enabled": False, "cache_ttl": 120, "cache_max": 4096}
+
+        def get_settings_version(self) -> int:
+            return 7
+
+        def list_statuses(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(key=selected, enabled=True)]
+
+        def list_path(self, key: str) -> str:
+            return str(lists_dir / f"{key}.txt")
+
+        def should_update(self, *_args, **_kwargs) -> bool:
+            return False
+
+        def update_one(self, key: str, *, force: bool = False) -> bool:
+            assert key == selected
+            assert force is True
+            downloaded.append(key)
+            Path(store.list_path(key)).write_text("||ads.example^\n", encoding="utf-8")
+            return True
+
+        def record_artifact_build_result(self, **_kwargs) -> None:
+            return None
+
+    store = FakeStore()
+    monkeypatch.setattr(store_module, "get_adblock_store", lambda: store)
+
+    artifact_store = artifacts_module.AdblockArtifactStore(
+        compiled_dir=str(tmp_path / "compiled"),
+    )
+    monkeypatch.setattr(artifact_store, "init_db", lambda: None)
+    monkeypatch.setattr(artifact_store, "get_active_artifact", lambda: None)
+
+    created: dict[str, object] = {}
+
+    def create_revision_from_directory(
+        out_dir: str,
+        *,
+        settings_version: int,
+        enabled_lists: list[str],
+        created_by: str,
+        source_kind: str,
+        activate: bool,
+    ) -> SimpleNamespace:
+        created["settings"] = json.loads(
+            Path(out_dir, "settings.json").read_text(encoding="utf-8")
+        )
+        created["report"] = json.loads(
+            Path(out_dir, "report.json").read_text(encoding="utf-8")
+        )
+        return SimpleNamespace(
+            revision_id=1,
+            artifact_sha256="abc123",
+            settings_version=settings_version,
+            enabled_lists=enabled_lists,
+            created_by=created_by,
+            source_kind=source_kind,
+            archive_blob=b"",
+        )
+
+    monkeypatch.setattr(
+        artifact_store,
+        "create_revision_from_directory",
+        create_revision_from_directory,
+    )
+    monkeypatch.setattr(artifact_store, "estimate_archive_size", lambda _out_dir: 123)
+
+    result = artifact_store.build_active_artifact(
+        refresh_lists=True,
+        created_by="tester",
+        source_kind="test",
+    )
+
+    assert result["ok"] is True
+    assert result["downloaded"] is True
+    assert downloaded == [selected]
+    revision = result["revision"]
+    assert revision is not None
+    assert revision.enabled_lists == []
+    assert created["settings"]["enabled"] is False
+    assert created["settings"]["enabled_lists"] == []
+    assert created["report"]["enabled_lists"] == []
+    assert created["report"]["breakdowns"]["lookup_index_counts"]["rules"] == 0
 
 
 def test_build_active_artifact_preserves_previous_when_enabled_list_missing(
