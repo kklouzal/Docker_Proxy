@@ -113,6 +113,7 @@ def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
     assert select_params == ("edge-a", 2)
     update_sql, update_params = conn.queries[1]
     assert update_sql.startswith("UPDATE proxy_operations SET status='applying'")
+    assert "request_key=NULL" in update_sql
     assert update_params == (123, 123, "edge-a", 7, 8)
     assert conn.committed is True
 

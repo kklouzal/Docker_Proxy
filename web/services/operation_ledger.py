@@ -399,7 +399,7 @@ class OperationLedger:
                 return []
             placeholders = ",".join(["%s"] * len(ids))
             conn.execute(
-                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
+                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s, request_key=NULL WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
                 (now, now, proxy_key, *ids),
             )
             claimed_rows = conn.execute(
