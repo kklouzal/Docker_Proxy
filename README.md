@@ -169,11 +169,13 @@ per-process idle pool from `WEB_THREADS`, and six default proxy containers plus
 one default admin UI stay well inside the 160-connection budget.
 
 The Admin UI starts scheduled MySQL housekeeping when background services are
-enabled. Daily runs prune stored observability rows and stale control-plane
-history; weekly runs also refresh optimizer statistics. Control-plane cleanup
-preserves active config/certificate/adblock artifact revisions, keeps recent
-apply/operation/policy history, expires stale temporary policy exceptions, and
-removes expired Safe Browsing cache rows. Tune
+enabled. In multi-worker Gunicorn deployments, a file lock allows one process to
+run background tailers, samplers, and housekeeping while the other workers serve
+requests normally. Daily runs prune stored observability rows and stale
+control-plane history; weekly runs also refresh optimizer statistics.
+Control-plane cleanup preserves active config/certificate/adblock artifact
+revisions, keeps recent apply/operation/policy history, expires stale temporary
+policy exceptions, and removes expired Safe Browsing cache rows. Tune
 `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`,
 `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`,
 `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, and
@@ -259,6 +261,7 @@ The Compose files expose the common production knobs as environment variables. T
 | Adblock helper | `ADBLOCK_CACHE_TTL`, `ADBLOCK_CACHE_MAX`, `ADBLOCK_RULE_CACHE_MAX`, `ADBLOCK_ICAP_MAX_REQUEST_BYTES`, `ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES`, `ADBLOCK_ICAP_REQUEST_TIMEOUT`, `ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS` |
 | Web filtering helpers | `WEBFILTER_HELPERS`, `WEBFILTER_CACHE_ENTRIES`, `WEBFILTER_CACHE_TTL_SECONDS`, `WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS`, `WEBFILTER_SNAPSHOT_REFRESH_SECONDS`, `WEBFILTER_FAIL`, `SAFE_BROWSING_POLL_SECONDS`, `SAFE_BROWSING_HELPER_CACHE_ENTRIES`, `SAFE_BROWSING_HELPER_PREFIX_HIT_TTL_SECONDS`, `SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS`, `SAFE_BROWSING_FAIL` |
 | Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_PENDING_MAX_ROWS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS` |
+| Background and housekeeping | `DISABLE_BACKGROUND`, `BACKGROUND_LOCK_PATH`, `BACKGROUND_FORCE`, `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`, `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` |
 | Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE` |
 
 Both containers also load `/config/app.env` at startup when mounted. Use this for host-managed deployments that prefer a mounted environment file over a root `.env`.
