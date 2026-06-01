@@ -94,6 +94,50 @@ class _Connection:
         return False
 
 
+def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(ledger, "_column_exists", lambda *_args: True)
+    monkeypatch.setattr(ledger, "_index_exists", lambda *_args: False)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    ledger.init_db()
+
+    sql = [query for query, _params in conn.queries]
+    create_index_pos = next(
+        i
+        for i, query in enumerate(sql)
+        if query.startswith("ALTER TABLE proxy_operations ADD UNIQUE KEY")
+    )
+    clear_pos = next(
+        i
+        for i, query in enumerate(sql)
+        if query.startswith("UPDATE proxy_operations SET request_key=NULL")
+    )
+    supersede_pos = next(
+        i
+        for i, query in enumerate(sql)
+        if query.startswith("UPDATE proxy_operations pending JOIN")
+    )
+    backfill_pos = next(
+        i
+        for i, query in enumerate(sql)
+        if query.startswith("UPDATE proxy_operations SET request_key=SHA2")
+    )
+    assert clear_pos < supersede_pos < backfill_pos < create_index_pos
+    supersede_sql, supersede_params = conn.queries[supersede_pos]
+    assert "ROW_NUMBER() OVER ( PARTITION BY proxy_id, SHA2(CONCAT(" in supersede_sql
+    assert "WHERE status='pending'" in supersede_sql
+    assert "pending.status='superseded'" in supersede_sql
+    assert supersede_params == (123, 123)
+    assert "WHERE status='pending'" in sql[backfill_pos]
+    assert conn.committed is True
+
+
 def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
     monkeypatch,
 ) -> None:

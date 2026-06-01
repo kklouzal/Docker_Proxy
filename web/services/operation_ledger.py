@@ -127,6 +127,44 @@ class OperationLedger:
             "),256)"
         )
 
+    def _backfill_active_request_keys(self, conn) -> None:
+        now = int(time.time())
+        request_key_expr = self._request_key_sql()
+        conn.execute(
+            """
+            UPDATE proxy_operations
+            SET request_key=NULL
+            WHERE status<>'pending' AND request_key IS NOT NULL
+            """,
+        )
+        conn.execute(
+            f"""
+            UPDATE proxy_operations pending
+            JOIN (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY proxy_id, {request_key_expr}
+                    ORDER BY created_ts ASC, id ASC
+                ) AS rn
+                FROM proxy_operations
+                WHERE status='pending'
+            ) ranked ON ranked.id=pending.id
+            SET pending.status='superseded',
+                pending.detail='Superseded by a matching pending operation during request-key backfill.',
+                pending.completed_ts=%s,
+                pending.updated_ts=%s,
+                pending.request_key=NULL
+            WHERE ranked.rn>1
+            """,
+            (now, now),
+        )
+        conn.execute(
+            f"""
+            UPDATE proxy_operations
+            SET request_key={request_key_expr}
+            WHERE status='pending' AND (request_key IS NULL OR request_key='')
+            """,
+        )
+
     def init_db(self) -> None:
         if self._schema_ready:
             return
@@ -170,6 +208,7 @@ class OperationLedger:
                     conn.execute(
                         "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER updated_ts",
                     )
+                self._backfill_active_request_keys(conn)
                 if not self._index_exists(
                     conn,
                     "proxy_operations",
