@@ -310,6 +310,53 @@ def _sleep_until(target: datetime) -> None:
         time.sleep(min(300.0, max(1.0, remaining)))
 
 
+def _run_due_scheduled_housekeeping(
+    *,
+    now: datetime,
+    next_daily: datetime,
+    next_weekly: datetime,
+    retention_days: int,
+    daily_hour: int,
+    weekly_weekday: int,
+    weekly_hour: int,
+) -> tuple[datetime, datetime]:
+    if now >= next_daily:
+        try:
+            run_housekeeping_once(
+                retention_days=current_retention_days(retention_days),
+            )
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "housekeeping.loop",
+                interval_seconds=300,
+                message="Housekeeping run failed",
+            )
+        finally:
+            next_daily = _next_local_run(hour=daily_hour, now=now)
+    if now >= next_weekly:
+        try:
+            run_housekeeping_once(
+                retention_days=current_retention_days(retention_days),
+                analyze=True,
+                optimize=True,
+            )
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "housekeeping.loop",
+                interval_seconds=300,
+                message="Housekeeping run failed",
+            )
+        finally:
+            next_weekly = _next_local_run(
+                hour=weekly_hour,
+                weekday=weekly_weekday,
+                now=now,
+            )
+    return next_daily, next_weekly
+
+
 def start_housekeeping(
     *,
     retention_days: int = 30,
@@ -346,31 +393,16 @@ def start_housekeeping(
         while True:
             target = min(next_daily, next_weekly)
             _sleep_until(target)
-            try:
-                now = datetime.now().astimezone()
-                if now >= next_daily:
-                    run_housekeeping_once(
-                        retention_days=current_retention_days(retention_days),
-                    )
-                    next_daily = _next_local_run(hour=daily_hour, now=now)
-                if now >= next_weekly:
-                    run_housekeeping_once(
-                        retention_days=current_retention_days(retention_days),
-                        analyze=True,
-                        optimize=True,
-                    )
-                    next_weekly = _next_local_run(
-                        hour=weekly_hour,
-                        weekday=weekly_weekday,
-                        now=now,
-                    )
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "housekeeping.loop",
-                    interval_seconds=300,
-                    message="Housekeeping run failed",
-                )
+            now = datetime.now().astimezone()
+            next_daily, next_weekly = _run_due_scheduled_housekeeping(
+                now=now,
+                next_daily=next_daily,
+                next_weekly=next_weekly,
+                retention_days=retention_days,
+                daily_hour=daily_hour,
+                weekly_weekday=weekly_weekday,
+                weekly_hour=weekly_hour,
+            )
 
     t = threading.Thread(target=loop, name="db-housekeeping", daemon=True)
     t.start()

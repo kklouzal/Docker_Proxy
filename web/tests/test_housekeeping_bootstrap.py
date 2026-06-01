@@ -417,3 +417,45 @@ def test_housekeeping_schedules_next_daily_and_weekly_runs() -> None:
 
     assert daily == datetime(2026, 5, 23, 2, 0, tzinfo=UTC)
     assert weekly == datetime(2026, 5, 24, 3, 0, tzinfo=UTC)
+
+
+def test_housekeeping_scheduled_due_runs_advance_after_failures(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    calls: list[tuple[int, bool, bool]] = []
+
+    def run_once(
+        *,
+        retention_days: int,
+        analyze: bool = False,
+        optimize: bool = False,
+        **_kwargs,
+    ) -> None:
+        calls.append((retention_days, analyze, optimize))
+        if not analyze:
+            msg = "daily prune failed"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+    monkeypatch.setattr(
+        housekeeping,
+        "log_exception_throttled",
+        lambda *_args, **_kwargs: None,
+    )
+
+    now = datetime(2026, 5, 24, 3, 30, tzinfo=UTC)
+    next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
+        now=now,
+        next_daily=datetime(2026, 5, 24, 2, 0, tzinfo=UTC),
+        next_weekly=datetime(2026, 5, 24, 3, 0, tzinfo=UTC),
+        retention_days=45,
+        daily_hour=2,
+        weekly_weekday=6,
+        weekly_hour=3,
+    )
+
+    assert calls == [(45, False, False), (45, True, True)]
+    assert next_daily == datetime(2026, 5, 25, 2, 0, tzinfo=UTC)
+    assert next_weekly == datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
