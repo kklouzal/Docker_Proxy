@@ -268,6 +268,83 @@ def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None
     assert result["maintenance"]["maintained_tables"] == 5
 
 
+def test_housekeeping_maintenance_continues_after_observability_failure(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        housekeeping,
+        "_run_prune_once",
+        lambda *, retention_days: {"ok": True, "steps": []},
+    )
+
+    def fail_observability(*, analyze: bool, optimize: bool):
+        calls.append(f"maintain-observability:{analyze}:{optimize}")
+        msg = "observability analyze failed"
+        raise RuntimeError(msg)
+
+    def maintain_control_plane(*, analyze: bool, optimize: bool):
+        calls.append(f"maintain-control-plane:{analyze}:{optimize}")
+        return {
+            "ok": True,
+            "maintained_tables": 3,
+            "tables": [{"table": "proxy_operations", "status": "maintained"}],
+        }
+
+    monkeypatch.setattr(
+        housekeeping, "maintain_observability_tables", fail_observability
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "maintain_control_plane_tables",
+        maintain_control_plane,
+    )
+
+    def acquire_lock():
+        return object()
+
+    monkeypatch.setattr(
+        housekeeping, "acquire_observability_maintenance_lock", acquire_lock
+    )
+    monkeypatch.setattr(
+        housekeeping, "release_observability_maintenance_lock", lambda _conn: None
+    )
+    monkeypatch.setattr(
+        housekeeping, "record_observability_maintenance_run", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "log_exception_throttled",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = housekeeping.run_housekeeping_once(
+        retention_days=45,
+        analyze=True,
+        optimize=True,
+    )
+
+    assert calls == [
+        "maintain-observability:True:True",
+        "maintain-control-plane:True:True",
+    ]
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    assert result["maintenance"]["maintained_tables"] == 3
+    assert result["maintenance"]["observability"]["ok"] is False
+    assert result["maintenance"]["control_plane"]["ok"] is True
+    assert any(
+        row["scope"] == "observability"
+        and row["status"] == "failed"
+        and "observability analyze failed" in row["detail"]
+        for row in result["maintenance"]["tables"]
+    )
+
+
 def test_housekeeping_prune_continues_after_step_failure(monkeypatch) -> None:
     _add_web_to_path()
     from services import housekeeping  # type: ignore

@@ -23,6 +23,7 @@ from services.observability_maintenance import (
     get_observability_retention_settings,
     maintain_observability_tables,
     normalize_retention_days,
+    public_detail,
     record_observability_maintenance_run,
     release_observability_maintenance_lock,
 )
@@ -148,6 +149,56 @@ def _combine_maintenance_results(
     }
 
 
+def _failed_maintenance_result(scope: str, exc: BaseException) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "maintained_tables": 0,
+        "tables": [
+            {
+                "table": scope,
+                "status": "failed",
+                "maintenance": "failed",
+                "detail": public_detail(exc),
+            },
+        ],
+    }
+
+
+def _run_maintenance_once(*, analyze: bool, optimize: bool) -> dict[str, Any]:
+    observability_maintenance: dict[str, Any] | None = None
+    control_plane_maintenance: dict[str, Any] | None = None
+    try:
+        observability_maintenance = _run_with_db_lock_retry(
+            lambda: maintain_observability_tables(analyze=analyze, optimize=optimize),
+        )
+    except Exception as exc:
+        observability_maintenance = _failed_maintenance_result("observability", exc)
+        log_exception_throttled(
+            logger,
+            "housekeeping.maintenance.observability",
+            interval_seconds=300,
+            message="Housekeeping observability maintenance failed",
+        )
+
+    try:
+        control_plane_maintenance = _run_with_db_lock_retry(
+            lambda: maintain_control_plane_tables(analyze=analyze, optimize=optimize),
+        )
+    except Exception as exc:
+        control_plane_maintenance = _failed_maintenance_result("control_plane", exc)
+        log_exception_throttled(
+            logger,
+            "housekeeping.maintenance.control_plane",
+            interval_seconds=300,
+            message="Housekeeping control-plane maintenance failed",
+        )
+
+    return _combine_maintenance_results(
+        observability_maintenance,
+        control_plane_maintenance,
+    )
+
+
 def run_housekeeping_once(
     *,
     retention_days: int | None = None,
@@ -189,21 +240,7 @@ def run_housekeeping_once(
         prune = _run_prune_once(retention_days=days) or {"ok": True, "steps": []}
         maintenance: dict[str, Any] | None = None
         if analyze or optimize:
-            observability_maintenance = _run_with_db_lock_retry(
-                lambda: maintain_observability_tables(
-                    analyze=analyze, optimize=optimize
-                ),
-            )
-            control_plane_maintenance = _run_with_db_lock_retry(
-                lambda: maintain_control_plane_tables(
-                    analyze=analyze,
-                    optimize=optimize,
-                ),
-            )
-            maintenance = _combine_maintenance_results(
-                observability_maintenance,
-                control_plane_maintenance,
-            )
+            maintenance = _run_maintenance_once(analyze=analyze, optimize=optimize)
         maintenance_ok = bool(maintenance.get("ok", True)) if maintenance else True
         prune_ok = bool(prune.get("ok", True))
         result = {
