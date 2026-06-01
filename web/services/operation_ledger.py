@@ -369,6 +369,7 @@ class OperationLedger:
         cutoff = now - max(60, int(older_than_seconds or 600))
         request_key_expr = self._request_key_sql()
         stale_request_key_expr = self._request_key_sql("stale")
+        duplicate_request_key_expr = self._request_key_sql("dup")
         with self._connect() as conn:
             conn.execute(
                 f"""
@@ -390,6 +391,29 @@ class OperationLedger:
                   AND stale.started_ts<%s
                 """,
                 (now, now, proxy_key, cutoff),
+            )
+            conn.execute(
+                f"""
+                UPDATE proxy_operations stale
+                JOIN proxy_operations dup
+                  ON dup.proxy_id=stale.proxy_id
+                 AND dup.status='applying'
+                 AND dup.started_ts>0
+                 AND dup.started_ts<%s
+                 AND dup.id>stale.id
+                 AND {duplicate_request_key_expr}={stale_request_key_expr}
+                SET stale.status='superseded',
+                    stale.detail='Superseded by a matching stale applying operation before requeue.',
+                    stale.completed_ts=%s,
+                    stale.updated_ts=%s,
+                    stale.started_ts=0,
+                    stale.request_key=NULL
+                WHERE stale.proxy_id=%s
+                  AND stale.status='applying'
+                  AND stale.started_ts>0
+                  AND stale.started_ts<%s
+                """,
+                (cutoff, now, now, proxy_key, cutoff),
             )
             cur = conn.execute(
                 f"""

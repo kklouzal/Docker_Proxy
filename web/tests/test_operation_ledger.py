@@ -189,7 +189,15 @@ def test_requeue_stale_applying_restores_active_request_key(monkeypatch) -> None
     assert "pending.request_key=SHA2(CONCAT(" in supersede_sql
     assert "stale.request_key=NULL" in supersede_sql
     assert supersede_params == (1000, 1000, "edge-a", 700)
-    requeue_sql, requeue_params = conn.queries[1]
+    duplicate_sql, duplicate_params = conn.queries[1]
+    assert duplicate_sql.startswith("UPDATE proxy_operations stale JOIN")
+    assert "JOIN proxy_operations dup" in duplicate_sql
+    assert "dup.id>stale.id" in duplicate_sql
+    assert "dup.status='applying'" in duplicate_sql
+    assert "dup.request_hash" in duplicate_sql
+    assert "stale.request_key=NULL" in duplicate_sql
+    assert duplicate_params == (700, 1000, 1000, "edge-a", 700)
+    requeue_sql, requeue_params = conn.queries[2]
     assert requeue_sql.startswith("UPDATE proxy_operations SET")
     assert "request_key=SHA2(CONCAT(" in requeue_sql
     assert "COALESCE(NULLIF(operation_type,''),'sync')" in requeue_sql
