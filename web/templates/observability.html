@@ -684,7 +684,7 @@
         <td>{{ row.confidence }}</td>
         <td class="small text-break">{{ row.evidence }}</td>
         <td class="small text-break">{{ row.recommended_action }}</td>
-        <td class="num"><div class="table-action-stack">{% if row.subject %}<a class="btn" href="{{ url_for('observability', pane='destinations', q=row.subject, window=window) }}">Destination</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.subject, window=window) }}">SSL</a>{% endif %}<a class="btn" href="{{ url_for('sslfilter', domain=row.subject) }}">SSL Filtering</a></div></td>
+        <td class="num"><div class="table-action-stack">{% if row.subject and (row.subject_type or 'domain') == 'domain' %}<a class="btn" href="{{ url_for('observability', pane='destinations', q=row.subject, window=window) }}">Destination</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.subject, window=window) }}">SSL</a><a class="btn" href="{{ url_for('sslfilter', domain=row.subject) }}">SSL Filtering</a>{% else %}<a class="btn" href="{{ url_for('observability', pane='overview', window=window) }}">Overview</a>{% endif %}</div></td>
       </tr>
       {% endfor %}
       </tbody>

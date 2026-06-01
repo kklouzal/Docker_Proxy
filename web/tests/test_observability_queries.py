@@ -123,6 +123,7 @@ def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
 
     assert ObservabilityQueries._suggestion_matches_search(row, "clamd")
     assert ObservabilityQueries._suggestion_matches_search(row, "livingroom")
+    assert row["subject_type"] == "domain"
     assert not ObservabilityQueries._suggestion_matches_search(row, "video")
 
 
@@ -909,6 +910,10 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
     assert kinds["slow_icap"]["component"] == "ICAP av"
     assert kinds["icap_degraded"]["confidence"] == "high"
     assert kinds["runtime_icap_degraded"]["subject"] == "livingroom"
+    assert kinds["runtime_icap_degraded"]["subject_type"] == "proxy"
+    assert kinds["memory_pressure"]["subject_type"] == "proxy"
+    assert kinds["mysql_degraded"]["subject_type"] == "proxy"
+    assert kinds["http3_alt_svc"]["subject_type"] == "domain"
     assert kinds["memory_pressure"]["component"] == "Proxy runtime resources"
     assert kinds["mysql_degraded"]["component"] == "MySQL / observability ingestion"
     assert payload["summary"]["observations"] >= 10

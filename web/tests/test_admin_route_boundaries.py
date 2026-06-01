@@ -1046,6 +1046,67 @@ class SslPaneRowsObservability:
         return self._ssl_payload()
 
 
+class RemediationRowsObservability:
+    def summary(self, **_kwargs):
+        return {
+            "request_records": 1,
+            "cache_hits": 0,
+            "cache_misses": 1,
+            "cache_hit_pct": 0.0,
+            "clients": 1,
+            "destinations": 1,
+            "transactions": 1,
+            "icap_events": 0,
+            "av_icap_events": 0,
+            "adblock_icap_events": 0,
+        }
+
+    def remediation_overview(self, **_kwargs):
+        return {
+            "summary": {
+                "suggestions": 2,
+                "high_confidence": 1,
+                "observations": 2,
+                "domains": 1,
+                "latest": 1,
+                "http3_candidates": 1,
+            },
+            "rows": [
+                {
+                    "kind": "runtime_icap_degraded",
+                    "component": "ICAP / ClamAV health",
+                    "severity": "high",
+                    "title": "Runtime health degraded",
+                    "subject": "livingroom",
+                    "subject_type": "proxy",
+                    "count": 1,
+                    "clients": 0,
+                    "last_seen": 1,
+                    "confidence": "high",
+                    "evidence": "clamd unreachable",
+                    "recommended_action": "Check c-icap and clamd.",
+                },
+                {
+                    "kind": "http3_alt_svc",
+                    "component": "HTTP/3 / QUIC routing",
+                    "severity": "medium",
+                    "title": "Origin advertises HTTP/3 over QUIC",
+                    "subject": "video.example",
+                    "subject_type": "domain",
+                    "count": 1,
+                    "clients": 1,
+                    "last_seen": 1,
+                    "confidence": "medium",
+                    "evidence": 'Alt-Svc advertises h3; sample=h3=":443"',
+                    "recommended_action": "Block or steer UDP/443.",
+                },
+            ],
+            "top_components": [],
+            "top_kinds": [],
+            "quic_guidance": [],
+        }
+
+
 class RegistryListRaises(FakeRegistry):
     def list_proxies(self):
         msg = "registry unavailable"
@@ -1140,6 +1201,28 @@ def test_observability_ssl_pane_links_to_sslfilter_without_template_error(
 
     assert response.status_code == 200
     assert "/sslfilter?domain=broken.example" in text
+
+
+def test_observability_remediation_hides_domain_actions_for_proxy_subjects(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        proxy_client=RecordingProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=remediation")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "/sslfilter?domain=video.example" in text
+    assert "/observability?pane=destinations&amp;q=video.example" in text
+    assert "/sslfilter?domain=livingroom" not in text
+    assert "/observability?pane=destinations&amp;q=livingroom" not in text
 
 
 def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
