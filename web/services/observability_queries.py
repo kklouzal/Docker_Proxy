@@ -1848,8 +1848,24 @@ class ObservabilityQueries:
             )
 
         try:
-            ssl_payload = self.ssl_overview(since=since, search=search, limit=lim)
-            for row in ssl_payload.get("exclusion_candidates", [])[:lim]:
+            ssl_candidates: list[dict[str, Any]] = []
+            seen_ssl_domains: set[str] = set()
+
+            def add_ssl_candidates(payload: dict[str, Any]) -> None:
+                for candidate in payload.get("exclusion_candidates", []):
+                    domain = str(candidate.get("domain") or "")
+                    if not domain or domain in seen_ssl_domains:
+                        continue
+                    seen_ssl_domains.add(domain)
+                    ssl_candidates.append(candidate)
+
+            add_ssl_candidates(self.ssl_overview(since=since, search=search, limit=lim))
+            if search_value:
+                add_ssl_candidates(
+                    self.ssl_overview(since=since, search="", limit=query_lim),
+                )
+
+            for row in ssl_candidates[:query_lim]:
                 domain = str(row.get("domain") or "")
                 if not domain:
                     continue

@@ -181,6 +181,65 @@ def test_remediation_search_does_not_hide_generated_suggestion_fields(
     assert all("LOWER(domain) LIKE" not in sql for sql in fake_conn.executed_sql)
 
 
+def test_remediation_search_does_not_hide_ssl_generated_actions(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _sql, _params=()):
+            return FakeResult()
+
+    queries = observability_queries.ObservabilityQueries()
+
+    def _connect():
+        return FakeConnection()
+
+    monkeypatch.setattr(queries, "_connect", _connect)
+
+    ssl_searches: list[str] = []
+
+    def _ssl_overview(**kwargs):
+        search = str(kwargs.get("search") or "")
+        ssl_searches.append(search)
+        if search:
+            return {"exclusion_candidates": []}
+        return {
+            "exclusion_candidates": [
+                {
+                    "domain": "tls.example",
+                    "total": 5,
+                    "last_seen": 4100,
+                    "reason": "certificate verify failure",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(queries, "ssl_overview", _ssl_overview)
+
+    payload = queries.remediation_overview(
+        since=4000,
+        search="no-bump",
+        limit=10,
+        summary={"requests": 0},
+    )
+
+    assert ssl_searches == ["no-bump", ""]
+    assert [row["kind"] for row in payload["rows"]] == ["ssl_exclusion_candidate"]
+    assert payload["rows"][0]["subject"] == "tls.example"
+
+
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
