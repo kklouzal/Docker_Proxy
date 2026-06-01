@@ -1673,31 +1673,11 @@ class ObservabilityQueries:
         proxy_id = get_proxy_id()
         lim = max(10, min(200, int(limit or 50)))
         search_value = (search or "").strip().lower()
+        query_lim = 200 if search_value else lim
         where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
         params: list[Any] = [proxy_id, int(since)]
         icap_where = ["proxy_id = %s", "ts >= %s", "domain <> ''"]
         icap_params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(url) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(user_agent) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(COALESCE(result_code, '')) LIKE %s ESCAPE '\\\\' "
-                "OR CAST(http_status AS CHAR) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(COALESCE(response_content_type, '')) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(COALESCE(response_server, '')) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(COALESCE(response_cf_mitigated, '')) LIKE %s ESCAPE '\\\\' "
-                "OR LOWER(COALESCE(response_alt_svc, '')) LIKE %s ESCAPE '\\\\'"
-                ")",
-            )
-            params.extend([like] * 10)
-            icap_where.append(
-                "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(service_family) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\')",
-            )
-            icap_params.extend([like, like, like, like, like])
         where_sql = "WHERE " + " AND ".join(where)
         icap_where_sql = "WHERE " + " AND ".join(icap_where)
         suggestions: list[dict[str, Any]] = self._runtime_health_suggestions(
@@ -1719,7 +1699,7 @@ class ObservabilityQueries:
                 ORDER BY observations DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*params, lim),
+                (*params, query_lim),
             ).fetchall()
             h3_rows = conn.execute(
                 f"""
@@ -1732,7 +1712,7 @@ class ObservabilityQueries:
                 ORDER BY observations DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*params, lim),
+                (*params, query_lim),
             ).fetchall()
             aborted_rows = conn.execute(
                 f"""
@@ -1750,7 +1730,7 @@ class ObservabilityQueries:
                 ORDER BY observations DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*params, lim),
+                (*params, query_lim),
             ).fetchall()
             slow_icap_rows = conn.execute(
                 f"""
@@ -1763,7 +1743,7 @@ class ObservabilityQueries:
                 ORDER BY observations DESC, max_icap_ms DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*icap_params, lim),
+                (*icap_params, query_lim),
             ).fetchall()
             icap_failure_rows = conn.execute(
                 f"""
@@ -1776,7 +1756,7 @@ class ObservabilityQueries:
                 ORDER BY observations DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*icap_params, lim),
+                (*icap_params, query_lim),
             ).fetchall()
 
         suggestions.extend(

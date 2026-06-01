@@ -126,6 +126,60 @@ def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
     assert not ObservabilityQueries._suggestion_matches_search(row, "video")
 
 
+def test_remediation_search_does_not_hide_generated_suggestion_fields(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self):
+            self.executed_sql: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            self.executed_sql.append(str(sql))
+            if "LOWER(domain) LIKE" in sql:
+                return FakeResult([])
+            if "response_alt_svc" in sql and "REGEXP '(^|[^a-z0-9])h3[-=]'" in sql:
+                return FakeResult(
+                    [("stream.example", 2, 1, 4000, 'h3=":443"; ma=86400')],
+                )
+            return FakeResult([])
+
+    fake_conn = FakeConnection()
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: fake_conn)
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=3900,
+        search="quic",
+        limit=10,
+        summary={"requests": 0},
+    )
+
+    assert [row["kind"] for row in payload["rows"]] == ["http3_alt_svc"]
+    assert payload["rows"][0]["component"] == "HTTP/3 / QUIC routing"
+    assert all("LOWER(domain) LIKE" not in sql for sql in fake_conn.executed_sql)
+
+
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
