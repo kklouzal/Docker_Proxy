@@ -268,7 +268,11 @@ def test_remediation_summary_separates_domain_and_runtime_subjects(
             return FakeResult([])
 
     queries = observability_queries.ObservabilityQueries()
-    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+
+    def _connect():
+        return FakeConnection()
+
+    monkeypatch.setattr(queries, "_connect", _connect)
     monkeypatch.setattr(
         queries,
         "ssl_overview",
