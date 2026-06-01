@@ -670,6 +670,8 @@ class AdblockArtifactStore:
                         created_by="system",
                         source_kind="background",
                     )
+                    if bool(result.get("changed")):
+                        nudge_registered_proxies(force=False)
                     if not bool(result.get("ok")) or bool(
                         result.get("download_pending"),
                     ):
@@ -677,8 +679,6 @@ class AdblockArtifactStore:
                     else:
                         with contextlib.suppress(Exception):
                             store.clear_refresh_requested()
-                        if bool(result.get("changed")):
-                            nudge_registered_proxies(force=False)
                         sleep_seconds = 5.0
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(

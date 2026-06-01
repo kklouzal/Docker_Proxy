@@ -331,6 +331,93 @@ def test_background_build_detects_enabled_list_drift_without_version_change(
     )
 
 
+def test_background_loop_nudges_changed_artifact_even_when_download_pending(
+    tmp_path, monkeypatch
+) -> None:
+    store_module, artifacts_module = _import_artifact_modules(tmp_path)
+
+    lists_dir = tmp_path / "lists"
+    lists_dir.mkdir(parents=True, exist_ok=True)
+    list_path = lists_dir / "easylist.txt"
+    list_path.write_text("||cached.example^\n", encoding="utf-8")
+    cleared: list[bool] = []
+    nudges: list[bool] = []
+    sleeps: list[float] = []
+
+    class StopLoop(Exception):
+        pass
+
+    class FakeStore:
+        def init_db(self) -> None:
+            return None
+
+        def get_settings(self) -> dict[str, object]:
+            return {"enabled": True}
+
+        def list_statuses(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(key="easylist", enabled=True)]
+
+        def get_refresh_requested(self) -> int:
+            return 1
+
+        def get_settings_version(self) -> int:
+            return 7
+
+        def list_path(self, key: str) -> str:
+            assert key == "easylist"
+            return str(list_path)
+
+        def should_update(self, *_args, **_kwargs) -> bool:
+            return False
+
+        def clear_refresh_requested(self) -> None:
+            cleared.append(True)
+
+    monkeypatch.setattr(store_module, "get_adblock_store", lambda: FakeStore())
+    monkeypatch.setattr(
+        artifacts_module,
+        "nudge_registered_proxies",
+        lambda *, force=False: nudges.append(bool(force)) or (1, 1),
+    )
+
+    def sleep_once(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise StopLoop
+
+    monkeypatch.setattr(artifacts_module.time, "sleep", sleep_once)
+
+    artifact_store = artifacts_module.AdblockArtifactStore(
+        compiled_dir=str(tmp_path / "compiled"),
+    )
+    monkeypatch.setattr(artifact_store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        artifact_store,
+        "get_active_artifact",
+        lambda: SimpleNamespace(
+            revision_id=4,
+            settings_version=7,
+            enabled_lists=["easylist"],
+            source_kind="background",
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_store,
+        "build_active_artifact",
+        lambda **_kwargs: {"ok": True, "changed": True, "download_pending": True},
+    )
+
+    try:
+        artifact_store._loop()
+    except StopLoop:
+        pass
+    else:
+        raise AssertionError("background loop did not reach its sleep boundary")
+
+    assert nudges == [False]
+    assert cleared == []
+    assert sleeps == [30.0]
+
+
 def test_manual_refresh_downloads_enabled_lists_even_when_adblock_disabled(
     tmp_path, monkeypatch
 ) -> None:
