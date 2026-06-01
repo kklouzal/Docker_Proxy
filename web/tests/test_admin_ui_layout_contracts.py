@@ -192,6 +192,7 @@ def test_admin_dockerfile_packages_observability_maintenance_service() -> None:
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile.admin").read_text(encoding="utf-8")
 
     assert "web/services/observability_maintenance.py" in dockerfile
+    assert "web/services/control_plane_maintenance.py" in dockerfile
 
 
 def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -> None:

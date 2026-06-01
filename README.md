@@ -168,6 +168,18 @@ you have measured a need to override it: the application derives a small
 per-process idle pool from `WEB_THREADS`, and six default proxy containers plus
 one default admin UI stay well inside the 160-connection budget.
 
+The Admin UI starts scheduled MySQL housekeeping when background services are
+enabled. Daily runs prune stored observability rows and stale control-plane
+history; weekly runs also refresh optimizer statistics. Control-plane cleanup
+preserves active config/certificate/adblock artifact revisions, keeps recent
+apply/operation/policy history, expires stale temporary policy exceptions, and
+removes expired Safe Browsing cache rows. Tune
+`MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`,
+`MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`,
+`MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, and
+`MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` only when a deployment needs more
+audit depth or tighter storage bounds.
+
 ## Core capabilities
 
 ### Proxy policy and Squid configuration

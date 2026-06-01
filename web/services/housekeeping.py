@@ -9,6 +9,10 @@ from typing import Any
 
 from services.adblock_store import get_adblock_store
 from services.audit_store import get_audit_store
+from services.control_plane_maintenance import (
+    maintain_control_plane_tables,
+    prune_control_plane_tables,
+)
 from services.db import OPERATIONAL_ERRORS
 from services.diagnostic_store import get_diagnostic_store
 from services.live_stats import get_store
@@ -75,23 +79,73 @@ def current_retention_days(default: int = 30) -> int:
         return normalize_retention_days(default)
 
 
-def _run_prune_once(*, retention_days: int) -> None:
-    # Best-effort: each store handles its own DB locks and failures.
-    _run_with_db_lock_retry(
+def _run_prune_once(*, retention_days: int) -> dict[str, Any]:
+    # Best-effort: one failed table family must not block unrelated cleanup.
+    results: list[dict[str, Any]] = []
+
+    def run_step(name: str, fn) -> None:
+        try:
+            value = _run_with_db_lock_retry(fn)
+            results.append({"name": name, "ok": True, "result": value or {}})
+        except Exception as exc:
+            results.append({"name": name, "ok": False, "detail": str(exc)[:300]})
+            log_exception_throttled(
+                logger,
+                f"housekeeping.prune.{name}",
+                interval_seconds=300,
+                message=f"Housekeeping prune step failed: {name}",
+            )
+
+    run_step(
+        "live_stats",
         lambda: get_store().prune_old_entries(retention_days=retention_days),
     )
-    _run_with_db_lock_retry(
+    run_step(
+        "diagnostics",
         lambda: get_diagnostic_store().prune_old_entries(retention_days=retention_days),
     )
-    _run_with_db_lock_retry(
+    run_step(
+        "adblock",
         lambda: get_adblock_store().prune_old_entries(retention_days=retention_days),
     )
-    _run_with_db_lock_retry(
+    run_step(
+        "ssl_errors",
         lambda: get_ssl_errors_store().prune_old_entries(retention_days=retention_days),
     )
-    _run_with_db_lock_retry(
+    run_step(
+        "audit",
         lambda: get_audit_store().prune_old_entries(retention_days=retention_days),
     )
+    run_step(
+        "control_plane",
+        prune_control_plane_tables,
+    )
+    return {
+        "ok": all(bool(row.get("ok")) for row in results),
+        "steps": results,
+    }
+
+
+def _combine_maintenance_results(
+    observability: dict[str, Any] | None,
+    control_plane: dict[str, Any] | None,
+) -> dict[str, Any]:
+    observed = observability or {}
+    control = control_plane or {}
+    tables = []
+    for scope, result in (("observability", observed), ("control_plane", control)):
+        for table in result.get("tables") or []:
+            row = dict(table)
+            row["scope"] = scope
+            tables.append(row)
+    return {
+        "ok": bool(observed.get("ok", True)) and bool(control.get("ok", True)),
+        "maintained_tables": int(observed.get("maintained_tables") or 0)
+        + int(control.get("maintained_tables") or 0),
+        "tables": tables,
+        "observability": observed,
+        "control_plane": control,
+    }
 
 
 def run_housekeeping_once(
@@ -132,25 +186,37 @@ def run_housekeeping_once(
         raise ObservabilityMaintenanceAlreadyRunningError(skipped["detail"])
 
     try:
-        _run_prune_once(retention_days=days)
+        prune = _run_prune_once(retention_days=days) or {"ok": True, "steps": []}
         maintenance: dict[str, Any] | None = None
         if analyze or optimize:
-            maintenance = _run_with_db_lock_retry(
+            observability_maintenance = _run_with_db_lock_retry(
                 lambda: maintain_observability_tables(
                     analyze=analyze, optimize=optimize
                 ),
             )
+            control_plane_maintenance = _run_with_db_lock_retry(
+                lambda: maintain_control_plane_tables(
+                    analyze=analyze,
+                    optimize=optimize,
+                ),
+            )
+            maintenance = _combine_maintenance_results(
+                observability_maintenance,
+                control_plane_maintenance,
+            )
         maintenance_ok = bool(maintenance.get("ok", True)) if maintenance else True
+        prune_ok = bool(prune.get("ok", True))
         result = {
-            "ok": maintenance_ok,
-            "status": "ok" if maintenance_ok else "failed",
+            "ok": maintenance_ok and prune_ok,
+            "status": "ok" if maintenance_ok and prune_ok else "failed",
             "started_ts": int(started),
             "finished_ts": int(time.time()),
             "duration_ms": int((time.time() - started) * 1000),
             "retention_days": days,
-            "pruned": True,
+            "pruned": prune_ok,
             "analyze": bool(analyze),
             "optimize": bool(optimize),
+            "prune": prune,
             "maintenance": maintenance or {},
         }
         with contextlib.suppress(Exception):

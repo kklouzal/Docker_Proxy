@@ -225,10 +225,19 @@ def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None
     )
 
     def maintain(*, analyze: bool, optimize: bool):
-        calls.append(f"maintain:{analyze}:{optimize}")
+        calls.append(f"maintain-observability:{analyze}:{optimize}")
         return {"ok": True, "maintained_tables": 2, "tables": []}
 
+    def maintain_control_plane(*, analyze: bool, optimize: bool):
+        calls.append(f"maintain-control-plane:{analyze}:{optimize}")
+        return {"ok": True, "maintained_tables": 3, "tables": []}
+
     monkeypatch.setattr(housekeeping, "maintain_observability_tables", maintain)
+    monkeypatch.setattr(
+        housekeeping,
+        "maintain_control_plane_tables",
+        maintain_control_plane,
+    )
 
     def acquire_lock():
         return object()
@@ -249,10 +258,72 @@ def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None
         optimize=True,
     )
 
-    assert calls == ["prune:45", "maintain:True:True"]
+    assert calls == [
+        "prune:45",
+        "maintain-observability:True:True",
+        "maintain-control-plane:True:True",
+    ]
     assert result["ok"] is True
     assert result["retention_days"] == 45
-    assert result["maintenance"]["maintained_tables"] == 2
+    assert result["maintenance"]["maintained_tables"] == 5
+
+
+def test_housekeeping_prune_continues_after_step_failure(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    calls: list[str] = []
+
+    class Store:
+        def __init__(self, name: str, *, fail: bool = False) -> None:
+            self.name = name
+            self.fail = fail
+
+        def prune_old_entries(self, *, retention_days: int) -> None:
+            calls.append(f"{self.name}:{retention_days}")
+            if self.fail:
+                msg = f"{self.name} failed"
+                raise RuntimeError(msg)
+
+    monkeypatch.setattr(housekeeping, "get_store", lambda: Store("live"))
+    monkeypatch.setattr(
+        housekeeping,
+        "get_diagnostic_store",
+        lambda: Store("diagnostic", fail=True),
+    )
+    monkeypatch.setattr(housekeeping, "get_adblock_store", lambda: Store("adblock"))
+    monkeypatch.setattr(housekeeping, "get_ssl_errors_store", lambda: Store("ssl"))
+    monkeypatch.setattr(housekeeping, "get_audit_store", lambda: Store("audit"))
+
+    def control_plane():
+        calls.append("control")
+        return {"ok": True, "tables": []}
+
+    monkeypatch.setattr(housekeeping, "prune_control_plane_tables", control_plane)
+    monkeypatch.setattr(
+        housekeeping,
+        "log_exception_throttled",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = housekeeping._run_prune_once(retention_days=7)
+
+    assert calls == [
+        "live:7",
+        "diagnostic:7",
+        "adblock:7",
+        "ssl:7",
+        "audit:7",
+        "control",
+    ]
+    assert result["ok"] is False
+    assert [row["name"] for row in result["steps"] if row["ok"]] == [
+        "live_stats",
+        "adblock",
+        "ssl_errors",
+        "audit",
+        "control_plane",
+    ]
 
 
 def test_housekeeping_schedules_next_daily_and_weekly_runs() -> None:
