@@ -376,7 +376,29 @@ def maintain_control_plane_tables(
     failed: list[ControlPlaneMaintenanceResult] = []
 
     for table in CONTROL_PLANE_MAINTENANCE_TABLES:
-        if not _table_exists(table):
+        try:
+            exists = _table_exists(table)
+        except DATABASE_ERRORS as exc:
+            result = ControlPlaneMaintenanceResult(
+                table=table,
+                status="failed",
+                maintenance="failed",
+                detail=public_detail(exc),
+            )
+            table_results.append(result)
+            failed.append(result)
+            continue
+        except Exception as exc:
+            result = ControlPlaneMaintenanceResult(
+                table=table,
+                status="failed",
+                maintenance="failed",
+                detail=public_detail(exc),
+            )
+            table_results.append(result)
+            failed.append(result)
+            continue
+        if not exists:
             table_results.append(
                 ControlPlaneMaintenanceResult(table=table, status="missing"),
             )

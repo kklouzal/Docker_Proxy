@@ -106,3 +106,30 @@ def test_control_plane_maintenance_analyzes_existing_tables(monkeypatch) -> None
         row["table"] == "missing_table" and row["status"] == "missing"
         for row in result["tables"]
     )
+
+
+def test_control_plane_maintenance_records_table_exists_failures(monkeypatch) -> None:
+    conn = _Connection()
+    monkeypatch.setattr(
+        maintenance,
+        "CONTROL_PLANE_MAINTENANCE_TABLES",
+        ("broken_table", "proxy_config_revisions"),
+    )
+
+    def table_exists(table: str) -> bool:
+        if table == "broken_table":
+            msg = "metadata lookup failed"
+            raise RuntimeError(msg)
+        return True
+
+    monkeypatch.setattr(maintenance, "_table_exists", table_exists)
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+
+    result = maintenance.maintain_control_plane_tables(analyze=True, optimize=False)
+
+    assert result["ok"] is False
+    assert result["maintained_tables"] == 1
+    assert result["tables"][0]["table"] == "broken_table"
+    assert result["tables"][0]["status"] == "failed"
+    assert "metadata lookup failed" in result["tables"][0]["detail"]
+    assert ("ANALYZE TABLE `proxy_config_revisions`", ()) in conn.queries
