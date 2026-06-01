@@ -1469,6 +1469,26 @@ class ObservabilityQueries:
         }
 
     @staticmethod
+    def _suggestion_matches_search(row: dict[str, Any], search_value: str) -> bool:
+        needle = (search_value or "").strip().lower()
+        if not needle:
+            return True
+        haystack = " ".join(
+            str(row.get(key) or "")
+            for key in (
+                "kind",
+                "component",
+                "severity",
+                "title",
+                "subject",
+                "confidence",
+                "recommended_action",
+                "evidence",
+            )
+        ).lower()
+        return needle in haystack
+
+    @staticmethod
     def _runtime_health_suggestions(
         runtime_health: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
@@ -1655,13 +1675,20 @@ class ObservabilityQueries:
         search_value = (search or "").strip().lower()
         where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
         params: list[Any] = [proxy_id, int(since)]
+        icap_where = ["proxy_id = %s", "ts >= %s", "domain <> ''"]
+        icap_params: list[Any] = [proxy_id, int(since)]
         if search_value:
             like = f"%{_escape_like(search_value)}%"
             where.append(
                 "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\')",
             )
             params.extend([like, like, like, like])
+            icap_where.append(
+                "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(service_family) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\')",
+            )
+            icap_params.extend([like, like, like, like, like])
         where_sql = "WHERE " + " AND ".join(where)
+        icap_where_sql = "WHERE " + " AND ".join(icap_where)
         suggestions: list[dict[str, Any]] = self._runtime_health_suggestions(
             runtime_health
         )
@@ -1715,29 +1742,30 @@ class ObservabilityQueries:
                 (*params, lim),
             ).fetchall()
             slow_icap_rows = conn.execute(
-                """
+                f"""
                 SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
                        MAX(ts) AS last_seen, MAX(icap_time_ms) AS max_icap_ms
                 FROM diagnostic_icap_events
-                WHERE proxy_id = %s AND ts >= %s AND domain <> '' AND icap_time_ms >= 1000
+                {icap_where_sql}
+                  AND icap_time_ms >= 1000
                 GROUP BY domain, service_family
                 ORDER BY observations DESC, max_icap_ms DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (proxy_id, int(since), lim),
+                (*icap_params, lim),
             ).fetchall()
             icap_failure_rows = conn.execute(
-                """
+                f"""
                 SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
                        MAX(ts) AS last_seen, MAX(adapt_summary) AS sample_summary
                 FROM diagnostic_icap_events
-                WHERE proxy_id = %s AND ts >= %s AND domain <> ''
+                {icap_where_sql}
                   AND LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, ''))) REGEXP 'fail|error|timeout|unreachable|bypass'
                 GROUP BY domain, service_family
                 ORDER BY observations DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (proxy_id, int(since), lim),
+                (*icap_params, lim),
             ).fetchall()
 
         suggestions.extend(
@@ -1855,6 +1883,12 @@ class ObservabilityQueries:
         except Exception:
             pass
 
+        if search_value:
+            suggestions = [
+                row
+                for row in suggestions
+                if self._suggestion_matches_search(row, search_value)
+            ]
         suggestions.sort(key=lambda row: self._remediation_sort_key(row, sort))
         rows = suggestions[:lim]
         by_component = Counter(str(row.get("component") or "Other") for row in rows)

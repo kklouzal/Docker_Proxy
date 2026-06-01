@@ -103,6 +103,29 @@ def _insert_icap(diag_store, line: str) -> None:
         assert diag_store._ingest_icap_line_with_conn(conn, line)
 
 
+def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
+    _add_web_to_path()
+    from services.observability_queries import ObservabilityQueries  # type: ignore
+
+    row = ObservabilityQueries._suggestion_row(
+        kind="runtime_icap_degraded",
+        component="ICAP / ClamAV health",
+        severity="high",
+        title="ICAP or ClamAV runtime health is degraded",
+        subject="livingroom",
+        count=1,
+        clients=0,
+        last_seen=3030,
+        confidence="high",
+        recommended_action="Check supervisor state and c-icap listeners.",
+        evidence="clamd unreachable",
+    )
+
+    assert ObservabilityQueries._suggestion_matches_search(row, "clamd")
+    assert ObservabilityQueries._suggestion_matches_search(row, "livingroom")
+    assert not ObservabilityQueries._suggestion_matches_search(row, "video")
+
+
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
@@ -805,22 +828,24 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
         ),
     )
 
+    runtime_health = {
+        "proxy_id": "livingroom",
+        "status": "degraded",
+        "timestamp": 3030,
+        "services": {"clamd": {"ok": False, "detail": "clamd unreachable"}},
+        "stats": {
+            "memory": {
+                "used_percent": 91.5,
+                "available_bytes": 128 * 1024 * 1024,
+            },
+        },
+        "state_errors": ["MySQL lock wait timeout while reading policy state"],
+    }
+
     payload = queries.remediation_overview(
         since=2990,
         limit=20,
-        runtime_health={
-            "proxy_id": "livingroom",
-            "status": "degraded",
-            "timestamp": 3030,
-            "services": {"clamd": {"ok": False, "detail": "clamd unreachable"}},
-            "stats": {
-                "memory": {
-                    "used_percent": 91.5,
-                    "available_bytes": 128 * 1024 * 1024,
-                },
-            },
-            "state_errors": ["MySQL lock wait timeout while reading policy state"],
-        },
+        runtime_health=runtime_health,
     )
     kinds = {row["kind"]: row for row in payload["rows"]}
 
@@ -834,3 +859,26 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
     assert kinds["mysql_degraded"]["component"] == "MySQL / observability ingestion"
     assert payload["summary"]["observations"] >= 10
     assert payload["summary"]["http3_candidates"] == 1
+
+    video_payload = queries.remediation_overview(
+        since=2990,
+        search="video",
+        limit=20,
+        runtime_health=runtime_health,
+    )
+    assert {row["kind"] for row in video_payload["rows"]} == {
+        "aborted_media_segments",
+        "cloudflare_challenge",
+        "http3_alt_svc",
+    }
+
+    icap_payload = queries.remediation_overview(
+        since=2990,
+        search="scan",
+        limit=20,
+        runtime_health=runtime_health,
+    )
+    assert {row["kind"] for row in icap_payload["rows"]} == {
+        "icap_degraded",
+        "slow_icap",
+    }
