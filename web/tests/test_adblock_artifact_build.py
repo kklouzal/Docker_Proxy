@@ -344,7 +344,7 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
     nudges: list[bool] = []
     sleeps: list[float] = []
 
-    class StopLoop(Exception):
+    class StopLoopError(Exception):
         pass
 
     class FakeStore:
@@ -373,7 +373,7 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
         def clear_refresh_requested(self) -> None:
             cleared.append(True)
 
-    monkeypatch.setattr(store_module, "get_adblock_store", lambda: FakeStore())
+    monkeypatch.setattr(store_module, "get_adblock_store", FakeStore)
     monkeypatch.setattr(
         artifacts_module,
         "nudge_registered_proxies",
@@ -382,7 +382,7 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
 
     def sleep_once(seconds: float) -> None:
         sleeps.append(seconds)
-        raise StopLoop
+        raise StopLoopError
 
     monkeypatch.setattr(artifacts_module.time, "sleep", sleep_once)
 
@@ -408,10 +408,11 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
 
     try:
         artifact_store._loop()
-    except StopLoop:
+    except StopLoopError:
         pass
     else:
-        raise AssertionError("background loop did not reach its sleep boundary")
+        msg = "background loop did not reach its sleep boundary"
+        raise AssertionError(msg)
 
     assert nudges == [False]
     assert cleared == []
