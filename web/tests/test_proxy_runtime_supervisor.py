@@ -2075,6 +2075,59 @@ def test_sync_from_db_honors_force_flag_from_claimed_operations(monkeypatch) -> 
     assert observed == [True]
 
 
+def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    log_calls: list[tuple[str, str, str, str]] = []
+    observed: list[tuple[bool, list[object]]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            msg = "ledger unavailable"
+            raise RuntimeError(msg)
+
+    def capture_log(
+        key,
+        *,
+        recoverable_message,
+        unexpected_message,
+        exc,
+        interval_seconds,
+    ) -> None:
+        log_calls.append(
+            (key, recoverable_message, unexpected_message, str(exc)),
+        )
+
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(
+        runtime_module,
+        "_log_recoverable_db_or_unexpected",
+        capture_log,
+    )
+
+    def sync_unlocked(*, force=False, operations=None):
+        observed.append((bool(force), list(operations or [])))
+        return {"ok": True, "detail": "runtime reconciled"}
+
+    runtime._sync_from_db_unlocked = sync_unlocked
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert observed == [(False, [])]
+    assert log_calls == [
+        (
+            "proxy_runtime.operation_ledger.claim",
+            "Proxy operation ledger unavailable during runtime reconciliation",
+            "Proxy operation ledger claim failed",
+            "ledger unavailable",
+        )
+    ]
+
+
 def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

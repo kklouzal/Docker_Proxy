@@ -2305,7 +2305,14 @@ class ProxyRuntime:
                     limit=100,
                     operation_id=operation_id,
                 )
-            except Exception:
+            except Exception as exc:
+                _log_recoverable_db_or_unexpected(
+                    "proxy_runtime.operation_ledger.claim",
+                    recoverable_message="Proxy operation ledger unavailable during runtime reconciliation",
+                    unexpected_message="Proxy operation ledger claim failed",
+                    exc=exc,
+                    interval_seconds=30.0,
+                )
                 claimed_operations = []
                 ledger = None
             try:
