@@ -319,8 +319,11 @@ def test_remediation_runtime_health_bad_timestamp_degrades_safely(
         def execute(self, _sql, _params=()):
             return FakeResult()
 
+    def _connect():
+        return FakeConnection()
+
     queries = observability_queries.ObservabilityQueries()
-    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(queries, "_connect", _connect)
     monkeypatch.setattr(
         queries,
         "ssl_overview",
