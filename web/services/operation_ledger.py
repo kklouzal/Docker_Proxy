@@ -114,6 +114,19 @@ class OperationLedger:
         )
         return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
+    @staticmethod
+    def _request_key_sql(alias: str = "") -> str:
+        prefix = f"{alias}." if alias else ""
+        return (
+            "SHA2(CONCAT("
+            f"LEFT(COALESCE(NULLIF({prefix}operation_type,''),'sync'),64),CHAR(0),"
+            f"LEFT(COALESCE({prefix}subject,''),255),CHAR(0),"
+            f"LEFT(COALESCE({prefix}target_kind,''),64),CHAR(0),"
+            f"LEFT(COALESCE({prefix}target_ref,''),255),CHAR(0),"
+            f"LEFT(COALESCE({prefix}request_hash,''),64)"
+            "),256)"
+        )
+
     def init_db(self) -> None:
         if self._schema_ready:
             return
@@ -354,11 +367,38 @@ class OperationLedger:
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
         cutoff = now - max(60, int(older_than_seconds or 600))
+        request_key_expr = self._request_key_sql()
+        stale_request_key_expr = self._request_key_sql("stale")
         with self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE proxy_operations stale
+                JOIN proxy_operations pending
+                  ON pending.proxy_id=stale.proxy_id
+                 AND pending.status='pending'
+                 AND pending.id<>stale.id
+                 AND pending.request_key={stale_request_key_expr}
+                SET stale.status='superseded',
+                    stale.detail='Superseded by a matching pending operation after stale applying state.',
+                    stale.completed_ts=%s,
+                    stale.updated_ts=%s,
+                    stale.started_ts=0,
+                    stale.request_key=NULL
+                WHERE stale.proxy_id=%s
+                  AND stale.status='applying'
+                  AND stale.started_ts>0
+                  AND stale.started_ts<%s
+                """,
+                (now, now, proxy_key, cutoff),
+            )
             cur = conn.execute(
-                """
+                f"""
                 UPDATE proxy_operations
-                SET status='pending', detail='Requeued after stale applying state.', updated_ts=%s, started_ts=0
+                SET status='pending',
+                    detail='Requeued after stale applying state.',
+                    updated_ts=%s,
+                    started_ts=0,
+                    request_key={request_key_expr}
                 WHERE proxy_id=%s AND status='applying' AND started_ts>0 AND started_ts<%s
                 """,
                 (now, proxy_key, cutoff),

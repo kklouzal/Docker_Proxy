@@ -150,6 +150,53 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     assert [op.force for op in claimed] == [False, False]
 
 
+def test_requeue_stale_applying_restores_active_request_key(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _RequeueConnection:
+        def __init__(self) -> None:
+            self.queries = []
+            self.committed = False
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            result = _Result()
+            result.rowcount = 3 if compact.startswith("UPDATE proxy_operations SET") else 0
+            return result
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if exc_type is None:
+                self.committed = True
+            return False
+
+    conn = _RequeueConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 1000)
+
+    requeued = ledger.requeue_stale_applying("edge-a", older_than_seconds=300)
+
+    assert requeued == 3
+    supersede_sql, supersede_params = conn.queries[0]
+    assert supersede_sql.startswith("UPDATE proxy_operations stale JOIN")
+    assert "pending.request_key=SHA2(CONCAT(" in supersede_sql
+    assert "stale.request_key=NULL" in supersede_sql
+    assert supersede_params == (1000, 1000, "edge-a", 700)
+    requeue_sql, requeue_params = conn.queries[1]
+    assert requeue_sql.startswith("UPDATE proxy_operations SET")
+    assert "request_key=SHA2(CONCAT(" in requeue_sql
+    assert "COALESCE(NULLIF(operation_type,''),'sync')" in requeue_sql
+    assert requeue_params == (1000, "edge-a", 700)
+    assert conn.committed is True
+
+
 def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
     _add_repo_paths()
     from services.operation_ledger import OperationLedger
