@@ -1903,6 +1903,16 @@ class ObservabilityQueries:
         rows = suggestions[:lim]
         by_component = Counter(str(row.get("component") or "Other") for row in rows)
         by_kind = Counter(str(row.get("kind") or "other") for row in rows)
+        domain_subjects = {
+            str(row.get("subject") or "")
+            for row in rows
+            if row.get("subject") and (row.get("subject_type") or "domain") == "domain"
+        }
+        runtime_subjects = {
+            str(row.get("subject") or "")
+            for row in rows
+            if row.get("subject") and (row.get("subject_type") or "domain") != "domain"
+        }
         return {
             "summary": {
                 "suggestions": len(rows),
@@ -1910,13 +1920,8 @@ class ObservabilityQueries:
                     1 for row in rows if row.get("confidence") == "high"
                 ),
                 "observations": sum(int(row.get("count") or 0) for row in rows),
-                "domains": len(
-                    {
-                        str(row.get("subject") or "")
-                        for row in rows
-                        if row.get("subject")
-                    }
-                ),
+                "domains": len(domain_subjects),
+                "runtime_subjects": len(runtime_subjects),
                 "latest": max([int(row.get("last_seen") or 0) for row in rows] or [0]),
                 "http3_candidates": sum(
                     1 for row in rows if row.get("kind") == "http3_alt_svc"

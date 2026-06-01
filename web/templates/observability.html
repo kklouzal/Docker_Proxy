@@ -653,7 +653,8 @@
       <div class="stat compact-stat"><div class="stat-k">Suggestions</div><div class="stat-v">{{ payload.summary.suggestions }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">High confidence</div><div class="stat-v">{{ payload.summary.high_confidence }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Observed events</div><div class="stat-v">{{ payload.summary.observations }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Domains</div><div class="stat-v">{{ payload.summary.domains }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Domain subjects</div><div class="stat-v">{{ payload.summary.domains }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Runtime subjects</div><div class="stat-v">{{ payload.summary.runtime_subjects or 0 }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">HTTP/3 candidates</div><div class="stat-v">{{ payload.summary.http3_candidates }}</div></div>
     </div>
     <div class="hero-badges">

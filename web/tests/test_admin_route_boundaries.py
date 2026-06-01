@@ -1068,6 +1068,7 @@ class RemediationRowsObservability:
                 "high_confidence": 1,
                 "observations": 2,
                 "domains": 1,
+                "runtime_subjects": 1,
                 "latest": 1,
                 "http3_candidates": 1,
             },
@@ -1219,6 +1220,8 @@ def test_observability_remediation_hides_domain_actions_for_proxy_subjects(
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
+    assert "Domain subjects" in text
+    assert "Runtime subjects" in text
     assert "/sslfilter?domain=video.example" in text
     assert "/observability?pane=destinations&amp;q=video.example" in text
     assert "/sslfilter?domain=livingroom" not in text

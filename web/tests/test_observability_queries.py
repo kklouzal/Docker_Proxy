@@ -240,6 +240,61 @@ def test_remediation_search_does_not_hide_ssl_generated_actions(
     assert payload["rows"][0]["subject"] == "tls.example"
 
 
+def test_remediation_summary_separates_domain_and_runtime_subjects(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            if "response_alt_svc" in str(sql):
+                return FakeResult(
+                    [("video.example", 2, 1, 4000, 'h3=":443"; ma=86400')],
+                )
+            return FakeResult([])
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=3900,
+        limit=10,
+        summary={"requests": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 4100,
+            "stats": {"memory": {"used_percent": 90.0}},
+        },
+    )
+
+    assert {row["kind"] for row in payload["rows"]} == {
+        "http3_alt_svc",
+        "memory_pressure",
+    }
+    assert payload["summary"]["domains"] == 1
+    assert payload["summary"]["runtime_subjects"] == 1
+
+
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
@@ -976,6 +1031,8 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
     assert kinds["memory_pressure"]["component"] == "Proxy runtime resources"
     assert kinds["mysql_degraded"]["component"] == "MySQL / observability ingestion"
     assert payload["summary"]["observations"] >= 10
+    assert payload["summary"]["domains"] == 3
+    assert payload["summary"]["runtime_subjects"] == 1
     assert payload["summary"]["http3_candidates"] == 1
 
     video_payload = queries.remediation_overview(
