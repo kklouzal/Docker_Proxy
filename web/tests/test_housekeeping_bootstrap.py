@@ -212,6 +212,36 @@ def test_housekeeping_retention_setting_falls_back_to_default(monkeypatch) -> No
     assert housekeeping.current_retention_days(30) == 30
 
 
+def test_housekeeping_lock_retry_skips_sleep_after_final_failure(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import housekeeping  # type: ignore
+
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(housekeeping, "OPERATIONAL_ERRORS", (RuntimeError,))
+    monkeypatch.setattr(housekeeping.time, "sleep", sleeps.append)
+
+    def fail_locked():
+        msg = "database is locked"
+        raise RuntimeError(msg)
+
+    try:
+        housekeeping._run_with_db_lock_retry(
+            fail_locked,
+            attempts=3,
+            base_sleep_seconds=0.5,
+        )
+    except RuntimeError as exc:
+        assert "database is locked" in str(exc)
+    else:
+        msg = "expected lock retry exhaustion to raise the last lock error"
+        raise AssertionError(msg)
+
+    assert sleeps == [0.5, 1.0]
+
+
 def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None:
     _add_web_to_path()
     from services import housekeeping  # type: ignore

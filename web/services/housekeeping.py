@@ -64,6 +64,8 @@ def _run_with_db_lock_retry(
             last_exc = exc
             if not _is_db_locked(exc):
                 raise
+            if i >= max(1, int(attempts)) - 1:
+                raise
             # Backoff: 0.5s, 1s, 2s, 4s, ... (capped)
             sleep_s = min(30.0, float(base_sleep_seconds) * (2**i))
             time.sleep(sleep_s)
