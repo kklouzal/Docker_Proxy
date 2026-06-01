@@ -1680,9 +1680,20 @@ class ObservabilityQueries:
         if search_value:
             like = f"%{_escape_like(search_value)}%"
             where.append(
-                "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\')",
+                "("
+                "LOWER(domain) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(url) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(user_agent) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(COALESCE(result_code, '')) LIKE %s ESCAPE '\\\\' "
+                "OR CAST(http_status AS CHAR) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(COALESCE(response_content_type, '')) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(COALESCE(response_server, '')) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(COALESCE(response_cf_mitigated, '')) LIKE %s ESCAPE '\\\\' "
+                "OR LOWER(COALESCE(response_alt_svc, '')) LIKE %s ESCAPE '\\\\'"
+                ")",
             )
-            params.extend([like, like, like, like])
+            params.extend([like] * 10)
             icap_where.append(
                 "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(service_family) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\')",
             )

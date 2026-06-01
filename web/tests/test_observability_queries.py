@@ -872,6 +872,34 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
         "http3_alt_svc",
     }
 
+    h3_payload = queries.remediation_overview(
+        since=2990,
+        search="h3",
+        limit=20,
+        runtime_health=runtime_health,
+    )
+    assert {row["kind"] for row in h3_payload["rows"]} == {"http3_alt_svc"}
+
+    cloudflare_payload = queries.remediation_overview(
+        since=2990,
+        search="cloudflare",
+        limit=20,
+        runtime_health=runtime_health,
+    )
+    assert {row["kind"] for row in cloudflare_payload["rows"]} == {
+        "cloudflare_challenge",
+    }
+
+    media_payload = queries.remediation_overview(
+        since=2990,
+        search="iso.segment",
+        limit=20,
+        runtime_health=runtime_health,
+    )
+    assert {row["kind"] for row in media_payload["rows"]} == {
+        "aborted_media_segments",
+    }
+
     icap_payload = queries.remediation_overview(
         since=2990,
         search="scan",
