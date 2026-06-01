@@ -36,6 +36,13 @@ def _pct(part: int, whole: int) -> float:
     return round((float(part) / float(whole)) * 100.0, 1)
 
 
+def _int_or(value: object, default: int) -> int:
+    try:
+        return int(value or default)
+    except Exception:
+        return int(default)
+
+
 def _badge_rows(counter: Counter[str], *, limit: int = 8) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for label, count in counter.most_common(max(1, limit)):
@@ -1498,7 +1505,7 @@ class ObservabilityQueries:
             return []
 
         proxy_id = str(runtime_health.get("proxy_id") or get_proxy_id())
-        observed_at = int(runtime_health.get("timestamp") or time.time())
+        observed_at = _int_or(runtime_health.get("timestamp"), int(time.time()))
         rows: list[dict[str, Any]] = []
 
         def add(

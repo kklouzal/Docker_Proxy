@@ -3117,7 +3117,7 @@ def observability():
                     search,
                     limit,
                     sort,
-                    int(runtime_health.get("timestamp") or 0),
+                    _safe_int(runtime_health.get("timestamp")),
                     runtime_health.get("status") or "",
                 ),
                 lambda: queries.remediation_overview(

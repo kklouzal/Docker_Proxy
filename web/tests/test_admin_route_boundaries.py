@@ -63,6 +63,20 @@ class RecordingProxyClient:
         }
 
 
+class BadTimestampProxyClient(RecordingProxyClient):
+    def get_health(
+        self, proxy_id: object, *args, timeout_seconds: float | None = None, **kwargs
+    ) -> dict[str, object]:
+        payload = super().get_health(
+            proxy_id,
+            *args,
+            timeout_seconds=timeout_seconds,
+            **kwargs,
+        )
+        payload["timestamp"] = "bad-runtime-clock"
+        return payload
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -1226,6 +1240,26 @@ def test_observability_remediation_hides_domain_actions_for_proxy_subjects(
     assert "/observability?pane=destinations&amp;q=video.example" in text
     assert "/sslfilter?domain=livingroom" not in text
     assert "/observability?pane=destinations&amp;q=livingroom" not in text
+
+
+def test_observability_remediation_tolerates_bad_runtime_health_timestamp(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        proxy_client=BadTimestampProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=remediation")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Remediation suggestions" in text
+    assert "Runtime subjects" in text
 
 
 def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(

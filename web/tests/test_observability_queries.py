@@ -299,6 +299,52 @@ def test_remediation_summary_separates_domain_and_runtime_subjects(
     assert payload["summary"]["runtime_subjects"] == 1
 
 
+def test_remediation_runtime_health_bad_timestamp_degrades_safely(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _sql, _params=()):
+            return FakeResult()
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+    monkeypatch.setattr(observability_queries.time, "time", lambda: 5150)
+
+    payload = queries.remediation_overview(
+        since=5000,
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": "bad-runtime-clock",
+            "stats": {"memory": {"used_percent": 90.0}},
+        },
+    )
+
+    assert [row["kind"] for row in payload["rows"]] == ["memory_pressure"]
+    assert payload["rows"][0]["last_seen"] == 5150
+    assert payload["summary"]["runtime_subjects"] == 1
+
+
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
