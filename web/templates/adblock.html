@@ -221,6 +221,9 @@
           {% if artifact_build.pending %}
             <div><strong>Build state:</strong> pending refresh{% if artifact_build.refresh_requested %} requested at {{ fmt_ts(artifact_build.refresh_requested) }}{% endif %}.</div>
           {% endif %}
+          {% if artifact_build.missing_enabled_artifact %}
+            <div><strong>Missing artifact:</strong> enabled subscriptions have not been compiled into an active artifact yet.</div>
+          {% endif %}
           {% if artifact_build.version_stale %}
             <div><strong>Stale settings:</strong> artifact version {{ active_artifact.settings_version }} does not match current settings version {{ artifact_build.settings_version }}.</div>
           {% endif %}

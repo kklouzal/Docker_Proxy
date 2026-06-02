@@ -305,6 +305,28 @@ def test_adblock_page_shows_active_compiled_artifact_summary(
     assert "easylist, easyprivacy" in text
 
 
+def test_adblock_page_surfaces_missing_artifact_for_enabled_lists(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeAdblockStore()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_store=store,
+        adblock_artifacts=FakeAdblockArtifacts(None),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/adblock")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "build pending" in text
+    assert "Missing artifact" in text
+    assert "enabled subscriptions have not been compiled" in text
+
+
 def test_adblock_page_surfaces_stale_or_failed_artifact_build(
     monkeypatch, tmp_path
 ) -> None:
