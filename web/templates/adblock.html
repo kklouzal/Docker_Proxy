@@ -213,7 +213,7 @@
           No active compiled artifact was found. Save or refresh enabled subscriptions and wait for the background builder before expecting proxies to enforce ad-block updates.
         </div>
       {% endif %}
-      {% if artifact_build.last_failed or artifact_build.pending or artifact_build.version_stale or artifact_build.lists_stale %}
+      {% if artifact_build.last_failed or artifact_build.pending or artifact_build.download_pending or artifact_build.version_stale or artifact_build.lists_stale %}
         <div class="surface-note small">
           {% if artifact_build.last_failed %}
             <div><strong>Last build failed:</strong> {{ artifact_build.last_detail or 'builder failed before reporting detail' }}</div>

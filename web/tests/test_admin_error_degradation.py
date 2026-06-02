@@ -387,6 +387,7 @@ def test_adblock_page_surfaces_pending_subscription_downloads(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeAdblockStore()
+    store.statuses[0].key = "easylist"
     summary = SimpleNamespace(
         revision_id=7,
         artifact_sha256="abcdef1234567890",
@@ -428,6 +429,7 @@ def test_adblock_page_surfaces_pending_subscription_downloads(
     assert response.status_code == 200
     assert "Subscription downloads" in text
     assert "locally cached list content" in text
+    assert "Stale lists" not in text
 
 
 def test_disabled_adblock_empty_artifact_is_not_marked_list_stale(
