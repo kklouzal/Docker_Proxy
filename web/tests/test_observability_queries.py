@@ -410,6 +410,66 @@ def test_remediation_runtime_state_errors_surface_generated_state_drift(
     assert payload["summary"]["runtime_subjects"] == 1
 
 
+def test_remediation_search_keeps_runtime_state_drift_visible(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            if "result_code LIKE 'TCP_MISS_ABORTED/%%'" in str(sql):
+                return FakeResult(
+                    [("video.example", 3, 1, 5300, "video/iso.segment")],
+                )
+            return FakeResult([])
+
+    queries = observability_queries.ObservabilityQueries()
+
+    def _connect():
+        return FakeConnection()
+
+    monkeypatch.setattr(queries, "_connect", _connect)
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=5000,
+        search="video",
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 5301,
+            "state_errors": [
+                "PAC: desired desired-pac- does not match current current-pac-.",
+            ],
+        },
+    )
+
+    assert {row["kind"] for row in payload["rows"]} == {
+        "aborted_media_segments",
+        "runtime_state_degraded",
+    }
+    assert payload["summary"]["domains"] == 1
+    assert payload["summary"]["runtime_subjects"] == 1
+
+
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
