@@ -1599,6 +1599,10 @@ class ObservabilityQueries:
             "pool exhausted",
             "too many connections",
             "lock wait",
+            "server has gone away",
+            "max_allowed_packet",
+            "packet too large",
+            "packet bigger than",
         )
         db_state_errors = [
             item

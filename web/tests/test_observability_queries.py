@@ -460,6 +460,60 @@ def test_remediation_runtime_state_errors_accept_scalar_payload(
     assert payload["summary"]["runtime_subjects"] == 1
 
 
+def test_remediation_runtime_state_errors_classify_packet_failures_as_database(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _sql, _params=()):
+            return FakeResult()
+
+    def _connect():
+        return FakeConnection()
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", _connect)
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=5000,
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 5200,
+            "state_errors": [
+                "server has gone away while persisting adblock artifact",
+                "Got a packet bigger than max_allowed_packet bytes",
+            ],
+        },
+    )
+
+    assert [row["kind"] for row in payload["rows"]] == ["mysql_degraded"]
+    row = payload["rows"][0]
+    assert row["component"] == "MySQL / observability ingestion"
+    assert "server has gone away" in row["evidence"]
+    assert "max_allowed_packet" in row["evidence"]
+    assert payload["summary"]["runtime_subjects"] == 1
+
+
 def test_remediation_search_keeps_runtime_state_drift_visible(monkeypatch) -> None:
     _add_web_to_path()
     from services import observability_queries  # type: ignore
