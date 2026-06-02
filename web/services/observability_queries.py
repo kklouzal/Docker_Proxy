@@ -1518,7 +1518,11 @@ class ObservabilityQueries:
     def _suggestion_visible_during_search(row: dict[str, Any]) -> bool:
         return (row.get("subject_type") or "domain") == "proxy" and row.get(
             "kind",
-        ) in {"proxy_health_unreachable", "runtime_state_degraded"}
+        ) in {
+            "mysql_degraded",
+            "proxy_health_unreachable",
+            "runtime_state_degraded",
+        }
 
     @staticmethod
     def _runtime_health_suggestions(

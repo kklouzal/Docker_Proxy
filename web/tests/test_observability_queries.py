@@ -399,14 +399,21 @@ def test_remediation_runtime_state_errors_surface_generated_state_drift(
         },
     )
 
-    assert [row["kind"] for row in payload["rows"]] == ["runtime_state_degraded"]
-    row = payload["rows"][0]
-    assert row["subject"] == "livingroom"
-    assert row["subject_type"] == "proxy"
-    assert row["count"] == 2
-    assert row["component"] == "Proxy generated state"
-    assert "PAC drift" in row["evidence"]
-    assert "MySQL" not in row["evidence"]
+    assert {row["kind"] for row in payload["rows"]} == {
+        "mysql_degraded",
+        "runtime_state_degraded",
+    }
+    state_row = next(
+        row for row in payload["rows"] if row["kind"] == "runtime_state_degraded"
+    )
+    assert state_row["subject"] == "livingroom"
+    assert state_row["subject_type"] == "proxy"
+    assert state_row["count"] == 2
+    assert state_row["component"] == "Proxy generated state"
+    assert "PAC drift" in state_row["evidence"]
+    assert "MySQL" not in state_row["evidence"]
+    db_row = next(row for row in payload["rows"] if row["kind"] == "mysql_degraded")
+    assert "MySQL lock wait" in db_row["evidence"]
     assert payload["summary"]["runtime_subjects"] == 1
 
 
@@ -511,6 +518,62 @@ def test_remediation_runtime_state_errors_classify_packet_failures_as_database(
     assert row["component"] == "MySQL / observability ingestion"
     assert "server has gone away" in row["evidence"]
     assert "max_allowed_packet" in row["evidence"]
+    assert payload["summary"]["runtime_subjects"] == 1
+
+
+def test_remediation_search_keeps_database_degradation_visible(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            if "response_alt_svc" in str(sql):
+                return FakeResult(
+                    [("quic.example", 2, 1, 5300, 'h3=":443"; ma=86400')],
+                )
+            return FakeResult([])
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=5000,
+        search="quic",
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 5301,
+            "state_errors": [
+                "Got a packet bigger than max_allowed_packet bytes",
+            ],
+        },
+    )
+
+    assert {row["kind"] for row in payload["rows"]} == {
+        "http3_alt_svc",
+        "mysql_degraded",
+    }
+    assert payload["summary"]["domains"] == 1
     assert payload["summary"]["runtime_subjects"] == 1
 
 
