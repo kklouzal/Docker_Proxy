@@ -410,6 +410,56 @@ def test_remediation_runtime_state_errors_surface_generated_state_drift(
     assert payload["summary"]["runtime_subjects"] == 1
 
 
+def test_remediation_runtime_state_errors_accept_scalar_payload(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _sql, _params=()):
+            return FakeResult()
+
+    def _connect():
+        return FakeConnection()
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", _connect)
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=5000,
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 5200,
+            "state_errors": "PAC drift: desired state does not match runtime",
+        },
+    )
+
+    assert [row["kind"] for row in payload["rows"]] == ["runtime_state_degraded"]
+    row = payload["rows"][0]
+    assert row["count"] == 1
+    assert row["evidence"] == "PAC drift: desired state does not match runtime"
+    assert payload["summary"]["runtime_subjects"] == 1
+
+
 def test_remediation_search_keeps_runtime_state_drift_visible(monkeypatch) -> None:
     _add_web_to_path()
     from services import observability_queries  # type: ignore

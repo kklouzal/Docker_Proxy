@@ -1373,6 +1373,41 @@ def test_observability_remediation_cache_tracks_runtime_health_drift_details(
     assert "pac-a" not in second_text
 
 
+def test_observability_remediation_cache_fingerprint_accepts_scalar_state_error(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RuntimeHealthEchoObservability(),
+    )
+
+    list_fingerprint = loaded.module._runtime_health_remediation_cache_fingerprint(
+        {
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "state_errors": ["PAC drift: desired state does not match runtime"],
+        }
+    )
+    scalar_fingerprint = loaded.module._runtime_health_remediation_cache_fingerprint(
+        {
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "state_errors": "PAC drift: desired state does not match runtime",
+        }
+    )
+    changed_fingerprint = loaded.module._runtime_health_remediation_cache_fingerprint(
+        {
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "state_errors": "config drift: active revision does not match runtime",
+        }
+    )
+
+    assert scalar_fingerprint == list_fingerprint
+    assert changed_fingerprint != list_fingerprint
+
+
 def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
     monkeypatch, tmp_path
 ) -> None:

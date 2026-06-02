@@ -85,6 +85,9 @@ from services.observability_maintenance import (
 from services.observability_queries import (
     get_observability_queries as _default_get_observability_queries,
 )
+from services.observability_queries import (
+    normalize_runtime_health_state_errors,
+)
 from services.operation_ledger import get_operation_ledger
 from services.pac_profiles_store import (
     get_pac_profiles_store as _default_get_pac_profiles_store,
@@ -590,7 +593,9 @@ def _runtime_health_remediation_cache_fingerprint(
         "proxy_id": runtime_health.get("proxy_id"),
         "proxy_status": runtime_health.get("proxy_status"),
         "services": service_health,
-        "state_errors": list(runtime_health.get("state_errors") or []),
+        "state_errors": normalize_runtime_health_state_errors(
+            runtime_health.get("state_errors")
+        ),
         "status": runtime_health.get("status"),
         "timestamp": runtime_health.get("timestamp"),
     }

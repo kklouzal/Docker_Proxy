@@ -43,6 +43,23 @@ def _int_or(value: object, default: int) -> int:
         return int(default)
 
 
+def normalize_runtime_health_state_errors(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        errors: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                errors.append(text)
+        return errors
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
 def _badge_rows(counter: Counter[str], *, limit: int = 8) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for label, count in counter.most_common(max(1, limit)):
@@ -1546,9 +1563,9 @@ class ObservabilityQueries:
             str(runtime_health.get(key) or "")
             for key in ("detail", "health_cache_detail", "proxy_status")
         ).strip()
-        state_errors = [
-            str(item or "") for item in runtime_health.get("state_errors") or []
-        ]
+        state_errors = normalize_runtime_health_state_errors(
+            runtime_health.get("state_errors")
+        )
         services = (
             runtime_health.get("services")
             if isinstance(runtime_health.get("services"), dict)
