@@ -1569,18 +1569,26 @@ class ObservabilityQueries:
                 or "Proxy health request returned an unavailable runtime payload.",
             )
 
+        db_tokens = (
+            "mysql",
+            "database",
+            "db pool",
+            "pool exhausted",
+            "too many connections",
+            "lock wait",
+        )
+        db_state_errors = [
+            item
+            for item in state_errors
+            if any(token in item.lower() for token in db_tokens)
+        ]
         db_text = " ".join([detail_text, *state_errors]).lower()
-        if any(
-            token in db_text
-            for token in (
-                "mysql",
-                "database",
-                "db pool",
-                "pool exhausted",
-                "too many connections",
-                "lock wait",
-            )
-        ):
+        if any(token in db_text for token in db_tokens):
+            db_evidence_parts = [
+                item
+                for item in [detail_text, *db_state_errors]
+                if item and any(token in item.lower() for token in db_tokens)
+            ]
             add(
                 kind="mysql_degraded",
                 component="MySQL / observability ingestion",
@@ -1589,8 +1597,25 @@ class ObservabilityQueries:
                 count=1,
                 confidence="medium",
                 recommended_action="Check MySQL health, credentials, connection limits, DB_POOL_SIZE, tailer pending-row warnings, and ingestion queue pressure before relying on trend data.",
-                evidence="; ".join([detail_text, *state_errors]).strip()
+                evidence="; ".join(db_evidence_parts).strip()
                 or "Runtime health referenced database degradation.",
+            )
+
+        non_db_state_errors = [
+            item
+            for item in state_errors
+            if not any(token in item.lower() for token in db_tokens)
+        ]
+        if non_db_state_errors:
+            add(
+                kind="runtime_state_degraded",
+                component="Proxy generated state",
+                severity="high",
+                title="Proxy generated state does not match runtime",
+                count=len(non_db_state_errors),
+                confidence="high",
+                recommended_action="Review the generated config, certificate bundle, adblock artifact, policy, and PAC state; then force a selected-proxy sync after confirming the desired state is correct.",
+                evidence="; ".join(non_db_state_errors),
             )
 
         for service_name, service in services.items():
@@ -1881,9 +1906,7 @@ class ObservabilityQueries:
                     self._suggestion_row(
                         kind="ssl_exclusion_candidate",
                         component="SSL inspection",
-                        severity="high"
-                        if event_count >= 5
-                        else "medium",
+                        severity="high" if event_count >= 5 else "medium",
                         title="Repeated TLS/SSL errors indicate likely inspection incompatibility",
                         subject=domain,
                         count=event_count,
