@@ -238,6 +238,9 @@ def test_remediation_search_does_not_hide_ssl_generated_actions(
     assert ssl_searches == ["no-bump", ""]
     assert [row["kind"] for row in payload["rows"]] == ["ssl_exclusion_candidate"]
     assert payload["rows"][0]["subject"] == "tls.example"
+    assert payload["rows"][0]["count"] == 5
+    assert payload["rows"][0]["severity"] == "high"
+    assert payload["summary"]["observations"] == 5
 
 
 def test_remediation_summary_separates_domain_and_runtime_subjects(

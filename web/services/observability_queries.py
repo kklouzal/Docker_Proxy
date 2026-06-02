@@ -1876,16 +1876,17 @@ class ObservabilityQueries:
                 domain = str(row.get("domain") or "")
                 if not domain:
                     continue
+                event_count = _int_or(row.get("count") or row.get("total"), 0)
                 suggestions.append(
                     self._suggestion_row(
                         kind="ssl_exclusion_candidate",
                         component="SSL inspection",
                         severity="high"
-                        if int(row.get("count") or 0) >= 5
+                        if event_count >= 5
                         else "medium",
                         title="Repeated TLS/SSL errors indicate likely inspection incompatibility",
                         subject=domain,
-                        count=int(row.get("count") or 0),
+                        count=event_count,
                         clients=0,
                         last_seen=int(row.get("last_seen") or 0),
                         confidence="high",
