@@ -930,6 +930,10 @@ def _observability_privacy_from_request() -> bool:
     )
 
 
+def _observability_search_from_request() -> str:
+    return (request.args.get("q") or request.args.get("search") or "").strip().lower()
+
+
 def _observability_export_format_from_request() -> str:
     return _normalize_choice(
         request.args.get("format") or "csv",
@@ -1686,10 +1690,7 @@ def _present_adblock_build_state(
     lists_stale = bool(artifact_available and active_lists != enabled_lists)
     missing_enabled_artifact = bool(enabled_lists and not artifact_available)
     pending = bool(
-        refresh_requested
-        or version_stale
-        or lists_stale
-        or missing_enabled_artifact
+        refresh_requested or version_stale or lists_stale or missing_enabled_artifact
     )
 
     ok_value = raw_status.get("ok")
@@ -3003,7 +3004,7 @@ def observability():
         maximum=7 * 24 * 3600,
     )
     since_ts = int(time.time()) - window_i
-    search = (request.args.get("q") or "").strip().lower()
+    search = _observability_search_from_request()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
     privacy = _observability_privacy_from_request()
 
@@ -3488,7 +3489,7 @@ def observability_export():
         maximum=7 * 24 * 3600,
     )
     since_ts = int(time.time()) - window_i
-    search = (request.args.get("q") or "").strip().lower()
+    search = _observability_search_from_request()
     resolve_hostnames = _observability_resolve_hostnames_from_request()
     privacy = _observability_privacy_from_request()
     export_format = _observability_export_format_from_request()

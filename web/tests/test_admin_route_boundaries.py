@@ -1037,6 +1037,46 @@ def test_observability_hostnames_are_resolved_by_default(monkeypatch, tmp_path) 
     assert observability_queries.top_client_calls[-1]["resolve_hostnames"] is True
 
 
+def test_observability_accepts_search_alias_for_page_and_export(
+    monkeypatch, tmp_path
+) -> None:
+    class RecordingSearchObservabilityQueries:
+        def __init__(self) -> None:
+            self.destination_calls = []
+
+        def summary(self, **_kwargs):
+            return {"request_records": 0, "cache_hit_pct": 0}
+
+        def top_destinations(self, **kwargs):
+            self.destination_calls.append(dict(kwargs))
+            return []
+
+    observability_queries = RecordingSearchObservabilityQueries()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=observability_queries,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=destinations&search=Video.Example")
+    assert response.status_code == 200
+    assert observability_queries.destination_calls[-1]["search"] == "video.example"
+
+    response = client.get(
+        "/observability/export?pane=destinations&search=Export.Example"
+    )
+    assert response.status_code == 200
+    assert observability_queries.destination_calls[-1]["search"] == "export.example"
+
+    response = client.get(
+        "/observability?pane=destinations&q=canonical.example&search=ignored.example"
+    )
+    assert response.status_code == 200
+    assert observability_queries.destination_calls[-1]["search"] == "canonical.example"
+
+
 def test_observability_metrics_returns_partial_payload_on_collector_failure(
     monkeypatch, tmp_path
 ) -> None:
