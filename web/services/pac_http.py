@@ -7,7 +7,6 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from services.pac_renderer import (
     PAC_MANIFEST_FILENAME,
@@ -17,6 +16,7 @@ from services.pac_renderer import (
     select_manifest_file,
     substitute_request_host,
 )
+from services.proxy_registry import normalize_public_pac_path
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
@@ -93,29 +93,11 @@ def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> s
 
 
 def _public_target_from_manifest(value: object) -> tuple[str, str | None]:
-    candidate = str(value or "").strip()
-    if not candidate:
+    normalized = normalize_public_pac_path(value, default="")
+    if not normalized:
         return "", None
-    try:
-        parsed = urlsplit(candidate)
-    except Exception:
-        return "", None
-
-    has_query = "?" in candidate
-    if parsed.scheme or parsed.netloc:
-        path = parsed.path
-        query = parsed.query if has_query else None
-    elif has_query:
-        path, query = candidate.split("?", 1)
-    else:
-        path, query = candidate, None
-
-    path = str(path or "").strip()
-    if not path:
-        return "", None
-    if not path.startswith("/"):
-        path = f"/{path}"
-    return path, query
+    path, separator, query = normalized.partition("?")
+    return path, query if separator else None
 
 
 def _public_path_from_manifest(value: object) -> str:

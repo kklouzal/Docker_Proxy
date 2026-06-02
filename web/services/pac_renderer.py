@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from services.pac_profiles_store import PacProfile, get_pac_profiles_store
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
-from services.proxy_registry import get_proxy_registry
+from services.proxy_registry import get_proxy_registry, normalize_public_pac_path
 from services.sslfilter_store import get_sslfilter_store
 
 if TYPE_CHECKING:
@@ -52,11 +52,7 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
         parsed_port = parsed.port
     except ValueError:
         parsed_port = None
-    path = parsed.path or "/proxy.pac"
-    if not path.startswith("/"):
-        path = f"/{path}"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
+    path = normalize_public_pac_path(candidate)
     return host, scheme, int(parsed_port or default_port), path
 
 
@@ -98,9 +94,7 @@ def _build_pac_url(
     normalized_scheme = _normalize_pac_scheme(scheme)
     default_port = 443 if normalized_scheme == "https" else 80
     port_part = "" if int(port) == default_port else f":{int(port)}"
-    pac_path = str(path or "/proxy.pac")
-    if not pac_path.startswith("/"):
-        pac_path = f"/{pac_path}"
+    pac_path = normalize_public_pac_path(path)
     return f"{normalized_scheme}://{clean_host}{port_part}{pac_path}"
 
 
@@ -276,7 +270,10 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         else os.environ.get("PROXY_PUBLIC_HTTP_PROXY_PORT"),
         env_http_proxy_port,
     )
-    proxy_pac_path = str(getattr(proxy, "public_pac_path", "") or "").strip()
+    proxy_pac_path = normalize_public_pac_path(
+        getattr(proxy, "public_pac_path", "") or "",
+        default="",
+    )
     pac_path = proxy_pac_path if proxy_owns_public_endpoint else url_pac_path
     if not pac_path:
         pac_path = "/proxy.pac"

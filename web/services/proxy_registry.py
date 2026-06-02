@@ -6,7 +6,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from services.db import (
     DATABASE_ERRORS,
@@ -67,6 +67,48 @@ def _coerce_bool(value: object | None, default: bool) -> bool:
     return bool(default)
 
 
+def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac") -> str:
+    fallback = str(default if default is not None else "/proxy.pac").strip()
+    if fallback and not fallback.startswith("/"):
+        fallback = f"/{fallback}"
+    candidate = str(value or "").strip()
+    if not candidate:
+        return fallback
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+        return fallback
+    try:
+        parsed = urlsplit(candidate)
+    except Exception:
+        return fallback
+    if parsed.netloc and not parsed.scheme:
+        return fallback
+    if parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
+        return fallback
+    path = parsed.path or fallback
+    if path.startswith("//") or "\\" in path:
+        return fallback
+    decoded_path = unquote(path)
+    if "\\" in decoded_path or any(
+        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in decoded_path
+    ):
+        return fallback
+    if not path.startswith("/"):
+        path = f"/{path}"
+        decoded_path = f"/{decoded_path}"
+    segments = [segment for segment in decoded_path.split("/") if segment]
+    if any(segment in {".", ".."} for segment in segments):
+        return fallback
+    query = parsed.query
+    if query:
+        decoded_query = unquote(query)
+        if any(
+            ch.isspace() or ord(ch) < 32 or ord(ch) == 127
+            for ch in decoded_query
+        ):
+            return fallback
+    return f"{path}?{query}" if query else path
+
+
 def _dns_safe_proxy_host(value: object | None) -> str:
     raw = str(value or "").strip().lower()
     if not raw or raw == "default":
@@ -92,11 +134,7 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
         parsed_port = parsed.port
     except ValueError:
         parsed_port = None
-    path = parsed.path or "/proxy.pac"
-    if not path.startswith("/"):
-        path = f"/{path}"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
+    path = normalize_public_pac_path(candidate)
     return host, scheme, int(parsed_port or default_port), path
 
 
@@ -342,7 +380,7 @@ class ProxyRegistry:
                         (public_host or "").strip(),
                         _normalize_public_scheme(public_pac_scheme),
                         _coerce_port(public_pac_port, 80),
-                        (public_pac_path or "/proxy.pac").strip() or "/proxy.pac",
+                        normalize_public_pac_path(public_pac_path),
                         _coerce_port(public_http_proxy_port, 3128),
                         (status or "unknown").strip() or "unknown",
                         0,
@@ -362,8 +400,7 @@ class ProxyRegistry:
                     "public_host": (public_host or "").strip(),
                     "public_pac_scheme": _normalize_public_scheme(public_pac_scheme),
                     "public_pac_port": _coerce_port(public_pac_port, 80),
-                    "public_pac_path": (public_pac_path or "/proxy.pac").strip()
-                    or "/proxy.pac",
+                    "public_pac_path": normalize_public_pac_path(public_pac_path),
                     "public_http_proxy_port": _coerce_port(
                         public_http_proxy_port,
                         3128,
@@ -397,11 +434,11 @@ class ProxyRegistry:
                     else row["public_pac_port"],
                     80,
                 )
-                next_public_pac_path = (
+                next_public_pac_path = normalize_public_pac_path(
                     public_pac_path
                     if public_pac_path is not None
-                    else row.get("public_pac_path") or "/proxy.pac"
-                ).strip() or "/proxy.pac"
+                    else row.get("public_pac_path") or "/proxy.pac",
+                )
                 next_public_http_proxy_port = _coerce_port(
                     public_http_proxy_port
                     if public_http_proxy_port is not None
@@ -751,12 +788,11 @@ class ProxyRegistry:
                         else instance.public_pac_port,
                         80,
                     ),
-                    (
+                    normalize_public_pac_path(
                         public_pac_path
                         if public_pac_path is not None
-                        else instance.public_pac_path
-                    ).strip()
-                    or "/proxy.pac",
+                        else instance.public_pac_path,
+                    ),
                     _coerce_port(
                         public_http_proxy_port
                         if public_http_proxy_port is not None

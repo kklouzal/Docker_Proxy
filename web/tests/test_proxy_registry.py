@@ -40,6 +40,45 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
     ) == ("proxy.example", "https", 443, "/proxy.pac")
 
 
+def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    assert (
+        proxy_registry.normalize_public_pac_path("download/wpad.dat?site=lab")
+        == "/download/wpad.dat?site=lab"
+    )
+    assert (
+        proxy_registry.normalize_public_pac_path(
+            "https://proxy.example/custom/proxy.pac?site=lab"
+        )
+        == "/custom/proxy.pac?site=lab"
+    )
+    assert proxy_registry.normalize_public_pac_path("//evil.example/wpad.dat") == (
+        "/proxy.pac"
+    )
+    assert proxy_registry.normalize_public_pac_path("/../secret.pac") == "/proxy.pac"
+    assert (
+        proxy_registry.normalize_public_pac_path("/download/%2e%2e/secret.pac")
+        == "/proxy.pac"
+    )
+    assert (
+        proxy_registry.normalize_public_pac_path("/download/wpad.dat?site=%0alab")
+        == "/proxy.pac"
+    )
+    assert (
+        proxy_registry.normalize_public_pac_path("/download/wpad.dat\nInjected: yes")
+        == "/proxy.pac"
+    )
+    assert (
+        proxy_registry.normalize_public_pac_path(
+            "javascript:alert(1)",
+            default="",
+        )
+        == ""
+    )
+
+
 def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_url(
     monkeypatch,
 ) -> None:
