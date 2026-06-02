@@ -77,6 +77,87 @@ class BadTimestampProxyClient(RecordingProxyClient):
         return payload
 
 
+class RuntimeDriftSequenceProxyClient(RecordingProxyClient):
+    def __init__(self, state_errors: list[str]) -> None:
+        super().__init__()
+        self.state_errors = list(state_errors)
+        self.index = 0
+
+    def get_health(
+        self, proxy_id: object, *args, timeout_seconds: float | None = None, **kwargs
+    ) -> dict[str, object]:
+        payload = super().get_health(
+            proxy_id,
+            *args,
+            timeout_seconds=timeout_seconds,
+            **kwargs,
+        )
+        if not kwargs.get("full"):
+            return payload
+        error = self.state_errors[min(self.index, len(self.state_errors) - 1)]
+        self.index += 1
+        payload.update(
+            {
+                "ok": False,
+                "status": "degraded",
+                "timestamp": 6200,
+                "state_errors": [error],
+            },
+        )
+        return payload
+
+
+class RuntimeHealthEchoObservability:
+    def summary(self, **_kwargs):
+        return {
+            "request_records": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_pct": 0.0,
+            "clients": 0,
+            "destinations": 0,
+            "transactions": 0,
+            "icap_events": 0,
+            "av_icap_events": 0,
+            "adblock_icap_events": 0,
+        }
+
+    def remediation_overview(self, **kwargs):
+        runtime_health = kwargs.get("runtime_health") or {}
+        state_errors = runtime_health.get("state_errors") or []
+        evidence = "; ".join(str(item) for item in state_errors)
+        return {
+            "summary": {
+                "suggestions": 1,
+                "high_confidence": 1,
+                "observations": 1,
+                "domains": 0,
+                "runtime_subjects": 1,
+                "latest": int(runtime_health.get("timestamp") or 0),
+                "http3_candidates": 0,
+            },
+            "rows": [
+                {
+                    "kind": "runtime_state_degraded",
+                    "component": "Proxy generated state",
+                    "severity": "high",
+                    "title": "Proxy generated state does not match runtime",
+                    "subject": runtime_health.get("proxy_id") or "default",
+                    "subject_type": "proxy",
+                    "count": 1,
+                    "clients": 0,
+                    "last_seen": int(runtime_health.get("timestamp") or 0),
+                    "confidence": "high",
+                    "evidence": evidence,
+                    "recommended_action": "Force a selected-proxy sync.",
+                }
+            ],
+            "top_components": [],
+            "top_kinds": [],
+            "quic_guidance": [],
+        }
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -1260,6 +1341,36 @@ def test_observability_remediation_tolerates_bad_runtime_health_timestamp(
     assert response.status_code == 200
     assert "Remediation suggestions" in text
     assert "Runtime subjects" in text
+
+
+def test_observability_remediation_cache_tracks_runtime_health_drift_details(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PROXY_HEALTH_UI_CACHE_TTL_SECONDS", "0")
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RuntimeHealthEchoObservability(),
+        proxy_client=RuntimeDriftSequenceProxyClient(
+            [
+                "PAC drift: desired pac-a does not match runtime.",
+                "PAC drift: desired pac-b does not match runtime.",
+            ],
+        ),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    first_response = client.get("/observability?pane=remediation")
+    first_text = first_response.get_data(as_text=True)
+    second_response = client.get("/observability?pane=remediation")
+    second_text = second_response.get_data(as_text=True)
+
+    assert first_response.status_code == 200
+    assert "pac-a" in first_text
+    assert second_response.status_code == 200
+    assert "pac-b" in second_text
+    assert "pac-a" not in second_text
 
 
 def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(

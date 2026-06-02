@@ -561,6 +561,43 @@ def _observability_result_cache_key(
     return tuple(parts)
 
 
+def _runtime_health_remediation_cache_fingerprint(
+    runtime_health: dict[str, Any] | None,
+) -> str:
+    if not isinstance(runtime_health, dict):
+        return ""
+    services = runtime_health.get("services")
+    service_health = {}
+    if isinstance(services, dict):
+        service_health = {
+            str(name): {
+                "ok": payload.get("ok"),
+                "detail": payload.get("detail"),
+            }
+            for name, payload in services.items()
+            if isinstance(payload, dict)
+        }
+    stats = runtime_health.get("stats")
+    memory = {}
+    if isinstance(stats, dict) and isinstance(stats.get("memory"), dict):
+        memory = dict(stats.get("memory") or {})
+    payload = {
+        "_stale": runtime_health.get("_stale"),
+        "_unavailable_cached": runtime_health.get("_unavailable_cached"),
+        "detail": runtime_health.get("detail"),
+        "health_cache_detail": runtime_health.get("health_cache_detail"),
+        "memory": memory,
+        "proxy_id": runtime_health.get("proxy_id"),
+        "proxy_status": runtime_health.get("proxy_status"),
+        "services": service_health,
+        "state_errors": list(runtime_health.get("state_errors") or []),
+        "status": runtime_health.get("status"),
+        "timestamp": runtime_health.get("timestamp"),
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
 def _cached_observability_result(
     cache_key: tuple[Any, ...],
     builder: Any,
@@ -3119,6 +3156,7 @@ def observability():
                     sort,
                     _safe_int(runtime_health.get("timestamp")),
                     runtime_health.get("status") or "",
+                    _runtime_health_remediation_cache_fingerprint(runtime_health),
                 ),
                 lambda: queries.remediation_overview(
                     since=since_ts,
