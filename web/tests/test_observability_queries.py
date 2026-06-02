@@ -546,8 +546,11 @@ def test_remediation_search_keeps_database_degradation_visible(monkeypatch) -> N
                 )
             return FakeResult([])
 
+    def _connect():
+        return FakeConnection()
+
     queries = observability_queries.ObservabilityQueries()
-    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(queries, "_connect", _connect)
     monkeypatch.setattr(
         queries,
         "ssl_overview",
