@@ -1709,6 +1709,7 @@ def _present_adblock_build_state(
         "last_ts": _safe_int(raw_status.get("ts")),
         "last_revision_id": _safe_int(raw_status.get("revision_id")),
         "archive_bytes": _safe_int(raw_status.get("archive_bytes")),
+        "download_pending": bool(raw_status.get("download_pending")),
     }
 
 

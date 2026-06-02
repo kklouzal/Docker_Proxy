@@ -188,6 +188,10 @@ def test_build_active_artifact_reports_download_pending_when_due_download_fails_
         assert result["ok"] is True
         assert result["downloaded"] is False
         assert result["download_pending"] is True
+        status = store.get_artifact_build_status()
+        assert status["ok"] is True
+        assert status["download_pending"] is True
+        assert "locally cached lists" in status["detail"]
     finally:
         for key, value in env_backup.items():
             if value is None:

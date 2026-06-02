@@ -221,6 +221,9 @@
           {% if artifact_build.pending %}
             <div><strong>Build state:</strong> pending refresh{% if artifact_build.refresh_requested %} requested at {{ fmt_ts(artifact_build.refresh_requested) }}{% endif %}.</div>
           {% endif %}
+          {% if artifact_build.download_pending %}
+            <div><strong>Subscription downloads:</strong> pending; the current artifact is using locally cached list content until downloads succeed.</div>
+          {% endif %}
           {% if artifact_build.missing_enabled_artifact %}
             <div><strong>Missing artifact:</strong> enabled subscriptions have not been compiled into an active artifact yet.</div>
           {% endif %}

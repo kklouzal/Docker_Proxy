@@ -836,6 +836,7 @@ class AdblockStore:
         revision_id: int | None = None,
         artifact_sha256: str = "",
         archive_bytes: int | None = None,
+        download_pending: bool = False,
     ) -> None:
         payload = {
             "ok": bool(ok),
@@ -843,6 +844,7 @@ class AdblockStore:
             "revision_id": int(revision_id or 0),
             "artifact_sha256": str(artifact_sha256 or "")[:64],
             "archive_bytes": int(archive_bytes or 0),
+            "download_pending": bool(download_pending),
             "ts": _now(),
         }
         with self._connect() as conn:

@@ -586,6 +586,11 @@ class AdblockArtifactStore:
         detail = "Adblock artifact is already current."
         if changed:
             detail = f"Activated adblock artifact revision {revision.revision_id}."
+        if download_pending:
+            detail = (
+                f"{detail} One or more enabled subscription downloads are still "
+                "pending; the active artifact was built from locally cached lists."
+            )
         with contextlib.suppress(Exception):
             store.record_artifact_build_result(
                 ok=True,
@@ -593,6 +598,7 @@ class AdblockArtifactStore:
                 revision_id=revision.revision_id,
                 artifact_sha256=revision.artifact_sha256,
                 archive_bytes=archive_bytes,
+                download_pending=download_pending,
             )
         return {
             "ok": True,
