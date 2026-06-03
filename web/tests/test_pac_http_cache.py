@@ -221,6 +221,38 @@ def test_local_pac_cache_reloads_when_materialized_files_change(tmp_path) -> Non
     )
 
 
+def test_local_pac_cache_reloads_when_referenced_pac_file_changes(tmp_path) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
+        encoding="utf-8",
+    )
+    fallback = pac_dir / "fallback.pac"
+    fallback.write_text(
+        'function FindProxyForURL(){return "PROXY one";}\n',
+        encoding="utf-8",
+    )
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
+        b'function FindProxyForURL(){return "PROXY one";}\n'
+    )
+
+    fallback.write_text(
+        'function FindProxyForURL(){return "PROXY two repaired";}\n',
+        encoding="utf-8",
+    )
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
+        b'function FindProxyForURL(){return "PROXY two repaired";}\n'
+    )
+
+
 def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(tmp_path) -> None:
     _add_repo_paths()
     from services import pac_http  # type: ignore
