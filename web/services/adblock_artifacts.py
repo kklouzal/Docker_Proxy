@@ -32,6 +32,21 @@ _DEFAULT_SETTINGS_FILENAME = "settings.json"
 _BUILDER_SOURCE_KINDS = {"background", "compile"}
 
 
+def _list_file_has_rule_content(path: str | os.PathLike[str]) -> bool:
+    try:
+        with Path(path).open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                text = (line or "").strip()
+                if not text or text.startswith("!"):
+                    continue
+                if text.startswith("[") and text.endswith("]"):
+                    continue
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _mysql_error_code(exc: BaseException) -> int | None:
     args = getattr(exc, "args", ())
     if args:
@@ -487,14 +502,15 @@ class AdblockArtifactStore:
             now_ts = _now()
             for status in enabled_statuses:
                 list_path = store.list_path(status.key)
+                has_local_rules = _list_file_has_rule_content(list_path)
                 needs_download = (
                     refresh_lists
-                    or not Path(list_path).exists()
+                    or not has_local_rules
                     or store.should_update(status, now_ts, False)
                 )
                 if not needs_download:
                     continue
-                force_download = bool(refresh_lists or not Path(list_path).exists())
+                force_download = bool(refresh_lists or not has_local_rules)
                 downloaded_now = bool(
                     store.update_one(status.key, force=force_download),
                 )
@@ -505,15 +521,17 @@ class AdblockArtifactStore:
         available_enabled_statuses = [
             status
             for status in enabled_statuses
-            if settings_enabled and Path(store.list_path(status.key)).exists()
+            if settings_enabled and _list_file_has_rule_content(store.list_path(status.key))
         ]
         effective_enabled_lists = [status.key for status in available_enabled_statuses]
+        if settings_enabled and len(available_enabled_statuses) < len(enabled_statuses):
+            download_pending = True
         if settings_enabled and enabled_statuses and not available_enabled_statuses:
-            detail = "No enabled adblock subscription lists are available locally."
+            detail = "No enabled adblock subscription lists with rule content are available locally."
             if download_pending:
                 detail = (
                     "Enabled adblock subscription lists could not be downloaded and "
-                    "no cached lists are available."
+                    "no cached lists with rule content are available."
                 )
             with contextlib.suppress(Exception):
                 store.record_artifact_build_result(
@@ -656,7 +674,7 @@ class AdblockArtifactStore:
                 )
                 due_download = settings_enabled and any(
                     (
-                        not Path(store.list_path(status.key)).exists()
+                        not _list_file_has_rule_content(store.list_path(status.key))
                         or store.should_update(status, _now(), False)
                     )
                     for status in enabled_statuses
