@@ -17,7 +17,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-from services.db import DATABASE_ERRORS, INTEGRITY_ERRORS, connect
+from services.db import (
+    DATABASE_ERRORS,
+    INTEGRITY_ERRORS,
+    connect,
+    run_mysql_operation_with_retry,
+)
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
@@ -171,6 +176,9 @@ class AdblockStore:
 
     def _connect(self):
         return connect()
+
+    def _with_db_write_retry(self, operation):
+        return run_mysql_operation_with_retry(operation)
 
     def init_db(self) -> None:
         pathlib.Path(self.lists_dir).mkdir(exist_ok=True, parents=True)
@@ -756,20 +764,23 @@ class AdblockStore:
         cache_ttl = max(0, min(7 * 24 * 3600, cache_ttl))
         cache_max = max(0, min(1_000_000, cache_max))
 
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO adblock_settings(k,v) VALUES('enabled',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                ("1" if enabled else "0",),
-            )
-            conn.execute(
-                "INSERT INTO adblock_settings(k,v) VALUES('cache_ttl',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                (str(cache_ttl),),
-            )
-            conn.execute(
-                "INSERT INTO adblock_settings(k,v) VALUES('cache_max',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                (str(cache_max),),
-            )
-            self._bump_version(conn)
+        def write() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO adblock_settings(k,v) VALUES('enabled',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                    ("1" if enabled else "0",),
+                )
+                conn.execute(
+                    "INSERT INTO adblock_settings(k,v) VALUES('cache_ttl',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                    (str(cache_ttl),),
+                )
+                conn.execute(
+                    "INSERT INTO adblock_settings(k,v) VALUES('cache_max',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                    (str(cache_max),),
+                )
+                self._bump_version(conn)
+
+        self._with_db_write_retry(write)
 
     def _bump_version(self, conn) -> None:
         cur = conn.execute(
@@ -785,28 +796,44 @@ class AdblockStore:
         )
 
     def request_refresh_now(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                (str(_now()),),
-            )
+        def write() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                    (str(_now()),),
+                )
+
+        self._with_db_write_retry(write)
 
     def clear_refresh_requested(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-            )
+        def write() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                )
+
+        self._with_db_write_retry(write)
 
     def request_cache_flush(self) -> None:
-        with self._connect() as conn:
-            self._set_proxy_meta(conn, "cache_flush_requested", str(_now()))
+        def write() -> None:
+            with self._connect() as conn:
+                self._set_proxy_meta(conn, "cache_flush_requested", str(_now()))
+
+        self._with_db_write_retry(write)
 
     def mark_cache_flushed(self, *, size: int | None = None) -> None:
-        with self._connect() as conn:
-            self._set_proxy_meta(conn, "cache_flush_requested", "0")
-            self._set_proxy_meta(conn, "cache_last_flush", str(_now()))
-            if size is not None:
-                self._set_proxy_meta(conn, "cache_current_size", str(max(0, int(size))))
+        def write() -> None:
+            with self._connect() as conn:
+                self._set_proxy_meta(conn, "cache_flush_requested", "0")
+                self._set_proxy_meta(conn, "cache_last_flush", str(_now()))
+                if size is not None:
+                    self._set_proxy_meta(
+                        conn,
+                        "cache_current_size",
+                        str(max(0, int(size))),
+                    )
+
+        self._with_db_write_retry(write)
 
     def get_settings_version(self) -> int:
         with self._connect() as conn:
@@ -890,17 +917,20 @@ class AdblockStore:
             ]
 
     def set_enabled(self, enabled_map: dict[str, bool]) -> None:
-        with self._connect() as conn:
-            rows = [
-                (1 if enabled else 0, key)
-                for key, enabled in (enabled_map or {}).items()
-            ]
-            if rows:
-                conn.executemany(
-                    "UPDATE adblock_lists SET enabled=%s WHERE `key`=%s",
-                    rows,
-                )
-            self._bump_version(conn)
+        rows = [
+            (1 if enabled else 0, key) for key, enabled in (enabled_map or {}).items()
+        ]
+
+        def write() -> None:
+            with self._connect() as conn:
+                if rows:
+                    conn.executemany(
+                        "UPDATE adblock_lists SET enabled=%s WHERE `key`=%s",
+                        rows,
+                    )
+                self._bump_version(conn)
+
+        self._with_db_write_retry(write)
 
     def list_path(self, key: str) -> str:
         safe = "".join([c for c in (key or "") if c.isalnum() or c in {"-", "_"}])
