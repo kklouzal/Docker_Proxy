@@ -556,7 +556,7 @@ class AdblockDecisionEngine:
             third_party_state = bool(third_party_hint)
         if third_party == "only" and third_party_state is not True:
             return False
-        if third_party == "exclude" and third_party_state is True:
+        if third_party == "exclude" and third_party_state is not False:
             return False
 
         if not self._domain_scope_matches(rule, source_host):
