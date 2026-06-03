@@ -558,6 +558,31 @@ class AdblockArtifactStore:
                         out_dir=out_dir,
                         enabled_lists=effective_enabled_lists,
                     )
+                    if _compiled_request_rule_count(out_dir) <= 0:
+                        detail = (
+                            "Enabled adblock subscription lists compiled without any "
+                            "request-time rules; preserving the previous artifact."
+                        )
+                        with contextlib.suppress(Exception):
+                            store.record_artifact_build_result(
+                                ok=False,
+                                detail=detail,
+                                revision_id=getattr(previous, "revision_id", 0),
+                                artifact_sha256=getattr(
+                                    previous,
+                                    "artifact_sha256",
+                                    "",
+                                ),
+                                download_pending=download_pending,
+                            )
+                        return {
+                            "ok": False,
+                            "detail": detail,
+                            "revision": previous,
+                            "changed": False,
+                            "downloaded": any_downloaded,
+                            "download_pending": download_pending,
+                        }
                 else:
                     _write_empty_output(out_dir)
                 _write_settings_file(
@@ -743,6 +768,22 @@ def _compile_current_lists(
     if rc != 0:
         msg = f"adblock_compile failed with exit code {rc}"
         raise RuntimeError(msg)
+
+
+def _compiled_request_rule_count(out_dir: str | os.PathLike[str]) -> int:
+    try:
+        report = json.loads(Path(out_dir, "report.json").read_text(encoding="utf-8"))
+        breakdowns = report.get("breakdowns") if isinstance(report, dict) else {}
+        lookup_counts = (
+            breakdowns.get("lookup_index_counts")
+            if isinstance(breakdowns, dict)
+            else {}
+        )
+        if not isinstance(lookup_counts, dict):
+            return 0
+        return int(lookup_counts.get("rules") or 0)
+    except Exception:
+        return 0
 
 
 def _active_enabled_lists_drift(

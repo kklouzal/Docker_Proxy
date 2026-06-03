@@ -716,6 +716,65 @@ def test_build_active_artifact_preserves_previous_when_enabled_list_empty(
                 os.environ[key] = value
 
 
+def test_build_active_artifact_preserves_previous_when_enabled_list_has_no_request_rules(
+    tmp_path, monkeypatch
+) -> None:
+    env_backup = {key: os.environ.get(key) for key in ("DISABLE_BACKGROUND",)}
+    try:
+        store_module, artifacts_module = _import_artifact_modules(tmp_path)
+
+        store = store_module.get_adblock_store()
+        store.lists_dir = str(tmp_path / "lists")
+        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
+        store.init_db()
+
+        statuses = store.list_statuses()
+        assert statuses, "expected default adblock lists to be present"
+        selected = statuses[0].key
+
+        store.set_enabled({status.key: status.key == selected for status in statuses})
+        store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+        list_path = Path(store.list_path(selected))
+        list_path.write_text("||cached.example^\n", encoding="utf-8")
+        monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
+
+        artifacts = artifacts_module.get_adblock_artifacts()
+        initial = artifacts.build_active_artifact(
+            refresh_lists=False,
+            created_by="tester",
+            source_kind="test",
+        )
+        assert initial["ok"] is True
+        previous_revision = initial["revision"]
+        assert previous_revision is not None
+
+        list_path.write_text("example.com##.advert\n", encoding="utf-8")
+
+        result = artifacts.build_active_artifact(
+            refresh_lists=False,
+            created_by="tester",
+            source_kind="test",
+        )
+
+        assert result["ok"] is False
+        assert result["changed"] is False
+        assert result["download_pending"] is False
+        assert result["revision"].revision_id == previous_revision.revision_id
+        assert "without any request-time rules" in result["detail"]
+        assert (
+            artifacts.get_active_artifact().revision_id == previous_revision.revision_id
+        )
+        status = store.get_artifact_build_status()
+        assert status["ok"] is False
+        assert status["revision_id"] == previous_revision.revision_id
+    finally:
+        for key, value in env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_adblock_download_rejects_hostname_resolving_private(
     tmp_path, monkeypatch
 ) -> None:
