@@ -400,6 +400,34 @@ def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing
     assert (target / "fallback.pac").read_text(encoding="utf-8") == "original\n"
 
 
+def test_materialize_proxy_pac_state_rejects_backslash_traversal_paths(
+    tmp_path,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = tmp_path / "pac"
+    target.mkdir()
+    (target / "fallback.pac").write_text("original\n", encoding="utf-8")
+
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="sha",
+        files=(
+            pac_renderer.RenderedPacFile(
+                relative_path=r"subdir\..\..\escape.pac",
+                content="bad",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError):
+        pac_renderer.materialize_proxy_pac_state(target, state=state)
+
+    assert (target / "fallback.pac").read_text(encoding="utf-8") == "original\n"
+    assert not (tmp_path / "escape.pac").exists()
+
+
 def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

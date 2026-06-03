@@ -595,8 +595,9 @@ def materialize_proxy_pac_state(
 
     try:
         for item in state.files:
-            rel = os.path.normpath(str(item.relative_path or "")).replace("\\", "/")
-            if not rel or rel.startswith(("../", "/")) or rel == "..":
+            raw_rel = str(item.relative_path or "").replace("\\", "/")
+            rel = os.path.normpath(raw_rel).replace("\\", "/")
+            if not rel or rel.startswith(("../", "/")) or rel in {".", ".."}:
                 msg = f"Unsafe PAC materialization path: {item.relative_path}"
                 raise ValueError(msg)
             dest = payload_dir / rel
