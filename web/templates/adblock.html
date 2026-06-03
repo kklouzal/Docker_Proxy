@@ -166,7 +166,7 @@
         {% else %}
           <span class="badge danger">not built</span>
         {% endif %}
-        {% if artifact_build.last_failed %}
+        {% if artifact_build.last_failed and not artifact_build.pending %}
           <span class="badge danger">build failed</span>
         {% elif artifact_build.pending %}
           <span class="badge warn">build pending</span>

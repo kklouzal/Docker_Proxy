@@ -383,6 +383,56 @@ def test_adblock_page_surfaces_stale_or_failed_artifact_build(
     assert "Archive size" in text
 
 
+def test_adblock_page_prioritizes_pending_badge_during_failed_retry(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeAdblockStore()
+    store.refresh_requested = 1_700_000_100
+    summary = SimpleNamespace(
+        revision_id=7,
+        artifact_sha256="abcdef1234567890",
+        settings_version=1,
+        source_kind="background",
+        created_by="builder",
+        created_ts=1_700_000_000,
+        enabled_lists=["easylist"],
+        report={
+            "counts": {
+                "network_rules_total": 42,
+                "network_rules_with_options": 0,
+                "cosmetic_rules_total": 0,
+            },
+            "breakdowns": {"lookup_index_counts": {}},
+        },
+    )
+    store.get_artifact_build_status = lambda: {
+        "ok": False,
+        "detail": "Enabled lists could not be downloaded",
+        "revision_id": 7,
+        "artifact_sha256": "abcdef1234567890",
+        "archive_bytes": 1024,
+        "download_pending": True,
+        "ts": 1_700_000_101,
+    }
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_store=store,
+        adblock_artifacts=FakeAdblockArtifacts(summary),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/adblock")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert '<span class="badge warn">build pending</span>' in text
+    assert '<span class="badge danger">build failed</span>' not in text
+    assert "Last build failed" in text
+    assert "Enabled lists could not be downloaded" in text
+
+
 def test_adblock_page_surfaces_pending_subscription_downloads(
     monkeypatch, tmp_path
 ) -> None:
