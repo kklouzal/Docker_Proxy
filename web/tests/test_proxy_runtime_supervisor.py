@@ -1806,6 +1806,71 @@ def test_collect_health_degrades_when_desired_runtime_state_drifts() -> None:
     ]
 
 
+def test_collect_health_degrades_when_materialized_runtime_payload_is_stale() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 0.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._health_refresh_lock = threading.Lock()
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime.stats_provider = dict
+    runtime.runtime_services_builder = lambda **_kwargs: {"icap": {"ok": True}}
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=7,
+            config_sha256="config-sha",
+        ),
+    )
+    runtime.certificate_bundles = SimpleNamespace(
+        get_active_bundle_metadata=lambda: SimpleNamespace(
+            revision_id=8,
+            bundle_sha256="cert-sha",
+        ),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        get_active_artifact_metadata=lambda: SimpleNamespace(
+            revision_id=9,
+            artifact_sha256="adblock-sha",
+        ),
+    )
+    pac_state = SimpleNamespace(state_sha256="pac-sha", files=())
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._current_certificate_bundle_sha = lambda: "cert-sha"
+    runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
+    runtime._current_policy_sha = lambda: "policy-sha"
+    runtime._current_pac_state_sha = lambda: "pac-sha"
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="policy-sha",
+        files=(),
+    )
+    runtime.pac_state_builder = lambda _proxy_id: pac_state
+    runtime._adblock_materialization_integrity = lambda expected, *, current_sha=None: (
+        False,
+        "adblock request lookup database is missing.",
+    )
+    runtime._pac_materialization_integrity = lambda desired, *, current_sha=None: (
+        False,
+        "PAC materialized file is stale: fallback.pac",
+    )
+
+    result = runtime.collect_health(force=True)
+
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert result["state_errors"] == [
+        "adblock artifact: adblock request lookup database is missing.",
+        "PAC: PAC materialized file is stale: fallback.pac",
+    ]
+
+
 def test_collect_health_accepts_normalized_active_config_revision() -> None:
     _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore

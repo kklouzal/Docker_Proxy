@@ -571,7 +571,7 @@ class ProxyRuntime:
         if current != expected:
             return False, "PAC state marker does not match the active PAC state."
 
-        root = pathlib.Path(self.pac_render_dir)
+        root = pathlib.Path(getattr(self, "pac_render_dir", PAC_RENDER_DIR))
         for item in tuple(getattr(desired, "files", ()) or ()):
             raw_rel = str(getattr(item, "relative_path", "") or "").replace("\\", "/")
             rel = os.path.normpath(raw_rel).replace("\\", "/")
@@ -2167,6 +2167,7 @@ class ProxyRuntime:
             state_errors: list[str] = []
             desired_policy_sha = ""
             current_policy_sha = ""
+            desired_pac = None
             desired_pac_sha = ""
             current_pac_sha = self._current_pac_state_sha()
 
@@ -2255,6 +2256,20 @@ class ProxyRuntime:
                 )
                 if drift_detail
             )
+            if active_adblock_sha and active_adblock_sha == current_adblock_sha:
+                integrity_ok, integrity_detail = self._adblock_materialization_integrity(
+                    active_adblock_sha,
+                    current_sha=current_adblock_sha,
+                )
+                if not integrity_ok:
+                    state_errors.append(f"adblock artifact: {integrity_detail}")
+            if desired_pac is not None and desired_pac_sha == current_pac_sha:
+                integrity_ok, integrity_detail = self._pac_materialization_integrity(
+                    desired_pac,
+                    current_sha=current_pac_sha,
+                )
+                if not integrity_ok:
+                    state_errors.append(f"PAC: {integrity_detail}")
 
             ok = (
                 proxy_ok
