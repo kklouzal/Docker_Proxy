@@ -114,13 +114,17 @@ def _request_query_text(query_string: object | None) -> str:
 
 
 def _safe_manifest_file_path(value: object) -> str:
-    rel_path = os.path.normpath(str(value or "").strip()).replace("\\", "/")
-    if not rel_path or rel_path in {".", ".."}:
+    candidate = str(value or "").strip().replace("\\", "/")
+    if not candidate or candidate.startswith("/"):
         return ""
-    if rel_path.startswith(("/", "../")):
+    parts = candidate.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
         return ""
-    first_segment = rel_path.split("/", 1)[0]
+    first_segment = parts[0]
     if ":" in first_segment:
+        return ""
+    rel_path = os.path.normpath(candidate).replace("\\", "/")
+    if not rel_path or rel_path in {".", ".."} or rel_path.startswith("../"):
         return ""
     return rel_path
 
