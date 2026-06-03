@@ -201,6 +201,13 @@ class LocalPacCache:
             self._files = {}
             self._state_signatures = state_signatures
             return False
+        manifest_state_sha = str(manifest.get("state_sha256") or "").strip()
+        if state_sha and manifest_state_sha and state_sha != manifest_state_sha:
+            self._state_sha = ""
+            self._manifest = {}
+            self._files = {}
+            self._state_signatures = state_signatures
+            return False
 
         files: dict[str, str] = {}
         fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
