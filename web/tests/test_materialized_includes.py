@@ -417,3 +417,21 @@ def test_write_managed_text_files_restores_previous_files_when_late_replace_fail
     assert replace_calls[-1][1] == str(second)
     assert first.read_text(encoding="utf-8") == "old first\n"
     assert second.read_text(encoding="utf-8") == "old second\n"
+
+
+def test_write_managed_text_files_keeps_runtime_files_world_readable(tmp_path) -> None:
+    _add_repo_paths()
+    from services import materialized_files  # type: ignore
+
+    include_path = tmp_path / "conf.d" / "30-webfilter.conf"
+    list_path = tmp_path / "webfilter_whitelist.txt"
+
+    materialized_files.write_managed_text_files(
+        (str(include_path), "include text\n"),
+        (str(list_path), "example.com\n"),
+    )
+
+    assert include_path.read_text(encoding="utf-8") == "include text\n"
+    assert list_path.read_text(encoding="utf-8") == "example.com\n"
+    assert include_path.stat().st_mode & 0o777 == 0o644
+    assert list_path.stat().st_mode & 0o777 == 0o644

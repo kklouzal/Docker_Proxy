@@ -10,6 +10,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
     temp_paths: list[str] = []
     backups: dict[str, tuple[bool, bytes]] = {}
     replaced_paths: list[str] = []
+    mode = 0o644
     try:
         for path, content in files:
             directory = pathlib.Path(path).parent or "."
@@ -28,6 +29,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                 handle.flush()
             finally:
                 handle.close()
+            pathlib.Path(temp_path).chmod(mode)
 
         for path, _content in files:
             try:
@@ -44,6 +46,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
             existed, previous = backups.get(path, (False, b""))
             if existed:
                 pathlib.Path(path).write_bytes(previous)
+                pathlib.Path(path).chmod(mode)
             else:
                 with contextlib.suppress(FileNotFoundError):
                     pathlib.Path(path).unlink()
