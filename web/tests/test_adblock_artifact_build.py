@@ -775,6 +775,91 @@ def test_build_active_artifact_preserves_previous_when_enabled_list_has_no_reque
                 os.environ[key] = value
 
 
+def test_build_active_artifact_preserves_previous_and_pending_on_compile_failure(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import services.adblock_artifacts as artifacts_module  # type: ignore
+    import services.adblock_store as store_module  # type: ignore
+
+    importlib.reload(artifacts_module)
+
+    lists_dir = tmp_path / "lists"
+    lists_dir.mkdir(parents=True, exist_ok=True)
+    selected = "easylist"
+    (lists_dir / f"{selected}.txt").write_text("||cached.example^\n", encoding="utf-8")
+    recorded: dict[str, object] = {}
+    previous_revision = SimpleNamespace(
+        revision_id=42,
+        artifact_sha256="previous-sha",
+    )
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.lists_dir = str(lists_dir)
+
+        def init_db(self) -> None:
+            return None
+
+        def get_settings(self) -> dict[str, object]:
+            return {"enabled": True, "cache_ttl": 120, "cache_max": 4096}
+
+        def get_settings_version(self) -> int:
+            return 7
+
+        def list_statuses(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(key=selected, enabled=True)]
+
+        def list_path(self, key: str) -> str:
+            assert key == selected
+            return str(lists_dir / f"{key}.txt")
+
+        def should_update(self, *_args, **_kwargs) -> bool:
+            return True
+
+        def update_one(self, key: str, *, force: bool = False) -> bool:
+            assert key == selected
+            assert force is False
+            return False
+
+        def record_artifact_build_result(self, **kwargs: object) -> None:
+            recorded.update(kwargs)
+
+    def fail_compile(**_kwargs) -> None:
+        msg = "adblock_compile failed with exit code 2"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(store_module, "get_adblock_store", FakeStore)
+    monkeypatch.setattr(artifacts_module, "_compile_current_lists", fail_compile)
+
+    artifact_store = artifacts_module.AdblockArtifactStore(
+        compiled_dir=str(tmp_path / "compiled"),
+    )
+    monkeypatch.setattr(artifact_store, "init_db", lambda: None)
+    monkeypatch.setattr(artifact_store, "get_active_artifact", lambda: previous_revision)
+
+    result = artifact_store.build_active_artifact(
+        refresh_lists=False,
+        created_by="tester",
+        source_kind="test",
+    )
+
+    assert result["ok"] is False
+    assert result["changed"] is False
+    assert result["downloaded"] is False
+    assert result["download_pending"] is True
+    assert result["revision"].revision_id == previous_revision.revision_id
+    assert recorded["ok"] is False
+    assert recorded["download_pending"] is True
+    assert recorded["revision_id"] == previous_revision.revision_id
+    assert recorded["artifact_sha256"] == previous_revision.artifact_sha256
+
+
 def test_adblock_download_rejects_hostname_resolving_private(
     tmp_path, monkeypatch
 ) -> None:

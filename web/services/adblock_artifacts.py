@@ -612,11 +612,12 @@ class AdblockArtifactStore:
                     detail=detail,
                     revision_id=getattr(previous, "revision_id", 0),
                     artifact_sha256=getattr(previous, "artifact_sha256", ""),
+                    download_pending=download_pending,
                 )
             return {
                 "ok": False,
                 "detail": detail,
-                "revision": None,
+                "revision": previous,
                 "changed": False,
                 "downloaded": any_downloaded,
                 "download_pending": download_pending,
