@@ -73,6 +73,31 @@ def test_sync_policy_state_failure_reports_desired_and_current_sha(tmp_path) -> 
     )
 
 
+def test_sync_policy_state_reapplies_missing_empty_materialized_file(tmp_path) -> None:
+    missing_empty = tmp_path / "sslfilter_nobump.txt"
+    policy_conf = tmp_path / "policy.conf"
+    policy_conf.write_text("include policy\n", encoding="utf-8")
+    desired_files = (
+        SimpleNamespace(path=str(policy_conf), content="include policy\n"),
+        SimpleNamespace(path=str(missing_empty), content=""),
+    )
+    runtime = _runtime_shell()
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="same-policy-sha",
+        files=desired_files,
+    )
+    runtime._current_policy_sha = lambda: "same-policy-sha"
+
+    result = runtime.sync_policy_state()
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["reload_required"] is True
+    assert missing_empty.exists()
+    assert missing_empty.read_text(encoding="utf-8") == ""
+    assert "policy materialized file is missing" in result["detail"]
+
+
 def test_sync_pac_state_failure_reports_desired_and_current_sha(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

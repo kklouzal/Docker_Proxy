@@ -474,6 +474,31 @@ class ProxyRuntime:
         )
         return calculate_policy_sha(current_files)
 
+    def _policy_materialization_integrity(
+        self,
+        desired: Any,
+        *,
+        current_sha: str | None = None,
+    ) -> tuple[bool, str]:
+        current = (
+            str(current_sha or "").strip()
+            if current_sha is not None
+            else self._current_policy_sha()
+        )
+        expected = str(getattr(desired, "policy_sha256", "") or "").strip()
+        if current != expected:
+            return False, "policy marker does not match the active policy state."
+
+        for item in tuple(getattr(desired, "files", ()) or ()):
+            path = pathlib.Path(str(getattr(item, "path", "") or ""))
+            if not path.exists():
+                return False, f"policy materialized file is missing: {path}"
+            current_content = self._read_text_file(str(path))
+            desired_content = str(getattr(item, "content", "") or "")
+            if current_content != desired_content:
+                return False, f"policy materialized file is stale: {path}"
+        return True, ""
+
     def _current_adblock_artifact_sha(self) -> str:
         if self.services.current_adblock_sha_reader is not None:
             return str(self.services.current_adblock_sha_reader() or "")
@@ -1403,7 +1428,11 @@ class ProxyRuntime:
                 "Web category snapshot not required for current policy.",
             )
         current_sha = self._current_policy_sha()
-        if not force and desired.policy_sha256 == current_sha:
+        integrity_ok, integrity_detail = self._policy_materialization_integrity(
+            desired,
+            current_sha=current_sha,
+        )
+        if not force and integrity_ok:
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
@@ -1420,8 +1449,9 @@ class ProxyRuntime:
         changed_paths: list[str] = []
         try:
             for item in desired.files:
+                path = pathlib.Path(str(item.path or ""))
                 current_content = self._read_text_file(item.path)
-                if current_content == item.content:
+                if path.exists() and current_content == item.content:
                     continue
                 self._atomic_write_text(item.path, item.content)
                 changed_paths.append(item.path)
@@ -1465,9 +1495,21 @@ class ProxyRuntime:
             "reload_required": True,
             "policy_sha256": desired.policy_sha256,
             "previous_policy_sha": current_sha,
-            "detail": f"Updated {len(changed_paths)} local policy file(s)."
-            if snapshot_ok
-            else f"Updated {len(changed_paths)} local policy file(s); {snapshot_detail}",
+            "detail": "\n".join(
+                part
+                for part in (
+                    f"Updated {len(changed_paths)} local policy file(s)."
+                    if snapshot_ok
+                    else f"Updated {len(changed_paths)} local policy file(s); {snapshot_detail}",
+                    (
+                        "Reapplied policy state because local materialization was stale: "
+                        f"{integrity_detail.strip()}"
+                    )
+                    if integrity_detail.strip()
+                    else "",
+                )
+                if part
+            ),
             "degraded": not snapshot_ok,
         }
 
