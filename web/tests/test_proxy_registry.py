@@ -200,6 +200,7 @@ def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
         "public_host": "edge.example",
         "public_pac_scheme": "ftp",
         "public_pac_port": 0,
+        "public_pac_path": "/../secret.pac",
         "public_http_proxy_port": "3129",
         "status": "healthy",
         "last_heartbeat": 123,
@@ -216,6 +217,7 @@ def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
     assert instance.display_name == "edge-2"
     assert instance.public_pac_scheme == "http"
     assert instance.public_pac_port == 80
+    assert instance.public_pac_path == "/proxy.pac"
     assert instance.public_http_proxy_port == 3129
     assert instance.last_apply_ok is True
 

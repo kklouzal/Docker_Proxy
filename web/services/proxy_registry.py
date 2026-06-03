@@ -325,7 +325,9 @@ class ProxyRegistry:
             public_host=str(row["public_host"] or ""),
             public_pac_scheme=_normalize_public_scheme(row["public_pac_scheme"]),
             public_pac_port=_coerce_port(row["public_pac_port"], 80),
-            public_pac_path=str(row.get("public_pac_path") or "/proxy.pac"),
+            public_pac_path=normalize_public_pac_path(
+                row.get("public_pac_path") or "/proxy.pac",
+            ),
             public_http_proxy_port=_coerce_port(row["public_http_proxy_port"], 3128),
             status=str(row["status"] or "unknown"),
             last_heartbeat=int(row["last_heartbeat"] or 0),
