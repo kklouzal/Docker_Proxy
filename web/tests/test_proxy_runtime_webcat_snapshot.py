@@ -22,6 +22,7 @@ def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current
         path=str(tmp_path / "30-webfilter.conf"),
         content="# webfilter\nexternal_acl_type webcat_deadbeef children=2 ttl=0 negative_ttl=1 %SRC %DST %URI /usr/bin/python3 /app/tools/webcat_acl.py --fail open\n",
     )
+    (tmp_path / "30-webfilter.conf").write_text(policy_file.content, encoding="utf-8")
     policy_sha = calculate_policy_sha((policy_file,))
 
     services = ProxyRuntimeServices(
@@ -76,6 +77,7 @@ def test_proxy_policy_sync_skips_webcat_snapshot_when_policy_does_not_need_it(
         path=str(tmp_path / "30-webfilter.conf"),
         content="# webfilter\nhttp_access allow all\n",
     )
+    (tmp_path / "30-webfilter.conf").write_text(policy_file.content, encoding="utf-8")
     policy_sha = calculate_policy_sha((policy_file,))
     snapshot_calls: list[bool] = []
 
