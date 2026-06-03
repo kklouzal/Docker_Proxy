@@ -1400,6 +1400,83 @@ def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
     assert recorded[-1]["ok"] is True
 
 
+def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_missing_without_rule_count(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / ".artifact-sha256").write_text("same-sha", encoding="utf-8")
+    recorded: list[dict[str, object]] = []
+
+    class Artifacts:
+        compiled_dir = str(compiled)
+
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def get_active_artifact_summary(self):
+            return SimpleNamespace(report={})
+
+        def get_active_artifact(self):
+            return SimpleNamespace(
+                revision_id=42,
+                artifact_sha256="same-sha",
+                archive_blob=b"archive",
+            )
+
+        def record_apply_result(self, proxy_id, revision_id, **kwargs):
+            recorded.append(
+                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
+            )
+            return SimpleNamespace(application_id=18)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
+        root = Path(directory)
+        (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
+        _write_adblock_lookup_metadata(root / "request_lookup.sqlite", count_rules=0)
+
+    restarts: list[bool] = []
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=None)
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime.adblock_compiled_dir = str(compiled)
+    runtime._restart_adblock_service = lambda: (
+        restarts.append(True)
+        or (
+            True,
+            "restarted",
+        )
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "materialize_archive_to_directory",
+        fake_materialize,
+    )
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["artifact_changed"] is True
+    assert result["application_id"] == 18
+    assert "adblock request lookup database is missing" in result["detail"]
+    assert (compiled / "request_lookup.sqlite").exists()
+    assert restarts == [True]
+    assert recorded[-1]["ok"] is True
+
+
 def test_sync_adblock_state_records_missing_apply_for_current_artifact() -> None:
     recorded = []
 

@@ -518,13 +518,14 @@ class ProxyRuntime:
         if current != expected:
             return False, "adblock artifact marker does not match the active artifact."
 
+        lookup_path = pathlib.Path(self.adblock_compiled_dir) / "request_lookup.sqlite"
+        if not lookup_path.exists():
+            return False, "adblock request lookup database is missing."
+
         expected_rules = self._active_adblock_lookup_rule_count()
         if expected_rules is None:
             return True, ""
 
-        lookup_path = pathlib.Path(self.adblock_compiled_dir) / "request_lookup.sqlite"
-        if not lookup_path.exists():
-            return False, "adblock request lookup database is missing."
         try:
             conn = sqlite3.connect(str(lookup_path))
             try:
