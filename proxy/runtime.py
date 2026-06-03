@@ -522,10 +522,6 @@ class ProxyRuntime:
         if not lookup_path.exists():
             return False, "adblock request lookup database is missing."
 
-        expected_rules = self._active_adblock_lookup_rule_count()
-        if expected_rules is None:
-            return True, ""
-
         try:
             conn = sqlite3.connect(str(lookup_path))
             try:
@@ -540,6 +536,11 @@ class ProxyRuntime:
                 default="adblock request lookup database could not be inspected.",
             )
             return False, detail
+
+        expected_rules = self._active_adblock_lookup_rule_count()
+        if expected_rules is None:
+            return True, ""
+
         try:
             actual_rules = int(row[0]) if row else 0
         except Exception:
