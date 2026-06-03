@@ -102,6 +102,90 @@ def test_sync_pac_state_failure_reports_desired_and_current_sha(monkeypatch) -> 
     )
 
 
+def test_sync_pac_state_force_does_not_churn_intact_materialization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services import pac_renderer  # type: ignore
+
+    import proxy.runtime as runtime_module  # type: ignore
+
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="same-pac-sha",
+        files=(
+            pac_renderer.RenderedPacFile(
+                relative_path="fallback.pac",
+                content="PAC content\n",
+            ),
+            pac_renderer.RenderedPacFile(
+                relative_path=pac_renderer.PAC_STATE_SHA_FILENAME,
+                content="same-pac-sha\n",
+            ),
+        ),
+    )
+    pac_dir = tmp_path / "pac"
+    pac_renderer.materialize_proxy_pac_state(pac_dir, state=state)
+
+    def fail_materialize(*_args, **_kwargs) -> None:
+        msg = "intact PAC materialization should not be rewritten"
+        raise AssertionError(msg)
+
+    runtime = _runtime_shell()
+    runtime.pac_render_dir = str(pac_dir)
+    runtime.pac_state_builder = lambda _proxy_id: state
+    runtime._current_pac_state_sha = lambda: "same-pac-sha"
+    monkeypatch.setattr(runtime_module, "materialize_proxy_pac_state", fail_materialize)
+
+    result = runtime.sync_pac_state(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["state_sha256"] == "same-pac-sha"
+
+
+def test_sync_pac_state_reapplies_when_marker_matches_but_file_missing(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    from services import pac_renderer  # type: ignore
+
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="same-pac-sha",
+        files=(
+            pac_renderer.RenderedPacFile(
+                relative_path="fallback.pac",
+                content="PAC content\n",
+            ),
+            pac_renderer.RenderedPacFile(
+                relative_path=pac_renderer.PAC_STATE_SHA_FILENAME,
+                content="same-pac-sha\n",
+            ),
+        ),
+    )
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / pac_renderer.PAC_STATE_SHA_FILENAME).write_text(
+        "same-pac-sha\n",
+        encoding="utf-8",
+    )
+
+    runtime = _runtime_shell()
+    runtime.pac_render_dir = str(pac_dir)
+    runtime.pac_state_builder = lambda _proxy_id: state
+    runtime._current_pac_state_sha = lambda: "same-pac-sha"
+
+    result = runtime.sync_pac_state(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["previous_state_sha256"] == "same-pac-sha"
+    assert "PAC materialized file is missing: fallback.pac" in result["detail"]
+    assert (pac_dir / "fallback.pac").read_text(encoding="utf-8") == "PAC content\n"
+
+
 def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_returncode(
     monkeypatch,
 ) -> None:

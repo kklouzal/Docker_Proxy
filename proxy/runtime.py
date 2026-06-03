@@ -555,6 +555,43 @@ class ProxyRuntime:
             return str(self.services.current_pac_sha_reader() or "")
         return read_materialized_pac_state_sha(self.pac_render_dir)
 
+    def _pac_materialization_integrity(
+        self,
+        desired: Any,
+        *,
+        current_sha: str | None = None,
+    ) -> tuple[bool, str]:
+        current = (
+            str(current_sha or "").strip()
+            if current_sha is not None
+            else self._current_pac_state_sha()
+        )
+        expected = str(getattr(desired, "state_sha256", "") or "").strip()
+        if current != expected:
+            return False, "PAC state marker does not match the active PAC state."
+
+        root = pathlib.Path(self.pac_render_dir)
+        for item in tuple(getattr(desired, "files", ()) or ()):
+            raw_rel = str(getattr(item, "relative_path", "") or "").replace("\\", "/")
+            rel = os.path.normpath(raw_rel).replace("\\", "/")
+            if not rel or rel.startswith(("../", "/")) or rel in {".", ".."}:
+                return False, f"PAC state contains unsafe materialized path: {raw_rel}"
+            path = root / rel
+            if not path.exists():
+                return False, f"PAC materialized file is missing: {rel}"
+            try:
+                current_content = path.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                detail = public_error_message(
+                    exc,
+                    default=f"PAC materialized file could not be inspected: {rel}",
+                )
+                return False, detail
+            desired_content = str(getattr(item, "content", "") or "")
+            if current_content != desired_content:
+                return False, f"PAC materialized file is stale: {rel}"
+        return True, ""
+
     def _supervisor_program_status(
         self,
         program_name: str,
@@ -1692,7 +1729,11 @@ class ProxyRuntime:
     def sync_pac_state(self, *, force: bool = False) -> dict[str, Any]:
         desired = self.pac_state_builder(self.proxy_id)
         current_sha = self._current_pac_state_sha()
-        if not force and desired.state_sha256 == current_sha:
+        integrity_ok, integrity_detail = self._pac_materialization_integrity(
+            desired,
+            current_sha=current_sha,
+        )
+        if integrity_ok:
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
@@ -1728,7 +1769,19 @@ class ProxyRuntime:
             "changed": True,
             "state_sha256": desired.state_sha256,
             "previous_state_sha256": current_sha,
-            "detail": "PAC state materialized locally.",
+            "detail": "\n".join(
+                part
+                for part in (
+                    "PAC state materialized locally.",
+                    (
+                        "Reapplied PAC state because local materialization was stale: "
+                        f"{integrity_detail.strip()}"
+                    )
+                    if integrity_detail.strip()
+                    else "",
+                )
+                if part
+            ),
         }
 
     def bootstrap_revision_if_missing(self) -> None:
