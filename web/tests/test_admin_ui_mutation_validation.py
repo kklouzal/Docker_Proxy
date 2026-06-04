@@ -103,6 +103,21 @@ def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
+def test_ssl_error_exclusion_quick_action_reports_invalid_domain_without_sync(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(client, "/ssl-errors/exclude", {"domain": "not a host"})
+
+    assert response.status_code in {302, 303}
+    location = response.headers.get("Location", "")
+    assert "pane=ssl" in location
+    assert "error=1" in location
+    assert loaded.sslfilter_store.no_bump_domains == []
+    assert loaded.operation_ledger.operations == []
+
+
 @pytest.mark.parametrize(
     ("path", "data", "expected_source_kind"),
     [

@@ -4120,17 +4120,40 @@ def ssl_errors():
 @app.route("/ssl-errors/exclude", methods=["POST"])
 def ssl_errors_exclude():
     domain = _extract_domain(request.form.get("domain"))
-    if domain:
-        with contextlib.suppress(Exception):
-            get_sslfilter_store().add_domain("nobump", domain)
-        return _redirect_after_policy_refresh(
+    if not domain:
+        return _redirect_to("observability", pane="ssl", q=domain)
+    store = get_sslfilter_store()
+    try:
+        ok, detail, canonical = store.add_domain("nobump", domain)
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.ssl_errors_exclude",
+            interval_seconds=30.0,
+            message="Failed to add SSL error exclusion",
+        )
+        return _redirect_to(
             "observability",
-            get_sslfilter_store(),
-            force=True,
             pane="ssl",
             q=domain,
+            error="1",
+            msg=public_error_message(exc, default="SSL exclusion was not saved."),
         )
-    return _redirect_to("observability", pane="ssl", q=domain)
+    if ok:
+        return _redirect_after_policy_refresh(
+            "observability",
+            store,
+            force=True,
+            pane="ssl",
+            q=(canonical or domain),
+        )
+    return _redirect_to(
+        "observability",
+        pane="ssl",
+        q=domain,
+        error="1",
+        msg=detail or "SSL exclusion was not saved.",
+    )
 
 
 @app.route("/ssl-errors/export", methods=["GET"])
