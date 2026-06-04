@@ -126,6 +126,16 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
             "",
             "cache.example",
         )
+        assert store.add_domain("nobump", "https://Bücher.Example:443/path") == (
+            True,
+            "",
+            "xn--bcher-kva.example",
+        )
+        assert store.add_domain("nocache", "*.Bücher.Example") == (
+            True,
+            "",
+            "*.xn--bcher-kva.example",
+        )
         ok, detail, canonical = store.add_domain("nobump", "bad domain/example")
         assert ok is False
         assert canonical == ""
@@ -161,8 +171,10 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
 
         current = store.list_all()
         assert "*.example.com" in current.no_bump_domains
+        assert "xn--bcher-kva.example" in current.no_bump_domains
+        assert "*.xn--bcher-kva.example" in current.no_cache_domains
         assert "*.discord.com" in current.no_bump_domains
-        assert current.no_cache_domains == ["cache.example"]
+        assert "cache.example" in current.no_cache_domains
         assert current.no_bump_src_nets == ["192.168.44.0/24"]
         assert current.no_cache_src_nets == ["192.168.55.0/24"]
         assert current.exclude_private_nets is False
@@ -172,7 +184,12 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         assert store.list_all().inspection_enabled is False
 
         store.remove_domain("nobump", "*.example.com")
+        store.remove_domain("nobump", "https://Bücher.Example:443/path")
+        store.remove_domain("nocache", "*.Bücher.Example")
         store.remove_src_net("nobump", "192.168.44.0/24")
+        current = store.list_all()
+        assert "xn--bcher-kva.example" not in current.no_bump_domains
+        assert "*.xn--bcher-kva.example" not in current.no_cache_domains
         assert store.list_all().no_bump_src_nets == []
     finally:
         reset_proxy_id(token)

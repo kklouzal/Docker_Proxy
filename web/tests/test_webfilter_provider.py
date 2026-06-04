@@ -23,6 +23,30 @@ def test_webfilter_core_uses_shared_idna_normalization() -> None:
     assert m._looks_like_host("http://Bücher.Example:8080/path") is True
 
 
+def test_sslfilter_domain_policy_uses_shared_idna_normalization() -> None:
+    web_dir = Path(__file__).resolve().parents[1]
+    if str(web_dir) not in sys.path:
+        sys.path.insert(0, str(web_dir))
+    from services import sslfilter_store  # type: ignore
+
+    assert sslfilter_store._normalize_domain_rule(
+        "https://Bücher.Example:443/path"
+    ) == (True, "", "xn--bcher-kva.example")
+    assert sslfilter_store._normalize_domain_rule("*.Bücher.Example") == (
+        True,
+        "",
+        "*.xn--bcher-kva.example",
+    )
+    assert (
+        sslfilter_store._normalize_domain_for_squid("*.Bücher.Example")
+        == ".xn--bcher-kva.example"
+    )
+    ok, detail, canonical = sslfilter_store._normalize_domain_rule("bad/example")
+    assert ok is False
+    assert canonical == ""
+    assert "invalid domain characters" in detail.lower()
+
+
 def test_webfilter_run_build_passes_provider_to_builder() -> None:
     m = _import_webfilter_store_module()
     captured = {}

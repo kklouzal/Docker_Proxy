@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db import connect
+from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import now_ts as _now
@@ -58,25 +59,25 @@ def _canonical_policy(policy: str) -> str:
 
 
 def _normalize_domain_rule(domain: str) -> tuple[bool, str, str]:
-    raw = (domain or "").strip().lower()
+    raw = (domain or "").strip()
     if not raw:
         return False, "Domain is required.", ""
-    if raw.startswith(("http://", "https://")):
-        # Keep this helper deliberately small; app-level callers usually pass extracted domains.
-        raw = raw.split("//", 1)[1].split("/", 1)[0].split(":", 1)[0]
-    if raw.startswith("*."):
+    lowered = raw.lower()
+    is_url = lowered.startswith(("http://", "https://"))
+    if not is_url and any(ch in raw for ch in ("/", "?", "#", "\n", "\r")):
+        return False, "Invalid domain characters.", ""
+    if lowered.startswith("*."):
         core = raw[2:]
         is_wildcard = True
-    elif raw.startswith("."):
+    elif lowered.startswith("."):
         core = raw[1:]
         is_wildcard = True
     else:
         core = raw
         is_wildcard = False
+    core = _shared_normalize_domain(core)
     if not core or len(core) > 253:
         return False, "Invalid domain length.", ""
-    if any(ch in core for ch in (" ", "/", "\n", "\r")):
-        return False, "Invalid domain characters.", ""
     labels = core.split(".")
     if not labels or any(not label for label in labels):
         return False, "Invalid domain format.", ""
@@ -87,12 +88,15 @@ def _normalize_domain_rule(domain: str) -> tuple[bool, str, str]:
 
 
 def _normalize_domain_for_squid(domain: str) -> str:
-    value = (domain or "").strip().lower()
-    if value.startswith("*."):
-        return "." + value[2:].lstrip(".")
-    if value.startswith("."):
-        return "." + value.lstrip(".")
-    return value.lstrip(".")
+    value = (domain or "").strip()
+    lowered = value.lower()
+    if lowered.startswith("*."):
+        normalized = _shared_normalize_domain(value[2:])
+        return f".{normalized}" if normalized else ""
+    if lowered.startswith("."):
+        normalized = _shared_normalize_domain(value[1:])
+        return f".{normalized}" if normalized else ""
+    return _shared_normalize_domain(value)
 
 
 def _dedupe_squid_domains(values: list[str]) -> list[str]:
@@ -236,6 +240,13 @@ class SslFilterStore:
             candidates.add(f"*.{raw.lstrip('.')}")
         elif raw:
             candidates.add(f"*.{raw}")
+        ok, _err, canonical = _normalize_domain_rule(domain or "")
+        if ok and canonical:
+            candidates.add(canonical)
+            if canonical.startswith("*."):
+                candidates.add(canonical[2:].lstrip("."))
+            else:
+                candidates.add(f"*.{canonical}")
         values = [value for value in candidates if value]
         if not values:
             return
