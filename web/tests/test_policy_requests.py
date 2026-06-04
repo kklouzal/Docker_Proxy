@@ -260,6 +260,51 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
     assert store.approved[0][0] == 1
 
 
+def test_admin_policy_requests_approval_duration_is_bounded(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from .admin_route_test_utils import load_admin_app
+
+    class Store:
+        def __init__(self) -> None:
+            self.approved: list[tuple[int, dict[str, object]]] = []
+
+        def init_db(self) -> None:
+            pass
+
+        def approve_request(self, request_id, **kwargs):
+            self.approved.append((request_id, kwargs))
+
+    store = Store()
+    loaded = load_admin_app(monkeypatch, tmp_path, policy_request_store=store)
+    monkeypatch.setattr(
+        loaded.module, "_best_effort_refresh_managed_policy", lambda *a, **k: None
+    )
+
+    def approve(duration_seconds: str, *, indefinite: bool = False) -> dict[str, object]:
+        data = {
+            "action": "approve",
+            "request_id": "1",
+            "duration_seconds": duration_seconds,
+        }
+        if indefinite:
+            data["duration_mode"] = "indefinite"
+        with loaded.module.app.test_request_context(
+            "/requests",
+            method="POST",
+            data=data,
+        ):
+            response = loaded.module.policy_requests()
+        assert response.status_code in {302, 303}
+        return store.approved[-1][1]
+
+    assert approve("not-int")["duration_seconds"] == 24 * 60 * 60
+    assert approve("0")["duration_seconds"] == 60
+    assert approve("999999999")["duration_seconds"] == 30 * 24 * 60 * 60
+    assert approve("0", indefinite=True)["indefinite"] is True
+
+
 def test_admin_policy_requests_route_scopes_selected_proxy(
     monkeypatch,
     tmp_path,

@@ -187,6 +187,9 @@ _PROXY_OBSERVABILITY_TTL_SECONDS = _env_float(
     minimum=0.0,
     maximum=300.0,
 )
+_POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
+_POLICY_EXCEPTION_MIN_DURATION_SECONDS = 60
+_POLICY_EXCEPTION_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
 _OBSERVABILITY_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, int]]] = {}
 _OBSERVABILITY_RESULT_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 _OBSERVABILITY_RESULT_CACHE_LIMIT = 24
@@ -815,14 +818,6 @@ def _normalize_choice(
 def _form_action(*, default: str = "", lower: bool = False) -> str:
     action = (request.form.get("action") or default).strip()
     return action.lower() if lower else action
-
-
-def _posted_int(name: str, default: int) -> int:
-    value = (request.form.get(name) or "").strip()
-    try:
-        return int(value)
-    except ValueError:
-        return default
 
 
 def _bounded_int(
@@ -4050,7 +4045,12 @@ def policy_requests():
         reviewer = str(session.get("user") or "")
         try:
             if action == "approve":
-                duration = _posted_int("duration_seconds", 86400)
+                duration = _bounded_int(
+                    request.form.get("duration_seconds"),
+                    default=_POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS,
+                    minimum=_POLICY_EXCEPTION_MIN_DURATION_SECONDS,
+                    maximum=_POLICY_EXCEPTION_MAX_DURATION_SECONDS,
+                )
                 indefinite = request.form.get("duration_mode") == "indefinite"
                 store.approve_request(
                     int(request.form.get("request_id") or "0"),
