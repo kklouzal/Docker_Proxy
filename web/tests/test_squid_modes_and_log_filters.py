@@ -1038,7 +1038,7 @@ def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_incl
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
-    legacy = "http_port 3128\nicap_service adblock_req_old reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on\nicap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod bypass=on\nadaptation_service_set adblock_req_set adblock_req_old\nadaptation_service_set av_resp_set av_resp\nadaptation_access adblock_req_set allow all\nadaptation_access adblock_req_set allow icap_adblockable\nadaptation_access adblock_req_set deny all\nhttp_access allow manager localhost\nhttp_access deny manager\nhttp_access allow all\ninclude /etc/squid/conf.d/30-webfilter.conf\n"
+    legacy = "http_port 3128\nicap_service adblock_req_old reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on\nicap_service av_req reqmod_precache icap://127.0.0.1:14001/avrespmod bypass=on\nicap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod bypass=on\nadaptation_service_set adblock_req_set adblock_req_old\nadaptation_service_set av_req_set av_req\nadaptation_service_set av_resp_set av_resp\nacl file_security_upload_methods method POST PUT PATCH\nacl file_security_download_methods method GET HEAD\nacl file_security_risky_path urlpath_regex -i \\.(exe|dll)($|[?#])\nadaptation_access adblock_req_set allow all\nadaptation_access adblock_req_set allow icap_adblockable\nadaptation_access adblock_req_set deny all\nadaptation_access av_req_set allow file_security_upload_methods\nadaptation_access av_req_set deny all\nadaptation_access av_resp_set allow file_security_download_methods\nadaptation_access av_resp_set deny all\nhttp_access allow manager localhost\nhttp_access deny manager\nhttp_access deny file_security_risky_path\nhttp_access allow all\ninclude /etc/squid/conf.d/30-webfilter.conf\n"
 
     normalized = controller.normalize_config_text(legacy)
 
@@ -1046,10 +1046,20 @@ def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_incl
     assert normalized.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
     assert "icap_service adblock_req_old" not in normalized
     assert "adaptation_service_set adblock_req_set adblock_req_old" not in normalized
+    assert "adaptation_service_set av_req_set av_req" not in normalized
+    assert "adaptation_service_set av_resp_set av_resp" not in normalized
     assert "acl icap_adblockable method" not in normalized
+    assert "acl file_security_upload_methods" not in normalized
+    assert "acl file_security_download_methods" not in normalized
+    assert "acl file_security_risky_path" not in normalized
     assert "adaptation_access adblock_req_set allow icap_adblockable" not in normalized
     assert "adaptation_access adblock_req_set allow all" not in normalized
     assert "adaptation_access adblock_req_set deny all" not in normalized
+    assert "adaptation_access av_req_set allow file_security_upload_methods" not in normalized
+    assert "adaptation_access av_req_set deny all" not in normalized
+    assert "adaptation_access av_resp_set allow file_security_download_methods" not in normalized
+    assert "adaptation_access av_resp_set deny all" not in normalized
+    assert "http_access deny file_security_risky_path" not in normalized
     assert normalized.index(
         "include /etc/squid/conf.d/20-icap.conf"
     ) < normalized.index("http_access allow manager localhost")

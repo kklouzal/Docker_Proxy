@@ -240,8 +240,11 @@ class SquidController:
             r"^\s*icap_service\s+(?:adblock_req(?:_[A-Za-z0-9]+)?|av_req|av_resp)\b.*$\n?",
             r"^\s*adaptation_service_set\s+(?:adblock_req_set|av_req_set|av_resp_set)\b.*$\n?",
             r"^\s*acl\s+icap_adblockable\s+method\b.*$\n?",
+            r"^\s*acl\s+file_security_[A-Za-z0-9_]+\b.*$\n?",
             r"^\s*adaptation_access\s+adblock_req_set\s+allow\s+(?:all|icap_adblockable)\s*$\n?",
             r"^\s*adaptation_access\s+adblock_req_set\s+deny\s+all\s*$\n?",
+            r"^\s*adaptation_access\s+(?:av_req_set|av_resp_set)\s+(?:allow|deny)\b.*$\n?",
+            r"^\s*http_access\s+deny\s+file_security_[A-Za-z0-9_]+(?:\s+file_security_[A-Za-z0-9_]+)?\s*$\n?",
         )
         for pattern in managed_patterns:
             text = re.sub(pattern, "", text, flags=re.MULTILINE)
