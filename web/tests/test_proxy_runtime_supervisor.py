@@ -1735,6 +1735,53 @@ def test_sync_adblock_state_reports_cache_flush_as_runtime_change() -> None:
     assert recorded[-1]["ok"] is True
 
 
+def test_sync_adblock_state_reports_cache_flush_marker_failure() -> None:
+    recorded = []
+
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def get_active_artifact(self):
+            return SimpleNamespace(
+                revision_id=42, artifact_sha256="same-sha", archive_blob=b""
+            )
+
+        def record_apply_result(self, proxy_id, revision_id, **kwargs):
+            recorded.append(
+                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
+            )
+            return SimpleNamespace(application_id=8)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return True
+
+        def mark_cache_flushed(self, *, size=0) -> None:
+            msg = "db unavailable"
+            raise RuntimeError(msg)
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime._restart_adblock_service = lambda: (True, "restarted")
+
+    result = runtime.sync_adblock_state(force=False)
+
+    assert result["ok"] is False
+    assert result["changed"] is True
+    assert result["adblock_changed"] is True
+    assert result["artifact_changed"] is False
+    assert result["cache_flushed"] is False
+    assert "restarted" in result["detail"]
+    assert "Failed to clear adblock cache flush request" in result["detail"]
+    assert recorded[-1]["ok"] is False
+
+
 def test_collect_health_returns_stale_cache_during_inflight_refresh() -> None:
     runtime = _runtime_shell()
     runtime.health_cache_ttl_seconds = 3.0

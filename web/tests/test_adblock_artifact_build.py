@@ -345,6 +345,53 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
                 os.environ[key] = value
 
 
+def test_apply_active_artifact_locally_reports_cache_flush_marker_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    os.environ["DISABLE_BACKGROUND"] = "1"
+
+    import services.adblock_artifacts as artifacts_module  # type: ignore
+    import services.adblock_store as store_module  # type: ignore
+
+    importlib.reload(store_module)
+    importlib.reload(artifacts_module)
+
+    class Store:
+        def get_cache_flush_requested(self) -> bool:
+            return True
+
+        def mark_cache_flushed(self, *, size=0) -> None:
+            msg = "db unavailable"
+            raise RuntimeError(msg)
+
+    class Artifacts:
+        compiled_dir = str(tmp_path / "compiled")
+
+        def get_active_artifact(self):
+            return None
+
+    monkeypatch.setattr(artifacts_module, "get_adblock_artifacts", Artifacts)
+    monkeypatch.setattr(store_module, "get_adblock_store", Store)
+    monkeypatch.setattr(
+        artifacts_module,
+        "_restart_local_adblock_service",
+        lambda: (True, "restarted"),
+    )
+
+    ok, detail = artifacts_module.apply_active_artifact_locally()
+
+    assert ok is False
+    assert "restarted" in detail
+    assert "Failed to clear adblock cache flush request" in detail
+
+
 def test_background_build_detects_enabled_list_drift_without_version_change(
     tmp_path,
 ) -> None:

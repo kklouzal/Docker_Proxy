@@ -1258,8 +1258,17 @@ def apply_active_artifact_locally(
 
     ok, detail = _restart_local_adblock_service()
     if ok and flush_requested:
-        with contextlib.suppress(Exception):
+        try:
             store.mark_cache_flushed(size=0)
+        except Exception as exc:
+            clear_detail = public_error_message(
+                exc,
+                default="Failed to clear adblock cache flush request.",
+            )
+            detail = "\n".join(
+                part for part in (detail.strip(), clear_detail) if part
+            ).strip()
+            return False, detail
     return ok, detail
 
 

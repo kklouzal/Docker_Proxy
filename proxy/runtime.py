@@ -1535,8 +1535,28 @@ class ProxyRuntime:
 
             ok_restart, restart_detail = self._restart_adblock_service()
             if ok_restart:
-                with suppress(Exception):
+                try:
                     store.mark_cache_flushed(size=0)
+                except Exception as exc:
+                    clear_detail = public_error_message(
+                        exc,
+                        default="Failed to clear adblock cache flush request.",
+                    )
+                    detail = "\n".join(
+                        part
+                        for part in (restart_detail.strip(), clear_detail)
+                        if str(part or "").strip()
+                    ).strip()
+                    return {
+                        "ok": False,
+                        "proxy_id": self.proxy_id,
+                        "changed": True,
+                        "artifact_changed": False,
+                        "cache_flushed": False,
+                        "revision_id": None,
+                        "artifact_sha256": current_sha,
+                        "detail": detail,
+                    }
             return {
                 "ok": ok_restart,
                 "proxy_id": self.proxy_id,
@@ -1739,31 +1759,42 @@ class ProxyRuntime:
         if artifact_changed and snapshot_root:
             with suppress(Exception):
                 shutil.rmtree(snapshot_root, ignore_errors=True)
+        cache_flush_detail = ""
+        cache_flushed = False
         if ok_restart and flush_requested:
-            with suppress(Exception):
+            try:
                 store.mark_cache_flushed(size=0)
+                cache_flushed = True
+            except Exception as exc:
+                cache_flush_detail = public_error_message(
+                    exc,
+                    default="Failed to clear adblock cache flush request.",
+                )
         detail_parts = [restart_detail.strip() or "Adblock artifact applied."]
         if integrity_detail.strip():
             detail_parts.append(
                 f"Reapplied artifact because local materialization was stale: {integrity_detail.strip()}",
             )
+        if cache_flush_detail.strip():
+            detail_parts.append(cache_flush_detail.strip())
         detail = "\n".join(part for part in detail_parts if part).strip()
+        result_ok = bool(ok_restart and not cache_flush_detail)
         applied = self.adblock_artifacts.record_apply_result(
             self.proxy_id,
             revision.revision_id,
-            ok=ok_restart,
+            ok=result_ok,
             detail=detail,
             applied_by="proxy",
             artifact_sha256=revision.artifact_sha256,
         )
         adblock_runtime_changed = bool(artifact_changed or flush_requested)
         return {
-            "ok": ok_restart,
+            "ok": result_ok,
             "proxy_id": self.proxy_id,
             "changed": adblock_runtime_changed,
             "adblock_changed": adblock_runtime_changed,
             "artifact_changed": artifact_changed,
-            "cache_flushed": bool(ok_restart and flush_requested),
+            "cache_flushed": cache_flushed,
             "revision_id": revision.revision_id,
             "application_id": applied.application_id,
             "artifact_sha256": revision.artifact_sha256,
