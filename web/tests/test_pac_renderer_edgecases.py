@@ -301,6 +301,22 @@ def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
     assert "3129" not in target.proxy_chain
 
 
+def test_pac_target_display_chain_normalizes_url_shaped_public_host() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = pac_renderer.ProxyPacTarget(
+        proxy_id="default",
+        public_host="http://Proxy.Example:8080/proxy.pac",
+        pac_scheme="http",
+        pac_port=80,
+        http_proxy_port=3128,
+    )
+
+    assert target.proxy_chain == "PROXY proxy.example:3128; DIRECT"
+    assert target.proxy_chain_display == "PROXY proxy.example:3128; DIRECT"
+
+
 def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

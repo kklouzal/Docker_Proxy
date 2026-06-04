@@ -204,9 +204,10 @@ class ProxyPacTarget:
         return tuple(entries)
 
     def _build_proxy_chain(self, *, display: bool) -> str:
-        host = (
-            self.public_host or "<request-host>" if display else self.proxy_host_token
-        )
+        if display and not self.public_host:
+            host = "<request-host>"
+        else:
+            host = self.proxy_host_token
         entries = [f"PROXY {host}:{self.http_proxy_port}"]
         for rendered_host, backup_port in self.normalized_backup_proxies:
             entries.append(f"PROXY {rendered_host}:{int(backup_port)}")
