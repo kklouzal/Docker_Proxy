@@ -81,7 +81,27 @@ class ProxyClient:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8", errors="replace")
-                data = json.loads(raw) if raw else {}
+                try:
+                    data = json.loads(raw) if raw else {}
+                except Exception as exc:
+                    detail = self._safe_error_detail(
+                        raw,
+                        status_code=int(response.status),
+                    )
+                    msg = (
+                        f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+                    )
+                    raise ProxyClientError(msg) from exc
+                if not isinstance(data, dict):
+                    detail = (
+                        "Proxy management endpoint returned JSON that was not an "
+                        "object. Check that the registered management URL points to "
+                        "the proxy management listener."
+                    )
+                    msg = (
+                        f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+                    )
+                    raise ProxyClientError(msg)
                 return ProxyResponse(
                     ok=bool(data.get("ok", True)),
                     status_code=int(response.status),

@@ -217,6 +217,62 @@ def test_proxy_client_sanitizes_html_management_auth_error(monkeypatch) -> None:
     assert "proxy=live" in message
 
 
+def test_proxy_client_sanitizes_successful_html_response(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import proxy_client  # type: ignore
+
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    class HtmlResponse(_Response):
+        def read(self) -> bytes:
+            return b"<!doctype html><title>Wrong listener</title><h1>OK</h1>"
+
+    monkeypatch.setattr(
+        proxy_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: HtmlResponse({}),
+    )
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "HTML error page" in message
+    assert "registered management URL" in message
+    assert "<!doctype" not in message.lower()
+    assert "proxy=live" in message
+
+
+def test_proxy_client_rejects_successful_non_object_json(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import proxy_client  # type: ignore
+
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    class ListResponse(_Response):
+        def read(self) -> bytes:
+            return b'["not", "a", "management", "payload"]'
+
+    monkeypatch.setattr(
+        proxy_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: ListResponse({}),
+    )
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "returned JSON that was not an object" in message
+    assert "registered management URL" in message
+    assert "not\", \"a\", \"management" not in message
+    assert "proxy=live" in message
+
+
 def test_proxy_client_timeout_error_is_actionable(monkeypatch) -> None:
     _add_web_to_path()
     from services import proxy_client  # type: ignore
