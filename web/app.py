@@ -2173,8 +2173,18 @@ def _handle_adblock_post(store: Any):
     elif action == "save_settings":
         enabled = request.form.get("adblock_enabled") == "on"
         cur = store.get_settings()
-        cache_ttl = _posted_int("cache_ttl", int(cur.get("cache_ttl") or 0))
-        cache_max = _posted_int("cache_max", int(cur.get("cache_max") or 0))
+        cache_ttl = _bounded_int(
+            request.form.get("cache_ttl"),
+            default=int(cur.get("cache_ttl") or 0),
+            minimum=0,
+            maximum=7 * 24 * 3600,
+        )
+        cache_max = _bounded_int(
+            request.form.get("cache_max"),
+            default=int(cur.get("cache_max") or 0),
+            minimum=0,
+            maximum=1_000_000,
+        )
         store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
         store.request_refresh_now()
         _best_effort_queue_adblock_runtime_refresh(action="settings save")

@@ -15,7 +15,7 @@ def _params(location: str) -> dict[str, list[str]]:
     return parse_qs(urlsplit(location).query)
 
 
-def test_adblock_settings_accept_non_int_default_and_request_refresh(
+def test_adblock_settings_clamp_invalid_cache_values_and_request_refresh(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeAdblockStore()
@@ -34,7 +34,7 @@ def test_adblock_settings_accept_non_int_default_and_request_refresh(
     assert response.status_code in {301, 302, 303}
     assert store.settings["enabled"] is True
     assert store.settings["cache_ttl"] == 3600
-    assert store.settings["cache_max"] == -10
+    assert store.settings["cache_max"] == 0
     assert store.refresh_requested == 1
     assert loaded.operation_ledger.operations[-1].operation_type == "adblock_refresh"
     assert loaded.operation_ledger.operations[-1].status == "pending"
