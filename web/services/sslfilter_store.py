@@ -291,15 +291,31 @@ class SslFilterStore:
         policy_key = _canonical_policy(policy)
         if policy_key not in _SRC_POLICIES:
             return
-        canonical = (cidr or "").strip()
-        if not canonical:
+        raw = (cidr or "").strip()
+        if not raw:
             return
+        candidates = {raw}
+        try:
+            if "/" in raw:
+                net = ipaddress.ip_network(raw, strict=False)
+            else:
+                ip = ipaddress.ip_address(raw)
+                net = ipaddress.ip_network(
+                    f"{ip}/{32 if ip.version == 4 else 128}",
+                    strict=False,
+                )
+            candidates.add(net.with_prefixlen)
+        except Exception:
+            pass
         self.init_db()
         proxy_id = get_proxy_id()
+        values = [value for value in candidates if value]
+        placeholders = ",".join(["%s"] * len(values))
         with self._connect() as conn:
             conn.execute(
-                "DELETE FROM sslfilter_src_nets WHERE proxy_id=%s AND policy=%s AND cidr=%s",
-                (proxy_id, policy_key, canonical),
+                "DELETE FROM sslfilter_src_nets "
+                f"WHERE proxy_id=%s AND policy=%s AND cidr IN ({placeholders})",
+                (proxy_id, policy_key, *values),
             )
 
     # Backward-compatible helpers for older tests/callers.

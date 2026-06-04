@@ -186,11 +186,13 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         store.remove_domain("nobump", "*.example.com")
         store.remove_domain("nobump", "https://Bücher.Example:443/path")
         store.remove_domain("nocache", "*.Bücher.Example")
-        store.remove_src_net("nobump", "192.168.44.0/24")
+        store.remove_src_net("nobump", "192.168.44.123/24")
+        store.remove_src_net("nocache", "192.168.55.99/24")
         current = store.list_all()
         assert "xn--bcher-kva.example" not in current.no_bump_domains
         assert "*.xn--bcher-kva.example" not in current.no_cache_domains
         assert store.list_all().no_bump_src_nets == []
+        assert store.list_all().no_cache_src_nets == []
     finally:
         reset_proxy_id(token)
 
