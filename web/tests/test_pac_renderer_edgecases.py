@@ -329,6 +329,36 @@ def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> 
     )
 
 
+def test_pac_target_filters_stale_invalid_backup_proxy_rows() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = pac_renderer.ProxyPacTarget(
+        proxy_id="default",
+        public_host="proxy.example",
+        pac_scheme="http",
+        pac_port=80,
+        http_proxy_port=3128,
+        backup_proxies=(
+            ("http://Backup.Example:8080/proxy.pac", 3128),
+            ("bad host.example", 8080),
+            ("backup.example/path", 8080),
+            ("[2001:db8::20]:8443", None),
+        ),
+    )
+
+    assert target.normalized_backup_proxies == (
+        ("backup.example", 3128),
+        ("[2001:db8::20]", 8443),
+    )
+    assert (
+        target.proxy_chain
+        == "PROXY proxy.example:3128; PROXY backup.example:3128; PROXY [2001:db8::20]:8443; DIRECT"
+    )
+    assert "bad host" not in target.proxy_chain
+    assert "/path" not in target.proxy_chain
+
+
 def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

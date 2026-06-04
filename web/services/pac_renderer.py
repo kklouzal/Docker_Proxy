@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from services.domain_normalization import normalize_domain as _shared_normalize_domain
-from services.pac_profiles_store import PacProfile, get_pac_profiles_store
+from services.pac_profiles_store import (
+    PacProfile,
+    _normalize_proxy_host_port,
+    get_pac_profiles_store,
+)
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.proxy_registry import get_proxy_registry, normalize_public_pac_path
 from services.sslfilter_store import get_sslfilter_store
@@ -134,6 +138,19 @@ def _domain_match_expression(domain: str) -> str:
     return f"(host === {json.dumps(normalized)} || dnsDomainIs(host, {json.dumps(suffix)}))"
 
 
+def _normalize_backup_proxy_entry(
+    proxy_host: object | None,
+    proxy_port: object | None,
+) -> tuple[str, int] | None:
+    host, port, _err = _normalize_proxy_host_port(
+        str(proxy_host or ""),
+        proxy_port,
+    )
+    if host is None or port is None:
+        return None
+    return format_proxy_host(host), int(port)
+
+
 @dataclass(frozen=True)
 class ProxyPacTarget:
     proxy_id: str
@@ -176,17 +193,22 @@ class ProxyPacTarget:
     def proxy_chain_display(self) -> str:
         return self._build_proxy_chain(display=True)
 
+    @property
+    def normalized_backup_proxies(self) -> tuple[tuple[str, int], ...]:
+        entries: list[tuple[str, int]] = []
+        for backup_host, backup_port in self.backup_proxies:
+            normalized = _normalize_backup_proxy_entry(backup_host, backup_port)
+            if normalized is None:
+                continue
+            entries.append(normalized)
+        return tuple(entries)
+
     def _build_proxy_chain(self, *, display: bool) -> str:
         host = (
             self.public_host or "<request-host>" if display else self.proxy_host_token
         )
         entries = [f"PROXY {host}:{self.http_proxy_port}"]
-        for backup_host, backup_port in self.backup_proxies:
-            rendered_host = str(backup_host or "").strip()
-            if not rendered_host:
-                continue
-            if not display or ":" in rendered_host:
-                rendered_host = format_proxy_host(rendered_host)
+        for rendered_host, backup_port in self.normalized_backup_proxies:
             entries.append(f"PROXY {rendered_host}:{int(backup_port)}")
         if self.direct_enabled:
             entries.append("DIRECT")
@@ -553,7 +575,7 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
             "proxy_chain": target.proxy_chain_display,
             "backup_proxies": [
                 {"proxy_host": host, "proxy_port": port}
-                for host, port in target.backup_proxies
+                for host, port in target.normalized_backup_proxies
             ],
             "direct_enabled": target.direct_enabled,
             "profiles": _manifest_profiles(sorted_profiles),
