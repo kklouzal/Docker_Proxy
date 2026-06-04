@@ -6,6 +6,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import urlsplit
 
 from services.db import connect
+from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import now_ts as _now
 
@@ -36,15 +37,28 @@ class PacProxyChainSettings:
 
 
 def _normalize_domain(domain: str) -> tuple[str | None, str]:
-    d = (domain or "").strip().lower()
-    if not d:
+    raw = (domain or "").strip()
+    if not raw:
         return None, ""
-    if " " in d or "/" in d:
+    if any(ch.isspace() for ch in raw):
         return None, "Invalid domain."
-    d = d.removeprefix(".")
-    if not d:
+    wildcard = raw.lower().startswith("*.") and "://" not in raw
+    raw = raw[2:] if wildcard else raw.removeprefix(".")
+    d = _shared_normalize_domain(raw)
+    if not d or ":" in d:
         return None, "Invalid domain."
-    return d, ""
+    labels = d.split(".")
+    if any(
+        not label
+        or len(label) > 63
+        or not label.isascii()
+        or not label[0].isalnum()
+        or not label[-1].isalnum()
+        or any(not (ch.isalnum() or ch == "-") for ch in label)
+        for label in labels
+    ):
+        return None, "Invalid domain."
+    return (f"*.{d}" if wildcard else d), ""
 
 
 def _normalize_client_cidr(cidr: str) -> tuple[str | None, str]:

@@ -138,6 +138,23 @@ def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(
     assert settings.direct_enabled is False
 
 
+def test_direct_domain_normalization_accepts_urls_idn_and_wildcards() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    assert mod._normalize_domain("https://Bücher.Example:443/path") == (
+        "xn--bcher-kva.example",
+        "",
+    )
+    assert mod._normalize_domain("*.Bücher.Example") == (
+        "*.xn--bcher-kva.example",
+        "",
+    )
+    assert mod._normalize_domain(".Example.COM") == ("example.com", "")
+    assert mod._normalize_domain("-bad.example")[0] is None
+    assert mod._normalize_domain("bad domain.example")[0] is None
+
+
 def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> None:
     _add_web_path()
     import services.pac_profiles_store as mod
