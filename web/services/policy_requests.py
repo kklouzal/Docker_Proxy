@@ -18,6 +18,9 @@ ACTIVE = "active"
 REVOKED = "revoked"
 REQ_STATUS = {PENDING, APPROVED, REJECTED, CLOSED}
 BLOCK_TYPES = {"webfilter", "adblock", "clamav", "download", "mime"}
+POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
+POLICY_EXCEPTION_MIN_DURATION_SECONDS = 60
+POLICY_EXCEPTION_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
 _SAFE = re.compile(r"[^a-z0-9_.:-]+", re.IGNORECASE)
 _HOST_LABEL = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
@@ -99,6 +102,17 @@ def _text(v: object, max_len: int, multiline: bool = False) -> str:
     else:
         s = re.sub(r"[\r\n\t]+", " ", s)
     return s[:max_len]
+
+
+def _bounded_duration_seconds(value: object) -> int:
+    try:
+        seconds = int(str(value).strip())
+    except Exception:
+        seconds = POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS
+    return max(
+        POLICY_EXCEPTION_MIN_DURATION_SECONDS,
+        min(POLICY_EXCEPTION_MAX_DURATION_SECONDS, seconds),
+    )
 
 
 def normalize_block_type(v: object) -> str:
@@ -344,8 +358,8 @@ class PolicyRequestStore:
         now = now_ts()
         exp = (
             0
-            if indefinite or not duration_seconds
-            else now + max(60, int(duration_seconds))
+            if indefinite or duration_seconds is None
+            else now + _bounded_duration_seconds(duration_seconds)
         )
         reviewer_s = _text(reviewer, 128)
         note = _text(admin_note, 2000, True)

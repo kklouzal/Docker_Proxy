@@ -42,6 +42,49 @@ def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path) ->
     assert store.active_webfilter_exceptions(proxy_id="edge-a") == []
 
 
+def test_policy_request_store_bounds_direct_approval_durations(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-duration-bounds")
+    ensure_web_import_path()
+    from services.policy_requests import (
+        POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS,
+        POLICY_EXCEPTION_MAX_DURATION_SECONDS,
+        POLICY_EXCEPTION_MIN_DURATION_SECONDS,
+        PolicyRequestStore,
+    )
+
+    store = PolicyRequestStore()
+    store.init_db()
+
+    def approve(domain: str, duration_seconds: object):
+        req = store.create_request(
+            proxy_id="edge-a",
+            client_ip="192.168.1.55",
+            request_url=f"https://{domain}/",
+            domain=domain,
+        )
+        return store.approve_request(
+            req.id,
+            reviewer="admin",
+            duration_seconds=duration_seconds,
+        )
+
+    minimum = approve("min.example", 0)
+    default = approve("default.example", "not-int")
+    maximum = approve("max.example", 999999999)
+    indefinite = approve("indefinite.example", None)
+
+    assert minimum.expires_ts - minimum.created_ts == (
+        POLICY_EXCEPTION_MIN_DURATION_SECONDS
+    )
+    assert default.expires_ts - default.created_ts == (
+        POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS
+    )
+    assert maximum.expires_ts - maximum.created_ts == (
+        POLICY_EXCEPTION_MAX_DURATION_SECONDS
+    )
+    assert indefinite.expires_ts == 0
+
+
 def test_webfilter_materialization_renders_client_scoped_exceptions(
     monkeypatch, tmp_path
 ) -> None:

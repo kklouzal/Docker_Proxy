@@ -94,6 +94,9 @@ from services.pac_profiles_store import (
 )
 from services.pac_renderer import resolve_proxy_pac_target
 from services.policy_requests import (
+    POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS,
+    POLICY_EXCEPTION_MAX_DURATION_SECONDS,
+    POLICY_EXCEPTION_MIN_DURATION_SECONDS,
     get_policy_request_store as _default_get_policy_request_store,
 )
 from services.proxy_client import ProxyClientError
@@ -187,9 +190,6 @@ _PROXY_OBSERVABILITY_TTL_SECONDS = _env_float(
     minimum=0.0,
     maximum=300.0,
 )
-_POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
-_POLICY_EXCEPTION_MIN_DURATION_SECONDS = 60
-_POLICY_EXCEPTION_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
 _OBSERVABILITY_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, int]]] = {}
 _OBSERVABILITY_RESULT_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 _OBSERVABILITY_RESULT_CACHE_LIMIT = 24
@@ -4047,9 +4047,9 @@ def policy_requests():
             if action == "approve":
                 duration = _bounded_int(
                     request.form.get("duration_seconds"),
-                    default=_POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS,
-                    minimum=_POLICY_EXCEPTION_MIN_DURATION_SECONDS,
-                    maximum=_POLICY_EXCEPTION_MAX_DURATION_SECONDS,
+                    default=POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS,
+                    minimum=POLICY_EXCEPTION_MIN_DURATION_SECONDS,
+                    maximum=POLICY_EXCEPTION_MAX_DURATION_SECONDS,
                 )
                 indefinite = request.form.get("duration_mode") == "indefinite"
                 store.approve_request(
