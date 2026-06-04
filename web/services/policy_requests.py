@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db import connect
+from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.proxy_context import get_proxy_id, normalize_proxy_id
 from services.runtime_helpers import extract_domain, now_ts
 
@@ -25,16 +26,12 @@ _HOST_LABEL = re.compile(
 
 
 def _norm_domain(value: object) -> str:
-    host = str(value or "").strip().lower().lstrip(".")
+    raw = str(value or "").strip().lstrip(".")
+    raw = raw.removeprefix("*.")
+    host = _shared_normalize_domain(raw)
     if not host:
         return ""
-    host = host.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    host = host.removeprefix("*.")
-    if ":" in host and host.count(":") == 1:
-        h, port = host.rsplit(":", 1)
-        if port.isdigit():
-            host = h
-    return host.strip(".")[:255]
+    return host[:255]
 
 
 def _looks_like_host(value: object) -> bool:
