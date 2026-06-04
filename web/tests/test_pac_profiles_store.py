@@ -22,8 +22,13 @@ class _FakeResult:
 
 
 class _FakeConn:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        direct_domain_rows: list[dict[str, object]] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.direct_domain_rows = direct_domain_rows
 
     def execute(self, sql: str, params: tuple[object, ...] = ()):
         self.calls.append((sql, params))
@@ -41,6 +46,9 @@ class _FakeConn:
             )
         if sql.startswith("SELECT profile_id, domain FROM pac_direct_domains"):
             return _FakeResult(
+                self.direct_domain_rows
+                if self.direct_domain_rows is not None
+                else
                 [
                     {"profile_id": 11, "domain": "a.example"},
                     {"profile_id": 11, "domain": "b.example"},
@@ -113,6 +121,34 @@ def test_list_profiles_batches_child_queries(monkeypatch) -> None:
     )
     assert "profile_id IN" in conn.calls[1][0]
     assert "profile_id IN" in conn.calls[2][0]
+
+
+def test_list_profiles_normalizes_stale_direct_domain_rows(monkeypatch) -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    conn = _FakeConn(
+        direct_domain_rows=[
+            {"profile_id": 11, "domain": "Example.COM"},
+            {"profile_id": 11, "domain": ".example.com"},
+            {"profile_id": 11, "domain": "https://Bücher.Example:443/path"},
+            {"profile_id": 11, "domain": "bad domain.example"},
+            {"profile_id": 12, "domain": "*.Media.Example"},
+        ],
+    )
+    store = mod.PacProfilesStore()
+
+    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
+    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
+    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+
+    profiles = store.list_profiles()
+
+    assert profiles[0].direct_domains == [
+        "example.com",
+        "xn--bcher-kva.example",
+    ]
+    assert profiles[1].direct_domains == ["*.media.example"]
 
 
 def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(

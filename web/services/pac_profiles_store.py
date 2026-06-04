@@ -208,9 +208,15 @@ class PacProfilesStore:
                 tuple(profile_ids),
             ).fetchall()
             for row in domain_rows:
-                domains_by_profile.setdefault(int(row["profile_id"]), []).append(
-                    str(row["domain"]),
+                domain, _err = _normalize_domain(str(row["domain"]))
+                if not domain:
+                    continue
+                profile_domains = domains_by_profile.setdefault(
+                    int(row["profile_id"]),
+                    [],
                 )
+                if domain not in profile_domains:
+                    profile_domains.append(domain)
 
             nets_by_profile: dict[int, list[str]] = {pid: [] for pid in profile_ids}
             net_rows = conn.execute(

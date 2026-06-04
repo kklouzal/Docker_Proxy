@@ -262,6 +262,29 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
     assert 'return "PROXY proxy.example:3128; DIRECT";' in rendered
 
 
+def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=[
+            "https://Bücher.Example:443/path",
+            "*.Media.Example",
+            "bad domain.example",
+            "2001:db8::1",
+        ],
+        direct_dst_nets=[],
+        include_private=False,
+    )
+
+    assert 'host === "xn--bcher-kva.example"' in rendered
+    assert 'dnsDomainIs(host, ".media.example")' in rendered
+    assert "bad domain" not in rendered
+    assert "2001:db8" not in rendered
+
+
 def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
