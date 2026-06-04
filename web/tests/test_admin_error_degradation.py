@@ -518,5 +518,7 @@ def test_disabled_adblock_empty_artifact_is_not_marked_list_stale(
 
     assert response.status_code == 200
     assert "Disabled" in text
+    assert "empty because ad blocking is disabled" in text
+    assert "selected lists remain default" in text
     assert "build pending" not in text
     assert "Stale lists" not in text

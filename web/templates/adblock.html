@@ -206,6 +206,9 @@
           <div><strong>Built:</strong> {{ fmt_ts(active_artifact.created_ts) if active_artifact.created_ts else 'unknown' }}{% if active_artifact.created_by %} by {{ active_artifact.created_by }}{% endif %} ({{ active_artifact.source_kind or 'compile' }})</div>
           <div><strong>Settings version:</strong> {{ active_artifact.settings_version }}</div>
           <div><strong>Compiled lists:</strong> {{ active_artifact.enabled_lists|join(', ') if active_artifact.enabled_lists else 'none' }}</div>
+          {% if artifact_build.artifact_empty_because_disabled %}
+            <div><strong>Artifact state:</strong> empty because ad blocking is disabled; selected lists remain {{ artifact_build.configured_enabled_lists|join(', ') }}.</div>
+          {% endif %}
           {% if artifact_build.archive_bytes %}<div><strong>Archive size:</strong> {{ (artifact_build.archive_bytes / 1048576)|round(1) }} MiB</div>{% endif %}
         </div>
       {% else %}

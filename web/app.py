@@ -1667,15 +1667,12 @@ def _present_adblock_build_state(
         )
     except Exception:
         settings_enabled = True
-    enabled_lists = (
-        sorted(
-            str(row.get("key") or "").strip()
-            for row in statuses
-            if row.get("enabled") and str(row.get("key") or "").strip()
-        )
-        if settings_enabled
-        else []
+    configured_enabled_lists = sorted(
+        str(row.get("key") or "").strip()
+        for row in statuses
+        if row.get("enabled") and str(row.get("key") or "").strip()
     )
+    enabled_lists = configured_enabled_lists if settings_enabled else []
     active_lists = sorted(
         str(item).strip()
         for item in (active_artifact.get("enabled_lists") or [])
@@ -1699,7 +1696,14 @@ def _present_adblock_build_state(
         "refresh_requested": refresh_requested,
         "settings_version": settings_version,
         "enabled_lists": enabled_lists,
+        "configured_enabled_lists": configured_enabled_lists,
         "active_lists": active_lists,
+        "artifact_empty_because_disabled": bool(
+            not settings_enabled
+            and artifact_available
+            and not active_lists
+            and configured_enabled_lists
+        ),
         "version_stale": version_stale,
         "lists_stale": lists_stale,
         "missing_enabled_artifact": missing_enabled_artifact,
