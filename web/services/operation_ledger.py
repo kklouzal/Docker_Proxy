@@ -406,7 +406,6 @@ class OperationLedger:
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
         cutoff = now - max(60, int(older_than_seconds or 600))
-        request_key_expr = self._request_key_sql()
         stale_request_key_expr = self._request_key_sql("stale")
         duplicate_request_key_expr = self._request_key_sql("dup")
         with self._connect() as conn:
@@ -456,13 +455,22 @@ class OperationLedger:
             )
             cur = conn.execute(
                 f"""
-                UPDATE proxy_operations
-                SET status='pending',
-                    detail='Requeued after stale applying state.',
-                    updated_ts=%s,
-                    started_ts=0,
-                    request_key={request_key_expr}
-                WHERE proxy_id=%s AND status='applying' AND started_ts>0 AND started_ts<%s
+                UPDATE proxy_operations stale
+                LEFT JOIN proxy_operations pending
+                  ON pending.proxy_id=stale.proxy_id
+                 AND pending.status='pending'
+                 AND pending.id<>stale.id
+                 AND pending.request_key={stale_request_key_expr}
+                SET stale.status='pending',
+                    stale.detail='Requeued after stale applying state.',
+                    stale.updated_ts=%s,
+                    stale.started_ts=0,
+                    stale.request_key={stale_request_key_expr}
+                WHERE stale.proxy_id=%s
+                  AND stale.status='applying'
+                  AND stale.started_ts>0
+                  AND stale.started_ts<%s
+                  AND pending.id IS NULL
                 """,
                 (now, proxy_key, cutoff),
             )

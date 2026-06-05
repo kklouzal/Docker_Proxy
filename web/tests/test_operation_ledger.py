@@ -208,7 +208,9 @@ def test_requeue_stale_applying_restores_active_request_key(monkeypatch) -> None
             params = tuple(params or ())
             self.queries.append((compact, params))
             result = _Result()
-            result.rowcount = 3 if compact.startswith("UPDATE proxy_operations SET") else 0
+            result.rowcount = (
+                3 if compact.startswith("UPDATE proxy_operations stale LEFT JOIN") else 0
+            )
             return result
 
         def __enter__(self):
@@ -242,9 +244,12 @@ def test_requeue_stale_applying_restores_active_request_key(monkeypatch) -> None
     assert "stale.request_key=NULL" in duplicate_sql
     assert duplicate_params == (700, 1000, 1000, "edge-a", 700)
     requeue_sql, requeue_params = conn.queries[2]
-    assert requeue_sql.startswith("UPDATE proxy_operations SET")
+    assert requeue_sql.startswith("UPDATE proxy_operations stale LEFT JOIN")
+    assert "pending.request_key=SHA2(CONCAT(" in requeue_sql
+    assert "pending.id IS NULL" in requeue_sql
+    assert "SET stale.status='pending'" in requeue_sql
     assert "request_key=SHA2(CONCAT(" in requeue_sql
-    assert "COALESCE(NULLIF(operation_type,''),'sync')" in requeue_sql
+    assert "COALESCE(NULLIF(stale.operation_type,''),'sync')" in requeue_sql
     assert requeue_params == (1000, "edge-a", 700)
     assert conn.committed is True
 
