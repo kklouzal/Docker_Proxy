@@ -21,20 +21,31 @@ def _import_webcat_build():
     return webcat_build
 
 
+def _download_safety_module():
+    web_dir = Path(__file__).resolve().parents[1]
+    if str(web_dir) not in sys.path:
+        sys.path.insert(0, str(web_dir))
+    from services import download_safety  # type: ignore
+
+    return download_safety
+
+
 def _allow_public_example_dns(webcat_build, monkeypatch: pytest.MonkeyPatch) -> None:
+    download_safety = _download_safety_module()
+
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
         assert host == "public.example"
         return [
             (
-                webcat_build.socket.AF_INET,
-                webcat_build.socket.SOCK_STREAM,
+                download_safety.socket.AF_INET,
+                download_safety.socket.SOCK_STREAM,
                 0,
                 "",
                 ("93.184.216.34", 0),
             ),
         ]
 
-    monkeypatch.setattr(webcat_build.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
 
 def test_ut1_tar_gz_lowercase_blacklists_detected() -> None:
@@ -118,6 +129,7 @@ def test_download_rejects_oversized_content_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     webcat_build = _import_webcat_build()
+    download_safety = _download_safety_module()
 
     class _Headers:
         def get(self, name: str) -> str | None:
@@ -143,7 +155,9 @@ def test_download_rejects_oversized_content_length(
             return _Response()
 
     monkeypatch.setattr(
-        webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener()
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
     )
 
     with tempfile.TemporaryDirectory(prefix="webcat_download_") as td:
@@ -182,22 +196,23 @@ def test_download_rejects_hostname_resolving_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     webcat_build = _import_webcat_build()
+    download_safety = _download_safety_module()
 
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
         assert host == "public.example"
         return [
             (
-                webcat_build.socket.AF_INET,
-                webcat_build.socket.SOCK_STREAM,
+                download_safety.socket.AF_INET,
+                download_safety.socket.SOCK_STREAM,
                 0,
                 "",
                 ("127.0.0.1", 0),
             )
         ]
 
-    monkeypatch.setattr(webcat_build.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
-        webcat_build.urllib.request,
+        download_safety.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("urlopen should not be called")
@@ -215,15 +230,16 @@ def test_download_rejects_hostname_when_dns_cannot_be_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     webcat_build = _import_webcat_build()
+    download_safety = _download_safety_module()
 
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
         assert host == "public.example"
         msg = "resolver unavailable"
-        raise webcat_build.socket.gaierror(msg)
+        raise download_safety.socket.gaierror(msg)
 
-    monkeypatch.setattr(webcat_build.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
-        webcat_build.urllib.request,
+        download_safety.urllib.request,
         "build_opener",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("download should not open when DNS cannot be verified")
@@ -276,6 +292,7 @@ def test_download_rejects_redirect_to_internal_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     webcat_build = _import_webcat_build()
+    download_safety = _download_safety_module()
     _allow_public_example_dns(webcat_build, monkeypatch)
     from email.message import Message
 
@@ -284,12 +301,14 @@ def test_download_rejects_redirect_to_internal_host(
 
     class _Opener:
         def open(self, req, **_kwargs) -> NoReturn:
-            raise webcat_build.urllib.error.HTTPError(
+            raise download_safety.urllib.error.HTTPError(
                 req.full_url, 302, "Found", headers, None
             )
 
     monkeypatch.setattr(
-        webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener()
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
     )
 
     with pytest.raises(ValueError, match="internal/localhost"):
@@ -300,6 +319,7 @@ def test_download_if_changed_uses_conditional_headers_and_skips_on_304(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     webcat_build = _import_webcat_build()
+    download_safety = _download_safety_module()
     _allow_public_example_dns(webcat_build, monkeypatch)
 
     seen_headers = []
@@ -307,12 +327,14 @@ def test_download_if_changed_uses_conditional_headers_and_skips_on_304(
     class _Opener:
         def open(self, req, **_kwargs) -> NoReturn:
             seen_headers.append(dict(req.header_items()))
-            raise webcat_build.urllib.error.HTTPError(
+            raise download_safety.urllib.error.HTTPError(
                 req.full_url, 304, "Not Modified", {}, None
             )
 
     monkeypatch.setattr(
-        webcat_build.urllib.request, "build_opener", lambda *_args, **_kwargs: _Opener()
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
     )
     monkeypatch.setattr(webcat_build, "_now", lambda: 456)
 

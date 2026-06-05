@@ -2,21 +2,17 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import ipaddress
 import json
 import logging
 import os
 import pathlib
 import re
-import socket
 import threading
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin, urlparse
 
+from services import download_safety
 from services.db import (
     DATABASE_ERRORS,
     INTEGRITY_ERRORS,
@@ -41,57 +37,12 @@ def _is_duplicate_key_error(exc: BaseException) -> bool:
     return False
 
 
-def _is_forbidden_download_ip(address: str) -> bool:
-    ip = ipaddress.ip_address(address)
-    return (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_reserved
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
-
-
 def _is_internal_host(hostname: str) -> bool:
-    """Check if hostname resolves to or appears to be an internal/localhost address."""
-    h = (hostname or "").strip().lower().rstrip(".")
-    if not h:
-        return True
-    if h in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}:
-        return True
-    try:
-        return _is_forbidden_download_ip(h)
-    except ValueError:
-        pass
-    if h.endswith((".local", ".internal", ".localhost")):
-        return True
-
-    try:
-        infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)
-    except (socket.gaierror, OSError):
-        return True
-
-    resolved = {info[4][0] for info in infos if info and info[4]}
-    if not resolved:
-        return True
-    return any(_is_forbidden_download_ip(address) for address in resolved)
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl) -> None:
-        return None
+    return download_safety.is_internal_host(hostname)
 
 
 def _validate_download_url(url: str):
-    u = urlparse(url or "")
-    if u.scheme not in {"http", "https"}:
-        msg = "Only http/https URLs are supported."
-        raise ValueError(msg)
-    if _is_internal_host(u.hostname or ""):
-        msg = "Downloads from internal/localhost addresses are not allowed."
-        raise ValueError(msg)
-    return u
+    return download_safety.validate_download_url(url)
 
 
 def _open_download_url(
@@ -101,27 +52,13 @@ def _open_download_url(
     max_redirects: int = 5,
     headers: dict[str, str] | None = None,
 ):
-    current = url
-    opener = urllib.request.build_opener(_NoRedirectHandler)
-    request_headers = {"User-Agent": "squid-flask-proxy/icap-adblock"}
-    if headers:
-        request_headers.update({str(k): str(v) for k, v in headers.items() if k and v})
-    for _ in range(max_redirects + 1):
-        _validate_download_url(current)
-        req = urllib.request.Request(current, headers=request_headers)
-        try:
-            return opener.open(req, timeout=timeout)
-        except urllib.error.HTTPError as exc:
-            if exc.code not in {301, 302, 303, 307, 308}:
-                raise
-            location = exc.headers.get("Location") if exc.headers is not None else None
-            if not location:
-                msg = "Download redirect response did not include a Location header."
-                raise ValueError(msg) from exc
-            current = urljoin(current, location)
-            _validate_download_url(current)
-    msg = f"Download exceeded redirect limit ({max_redirects})."
-    raise ValueError(msg)
+    return download_safety.open_download_url(
+        url,
+        timeout=timeout,
+        user_agent="squid-flask-proxy/icap-adblock",
+        max_redirects=max_redirects,
+        headers=headers,
+    )
 
 
 @dataclass(frozen=True)

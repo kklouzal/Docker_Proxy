@@ -911,22 +911,23 @@ def test_adblock_download_rejects_hostname_resolving_private(
     tmp_path, monkeypatch
 ) -> None:
     store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+    download_safety = store_module.download_safety
 
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
         assert host == "public.example"
         return [
             (
-                store_module.socket.AF_INET,
-                store_module.socket.SOCK_STREAM,
+                download_safety.socket.AF_INET,
+                download_safety.socket.SOCK_STREAM,
                 0,
                 "",
                 ("127.0.0.1", 0),
             ),
         ]
 
-    monkeypatch.setattr(store_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
-        store_module.urllib.request,
+        download_safety.urllib.request,
         "build_opener",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("download should not open internal resolved host")
@@ -949,15 +950,16 @@ def test_adblock_download_rejects_hostname_when_dns_cannot_be_verified(
     tmp_path, monkeypatch
 ) -> None:
     store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+    download_safety = store_module.download_safety
 
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
         assert host == "public.example"
         msg = "resolver unavailable"
-        raise store_module.socket.gaierror(msg)
+        raise download_safety.socket.gaierror(msg)
 
-    monkeypatch.setattr(store_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
-        store_module.urllib.request,
+        download_safety.urllib.request,
         "build_opener",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("download should not open when DNS cannot be verified")
@@ -980,13 +982,14 @@ def test_adblock_download_rejects_redirect_to_internal_host(
     tmp_path, monkeypatch
 ) -> None:
     store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+    download_safety = store_module.download_safety
 
     def fake_getaddrinfo(host: str, *_args, **_kwargs):
         assert host == "public.example"
         return [
             (
-                store_module.socket.AF_INET,
-                store_module.socket.SOCK_STREAM,
+                download_safety.socket.AF_INET,
+                download_safety.socket.SOCK_STREAM,
                 0,
                 "",
                 ("93.184.216.34", 0),
@@ -998,7 +1001,7 @@ def test_adblock_download_rejects_redirect_to_internal_host(
 
     class _Opener:
         def open(self, req, **_kwargs):
-            raise store_module.urllib.error.HTTPError(
+            raise download_safety.urllib.error.HTTPError(
                 req.full_url,
                 302,
                 "Found",
@@ -1006,9 +1009,9 @@ def test_adblock_download_rejects_redirect_to_internal_host(
                 None,
             )
 
-    monkeypatch.setattr(store_module.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
-        store_module.urllib.request,
+        download_safety.urllib.request,
         "build_opener",
         lambda *_args, **_kwargs: _Opener(),
     )

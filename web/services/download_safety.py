@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+import ipaddress
+import socket
+import urllib.error
+import urllib.request
+from urllib.parse import urljoin, urlparse
+
+
+def _is_forbidden_download_ip(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_reserved
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def is_internal_host(hostname: str) -> bool:
+    h = (hostname or "").strip().lower().rstrip(".")
+    if not h:
+        return True
+    if h in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}:
+        return True
+    try:
+        return _is_forbidden_download_ip(h)
+    except ValueError:
+        pass
+    if h.endswith((".local", ".internal", ".localhost")):
+        return True
+
+    try:
+        infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return True
+
+    resolved = {info[4][0] for info in infos if info and info[4]}
+    if not resolved:
+        return True
+    return any(_is_forbidden_download_ip(address) for address in resolved)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl) -> None:
+        return None
+
+
+def validate_download_url(
+    url: str,
+    *,
+    scheme_error: str = "Only http/https URLs are supported.",
+):
+    parsed = urlparse(url or "")
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(scheme_error)
+    if is_internal_host(parsed.hostname or ""):
+        msg = "Downloads from internal/localhost addresses are not allowed."
+        raise ValueError(msg)
+    return parsed
+
+
+def open_download_url(
+    url: str,
+    *,
+    timeout: int,
+    user_agent: str,
+    max_redirects: int = 5,
+    headers: dict[str, str] | None = None,
+    scheme_error: str = "Only http/https URLs are supported.",
+):
+    current = url
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    request_headers = {"User-Agent": user_agent}
+    if headers:
+        request_headers.update({str(k): str(v) for k, v in headers.items() if k and v})
+    for _ in range(max_redirects + 1):
+        validate_download_url(current, scheme_error=scheme_error)
+        req = urllib.request.Request(current, headers=request_headers)  # noqa: S310
+        try:
+            return opener.open(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {301, 302, 303, 307, 308}:
+                raise
+            location = exc.headers.get("Location") if exc.headers is not None else None
+            if not location:
+                msg = "Download redirect response did not include a Location header."
+                raise ValueError(msg) from exc
+            current = urljoin(current, location)
+            validate_download_url(current, scheme_error=scheme_error)
+    msg = f"Download exceeded redirect limit ({max_redirects})."
+    raise ValueError(msg)
