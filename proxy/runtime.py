@@ -1633,20 +1633,21 @@ class ProxyRuntime:
                 "detail": "Proxy is already using the active adblock artifact.",
             }
 
-        revision = self.adblock_artifacts.get_active_artifact()
-        if revision is None:
-            return {
-                "ok": False,
-                "proxy_id": self.proxy_id,
-                "changed": False,
-                "artifact_changed": False,
-                "cache_flushed": False,
-                "revision_id": None,
-                "artifact_sha256": "",
-                "detail": "Active adblock artifact metadata was present, but the full artifact could not be loaded.",
-            }
-
         if artifact_changed:
+            revision = self.adblock_artifacts.get_active_artifact()
+            if revision is None:
+                return {
+                    "ok": False,
+                    "proxy_id": self.proxy_id,
+                    "changed": False,
+                    "artifact_changed": False,
+                    "cache_flushed": False,
+                    "revision_id": revision_meta.revision_id,
+                    "artifact_sha256": revision_meta.artifact_sha256,
+                    "detail": "Active adblock artifact metadata was present, but the full artifact could not be loaded.",
+                }
+            apply_revision_id = revision.revision_id
+            apply_artifact_sha256 = revision.artifact_sha256
             snapshot_root = self._snapshot_adblock_compiled_dir()
             try:
                 materialize_archive_to_directory(
@@ -1704,6 +1705,8 @@ class ProxyRuntime:
                     "detail": detail,
                 }
         else:
+            apply_revision_id = revision_meta.revision_id
+            apply_artifact_sha256 = revision_meta.artifact_sha256
             snapshot_root = ""
 
         ok_restart, restart_detail = self._restart_adblock_service()
@@ -1781,11 +1784,11 @@ class ProxyRuntime:
         result_ok = bool(ok_restart and not cache_flush_detail)
         applied = self.adblock_artifacts.record_apply_result(
             self.proxy_id,
-            revision.revision_id,
+            apply_revision_id,
             ok=result_ok,
             detail=detail,
             applied_by="proxy",
-            artifact_sha256=revision.artifact_sha256,
+            artifact_sha256=apply_artifact_sha256,
         )
         adblock_runtime_changed = bool(artifact_changed or flush_requested)
         return {
@@ -1795,9 +1798,9 @@ class ProxyRuntime:
             "adblock_changed": adblock_runtime_changed,
             "artifact_changed": artifact_changed,
             "cache_flushed": cache_flushed,
-            "revision_id": revision.revision_id,
+            "revision_id": apply_revision_id,
             "application_id": applied.application_id,
-            "artifact_sha256": revision.artifact_sha256,
+            "artifact_sha256": apply_artifact_sha256,
             "detail": detail,
         }
 
