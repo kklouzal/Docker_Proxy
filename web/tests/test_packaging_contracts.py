@@ -30,8 +30,10 @@ def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     assert "web/services/auth_store.py" not in proxy
     assert "web/services/webfilter_core.py" in proxy
     assert "web/services/helper_runtime.py" in proxy
+    assert "web/services/download_safety.py" in proxy
     assert "web/services/domain_normalization.py" in proxy
     assert "web/services/helper_runtime.py" in admin
+    assert "web/services/download_safety.py" in admin
     assert "web/services/domain_normalization.py" in admin
     assert "COPY web/app.py /app/app.py" in admin
     assert "COPY web/templates /app/templates" in admin
