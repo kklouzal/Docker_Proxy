@@ -119,6 +119,7 @@ def test_webfilter_source_url_validation_rejects_unsafe_targets(
     source_url, monkeypatch
 ) -> None:
     m = _import_webfilter_store_module()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
 
     with pytest.raises(ValueError):
         m.validate_source_url(source_url)
@@ -126,9 +127,7 @@ def test_webfilter_source_url_validation_rejects_unsafe_targets(
     def fake_getaddrinfo(*_args, **_kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
-    monkeypatch.setattr(
-        m.validate_source_url.__globals__["socket"], "getaddrinfo", fake_getaddrinfo
-    )
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
     assert (
         m.validate_source_url(" https://example.test/feed.csv ")
@@ -138,14 +137,13 @@ def test_webfilter_source_url_validation_rejects_unsafe_targets(
 
 def test_webfilter_source_url_validation_rejects_unverifiable_dns(monkeypatch) -> None:
     m = _import_webfilter_store_module()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
 
     def fake_getaddrinfo(*_args, **_kwargs):
         msg = "dns unavailable"
         raise socket.gaierror(msg)
 
-    monkeypatch.setattr(
-        m.validate_source_url.__globals__["socket"], "getaddrinfo", fake_getaddrinfo
-    )
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
     with pytest.raises(ValueError):
         m.validate_source_url("https://unresolved.example.test/feed.csv")

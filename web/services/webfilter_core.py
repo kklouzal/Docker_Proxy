@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import os
-import socket
 import threading
 import time
 from dataclasses import dataclass
 from typing import ClassVar
 from urllib.parse import urlparse
 
+from services import download_safety
 from services.db import connect, table_exists
 from services.domain_normalization import (
     looks_like_domain as _looks_like_host,
@@ -121,42 +120,6 @@ def _next_midnight_ts(now: int | None = None) -> int:
     return midnight + 24 * 60 * 60
 
 
-def _is_forbidden_download_ip(address: str) -> bool:
-    ip = ipaddress.ip_address(address)
-    return (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_reserved
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
-
-
-def _is_internal_source_host(hostname: str) -> bool:
-    host = (hostname or "").strip().lower().rstrip(".")
-    if not host:
-        return True
-    if host in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}:
-        return True
-    try:
-        return _is_forbidden_download_ip(host)
-    except ValueError:
-        pass
-    if host.endswith((".local", ".internal", ".localhost")):
-        return True
-
-    try:
-        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except (socket.gaierror, OSError):
-        return True
-
-    resolved = {info[4][0] for info in infos if info and info[4]}
-    if not resolved:
-        return True
-    return any(_is_forbidden_download_ip(address) for address in resolved)
-
-
 def validate_source_url(source_url: str) -> str:
     invalid_url_msg = "Web filter source URLs must be valid absolute HTTP/HTTPS URLs."
     source = (source_url or "").strip()
@@ -177,11 +140,16 @@ def validate_source_url(source_url: str) -> str:
         raise ValueError(invalid_url_msg) from exc
     if not parsed.netloc or not hostname:
         raise ValueError(invalid_url_msg)
-    if _is_internal_source_host(hostname):
+    try:
+        download_safety.validate_download_url(
+            source,
+            scheme_error="Only http/https web filter source URLs are supported.",
+        )
+    except ValueError as exc:
         msg = (
             "Web filter source URLs must not point at internal or localhost addresses."
         )
-        raise ValueError(msg)
+        raise ValueError(msg) from exc
     return source
 
 

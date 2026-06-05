@@ -39,12 +39,12 @@ def _loaded(monkeypatch, tmp_path, *, controller=None, **overrides):
 
 
 def _allow_public_example_dns(monkeypatch) -> None:
-    from services import webfilter_core
+    from services import download_safety
 
     def fake_getaddrinfo(*_args, **_kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
-    monkeypatch.setattr(webfilter_core.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
 
 def _assert_redirect_success(response) -> None:
