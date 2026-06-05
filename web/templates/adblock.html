@@ -29,6 +29,15 @@
 </ul>
 {% endcall %}
 
+{% if request.args.get('error') %}
+  <div class="banner error">
+    <span class="badge danger">Refresh not queued</span>
+    <div class="banner-copy">
+      <span class="small">{{ request.args.get('msg') or 'Adblock changes were saved, but runtime refresh was not queued.' }}</span>
+    </div>
+  </div>
+{% endif %}
+
 <div class="grid split-layout">
   <section class="card split-left">
     <div class="card-header">

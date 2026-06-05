@@ -320,3 +320,64 @@ def test_adblock_list_save_queues_runtime_refresh(monkeypatch, tmp_path) -> None
     assert store.refresh_requested == 1
     assert loaded.operation_ledger.operations[-1].operation_type == "adblock_refresh"
     assert loaded.operation_ledger.operations[-1].subject == "Adblock runtime refresh"
+
+
+def test_adblock_settings_report_runtime_refresh_queue_failure(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeAdblockStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    with loaded.module.app.test_request_context(
+        "/adblock",
+        method="POST",
+        data={
+            "action": "save_settings",
+            "adblock_enabled": "on",
+            "cache_ttl": "900",
+            "cache_max": "100",
+        },
+    ):
+        response = loaded.module._handle_adblock_post(store)
+
+    params = _params(response.location)
+    assert params["error"] == ["1"]
+    assert "runtime refresh was not queued" in params["msg"][0]
+    assert "cache_flushed" not in params
+    assert store.settings["cache_ttl"] == 900
+    assert store.settings["cache_max"] == 100
+    assert store.refresh_requested == 1
+    assert loaded.operation_ledger.operations == []
+
+
+def test_adblock_cache_flush_reports_runtime_refresh_queue_failure(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeAdblockStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    with loaded.module.app.test_request_context(
+        "/adblock",
+        method="POST",
+        data={"action": "flush_cache"},
+    ):
+        response = loaded.module._handle_adblock_post(store)
+
+    params = _params(response.location)
+    assert params["error"] == ["1"]
+    assert "runtime refresh was not queued" in params["msg"][0]
+    assert "cache_flushed" not in params
+    assert store.cache_flush_requested == 1
+    assert loaded.operation_ledger.operations == []

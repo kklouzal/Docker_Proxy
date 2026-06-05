@@ -2213,38 +2213,56 @@ def _best_effort_refresh_pac_runtime() -> None:
     _queue_pac_runtime_refresh()
 
 
-def _queue_adblock_runtime_refresh(*, action: str) -> None:
-    operation = request_proxy_reconcile(
-        get_proxy_id(),
-        operation_type="adblock_refresh",
-        subject="Adblock runtime refresh",
-        summary="Adblock settings changed; proxy reconciliation queued.",
-        detail=f"Admin requested adblock runtime refresh after {action}.",
-        created_by=str(session.get("user") or ""),
-        force=True,
-    )
-    if (
-        not getattr(operation, "operation_id", 0)
-        and getattr(operation, "status", "") == "failed"
-    ):
-        raise RuntimeError(
-            str(
-                getattr(operation, "detail", "")
-                or "Adblock runtime refresh was not queued."
-            ),
-        )
-
-
-def _best_effort_queue_adblock_runtime_refresh(*, action: str) -> None:
+def _queue_adblock_runtime_refresh(*, action: str) -> tuple[bool, str]:
+    default = "Adblock changes were saved, but runtime refresh was not queued."
     try:
-        _queue_adblock_runtime_refresh(action=action)
-    except Exception:
+        operation = request_proxy_reconcile(
+            get_proxy_id(),
+            operation_type="adblock_refresh",
+            subject="Adblock runtime refresh",
+            summary="Adblock settings changed; proxy reconciliation queued.",
+            detail=f"Admin requested adblock runtime refresh after {action}.",
+            created_by=str(session.get("user") or ""),
+            force=True,
+        )
+    except Exception as exc:
         log_exception_throttled(
             app.logger,
             "web.app.adblock_runtime_refresh",
             interval_seconds=30.0,
             message="Failed to queue adblock runtime refresh",
         )
+        return False, public_error_message(exc, default=default)
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return False, str(
+            getattr(operation, "detail", "")
+            or "Adblock runtime refresh was not queued."
+        )
+    op_suffix = (
+        f" operation #{operation.operation_id}"
+        if getattr(operation, "operation_id", 0)
+        else ""
+    )
+    return True, f"Adblock runtime refresh queued{op_suffix}."
+
+
+def _redirect_adblock_queue_failure(detail: str):
+    return _redirect_to(
+        "adblock",
+        error="1",
+        msg=detail
+        or "Adblock changes were saved, but runtime refresh was not queued.",
+    )
+
+
+def _queue_adblock_or_error(*, action: str):
+    ok, detail = _queue_adblock_runtime_refresh(action=action)
+    if not ok:
+        return _redirect_adblock_queue_failure(detail)
+    return None
 
 
 def _handle_adblock_post(store: Any):
@@ -2255,7 +2273,8 @@ def _handle_adblock_post(store: Any):
             enabled_map[st.key] = request.form.get(f"enabled_{st.key}") == "on"
         store.set_enabled(enabled_map)
         store.request_refresh_now()
-        _best_effort_queue_adblock_runtime_refresh(action="list save")
+        if response := _queue_adblock_or_error(action="list save"):
+            return response
     elif action == "save_settings":
         enabled = request.form.get("adblock_enabled") == "on"
         cur = store.get_settings()
@@ -2273,7 +2292,8 @@ def _handle_adblock_post(store: Any):
         )
         store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
         store.request_refresh_now()
-        _best_effort_queue_adblock_runtime_refresh(action="settings save")
+        if response := _queue_adblock_or_error(action="settings save"):
+            return response
     elif action == "refresh":
         any_enabled = False
         try:
@@ -2283,11 +2303,13 @@ def _handle_adblock_post(store: Any):
         if not any_enabled:
             return _redirect_to("adblock", refresh_no_lists="1")
         store.request_refresh_now()
-        _best_effort_queue_adblock_runtime_refresh(action="manual refresh")
+        if response := _queue_adblock_or_error(action="manual refresh"):
+            return response
         return _redirect_to("adblock", refresh_requested="1")
     elif action == "flush_cache":
         store.request_cache_flush()
-        _best_effort_queue_adblock_runtime_refresh(action="cache flush")
+        if response := _queue_adblock_or_error(action="cache flush"):
+            return response
         return _redirect_to("adblock", cache_flushed="1")
     return _redirect_to("adblock")
 
