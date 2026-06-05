@@ -1266,6 +1266,69 @@ def test_observability_metrics_returns_partial_payload_on_collector_failure(
     )
 
 
+def test_observability_metrics_reuses_short_lived_section_cache(
+    monkeypatch, tmp_path
+) -> None:
+    class CountingObservabilityQueries:
+        def __init__(self) -> None:
+            self.summary_calls = 0
+            self.cache_calls = 0
+            self.security_calls = 0
+
+        def summary(self, **_kwargs):
+            self.summary_calls += 1
+            return {
+                "request_records": 9,
+                "cache_hit_pct": 66.7,
+            }
+
+        def cache_savings(self, **_kwargs):
+            self.cache_calls += 1
+            return {"estimated_saved_bytes": 1234}
+
+        def security_overview(self, **_kwargs):
+            self.security_calls += 1
+            return {
+                "summary": {
+                    "combined_blocks": 3,
+                    "potential_findings": 1,
+                },
+            }
+
+    observability_queries = CountingObservabilityQueries()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=observability_queries,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    class RouteClock:
+        def __init__(self) -> None:
+            self._current_time = iter([1000, 1001])
+
+        def time(self) -> int:
+            return next(self._current_time)
+
+        def monotonic(self) -> float:
+            return 50.0
+
+    monkeypatch.setattr(loaded.module, "time", RouteClock())
+
+    first = client.get("/observability/metrics?window=3600")
+    second = client.get("/observability/metrics?window=3600")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert 'docker_proxy_observability_requests{proxy_id="default"} 9' in second.get_data(
+        as_text=True
+    )
+    assert observability_queries.summary_calls == 1
+    assert observability_queries.cache_calls == 1
+    assert observability_queries.security_calls == 1
+
+
 class SslPaneRowsObservability:
     def summary(self, **_kwargs):
         return {

@@ -4123,7 +4123,19 @@ def observability_metrics():
             )
             return None
 
-    summary = collect("summary", lambda: queries.summary(since=since_ts))
+    summary = collect(
+        "summary",
+        lambda: _cached_observability_result(
+            _observability_result_cache_key(
+                "observability",
+                "metrics",
+                "summary",
+                proxy_id,
+                window_i,
+            ),
+            lambda: queries.summary(since=since_ts),
+        ),
+    )
     if isinstance(summary, dict):
         lines.extend(
             [
@@ -4136,7 +4148,19 @@ def observability_metrics():
             ],
         )
 
-    cache = collect("cache", lambda: queries.cache_savings(since=since_ts))
+    cache = collect(
+        "cache",
+        lambda: _cached_observability_result(
+            _observability_result_cache_key(
+                "observability",
+                "metrics",
+                "cache",
+                proxy_id,
+                window_i,
+            ),
+            lambda: queries.cache_savings(since=since_ts),
+        ),
+    )
     if isinstance(cache, dict):
         lines.extend(
             [
@@ -4148,7 +4172,16 @@ def observability_metrics():
 
     security = collect(
         "security",
-        lambda: queries.security_overview(since=since_ts, limit=10),
+        lambda: _cached_observability_result(
+            _observability_result_cache_key(
+                "observability",
+                "metrics",
+                "security",
+                proxy_id,
+                window_i,
+            ),
+            lambda: queries.security_overview(since=since_ts, limit=10),
+        ),
     )
     if isinstance(security, dict):
         security_summary = security.get("summary") or {}
