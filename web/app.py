@@ -2372,7 +2372,7 @@ def _handle_webfilter_post(store: Any, tab: str):
         try:
             source_url = (
                 _validate_webfilter_source_url(source_url)
-                if enabled and source_url
+                if source_url
                 else source_url
             )
         except ValueError:
