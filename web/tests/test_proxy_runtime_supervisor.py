@@ -2248,6 +2248,33 @@ def test_squid_reload_preserves_nonzero_reconfigure_failure() -> None:
     assert b"fatal squid error" in stderr
 
 
+def test_squid_controller_matches_socket_inode_symlink_targets(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import pathlib
+
+    import services.squid_core as squid_core  # type: ignore
+    from services.squid_core import SquidController  # type: ignore
+
+    proc_root = tmp_path / "proc"
+    fd_dir = proc_root / "4321" / "fd"
+    fd_dir.mkdir(parents=True)
+    (fd_dir / "7").symlink_to("socket:[12345]")
+
+    def fake_path(value):
+        if str(value) == "/proc":
+            return proc_root
+        return pathlib.Path(value)
+
+    monkeypatch.setattr(squid_core, "Path", fake_path)
+
+    controller = SquidController.__new__(SquidController)
+
+    assert controller._pids_with_socket_inodes({"12345"}) == {4321}
+
+
 def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> None:
     runtime = _runtime_shell()
     reloads: list[bool] = []

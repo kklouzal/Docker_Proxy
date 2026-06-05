@@ -716,10 +716,11 @@ class SquidController:
                         target = Path(fd).readlink()
                     except Exception:
                         continue
+                    target_text = str(target)
                     if (
-                        target.startswith("socket:[")
-                        and target.endswith("]")
-                        and target[8:-1] in inodes
+                        target_text.startswith("socket:[")
+                        and target_text.endswith("]")
+                        and target_text[8:-1] in inodes
                     ):
                         pids.add(pid)
                         break
