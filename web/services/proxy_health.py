@@ -96,6 +96,25 @@ def normalize_service_health(
     return normalized
 
 
+def _remote_health_source(health_payload: dict[str, Any]) -> str:
+    source = str(
+        health_payload.get("proxy_status") or health_payload.get("detail") or "",
+    )
+    if health_payload.get("_stale"):
+        stale_detail = str(
+            health_payload.get("health_cache_detail")
+            or health_payload.get("detail")
+            or "using recent cached health after refresh failure",
+        )
+        return f"{source} ({stale_detail})" if source else stale_detail
+    if health_payload.get("_unavailable_cached"):
+        unavailable_detail = str(
+            health_payload.get("detail") or "proxy health unavailable",
+        )
+        return f"{source} ({unavailable_detail})" if source else unavailable_detail
+    return source
+
+
 def build_unavailable_runtime_health(
     detail: str,
     *,
@@ -318,9 +337,7 @@ def build_remote_clamav_view(health_payload: dict[str, Any]) -> dict[str, Any]:
         "health": health,
         "clamd_health": clamd_health,
         "av_icap_health": av_icap_health,
-        "health_source": str(
-            health_payload.get("proxy_status") or health_payload.get("detail") or "",
-        ),
+        "health_source": _remote_health_source(health_payload),
     }
 
 

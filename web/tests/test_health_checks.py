@@ -228,3 +228,44 @@ def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) ->
         "target": "127.0.0.1:14000",
         "service": "/adblockreq",
     }
+
+
+def test_remote_clamav_view_surfaces_stale_cached_health_source() -> None:
+    _add_web_to_path()
+    from services import proxy_health  # type: ignore
+
+    view = proxy_health.build_remote_clamav_view(
+        {
+            "ok": True,
+            "proxy_status": "ClamAV health checked via lightweight management endpoint.",
+            "detail": "using recent cached ClamAV health after refresh failure",
+            "_stale": True,
+            "services": {
+                "clamav": {"ok": True, "detail": "clamav ok"},
+                "av_icap": {"ok": True, "detail": "icap ok"},
+                "clamd": {"ok": True, "detail": "clamd ok"},
+            },
+        }
+    )
+
+    assert view["health_source"] == (
+        "ClamAV health checked via lightweight management endpoint. "
+        "(using recent cached ClamAV health after refresh failure)"
+    )
+
+
+def test_remote_clamav_view_surfaces_unavailable_cached_health_source() -> None:
+    _add_web_to_path()
+    from services import proxy_health  # type: ignore
+
+    view = proxy_health.build_remote_clamav_view(
+        {
+            "ok": False,
+            "proxy_status": "offline",
+            "detail": "Proxy management request timed out",
+            "_unavailable_cached": True,
+            "services": {},
+        }
+    )
+
+    assert view["health_source"] == "offline (Proxy management request timed out)"
