@@ -12,6 +12,7 @@ from services.squid_config_forms import (
     DEFAULT_CACHE_POLICY_RULES,
     DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
     DEFAULT_REFRESH_PATTERNS,
+    coerce_config_bool,
 )
 from services.squid_core import SquidController as _CoreSquidController
 
@@ -220,7 +221,7 @@ class SquidController(_CoreSquidController):
 
         def bool_value(name: str, default: bool) -> bool:
             raw = options.get(name)
-            return bool(raw) if raw is not None else default
+            return coerce_config_bool(raw, default)
 
         def append_section(lines: list[str], title: str, description: str = "") -> None:
             if lines and lines[-1] != "":
@@ -751,7 +752,9 @@ class SquidController(_CoreSquidController):
                 "ssl_bump peek step1",
             ),
         )
-        if bool(options.get("https_intercept_enabled_on")) and bool(
+        if coerce_config_bool(
+            options.get("https_intercept_enabled_on"),
+        ) and coerce_config_bool(
             options.get("https_intercept_splice_only_on"),
         ):
             lines.extend(
@@ -1257,12 +1260,14 @@ class SquidController(_CoreSquidController):
         dynamic_cert_mem_cache_size_mb: int,
     ) -> str:
         explicit_port = self._coerce_port(options.get("explicit_proxy_port"), 3128)
-        intercept_enabled = bool(options.get("intercept_enabled_on"))
+        intercept_enabled = coerce_config_bool(options.get("intercept_enabled_on"))
         intercept_port = self._coerce_port(
             options.get("intercept_port"),
             self._default_intercept_port(explicit_port),
         )
-        https_intercept_enabled = bool(options.get("https_intercept_enabled_on"))
+        https_intercept_enabled = coerce_config_bool(
+            options.get("https_intercept_enabled_on"),
+        )
         https_intercept_port = self._coerce_port(
             options.get("https_intercept_port"),
             3130 if explicit_port != 3130 else 3131,

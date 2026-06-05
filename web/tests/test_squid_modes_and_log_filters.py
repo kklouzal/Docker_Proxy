@@ -634,6 +634,43 @@ def test_squid_controller_generate_config_adds_optional_intercept_listener(
     assert "SOCKS" not in rendered
 
 
+def test_squid_controller_generate_config_parses_string_false_booleans(tmp_path) -> (
+    None
+):
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text(
+        (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+
+    rendered = ctl.generate_config_from_template(
+        {
+            "intercept_enabled_on": "false",
+            "https_intercept_enabled_on": "0",
+            "https_intercept_splice_only_on": "true",
+            "pipeline_prefetch_on": "off",
+            "pipeline_prefetch_count": 9,
+            "memory_pools_on": "no",
+            "icap_enable_on": "false",
+        },
+    )
+
+    assert "# BEGIN SQUID-UI INTERCEPT LISTENER" not in rendered
+    assert "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" not in rendered
+    assert "ssl_bump splice https_intercept_listener" not in rendered
+    assert "pipeline_prefetch 0" in rendered
+    assert "memory_pools off" in rendered
+    assert "icap_enable off" in rendered
+
+
 def test_squid_controller_generate_config_adds_optional_https_intercept_listener(
     tmp_path,
 ) -> None:

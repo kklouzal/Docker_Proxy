@@ -162,7 +162,7 @@ def _tunable_or_default_if_none(key: str, default: Any) -> OptionResolver:
 def _tunable_bool_or_default(key: str, default: bool) -> OptionResolver:
     def resolve(tunables: TunableMap, _max_workers: int) -> bool:
         value = tunables.get(key)
-        return bool(value) if value is not None else default
+        return coerce_config_bool(value, default)
 
     return resolve
 
@@ -173,6 +173,27 @@ def _tunable_optional(key: str) -> OptionResolver:
         return value if value is not None else None
 
     return resolve
+
+
+_TRUE_CONFIG_BOOL_STRINGS = {"1", "on", "true", "yes", "y", "enabled"}
+_FALSE_CONFIG_BOOL_STRINGS = {"0", "off", "false", "no", "n", "disabled"}
+
+
+def coerce_config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    text = str(value).strip().lower()
+    if text == "":
+        return bool(default)
+    if text in _TRUE_CONFIG_BOOL_STRINGS:
+        return True
+    if text in _FALSE_CONFIG_BOOL_STRINGS:
+        return False
+    return bool(value)
 
 
 def _tunable_choice_or_default(
@@ -242,7 +263,7 @@ def _resolve_range_offset_limit_value(tunables: TunableMap, _max_workers: int) -
 
 def _resolve_range_cache(tunables: TunableMap, _max_workers: int) -> bool:
     if tunables.get("range_cache_on") is not None:
-        return bool(tunables.get("range_cache_on"))
+        return coerce_config_bool(tunables.get("range_cache_on"), True)
     if tunables.get("range_offset_limit_value") is not None:
         return _range_value_enabled(tunables.get("range_offset_limit_value"))
     value = tunables.get("range_offset_limit")
@@ -369,7 +390,7 @@ def _resolve_explicit_proxy_port(tunables: TunableMap, _max_workers: int) -> int
 
 
 def _resolve_intercept_enabled(tunables: TunableMap, _max_workers: int) -> bool:
-    return bool(tunables.get("intercept_enabled"))
+    return coerce_config_bool(tunables.get("intercept_enabled"))
 
 
 def _resolve_intercept_port(tunables: TunableMap, max_workers: int) -> int:
@@ -379,14 +400,14 @@ def _resolve_intercept_port(tunables: TunableMap, max_workers: int) -> int:
 
 
 def _resolve_https_intercept_enabled(tunables: TunableMap, _max_workers: int) -> bool:
-    return bool(tunables.get("https_intercept_enabled"))
+    return coerce_config_bool(tunables.get("https_intercept_enabled"))
 
 
 def _resolve_https_intercept_splice_only(
     tunables: TunableMap,
     _max_workers: int,
 ) -> bool:
-    return bool(tunables.get("https_intercept_splice_only"))
+    return coerce_config_bool(tunables.get("https_intercept_splice_only"))
 
 
 def _resolve_https_intercept_port(tunables: TunableMap, max_workers: int) -> int:
@@ -3233,7 +3254,9 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
             intercept_port = 3129 if explicit_port != 3129 else 3130
     options["explicit_proxy_port"] = explicit_port
     options["intercept_port"] = intercept_port
-    options["intercept_enabled_on"] = bool(options.get("intercept_enabled_on", False))
+    options["intercept_enabled_on"] = coerce_config_bool(
+        options.get("intercept_enabled_on"),
+    )
     https_intercept_port = _clamp_port(
         options.get("https_intercept_port"),
         3130 if explicit_port != 3130 else 3131,
@@ -3244,18 +3267,18 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
     }
     https_intercept_port = _first_available_port(https_intercept_port, used_ports)
     options["https_intercept_port"] = https_intercept_port
-    options["https_intercept_enabled_on"] = bool(
-        options.get("https_intercept_enabled_on", False),
+    options["https_intercept_enabled_on"] = coerce_config_bool(
+        options.get("https_intercept_enabled_on"),
     )
     options["https_intercept_splice_only_on"] = (
-        bool(options.get("https_intercept_splice_only_on", False))
+        coerce_config_bool(options.get("https_intercept_splice_only_on"))
         and options["https_intercept_enabled_on"]
     )
 
     range_value = _normalize_range_offset_limit_value(
         options.get("range_offset_limit_value"),
     )
-    if not bool(options.get("range_cache_on", True)):
+    if not coerce_config_bool(options.get("range_cache_on"), True):
         range_value = "0"
     elif not _range_value_enabled(range_value):
         range_value = "128 MB"
@@ -3266,7 +3289,7 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
         pipeline_count = max(0, int(options.get("pipeline_prefetch_count") or 0))
     except Exception:
         pipeline_count = 0
-    if not bool(options.get("pipeline_prefetch_on", False)):
+    if not coerce_config_bool(options.get("pipeline_prefetch_on")):
         pipeline_count = 0
     elif pipeline_count <= 0:
         pipeline_count = 1

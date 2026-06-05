@@ -45,6 +45,28 @@ def test_build_template_options_clamps_workers_and_preserves_zero_values() -> No
     assert options["memory_pools_on"] is False
 
 
+def test_build_template_options_parses_string_boolean_tunables() -> None:
+    options = build_template_options(
+        {
+            "collapsed_forwarding": "off",
+            "range_cache_on": "false",
+            "intercept_enabled": "0",
+            "https_intercept_enabled": "no",
+            "https_intercept_splice_only": "true",
+            "memory_pools": "False",
+        },
+        max_workers=4,
+    )
+
+    assert options["collapsed_forwarding_on"] is False
+    assert options["range_cache_on"] is False
+    assert options["range_offset_limit_value"] == "0"
+    assert options["intercept_enabled_on"] is False
+    assert options["https_intercept_enabled_on"] is False
+    assert options["https_intercept_splice_only_on"] is False
+    assert options["memory_pools_on"] is False
+
+
 def test_build_template_options_defaults_match_perf_baseline() -> None:
     options = build_template_options({}, max_workers=4)
 
