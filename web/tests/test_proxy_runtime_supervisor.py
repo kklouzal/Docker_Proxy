@@ -2255,7 +2255,7 @@ def test_squid_controller_matches_socket_inode_symlink_targets(
     _add_repo_paths()
     import pathlib
 
-    import services.squid_core as squid_core  # type: ignore
+    from services import squid_core  # type: ignore
     from services.squid_core import SquidController  # type: ignore
 
     proc_root = tmp_path / "proc"
