@@ -1889,6 +1889,29 @@ def _publish_config_for_current_mode(
         source_kind=source_kind,
         activate=True,
     )
+    restore_detail = ""
+
+    def restore_previous_active_revision() -> None:
+        nonlocal restore_detail
+        try:
+            if previous_revision is not None:
+                revisions.activate_revision(proxy_id, previous_revision.revision_id)
+                restore_detail = "Previous active revision was restored."
+            else:
+                revisions.deactivate_revision(proxy_id, revision.revision_id)
+                restore_detail = "Unqueued revision was left inactive."
+        except Exception:
+            log_exception_throttled(
+                app.logger,
+                "web.app.config_apply_restore_active_revision",
+                interval_seconds=30.0,
+                message="Failed to restore active config revision after reconcile queue failure",
+            )
+            restore_detail = (
+                "Failed to restore the prior active revision after reconcile queue failure; "
+                "check the operation ledger and config revision store before retrying."
+            )
+
     try:
         operation = request_proxy_reconcile(
             proxy_id,
@@ -1913,17 +1936,27 @@ def _publish_config_for_current_mode(
             interval_seconds=30.0,
             message="Failed to queue config apply reconciliation",
         )
+        restore_previous_active_revision()
         return False, public_error_message(
             exc,
-            default=f"Revision {revision.revision_id} saved, but proxy reconcile was not queued.",
+            default=(
+                f"Revision {revision.revision_id} saved, but proxy reconcile was not queued. "
+                f"{restore_detail}".strip()
+            ),
         )
     if (
         not getattr(operation, "operation_id", 0)
         and getattr(operation, "status", "") == "failed"
     ):
-        return False, str(
+        restore_previous_active_revision()
+        detail = str(
             getattr(operation, "detail", "")
-            or "Revision saved, but proxy reconcile was not queued.",
+            or "Revision saved, but proxy reconcile was not queued."
+        )
+        if restore_detail:
+            detail = f"{detail}\n{restore_detail}"
+        return False, str(
+            detail,
         )
     op_suffix = (
         f" operation #{operation.operation_id}"

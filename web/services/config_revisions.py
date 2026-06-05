@@ -280,6 +280,70 @@ class ConfigRevisionStore:
         assert revision is not None
         return revision
 
+    def activate_revision(
+        self,
+        proxy_id: object | None,
+        revision_id: object,
+    ) -> ConfigRevision:
+        return self._with_db_lock_retry(
+            lambda: self._activate_revision_once(proxy_id, revision_id),
+        )
+
+    def _activate_revision_once(
+        self,
+        proxy_id: object | None,
+        revision_id: object,
+    ) -> ConfigRevision:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        target_id = int(revision_id or 0)
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1",
+                (target_id, proxy_key),
+            ).fetchone()
+            if existing is None:
+                msg = f"Config revision {target_id} was not found for proxy {proxy_key}."
+                raise ValueError(msg)
+            conn.execute(
+                "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1",
+                (proxy_key,),
+            )
+            conn.execute(
+                "UPDATE proxy_config_revisions SET is_active=1 WHERE proxy_id=%s AND id=%s",
+                (proxy_key, target_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1",
+                (target_id, proxy_key),
+            ).fetchone()
+        revision = self._row_to_revision(row)
+        assert revision is not None
+        return revision
+
+    def deactivate_revision(
+        self,
+        proxy_id: object | None,
+        revision_id: object,
+    ) -> None:
+        self._with_db_lock_retry(
+            lambda: self._deactivate_revision_once(proxy_id, revision_id),
+        )
+
+    def _deactivate_revision_once(
+        self,
+        proxy_id: object | None,
+        revision_id: object,
+    ) -> None:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        target_id = int(revision_id or 0)
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND id=%s",
+                (proxy_key, target_id),
+            )
+
     def ensure_active_revision(
         self,
         proxy_id: object | None,

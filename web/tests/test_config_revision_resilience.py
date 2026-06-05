@@ -154,3 +154,81 @@ def test_config_revision_lock_retry_backoff_is_capped(monkeypatch) -> None:
 
     assert store._with_db_lock_retry(fail_many_then_succeed, attempts=8) == "ok"
     assert sleeps == [0.1, 0.2, 0.4, 0.8, 1.0, 1.0, 1.0]
+
+
+class _ActivationConn:
+    def __init__(self, calls: list[str], *, target_exists: bool) -> None:
+        self.calls = calls
+        self.target_exists = target_exists
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        text = str(sql)
+        self.calls.append(text)
+        if (
+            "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1"
+            in text
+        ):
+            row = None
+            if self.target_exists:
+                row = {
+                    "id": 9,
+                    "proxy_id": "edge-a",
+                    "config_sha256": "abc",
+                    "config_text": "workers 2\n",
+                    "source_kind": "manual",
+                    "created_by": "operator",
+                    "created_ts": 123,
+                    "is_active": 1,
+                }
+            return SimpleNamespace(fetchone=lambda: row)
+        return SimpleNamespace(fetchone=lambda: None, rowcount=1)
+
+
+def test_activate_revision_checks_target_before_deactivating_current(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services.config_revisions import ConfigRevisionStore  # type: ignore
+
+    store = ConfigRevisionStore()
+    calls: list[str] = []
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        store, "_connect", lambda: _ActivationConn(calls, target_exists=False)
+    )
+
+    try:
+        store.activate_revision("edge-a", 404)
+    except ValueError as exc:
+        assert "Config revision 404 was not found" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        msg = "expected missing target activation to fail"
+        raise AssertionError(msg)
+
+    assert not any("SET is_active=0" in call for call in calls)
+
+
+def test_activate_revision_switches_active_revision(monkeypatch) -> None:
+    _add_web_to_path()
+    from services.config_revisions import ConfigRevisionStore  # type: ignore
+
+    store = ConfigRevisionStore()
+    calls: list[str] = []
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        store, "_connect", lambda: _ActivationConn(calls, target_exists=True)
+    )
+
+    revision = store.activate_revision("edge-a", 9)
+
+    assert revision.revision_id == 9
+    assert any("SET is_active=0" in call for call in calls)
+    assert any("SET is_active=1" in call for call in calls)

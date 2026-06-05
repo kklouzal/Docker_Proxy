@@ -40,10 +40,16 @@ class _Revisions:
     def __init__(self) -> None:
         self.created: list[dict[str, object]] = []
         self.applied: list[dict[str, object]] = []
+        self.active_revision_id: int | None = None
+        self.active_revision = None
+
+    def get_active_revision(self, _proxy_id):
+        return self.active_revision
 
     def create_revision(
         self, proxy_id, config_text, *, created_by, source_kind, activate
     ):
+        revision_id = len(self.created) + 17
         self.created.append(
             {
                 "proxy_id": proxy_id,
@@ -51,9 +57,28 @@ class _Revisions:
                 "created_by": created_by,
                 "source_kind": source_kind,
                 "activate": activate,
+                "revision_id": revision_id,
             },
         )
-        return SimpleNamespace(revision_id=17)
+        revision = SimpleNamespace(revision_id=revision_id, config_sha256="abc")
+        if activate:
+            self.active_revision_id = revision_id
+            self.active_revision = revision
+        return revision
+
+    def activate_revision(self, proxy_id, revision_id):
+        self.active_revision_id = int(revision_id)
+        self.active_revision = SimpleNamespace(
+            revision_id=int(revision_id),
+            proxy_id=proxy_id,
+            config_sha256="previous-sha",
+        )
+        return self.active_revision
+
+    def deactivate_revision(self, _proxy_id, revision_id) -> None:
+        if self.active_revision_id == int(revision_id):
+            self.active_revision_id = None
+            self.active_revision = None
 
     def record_apply_result(
         self, proxy_id, revision_id, *, ok, detail, applied_by
@@ -142,6 +167,7 @@ def test_publish_config_saves_revision_but_reports_remote_sync_failure(
             "created_by": "operator",
             "source_kind": "manual",
             "activate": True,
+            "revision_id": 17,
         },
     ]
     assert controller.applied == []
@@ -183,6 +209,48 @@ def test_publish_config_queues_operation_without_local_apply_fallback(
     assert revisions.applied == []
     assert queued[0]["operation_type"] == "config_apply"
     assert queued[0]["proxy_id"] == "edge-local"
+
+
+def test_publish_config_restores_previous_revision_when_reconcile_not_queued(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+    controller = _Controller()
+    revisions = _Revisions()
+    revisions.active_revision = SimpleNamespace(revision_id=3, config_sha256="old-sha")
+    revisions.active_revision_id = 3
+
+    def fake_request_proxy_reconcile(_proxy_id, **_kwargs):
+        return SimpleNamespace(
+            operation_id=0,
+            status="failed",
+            detail="operation ledger unavailable",
+        )
+
+    monkeypatch.setattr(admin_app, "squid_controller", controller)
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
+    monkeypatch.setattr(
+        admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok")
+    )
+    monkeypatch.setattr(
+        admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
+    )
+
+    with admin_app.app.test_request_context("/"):
+        admin_app.session["user"] = "operator"
+        ok, detail = admin_app._publish_config_for_current_mode(
+            "workers 2", source_kind="manual"
+        )
+
+    assert ok is False
+    assert "operation ledger unavailable" in detail
+    assert "Previous active revision was restored" in detail
+    assert revisions.created[-1]["activate"] is True
+    assert revisions.created[-1]["revision_id"] == 17
+    assert revisions.active_revision_id == 3
+    assert controller.applied == []
 
 
 def test_validate_config_requires_proxy_or_local_squid_runtime(
