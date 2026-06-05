@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import NoReturn
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 
 def _add_web_path() -> None:
     web_root = Path(__file__).resolve().parents[1]
@@ -503,3 +505,80 @@ def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
             "force": False,
         },
     ]
+
+
+@pytest.mark.parametrize("queue_failure", ["raises", "failed_operation"])
+def test_revert_operation_restores_active_revision_when_queue_fails(
+    monkeypatch, tmp_path, queue_failure
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    class Op:
+        operation_id = 9
+        proxy_id = "edge-a"
+        can_revert = True
+        rollback_kind = "config_revision"
+        rollback_ref = "3"
+        operation_type = "config_apply"
+        target_ref = "4"
+
+    class Ledger:
+        def get_operation(self, operation_id):
+            assert operation_id == 9
+            return Op()
+
+    class Revisions:
+        def __init__(self) -> None:
+            self.active_revision_id = 4
+            self.created: list[int] = []
+
+        def get_active_revision(self, _proxy_id):
+            return SimpleNamespace(revision_id=self.active_revision_id)
+
+        def get_revision(self, revision_id, *, proxy_id=None):
+            assert revision_id == "3"
+            assert proxy_id == "edge-a"
+            return SimpleNamespace(revision_id=3, config_text="workers 1\n")
+
+        def create_revision(
+            self, _proxy_id, _config_text, *, created_by, source_kind, activate
+        ):
+            assert created_by == "operator"
+            assert source_kind == "revert-config_apply"
+            assert activate is True
+            self.active_revision_id = 12
+            self.created.append(12)
+            return SimpleNamespace(revision_id=12, config_sha256="abc")
+
+        def activate_revision(self, _proxy_id, revision_id):
+            self.active_revision_id = int(revision_id)
+
+        def deactivate_revision(self, _proxy_id, revision_id):
+            if self.active_revision_id == int(revision_id):
+                self.active_revision_id = None
+
+    revisions = Revisions()
+
+    def fail_reconcile(*_args, **_kwargs):
+        if queue_failure == "raises":
+            msg = "operation ledger unavailable"
+            raise RuntimeError(msg)
+        return SimpleNamespace(
+            operation_id=0,
+            status="failed",
+            detail="operation ledger unavailable",
+        )
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
+    monkeypatch.setattr(admin_app, "request_proxy_reconcile", fail_reconcile)
+
+    with admin_app.app.test_request_context("/operations/9/revert", method="POST"):
+        admin_app.session["user"] = "operator"
+        response = admin_app.revert_operation(9)
+
+    assert response.status_code == 302
+    assert "error=revert_failed" in response.location
+    assert revisions.created == [12]
+    assert revisions.active_revision_id == 4

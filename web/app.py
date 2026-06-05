@@ -3000,8 +3000,32 @@ def revert_operation(operation_id: int):
     if op is None or op.proxy_id != get_proxy_id() or not op.can_revert:
         return _redirect_to("operations_status", error="not_revertible")
     if op.rollback_kind == "config_revision":
+        revision = None
         try:
             revisions = get_config_revisions()
+            active_revision = None
+            try:
+                active_revision = revisions.get_active_revision(op.proxy_id)
+            except Exception:
+                active_revision = None
+
+            def restore_active_revision_after_failure() -> None:
+                try:
+                    if active_revision is not None:
+                        revisions.activate_revision(
+                            op.proxy_id,
+                            active_revision.revision_id,
+                        )
+                    elif revision is not None:
+                        revisions.deactivate_revision(op.proxy_id, revision.revision_id)
+                except Exception:
+                    log_exception_throttled(
+                        app.logger,
+                        "web.app.revert_operation_restore_active_revision",
+                        interval_seconds=30.0,
+                        message="Failed to restore active config revision after revert queue failure",
+                    )
+
             previous = revisions.get_revision(op.rollback_ref, proxy_id=op.proxy_id)
             if previous is None:
                 return _redirect_to("operations_status", error="rollback_missing")
@@ -3012,7 +3036,7 @@ def revert_operation(operation_id: int):
                 source_kind=f"revert-{op.operation_type}",
                 activate=True,
             )
-            request_proxy_reconcile(
+            operation = request_proxy_reconcile(
                 op.proxy_id,
                 operation_type="revert",
                 subject=f"Revert #{op.operation_id}",
@@ -3026,7 +3050,15 @@ def revert_operation(operation_id: int):
                 created_by=str(session.get("user") or ""),
                 force=False,
             )
+            if (
+                not getattr(operation, "operation_id", 0)
+                and getattr(operation, "status", "") == "failed"
+            ):
+                restore_active_revision_after_failure()
+                return _redirect_to("operations_status", error="revert_failed")
         except Exception:
+            if revision is not None:
+                restore_active_revision_after_failure()
             log_exception_throttled(
                 app.logger,
                 "web.app.revert_operation",
