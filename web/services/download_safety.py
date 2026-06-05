@@ -53,10 +53,26 @@ def validate_download_url(
     *,
     scheme_error: str = "Only http/https URLs are supported.",
 ):
-    parsed = urlparse(url or "")
+    invalid_url_msg = "Download URLs must be valid absolute HTTP/HTTPS URLs."
+    source = str(url or "")
+    if not source or any(
+        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in source
+    ):
+        raise ValueError(invalid_url_msg)
+    try:
+        parsed = urlparse(source)
+    except ValueError as exc:
+        raise ValueError(invalid_url_msg) from exc
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(scheme_error)
-    if is_internal_host(parsed.hostname or ""):
+    try:
+        hostname = parsed.hostname or ""
+        _port = parsed.port
+    except ValueError as exc:
+        raise ValueError(invalid_url_msg) from exc
+    if not parsed.netloc or not hostname:
+        raise ValueError(invalid_url_msg)
+    if is_internal_host(hostname):
         msg = "Downloads from internal/localhost addresses are not allowed."
         raise ValueError(msg)
     return parsed
