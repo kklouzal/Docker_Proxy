@@ -295,6 +295,62 @@ def test_build_template_options_from_form_blank_optional_values_do_not_override(
     assert options["visible_hostname"] == "proxy-host"
 
 
+def test_build_template_options_bounds_numeric_form_and_persisted_values() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    persisted_options = build_template_options(
+        {
+            "cache_dir_size_mb": -1,
+            "cache_swap_low": -20,
+            "cache_swap_high": 120,
+            "quick_abort_pct": 999,
+            "explicit_proxy_port": 999999,
+        },
+        max_workers=4,
+    )
+    form_options = build_template_options_from_form(
+        {},
+        {
+            "cache_dir_size_mb": "-1",
+            "cache_swap_low": "-20",
+            "cache_swap_high": "120",
+            "quick_abort_pct": "999",
+            "explicit_proxy_port": "999999",
+        },
+        form_kind="caching",
+        max_workers=4,
+    )
+    network_form_options = build_template_options_from_form(
+        {},
+        {"explicit_proxy_port": "999999"},
+        form_kind="network",
+        max_workers=4,
+    )
+
+    assert persisted_options["cache_dir_size_mb"] == 100
+    assert persisted_options["cache_swap_low"] == 0
+    assert persisted_options["cache_swap_high"] == 100
+    assert persisted_options["quick_abort_pct"] == 100
+    assert persisted_options["explicit_proxy_port"] == 65535
+    assert form_options["cache_dir_size_mb"] == 100
+    assert form_options["cache_swap_low"] == 0
+    assert form_options["cache_swap_high"] == 100
+    assert form_options["quick_abort_pct"] == 100
+    assert network_form_options["explicit_proxy_port"] == 65535
+
+    config = controller.generate_config_from_template(persisted_options)
+    assert "cache_dir rock /var/spool/squid 100 slot-size=32768" in config
+    assert "cache_swap_low 0" in config
+    assert "cache_swap_high 100" in config
+    assert "quick_abort_pct 100" in config
+    assert "http_port 0.0.0.0:65535" in config
+
+
 def test_build_template_options_from_form_accepts_dns_packet_none() -> None:
     options = build_template_options_from_form(
         {},

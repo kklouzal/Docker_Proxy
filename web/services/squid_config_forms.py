@@ -416,6 +416,16 @@ def _coerce_current_int(current: Any, default: int = 0) -> int:
         return default
 
 
+def _clamp_field_numeric_value(value: Any, spec: ConfigFieldSpec) -> Any:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return value
+    if spec.minimum is not None:
+        value = max(spec.minimum, value)
+    if spec.maximum is not None:
+        value = min(spec.maximum, value)
+    return value
+
+
 def _posted_int_reader(
     field: str,
     *,
@@ -3208,6 +3218,10 @@ def normalize_safe_form_kind(form_kind: object | None) -> str:
 
 
 def _normalize_template_options(options: OptionMap) -> OptionMap:
+    for spec in CONFIG_FIELDS:
+        if spec.key in options:
+            options[spec.key] = _clamp_field_numeric_value(options[spec.key], spec)
+
     explicit_port = _clamp_port(options.get("explicit_proxy_port"), 3128)
     intercept_port = _clamp_port(
         options.get("intercept_port"),
