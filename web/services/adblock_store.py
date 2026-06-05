@@ -474,7 +474,8 @@ class AdblockStore:
             # Truncated.
             pos = 0
 
-        # Read incremental bytes from last pos.
+        # Read incremental bytes from last pos. Keep a trailing partial line
+        # uncheckpointed so it can be parsed once the writer finishes it.
         try:
             with pathlib.Path(path).open("rb") as f:
                 f.seek(pos, os.SEEK_SET)
@@ -499,9 +500,20 @@ class AdblockStore:
                     conn.rollback()
             return
 
+        complete_data = data
+        checkpoint_pos = new_pos
+        if data and not data.endswith(b"\n"):
+            last_newline = data.rfind(b"\n")
+            if last_newline < 0:
+                complete_data = b""
+                checkpoint_pos = pos
+            else:
+                complete_data = data[: last_newline + 1]
+                checkpoint_pos = pos + last_newline + 1
+
         created_ts = _now()
         event_rows: list[tuple[int, str, str, str, int, str, int, str, int]] = []
-        text = data.decode("utf-8", errors="replace")
+        text = complete_data.decode("utf-8", errors="replace")
         proxy_id = get_proxy_id()
         for ln in text.splitlines():
             row = self._parse_cicap_access_line(ln)
@@ -544,7 +556,7 @@ class AdblockStore:
                 conn,
                 {
                     "cicap_access_inode": str(inode),
-                    "cicap_access_pos": str(new_pos),
+                    "cicap_access_pos": str(checkpoint_pos),
                 },
             )
 

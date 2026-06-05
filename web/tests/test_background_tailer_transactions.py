@@ -250,6 +250,73 @@ def test_adblock_proxy_meta_insert_duplicate_falls_back_to_update(monkeypatch) -
     ]
 
 
+def test_adblock_tailer_keeps_partial_line_until_newline(monkeypatch, tmp_path) -> None:
+    _add_repo_paths()
+    from services import adblock_store  # type: ignore
+
+    log_path = tmp_path / "cicap-access.log"
+    partial = (
+        "1710000000\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
+        "GET http://ads.example/banner.js HTTP/1.1\t"
+    )
+    suffix = "http://ads.example/banner.js\tHTTP/1.1 403 Forbidden\textra\n"
+    log_path.write_text(partial, encoding="utf-8")
+
+    meta = {"cicap_access_inode": "0", "cicap_access_pos": "0"}
+    inserted: list[tuple[object, ...]] = []
+
+    class Conn:
+        def execute(self, sql, params=()):
+            normalized = " ".join(str(sql).split())
+            if "SELECT v FROM adblock_proxy_meta" in normalized:
+                key = str((params or ("", ""))[1])
+                value = meta.get(key, "0")
+
+                class Result:
+                    def fetchone(self):
+                        return (value,)
+
+                return Result()
+            if normalized.startswith("UPDATE adblock_proxy_meta"):
+                value, _proxy_id, key = params
+                meta[str(key)] = str(value)
+            elif normalized.startswith("INSERT IGNORE INTO adblock_events"):
+                inserted.append(tuple(params or ()))
+
+            return type("Result", (), {"rowcount": 1})()
+
+        def executemany(self, sql, rows):
+            normalized = " ".join(str(sql).split())
+            if normalized.startswith("INSERT IGNORE INTO adblock_events"):
+                inserted.extend(tuple(row) for row in rows)
+            return type("Result", (), {"rowcount": len(inserted)})()
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    monkeypatch.setattr(adblock_store, "get_proxy_id", lambda: "proxy-a")
+    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
+    conn = Conn()
+
+    store._ingest_new_cicap_lines(conn)
+
+    assert inserted == []
+    assert meta["cicap_access_pos"] == "0"
+    assert meta["cicap_access_inode"] == str(log_path.stat().st_ino)
+
+    log_path.write_text(partial + suffix, encoding="utf-8")
+
+    store._ingest_new_cicap_lines(conn)
+
+    assert len(inserted) == 1
+    assert inserted[0][0] == "proxy-a"
+    assert inserted[0][5] == "http://ads.example/banner.js"
+    assert meta["cicap_access_pos"] == str(log_path.stat().st_size)
+
+
 def test_adblock_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None:
     _add_repo_paths()
     from services import adblock_store  # type: ignore
