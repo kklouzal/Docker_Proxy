@@ -3662,7 +3662,7 @@ def observability_export():
                     "observability",
                     "summary",
                     get_proxy_id(),
-                    since_ts,
+                    window_i,
                 ),
                 lambda: queries.summary(since=since_ts),
             )

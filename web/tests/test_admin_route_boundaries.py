@@ -1173,6 +1173,59 @@ def test_observability_accepts_search_alias_for_page_and_export(
     assert observability_queries.destination_calls[-1]["search"] == "canonical.example"
 
 
+def test_observability_export_reuses_summary_cache_for_same_window(
+    monkeypatch, tmp_path
+) -> None:
+    class CountingObservabilityQueries:
+        def __init__(self) -> None:
+            self.summary_calls = 0
+            self.client_calls = []
+
+        def summary(self, **_kwargs):
+            self.summary_calls += 1
+            return {"request_records": 14, "cache_hit_pct": 0}
+
+        def top_clients(self, **kwargs):
+            self.client_calls.append(dict(kwargs))
+            return []
+
+    observability_queries = CountingObservabilityQueries()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=observability_queries,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    class RouteClock:
+        def __init__(self) -> None:
+            self._current_time = iter([1000, 1001])
+
+        def time(self) -> int:
+            return next(self._current_time)
+
+        def monotonic(self) -> float:
+            return 50.0
+
+    monkeypatch.setattr(loaded.module, "time", RouteClock())
+
+    assert (
+        client.get("/observability/export?pane=clients&window=3600").status_code
+        == 200
+    )
+    assert (
+        client.get("/observability/export?pane=clients&window=3600").status_code
+        == 200
+    )
+
+    assert observability_queries.summary_calls == 1
+    assert [call["total_requests"] for call in observability_queries.client_calls] == [
+        14,
+        14,
+    ]
+
+
 def test_observability_metrics_returns_partial_payload_on_collector_failure(
     monkeypatch, tmp_path
 ) -> None:
