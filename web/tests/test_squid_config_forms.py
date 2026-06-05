@@ -308,6 +308,7 @@ def test_build_template_options_bounds_numeric_form_and_persisted_values() -> No
             "cache_dir_size_mb": -1,
             "cache_swap_low": -20,
             "cache_swap_high": 120,
+            "pipeline_prefetch_count": 999,
             "quick_abort_pct": 999,
             "explicit_proxy_port": 999999,
         },
@@ -319,6 +320,8 @@ def test_build_template_options_bounds_numeric_form_and_persisted_values() -> No
             "cache_dir_size_mb": "-1",
             "cache_swap_low": "-20",
             "cache_swap_high": "120",
+            "pipeline_prefetch_on": "on",
+            "pipeline_prefetch_count": "999",
             "quick_abort_pct": "999",
             "explicit_proxy_port": "999999",
         },
@@ -335,11 +338,15 @@ def test_build_template_options_bounds_numeric_form_and_persisted_values() -> No
     assert persisted_options["cache_dir_size_mb"] == 100
     assert persisted_options["cache_swap_low"] == 0
     assert persisted_options["cache_swap_high"] == 100
+    assert persisted_options["pipeline_prefetch_on"] is True
+    assert persisted_options["pipeline_prefetch_count"] == 16
     assert persisted_options["quick_abort_pct"] == 100
     assert persisted_options["explicit_proxy_port"] == 65535
     assert form_options["cache_dir_size_mb"] == 100
     assert form_options["cache_swap_low"] == 0
     assert form_options["cache_swap_high"] == 100
+    assert form_options["pipeline_prefetch_on"] is True
+    assert form_options["pipeline_prefetch_count"] == 16
     assert form_options["quick_abort_pct"] == 100
     assert network_form_options["explicit_proxy_port"] == 65535
 
@@ -347,8 +354,17 @@ def test_build_template_options_bounds_numeric_form_and_persisted_values() -> No
     assert "cache_dir rock /var/spool/squid 100 slot-size=32768" in config
     assert "cache_swap_low 0" in config
     assert "cache_swap_high 100" in config
+    assert "pipeline_prefetch 16" in config
     assert "quick_abort_pct 100" in config
     assert "http_port 0.0.0.0:65535" in config
+
+    raw_renderer_config = controller.generate_config_from_template(
+        {
+            "pipeline_prefetch_on": True,
+            "pipeline_prefetch_count": 999,
+        },
+    )
+    assert "pipeline_prefetch 16" in raw_renderer_config
 
 
 def test_build_template_options_from_form_accepts_dns_packet_none() -> None:

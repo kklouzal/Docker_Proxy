@@ -327,7 +327,12 @@ class SquidController(_CoreSquidController):
         cache_miss_revalidate_on = bool_value("cache_miss_revalidate_on", True)
         reload_into_ims_on = bool_value("reload_into_ims_on", False)
         pipeline_prefetch_on = bool_value("pipeline_prefetch_on", False)
-        pipeline_prefetch_count = int_value("pipeline_prefetch_count", 0, minimum=0)
+        pipeline_prefetch_count = int_value(
+            "pipeline_prefetch_count",
+            0,
+            minimum=0,
+            maximum=16,
+        )
         if not pipeline_prefetch_on:
             pipeline_prefetch_count = 0
         elif pipeline_prefetch_count <= 0:

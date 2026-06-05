@@ -3270,6 +3270,10 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
         pipeline_count = 0
     elif pipeline_count <= 0:
         pipeline_count = 1
+    pipeline_count = _clamp_field_numeric_value(
+        pipeline_count,
+        FIELD_MAP["pipeline_prefetch_count"],
+    )
     options["pipeline_prefetch_count"] = pipeline_count
     options["pipeline_prefetch_on"] = pipeline_count > 0
     return options
