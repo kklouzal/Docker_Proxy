@@ -1063,6 +1063,42 @@ def test_fleet_observability_summary_is_not_repeated_per_proxy(
     assert diagnostic_store.activity_calls == 1
 
 
+def test_fleet_observability_summary_uses_active_proxy_scope(
+    monkeypatch, tmp_path
+) -> None:
+    class ScopedDiagnosticStore:
+        def __init__(self) -> None:
+            self.proxy_ids = []
+
+        def activity_summary(self, **_kwargs):
+            from services.proxy_context import get_proxy_id
+
+            proxy_id = get_proxy_id()
+            self.proxy_ids.append(proxy_id)
+            return {
+                "requests": 22 if proxy_id == "edge-2" else 7,
+                "transactions": 3,
+                "icap_events": 2,
+            }
+
+        def icap_summary(self, **_kwargs):
+            return {"events": 0, "avg_icap_time_ms": 0, "max_icap_time_ms": 0}
+
+    diagnostic_store = ScopedDiagnosticStore()
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, registry=registry, diagnostic_store=diagnostic_store
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies?proxy_id=edge-2")
+
+    assert response.status_code == 200
+    assert diagnostic_store.proxy_ids == ["edge-2"]
+    assert "Req 22" in response.get_data(as_text=True)
+
+
 def test_observability_hostnames_are_resolved_by_default(monkeypatch, tmp_path) -> None:
     class RecordingObservabilityQueries:
         def __init__(self) -> None:

@@ -1803,16 +1803,21 @@ def _cached_observability_summary(
     window_i: int = OBSERVABILITY_DEFAULT_WINDOW,
 ) -> dict[str, int]:
     window_i = max(300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW))
-    key = (str(proxy_id or ""), window_i)
+    scoped_proxy_id = normalize_proxy_id(proxy_id)
+    key = (scoped_proxy_id, window_i)
     now = time.monotonic()
     cached = _OBSERVABILITY_SUMMARY_CACHE.get(key)
     if cached is not None:
         cached_at, payload = cached
         if now - cached_at <= max(0.0, float(_PROXY_OBSERVABILITY_TTL_SECONDS)):
             return dict(payload)
-    summary, _label = _build_observability_snapshot(window_i)
+    token = set_proxy_id(scoped_proxy_id)
+    try:
+        summary, _label = _build_observability_snapshot(window_i)
+    finally:
+        reset_proxy_id(token)
     _OBSERVABILITY_SUMMARY_CACHE[key] = (now, dict(summary))
-    return summary
+    return dict(summary)
 
 
 def _current_managed_config() -> str:
