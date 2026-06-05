@@ -77,9 +77,9 @@
 {% elif request.args.get('apply_all_ok') == '0' %}
     <div class="banner error"><span class="badge danger">Rebuild failed</span><div class="banner-copy"><span class="small">Saved settings could not be rebuilt and applied to {{ active_proxy.display_name }}; previous config kept.</span>{% if request.args.get('apply_all_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_all_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('ok') %}
-    <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">Config validated and apply requested for {{ active_proxy.display_name }}.</span></div></div>
+    <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">Config validated and apply requested for {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('error') %}
-    <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Config validation/apply failed; previous config kept.</span></div></div>
+    <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Config validation/apply failed; previous config kept.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
 {% endif %}
 
 {% if validation %}

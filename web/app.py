@@ -778,6 +778,7 @@ def _redirect_config(
     ok: bool = False,
     error: bool = False,
     subtab: str | None = None,
+    msg: str | None = None,
 ):
     return _redirect_to(
         "squid_config",
@@ -785,6 +786,7 @@ def _redirect_config(
         subtab=subtab,
         ok=_query_flag(ok),
         error=_query_flag(error),
+        apply_msg=(msg or "")[:1000] if msg else None,
     )
 
 
@@ -4716,8 +4718,8 @@ def squid_config():
                     config_text=config_text,
                 )
                 if ok:
-                    return _redirect_config(tab, ok=True)
-                return _redirect_config(tab, error=True)
+                    return _redirect_config(tab, ok=True, msg=details)
+                return _redirect_config(tab, error=True, msg=details)
         except Exception as exc:
             detail = public_error_message(exc)
             log_exception_throttled(
@@ -4737,7 +4739,7 @@ def squid_config():
             if action == "validate":
                 validation = {"ok": False, "detail": detail}
             else:
-                return _redirect_config(tab, error=True)
+                return _redirect_config(tab, error=True, msg=detail)
     current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
     managed_options = build_template_options(tunables, max_workers=_max_workers())
@@ -4841,12 +4843,18 @@ def apply_all_saved_config():
             overrides=overrides,
         )
     except Exception as exc:
+        detail = public_error_message(exc)
         _record_audit_event(
             "config_apply_all_saved",
             ok=False,
-            detail=public_error_message(exc),
+            detail=detail,
         )
-        return _redirect_to("squid_config", tab="config", apply_all_ok="0")
+        return _redirect_to(
+            "squid_config",
+            tab="config",
+            apply_all_ok="0",
+            apply_all_msg=detail[:1000],
+        )
 
     return _redirect_to(
         "squid_config",
@@ -4873,15 +4881,15 @@ def apply_safe_caching():
     )
 
     try:
-        ok, _details = _publish_template_config(
+        ok, detail = _publish_template_config(
             options,
             source_kind="template",
             audit_kind="config_apply_template",
         )
-    except Exception:
-        return _redirect_config(form_kind, error=True)
+    except Exception as exc:
+        return _redirect_config(form_kind, error=True, msg=public_error_message(exc))
 
-    return _redirect_config(form_kind, ok=ok, error=not ok)
+    return _redirect_config(form_kind, ok=ok, error=not ok, msg=detail)
 
 
 @app.route("/squid/config/apply-overrides", methods=["POST"])
@@ -4893,16 +4901,27 @@ def apply_cache_overrides():
 
         options = _options_from_tunables(tunables)
         overrides = parse_cache_override_form(request.form)
-        ok, _details = _publish_template_config(
+        ok, detail = _publish_template_config(
             options,
             source_kind="overrides",
             audit_kind="config_apply_overrides",
             overrides=overrides,
         )
-    except Exception:
-        return _redirect_config("caching", subtab="overrides", error=True)
+    except Exception as exc:
+        return _redirect_config(
+            "caching",
+            subtab="overrides",
+            error=True,
+            msg=public_error_message(exc),
+        )
 
-    return _redirect_config("caching", subtab="overrides", ok=ok, error=not ok)
+    return _redirect_config(
+        "caching",
+        subtab="overrides",
+        ok=ok,
+        error=not ok,
+        msg=detail,
+    )
 
 
 @app.route("/pac", methods=["GET", "POST"])

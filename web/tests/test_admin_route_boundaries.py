@@ -382,6 +382,38 @@ def test_safe_config_apply_failure_returns_to_active_form_tab(
     assert "error=1" in response.headers["Location"]
 
 
+def test_safe_config_apply_failure_shows_publish_detail(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    monkeypatch.setattr(
+        loaded.module,
+        "_publish_template_config",
+        lambda *_args, **_kwargs: (
+            False,
+            "Config validation failed; revision was not activated.\nline 42: bad directive",
+        ),
+    )
+
+    response = client.post(
+        "/squid/config/apply-safe",
+        data={
+            "csrf_token": csrf_token(client, "/squid/config?tab=network"),
+            "form_kind": "network",
+            "explicit_proxy_port": "3128",
+        },
+        follow_redirects=True,
+    )
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Config validation/apply failed; previous config kept." in text
+    assert "line 42: bad directive" in text
+
+
 def test_fleet_page_shows_explicit_and_intercept_listeners(
     monkeypatch, tmp_path
 ) -> None:
