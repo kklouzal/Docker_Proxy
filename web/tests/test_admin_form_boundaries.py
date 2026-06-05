@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 from .admin_route_test_utils import (
     FakeAdblockStore,
@@ -9,6 +12,9 @@ from .admin_route_test_utils import (
     FakeWebfilterStore,
     load_admin_app,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _params(location: str) -> dict[str, list[str]]:
@@ -322,8 +328,50 @@ def test_adblock_list_save_queues_runtime_refresh(monkeypatch, tmp_path) -> None
     assert loaded.operation_ledger.operations[-1].subject == "Adblock runtime refresh"
 
 
-def test_adblock_settings_report_runtime_refresh_queue_failure(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("form_data", "assert_mutation"),
+    [
+        (
+            {"action": "save_lists", "enabled_default": "on"},
+            lambda store: (
+                store.refresh_requested == 1
+                and store.statuses[0].enabled is True
+                and store.cache_flush_requested == 0
+            ),
+        ),
+        (
+            {
+                "action": "save_settings",
+                "adblock_enabled": "on",
+                "cache_ttl": "900",
+                "cache_max": "100",
+            },
+            lambda store: (
+                store.refresh_requested == 1
+                and store.settings["cache_ttl"] == 900
+                and store.settings["cache_max"] == 100
+                and store.cache_flush_requested == 0
+            ),
+        ),
+        (
+            {"action": "refresh"},
+            lambda store: (
+                store.refresh_requested == 1 and store.cache_flush_requested == 0
+            ),
+        ),
+        (
+            {"action": "flush_cache"},
+            lambda store: (
+                store.cache_flush_requested == 1 and store.refresh_requested == 0
+            ),
+        ),
+    ],
+)
+def test_adblock_mutations_report_runtime_refresh_queue_failure(
+    monkeypatch,
+    tmp_path,
+    form_data: dict[str, str],
+    assert_mutation: Callable[[FakeAdblockStore], bool],
 ) -> None:
     store = FakeAdblockStore()
     loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
@@ -337,47 +385,14 @@ def test_adblock_settings_report_runtime_refresh_queue_failure(
     with loaded.module.app.test_request_context(
         "/adblock",
         method="POST",
-        data={
-            "action": "save_settings",
-            "adblock_enabled": "on",
-            "cache_ttl": "900",
-            "cache_max": "100",
-        },
+        data=form_data,
     ):
         response = loaded.module._handle_adblock_post(store)
 
     params = _params(response.location)
     assert params["error"] == ["1"]
     assert "runtime refresh was not queued" in params["msg"][0]
+    assert "refresh_requested" not in params
     assert "cache_flushed" not in params
-    assert store.settings["cache_ttl"] == 900
-    assert store.settings["cache_max"] == 100
-    assert store.refresh_requested == 1
-    assert loaded.operation_ledger.operations == []
-
-
-def test_adblock_cache_flush_reports_runtime_refresh_queue_failure(
-    monkeypatch, tmp_path
-) -> None:
-    store = FakeAdblockStore()
-    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
-
-    def fail_reconcile(*_args, **_kwargs):
-        msg = "operation ledger unavailable"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
-
-    with loaded.module.app.test_request_context(
-        "/adblock",
-        method="POST",
-        data={"action": "flush_cache"},
-    ):
-        response = loaded.module._handle_adblock_post(store)
-
-    params = _params(response.location)
-    assert params["error"] == ["1"]
-    assert "runtime refresh was not queued" in params["msg"][0]
-    assert "cache_flushed" not in params
-    assert store.cache_flush_requested == 1
+    assert assert_mutation(store)
     assert loaded.operation_ledger.operations == []
