@@ -2051,30 +2051,74 @@ def _publish_certificate_bundle_remote(
     original_filename: str = "",
 ) -> tuple[bool, str]:
     bundle_store = get_certificate_bundles()
+    previous_revision = None
+    try:
+        previous_revision = bundle_store.get_active_bundle()
+    except Exception:
+        previous_revision = None
     revision = bundle_store.create_revision(
         bundle,
         created_by=str(session.get("user") or ""),
         original_filename=(original_filename or "")[:255],
         activate=True,
     )
+
+    restore_detail = ""
+
+    def restore_previous_active_bundle() -> None:
+        nonlocal restore_detail
+        try:
+            if previous_revision is not None:
+                bundle_store.activate_revision(previous_revision.revision_id)
+                restore_detail = "Previous active certificate bundle was restored."
+            else:
+                bundle_store.deactivate_revision(revision.revision_id)
+                restore_detail = "Unqueued certificate bundle revision was left inactive."
+        except Exception:
+            log_exception_throttled(
+                app.logger,
+                "web.app.certificate_apply_restore_active_bundle",
+                interval_seconds=30.0,
+                message="Failed to restore active certificate bundle after reconcile queue failure",
+            )
+            restore_detail = (
+                "Failed to restore the prior active certificate bundle after reconcile queue failure; "
+                "check the certificate bundle store before retrying."
+            )
+
     proxies = get_proxy_registry().list_proxies()
     attempted = len(proxies)
     queued_count = 0
+    failure_details = []
     for proxy in proxies:
-        operation = request_proxy_reconcile(
-            proxy.proxy_id,
-            operation_type="certificate_apply",
-            subject="Certificate bundle",
-            summary=f"Certificate revision {revision.revision_id} saved; applying asynchronously to proxy {proxy.proxy_id}.",
-            target_kind="certificate_revision",
-            target_ref=revision.revision_id,
-            request_hash=getattr(revision, "bundle_sha256", ""),
-            detail=f"Certificate revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
-            created_by=str(session.get("user") or ""),
-            force=True,
-        )
+        try:
+            operation = request_proxy_reconcile(
+                proxy.proxy_id,
+                operation_type="certificate_apply",
+                subject="Certificate bundle",
+                summary=f"Certificate revision {revision.revision_id} saved; applying asynchronously to proxy {proxy.proxy_id}.",
+                target_kind="certificate_revision",
+                target_ref=revision.revision_id,
+                request_hash=getattr(revision, "bundle_sha256", ""),
+                detail=f"Certificate revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
+                created_by=str(session.get("user") or ""),
+                force=True,
+            )
+        except Exception as exc:
+            failure_details.append(public_error_message(exc))
+            continue
         if getattr(operation, "operation_id", 0) and operation.status == "pending":
             queued_count += 1
+        elif (
+            not getattr(operation, "operation_id", 0)
+            and getattr(operation, "status", "") == "failed"
+        ):
+            failure_details.append(
+                str(
+                    getattr(operation, "detail", "")
+                    or "Certificate bundle reconciliation was not queued.",
+                ),
+            )
     if attempted == 0:
         detail = (
             f"Certificate revision {revision.revision_id} saved. "
@@ -2083,6 +2127,16 @@ def _publish_certificate_bundle_remote(
     elif queued_count == attempted:
         plural = "operation" if queued_count == 1 else "operations"
         detail = f"Certificate revision {revision.revision_id} saved. Queued {queued_count} async {plural}."
+    elif queued_count == 0:
+        restore_previous_active_bundle()
+        detail = (
+            f"Certificate revision {revision.revision_id} saved, but no proxy reconciliation operations were queued."
+        )
+        if failure_details:
+            detail = f"{detail}\n{failure_details[0]}"
+        if restore_detail:
+            detail = f"{detail}\n{restore_detail}"
+        return False, detail
     else:
         detail = (
             f"Certificate revision {revision.revision_id} saved. "

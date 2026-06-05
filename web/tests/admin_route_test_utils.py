@@ -920,18 +920,37 @@ class FakeCertificateBundles:
         self.bundle = bundle
         self.created: list[Any] = []
         self.applied: list[dict[str, Any]] = []
+        self._revisions: dict[int, Any] = {}
+        if bundle is not None and getattr(bundle, "revision_id", None) is not None:
+            self._revisions[int(bundle.revision_id)] = bundle
 
     def get_active_bundle(self) -> Any | None:
         return self.bundle
 
     def create_revision(self, bundle: Any, **_kwargs: Any) -> Any:
-        self.bundle = bundle
         revision = SimpleNamespace(
             revision_id=len(self.created) + 1,
             bundle_sha256=getattr(bundle, "bundle_sha256", "bundle-sha"),
+            fullchain_pem=getattr(bundle, "fullchain_pem", ""),
+            original_pfx_bytes=getattr(bundle, "original_pfx_bytes", None),
         )
         self.created.append(revision)
+        self._revisions[revision.revision_id] = revision
+        self.bundle = revision
         return revision
+
+    def activate_revision(self, revision_id: object) -> Any:
+        target_id = int(revision_id or 0)
+        revision = self._revisions.get(target_id)
+        if revision is not None:
+            self.bundle = revision
+            return revision
+        msg = f"Certificate bundle revision {target_id} was not found."
+        raise ValueError(msg)
+
+    def deactivate_revision(self, revision_id: object) -> None:
+        if int(getattr(self.bundle, "revision_id", 0) or 0) == int(revision_id or 0):
+            self.bundle = None
 
     def record_apply_result(
         self, proxy_id: object, revision_id: int, **kwargs: Any

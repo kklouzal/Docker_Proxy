@@ -257,6 +257,40 @@ class CertificateBundleStore:
         assert revision is not None
         return revision
 
+    def activate_revision(self, revision_id: object) -> CertificateBundleRevision:
+        self.init_db()
+        target_id = int(revision_id or 0)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
+                (target_id,),
+            ).fetchone()
+            if not row:
+                msg = f"Certificate bundle revision {target_id} was not found."
+                raise ValueError(msg)
+            conn.execute(
+                "UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1",
+            )
+            conn.execute(
+                "UPDATE certificate_bundle_revisions SET is_active=1 WHERE id=%s",
+                (target_id,),
+            )
+            row = conn.execute(
+                "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
+                (target_id,),
+            ).fetchone()
+        revision = self._row_to_revision(row)
+        assert revision is not None
+        return revision
+
+    def deactivate_revision(self, revision_id: object) -> None:
+        self.init_db()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE certificate_bundle_revisions SET is_active=0 WHERE id=%s",
+                (int(revision_id or 0),),
+            )
+
     def record_apply_result(
         self,
         proxy_id: object | None,

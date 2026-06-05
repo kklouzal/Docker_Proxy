@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .admin_route_test_utils import (
     FakeCertificateBundles,
+    FakeRegistry,
     csrf_token,
     load_admin_app,
     login_client,
@@ -112,6 +113,44 @@ def test_certificate_upload_accepts_pfx_and_p12_extensions_case_insensitively(
 
     assert len(parsed_bundles) == 4
     assert len(loaded.certificate_bundles.created) == 4
+
+
+def test_certificate_publish_restores_previous_bundle_when_no_reconcile_queued(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=previous)
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+    )
+
+    def fail_reconcile(_proxy_id, **_kwargs):
+        return SimpleNamespace(
+            operation_id=0,
+            status="failed",
+            detail="operation ledger unavailable",
+        )
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    with loaded.module.app.test_request_context("/certs/upload", method="POST"):
+        loaded.module.session["user"] = "operator"
+        ok, detail = loaded.module._publish_certificate_bundle_remote(_bundle())
+
+    assert ok is False
+    assert "no proxy reconciliation operations were queued" in detail
+    assert "operation ledger unavailable" in detail
+    assert "Previous active certificate bundle was restored" in detail
+    assert len(bundles.created) == 1
+    assert bundles.bundle is previous
 
 
 def test_certificate_upload_rejects_body_over_ten_megabytes(
