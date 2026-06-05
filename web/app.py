@@ -536,6 +536,9 @@ def _cached_proxy_health(
     except ProxyClientError as exc:
         if cached is not None:
             stale_payload = dict(cached[1])
+            stale_payload["health_cache_detail"] = str(
+                exc or "using recent cached health after refresh failure",
+            )
             stale_payload.setdefault(
                 "detail",
                 "using recent cached health after refresh failure",
@@ -4640,6 +4643,9 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
     except ProxyClientError as exc:
         if cached is not None:
             stale_payload = dict(cached[1])
+            stale_payload["health_cache_detail"] = str(
+                exc or "using recent cached ClamAV health after refresh failure",
+            )
             stale_payload.setdefault(
                 "detail",
                 "using recent cached ClamAV health after refresh failure",

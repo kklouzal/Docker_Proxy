@@ -107,6 +107,55 @@ class RuntimeDriftSequenceProxyClient(RecordingProxyClient):
         return payload
 
 
+class FailAfterCachedHealthProxyClient(RecordingProxyClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.admin_app = None
+        self.fail_health = False
+        self.fail_clamav = False
+
+    def get_health(
+        self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
+    ) -> dict[str, object]:
+        self.health_calls.append((str(proxy_id), timeout_seconds))
+        if self.fail_health:
+            msg = "management request timed out"
+            raise self.admin_app.ProxyClientError(msg)
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": str(proxy_id),
+            "proxy_status": "Squid check ok.",
+            "detail": "cached full-health detail",
+            "stats": {},
+            "services": {
+                "icap": {"ok": True, "detail": "ok"},
+                "clamav": {"ok": True, "detail": "ok"},
+            },
+        }
+
+    def get_clamav_health(
+        self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
+    ) -> dict[str, object]:
+        self.health_calls.append((f"clamav:{proxy_id}", timeout_seconds))
+        if self.fail_clamav:
+            msg = "ClamAV endpoint timed out"
+            raise self.admin_app.ProxyClientError(msg)
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": str(proxy_id),
+            "proxy_status": "ClamAV lightweight ok.",
+            "detail": "cached clamav detail",
+            "services": {
+                "clamav": {"ok": True, "detail": "clamav lightweight"},
+                "av_icap": {"ok": True, "detail": "ok"},
+                "clamd": {"ok": True, "detail": "ok"},
+            },
+            "health_scope": "clamav",
+        }
+
+
 class RuntimeHealthEchoObservability:
     def summary(self, **_kwargs):
         return {
@@ -236,6 +285,32 @@ def test_index_reuses_short_lived_proxy_health_cache(monkeypatch, tmp_path) -> N
     assert client.get("/").status_code == 200
 
     assert proxy_client.health_calls == [("default", 1.5)]
+
+
+def test_cached_proxy_health_preserves_refresh_failure_detail(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = FailAfterCachedHealthProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    proxy_client.admin_app = loaded.module
+
+    fresh = loaded.module._cached_proxy_health(
+        "default",
+        timeout_seconds=1.5,
+        ttl_seconds=0,
+    )
+    assert fresh["detail"] == "cached full-health detail"
+
+    proxy_client.fail_health = True
+    stale = loaded.module._cached_proxy_health(
+        "default",
+        timeout_seconds=1.5,
+        ttl_seconds=0,
+    )
+
+    assert stale["_stale"] is True
+    assert stale["detail"] == "cached full-health detail"
+    assert stale["health_cache_detail"] == "management request timed out"
 
 
 def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> None:
@@ -1033,6 +1108,31 @@ def test_clamav_page_uses_dedicated_clamav_health_endpoint(
 
     assert response.status_code == 200
     assert proxy_client.health_calls == [("clamav:default", 5.0)]
+
+
+def test_clamav_remote_health_preserves_refresh_failure_detail(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = FailAfterCachedHealthProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    proxy_client.admin_app = loaded.module
+
+    fresh = loaded.module._clamav_remote_health("default")
+    assert fresh["detail"] == "cached clamav detail"
+
+    cache_key = ("default", "clamav", 5.0)
+    cached_at, payload = loaded.module._PROXY_HEALTH_CACHE[cache_key]
+    loaded.module._PROXY_HEALTH_CACHE[cache_key] = (cached_at - 60.0, payload)
+    proxy_client.fail_clamav = True
+
+    stale = loaded.module._clamav_remote_health("default")
+
+    assert stale["_stale"] is True
+    assert stale["detail"] == "cached clamav detail"
+    assert stale["health_cache_detail"] == "ClamAV endpoint timed out"
+    assert loaded.module.build_remote_clamav_view(stale)["health_source"] == (
+        "ClamAV lightweight ok. (ClamAV endpoint timed out)"
+    )
 
 
 def test_fleet_observability_summary_is_not_repeated_per_proxy(
