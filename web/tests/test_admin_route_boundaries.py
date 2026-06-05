@@ -354,6 +354,34 @@ def test_network_config_apply_can_publish_intercept_listener(
     assert "PROXY" not in config_text
 
 
+def test_safe_config_apply_failure_returns_to_active_form_tab(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    def fail_publish(*_args, **_kwargs):
+        msg = "publish failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "_publish_template_config", fail_publish)
+
+    response = client.post(
+        "/squid/config/apply-safe",
+        data={
+            "csrf_token": csrf_token(client, "/squid/config?tab=network"),
+            "form_kind": "network",
+            "explicit_proxy_port": "3128",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert "tab=network" in response.headers["Location"]
+    assert "error=1" in response.headers["Location"]
+
+
 def test_fleet_page_shows_explicit_and_intercept_listeners(
     monkeypatch, tmp_path
 ) -> None:

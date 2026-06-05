@@ -4879,7 +4879,7 @@ def apply_safe_caching():
             audit_kind="config_apply_template",
         )
     except Exception:
-        return _redirect_config("caching", error=True)
+        return _redirect_config(form_kind, error=True)
 
     return _redirect_config(form_kind, ok=ok, error=not ok)
 
