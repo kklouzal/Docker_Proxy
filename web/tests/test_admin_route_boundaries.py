@@ -2025,6 +2025,33 @@ def test_webfilter_safe_browsing_save_rejects_without_lists(
     assert not hasattr(store, "last_set_settings")
 
 
+def test_webfilter_safe_browsing_save_rejects_invalid_lists(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeWebfilterStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/webfilter?tab=categories",
+        data={
+            "csrf_token": csrf_token(client, "/webfilter"),
+            "tab": "categories",
+            "action": "safe_browsing_save",
+            "safe_browsing_enabled": "on",
+            "safe_browsing_api_key": "test-key",
+            "safe_browsing_lists": ["invalid-list"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "err_safe_browsing_lists=1" in response.headers["Location"]
+    assert "err_source=1" not in response.headers["Location"]
+    assert not hasattr(store, "last_set_settings")
+
+
 def test_webfilter_safe_browsing_save_rejects_without_api_key(
     monkeypatch, tmp_path
 ) -> None:

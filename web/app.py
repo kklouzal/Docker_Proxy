@@ -122,6 +122,7 @@ from services.proxy_health import test_eicar as _shared_test_eicar
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import request_proxy_reconcile
 from services.runtime_helpers import extract_domain as _extract_domain
+from services.safe_browsing_v5 import SafeBrowsingStore
 from services.squid_config_forms import (
     build_template_options,
     build_template_options_from_form,
@@ -2466,6 +2467,7 @@ def _handle_webfilter_post(store: Any, tab: str):
             for c in request.form.getlist("safe_browsing_lists")
             if (c or "").strip()
         ]
+        safe_browsing_lists = list(SafeBrowsingStore.selected_lists(safe_browsing_lists))
 
         if safe_browsing_enabled and not safe_browsing_lists:
             return _redirect_to(
