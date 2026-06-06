@@ -2344,6 +2344,25 @@ def _webfilter_setting_list(settings: Any, name: str) -> list[str]:
     return [str(item).strip() for item in items if str(item or "").strip()]
 
 
+def _webfilter_setting_bool(settings: Any, name: str, default: bool = False) -> bool:
+    value = _webfilter_setting(settings, name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _webfilter_category_refresh_required(
+    current_settings: Any,
+    *,
+    enabled: bool,
+) -> bool:
+    return bool(enabled or _webfilter_setting_bool(current_settings, "enabled", False))
+
+
 def _webfilter_set_settings(store: Any, **kwargs: Any) -> None:
     optional_names = {
         "source_provider",
@@ -2417,6 +2436,11 @@ def _handle_webfilter_post(store: Any, tab: str):
             )
         except ValueError:
             return _redirect_to("webfilter", tab="categories", err_source="1")
+        if not _webfilter_category_refresh_required(
+            current_settings,
+            enabled=enabled,
+        ):
+            return _redirect_to("webfilter", tab="categories")
         return _redirect_after_policy_refresh(
             "webfilter",
             store,

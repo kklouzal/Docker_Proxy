@@ -142,6 +142,7 @@ def test_webfilter_save_validates_source_url_and_whitelist(
         store.last_set_settings["source_url"]
         == "http://127.0.0.1/private-feed.tar.gz"
     )
+    assert loaded.operation_ledger.operations == []
 
     with loaded.module.app.test_request_context(
         "/webfilter",
