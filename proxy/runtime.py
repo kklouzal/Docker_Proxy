@@ -32,6 +32,7 @@ from services.errors import public_error_message
 from services.health_checks import build_clamav_health
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
+from services.materialized_files import write_managed_text_files
 from services.operation_ledger import get_operation_ledger
 from services.pac_renderer import (
     PAC_RENDER_DIR,
@@ -1446,15 +1447,16 @@ class ProxyRuntime:
                 "degraded": not snapshot_ok,
             }
 
-        changed_paths: list[str] = []
+        changed_files: list[tuple[str, str]] = []
         try:
             for item in desired.files:
                 path = pathlib.Path(str(item.path or ""))
                 current_content = self._read_text_file(item.path)
                 if path.exists() and current_content == item.content:
                     continue
-                self._atomic_write_text(item.path, item.content)
-                changed_paths.append(item.path)
+                changed_files.append((item.path, item.content))
+            if changed_files:
+                write_managed_text_files(*changed_files)
         except Exception as exc:
             return {
                 "ok": False,
@@ -1474,7 +1476,7 @@ class ProxyRuntime:
                 ),
             }
 
-        if not changed_paths:
+        if not changed_files:
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
@@ -1498,9 +1500,9 @@ class ProxyRuntime:
             "detail": "\n".join(
                 part
                 for part in (
-                    f"Updated {len(changed_paths)} local policy file(s)."
+                    f"Updated {len(changed_files)} local policy file(s)."
                     if snapshot_ok
-                    else f"Updated {len(changed_paths)} local policy file(s); {snapshot_detail}",
+                    else f"Updated {len(changed_files)} local policy file(s); {snapshot_detail}",
                     (
                         "Reapplied policy state because local materialization was stale: "
                         f"{integrity_detail.strip()}"

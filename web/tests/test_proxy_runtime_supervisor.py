@@ -49,7 +49,13 @@ def _write_adblock_lookup_metadata(path: Path, *, count_rules: int) -> None:
         conn.close()
 
 
-def test_sync_policy_state_failure_reports_desired_and_current_sha(tmp_path) -> None:
+def test_sync_policy_state_failure_reports_desired_and_current_sha(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
     runtime = _runtime_shell()
     runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
         policy_sha256="desired-policy-shaabcdef",
@@ -57,9 +63,12 @@ def test_sync_policy_state_failure_reports_desired_and_current_sha(tmp_path) -> 
     )
     runtime._current_policy_sha = lambda: "current-policy-shaxyz"
     runtime._read_text_file = lambda _path: "old\n"
-    runtime._atomic_write_text = lambda _path, _content: (_ for _ in ()).throw(
-        PermissionError("read-only policy directory")
-    )
+
+    def fail_policy_write(*_files) -> NoReturn:
+        msg = "read-only policy directory"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(runtime_module, "write_managed_text_files", fail_policy_write)
 
     result = runtime.sync_policy_state()
 
@@ -71,6 +80,45 @@ def test_sync_policy_state_failure_reports_desired_and_current_sha(tmp_path) -> 
         "policy: desired desired-poli does not match current current-poli."
         in result["detail"]
     )
+
+
+def test_sync_policy_state_rolls_back_partial_policy_materialization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services import materialized_files  # type: ignore
+
+    first = tmp_path / "10-sslfilter.conf"
+    second = tmp_path / "30-webfilter.conf"
+    first.write_text("old ssl policy\n", encoding="utf-8")
+    second.write_text("old web policy\n", encoding="utf-8")
+    real_replace = materialized_files.os.replace
+
+    def flaky_replace(src, dst) -> None:
+        if str(dst) == str(second):
+            msg = "disk full during webfilter policy update"
+            raise OSError(msg)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(materialized_files.os, "replace", flaky_replace)
+
+    runtime = _runtime_shell()
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="desired-policy-sha",
+        files=(
+            SimpleNamespace(path=str(first), content="new ssl policy\n"),
+            SimpleNamespace(path=str(second), content="new web policy\n"),
+        ),
+    )
+    runtime._current_policy_sha = lambda: "current-policy-sha"
+
+    result = runtime.sync_policy_state()
+
+    assert result["ok"] is False
+    assert "Failed to materialize policy state." in result["detail"]
+    assert first.read_text(encoding="utf-8") == "old ssl policy\n"
+    assert second.read_text(encoding="utf-8") == "old web policy\n"
 
 
 def test_sync_policy_state_reapplies_missing_empty_materialized_file(tmp_path) -> None:
