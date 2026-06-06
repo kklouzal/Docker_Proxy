@@ -622,6 +622,8 @@ class _BlockedLogDb:
                 conn.rollback()
             with contextlib.suppress(Exception):
                 conn.close()
+            if self._conn is conn:
+                self._conn = None
             return None, False
         return conn, True
 

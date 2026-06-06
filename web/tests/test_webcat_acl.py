@@ -313,11 +313,14 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
 
     db = BrokenBlockedLogDb(max_rows=10)
     batch = [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+    conn = FakeConn()
+    db._conn = conn
 
-    conn, flushed = db._flush_batch_if_possible(FakeConn(), batch)
+    conn, flushed = db._flush_batch_if_possible(conn, batch)
 
     assert conn is None
     assert flushed is False
+    assert db._conn is None
     assert rolled_back == [True]
     assert closed == [True]
     assert batch == [
