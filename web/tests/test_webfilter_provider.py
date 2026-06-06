@@ -103,6 +103,33 @@ def test_webfilter_run_build_defaults_invalid_provider_to_auto() -> None:
     assert captured["argv"][captured["argv"].index("--provider") + 1] == "auto"
 
 
+def test_webfilter_loop_uses_error_backoff_for_database_outages(monkeypatch) -> None:
+    m = _import_webfilter_store_module()
+    store = m.WebFilterStore()
+    sleeps: list[float] = []
+
+    class StopLoopError(Exception):
+        pass
+
+    def fail_init_db():
+        raise m.DATABASE_ERRORS[0](2003, "database unavailable")
+
+    def stop_after_sleep(seconds: float):
+        sleeps.append(seconds)
+        raise StopLoopError
+
+    monkeypatch.setenv("WEBFILTER_ENABLED_POLL_SECONDS", "120")
+    monkeypatch.setenv("WEBFILTER_ERROR_BACKOFF_SECONDS", "7")
+    monkeypatch.setattr(store, "init_db", fail_init_db)
+    monkeypatch.setattr(m, "log_database_unavailable", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(m.time, "sleep", stop_after_sleep)
+
+    with pytest.raises(StopLoopError):
+        store._loop()
+
+    assert sleeps == [7.0]
+
+
 @pytest.mark.parametrize(
     "source_url",
     [

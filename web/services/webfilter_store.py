@@ -636,6 +636,7 @@ class WebFilterStore(WebFilterStoreBase):
                     "Webfilter background updater deferred database work while MySQL is unavailable",
                     exc,
                 )
+                sleep_seconds = error_sleep
             except Exception:
                 log_exception_throttled(
                     logger,
