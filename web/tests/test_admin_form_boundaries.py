@@ -135,8 +135,13 @@ def test_webfilter_save_validates_source_url_and_whitelist(
         },
     ):
         disabled_internal = loaded.module._handle_webfilter_post(store, "categories")
-    assert _params(disabled_internal.location)["err_source"] == ["1"]
-    assert not hasattr(store, "last_set_settings")
+    disabled_params = _params(disabled_internal.location)
+    assert "err_source" not in disabled_params
+    assert store.last_set_settings["enabled"] is False
+    assert (
+        store.last_set_settings["source_url"]
+        == "http://127.0.0.1/private-feed.tar.gz"
+    )
 
     with loaded.module.app.test_request_context(
         "/webfilter",
