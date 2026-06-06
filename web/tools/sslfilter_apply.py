@@ -5,26 +5,39 @@ import argparse
 import contextlib
 import pathlib
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
-def main() -> int:
+def _emit_failure(event: str, exc: Exception) -> None:
+    with contextlib.suppress(Exception):
+        from services.helper_runtime import helper_failure_event  # type: ignore
+
+        helper_failure_event("sslfilter_apply", event, exc)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Generate /etc/squid/conf.d/10-sslfilter.conf from UI settings",
     )
     ap.add_argument("--out", default="/etc/squid/conf.d/10-sslfilter.conf")
-    args = ap.parse_args()
+    args = ap.parse_args(list(argv) if argv is not None else None)
 
     sys.path.insert(0, "/app")
     try:
         from services.sslfilter_store import SslFilterStore  # type: ignore
-    except Exception:
+    except Exception as exc:
+        _emit_failure("import_failed", exc)
         return 2
 
     store = SslFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
         return 0
-    except Exception:
+    except Exception as exc:
+        _emit_failure("apply_failed", exc)
         pathlib.Path(pathlib.Path(args.out).parent).mkdir(exist_ok=True, parents=True)
         with contextlib.suppress(Exception):
             pathlib.Path(args.out).write_text(

@@ -5,6 +5,17 @@ import argparse
 import contextlib
 import pathlib
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+def _emit_failure(event: str, exc: Exception) -> None:
+    with contextlib.suppress(Exception):
+        from services.helper_runtime import helper_failure_event  # type: ignore
+
+        helper_failure_event("webfilter_apply", event, exc)
 
 
 def _write_safe_include(path: str, reason: str) -> None:
@@ -15,18 +26,19 @@ def _write_safe_include(path: str, reason: str) -> None:
     )
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Generate /etc/squid/conf.d/30-webfilter.conf from UI settings",
     )
     ap.add_argument("--out", default="/etc/squid/conf.d/30-webfilter.conf")
-    args = ap.parse_args()
+    args = ap.parse_args(list(argv) if argv is not None else None)
 
     # Import from the app package (works in container where /app is present).
     sys.path.insert(0, "/app")
     try:
         from services.webfilter_core import ProxyWebFilterStore
-    except Exception:
+    except Exception as exc:
+        _emit_failure("import_failed", exc)
         with contextlib.suppress(Exception):
             _write_safe_include(args.out, "import failed")
         return 2
@@ -40,7 +52,8 @@ def main() -> int:
             (True, ""),
         )
         return 0
-    except Exception:
+    except Exception as exc:
+        _emit_failure("apply_failed", exc)
         # Ensure include exists so Squid include is safe.
         with contextlib.suppress(Exception):
             _write_safe_include(args.out, "apply failed")

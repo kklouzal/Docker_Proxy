@@ -52,6 +52,28 @@ def helper_event(helper: str, event: str, **fields: Any) -> None:
         pass
 
 
+def _safe_event_text(value: object, *, max_len: int = 160) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    text = " ".join(text.split())
+    if max_len and len(text) > max_len:
+        return text[: max_len - 1].rstrip() + "..."
+    return text
+
+
+def helper_failure_event(helper: str, event: str, exc: Exception) -> None:
+    reason = (
+        _safe_event_text(exc)
+        if isinstance(exc, ValueError)
+        else "Operation failed. Check server logs for details."
+    )
+    helper_event(
+        helper,
+        event,
+        error_type=type(exc).__name__,
+        reason=reason,
+    )
+
+
 @dataclass
 class HelperStats:
     helper: str

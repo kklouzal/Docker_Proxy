@@ -34,6 +34,20 @@ def test_helper_event_writes_json_to_stderr(capsys) -> None:
     assert "skipped" not in payload
 
 
+def test_helper_failure_event_sanitizes_non_validation_errors(capsys) -> None:
+    from services.helper_runtime import helper_failure_event
+
+    msg = "database password=secret unavailable"
+    helper_failure_event("sample", "apply_failed", RuntimeError(msg))
+
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["helper"] == "sample"
+    assert payload["event"] == "apply_failed"
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["reason"] == "Operation failed. Check server logs for details."
+    assert "secret" not in payload["reason"]
+
+
 def test_helper_stats_emits_snapshot_without_blocking_increments(
     monkeypatch, capsys
 ) -> None:
