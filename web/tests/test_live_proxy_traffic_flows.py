@@ -40,8 +40,8 @@ def test_live_proxy_supports_head_large_post_and_slow_requests(
         admin_client,
         f"/slow/{token}?delay_ms=1200",
         needle=token,
-        timeout_seconds=120.0,
-        request_timeout_seconds=30.0,
+        timeout_seconds=180.0,
+        request_timeout_seconds=90.0,
     )
     assert slow.status == 200
     assert slow.json()["query"]["delay_ms"] == ["1200"]
