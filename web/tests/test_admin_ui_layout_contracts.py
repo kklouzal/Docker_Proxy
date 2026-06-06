@@ -205,6 +205,13 @@ def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -
     assert "buildSubmitFormData(form, event.submitter)" in js
 
 
+def test_webfilter_domain_test_surfaces_allowed_reason() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "Allowed (${reason})" in js
+    assert "String(data.reason).trim()" in js
+
+
 def test_adblock_page_does_not_expose_unimplemented_decision_cache_controls() -> None:
     html = (TEMPLATES / "adblock.html").read_text(encoding="utf-8")
 

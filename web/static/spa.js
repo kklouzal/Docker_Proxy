@@ -1106,7 +1106,8 @@
             const suffix = list.length > 1 ? ` (${list.join(', ')})` : (by ? ` (${by})` : '');
             setResult('blocked', `Blocked${suffix}`);
           } else if (verdict === 'allowed') {
-            setResult('allowed', 'Allowed');
+            const reason = (data && data.reason) ? String(data.reason).trim() : '';
+            setResult('allowed', reason ? `Allowed (${reason})` : 'Allowed');
           } else if (verdict === 'invalid') {
             setResult('', String(data.reason || 'Invalid domain'));
           } else {
