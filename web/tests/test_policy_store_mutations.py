@@ -409,8 +409,9 @@ def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(
     from services.webfilter_store import WebFilterStore  # type: ignore
 
     class FakeChecker:
-        def __init__(self, *, api_key: str) -> None:
+        def __init__(self, *, api_key: str, selected_lists=None) -> None:
             assert api_key == "test-key"
+            assert selected_lists == ["se-4b"]
 
         def __enter__(self):
             return self
@@ -438,6 +439,7 @@ def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(
             blocked_categories=[],
             safe_browsing_enabled=True,
             safe_browsing_api_key="test-key",
+            safe_browsing_lists=["se-4b"],
         ),
     )
     monkeypatch.setattr(store, "get_whitelist_patterns", list)

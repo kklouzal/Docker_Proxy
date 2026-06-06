@@ -264,6 +264,7 @@ class WebFilterStore(WebFilterStoreBase):
         try:
             with SafeBrowsingLocalChecker(
                 api_key=str(getattr(settings, "safe_browsing_api_key", "") or ""),
+                selected_lists=getattr(settings, "safe_browsing_lists", None),
             ) as checker:
                 verdict = checker.check_url(f"http://{domain}/")
         except Exception as exc:
