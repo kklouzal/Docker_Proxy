@@ -328,3 +328,20 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
     update_sql, update_params = conn.queries[0]
     assert "request_key=IF(%s, NULL, request_key)" in update_sql
     assert update_params == ("superseded", "newer revision applied", 456, 456, True, 7)
+
+
+def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 789)
+
+    ledger.mark_status(7, status="applying", detail="retrying")
+
+    update_sql, update_params = conn.queries[0]
+    assert "request_key=IF(%s, NULL, request_key)" in update_sql
+    assert update_params == ("applying", "retrying", 0, 789, False, 7)
