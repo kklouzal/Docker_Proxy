@@ -606,35 +606,48 @@ class _BlockedLogDb:
             )
             conn.commit()
 
+    def _flush_batch_if_possible(
+        self,
+        conn,
+        batch: list[tuple[int, str, str, str, str]],
+    ):
+        if conn is None:
+            conn = self._connect()
+        if conn is None:
+            return None, False
+        try:
+            self._flush(conn, batch)
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            with contextlib.suppress(Exception):
+                conn.close()
+            return None, False
+        return conn, True
+
     def _run(self) -> None:
         conn = None
         batch: list[tuple[int, str, str, str, str]] = []
         last_flush = time.monotonic()
         while True:
             timeout = max(0.05, self._flush_interval - (time.monotonic() - last_flush))
-            try:
-                item = self._queue.get(timeout=timeout)
-                batch.append(item)
-            except queue.Empty:
-                pass
+            if len(batch) < self._batch_size:
+                try:
+                    item = self._queue.get(timeout=timeout)
+                    batch.append(item)
+                except queue.Empty:
+                    pass
+            else:
+                time.sleep(min(0.05, self._flush_interval))
 
             if batch and (
                 len(batch) >= self._batch_size
                 or (time.monotonic() - last_flush) >= self._flush_interval
             ):
-                if conn is None:
-                    conn = self._connect()
-                if conn is not None:
-                    try:
-                        self._flush(conn, batch)
-                    except Exception:
-                        with contextlib.suppress(Exception):
-                            conn.rollback()
-                        with contextlib.suppress(Exception):
-                            conn.close()
-                        conn = None
-                batch.clear()
-                last_flush = time.monotonic()
+                conn, flushed = self._flush_batch_if_possible(conn, batch)
+                if flushed:
+                    batch.clear()
+                    last_flush = time.monotonic()
 
 
 def _parse_line(

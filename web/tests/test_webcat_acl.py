@@ -271,3 +271,55 @@ def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> N
         "http://blocked.example/",
         "adult",
     )
+
+
+def test_blocked_log_db_preserves_batch_when_connection_unavailable(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from tools import webcat_acl  # type: ignore
+
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    batch = [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+    monkeypatch.setattr(db, "_connect", lambda: None)
+
+    conn, flushed = db._flush_batch_if_possible(None, batch)
+
+    assert conn is None
+    assert flushed is False
+    assert batch == [
+        (123, "default", "192.0.2.10", "http://blocked.example/", "adult")
+    ]
+
+
+def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
+    _add_web_to_path()
+    from tools import webcat_acl  # type: ignore
+
+    closed: list[bool] = []
+    rolled_back: list[bool] = []
+
+    class FakeConn:
+        def rollback(self) -> None:
+            rolled_back.append(True)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class BrokenBlockedLogDb(webcat_acl._BlockedLogDb):
+        def _flush(self, conn, batch) -> None:
+            msg = "insert failed"
+            raise RuntimeError(msg)
+
+    db = BrokenBlockedLogDb(max_rows=10)
+    batch = [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+
+    conn, flushed = db._flush_batch_if_possible(FakeConn(), batch)
+
+    assert conn is None
+    assert flushed is False
+    assert rolled_back == [True]
+    assert closed == [True]
+    assert batch == [
+        (123, "default", "192.0.2.10", "http://blocked.example/", "adult")
+    ]
