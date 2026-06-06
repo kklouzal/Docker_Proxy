@@ -7,6 +7,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 
 def _monotonic_now() -> float:
@@ -20,9 +21,17 @@ def split_acl_channel(line: str) -> tuple[str | None, list[str]]:
     return None, parts
 
 
-def write_acl_response(channel_id: str | None, ok: bool) -> None:
+def write_acl_response(
+    channel_id: str | None,
+    ok: bool,
+    *,
+    message: str | None = None,
+) -> None:
     prefix = f"{channel_id} " if channel_id is not None else ""
-    sys.stdout.write(f"{prefix}{'OK' if ok else 'ERR'}\n")
+    detail = ""
+    if message:
+        detail = f" message={quote(str(message), safe='/:._=-')}"
+    sys.stdout.write(f"{prefix}{'OK' if ok else 'ERR'}{detail}\n")
     sys.stdout.flush()
 
 

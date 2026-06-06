@@ -171,6 +171,16 @@ def test_webcat_acl_prefers_uri_host_over_dst_field() -> None:
     assert category == "malware"
 
 
+def test_webcat_acl_response_can_include_matched_category(capsys) -> None:
+    _add_web_to_path()
+
+    from tools import webcat_acl  # type: ignore
+
+    webcat_acl._write_response("7", True, message="category=adult")
+
+    assert capsys.readouterr().out == "7 OK message=category=adult\n"
+
+
 def test_webcat_acl_discards_stale_remote_connection_after_lookup_error() -> None:
     _add_web_to_path()
 

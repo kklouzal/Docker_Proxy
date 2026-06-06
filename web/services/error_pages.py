@@ -119,7 +119,7 @@ _SAMPLE_VALUES = {
     "%L": "Contact your proxy administrator if this block is unexpected.",
     "%M": "GET",
     "%m": "Authentication helper denied the credentials",
-    "%o": "webfilter category: malware",
+    "%o": "category=malware",
     "%p": "443",
     "%P": "HTTPS",
     "%R": "GET https://example.invalid/report.pdf HTTP/1.1",

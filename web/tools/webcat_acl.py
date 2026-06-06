@@ -663,8 +663,13 @@ def _parse_line(
     return channel_id, None, parts[0], None, None
 
 
-def _write_response(channel_id: str | None, ok: bool) -> None:
-    write_acl_response(channel_id, ok)
+def _write_response(
+    channel_id: str | None,
+    ok: bool,
+    *,
+    message: str | None = None,
+) -> None:
+    write_acl_response(channel_id, ok, message=message)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -730,7 +735,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 url=(url or domain or ""),
                 category=(category or ""),
             )
-        _write_response(ch, match)
+        _write_response(ch, match, message=f"category={category}" if match else None)
         stats.emit_if_due()
 
     stats.emit_if_due(force=True)

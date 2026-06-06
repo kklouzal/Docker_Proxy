@@ -714,7 +714,7 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
 
     assert safe_browsing_acl.main(["--list", "se-4b", "--list", "uwsa-4b"]) == 0
     assert checker_selected_lists == [["se-4b", "uwsa-4b"]]
-    assert outputs == ["OK\n"]
+    assert outputs == ["OK message=category=google-safe-browsing/social-engineering\n"]
     assert inserted[0]["src_ip"] == "192.0.2.10"
     assert inserted[0]["url"] == "http://bad.example/"
     assert inserted[0]["category"] == "google-safe-browsing/social-engineering"

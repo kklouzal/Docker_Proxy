@@ -8,6 +8,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 add_web_to_path()
 
+BLOCK_REASON_TEMPLATE_NAMES = {
+    "ERR_ACCESS_DENIED",
+    "ERR_ACL_TIME_QUOTA_EXCEEDED",
+    "ERR_CACHE_ACCESS_DENIED",
+    "ERR_CACHE_MGR_ACCESS_DENIED",
+    "ERR_FORWARDING_DENIED",
+    "ERR_FTP_DISABLED",
+    "ERR_FTP_FORBIDDEN",
+    "ERR_TOO_BIG",
+    "ERR_WEBFILTER_BLOCKED",
+}
+
 
 def test_managed_error_page_manifest_has_complete_squid_template_coverage() -> None:
     from services.error_pages import (
@@ -62,7 +74,26 @@ def test_access_denied_page_explains_block_reason() -> None:
     )
     assert "%o" in text
     assert "%m" in text
-    assert "webfilter category: malware" in render_preview("ERR_ACCESS_DENIED")
+    assert "category=malware" in render_preview("ERR_ACCESS_DENIED")
+
+
+def test_policy_error_pages_explain_block_reason() -> None:
+    from services.error_pages import read_template, render_preview
+
+    for name in sorted(BLOCK_REASON_TEMPLATE_NAMES):
+        text = read_template(name)
+        assert '<div class="reason">' in text, name
+        assert "<strong>Block reason</strong>" in text, name
+        assert ".reason { margin:" in text, name
+        assert text.index("<strong>User guidance</strong>") < text.index(
+            "<strong>Block reason</strong>"
+        ), name
+        assert text.index("<strong>Block reason</strong>") < text.index(
+            'aria-label="Request details"'
+        ), name
+        assert "%o" in text, name
+
+    assert "category=malware" in render_preview("ERR_WEBFILTER_BLOCKED")
 
 
 def test_squid_config_uses_branded_error_directory_and_proxy_image_installs_all_templates() -> (

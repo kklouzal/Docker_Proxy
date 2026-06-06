@@ -20,6 +20,8 @@
     code, .value { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #ffffff; }
     .user { margin: 24px 30px 0; padding: 18px; border-left: 4px solid #34d399; border-radius: 12px; background: rgba(52,211,153,.13); }
     .user strong { color: #bbf7d0; }
+    .reason { margin: 16px 30px 0; padding: 18px; border-left: 4px solid #facc15; border-radius: 12px; background: rgba(250,204,21,.12); }
+    .reason strong { color: #fde68a; }
     form.request { margin: 24px 30px; padding: 18px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(0,0,0,.16); }
     textarea { display: block; box-sizing: border-box; width: auto; min-height: 90px; border-radius: 10px; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: #fff; padding: 10px; }
     button { margin-top: 10px; border: 0; border-radius: 999px; padding: 10px 16px; font-weight: 700; background: #7aa2ff; color: #071021; cursor: pointer; }
@@ -40,6 +42,11 @@
       <strong>User guidance</strong>
       <p>This site is blocked by policy. Ask the proxy administrator to review it if needed.</p>
     </div>
+    <div class="reason">
+      <strong>Block reason</strong>
+      <p>This destination matched an enabled web-filter policy. Matched category/detail: <span class="value">%o</span>.</p>
+      <p>If the category field is empty, review the matching web-filter block log for this client, destination, and timestamp.</p>
+    </div>
     <div class="grid" aria-label="Request details">
       <div class="item"><span class="label">Requested URL</span><code>%U</code></div>
       <div class="item"><span class="label">Client address</span><span class="value">%i</span></div>
@@ -57,6 +64,7 @@
       <input type="hidden" name="request_url" value="%U">
       <input type="hidden" name="client_ip" value="%i">
       <input type="hidden" name="domain" value="%H">
+      <input type="hidden" name="category" value="%o">
       <input type="hidden" name="destination" value="%H:%p">
       <input type="hidden" name="method" value="%M">
       <input type="hidden" name="squid_error" value="%c">

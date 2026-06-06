@@ -98,11 +98,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             verdict = checker.check_url(url)
             unsafe = verdict.verdict == "unsafe"
             stats.increment("requests")
-            if unsafe and log_db is not None:
+            category = ""
+            if unsafe:
                 stats.increment("unsafe")
                 category = "google-safe-browsing"
                 if verdict.threat_type:
                     category += "/" + verdict.threat_type.lower().replace("_", "-")
+            if unsafe and log_db is not None:
                 with contextlib.suppress(Exception):
                     log_db.insert(
                         ts=int(__import__("time").time()),
@@ -110,7 +112,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         url=url,
                         category=category,
                     )
-            write_acl_response(channel_id, unsafe)
+            detail = f"category={category}" if unsafe else None
+            write_acl_response(channel_id, unsafe, message=detail)
         except Exception:
             stats.increment("errors")
             write_acl_response(channel_id, not fail_open)

@@ -20,6 +20,8 @@
     code, .value { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #ffffff; }
     .user { margin: 24px 30px 0; padding: 18px; border-left: 4px solid #34d399; border-radius: 12px; background: rgba(52,211,153,.13); }
     .user strong { color: #bbf7d0; }
+    .reason { margin: 16px 30px 0; padding: 18px; border-left: 4px solid #facc15; border-radius: 12px; background: rgba(250,204,21,.12); }
+    .reason strong { color: #fde68a; }
     .admin { margin: 0 30px 30px; padding: 18px; border-left: 4px solid #7aa2ff; border-radius: 12px; background: rgba(122,162,255,.10); }
     .diag { margin-top: 12px; color: rgba(238,244,255,.72); font-size: 13px; }
     .footer { padding: 18px 30px; color: rgba(238,244,255,.55); border-top: 1px solid rgba(255,255,255,.10); font-size: 13px; }
@@ -36,6 +38,11 @@
     <div class="user">
       <strong>User guidance</strong>
       <p>Proxy policy blocked this request. Contact the administrator with the URL and time below.</p>
+    </div>
+    <div class="reason">
+      <strong>Block reason</strong>
+      <p>This request attempted to use a cache function blocked by policy. Squid reported <span class="value">%x</span>; helper/detail fields: <span class="value">%o</span> <span class="value">%m</span> <span class="value">%D</span> <span class="value">%E</span>.</p>
+      <p>Review cache manager, PURGE, and internal-object ACLs for this client and destination.</p>
     </div>
     <div class="grid" aria-label="Request details">
       <div class="item"><span class="label">Requested URL</span><code>%U</code></div>
