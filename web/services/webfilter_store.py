@@ -625,10 +625,11 @@ class WebFilterStore(WebFilterStoreBase):
                     )
                     with self._connect() as conn:
                         self._record_attempt_conn(conn, ok=ok, err=err)
-                        if refresh:
-                            self._clear_refresh_requested_conn(conn)
-                        self._set_next_run_conn(conn, ts=next_after)
-                    sleep_seconds = 5.0
+                        if ok:
+                            if refresh:
+                                self._clear_refresh_requested_conn(conn)
+                            self._set_next_run_conn(conn, ts=next_after)
+                    sleep_seconds = 5.0 if ok else error_sleep
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,

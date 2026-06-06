@@ -130,6 +130,86 @@ def test_webfilter_loop_uses_error_backoff_for_database_outages(monkeypatch) -> 
     assert sleeps == [7.0]
 
 
+def test_webfilter_loop_preserves_refresh_request_after_failed_build(
+    monkeypatch,
+) -> None:
+    m = _import_webfilter_store_module()
+    store = m.WebFilterStore()
+    values = {
+        "refresh_requested": "1",
+        "next_run_ts": "900",
+        "last_error": "",
+    }
+    sleeps: list[float] = []
+
+    class StopLoopError(Exception):
+        pass
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def stop_after_sleep(seconds: float):
+        sleeps.append(seconds)
+        raise StopLoopError
+
+    monkeypatch.setenv("WEBFILTER_ENABLED_POLL_SECONDS", "120")
+    monkeypatch.setenv("WEBFILTER_ERROR_BACKOFF_SECONDS", "9")
+    monkeypatch.setattr(m, "_now", lambda: 1000)
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConn)
+    monkeypatch.setattr(
+        store,
+        "_get_global_setting_conn",
+        lambda _conn, key, default="": {
+            "source_url": "https://example.test/categories.tar.gz",
+            "source_provider": "auto",
+            "next_run_ts": values["next_run_ts"],
+        }.get(key, default),
+    )
+    monkeypatch.setattr(
+        store,
+        "_refresh_requested_conn",
+        lambda _conn: values["refresh_requested"] == "1",
+    )
+    monkeypatch.setattr(
+        store,
+        "_category_build_needed_conn",
+        lambda _conn: True,
+    )
+    monkeypatch.setattr(
+        store,
+        "_run_build",
+        lambda _source_url, *, source_provider="auto": (False, "download failed"),
+    )
+
+    def record_attempt(_conn, *, ok: bool, err: str) -> None:
+        assert ok is False
+        values["last_error"] = err
+
+    def clear_refresh(_conn) -> None:
+        values["refresh_requested"] = "0"
+
+    def set_next_run(_conn, *, ts: int) -> None:
+        values["next_run_ts"] = str(ts)
+
+    monkeypatch.setattr(store, "_record_attempt_conn", record_attempt)
+    monkeypatch.setattr(store, "_clear_refresh_requested_conn", clear_refresh)
+    monkeypatch.setattr(store, "_set_next_run_conn", set_next_run)
+    monkeypatch.setattr(m.time, "sleep", stop_after_sleep)
+
+    with pytest.raises(StopLoopError):
+        store._loop()
+
+    assert sleeps == [9.0]
+    assert values["refresh_requested"] == "1"
+    assert values["next_run_ts"] == "900"
+    assert values["last_error"] == "download failed"
+
+
 @pytest.mark.parametrize(
     "source_url",
     [
