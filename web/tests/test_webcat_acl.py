@@ -252,3 +252,22 @@ def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) ->
     assert db._connect() is None
     assert closed == [True]
     assert db._conn is None
+
+
+def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> None:
+    _add_web_to_path()
+    from tools import webcat_acl  # type: ignore
+
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    monkeypatch.setattr(db, "start", lambda: None)
+    monkeypatch.setattr(db, "_proxy_id", lambda: "default")
+
+    db.insert(ts=123, src_ip="", url="http://blocked.example/", category="adult")
+
+    assert db._queue.get_nowait() == (
+        123,
+        "default",
+        "unknown",
+        "http://blocked.example/",
+        "adult",
+    )

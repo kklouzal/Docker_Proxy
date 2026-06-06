@@ -580,10 +580,10 @@ class _BlockedLogDb:
         if self.max_rows <= 0:
             return
         try:
-            s_ip = (src_ip or "")[:128]
+            s_ip = (src_ip or "unknown")[:128]
             s_url = (url or "")[:2000]
             s_cat = (category or "")[:128]
-            if not s_ip or not s_url or not s_cat:
+            if not s_url or not s_cat:
                 return
             self.start()
             self._queue.put_nowait((int(ts), self._proxy_id(), s_ip, s_url, s_cat))
