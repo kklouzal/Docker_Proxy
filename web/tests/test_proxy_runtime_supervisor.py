@@ -1091,6 +1091,51 @@ def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeo
     assert "bad-but-parseable" not in restored
 
 
+def test_squid_controller_apply_stages_config_with_atomic_writes(
+    tmp_path, monkeypatch
+) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    squid_conf.write_text("workers 1\n# old\n", encoding="utf-8")
+
+    def fake_run(args, **_kwargs):
+        if args[:3] == ["squid", "-k", "parse"]:
+            return SimpleNamespace(returncode=0, stdout="parse ok", stderr="")
+        if args[:3] == ["squid", "-k", "reconfigure"]:
+            return SimpleNamespace(returncode=0, stdout="reconfigured", stderr="")
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(tmp_path / "20-icap.conf"))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(tmp_path / "virus_scan.conf"))
+    from services.squid_core import (
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+    controller = SquidController(str(squid_conf), cmd_run=fake_run)
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    monkeypatch.setattr(controller, "_wait_for_http_listener", lambda *, timeout: True)
+
+    def reject_direct_write_text(*_args, **_kwargs) -> NoReturn:
+        msg = "Squid config apply must use atomic writes"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(Path, "write_text", reject_direct_write_text)
+
+    ok, detail = controller.apply_config_text("workers 1\n# new\n")
+
+    assert ok is True
+    assert "reconfigured" in detail
+    assert "# new" in squid_conf.read_text(encoding="utf-8")
+    assert "# old" in (tmp_path / "squid.conf.bak").read_text(encoding="utf-8")
+    assert "# new" in persisted_conf.read_text(encoding="utf-8")
+
+
 def test_squid_controller_validation_timeout_returns_actionable_detail(
     tmp_path,
 ) -> None:

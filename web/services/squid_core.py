@@ -83,9 +83,6 @@ class SquidController:
         self._run = cmd_run
         self._adblock_icap_revision_token = ""
 
-    def _write_file(self, path: str, content: str) -> None:
-        Path(path).write_text(content, encoding="utf-8")
-
     def _atomic_write_file(self, path: str, content: str) -> None:
         directory = Path(path).parent or "."
         Path(directory).mkdir(exist_ok=True, parents=True)
@@ -1195,9 +1192,9 @@ class SquidController:
                 except Exception:
                     old_icap_supervisor = None
 
-            self._write_file(new_path, normalized_config)
+            self._atomic_write_file(new_path, normalized_config)
             if current:
-                self._write_file(backup_path, current)
+                self._atomic_write_file(backup_path, current)
             Path(new_path).replace(self.squid_conf_path)
 
             ok_runtime, runtime_details = self.materialize_clamav_runtime_files(
@@ -1246,9 +1243,9 @@ class SquidController:
                         )
                     try:
                         if old_icap_supervisor is not None:
-                            Path("/etc/supervisor.d/icap.conf").write_text(
+                            self._atomic_write_file(
+                                "/etc/supervisor.d/icap.conf",
                                 old_icap_supervisor,
-                                encoding="utf-8",
                             )
                     except Exception:
                         log_exception_throttled(
@@ -1288,9 +1285,9 @@ class SquidController:
                             )
                         try:
                             if old_icap_supervisor is not None:
-                                Path("/etc/supervisor.d/icap.conf").write_text(
+                                self._atomic_write_file(
+                                    "/etc/supervisor.d/icap.conf",
                                     old_icap_supervisor,
-                                    encoding="utf-8",
                                 )
                         except Exception:
                             log_exception_throttled(
