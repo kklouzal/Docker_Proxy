@@ -5,31 +5,43 @@ import os
 import pathlib
 import tempfile
 
+_RUNTIME_FILE_MODE = 0o644
+
+
+def _write_staged_file(path: str, content: str | bytes) -> str:
+    directory = pathlib.Path(path).parent or "."
+    pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
+    binary = isinstance(content, bytes)
+    handle = tempfile.NamedTemporaryFile(
+        "wb" if binary else "w",
+        encoding=None if binary else "utf-8",
+        delete=False,
+        dir=directory,
+        prefix=".managed-",
+    )
+    temp_path = handle.name
+    try:
+        try:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            handle.close()
+        pathlib.Path(temp_path).chmod(_RUNTIME_FILE_MODE)
+        return temp_path
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            pathlib.Path(temp_path).unlink()
+        raise
+
 
 def write_managed_text_files(*files: tuple[str, str]) -> None:
     temp_paths: list[str] = []
     backups: dict[str, tuple[bool, bytes]] = {}
     replaced_paths: list[str] = []
-    mode = 0o644
     try:
         for path, content in files:
-            directory = pathlib.Path(path).parent or "."
-            pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
-            handle = tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                delete=False,
-                dir=directory,
-                prefix=".managed-",
-            )
-            temp_path = handle.name
-            temp_paths.append(temp_path)
-            try:
-                handle.write(content)
-                handle.flush()
-            finally:
-                handle.close()
-            pathlib.Path(temp_path).chmod(mode)
+            temp_paths.append(_write_staged_file(path, content))
 
         for path, _content in files:
             try:
@@ -45,8 +57,9 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
         for path in reversed(replaced_paths):
             existed, previous = backups.get(path, (False, b""))
             if existed:
-                pathlib.Path(path).write_bytes(previous)
-                pathlib.Path(path).chmod(mode)
+                temp_path = _write_staged_file(path, previous)
+                temp_paths.append(temp_path)
+                os.replace(temp_path, path)  # noqa: PTH105
             else:
                 with contextlib.suppress(FileNotFoundError):
                     pathlib.Path(path).unlink()

@@ -571,8 +571,46 @@ def test_write_managed_text_files_restores_previous_files_when_late_replace_fail
         msg = "expected second replace failure"
         raise AssertionError(msg)
 
-    assert replace_calls
-    assert replace_calls[-1][1] == str(second)
+    assert any(dst == str(second) for _src, dst in replace_calls)
+    assert first.read_text(encoding="utf-8") == "old first\n"
+    assert second.read_text(encoding="utf-8") == "old second\n"
+
+
+def test_write_managed_text_files_restores_via_staged_replace(
+    tmp_path, monkeypatch
+) -> None:
+    _add_repo_paths()
+    from services import materialized_files  # type: ignore
+
+    first = tmp_path / "first.conf"
+    second = tmp_path / "second.conf"
+    first.write_text("old first\n", encoding="utf-8")
+    second.write_text("old second\n", encoding="utf-8")
+    real_replace = materialized_files.os.replace
+
+    def flaky_replace(src, dst):
+        if str(dst) == str(second):
+            msg = "disk full"
+            raise OSError(msg)
+        return real_replace(src, dst)
+
+    def reject_direct_restore(*_args, **_kwargs) -> NoReturn:
+        msg = "rollback must not write directly to the live materialized file"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(materialized_files.os, "replace", flaky_replace)
+    monkeypatch.setattr(Path, "write_bytes", reject_direct_restore)
+
+    try:
+        materialized_files.write_managed_text_files(
+            (str(first), "new first\n"), (str(second), "new second\n")
+        )
+    except OSError as exc:
+        assert "disk full" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        msg = "expected second replace failure"
+        raise AssertionError(msg)
+
     assert first.read_text(encoding="utf-8") == "old first\n"
     assert second.read_text(encoding="utf-8") == "old second\n"
 
