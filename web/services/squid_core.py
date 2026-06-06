@@ -85,7 +85,7 @@ class SquidController:
 
     def _atomic_write_file(self, path: str, content: str) -> None:
         target = Path(path)
-        directory = target.parent or Path(".")
+        directory = target.parent
         Path(directory).mkdir(exist_ok=True, parents=True)
         mode = 0o644
         owner: tuple[int, int] | None = None
