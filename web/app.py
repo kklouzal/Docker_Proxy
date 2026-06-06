@@ -155,6 +155,8 @@ from services.ui_support import (
 )
 from services.webfilter_core import (
     _normalize_category_name as _normalize_webfilter_category_name,
+)
+from services.webfilter_core import (
     validate_source_url as _validate_webfilter_source_url,
 )
 from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
