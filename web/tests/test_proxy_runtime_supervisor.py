@@ -1136,6 +1136,36 @@ def test_squid_controller_apply_stages_config_with_atomic_writes(
     assert "# new" in persisted_conf.read_text(encoding="utf-8")
 
 
+def test_squid_controller_atomic_write_preserves_existing_file_mode(tmp_path) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    target = tmp_path / "squid.conf"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o640)
+
+    controller = SquidController(str(target))
+    controller._atomic_write_file(str(target), "new\n")
+
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+def test_squid_controller_atomic_write_uses_readable_mode_for_new_files(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    target = tmp_path / "conf.d" / "20-icap.conf"
+
+    controller = SquidController(str(tmp_path / "squid.conf"))
+    controller._atomic_write_file(str(target), "include\n")
+
+    assert target.read_text(encoding="utf-8") == "include\n"
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
 def test_squid_controller_validation_timeout_returns_actionable_detail(
     tmp_path,
 ) -> None:

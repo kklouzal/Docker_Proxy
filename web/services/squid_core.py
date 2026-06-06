@@ -84,8 +84,19 @@ class SquidController:
         self._adblock_icap_revision_token = ""
 
     def _atomic_write_file(self, path: str, content: str) -> None:
-        directory = Path(path).parent or "."
+        target = Path(path)
+        directory = target.parent or Path(".")
         Path(directory).mkdir(exist_ok=True, parents=True)
+        mode = 0o644
+        owner: tuple[int, int] | None = None
+        try:
+            existing = target.stat()
+            mode = existing.st_mode & 0o777
+            owner = (existing.st_uid, existing.st_gid)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            mode = 0o644
         tmp_path = ""
         try:
             with tempfile.NamedTemporaryFile(
@@ -97,7 +108,14 @@ class SquidController:
             ) as handle:
                 tmp_path = handle.name
                 handle.write(content)
-            Path(tmp_path).replace(path)
+                handle.flush()
+                os.fsync(handle.fileno())
+            tmp = Path(tmp_path)
+            tmp.chmod(mode)
+            if owner is not None:
+                with contextlib.suppress(Exception):
+                    os.chown(tmp_path, owner[0], owner[1])
+            tmp.replace(path)
         finally:
             if tmp_path and Path(tmp_path).exists():
                 with contextlib.suppress(Exception):
