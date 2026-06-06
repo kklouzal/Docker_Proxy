@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ _LEGACY_DEFAULT_BLOCKED_CATEGORIES: list[str] = [
     "stalkerware",
 ]
 _LEGACY_DEFAULT_BLOCKED_CATEGORIES_CSV = ",".join(_LEGACY_DEFAULT_BLOCKED_CATEGORIES)
+_CATEGORY_UNSAFE_RE = re.compile(r"[^a-z0-9_\-]+")
 
 _DEFAULTS: dict[str, str] = {
     "enabled": "0",
@@ -118,6 +120,12 @@ def _next_midnight_ts(now: int | None = None) -> int:
     if current < midnight:
         return midnight
     return midnight + 24 * 60 * 60
+
+
+def _normalize_category_name(value: object) -> str:
+    category = str(value or "").strip().lower().replace(" ", "_")
+    category = _CATEGORY_UNSAFE_RE.sub("", category)
+    return category.strip("_-")
 
 
 def validate_source_url(source_url: str) -> str:
@@ -449,7 +457,11 @@ class WebFilterStoreBase:
 
     def _resolve_category_aliases(self, categories: list[str]) -> list[str]:
         normalized = [
-            item.strip() for item in (categories or []) if (item or "").strip()
+            item
+            for item in (
+                _normalize_category_name(category) for category in (categories or [])
+            )
+            if item
         ]
         if not normalized:
             return []

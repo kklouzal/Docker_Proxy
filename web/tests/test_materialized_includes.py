@@ -310,6 +310,77 @@ def test_webfilter_materialized_helper_name_tracks_safe_browsing_key(
     assert "/app/tools/safe_browsing_acl.py" in second
 
 
+def test_webfilter_materialized_categories_are_canonicalized_before_acl_render(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
+        whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
+    )
+    settings = module.WebFilterSettings(
+        enabled=True,
+        source_url="",
+        blocked_categories=[
+            "Adult Sites",
+            "residential proxies",
+            "MALWARE<script>",
+            "Adult Sites",
+        ],
+        whitelist_domains=[],
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        next_run_ts=0,
+    )
+
+    class _Rows:
+        def fetchall(self):
+            return [
+                ("adult_sites", "adult"),
+                ("residential_proxies", "proxies"),
+            ]
+
+    class _Conn:
+        def execute(self, sql: str, params=()):
+            assert "FROM webcat_aliases" in sql
+            assert params == (
+                "adult_sites",
+                "residential_proxies",
+                "malwarescript",
+                "adult_sites",
+            )
+            return _Rows()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        module, "table_exists", lambda _conn, name: name == "webcat_aliases"
+    )
+
+    def connect_webcat() -> _Conn:
+        return _Conn()
+
+    monkeypatch.setattr(store, "_connect_webcat", connect_webcat)
+    monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
+
+    rendered = store.render_materialized_state().include_text
+
+    assert "acl webfilter_block_adult external" in rendered
+    assert "acl webfilter_block_proxies external" in rendered
+    assert "acl webfilter_block_malwarescript external" in rendered
+    assert "Adult Sites" not in rendered
+    assert "residential proxies" not in rendered
+    assert "MALWARE<script>" not in rendered
+
+
 def test_webfilter_materialized_helpers_honor_fail_mode_env(
     tmp_path, monkeypatch
 ) -> None:
