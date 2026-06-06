@@ -2322,9 +2322,49 @@ def _handle_adblock_post(store: Any):
     return _redirect_to("adblock")
 
 
+def _webfilter_setting(settings: Any, name: str, default: Any = None) -> Any:
+    if isinstance(settings, dict):
+        return settings.get(name, default)
+    return getattr(settings, name, default)
+
+
+def _webfilter_current_settings(store: Any) -> Any:
+    try:
+        return store.get_settings()
+    except Exception:
+        return {}
+
+
+def _webfilter_setting_list(settings: Any, name: str) -> list[str]:
+    value = _webfilter_setting(settings, name, [])
+    items = value.split(",") if isinstance(value, str) else list(value or [])
+    return [str(item).strip() for item in items if str(item or "").strip()]
+
+
+def _webfilter_set_settings(store: Any, **kwargs: Any) -> None:
+    optional_names = {
+        "source_provider",
+        "safe_browsing_enabled",
+        "safe_browsing_api_key",
+        "safe_browsing_lists",
+    }
+    try:
+        accepted_settings = set(inspect.signature(store.set_settings).parameters)
+    except (TypeError, ValueError):
+        accepted_settings = optional_names
+    store.set_settings(
+        **{
+            key: value
+            for key, value in kwargs.items()
+            if key not in optional_names or key in accepted_settings
+        },
+    )
+
+
 def _handle_webfilter_post(store: Any, tab: str):
     action = _form_action()
     if action == "save":
+        current_settings = _webfilter_current_settings(store)
         enabled = request.form.get("enabled") == "on"
         source_url = (request.form.get("source_url") or "").strip()
         source_provider = (
@@ -2335,39 +2375,6 @@ def _handle_webfilter_post(store: Any, tab: str):
         categories = [
             c.strip() for c in request.form.getlist("categories") if (c or "").strip()
         ]
-        safe_browsing_enabled = request.form.get("safe_browsing_enabled") == "on"
-        safe_browsing_api_key = (
-            request.form.get("safe_browsing_api_key") or ""
-        ).strip()
-        safe_browsing_lists = [
-            c.strip()
-            for c in request.form.getlist("safe_browsing_lists")
-            if (c or "").strip()
-        ]
-        safe_browsing_clear_key = request.form.get("safe_browsing_clear_key") == "on"
-        if not safe_browsing_api_key and not safe_browsing_clear_key:
-            try:
-                current_settings = store.get_settings()
-                if isinstance(current_settings, dict):
-                    safe_browsing_api_key = str(
-                        current_settings.get("safe_browsing_api_key") or "",
-                    )
-                else:
-                    safe_browsing_api_key = str(
-                        getattr(current_settings, "safe_browsing_api_key", "") or "",
-                    )
-            except Exception:
-                safe_browsing_api_key = ""
-
-        if safe_browsing_enabled and not safe_browsing_lists:
-            return _redirect_to(
-                "webfilter", tab="categories", err_safe_browsing_lists="1"
-            )
-
-        if safe_browsing_enabled and not safe_browsing_api_key:
-            return _redirect_to(
-                "webfilter", tab="categories", err_safe_browsing_key="1"
-            )
 
         if enabled and categories and not source_url:
             return _redirect_to("webfilter", tab="categories", err_source="1")
@@ -2381,30 +2388,33 @@ def _handle_webfilter_post(store: Any, tab: str):
         except ValueError:
             return _redirect_to("webfilter", tab="categories", err_source="1")
 
-        set_settings_kwargs = {
-            "enabled": enabled,
-            "source_url": source_url,
-            "blocked_categories": categories,
-        }
-        optional_settings = {
-            "source_provider": source_provider,
-            "safe_browsing_enabled": safe_browsing_enabled,
-            "safe_browsing_api_key": safe_browsing_api_key,
-            "safe_browsing_lists": safe_browsing_lists,
-        }
         try:
-            accepted_settings = set(inspect.signature(store.set_settings).parameters)
-        except (TypeError, ValueError):
-            accepted_settings = set(optional_settings)
-        set_settings_kwargs.update(
-            {
-                key: value
-                for key, value in optional_settings.items()
-                if key in accepted_settings
-            },
-        )
-        try:
-            store.set_settings(**set_settings_kwargs)
+            _webfilter_set_settings(
+                store,
+                enabled=enabled,
+                source_url=source_url,
+                blocked_categories=categories,
+                source_provider=source_provider,
+                safe_browsing_enabled=bool(
+                    _webfilter_setting(
+                        current_settings,
+                        "safe_browsing_enabled",
+                        False,
+                    ),
+                ),
+                safe_browsing_api_key=str(
+                    _webfilter_setting(
+                        current_settings,
+                        "safe_browsing_api_key",
+                        "",
+                    )
+                    or "",
+                ),
+                safe_browsing_lists=_webfilter_setting_list(
+                    current_settings,
+                    "safe_browsing_lists",
+                ),
+            )
         except ValueError:
             return _redirect_to("webfilter", tab="categories", err_source="1")
         return _redirect_after_policy_refresh(
@@ -2412,6 +2422,64 @@ def _handle_webfilter_post(store: Any, tab: str):
             store,
             force=True,
             tab="categories",
+        )
+
+    if action == "safe_browsing_save":
+        current_settings = _webfilter_current_settings(store)
+        safe_browsing_enabled = request.form.get("safe_browsing_enabled") == "on"
+        safe_browsing_api_key = (
+            request.form.get("safe_browsing_api_key") or ""
+        ).strip()
+        safe_browsing_clear_key = request.form.get("safe_browsing_clear_key") == "on"
+        if safe_browsing_clear_key:
+            safe_browsing_api_key = ""
+        elif not safe_browsing_api_key:
+            safe_browsing_api_key = str(
+                _webfilter_setting(current_settings, "safe_browsing_api_key", "") or "",
+            )
+        safe_browsing_lists = [
+            c.strip()
+            for c in request.form.getlist("safe_browsing_lists")
+            if (c or "").strip()
+        ]
+
+        if safe_browsing_enabled and not safe_browsing_lists:
+            return _redirect_to(
+                "webfilter", tab="categories", err_safe_browsing_lists="1"
+            )
+
+        if safe_browsing_enabled and not safe_browsing_api_key:
+            return _redirect_to(
+                "webfilter", tab="categories", err_safe_browsing_key="1"
+            )
+
+        try:
+            _webfilter_set_settings(
+                store,
+                enabled=bool(_webfilter_setting(current_settings, "enabled", False)),
+                source_url=str(
+                    _webfilter_setting(current_settings, "source_url", "") or "",
+                ),
+                blocked_categories=_webfilter_setting_list(
+                    current_settings,
+                    "blocked_categories",
+                ),
+                source_provider=str(
+                    _webfilter_setting(current_settings, "source_provider", "auto")
+                    or "auto",
+                ),
+                safe_browsing_enabled=safe_browsing_enabled,
+                safe_browsing_api_key=safe_browsing_api_key,
+                safe_browsing_lists=safe_browsing_lists,
+            )
+        except ValueError:
+            return _redirect_to("webfilter", tab="categories", err_source="1")
+        return _redirect_after_policy_refresh(
+            "webfilter",
+            store,
+            force=True,
+            tab="categories",
+            safe_browsing_saved="1",
         )
 
     if action == "whitelist_add":
@@ -4563,6 +4631,7 @@ def webfilter():
         err_source=(request.args.get("err_source") == "1"),
         err_safe_browsing_lists=(request.args.get("err_safe_browsing_lists") == "1"),
         err_safe_browsing_key=(request.args.get("err_safe_browsing_key") == "1"),
+        safe_browsing_saved=(request.args.get("safe_browsing_saved") == "1"),
         wl_ok=(request.args.get("wl_ok") == "1"),
         wl_err=(request.args.get("wl_err") or ""),
     )

@@ -137,17 +137,6 @@
               A valid shared category source URL is required before web filtering can be enabled.
             </div>
           {% endif %}
-          {% if err_safe_browsing_lists %}
-            <div class="alert error">
-              Select at least one Google Safe Browsing threat list before enabling Safe Browsing.
-            </div>
-          {% endif %}
-
-          {% if err_safe_browsing_key %}
-            <div class="alert error">
-              Enter a Google Safe Browsing API key before enabling Safe Browsing, or leave Safe Browsing disabled.
-            </div>
-          {% endif %}
 
           <section class="surface-panel">
             <div class="section-header-row">
@@ -208,39 +197,6 @@
           </div>
 
 
-          <section class="surface-panel">
-            <div class="section-header-row">
-              <div>
-                <h3>Google Safe Browsing v5</h3>
-                <div class="small">Optional cached/local-list provider. Requires your Google API key. Request checks use local hash-prefix lists first; Google is contacted only to confirm a local prefix hit.</div>
-              </div>
-              <span class="badge {{ 'ok' if settings.safe_browsing_enabled else 'warn' }}">{{ 'Enabled' if settings.safe_browsing_enabled else 'Opt-in' }}</span>
-            </div>
-            <label class="checkbox-row">
-              <input type="checkbox" name="safe_browsing_enabled" value="on" {% if settings.safe_browsing_enabled %}checked{% endif %}>
-              Enable Google Safe Browsing cached/local-list checks
-            </label>
-            <label class="label" for="safe-browsing-api-key">API key</label>
-            <input id="safe-browsing-api-key" class="input" type="password" name="safe_browsing_api_key" value="" autocomplete="new-password" placeholder="{{ 'Configured - enter a new key to replace' if settings.safe_browsing_api_key else 'AIza...' }}">
-            {% if settings.safe_browsing_api_key %}
-              <label class="checkbox-row">
-                <input type="checkbox" name="safe_browsing_clear_key" value="on">
-                Clear stored API key
-              </label>
-            {% endif %}
-            <div class="help">Stored in the local control database and used by the updater/full-hash confirmation path. This feature is intentionally cached-only; there is no live lookup mode.</div>
-            <div class="form-row">
-              <div class="label">Threat lists</div>
-              {% set gsb_lists = settings.safe_browsing_lists or ['se-4b','mw-4b','uws-4b'] %}
-              {% for list_id, label in [('se-4b','Social engineering / phishing'), ('mw-4b','Malware'), ('uws-4b','Unwanted software'), ('uwsa-4b','Android unwanted software'), ('pha-4b','Potentially harmful Android apps')] %}
-                <label class="checkbox-row">
-                  <input type="checkbox" name="safe_browsing_lists" value="{{ list_id }}" {% if list_id in gsb_lists %}checked{% endif %}>
-                  {{ label }} <span class="mono">{{ list_id }}</span>
-                </label>
-              {% endfor %}
-            </div>
-          </section>
-
           <div class="form-row">
             <div class="label">Categories to block on this proxy</div>
 
@@ -275,6 +231,73 @@
     </form>
 
     <aside class="split-right">
+      <section class="card">
+        <form method="post" action="{{ url_for('webfilter', tab='categories') }}">
+          {{ csrf_field() }}
+          <input type="hidden" name="tab" value="categories">
+          <input type="hidden" name="action" value="safe_browsing_save">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Google Safe Browsing</h2>
+              <div class="small">Optional cached/local-list threat-intel provider.</div>
+            </div>
+            <span class="badge {{ 'ok' if settings.safe_browsing_enabled else 'warn' }}">{{ 'Enabled' if settings.safe_browsing_enabled else 'Disabled' }}</span>
+          </div>
+          <div class="card-body">
+            <div class="stack-lg">
+              {% if safe_browsing_saved %}
+                <div class="banner success">
+                  <span class="badge ok">Saved</span>
+                  <div class="banner-copy"><span class="small">Safe Browsing settings updated.</span></div>
+                </div>
+              {% endif %}
+              {% if err_safe_browsing_lists %}
+                <div class="alert error">
+                  Select at least one Google Safe Browsing threat list before enabling Safe Browsing.
+                </div>
+              {% endif %}
+              {% if err_safe_browsing_key %}
+                <div class="alert error">
+                  Enter a Google Safe Browsing API key before enabling Safe Browsing, or leave Safe Browsing disabled.
+                </div>
+              {% endif %}
+
+              <label class="checkbox-row">
+                <input type="checkbox" name="safe_browsing_enabled" value="on" {% if settings.safe_browsing_enabled %}checked{% endif %}>
+                Enable cached/local-list checks
+              </label>
+
+              <div class="form-row">
+                <label class="label" for="safe-browsing-api-key">API key</label>
+                <input id="safe-browsing-api-key" class="input" type="password" name="safe_browsing_api_key" value="" autocomplete="new-password" placeholder="{{ 'Configured - enter a new key to replace' if settings.safe_browsing_api_key else 'AIza...' }}">
+                {% if settings.safe_browsing_api_key %}
+                  <label class="checkbox-row">
+                    <input type="checkbox" name="safe_browsing_clear_key" value="on">
+                    Clear stored API key
+                  </label>
+                {% endif %}
+                <div class="help">Google is contacted only to confirm a local hash-prefix hit. Leave disabled to use category filtering without a Google key.</div>
+              </div>
+
+              <div class="form-row">
+                <div class="label">Threat lists</div>
+                {% set gsb_lists = settings.safe_browsing_lists or ['se-4b','mw-4b','uws-4b'] %}
+                {% for list_id, label in [('se-4b','Social engineering / phishing'), ('mw-4b','Malware'), ('uws-4b','Unwanted software'), ('uwsa-4b','Android unwanted software'), ('pha-4b','Potentially harmful Android apps')] %}
+                  <label class="checkbox-row">
+                    <input type="checkbox" name="safe_browsing_lists" value="{{ list_id }}" {% if list_id in gsb_lists %}checked{% endif %}>
+                    {{ label }} <span class="mono">{{ list_id }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+
+              <div class="actions">
+                <button class="btn primary" type="submit">Save Safe Browsing</button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </section>
+
       <section class="card">
         <div class="card-header">
           <div>
@@ -382,4 +405,3 @@
 {% endif %}
 
 {% endblock %}
-

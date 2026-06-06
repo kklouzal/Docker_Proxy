@@ -1885,6 +1885,9 @@ def test_webfilter_page_renders_editable_shared_source_controls(
     assert 'id="webfilter-source-provider"' in text
     assert 'name="source_provider"' in text
     assert 'value="csv"' in text
+    assert 'name="action" value="save"' in text
+    assert 'name="action" value="safe_browsing_save"' in text
+    assert "Save Safe Browsing" in text
 
 
 def test_recover_route_skips_proxy_registry_when_selection_is_stale(
@@ -1966,9 +1969,7 @@ def test_webfilter_save_clears_stored_safe_browsing_key_when_requested(
         data={
             "csrf_token": csrf_token(client, "/webfilter"),
             "tab": "categories",
-            "action": "save",
-            "source_url": "https://example.com/categories.csv",
-            "source_provider": "csv",
+            "action": "safe_browsing_save",
             "safe_browsing_api_key": "",
             "safe_browsing_clear_key": "on",
             "safe_browsing_lists": ["se-4b", "mw-4b"],
@@ -1981,7 +1982,7 @@ def test_webfilter_save_clears_stored_safe_browsing_key_when_requested(
     assert store.last_set_settings["safe_browsing_api_key"] == ""
 
 
-def test_webfilter_save_rejects_safe_browsing_without_lists(
+def test_webfilter_safe_browsing_save_rejects_without_lists(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeWebfilterStore()
@@ -1994,9 +1995,7 @@ def test_webfilter_save_rejects_safe_browsing_without_lists(
         data={
             "csrf_token": csrf_token(client, "/webfilter"),
             "tab": "categories",
-            "action": "save",
-            "source_url": "https://example.com/categories.csv",
-            "source_provider": "csv",
+            "action": "safe_browsing_save",
             "safe_browsing_enabled": "on",
             "safe_browsing_api_key": "test-key",
         },
@@ -2008,7 +2007,33 @@ def test_webfilter_save_rejects_safe_browsing_without_lists(
     assert not hasattr(store, "last_set_settings")
 
 
-def test_webfilter_save_rejects_safe_browsing_without_api_key(
+def test_webfilter_safe_browsing_save_rejects_without_api_key(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeWebfilterStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/webfilter?tab=categories",
+        data={
+            "csrf_token": csrf_token(client, "/webfilter"),
+            "tab": "categories",
+            "action": "safe_browsing_save",
+            "safe_browsing_enabled": "on",
+            "safe_browsing_api_key": "",
+            "safe_browsing_lists": ["se-4b", "mw-4b"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "err_safe_browsing_key=1" in response.headers["Location"]
+    assert not hasattr(store, "last_set_settings")
+
+
+def test_webfilter_enforcement_save_ignores_incomplete_safe_browsing_form(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeWebfilterStore()
@@ -2032,5 +2057,5 @@ def test_webfilter_save_rejects_safe_browsing_without_api_key(
     )
 
     assert response.status_code in {302, 303}
-    assert "err_safe_browsing_key=1" in response.headers["Location"]
-    assert not hasattr(store, "last_set_settings")
+    assert "err_safe_browsing_key=1" not in response.headers["Location"]
+    assert store.last_set_settings["safe_browsing_enabled"] is False
