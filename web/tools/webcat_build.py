@@ -993,7 +993,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Guess filename
         name = "webcat_feed"
         # Prefer exact matches for common archive types.
-        parsed_name = urlparse(source_url).path.lower()
+        try:
+            parsed_name = urlparse(source_url).path.lower()
+        except ValueError:
+            sys.stderr.write(
+                "Download URLs must be valid absolute HTTP/HTTPS URLs.\n",
+            )
+            return 2
         lower_url = parsed_name or source_url.lower()
         if lower_url.endswith(".tar.gz"):
             name += ".tar.gz"

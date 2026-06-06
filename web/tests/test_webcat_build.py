@@ -460,6 +460,36 @@ def test_main_rebuilds_from_cached_feed_when_upstream_not_modified_but_db_stale(
         assert calls["build_db"]["source_sha256"] == webcat_build._file_sha256(cached)
 
 
+def test_main_rejects_malformed_source_url_before_filename_guess(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    monkeypatch.setattr(
+        webcat_build,
+        "_download_if_changed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid URLs should not reach download")
+        ),
+    )
+
+    with tempfile.TemporaryDirectory(prefix="webcat_main_bad_url_") as td:
+        rc = webcat_build.main(
+            [
+                "--source-url",
+                "http://[::1",
+                "--download-to",
+                td,
+            ]
+        )
+
+    stderr = capsys.readouterr().err
+    assert rc == 2
+    assert "Only http/https URLs are supported for downloads." not in stderr
+    assert "valid absolute HTTP/HTTPS" in stderr
+
+
 def test_webcat_domain_normalization_is_shared_and_idna() -> None:
     webcat_build = _import_webcat_build()
     _add_web_to_path = None
