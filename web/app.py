@@ -154,6 +154,7 @@ from services.ui_support import (
     window_label as _window_label,
 )
 from services.webfilter_core import (
+    _normalize_category_name as _normalize_webfilter_category_name,
     validate_source_url as _validate_webfilter_source_url,
 )
 from services.webfilter_store import get_webfilter_store as _default_get_webfilter_store
@@ -4602,12 +4603,17 @@ def webfilter():
         available = _normalize_webfilter_categories(store.list_available_categories())
     except Exception:
         available = []
-    selected = set(
-        getattr(settings, "blocked_categories", None)
-        or (
-            settings.get("blocked_categories", []) if isinstance(settings, dict) else []
-        )
+    raw_selected = getattr(settings, "blocked_categories", None) or (
+        settings.get("blocked_categories", []) if isinstance(settings, dict) else []
     )
+    selected = {
+        normalized
+        for normalized in (
+            _normalize_webfilter_category_name(category)
+            for category in (raw_selected or [])
+        )
+        if normalized
+    }
     try:
         whitelist_rows = store.list_whitelist()
     except Exception:

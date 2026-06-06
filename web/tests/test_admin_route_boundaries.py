@@ -1869,6 +1869,24 @@ def test_webfilter_page_normalizes_object_category_rows(monkeypatch, tmp_path) -
     assert 'data-category="adult"' in response.get_data(as_text=True)
 
 
+def test_webfilter_page_marks_normalized_selected_categories(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeWebfilterStore()
+    store.settings.blocked_categories = [" Adult "]
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/webfilter")
+
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert 'name="categories" value="adult"' in text
+    assert 'data-category="adult"' in text
+    assert 'aria-pressed="true"' in text
+
+
 def test_webfilter_page_renders_editable_shared_source_controls(
     monkeypatch, tmp_path
 ) -> None:
