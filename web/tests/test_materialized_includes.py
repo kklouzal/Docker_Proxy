@@ -615,6 +615,44 @@ def test_write_managed_text_files_restores_via_staged_replace(
     assert second.read_text(encoding="utf-8") == "old second\n"
 
 
+def test_write_managed_text_files_restores_previous_file_mode_on_rollback(
+    tmp_path, monkeypatch
+) -> None:
+    _add_repo_paths()
+    from services import materialized_files  # type: ignore
+
+    first = tmp_path / "first.conf"
+    second = tmp_path / "second.conf"
+    first.write_text("old first\n", encoding="utf-8")
+    second.write_text("old second\n", encoding="utf-8")
+    first.chmod(0o600)
+    second.chmod(0o640)
+    real_replace = materialized_files.os.replace
+
+    def flaky_replace(src, dst):
+        if str(dst) == str(second):
+            msg = "disk full"
+            raise OSError(msg)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(materialized_files.os, "replace", flaky_replace)
+
+    try:
+        materialized_files.write_managed_text_files(
+            (str(first), "new first\n"), (str(second), "new second\n")
+        )
+    except OSError as exc:
+        assert "disk full" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        msg = "expected second replace failure"
+        raise AssertionError(msg)
+
+    assert first.read_text(encoding="utf-8") == "old first\n"
+    assert second.read_text(encoding="utf-8") == "old second\n"
+    assert first.stat().st_mode & 0o777 == 0o600
+    assert second.stat().st_mode & 0o777 == 0o640
+
+
 def test_write_managed_text_files_keeps_runtime_files_world_readable(tmp_path) -> None:
     _add_repo_paths()
     from services import materialized_files  # type: ignore
