@@ -49,6 +49,13 @@ class ProxyClient:
             return f"Proxy management request failed with HTTP {status_code}."
         return "Proxy management request failed."
 
+    def _non_object_json_detail(self) -> str:
+        return (
+            "Proxy management endpoint returned JSON that was not an object. "
+            "Check that the registered management URL points to the proxy "
+            "management listener."
+        )
+
     def _proxy_base_url(self, proxy_id: object | None) -> str:
         proxy_key = normalize_proxy_id(proxy_id)
         info = get_proxy_registry().get_proxy(proxy_key)
@@ -96,11 +103,7 @@ class ProxyClient:
                     )
                     raise ProxyClientError(msg) from exc
                 if not isinstance(data, dict):
-                    detail = (
-                        "Proxy management endpoint returned JSON that was not an "
-                        "object. Check that the registered management URL points to "
-                        "the proxy management listener."
-                    )
+                    detail = self._non_object_json_detail()
                     msg = (
                         f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
                     )
@@ -123,12 +126,16 @@ class ProxyClient:
                     "ok": False,
                     "detail": self._safe_error_detail(raw, status_code=int(exc.code)),
                 }
+            if not isinstance(data, dict):
+                data = {"ok": False, "detail": self._non_object_json_detail()}
             detail = data.get("detail") or self._safe_error_detail(
                 raw,
                 status_code=int(exc.code),
             )
             msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
             raise ProxyClientError(msg) from exc
+        except ProxyClientError:
+            raise
         except urllib.error.URLError as exc:
             reason = str(exc.reason) or str(exc)
             msg = f"Proxy management request failed: {reason} (proxy={normalize_proxy_id(proxy_id)}, url={url})"

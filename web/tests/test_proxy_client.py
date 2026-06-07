@@ -206,6 +206,36 @@ def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
         proxy_client.ProxyClient().sync_proxy("live")
 
 
+def test_proxy_client_http_error_rejects_non_object_json(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import proxy_client  # type: ignore
+
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    def fake_urlopen(_request, timeout) -> NoReturn:
+        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        raise urllib.error.HTTPError(
+            msg,
+            502,
+            "Bad Gateway",
+            {},
+            io.BytesIO(b'["not", "a", "management", "payload"]'),
+        )
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().sync_proxy("live")
+
+    message = str(exc_info.value)
+    assert "returned JSON that was not an object" in message
+    assert "registered management URL" in message
+    assert "not\", \"a\", \"management" not in message
+    assert "proxy=live" in message
+
+
 def test_proxy_client_sanitizes_html_management_auth_error(monkeypatch) -> None:
     _add_web_to_path()
     from services import proxy_client  # type: ignore
