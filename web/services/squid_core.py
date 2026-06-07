@@ -891,7 +891,8 @@ class SquidController:
             return True, "\n".join(part for part in detail_parts if part).strip()
         return None
 
-    def restart_squid(self) -> tuple[bool, str]:
+    def restart_squid(self, *, ready_timeout: float = 45.0) -> tuple[bool, str]:
+        ready_timeout = max(1.0, float(ready_timeout or 45.0))
         detail_parts: list[str] = []
         try:
             stop = self._run(
@@ -1025,7 +1026,7 @@ class SquidController:
                         )
                         detail_parts.append(retry_detail)
                         if retry.returncode == 0 and self._wait_for_http_listener(
-                            timeout=45.0,
+                            timeout=ready_timeout,
                         ):
                             detail_parts.append(
                                 "Squid HTTP listener is accepting connections.",
@@ -1038,7 +1039,7 @@ class SquidController:
                             f"retry after already-running start failure failed: {exc}",
                         )
                 return False, "\n".join(detail_parts).strip()
-            if self._wait_for_http_listener(timeout=45.0):
+            if self._wait_for_http_listener(timeout=ready_timeout):
                 detail_parts.append("Squid HTTP listener is accepting connections.")
                 return True, "\n".join(part for part in detail_parts if part).strip()
             return False, "\n".join(
@@ -1061,7 +1062,9 @@ class SquidController:
                 timeout=20,
             )
             detail_parts.append(self._decode_completed(proc) or "squid start requested")
-            if proc.returncode == 0 and self._wait_for_http_listener(timeout=45.0):
+            if proc.returncode == 0 and self._wait_for_http_listener(
+                timeout=ready_timeout,
+            ):
                 return True, "\n".join(part for part in detail_parts if part).strip()
             return False, "\n".join(
                 [
@@ -1173,7 +1176,7 @@ class SquidController:
         except Exception as exc:
             detail_parts.append(f"squid -z error: {exc}")
 
-        ok_restart, restart_detail = self.restart_squid()
+        ok_restart, restart_detail = self.restart_squid(ready_timeout=20.0)
         detail_parts.append(
             restart_detail
             or ("Squid restarted." if ok_restart else "Squid restart failed."),
