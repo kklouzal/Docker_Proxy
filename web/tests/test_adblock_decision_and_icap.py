@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import socket
+import struct
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -681,6 +683,56 @@ def test_adblock_icap_server_handles_persistent_transactions(tmp_path: Path) -> 
             closing = _recv_icap_headers(sock)
             assert closing.startswith(b"ICAP/1.0 200")
             assert b"Connection: close" in closing
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_ignores_reset_peer_during_response(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    db_path = _build_lookup_db(tmp_path, [])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        http = (
+            b"GET http://allowed.example/page.html HTTP/1.1\r\n"
+            b"Host: allowed.example\r\n\r\n"
+        )
+        req = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: req-hdr=0, null-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+            sock.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_LINGER,
+                struct.pack("ii", 1, 0),
+            )
+            sock.sendall(req)
+        time.sleep(0.2)
+
+        captured = capfd.readouterr()
+        assert "ConnectionResetError" not in captured.err
+        assert "Exception occurred during processing of request" not in captured.err
     finally:
         server.shutdown()
         server.server_close()

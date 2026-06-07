@@ -93,6 +93,13 @@ def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
             AssertionError("idle tailer opened a DB connection")
         ),
     )
+    monkeypatch.setattr(
+        store,
+        "_tailer_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("idle tailer opened an unpooled DB connection")
+        ),
+    )
     monkeypatch.setattr(ssl_errors_store.time, "sleep", _stop_sleep)
 
     with pytest.raises(StopLoop):

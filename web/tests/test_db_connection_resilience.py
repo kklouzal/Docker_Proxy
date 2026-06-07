@@ -372,6 +372,33 @@ def test_ssl_errors_ingest_retries_after_database_init_timeout(
     assert calls["init_db"] == 2
 
 
+def test_ssl_errors_tailer_uses_unpooled_connections(monkeypatch, tmp_path) -> None:
+    _add_repo_paths()
+    from services import ssl_errors_store  # type: ignore
+
+    calls: list[str] = []
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
+
+    class Conn:
+        pass
+
+    monkeypatch.setattr(
+        ssl_errors_store,
+        "connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("tailer should not use the shared DB pool")
+        ),
+    )
+    monkeypatch.setattr(
+        ssl_errors_store,
+        "connect_unpooled",
+        lambda: calls.append("unpooled") or Conn(),
+    )
+
+    assert isinstance(store._tailer_connect(), Conn)
+    assert calls == ["unpooled"]
+
+
 def test_ssl_errors_cleanup_uses_bounded_delete_chunks(monkeypatch, tmp_path) -> None:
     _add_repo_paths()
     from services import ssl_errors_store  # type: ignore

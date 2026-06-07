@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import html
 import os
 import socket
@@ -357,6 +358,18 @@ def _connection_close_requested(header_blob: bytes) -> bool:
     return "close" in tokens
 
 
+def _send_icap_response(sock: socket.socket, response: bytes) -> bool:
+    try:
+        sock.sendall(response)
+        return True
+    except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        return False
+    except OSError as exc:
+        if exc.errno in {errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT}:
+            return False
+        raise
+
+
 class _AdblockIcapHandler(socketserver.BaseRequestHandler):
     server: _AdblockIcapServer
 
@@ -400,19 +413,22 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
             method = parts[0].upper() if parts else ""
             if method == "OPTIONS":
                 self.server.increment_stat("options")
-                self.request.sendall(_options_response(close=close))
+                if not _send_icap_response(self.request, _options_response(close=close)):
+                    return
                 if close:
                     return
                 continue
             if method != "REQMOD":
                 self.server.increment_stat("method_not_allowed")
-                self.request.sendall(
+                if not _send_icap_response(
+                    self.request,
                     _icap_response(
                         "405 Method Not Allowed",
                         {"Encapsulated": "null-body=0"},
                         close=close,
                     ),
-                )
+                ):
+                    return
                 if close:
                     return
                 continue
@@ -422,7 +438,8 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
             )
             if not url:
                 self.server.increment_stat("parse_miss")
-                self.request.sendall(_allow_response(close=close))
+                if not _send_icap_response(self.request, _allow_response(close=close)):
+                    return
                 if close:
                     return
                 continue
@@ -447,10 +464,15 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                     rule_id=decision.rule_id,
                 )
                 self.server.record_block(list_key)
-                self.request.sendall(_block_response(url, decision.raw, close=close))
+                if not _send_icap_response(
+                    self.request,
+                    _block_response(url, decision.raw, close=close),
+                ):
+                    return
             else:
                 self.server.increment_stat("allowed")
-                self.request.sendall(_allow_response(close=close))
+                if not _send_icap_response(self.request, _allow_response(close=close)):
+                    return
             if close:
                 return
 

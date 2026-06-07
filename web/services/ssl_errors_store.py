@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import DATABASE_ERRORS, connect
+from services.db import DATABASE_ERRORS, connect, connect_unpooled
 from services.logutil import (
     log_database_unavailable,
     log_exception_throttled,
@@ -217,6 +217,9 @@ class SslErrorsStore:
 
     def _connect(self):
         return connect()
+
+    def _tailer_connect(self):
+        return connect_unpooled()
 
     def _row_key(self, proxy_id: str, domain: str, category: str, reason: str) -> str:
         return hashlib.sha1(
@@ -845,14 +848,14 @@ class SslErrorsStore:
                     if not self._line_requires_database(line):
                         return False
                     self.init_db()
-                    with self._connect() as conn:
+                    with self._tailer_connect() as conn:
                         return self._ingest_line_with_conn(conn, line)
 
                 def flush_pending() -> bool:
                     if not self._has_uncommitted_pending_error():
                         return False
                     self.init_db()
-                    with self._connect() as conn:
+                    with self._tailer_connect() as conn:
                         return self._flush_pending_error(conn)
 
                 with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
