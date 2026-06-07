@@ -2125,7 +2125,9 @@ def _publish_certificate_bundle_remote(
                 force=True,
             )
         except Exception as exc:
-            failure_details.append(public_error_message(exc))
+            failure_details.append(
+                f"{proxy.proxy_id}: {public_error_message(exc)}",
+            )
             continue
         if getattr(operation, "operation_id", 0) and operation.status == "pending":
             queued_count += 1
@@ -2133,12 +2135,11 @@ def _publish_certificate_bundle_remote(
             not getattr(operation, "operation_id", 0)
             and getattr(operation, "status", "") == "failed"
         ):
-            failure_details.append(
-                str(
-                    getattr(operation, "detail", "")
-                    or "Certificate bundle reconciliation was not queued.",
-                ),
+            operation_detail = (
+                getattr(operation, "detail", "")
+                or "Certificate bundle reconciliation was not queued."
             )
+            failure_details.append(f"{proxy.proxy_id}: {operation_detail}")
     if attempted == 0:
         detail = (
             f"Certificate revision {revision.revision_id} saved. "
@@ -2160,8 +2161,10 @@ def _publish_certificate_bundle_remote(
     else:
         detail = (
             f"Certificate revision {revision.revision_id} saved. "
-            f"Queued {queued_count}/{attempted} async operations; check the operations ledger for failures."
+            f"Queued {queued_count}/{attempted} async operations; not every proxy got a queued operation."
         )
+        if failure_details:
+            detail = f"{detail} First queue failure: {failure_details[0]}"
     return True, detail
 
 

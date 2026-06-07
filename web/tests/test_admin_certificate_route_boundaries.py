@@ -185,6 +185,51 @@ def test_certificate_publish_records_previous_bundle_for_operation_revert(
     ]
 
 
+def test_certificate_publish_reports_partial_proxy_queue_failure(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=previous)
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+    )
+    original_reconcile = loaded.module.request_proxy_reconcile
+
+    def flaky_reconcile(proxy_id, **kwargs):
+        if proxy_id == "edge-b":
+            return SimpleNamespace(
+                operation_id=0,
+                status="failed",
+                detail="edge-b operation ledger unavailable",
+            )
+        return original_reconcile(proxy_id, **kwargs)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", flaky_reconcile)
+
+    with loaded.module.app.test_request_context("/certs/upload", method="POST"):
+        loaded.module.session["user"] = "operator"
+        ok, detail = loaded.module._publish_certificate_bundle_remote(_bundle())
+
+    assert ok is True
+    assert "Queued 1/2 async operations" in detail
+    assert "First queue failure: edge-b: edge-b operation ledger unavailable" in detail
+    assert bundles.bundle is bundles.created[0]
+    queued_operations = [
+        (op.proxy_id, op.operation_type) for op in loaded.operation_ledger.operations
+    ]
+    assert queued_operations == [
+        ("edge-a", "certificate_apply"),
+    ]
+
+
 def test_revert_certificate_operation_restores_bundle_and_queues_registered_proxies(
     monkeypatch, tmp_path
 ) -> None:
