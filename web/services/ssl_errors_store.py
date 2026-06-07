@@ -57,7 +57,10 @@ _DOMAIN_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bCONNECT\s+([A-Za-z0-9.-]+):\d+\b", re.IGNORECASE),
     re.compile(r"\bhttps?://([A-Za-z0-9.-]+)\b", re.IGNORECASE),
     re.compile(r"\bhost=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
-    re.compile(r"\bpeer=([A-Za-z0-9.-]+)(?::\d+)?\b", re.IGNORECASE),
+    re.compile(
+        r"\bpeer=(\"[^\"]+\"|'[^']+'|\[[^\]\s]+\](?::\d+)?|[^,\s;]+)",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bserver_name=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
     re.compile(r"\bsni=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
     re.compile(r"\bSNI\s*[:=]\s*([A-Za-z0-9.-]+)\b", re.IGNORECASE),
@@ -81,7 +84,7 @@ def _extract_domain(msg: str) -> str:
     for pat in _DOMAIN_PATTERNS:
         m = pat.search(msg)
         if m:
-            return _normalize_hostish(m.group(1))
+            return _normalize_hostish(m.group(1).strip("\"'"))
     return ""
 
 

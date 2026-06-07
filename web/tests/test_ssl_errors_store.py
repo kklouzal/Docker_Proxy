@@ -15,6 +15,16 @@ def test_ssl_error_domain_extraction_accepts_peer_token() -> None:
     assert _extract_domain(line) == "media.steampowered.com"
 
 
+def test_ssl_error_domain_extraction_accepts_quoted_peer_token() -> None:
+    line = 'kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT peer="media.steampowered.com:443"'
+    assert _extract_domain(line) == "media.steampowered.com"
+
+
+def test_ssl_error_domain_extraction_accepts_bracketed_ipv6_peer_token() -> None:
+    line = "kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT peer=[2001:db8::1]:443"
+    assert _extract_domain(line) == "2001:db8::1"
+
+
 def test_ssl_error_domain_extraction_accepts_server_name_token() -> None:
     line = "kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT server_name=api.steampowered.com"
     assert _extract_domain(line) == "api.steampowered.com"
