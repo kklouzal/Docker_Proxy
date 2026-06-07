@@ -71,6 +71,25 @@ def test_validate_download_url_rejects_malformed_absolute_url_before_dns(
         download_safety.validate_download_url(source_url)
 
 
+def test_validate_download_url_rejects_embedded_credentials_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("credential-bearing URLs should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="embedded credentials"):
+        download_safety.validate_download_url(
+            "https://feed-user:feed-pass@public.example/feed.csv",
+        )
+
+
 def test_validate_download_url_preserves_scheme_error_without_dns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -217,6 +217,7 @@ def test_webfilter_loop_preserves_refresh_request_after_failed_build(
         "http://127.0.0.1/feed.csv",
         "http://localhost/feed.csv",
         "http://proxy.internal/feed.csv",
+        "https://feed-user:feed-pass@example.test/feed.csv",
         "http://exa mple.com/feed.csv",
         "https://example.test/feed file.csv",
         "http://[::1",
@@ -240,6 +241,24 @@ def test_webfilter_source_url_validation_rejects_unsafe_targets(
         m.validate_source_url(" https://example.test/feed.csv ")
         == "https://example.test/feed.csv"
     )
+
+
+def test_webfilter_source_url_validation_reports_embedded_credentials(
+    monkeypatch,
+) -> None:
+    m = _import_webfilter_store_module()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("credential-bearing URLs should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="embedded credentials"):
+        m.validate_source_url("https://feed-user:feed-pass@example.test/feed.csv")
 
 
 def test_webfilter_source_url_validation_rejects_unverifiable_dns(monkeypatch) -> None:

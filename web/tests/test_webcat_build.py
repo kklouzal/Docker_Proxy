@@ -315,6 +315,33 @@ def test_download_rejects_redirect_to_internal_host(
         webcat_build._open_download_url("https://public.example/feed.csv", timeout=1)
 
 
+def test_download_rejects_redirect_to_embedded_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+    download_safety = _download_safety_module()
+    _allow_public_example_dns(webcat_build, monkeypatch)
+    from email.message import Message
+
+    headers = Message()
+    headers["Location"] = "https://user:password@public.example/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs) -> NoReturn:
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url, 302, "Found", headers, None
+            )
+
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(ValueError, match="embedded credentials"):
+        webcat_build._open_download_url("https://public.example/feed.csv", timeout=1)
+
+
 def test_download_if_changed_uses_conditional_headers_and_skips_on_304(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

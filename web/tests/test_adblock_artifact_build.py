@@ -978,6 +978,39 @@ def test_adblock_download_rejects_hostname_when_dns_cannot_be_verified(
     assert rules == 0
 
 
+def test_adblock_download_rejects_embedded_url_credentials(
+    tmp_path, monkeypatch
+) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+    download_safety = store_module.download_safety
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("credential-bearing URLs should not reach DNS")
+        ),
+    )
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("download should not open credential-bearing URL")
+        ),
+    )
+
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    ok, err, bytes_read, rules = store.download_list(
+        "easylist",
+        "https://feed-user:feed-pass@public.example/easylist.txt",
+    )
+
+    assert ok is False
+    assert "embedded credentials" in err
+    assert bytes_read == 0
+    assert rules == 0
+
+
 def test_adblock_download_rejects_redirect_to_internal_host(
     tmp_path, monkeypatch
 ) -> None:

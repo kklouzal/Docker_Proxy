@@ -72,6 +72,9 @@ def validate_download_url(
         raise ValueError(invalid_url_msg) from exc
     if not parsed.netloc or not hostname:
         raise ValueError(invalid_url_msg)
+    if parsed.username or parsed.password:
+        msg = "Download URLs must not include embedded credentials."
+        raise ValueError(msg)
     if is_internal_host(hostname):
         msg = "Downloads from internal/localhost addresses are not allowed."
         raise ValueError(msg)

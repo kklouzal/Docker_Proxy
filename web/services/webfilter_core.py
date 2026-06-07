@@ -154,9 +154,13 @@ def validate_source_url(source_url: str) -> str:
             scheme_error="Only http/https web filter source URLs are supported.",
         )
     except ValueError as exc:
-        msg = (
-            "Web filter source URLs must not point at internal or localhost addresses."
-        )
+        detail = str(exc)
+        if "embedded credentials" in detail:
+            msg = "Web filter source URLs must not include embedded credentials."
+        else:
+            msg = (
+                "Web filter source URLs must not point at internal or localhost addresses."
+            )
         raise ValueError(msg) from exc
     return source
 
