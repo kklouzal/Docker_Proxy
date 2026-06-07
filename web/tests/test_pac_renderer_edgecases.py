@@ -241,6 +241,75 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     assert target.pac_url == "http://registry.example:8080/registered/wpad.dat?site=a"
 
 
+def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from types import SimpleNamespace
+
+    from services import pac_renderer  # type: ignore
+    from services.proxy_context import (  # type: ignore
+        get_proxy_id,
+        reset_proxy_id,
+        set_proxy_id,
+    )
+
+    class _Registry:
+        def get_proxy(self, proxy_id):
+            return SimpleNamespace(
+                public_host=f"{proxy_id}.example",
+                public_pac_scheme="http",
+                public_pac_port=80,
+                public_pac_path="/proxy.pac",
+                public_http_proxy_port=3128,
+            )
+
+    class _ScopedPacProfilesStore:
+        def list_proxy_chain_settings(self):
+            proxy_id = get_proxy_id()
+            if proxy_id == "edge-b":
+                return SimpleNamespace(
+                    backup_proxies=[
+                        SimpleNamespace(
+                            proxy_host="backup-b.example",
+                            proxy_port=8080,
+                        ),
+                    ],
+                    direct_enabled=False,
+                )
+            return SimpleNamespace(
+                backup_proxies=[
+                    SimpleNamespace(
+                        proxy_host="backup-a.example",
+                        proxy_port=3129,
+                    ),
+                ],
+                direct_enabled=True,
+            )
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _Registry)
+    monkeypatch.setattr(
+        pac_renderer,
+        "get_pac_profiles_store",
+        _ScopedPacProfilesStore,
+    )
+
+    token = set_proxy_id("edge-a")
+    try:
+        target = pac_renderer.resolve_proxy_pac_target("edge-b")
+    finally:
+        reset_proxy_id(token)
+
+    assert target.proxy_id == "edge-b"
+    assert target.public_host == "edge-b.example"
+    assert (
+        target.proxy_chain
+        == "PROXY edge-b.example:3128; PROXY backup-b.example:8080"
+    )
+    assert "backup-a" not in target.proxy_chain
+    assert "DIRECT" not in target.proxy_chain
+
+
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

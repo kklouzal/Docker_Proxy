@@ -19,7 +19,12 @@ from services.pac_profiles_store import (
     _normalize_proxy_host_port,
     get_pac_profiles_store,
 )
-from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
+from services.proxy_context import (
+    get_proxy_id,
+    normalize_proxy_id,
+    reset_proxy_id,
+    set_proxy_id,
+)
 from services.proxy_registry import get_proxy_registry, normalize_public_pac_path
 from services.sslfilter_store import get_sslfilter_store
 
@@ -265,7 +270,9 @@ def format_proxy_host(raw_host: str) -> str:
 
 
 def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
-    normalized_proxy_id = normalize_proxy_id(proxy_id)
+    normalized_proxy_id = (
+        get_proxy_id() if proxy_id is None else normalize_proxy_id(proxy_id)
+    )
     try:
         proxy = get_proxy_registry().get_proxy(normalized_proxy_id)
     except Exception:
@@ -324,6 +331,7 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         pac_path = "/proxy.pac"
     backup_proxies: tuple[tuple[str, int], ...] = ()
     direct_enabled = True
+    token = set_proxy_id(normalized_proxy_id)
     try:
         chain_settings = get_pac_profiles_store().list_proxy_chain_settings()
         backup_proxies = tuple(
@@ -337,6 +345,8 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
     except Exception:
         backup_proxies = ()
         direct_enabled = True
+    finally:
+        reset_proxy_id(token)
     return ProxyPacTarget(
         proxy_id=normalized_proxy_id,
         public_host=public_host,
