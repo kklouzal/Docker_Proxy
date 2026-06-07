@@ -9,6 +9,37 @@
     </div>
 </section>
 
+{% if request.args.get('reverted') == '1' %}
+<div class="banner success">
+    <span class="badge ok">Revert queued</span>
+    <div class="banner-copy">
+        <strong>Operation revert requested</strong>
+        <span class="small">A follow-up operation was queued; watch the ledger below for apply status.</span>
+    </div>
+</div>
+{% elif request.args.get('error') %}
+{% set operation_error = request.args.get('error') %}
+<div class="banner error">
+    <span class="badge danger">Revert failed</span>
+    <div class="banner-copy">
+        <strong>Unable to queue revert</strong>
+        <span class="small">
+            {% if operation_error == 'not_revertible' %}
+                The selected operation is not revertible for this proxy.
+            {% elif operation_error == 'rollback_missing' %}
+                The rollback revision is no longer available.
+            {% elif operation_error == 'revert_failed' %}
+                The revert could not be queued; the prior active state was preserved when possible.
+            {% elif operation_error == 'unsupported_rollback' %}
+                This operation has an unsupported rollback target.
+            {% else %}
+                The operation request failed.
+            {% endif %}
+        </span>
+    </div>
+</div>
+{% endif %}
+
 <section class="stats-grid compact-stats operation-counts" data-operation-counts>
     {% for status in ['pending','applying','applied','superseded','failed'] %}
     <article class="stat-card operation-count-card {{ status }}">

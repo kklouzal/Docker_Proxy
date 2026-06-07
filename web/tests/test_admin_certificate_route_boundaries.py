@@ -343,6 +343,40 @@ def test_revert_certificate_operation_keeps_partial_proxy_queue(
     ] == [("edge-a", "certificate_revert", "9", "12", True)]
 
 
+def test_operations_page_surfaces_revert_success(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/operations?reverted=1")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Revert queued" in body
+    assert "A follow-up operation was queued" in body
+
+
+def test_operations_page_surfaces_revert_errors(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    expected_messages = {
+        "not_revertible": "not revertible for this proxy",
+        "rollback_missing": "rollback revision is no longer available",
+        "revert_failed": "prior active state was preserved when possible",
+        "unsupported_rollback": "unsupported rollback target",
+    }
+
+    for error, message in expected_messages.items():
+        response = client.get(f"/operations?error={error}")
+
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "Unable to queue revert" in body
+        assert message in body
+
+
 def test_certificate_upload_rejects_body_over_ten_megabytes(
     monkeypatch, tmp_path
 ) -> None:
