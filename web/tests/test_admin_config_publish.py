@@ -445,6 +445,7 @@ def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
     class Op:
         operation_id = 9
         proxy_id = "edge-a"
+        status = "failed"
         can_revert = True
         rollback_kind = "config_revision"
         rollback_ref = "3"
@@ -507,6 +508,43 @@ def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
     ]
 
 
+@pytest.mark.parametrize("status", ["pending", "applying", "applied", "superseded"])
+def test_revert_operation_requires_failed_status(
+    monkeypatch, tmp_path, status
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    class Op:
+        operation_id = 9
+        proxy_id = "edge-a"
+        can_revert = True
+        rollback_kind = "config_revision"
+        rollback_ref = "3"
+        operation_type = "config_apply"
+        target_ref = "4"
+
+    class Ledger:
+        def get_operation(self, operation_id):
+            assert operation_id == 9
+            op = Op()
+            op.status = status
+            return op
+
+    def fail_if_called(*_args, **_kwargs):
+        pytest.fail("non-failed operation should not queue a revert")
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(admin_app, "get_config_revisions", fail_if_called)
+    monkeypatch.setattr(admin_app, "request_proxy_reconcile", fail_if_called)
+
+    with admin_app.app.test_request_context("/operations/9/revert", method="POST"):
+        response = admin_app.revert_operation(9)
+
+    assert response.status_code == 302
+    assert "error=not_revertible" in response.location
+
+
 @pytest.mark.parametrize("queue_failure", ["raises", "failed_operation"])
 def test_revert_operation_restores_active_revision_when_queue_fails(
     monkeypatch, tmp_path, queue_failure
@@ -516,6 +554,7 @@ def test_revert_operation_restores_active_revision_when_queue_fails(
     class Op:
         operation_id = 9
         proxy_id = "edge-a"
+        status = "failed"
         can_revert = True
         rollback_kind = "config_revision"
         rollback_ref = "3"

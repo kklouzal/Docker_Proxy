@@ -3186,7 +3186,12 @@ def revert_operation(operation_id: int):
         op = ledger.get_operation(operation_id)
     except Exception:
         op = None
-    if op is None or op.proxy_id != get_proxy_id() or not op.can_revert:
+    if (
+        op is None
+        or op.proxy_id != get_proxy_id()
+        or not op.can_revert
+        or op.status != "failed"
+    ):
         return _redirect_to("operations_status", error="not_revertible")
     if op.rollback_kind == "config_revision":
         revision = None

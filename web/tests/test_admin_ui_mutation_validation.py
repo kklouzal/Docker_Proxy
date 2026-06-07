@@ -419,6 +419,7 @@ def test_revert_operation_redirects_when_revert_queue_fails(
         rollback_kind="config_revision",
         rollback_ref="1",
     )
+    operation.status = "failed"
 
     response = _post(client, f"/operations/{operation.operation_id}/revert", {})
 
