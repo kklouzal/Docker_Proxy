@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.proxy_context import normalize_proxy_id
-from services.proxy_registry import get_proxy_registry
+from services.proxy_registry import get_proxy_registry, normalize_management_url
 
 
 class ProxyClientError(RuntimeError):
@@ -52,10 +52,13 @@ class ProxyClient:
     def _proxy_base_url(self, proxy_id: object | None) -> str:
         proxy_key = normalize_proxy_id(proxy_id)
         info = get_proxy_registry().get_proxy(proxy_key)
-        if info is None or not info.management_url:
+        management_url = normalize_management_url(
+            getattr(info, "management_url", "") if info is not None else ""
+        )
+        if info is None or not management_url:
             msg = f"Proxy '{proxy_key}' is not registered with a management URL."
             raise ProxyClientError(msg)
-        return info.management_url.rstrip("/") + "/"
+        return management_url.rstrip("/") + "/"
 
     def _request(
         self,

@@ -6,7 +6,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from services.db import (
     DATABASE_ERRORS,
@@ -109,6 +109,51 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
     return f"{path}?{query}" if query else path
 
 
+def normalize_management_url(value: object | None) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+        return ""
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    try:
+        parsed = urlsplit(candidate)
+        _port = parsed.port
+    except Exception:
+        return ""
+    scheme = str(parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return ""
+    host = str(parsed.hostname or "").strip().lower()
+    if not host or parsed.username or parsed.password:
+        return ""
+    decoded_path = unquote(parsed.path or "")
+    if "\\" in decoded_path or any(
+        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in decoded_path
+    ):
+        return ""
+    segments = [segment for segment in decoded_path.split("/") if segment]
+    if any(segment in {".", ".."} for segment in segments):
+        return ""
+
+    path = (parsed.path or "").rstrip("/")
+    marker = "/api/manage"
+    marker_at = path.find(marker)
+    if marker_at >= 0:
+        marker_end = marker_at + len(marker)
+        if marker_end == len(path) or path[marker_end] == "/":
+            path = path[:marker_at]
+    path = path.rstrip("/")
+
+    netloc = host
+    if ":" in host and not host.startswith("["):
+        netloc = f"[{host}]"
+    if parsed.port is not None:
+        netloc = f"{netloc}:{int(parsed.port)}"
+    return urlunsplit((scheme, netloc, path, "", ""))
+
+
 def _dns_safe_proxy_host(value: object | None) -> str:
     raw = str(value or "").strip().lower()
     if not raw or raw == "default":
@@ -170,7 +215,7 @@ def resolve_local_proxy_management_url(
 ) -> str:
     explicit_url = (os.environ.get("PROXY_MANAGEMENT_URL") or "").strip()
     if explicit_url:
-        return explicit_url.rstrip("/")
+        return normalize_management_url(explicit_url)
 
     scheme = _normalize_public_scheme(
         os.environ.get("PROXY_MANAGEMENT_SCHEME") or "http",
@@ -182,7 +227,7 @@ def resolve_local_proxy_management_url(
         or str(public_host or "").strip()
         or _dns_safe_proxy_host(proxy_id)
     )
-    return f"{scheme}://{host}:{port}"
+    return normalize_management_url(f"{scheme}://{host}:{port}")
 
 
 @dataclass(frozen=True)
@@ -321,7 +366,7 @@ class ProxyRegistry:
             proxy_id=str(row["proxy_id"]),
             display_name=str(row["display_name"] or row["proxy_id"]),
             hostname=str(row["hostname"] or ""),
-            management_url=str(row["management_url"] or ""),
+            management_url=normalize_management_url(row["management_url"]),
             public_host=str(row["public_host"] or ""),
             public_pac_scheme=_normalize_public_scheme(row["public_pac_scheme"]),
             public_pac_port=_coerce_port(row["public_pac_port"], 80),
@@ -378,7 +423,7 @@ class ProxyRegistry:
                         proxy_key,
                         (display_name or proxy_key).strip() or proxy_key,
                         (hostname or "").strip(),
-                        (management_url or "").strip(),
+                        normalize_management_url(management_url),
                         (public_host or "").strip(),
                         _normalize_public_scheme(public_pac_scheme),
                         _coerce_port(public_pac_port, 80),
@@ -398,7 +443,7 @@ class ProxyRegistry:
                     "proxy_id": proxy_key,
                     "display_name": (display_name or proxy_key).strip() or proxy_key,
                     "hostname": (hostname or "").strip(),
-                    "management_url": (management_url or "").strip(),
+                    "management_url": normalize_management_url(management_url),
                     "public_host": (public_host or "").strip(),
                     "public_pac_scheme": _normalize_public_scheme(public_pac_scheme),
                     "public_pac_port": _coerce_port(public_pac_port, 80),
@@ -421,7 +466,11 @@ class ProxyRegistry:
                     display_name or row["display_name"] or proxy_key
                 ).strip() or proxy_key
                 next_hostname = (hostname or row["hostname"] or "").strip()
-                next_url = (management_url or row["management_url"] or "").strip()
+                next_url = normalize_management_url(
+                    management_url
+                    if management_url is not None
+                    else row["management_url"],
+                )
                 next_public_host = (
                     public_host if public_host is not None else row["public_host"] or ""
                 ).strip()
@@ -688,9 +737,10 @@ class ProxyRegistry:
         checks: list[str] = ["proxy_id <> %s"]
         params: list[object] = [proxy_key]
         match_clauses: list[str] = []
-        if management_url.strip():
+        management_url = normalize_management_url(management_url)
+        if management_url:
             match_clauses.append("management_url = %s")
-            params.append(management_url.strip())
+            params.append(management_url)
         if public_host.strip():
             match_clauses.append("public_host = %s")
             params.append(public_host.strip())
@@ -775,7 +825,9 @@ class ProxyRegistry:
                 (
                     (status or instance.status).strip() or "unknown",
                     (hostname or instance.hostname).strip(),
-                    (management_url or instance.management_url).strip(),
+                    normalize_management_url(
+                        management_url or instance.management_url,
+                    ),
                     (
                         public_host if public_host is not None else instance.public_host
                     ).strip(),

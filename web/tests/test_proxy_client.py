@@ -91,6 +91,27 @@ def test_proxy_client_sets_bearer_auth_and_json_body(monkeypatch) -> None:
     assert captured["timeout"] == pytest.approx(9.5)
 
 
+def test_proxy_client_canonicalizes_endpoint_shaped_management_url(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import proxy_client  # type: ignore
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        proxy_client,
+        "get_proxy_registry",
+        lambda: _Registry("http://proxy-mgmt:5000/api/manage"),
+    )
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _Response({"ok": True})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    assert proxy_client.ProxyClient().sync_proxy("live")["ok"] is True
+    assert captured["url"] == "http://proxy-mgmt:5000/api/manage/sync"
+
+
 def test_proxy_client_can_request_config_validation_and_rollback(monkeypatch) -> None:
     _add_web_to_path()
     from services import proxy_client  # type: ignore

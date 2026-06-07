@@ -136,6 +136,45 @@ def test_resolve_local_proxy_management_url_prefers_explicit_url(monkeypatch) ->
     )
 
 
+def test_management_url_normalization_canonicalizes_listener_base() -> None:
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    assert (
+        proxy_registry.normalize_management_url("proxy-mgmt:5000")
+        == "http://proxy-mgmt:5000"
+    )
+    assert (
+        proxy_registry.normalize_management_url("http://proxy-mgmt:5000/root/")
+        == "http://proxy-mgmt:5000/root"
+    )
+    assert (
+        proxy_registry.normalize_management_url(
+            "http://proxy-mgmt:5000/root/api/manage/health",
+        )
+        == "http://proxy-mgmt:5000/root"
+    )
+    assert (
+        proxy_registry.normalize_management_url("http://proxy-mgmt:5000/api/manage")
+        == "http://proxy-mgmt:5000"
+    )
+    assert (
+        proxy_registry.normalize_management_url("http://proxy-mgmt:5000/management")
+        == "http://proxy-mgmt:5000/management"
+    )
+
+
+def test_management_url_normalization_rejects_unsafe_shapes() -> None:
+    _add_web_to_path()
+    from services import proxy_registry  # type: ignore
+
+    assert proxy_registry.normalize_management_url("ftp://proxy-mgmt:5000") == ""
+    assert proxy_registry.normalize_management_url("http://user:pass@proxy:5000") == ""
+    assert proxy_registry.normalize_management_url("http://proxy:bad/api/manage") == ""
+    assert proxy_registry.normalize_management_url("http://proxy:5000/../admin") == ""
+    assert proxy_registry.normalize_management_url("http://proxy:5000/root\nx") == ""
+
+
 def test_resolve_local_proxy_management_url_derives_from_proxy_id(monkeypatch) -> None:
     _add_web_to_path()
     from services import proxy_registry  # type: ignore
