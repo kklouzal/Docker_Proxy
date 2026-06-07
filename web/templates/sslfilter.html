@@ -2,6 +2,10 @@
 {% from "_scope_macros.html" import scope_notice %}
 {% block title %}SSL Filtering · Docker Proxy{% endblock %}
 
+{% macro proxy_context_field() -%}
+  <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
+{%- endmacro %}
+
 {% macro policy_table(items, policy, kind, value_name) -%}
   <div class="table-note">Current ({{ items|length }}):</div>
   <div class="table-wrap"><table class="table">
@@ -13,6 +17,7 @@
           <td class="num">
             <form method="post" action="{{ url_for('sslfilter') }}">
               {{ csrf_field() }}
+              {{ proxy_context_field() }}
               <input type="hidden" name="action" value="{{ 'remove_domain' if kind == 'domain' else 'remove_src' }}" />
               <input type="hidden" name="policy" value="{{ policy }}" />
               <input type="hidden" name="{{ 'domain' if kind == 'domain' else 'cidr' }}" value="{{ item }}" />
@@ -35,6 +40,7 @@
   <div class="card-body">
     <form class="form" method="post" action="{{ url_for('sslfilter') }}">
       {{ csrf_field() }}
+      {{ proxy_context_field() }}
       <input type="hidden" name="action" value="add_domain" />
       <input type="hidden" name="policy" value="{{ policy }}" />
       <label for="{{ policy }}_domain">Add domain</label>
@@ -44,6 +50,7 @@
 
     <form class="form" method="post" action="{{ url_for('sslfilter') }}">
       {{ csrf_field() }}
+      {{ proxy_context_field() }}
       <input type="hidden" name="action" value="add_domain_bulk" />
       <input type="hidden" name="policy" value="{{ policy }}" />
       <label for="{{ policy }}_domains_bulk">Bulk add domains</label>
@@ -67,6 +74,7 @@
   <div class="card-body">
     <form class="form" method="post" action="{{ url_for('sslfilter') }}">
       {{ csrf_field() }}
+      {{ proxy_context_field() }}
       <input type="hidden" name="action" value="add_src" />
       <input type="hidden" name="policy" value="{{ policy }}" />
       <label for="{{ policy }}_src">Add client CIDR</label>
@@ -76,6 +84,7 @@
 
     <form class="form" method="post" action="{{ url_for('sslfilter') }}">
       {{ csrf_field() }}
+      {{ proxy_context_field() }}
       <input type="hidden" name="action" value="add_src_bulk" />
       <input type="hidden" name="policy" value="{{ policy }}" />
       <label for="{{ policy }}_src_bulk">Bulk add client CIDRs</label>
@@ -108,6 +117,7 @@
   <div class="page-actions">
     <form class="nav-inline-form" method="post" action="{{ url_for('sslfilter') }}">
       {{ csrf_field() }}
+      {{ proxy_context_field() }}
       <input type="hidden" name="action" value="apply_policy" />
       <button class="btn primary" type="submit">Apply &amp; Verify Config</button>
     </form>
@@ -160,6 +170,7 @@
   <div class="card-body">
     <form class="form" method="post" action="{{ url_for('sslfilter') }}">
       {{ csrf_field() }}
+      {{ proxy_context_field() }}
       <input type="hidden" name="action" value="toggle_inspection" />
       <div id="sslfilter-inspection-hidden">
         {% if rules.inspection_enabled %}
@@ -211,6 +222,7 @@
     <div class="card-body">
       <form class="form" method="post" action="{{ url_for('sslfilter') }}">
         {{ csrf_field() }}
+        {{ proxy_context_field() }}
         <input type="hidden" name="action" value="toggle_private" />
         <label class="check-row">
           <input class="check" type="checkbox" name="exclude_private_nets" {% if rules.exclude_private_nets %}checked{% endif %} />
@@ -246,6 +258,7 @@
             <td class="num">
               <form method="post" action="{{ url_for('sslfilter') }}">
                 {{ csrf_field() }}
+                {{ proxy_context_field() }}
                 <input type="hidden" name="action" value="install_compatibility_preset" />
                 <input type="hidden" name="preset_id" value="{{ preset.id }}" />
                 <button class="btn" type="submit">Install missing</button>
@@ -257,6 +270,7 @@
       </table></div>
       <form method="post" action="{{ url_for('sslfilter') }}" class="actions">
         {{ csrf_field() }}
+        {{ proxy_context_field() }}
         <input type="hidden" name="action" value="install_compatibility_preset" />
         <input type="hidden" name="preset_id" value="all" />
         <button class="btn" type="submit">Install all missing presets</button>

@@ -107,6 +107,40 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
+def test_sslfilter_forms_preserve_selected_proxy_context(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client = _loaded(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["default", "edge-2"]),
+    )
+
+    page = client.get("/sslfilter?proxy_id=edge-2")
+    text = page.get_data(as_text=True)
+
+    assert page.status_code == 200
+    assert text.count('name="proxy_id" value="edge-2"') >= 8
+
+    response = _post(
+        client,
+        "/sslfilter",
+        {
+            "proxy_id": "edge-2",
+            "action": "add_domain",
+            "policy": "nobump",
+            "domain": "edge-form.example",
+        },
+    )
+
+    _assert_redirect_success(response)
+    assert "proxy_id=edge-2" in response.headers.get("Location", "")
+    assert loaded.sslfilter_store.no_bump_domains == ["edge-form.example"]
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+
+
 def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(
     monkeypatch, tmp_path
 ) -> None:
