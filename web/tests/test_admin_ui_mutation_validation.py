@@ -407,6 +407,39 @@ def test_invalid_policy_mutations_do_not_queue_sync(
     assert loaded.operation_ledger.operations == []
 
 
+@pytest.mark.parametrize(
+    ("data", "expected_fragment"),
+    [
+        (
+            {
+                "action": "add_domain_bulk",
+                "policy": "nobump",
+                "domains_bulk": "\n# comment only\n",
+            },
+            "err=At+least+one+domain+is+required",
+        ),
+        (
+            {
+                "action": "add_src_bulk",
+                "policy": "nocache",
+                "src_bulk": "\n# comment only\n",
+            },
+            "err=At+least+one+CIDR/IP+entry+is+required",
+        ),
+    ],
+)
+def test_empty_sslfilter_bulk_mutations_do_not_queue_sync(
+    monkeypatch, tmp_path, data, expected_fragment
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(client, "/sslfilter", data)
+
+    assert response.status_code in {302, 303}
+    assert expected_fragment in response.headers.get("Location", "")
+    assert loaded.operation_ledger.operations == []
+
+
 def test_webfilter_save_persists_shared_source_provider(monkeypatch, tmp_path) -> None:
     _allow_public_example_dns(monkeypatch)
     webfilter_store = FakeWebfilterStore()

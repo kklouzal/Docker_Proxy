@@ -2653,6 +2653,12 @@ def _handle_sslfilter_post(store: Any):
             if action == "add_domain_bulk"
             else [request.form.get(field) or ""]
         )
+        if not values:
+            return _redirect_to(
+                "sslfilter",
+                err="At least one domain is required.",
+                added=0,
+            )
         added = 0
         errors: list[str] = []
         last_value = ""
@@ -2684,6 +2690,12 @@ def _handle_sslfilter_post(store: Any):
             if action == "add_src_bulk"
             else [request.form.get(field) or ""]
         )
+        if not values:
+            return _redirect_to(
+                "sslfilter",
+                err="At least one CIDR/IP entry is required.",
+                added=0,
+            )
         added = 0
         errors: list[str] = []
         last_value = ""
