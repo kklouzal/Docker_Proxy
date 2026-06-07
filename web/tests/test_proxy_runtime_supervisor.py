@@ -729,6 +729,78 @@ def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> No
     assert "not listening" in result["detail"]
 
 
+def test_clear_cache_refreshes_adblock_runtime_after_disk_cache_clear(monkeypatch) -> (
+    None
+):
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    cleared: list[bool] = []
+    restarted: list[bool] = []
+    marked: list[tuple[bool, str, str]] = []
+
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+
+    class Registry:
+        def mark_apply_result(self, proxy_id, *, ok, detail, current_config_sha):
+            marked.append((bool(ok), detail, current_config_sha))
+            return SimpleNamespace(proxy_id=proxy_id)
+
+    runtime.controller = SimpleNamespace(
+        clear_disk_cache=lambda: (
+            cleared.append(True) or (True, "Proxy disk cache cleared.")
+        ),
+    )
+    runtime.registry = Registry()
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._invalidate_health_cache = lambda: None
+    runtime._restart_adblock_service = lambda: (
+        restarted.append(True) or (True, "cicap_adblock RUNNING")
+    )
+
+    result = runtime.clear_cache()
+
+    assert result["ok"] is True
+    assert cleared == [True]
+    assert restarted == [True]
+    assert "Proxy disk cache cleared." in result["detail"]
+    assert "cicap_adblock RUNNING" in result["detail"]
+    assert marked == [(True, result["detail"], "config-sha")]
+
+
+def test_clear_cache_reports_failed_adblock_refresh_after_disk_cache_clear(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    marked: list[tuple[bool, str, str]] = []
+
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+
+    class Registry:
+        def mark_apply_result(self, proxy_id, *, ok, detail, current_config_sha):
+            marked.append((bool(ok), detail, current_config_sha))
+            return SimpleNamespace(proxy_id=proxy_id)
+
+    runtime.controller = SimpleNamespace(
+        clear_disk_cache=lambda: (True, "Proxy disk cache cleared."),
+    )
+    runtime.registry = Registry()
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._invalidate_health_cache = lambda: None
+    runtime._restart_adblock_service = lambda: (False, "cicap_adblock BACKOFF")
+
+    result = runtime.clear_cache()
+
+    assert result["ok"] is False
+    assert "Proxy disk cache cleared." in result["detail"]
+    assert "cicap_adblock BACKOFF" in result["detail"]
+    assert marked == [(False, result["detail"], "config-sha")]
+
+
 def test_sync_from_db_quarantines_previously_failed_active_revision_without_retry() -> (
     None
 ):
@@ -2772,6 +2844,7 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
 
     runtime = _runtime_shell()
     cleared: list[bool] = []
+    restarted: list[bool] = []
 
     monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
     runtime.ensure_registered = lambda: None
@@ -2797,6 +2870,9 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
             cleared.append(True) or (True, "Proxy disk cache cleared.")
         ),
     )
+    runtime._restart_adblock_service = lambda: (
+        restarted.append(True) or (True, "cicap_adblock restarted")
+    )
 
     class Revisions:
         def get_active_revision_metadata(self, _proxy_id):
@@ -2815,4 +2891,6 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
     assert result["changed"] is True
     assert result["cache_cleared"] is True
     assert cleared == [True]
+    assert restarted == [True]
     assert "Proxy disk cache cleared." in result["detail"]
+    assert "cicap_adblock restarted" in result["detail"]

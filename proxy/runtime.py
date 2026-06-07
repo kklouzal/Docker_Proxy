@@ -1236,6 +1236,31 @@ class ProxyRuntime:
             ),
         }
 
+    def _clear_disk_cache_and_refresh_runtime(self) -> tuple[bool, str]:
+        cache_ok, cache_detail = self.controller.clear_disk_cache()
+        detail_parts = [
+            str(cache_detail or "").strip(),
+        ]
+        if not cache_ok:
+            return (
+                False,
+                "\n".join(part for part in detail_parts if part).strip()
+                or "Proxy cache clear failed.",
+            )
+
+        ok_restart, restart_detail = self._restart_adblock_service()
+        if str(restart_detail or "").strip():
+            detail_parts.append(str(restart_detail or "").strip())
+        return (
+            bool(ok_restart),
+            "\n".join(part for part in detail_parts if part).strip()
+            or (
+                "Proxy disk cache cleared and adblock runtime refreshed."
+                if ok_restart
+                else "Proxy disk cache cleared but adblock runtime did not refresh."
+            ),
+        )
+
     def _find_sslcrtd_binary(self) -> str:
         candidates = [
             shutil.which("ssl_crtd"),
@@ -2591,7 +2616,7 @@ class ProxyRuntime:
         }
         cache_cleared = False
         if "cache_clear" in operation_types:
-            cache_ok, cache_detail = self.controller.clear_disk_cache()
+            cache_ok, cache_detail = self._clear_disk_cache_and_refresh_runtime()
             cache_cleared = bool(cache_ok)
             if str(cache_detail or "").strip():
                 detail_parts.append(str(cache_detail or "").strip())
@@ -2974,7 +2999,7 @@ class ProxyRuntime:
 
     def clear_cache(self) -> dict[str, Any]:
         self._invalidate_health_cache()
-        ok, detail = self.controller.clear_disk_cache()
+        ok, detail = self._clear_disk_cache_and_refresh_runtime()
         self.registry.mark_apply_result(
             self.proxy_id,
             ok=ok,
