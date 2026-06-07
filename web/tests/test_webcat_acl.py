@@ -231,6 +231,62 @@ def test_webcat_acl_discards_stale_remote_connection_after_metadata_error() -> N
     assert db._conn is None
 
 
+def test_webcat_acl_clears_cached_remote_connection_after_metadata_lookup() -> None:
+    _add_web_to_path()
+
+    from tools import webcat_acl  # type: ignore
+
+    class Result:
+        def fetchone(self):
+            return ("123",)
+
+    class CachedConn:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def execute(self, *_args, **_kwargs):
+            return Result()
+
+        def close(self) -> None:
+            self.closed = True
+
+    db = webcat_acl._Db()
+    conn = CachedConn()
+    db._conn = conn
+
+    assert db._load_remote_built_ts() == 123
+    assert conn.closed is True
+    assert db._conn is None
+
+
+def test_webcat_acl_clears_cached_remote_connection_after_category_lookup() -> None:
+    _add_web_to_path()
+
+    from tools import webcat_acl  # type: ignore
+
+    class Result:
+        def fetchone(self):
+            return ("adult|malware",)
+
+    class CachedConn:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def execute(self, *_args, **_kwargs):
+            return Result()
+
+        def close(self) -> None:
+            self.closed = True
+
+    db = webcat_acl._Db()
+    conn = CachedConn()
+    db._conn = conn
+
+    assert db._lookup_categories_remote("cdn.example.com") == {"adult", "malware"}
+    assert conn.closed is True
+    assert db._conn is None
+
+
 def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) -> None:
     _add_web_to_path()
     from tools import webcat_acl  # type: ignore

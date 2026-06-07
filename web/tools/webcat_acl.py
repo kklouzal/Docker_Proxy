@@ -130,6 +130,12 @@ class _Db:
             with contextlib.suppress(Exception):
                 conn.close()
 
+    def _close_remote_conn(self, conn) -> None:
+        if conn is self._conn:
+            self._conn = None
+        with contextlib.suppress(Exception):
+            conn.close()
+
     def _cache_get(self, domain: str) -> set[str] | None:
         positive = self._cache.get(domain)
         if positive is not None:
@@ -299,10 +305,11 @@ class _Db:
             )
         except Exception:
             self._discard_remote_conn()
+            conn = None
             return 0
         finally:
-            with contextlib.suppress(Exception):
-                conn.close()
+            if conn is not None:
+                self._close_remote_conn(conn)
 
     def _build_snapshot_from_db(self, *, expected_built_ts: int = 0) -> bool:
         lock_fd = self._acquire_snapshot_lock()
@@ -453,8 +460,7 @@ class _Db:
             return set()
         candidates = list(_parent_domains(normalized))
         if not candidates:
-            with contextlib.suppress(Exception):
-                conn.close()
+            self._close_remote_conn(conn)
             return set()
         placeholders = ",".join(["%s"] * len(candidates))
         params = tuple(candidates + candidates)
@@ -465,10 +471,11 @@ class _Db:
             ).fetchone()
         except Exception:
             self._discard_remote_conn()
+            conn = None
             return set()
         finally:
-            with contextlib.suppress(Exception):
-                conn.close()
+            if conn is not None:
+                self._close_remote_conn(conn)
         if row and row[0]:
             raw = str(row[0])
             return {c for c in raw.split("|") if c}
