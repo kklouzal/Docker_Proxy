@@ -136,6 +136,7 @@ from services.ssl_errors_store import (
     get_ssl_errors_store as _default_get_ssl_errors_store,
 )
 from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilter_store
+from services.sslfilter_store import normalize_src_net_rule, validate_domain_rule
 from services.timeseries_store import (
     get_timeseries_store as _default_get_timeseries_store,
 )
@@ -2641,7 +2642,10 @@ def _handle_sslfilter_post(store: Any):
         return _sslfilter_redirect(ok="1", added="1", value=canonical, policy="nobump")
 
     if action == "remove":
-        store.remove_src_net("nobump", request.form.get("cidr") or "")
+        ok, err, canonical = normalize_src_net_rule(request.form.get("cidr") or "")
+        if not ok:
+            return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
+        store.remove_src_net("nobump", canonical)
         return _sslfilter_redirect(removed="1")
 
     if action in {"add_domain", "add_domain_bulk"}:
@@ -2677,7 +2681,10 @@ def _handle_sslfilter_post(store: Any):
 
     if action == "remove_domain":
         if policy in {"nobump", "nocache"}:
-            store.remove_domain(policy, request.form.get("domain") or "")
+            ok, err, canonical = validate_domain_rule(request.form.get("domain") or "")
+            if not ok:
+                return _redirect_to("sslfilter", err=err or "Invalid domain.")
+            store.remove_domain(policy, canonical)
             return _sslfilter_redirect(removed="1")
         return _redirect_to("sslfilter", err="Invalid domain policy.")
 
@@ -2714,7 +2721,10 @@ def _handle_sslfilter_post(store: Any):
 
     if action == "remove_src":
         if policy in {"nobump", "nocache"}:
-            store.remove_src_net(policy, request.form.get("cidr") or "")
+            ok, err, canonical = normalize_src_net_rule(request.form.get("cidr") or "")
+            if not ok:
+                return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
+            store.remove_src_net(policy, canonical)
             return _sslfilter_redirect(removed="1")
         return _redirect_to("sslfilter", err="Invalid CIDR policy.")
 

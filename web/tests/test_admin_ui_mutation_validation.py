@@ -398,6 +398,21 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
             {"action": "add_domain", "policy": "invalid", "domain": "example.test"},
             "err=Invalid+domain+policy",
         ),
+        (
+            "/sslfilter",
+            {"action": "remove_domain", "policy": "nobump", "domain": ""},
+            "err=Domain+is+required",
+        ),
+        (
+            "/sslfilter",
+            {"action": "remove_src", "policy": "nocache", "cidr": "bad-cidr"},
+            "err=Invalid+CIDR",
+        ),
+        (
+            "/sslfilter",
+            {"action": "remove", "cidr": ""},
+            "err=CIDR+is+required",
+        ),
     ],
 )
 def test_invalid_policy_mutations_do_not_queue_sync(

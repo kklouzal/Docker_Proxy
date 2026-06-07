@@ -87,6 +87,28 @@ def _normalize_domain_rule(domain: str) -> tuple[bool, str, str]:
     return True, "", (f"*.{core}" if is_wildcard else core)
 
 
+def validate_domain_rule(domain: str) -> tuple[bool, str, str]:
+    return _normalize_domain_rule(domain)
+
+
+def normalize_src_net_rule(cidr: str) -> tuple[bool, str, str]:
+    raw = (cidr or "").strip()
+    if not raw:
+        return False, "CIDR is required.", ""
+    try:
+        if "/" in raw:
+            net = ipaddress.ip_network(raw, strict=False)
+        else:
+            ip = ipaddress.ip_address(raw)
+            net = ipaddress.ip_network(
+                f"{ip}/{32 if ip.version == 4 else 128}",
+                strict=False,
+            )
+    except Exception:
+        return False, "Invalid CIDR/IP. Example: 10.0.0.0/8", ""
+    return True, "", net.with_prefixlen
+
+
 def _normalize_domain_for_squid(domain: str) -> str:
     value = (domain or "").strip()
     lowered = value.lower()
@@ -263,21 +285,9 @@ class SslFilterStore:
         policy_key = _canonical_policy(policy)
         if policy_key not in _SRC_POLICIES:
             return False, "Invalid CIDR policy.", ""
-        raw = (cidr or "").strip()
-        if not raw:
-            return False, "CIDR is required.", ""
-        try:
-            if "/" in raw:
-                net = ipaddress.ip_network(raw, strict=False)
-            else:
-                ip = ipaddress.ip_address(raw)
-                net = ipaddress.ip_network(
-                    f"{ip}/{32 if ip.version == 4 else 128}",
-                    strict=False,
-                )
-        except Exception:
-            return False, "Invalid CIDR/IP. Example: 10.0.0.0/8", ""
-        canonical = net.with_prefixlen
+        ok, err, canonical = normalize_src_net_rule(cidr)
+        if not ok:
+            return False, err, canonical
         self.init_db()
         proxy_id = get_proxy_id()
         with self._connect() as conn:
