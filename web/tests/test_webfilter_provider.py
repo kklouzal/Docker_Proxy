@@ -23,6 +23,29 @@ def test_webfilter_core_uses_shared_idna_normalization() -> None:
     assert m._looks_like_host("http://Bücher.Example:8080/path") is True
 
 
+def test_webfilter_whitelist_remove_normalizes_like_add(monkeypatch) -> None:
+    m = _import_webfilter_store_module()
+    store = m.WebFilterStore()
+    deletes: list[tuple[object, ...]] = []
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _sql, params=()):
+            deletes.append(tuple(params or ()))
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConn)
+
+    store.remove_whitelist(".Bücher.Example")
+
+    assert deletes == [("default", "*.xn--bcher-kva.example")]
+
+
 def test_sslfilter_domain_policy_uses_shared_idna_normalization() -> None:
     web_dir = Path(__file__).resolve().parents[1]
     if str(web_dir) not in sys.path:

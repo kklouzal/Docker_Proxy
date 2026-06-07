@@ -335,9 +335,10 @@ class WebFilterStoreBase:
 
     def remove_whitelist(self, pattern: str) -> None:
         self.init_db()
-        candidate = (pattern or "").strip().lower()
-        if not candidate:
+        candidates = _parse_whitelist_lines([pattern])
+        if not candidates:
             return
+        candidate = candidates[0]
         with self._connect() as conn:
             conn.execute(
                 f"DELETE FROM {self._table('whitelist')} WHERE proxy_id=%s AND pattern=%s",
