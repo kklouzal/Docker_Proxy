@@ -3276,23 +3276,28 @@ def revert_operation(operation_id: int):
             queued_count = 0
             failure_detail = ""
             for proxy in proxies:
-                operation = request_proxy_reconcile(
-                    proxy.proxy_id,
-                    operation_type="certificate_revert",
-                    subject=f"Revert #{op.operation_id}",
-                    summary=(
-                        f"Restored certificate revision {restored_revision.revision_id}; "
-                        f"applying asynchronously to proxy {proxy.proxy_id}."
-                    ),
-                    target_kind="certificate_revision",
-                    target_ref=restored_revision.revision_id,
-                    rollback_kind="certificate_revision" if rollback_ref else "",
-                    rollback_ref=rollback_ref,
-                    request_hash=getattr(restored_revision, "bundle_sha256", ""),
-                    detail=f"Certificate bundle revert queued from failed operation #{op.operation_id}.",
-                    created_by=str(session.get("user") or ""),
-                    force=True,
-                )
+                try:
+                    operation = request_proxy_reconcile(
+                        proxy.proxy_id,
+                        operation_type="certificate_revert",
+                        subject=f"Revert #{op.operation_id}",
+                        summary=(
+                            f"Restored certificate revision {restored_revision.revision_id}; "
+                            f"applying asynchronously to proxy {proxy.proxy_id}."
+                        ),
+                        target_kind="certificate_revision",
+                        target_ref=restored_revision.revision_id,
+                        rollback_kind="certificate_revision" if rollback_ref else "",
+                        rollback_ref=rollback_ref,
+                        request_hash=getattr(restored_revision, "bundle_sha256", ""),
+                        detail=f"Certificate bundle revert queued from failed operation #{op.operation_id}.",
+                        created_by=str(session.get("user") or ""),
+                        force=True,
+                    )
+                except Exception as exc:
+                    if not failure_detail:
+                        failure_detail = public_error_message(exc)
+                    continue
                 if getattr(operation, "operation_id", 0) and operation.status == "pending":
                     queued_count += 1
                 elif not failure_detail:

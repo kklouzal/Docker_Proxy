@@ -239,6 +239,65 @@ def test_revert_certificate_operation_restores_bundle_and_queues_registered_prox
     ]
 
 
+def test_revert_certificate_operation_keeps_partial_proxy_queue(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    current = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="NEW CERT\n",
+        bundle_sha256="current-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=current)
+    bundles._revisions[previous.revision_id] = previous
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "edge-a",
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref=current.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+    )
+    operation.status = "failed"
+    original_reconcile = loaded.module.request_proxy_reconcile
+
+    def flaky_reconcile(proxy_id, **kwargs):
+        if proxy_id == "edge-b":
+            msg = "edge-b operation ledger unavailable"
+            raise RuntimeError(msg)
+        return original_reconcile(proxy_id, **kwargs)
+
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", flaky_reconcile)
+    with loaded.module.app.test_request_context(
+        f"/operations/{operation.operation_id}/revert",
+        method="POST",
+    ):
+        loaded.module.session["user"] = "operator"
+        response = loaded.module.revert_operation(operation.operation_id)
+
+    assert response.status_code == 302
+    assert "reverted=1" in response.location
+    assert bundles.bundle is previous
+    queued_reverts = loaded.operation_ledger.operations[1:]
+    assert [
+        (op.proxy_id, op.operation_type, op.target_ref, op.rollback_ref, op.force)
+        for op in queued_reverts
+    ] == [("edge-a", "certificate_revert", "9", "12", True)]
+
+
 def test_certificate_upload_rejects_body_over_ten_megabytes(
     monkeypatch, tmp_path
 ) -> None:
