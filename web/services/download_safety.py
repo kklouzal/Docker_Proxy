@@ -48,6 +48,14 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _url_origin(parsed) -> tuple[str, str, int | None]:
+    return (
+        str(parsed.scheme or "").lower(),
+        str(parsed.hostname or "").lower().rstrip("."),
+        parsed.port,
+    )
+
+
 def validate_download_url(
     url: str,
     *,
@@ -92,11 +100,12 @@ def open_download_url(
 ):
     current = url
     opener = urllib.request.build_opener(_NoRedirectHandler)
-    request_headers = {"User-Agent": user_agent}
+    base_headers = {"User-Agent": user_agent}
+    request_headers = dict(base_headers)
     if headers:
         request_headers.update({str(k): str(v) for k, v in headers.items() if k and v})
     for _ in range(max_redirects + 1):
-        validate_download_url(current, scheme_error=scheme_error)
+        parsed = validate_download_url(current, scheme_error=scheme_error)
         req = urllib.request.Request(current, headers=request_headers)  # noqa: S310
         try:
             return opener.open(req, timeout=timeout)
@@ -107,7 +116,13 @@ def open_download_url(
             if not location:
                 msg = "Download redirect response did not include a Location header."
                 raise ValueError(msg) from exc
-            current = urljoin(current, location)
-            validate_download_url(current, scheme_error=scheme_error)
+            redirect_url = urljoin(current, location)
+            redirect_parsed = validate_download_url(
+                redirect_url,
+                scheme_error=scheme_error,
+            )
+            if _url_origin(redirect_parsed) != _url_origin(parsed):
+                request_headers = dict(base_headers)
+            current = redirect_url
     msg = f"Download exceeded redirect limit ({max_redirects})."
     raise ValueError(msg)
