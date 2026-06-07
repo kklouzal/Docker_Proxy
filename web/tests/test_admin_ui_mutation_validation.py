@@ -390,6 +390,11 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
         ),
         (
             "/sslfilter",
+            {"action": "add", "cidr": "bad-cidr"},
+            "err=",
+        ),
+        (
+            "/sslfilter",
             {"action": "add_domain", "policy": "invalid", "domain": "example.test"},
             "err=Invalid+domain+policy",
         ),

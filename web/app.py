@@ -2637,7 +2637,7 @@ def _handle_sslfilter_post(store: Any):
             request.form.get("cidr") or "",
         )
         if not ok:
-            return _sslfilter_redirect(err=err or "Invalid CIDR.")
+            return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
         return _sslfilter_redirect(ok="1", added="1", value=canonical, policy="nobump")
 
     if action == "remove":
