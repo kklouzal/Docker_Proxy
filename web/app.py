@@ -2523,10 +2523,8 @@ def _handle_webfilter_post(store: Any, tab: str):
         entry = (request.form.get("whitelist_domain") or "").strip()
         ok, err, _pat = store.add_whitelist(entry)
         if not ok:
-            return _redirect_after_policy_refresh(
+            return _redirect_to(
                 "webfilter",
-                store,
-                force=True,
                 tab="whitelist",
                 wl_err=(err or "1"),
             )
@@ -2626,7 +2624,7 @@ def _handle_sslfilter_post(store: Any):
         preset_id = (request.form.get("preset_id") or "").strip()
         added, attempted, err = store.install_compatibility_preset(preset_id)
         if err:
-            return _sslfilter_redirect(err=err)
+            return _redirect_to("sslfilter", err=err)
         return _sslfilter_redirect(
             compatibility_added=added,
             compatibility_attempted=attempted,
@@ -2648,7 +2646,7 @@ def _handle_sslfilter_post(store: Any):
 
     if action in {"add_domain", "add_domain_bulk"}:
         if policy not in {"nobump", "nocache"}:
-            return _sslfilter_redirect(err="Invalid domain policy.")
+            return _redirect_to("sslfilter", err="Invalid domain policy.")
         field = "domains_bulk" if action == "add_domain_bulk" else "domain"
         values = (
             _bulk_lines(request.form.get(field))
@@ -2666,17 +2664,20 @@ def _handle_sslfilter_post(store: Any):
             elif err:
                 errors.append(f"{value}: {err}")
         if errors:
-            return _sslfilter_redirect(err=" | ".join(errors[:3]), added=added)
+            if added:
+                return _sslfilter_redirect(err=" | ".join(errors[:3]), added=added)
+            return _redirect_to("sslfilter", err=" | ".join(errors[:3]), added=added)
         return _sslfilter_redirect(ok="1", added=added, value=last_value, policy=policy)
 
     if action == "remove_domain":
         if policy in {"nobump", "nocache"}:
             store.remove_domain(policy, request.form.get("domain") or "")
-        return _sslfilter_redirect(removed="1")
+            return _sslfilter_redirect(removed="1")
+        return _redirect_to("sslfilter", err="Invalid domain policy.")
 
     if action in {"add_src", "add_src_bulk"}:
         if policy not in {"nobump", "nocache"}:
-            return _sslfilter_redirect(err="Invalid CIDR policy.")
+            return _redirect_to("sslfilter", err="Invalid CIDR policy.")
         field = "src_bulk" if action == "add_src_bulk" else "cidr"
         values = (
             _bulk_lines(request.form.get(field))
@@ -2694,18 +2695,20 @@ def _handle_sslfilter_post(store: Any):
             elif err:
                 errors.append(f"{value}: {err}")
         if errors:
-            return _sslfilter_redirect(err=" | ".join(errors[:3]), added=added)
+            if added:
+                return _sslfilter_redirect(err=" | ".join(errors[:3]), added=added)
+            return _redirect_to("sslfilter", err=" | ".join(errors[:3]), added=added)
         return _sslfilter_redirect(ok="1", added=added, value=last_value, policy=policy)
 
     if action == "remove_src":
         if policy in {"nobump", "nocache"}:
             store.remove_src_net(policy, request.form.get("cidr") or "")
-        return _sslfilter_redirect(removed="1")
+            return _sslfilter_redirect(removed="1")
+        return _redirect_to("sslfilter", err="Invalid CIDR policy.")
 
     if action == "toggle_private":
         store.set_exclude_private_nets(request.form.get("exclude_private_nets") == "on")
-        _best_effort_refresh_pac_runtime()
-        return _redirect_to("sslfilter", private_saved="1")
+        return _sslfilter_redirect(private_saved="1")
 
     return _redirect_to("sslfilter")
 

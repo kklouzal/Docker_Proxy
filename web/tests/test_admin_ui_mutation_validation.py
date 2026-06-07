@@ -85,6 +85,28 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
+def test_sslfilter_private_network_toggle_syncs_managed_policy(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client = _loaded(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["default", "edge-2"]),
+    )
+
+    response = _post(
+        client,
+        "/sslfilter?proxy_id=edge-2",
+        {"action": "toggle_private", "exclude_private_nets": "on"},
+    )
+
+    _assert_redirect_success(response)
+    assert loaded.sslfilter_store.exclude_private_nets is True
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+
+
 def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(
     monkeypatch, tmp_path
 ) -> None:
@@ -350,6 +372,38 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
 
     assert response.status_code in {302, 303}
     assert "err_source=1" in response.headers.get("Location", "")
+    assert loaded.operation_ledger.operations == []
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "expected_fragment"),
+    [
+        (
+            "/webfilter",
+            {"action": "whitelist_add", "whitelist_domain": "not a host"},
+            "wl_err=",
+        ),
+        (
+            "/sslfilter",
+            {"action": "add_src", "policy": "nobump", "cidr": "bad-cidr"},
+            "err=",
+        ),
+        (
+            "/sslfilter",
+            {"action": "add_domain", "policy": "invalid", "domain": "example.test"},
+            "err=Invalid+domain+policy",
+        ),
+    ],
+)
+def test_invalid_policy_mutations_do_not_queue_sync(
+    monkeypatch, tmp_path, path, data, expected_fragment
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(client, path, data)
+
+    assert response.status_code in {302, 303}
+    assert expected_fragment in response.headers.get("Location", "")
     assert loaded.operation_ledger.operations == []
 
 
