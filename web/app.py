@@ -2111,6 +2111,14 @@ def _publish_certificate_bundle_remote(
                 summary=f"Certificate revision {revision.revision_id} saved; applying asynchronously to proxy {proxy.proxy_id}.",
                 target_kind="certificate_revision",
                 target_ref=revision.revision_id,
+                rollback_kind="certificate_revision"
+                if previous_revision is not None
+                and previous_revision.revision_id != revision.revision_id
+                else "",
+                rollback_ref=getattr(previous_revision, "revision_id", "")
+                if previous_revision is not None
+                and previous_revision.revision_id != revision.revision_id
+                else "",
                 request_hash=getattr(revision, "bundle_sha256", ""),
                 detail=f"Certificate revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
                 created_by=str(session.get("user") or ""),
@@ -3242,6 +3250,95 @@ def revert_operation(operation_id: int):
                 "web.app.revert_operation",
                 interval_seconds=30.0,
                 message="Failed to queue revert operation",
+            )
+            return _redirect_to("operations_status", error="revert_failed")
+        return _redirect_to("operations_status", reverted="1")
+    if op.rollback_kind == "certificate_revision":
+        bundle_store = get_certificate_bundles()
+        active_revision = None
+        restored_revision = None
+        try:
+            try:
+                active_revision = bundle_store.get_active_bundle()
+            except Exception:
+                active_revision = None
+            restored_revision = bundle_store.activate_revision(op.rollback_ref)
+
+            rollback_ref = ""
+            if (
+                active_revision is not None
+                and getattr(active_revision, "revision_id", None)
+                != restored_revision.revision_id
+            ):
+                rollback_ref = str(active_revision.revision_id)
+
+            proxies = get_proxy_registry().list_proxies()
+            queued_count = 0
+            failure_detail = ""
+            for proxy in proxies:
+                operation = request_proxy_reconcile(
+                    proxy.proxy_id,
+                    operation_type="certificate_revert",
+                    subject=f"Revert #{op.operation_id}",
+                    summary=(
+                        f"Restored certificate revision {restored_revision.revision_id}; "
+                        f"applying asynchronously to proxy {proxy.proxy_id}."
+                    ),
+                    target_kind="certificate_revision",
+                    target_ref=restored_revision.revision_id,
+                    rollback_kind="certificate_revision" if rollback_ref else "",
+                    rollback_ref=rollback_ref,
+                    request_hash=getattr(restored_revision, "bundle_sha256", ""),
+                    detail=f"Certificate bundle revert queued from failed operation #{op.operation_id}.",
+                    created_by=str(session.get("user") or ""),
+                    force=True,
+                )
+                if getattr(operation, "operation_id", 0) and operation.status == "pending":
+                    queued_count += 1
+                elif not failure_detail:
+                    failure_detail = str(
+                        getattr(operation, "detail", "")
+                        or "Certificate bundle reconciliation was not queued.",
+                    )
+
+            if proxies and queued_count == 0:
+                try:
+                    if active_revision is not None:
+                        bundle_store.activate_revision(active_revision.revision_id)
+                    else:
+                        bundle_store.deactivate_revision(restored_revision.revision_id)
+                except Exception:
+                    log_exception_throttled(
+                        app.logger,
+                        "web.app.revert_certificate_restore_active_bundle",
+                        interval_seconds=30.0,
+                        message="Failed to restore active certificate bundle after revert queue failure",
+                    )
+                if failure_detail:
+                    app.logger.warning(
+                        "Certificate bundle revert queue failed: %s",
+                        failure_detail,
+                    )
+                return _redirect_to("operations_status", error="revert_failed")
+        except Exception:
+            if restored_revision is not None:
+                try:
+                    if active_revision is not None:
+                        bundle_store.activate_revision(active_revision.revision_id)
+                    else:
+                        bundle_store.deactivate_revision(restored_revision.revision_id)
+                except Exception:
+                    log_exception_throttled(
+                        app.logger,
+                        "web.app.revert_certificate_restore_active_bundle",
+                        interval_seconds=30.0,
+                        message="Failed to restore active certificate bundle after revert failure",
+                    )
+            log_exception_throttled(
+                app.logger,
+                "web.app.revert_certificate_operation",
+                interval_seconds=30.0,
+                message="Failed to queue certificate bundle revert operation",
             )
             return _redirect_to("operations_status", error="revert_failed")
         return _redirect_to("operations_status", reverted="1")
