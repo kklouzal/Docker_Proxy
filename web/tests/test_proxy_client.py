@@ -324,7 +324,14 @@ def test_proxy_client_rejects_successful_non_object_json(monkeypatch) -> None:
     assert "proxy=live" in message
 
 
-def test_proxy_client_timeout_error_is_actionable(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "raised",
+    [
+        TimeoutError("timed out"),
+        urllib.error.URLError(TimeoutError("timed out")),
+    ],
+)
+def test_proxy_client_timeout_error_is_actionable(monkeypatch, raised) -> None:
     _add_web_to_path()
     from services import proxy_client  # type: ignore
 
@@ -334,7 +341,7 @@ def test_proxy_client_timeout_error_is_actionable(monkeypatch) -> None:
     monkeypatch.setattr(
         proxy_client.urllib.request,
         "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("timed out")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(raised),
     )
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:

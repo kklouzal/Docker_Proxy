@@ -56,6 +56,19 @@ class ProxyClient:
             "management listener."
         )
 
+    def _timeout_error_detail(
+        self,
+        *,
+        proxy_id: object | None,
+        url: str,
+        timeout: float,
+    ) -> str:
+        return (
+            f"Proxy management request timed out after {timeout:.1f}s "
+            f"(proxy={normalize_proxy_id(proxy_id)}, url={url}). Check that "
+            "the proxy runtime is reachable from the Admin UI container."
+        )
+
     def _proxy_base_url(self, proxy_id: object | None) -> str:
         proxy_key = normalize_proxy_id(proxy_id)
         info = get_proxy_registry().get_proxy(proxy_key)
@@ -137,13 +150,25 @@ class ProxyClient:
         except ProxyClientError:
             raise
         except urllib.error.URLError as exc:
-            reason = str(exc.reason) or str(exc)
-            msg = f"Proxy management request failed: {reason} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+            reason = exc.reason
+            if isinstance(reason, TimeoutError):
+                raise ProxyClientError(
+                    self._timeout_error_detail(
+                        proxy_id=proxy_id,
+                        url=url,
+                        timeout=timeout,
+                    ),
+                ) from exc
+            reason_detail = str(reason) or str(exc)
+            msg = f"Proxy management request failed: {reason_detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
             raise ProxyClientError(msg) from exc
         except TimeoutError as exc:
-            msg = f"Proxy management request timed out after {timeout:.1f}s (proxy={normalize_proxy_id(proxy_id)}, url={url}). Check that the proxy runtime is reachable from the Admin UI container."
             raise ProxyClientError(
-                msg,
+                self._timeout_error_detail(
+                    proxy_id=proxy_id,
+                    url=url,
+                    timeout=timeout,
+                ),
             ) from exc
         except Exception as exc:
             msg = f"Proxy management request failed: {exc} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
