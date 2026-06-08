@@ -978,6 +978,39 @@ def test_adblock_download_rejects_hostname_when_dns_cannot_be_verified(
     assert rules == 0
 
 
+def test_adblock_download_rejects_ambiguous_backslash_url_before_dns(
+    tmp_path, monkeypatch
+) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+    download_safety = store_module.download_safety
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("backslash-bearing URLs should not reach DNS")
+        ),
+    )
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("download should not open backslash-bearing URL")
+        ),
+    )
+
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    ok, err, bytes_read, rules = store.download_list(
+        "easylist",
+        r"https://public.example\@127.0.0.1/easylist.txt",
+    )
+
+    assert ok is False
+    assert "valid absolute HTTP/HTTPS" in err
+    assert bytes_read == 0
+    assert rules == 0
+
+
 def test_adblock_download_rejects_embedded_url_credentials(
     tmp_path, monkeypatch
 ) -> None:

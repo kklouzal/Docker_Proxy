@@ -241,6 +241,8 @@ def test_webfilter_loop_preserves_refresh_request_after_failed_build(
         "http://localhost/feed.csv",
         "http://proxy.internal/feed.csv",
         "https://feed-user:feed-pass@example.test/feed.csv",
+        r"https://example.test\@127.0.0.1/feed.csv",
+        r"https://example.test\path/feed.csv",
         "http://exa mple.com/feed.csv",
         "https://example.test/feed file.csv",
         "http://[::1",

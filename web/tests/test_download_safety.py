@@ -52,6 +52,8 @@ def test_validate_download_url_accepts_public_absolute_url(
         "https://public.example:bad/feed.csv",
         "https:///feed.csv",
         "https://[::1/feed.csv",
+        r"https://public.example\@127.0.0.1/feed.csv",
+        r"https://public.example\path/feed.csv",
     ],
 )
 def test_validate_download_url_rejects_malformed_absolute_url_before_dns(
