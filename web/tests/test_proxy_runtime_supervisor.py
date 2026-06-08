@@ -2499,6 +2499,58 @@ def test_local_runtime_service_health_checks_run_in_parallel(monkeypatch) -> Non
     assert result["clamav"]["ok"] is True
 
 
+def test_local_runtime_service_health_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    captured: dict[str, float] = {}
+
+    def ok_probe(**_kwargs):
+        return {"ok": True, "detail": "ok"}
+
+    def clamd_probe(**kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return {"ok": True, "detail": "clamd"}
+
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", ok_probe)
+    monkeypatch.setattr(runtime_module, "_check_icap_av", ok_probe)
+    monkeypatch.setattr(runtime_module, "_check_clamd", clamd_probe)
+
+    result = runtime_module.build_local_runtime_services(
+        icap_timeout=0.8,
+        tcp_timeout=0.25,
+    )
+
+    assert captured["timeout"] == pytest.approx(0.25)
+    assert result["clamd"]["ok"] is True
+
+
+def test_local_runtime_service_health_does_not_wait_for_stuck_probe(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    def stuck_probe(**_kwargs):
+        runtime_module.time.sleep(2.0)
+        return {"ok": True, "detail": "late"}
+
+    def ok_probe(**_kwargs):
+        return {"ok": True, "detail": "ok"}
+
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", stuck_probe)
+    monkeypatch.setattr(runtime_module, "_check_icap_av", ok_probe)
+    monkeypatch.setattr(runtime_module, "_check_clamd", ok_probe)
+    started = runtime_module.time.monotonic()
+
+    result = runtime_module.build_local_runtime_services(
+        icap_timeout=0.01,
+        tcp_timeout=0.01,
+    )
+
+    assert runtime_module.time.monotonic() - started < 1.4
+    assert result["icap"]["ok"] is False
+    assert "timed out" in result["icap"]["detail"]
+
+
 def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

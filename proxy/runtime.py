@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from typing import Any
@@ -205,6 +206,15 @@ def _call_health_check(func, /, **kwargs):
         return func()
 
 
+def _health_timeout_detail(name: str, timeout: float) -> str:
+    service = {
+        "icap": "adblock ICAP",
+        "av_icap": "c-icap AV",
+        "clamd": "clamd",
+    }.get(name, name)
+    return f"{service} health probe timed out after {timeout:.2f}s"
+
+
 def _log_recoverable_db_or_unexpected(
     key: str,
     *,
@@ -250,26 +260,42 @@ def build_local_runtime_services(
         ),
         "clamd": (
             _check_clamd,
-            {"timeout": icap_timeout, "error_formatter": error_formatter},
+            {"timeout": tcp_timeout, "error_formatter": error_formatter},
         ),
     }
+    deadlines = {
+        "icap": max(float(icap_timeout) + 0.5, 1.0),
+        "av_icap": max(float(icap_timeout) + 0.5, 1.0),
+        "clamd": max(float(tcp_timeout) + 0.5, 1.0),
+    }
     results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(
+    executor = ThreadPoolExecutor(
         max_workers=len(checks),
         thread_name_prefix="proxy-health",
-    ) as executor:
+    )
+    try:
         futures = {
             name: executor.submit(_call_health_check, func, **kwargs)
             for name, (func, kwargs) in checks.items()
         }
+        started_mono = time.monotonic()
         for name, future in futures.items():
+            remaining = max(deadlines[name] - (time.monotonic() - started_mono), 0.0)
             try:
-                results[name] = future.result(timeout=max(icap_timeout + 0.5, 1.0))
+                results[name] = future.result(timeout=remaining)
+            except FutureTimeoutError:
+                future.cancel()
+                results[name] = {
+                    "ok": False,
+                    "detail": _health_timeout_detail(name, deadlines[name]),
+                }
             except Exception as exc:
                 results[name] = {
                     "ok": False,
                     "detail": error_formatter(exc) if error_formatter else str(exc),
                 }
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     clamd = results.get("clamd") or {"ok": False, "detail": "clamd health unavailable"}
     av_icap = results.get("av_icap") or {
