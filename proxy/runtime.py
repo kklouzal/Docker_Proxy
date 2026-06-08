@@ -704,6 +704,35 @@ class ProxyRuntime:
             "programs": statuses,
         }
 
+    def _operation_ledger_health(self) -> dict[str, Any]:
+        try:
+            counts = get_operation_ledger().counts_by_status(self.proxy_id)
+        except Exception as exc:
+            detail = public_error_message(
+                exc,
+                default="Proxy operation ledger is unavailable.",
+            )
+            return {
+                "ok": False,
+                "detail": detail,
+                "counts": {},
+            }
+
+        normalized_counts = {
+            status: max(0, int(counts.get(status) or 0))
+            for status in ("pending", "applying", "applied", "superseded", "failed")
+        }
+        return {
+            "ok": True,
+            "detail": (
+                "operation ledger reachable; "
+                f"pending={normalized_counts['pending']} "
+                f"applying={normalized_counts['applying']} "
+                f"failed={normalized_counts['failed']}"
+            ),
+            "counts": normalized_counts,
+        }
+
     def test_control_supervisor_program(
         self,
         program_name: str,
@@ -2241,6 +2270,7 @@ class ProxyRuntime:
                 tcp_timeout=0.75,
             )
             services["supervisor"] = self._supervisor_programs_health()
+            services["operation_ledger"] = self._operation_ledger_health()
             try:
                 listener_details = tuple(self.controller._http_listener_details())
                 listener_ports = tuple(

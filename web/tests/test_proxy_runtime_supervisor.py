@@ -25,7 +25,13 @@ def _runtime_shell():
     _add_repo_paths()
     from proxy.runtime import ProxyRuntime  # type: ignore
 
-    return ProxyRuntime.__new__(ProxyRuntime)
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    runtime._operation_ledger_health = lambda: {
+        "ok": True,
+        "detail": "operation ledger reachable; pending=0 applying=0 failed=0",
+        "counts": {},
+    }
+    return runtime
 
 
 def _cp(returncode: int, stdout: str = "", stderr: str = ""):
@@ -2158,6 +2164,115 @@ def test_collect_health_cache_refreshes_when_config_sha_changes() -> None:
         "intercept",
     }
     assert calls["listeners"] == 2
+
+
+def test_operation_ledger_health_reports_counts_and_unavailable(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    from proxy.runtime import ProxyRuntime  # type: ignore
+
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+
+    class Ledger:
+        def counts_by_status(self, proxy_id):
+            assert proxy_id == "edge-a"
+            return {"pending": 2, "applying": 1, "failed": 3}
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+
+    result = ProxyRuntime._operation_ledger_health(runtime)
+
+    assert result["ok"] is True
+    assert result["counts"]["pending"] == 2
+    assert result["counts"]["applying"] == 1
+    assert result["counts"]["failed"] == 3
+    assert "pending=2 applying=1 failed=3" in result["detail"]
+
+    class BrokenLedger:
+        def counts_by_status(self, _proxy_id):
+            msg = "ledger offline"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", BrokenLedger)
+
+    unavailable = ProxyRuntime._operation_ledger_health(runtime)
+
+    assert unavailable["ok"] is False
+    assert unavailable["counts"] == {}
+    assert unavailable["detail"] == "Proxy operation ledger is unavailable."
+
+
+def test_collect_health_degrades_when_operation_ledger_unavailable() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 0.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._health_refresh_lock = threading.Lock()
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime.stats_provider = dict
+    runtime.runtime_services_builder = lambda **_kwargs: {"icap": {"ok": True}}
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+    runtime._operation_ledger_health = lambda: {
+        "ok": False,
+        "detail": "operation ledger unavailable",
+        "counts": {},
+    }
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=7,
+            config_sha256="config-sha",
+        ),
+    )
+    runtime.certificate_bundles = SimpleNamespace(
+        get_active_bundle_metadata=lambda: SimpleNamespace(
+            revision_id=8,
+            bundle_sha256="cert-sha",
+        ),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        get_active_artifact_metadata=lambda: SimpleNamespace(
+            revision_id=9,
+            artifact_sha256="adblock-sha",
+        ),
+    )
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._current_certificate_bundle_sha = lambda: "cert-sha"
+    runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
+    runtime._current_policy_sha = lambda: "policy-sha"
+    runtime._current_pac_state_sha = lambda: "pac-sha"
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="policy-sha",
+        files=(),
+    )
+    runtime.pac_state_builder = lambda _proxy_id: SimpleNamespace(
+        state_sha256="pac-sha",
+        files=(),
+    )
+    runtime._adblock_materialization_integrity = lambda expected, *, current_sha=None: (
+        True,
+        "",
+    )
+    runtime._pac_materialization_integrity = lambda desired, *, current_sha=None: (
+        True,
+        "",
+    )
+
+    result = runtime.collect_health(force=True)
+
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert result["services"]["operation_ledger"]["detail"] == (
+        "operation ledger unavailable"
+    )
 
 
 def test_collect_health_degrades_when_desired_runtime_state_drifts() -> None:
