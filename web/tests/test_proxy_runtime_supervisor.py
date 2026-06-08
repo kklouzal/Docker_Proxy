@@ -2169,7 +2169,6 @@ def test_collect_health_cache_refreshes_when_config_sha_changes() -> None:
 def test_operation_ledger_health_reports_counts_and_unavailable(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
-
     from proxy.runtime import ProxyRuntime  # type: ignore
 
     runtime = ProxyRuntime.__new__(ProxyRuntime)
