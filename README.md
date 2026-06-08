@@ -18,7 +18,8 @@ The project is designed for home labs, small offices, schools, managed LANs, and
 - **TLS inspection controls**: CA generation/upload, SSL-bump policy, compatibility presets, no-bump/no-cache rules, client-CIDR splicing, SSL error analysis, and one-click exclusions.
 - **Web filtering and threat intelligence**: UT1-style category filtering, whitelists, proxy-local SQLite snapshots for request-path lookups, and optional Google Safe Browsing v5 local-hash-prefix checks.
 - **ICAP security services**: EasyList-style ad blocking through a SQLite-backed REQMOD helper and ClamAV response scanning through c-icap RESPMOD with remote `clamd`.
-- **Operational visibility**: live traffic, clients, destinations, cache behavior, ICAP activity, SSL/TLS diagnostics, block events, exports, and maintenance actions.
+- **Operational visibility**: live traffic, clients, destinations, cache behavior, ICAP activity, SSL/TLS diagnostics, block events, exports, remediation cues, and maintenance actions.
+- **Bounded health checks**: navigation health uses lightweight proxy probes, remediation views can request full runtime health, and slow ICAP/ClamAV checks are isolated behind explicit timeouts and short caches.
 - **Multi-architecture images**: GitHub Actions builds and publishes `linux/amd64` and `linux/arm64` images to GHCR after deterministic and live-stack tests pass.
 
 ## Architecture
@@ -238,10 +239,12 @@ audit depth or tighter storage bounds.
 ### Observability and operations
 
 - Fleet page with registered proxies, live health, and per-proxy observability status.
+- Lightweight navigation-time proxy health plus full runtime health for remediation workflows.
+- Runtime health components for supervisor state, Squid listeners, ICAP services, ClamAV/`clamd`, policy/config/certificate/adblock alignment, and the operation ledger.
 - Live traffic pages for clients, domains, cache behavior, transactions, and ICAP activity.
 - Diagnostic ingestion from Squid and ICAP helper logs into MySQL-backed rollups.
-- SSL error store, block logs, CSV-style exports, and log maintenance actions.
-- Operations page for queued, applying, applied, and failed proxy operations, including rollback support when a failed operation has a rollback target.
+- SSL error store, block logs, CSV-style exports, remediation recommendations, and log maintenance actions.
+- Operations page for queued, applying, applied, superseded, and failed proxy operations, including rollback support when a failed operation has a rollback target.
 - Policy request workflow for users to submit unblock/review requests from custom block pages.
 
 ## Configuration reference
@@ -287,7 +290,7 @@ The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-lo
 
 For externally managed MySQL containers, apply equivalent MySQL settings and Docker log rotation on that host. Host-global Docker daemon rotation, if desired for every container on the host, still belongs in `/etc/docker/daemon.json`; this application can provide Compose defaults but cannot safely rewrite the host daemon policy.
 
-Older or disk-constrained hosts can legitimately take longer to answer management health requests. The Admin UI defaults to a 5 second management-health timeout and a 10 second UI cache, while the proxy runtime caches full health for 10 seconds. The ClamAV page uses a lightweight `/api/manage/health/clamav` management endpoint so AV c-icap and clamd status does not depend on the heavier full runtime health snapshot. Tune `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, and `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` for slower deployments.
+Older or disk-constrained hosts can legitimately take longer to answer management health requests. The Admin UI defaults to a 1.5 second navigation-health timeout, a 5 second ClamAV-health timeout, and a 10 second UI cache, while the proxy runtime caches health snapshots for 10 seconds by default. Normal navigation uses `/api/manage/health` for a lightweight supervisor/listener snapshot; remediation views can request `/api/manage/health?full=1` for the heavier policy/config/certificate/adblock/operation-ledger view. The ClamAV page uses `/api/manage/health/clamav` so AV c-icap and `clamd` status does not depend on the full runtime snapshot. Tune `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, and `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` for slower deployments.
 
 ## Persistence
 
