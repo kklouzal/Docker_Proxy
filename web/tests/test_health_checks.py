@@ -269,3 +269,35 @@ def test_remote_clamav_view_surfaces_unavailable_cached_health_source() -> None:
     )
 
     assert view["health_source"] == "offline (Proxy management request timed out)"
+
+
+def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import proxy_health  # type: ignore
+
+    calls: dict[str, float] = {}
+
+    def fake_check_adblock(*, timeout, **_kwargs):
+        calls["adblock"] = timeout
+        return {"ok": True, "detail": "adblock ok"}
+
+    def fake_check_av(*, timeout, **_kwargs):
+        calls["av_icap"] = timeout
+        return {"ok": True, "detail": "av ok"}
+
+    def fake_check_clamd(*, timeout, **_kwargs):
+        calls["clamd"] = timeout
+        return {"ok": True, "detail": "clamd ok"}
+
+    monkeypatch.setattr(proxy_health, "check_adblock_icap_health", fake_check_adblock)
+    monkeypatch.setattr(proxy_health, "check_av_icap_health", fake_check_av)
+    monkeypatch.setattr(proxy_health, "check_clamd_health", fake_check_clamd)
+
+    result = proxy_health.build_local_runtime_services(
+        icap_timeout=0.9,
+        tcp_timeout=0.2,
+    )
+
+    assert calls == {"adblock": 0.9, "av_icap": 0.9, "clamd": 0.2}
+    assert result["clamd"] == {"ok": True, "detail": "clamd ok"}
+    assert result["clamav"]["ok"] is True

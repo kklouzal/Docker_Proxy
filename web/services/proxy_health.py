@@ -350,7 +350,7 @@ def build_local_runtime_services(
     clamav_view = build_local_clamav_view(
         error_formatter=error_formatter,
         icap_timeout=icap_timeout,
-        clamd_timeout=icap_timeout,
+        clamd_timeout=tcp_timeout,
     )
     return {
         "icap": check_adblock_icap_health(
