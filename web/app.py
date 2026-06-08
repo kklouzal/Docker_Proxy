@@ -1254,6 +1254,10 @@ def _safe_next_url(next_url: str) -> str:
     parsed = urlparse(candidate)
     if parsed.scheme or parsed.netloc:
         return ""
+    # Backslashes are path separators for some clients/proxies and can turn a
+    # path-looking redirect into an authority-looking URL after normalization.
+    if "\\" in candidate:
+        return ""
     # Only allow app-local paths.
     if not candidate.startswith("/"):
         return ""

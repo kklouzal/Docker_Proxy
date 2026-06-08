@@ -125,7 +125,8 @@ def test_logout_requires_csrf_and_clears_session(monkeypatch, tmp_path) -> None:
         ("//evil.example/path", ""),
         ("https://evil.example/path", ""),
         ("http://evil.example/path", ""),
-        ("/\\evil", "/\\evil"),
+        ("/\\evil", ""),
+        ("/safe\\..\\login", ""),
     ],
 )
 def test_safe_next_url_edge_cases(
