@@ -49,10 +49,17 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _url_origin(parsed) -> tuple[str, str, int | None]:
+    scheme = str(parsed.scheme or "").lower()
+    port = parsed.port
+    if port is None:
+        if scheme == "http":
+            port = 80
+        elif scheme == "https":
+            port = 443
     return (
-        str(parsed.scheme or "").lower(),
+        scheme,
         str(parsed.hostname or "").lower().rstrip("."),
-        parsed.port,
+        port,
     )
 
 
