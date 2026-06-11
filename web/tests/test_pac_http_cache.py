@@ -259,6 +259,27 @@ def test_local_pac_cache_matches_percent_encoded_public_pac_path(tmp_path) -> No
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
 
 
+def test_local_pac_cache_rejects_public_pac_path_with_encoded_separator(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","public_pac_path":"/download%2fwpad.dat"}""",
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert "/download/wpad.dat" not in cache.public_paths()
+    assert cache.public_request_allowed("/download/wpad.dat") is False
+
+
 def test_local_pac_cache_requires_configured_public_pac_query(tmp_path) -> None:
     _add_repo_paths()
     from services import pac_http  # type: ignore

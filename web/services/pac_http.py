@@ -191,7 +191,10 @@ def _public_target_from_manifest(value: object) -> tuple[str, str | None]:
     if not normalized:
         return "", None
     path, separator, query = normalized.partition("?")
-    path = unquote(path)
+    decoded_segments = [unquote(segment) for segment in path.split("/")]
+    if any("/" in segment or "\\" in segment for segment in decoded_segments):
+        return "", None
+    path = "/".join(decoded_segments)
     return path, query if separator else None
 
 
