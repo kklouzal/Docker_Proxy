@@ -200,6 +200,56 @@ def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
     assert manifest["public_pac_path"] == "/download/wpad.dat?site=lab"
 
 
+def test_build_proxy_pac_state_manifest_rejects_encoded_public_pac_separator(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    class _EmptyRegistry:
+        def get_proxy(self, _proxy_id):
+            return None
+
+    class _EmptyPacProfilesStore:
+        def list_profiles(self):
+            return []
+
+        def list_proxy_chain_settings(self):
+            return type(
+                "PacProxyChainSettings",
+                (),
+                {"backup_proxies": [], "direct_enabled": True},
+            )()
+
+    class _EmptySslFilterStore:
+        def list_all(self):
+            return None
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setattr(
+        pac_renderer,
+        "get_sslfilter_store",
+        _EmptySslFilterStore,
+    )
+    monkeypatch.setenv(
+        "PROXY_PUBLIC_PAC_URL",
+        "https://pac.example/download%2fwpad.dat",
+    )
+
+    state = pac_renderer.build_proxy_pac_state("default")
+    manifest = json.loads(
+        next(
+            item.content
+            for item in state.files
+            if item.relative_path == "manifest.json"
+        )
+    )
+
+    assert manifest["public_pac_url"] == "https://pac.example/proxy.pac"
+    assert manifest["public_pac_path"] == "/proxy.pac"
+
+
 def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     monkeypatch,
 ) -> None:

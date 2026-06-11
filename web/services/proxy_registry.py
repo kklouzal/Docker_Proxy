@@ -87,15 +87,18 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
     path = parsed.path or fallback
     if path.startswith("//") or "\\" in path:
         return fallback
-    decoded_path = unquote(path)
-    if "\\" in decoded_path or any(
-        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in decoded_path
+    raw_segments = path.split("/")
+    decoded_segments = [unquote(segment) for segment in raw_segments]
+    if any(
+        "/" in segment
+        or "\\" in segment
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in segment)
+        for segment in decoded_segments
     ):
         return fallback
     if not path.startswith("/"):
         path = f"/{path}"
-        decoded_path = f"/{decoded_path}"
-    segments = [segment for segment in decoded_path.split("/") if segment]
+    segments = [segment for segment in decoded_segments if segment]
     if any(segment in {".", ".."} for segment in segments):
         return fallback
     query = parsed.query

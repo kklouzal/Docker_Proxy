@@ -62,6 +62,15 @@ def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
         proxy_registry.normalize_public_pac_path("/download/%2e%2e/secret.pac")
         == "/proxy.pac"
     )
+    assert proxy_registry.normalize_public_pac_path("/download%2fwpad.dat") == (
+        "/proxy.pac"
+    )
+    assert proxy_registry.normalize_public_pac_path("/download%5cwpad.dat") == (
+        "/proxy.pac"
+    )
+    assert proxy_registry.normalize_public_pac_path("/download/%77pad.dat") == (
+        "/download/%77pad.dat"
+    )
     assert (
         proxy_registry.normalize_public_pac_path("/download/wpad.dat?site=%0alab")
         == "/proxy.pac"
