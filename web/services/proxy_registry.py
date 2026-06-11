@@ -131,12 +131,16 @@ def normalize_management_url(value: object | None) -> str:
     host = str(parsed.hostname or "").strip().lower()
     if not host or parsed.username or parsed.password:
         return ""
-    decoded_path = unquote(parsed.path or "")
-    if "\\" in decoded_path or any(
-        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in decoded_path
+    raw_segments = (parsed.path or "").split("/")
+    decoded_segments = [unquote(segment) for segment in raw_segments]
+    if any(
+        "/" in segment
+        or "\\" in segment
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in segment)
+        for segment in decoded_segments
     ):
         return ""
-    segments = [segment for segment in decoded_path.split("/") if segment]
+    segments = [segment for segment in decoded_segments if segment]
     if any(segment in {".", ".."} for segment in segments):
         return ""
 

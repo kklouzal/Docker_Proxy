@@ -164,6 +164,10 @@ def test_management_url_normalization_canonicalizes_listener_base() -> None:
         == "http://proxy-mgmt:5000/root"
     )
     assert (
+        proxy_registry.normalize_management_url("http://proxy-mgmt:5000/root/%68ome")
+        == "http://proxy-mgmt:5000/root/%68ome"
+    )
+    assert (
         proxy_registry.normalize_management_url("http://proxy-mgmt:5000/api/manage")
         == "http://proxy-mgmt:5000"
     )
@@ -181,6 +185,22 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
     assert proxy_registry.normalize_management_url("http://user:pass@proxy:5000") == ""
     assert proxy_registry.normalize_management_url("http://proxy:bad/api/manage") == ""
     assert proxy_registry.normalize_management_url("http://proxy:5000/../admin") == ""
+    assert (
+        proxy_registry.normalize_management_url(
+            "http://proxy:5000/api%2fmanage/health"
+        )
+        == ""
+    )
+    assert (
+        proxy_registry.normalize_management_url(
+            "http://proxy:5000/root%2fapi/manage/health"
+        )
+        == ""
+    )
+    assert (
+        proxy_registry.normalize_management_url("http://proxy:5000/root%5cadmin")
+        == ""
+    )
     assert proxy_registry.normalize_management_url("http://proxy:5000/root\nx") == ""
 
 
