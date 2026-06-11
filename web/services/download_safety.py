@@ -129,6 +129,9 @@ def open_download_url(
                 redirect_url,
                 scheme_error=scheme_error,
             )
+            if parsed.scheme == "https" and redirect_parsed.scheme == "http":
+                msg = "Download redirects must not downgrade from https to http."
+                raise ValueError(msg) from exc
             if _url_origin(redirect_parsed) != _url_origin(parsed):
                 request_headers = dict(base_headers)
             current = redirect_url

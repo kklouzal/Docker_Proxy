@@ -280,6 +280,55 @@ def test_open_download_url_preserves_extra_headers_on_same_origin_redirect(
     assert redirected["if-none-match"] == "etag-1"
 
 
+def test_open_download_url_rejects_https_to_http_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    seen_urls: list[str] = []
+    redirect_headers = Message()
+    redirect_headers["Location"] = "http://public.example/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            seen_urls.append(req.full_url)
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                redirect_headers,
+                None,
+            )
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(ValueError, match="downgrade from https to http"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert seen_urls == ["https://public.example/feed.csv"]
+
+
 def test_open_download_url_preserves_extra_headers_when_same_origin_redirect_adds_default_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
