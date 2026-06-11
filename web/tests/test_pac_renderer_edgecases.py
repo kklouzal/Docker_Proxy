@@ -318,14 +318,19 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
         "PROXY proxy.example:3128; DIRECT",
         proxy_host="proxy.example",
         direct_domains=["Example.COM", "*.example.com", "", "example.com"],
-        direct_dst_nets=["10.20.0.0/16", "2001:db8::/32", "not-a-cidr"],
+        direct_dst_nets=[
+            "10.20.0.0/16",
+            "10.20.1.7/16",
+            "2001:db8::/32",
+            "not-a-cidr",
+        ],
         include_private=True,
     )
 
     assert "host === 'localhost'" in rendered
     assert 'dnsDomainIs(host, ".local")' in rendered
     assert rendered.count('host === "example.com"') == 1
-    assert "isInNet(ip, '10.20.0.0', '255.255.0.0')" in rendered
+    assert rendered.count("isInNet(ip, '10.20.0.0', '255.255.0.0')") == 1
     assert "isInNet(ip, '192.168.0.0', '255.255.0.0')" in rendered
     assert "2001:db8" not in rendered
     assert 'return "PROXY proxy.example:3128; DIRECT";' in rendered

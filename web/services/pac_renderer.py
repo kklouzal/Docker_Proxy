@@ -440,6 +440,7 @@ def _render_pac(
             ),
         )
 
+    seen_dst_nets: set[str] = set()
     for cidr in direct_dst_nets:
         try:
             net = ipaddress.ip_network(cidr, strict=False)
@@ -447,8 +448,12 @@ def _render_pac(
             continue
         if net.version != 4:
             continue
+        canonical_cidr = str(net)
+        if canonical_cidr in seen_dst_nets:
+            continue
+        seen_dst_nets.add(canonical_cidr)
         lines.append(
-            f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(str(net))}')) return 'DIRECT';",
+            f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(canonical_cidr)}')) return 'DIRECT';",
         )
 
     if include_private:

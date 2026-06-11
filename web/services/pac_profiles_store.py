@@ -224,9 +224,15 @@ class PacProfilesStore:
                 tuple(profile_ids),
             ).fetchall()
             for row in net_rows:
-                nets_by_profile.setdefault(int(row["profile_id"]), []).append(
-                    str(row["cidr"]),
+                cidr, _err = _normalize_pac_dst_v4_cidr(str(row["cidr"]))
+                if not cidr:
+                    continue
+                profile_nets = nets_by_profile.setdefault(
+                    int(row["profile_id"]),
+                    [],
                 )
+                if cidr not in profile_nets:
+                    profile_nets.append(cidr)
 
             res: list[PacProfile] = []
             for p in profiles:

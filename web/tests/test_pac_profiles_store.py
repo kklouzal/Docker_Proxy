@@ -26,9 +26,11 @@ class _FakeConn:
         self,
         *,
         direct_domain_rows: list[dict[str, object]] | None = None,
+        direct_dst_net_rows: list[dict[str, object]] | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.direct_domain_rows = direct_domain_rows
+        self.direct_dst_net_rows = direct_dst_net_rows
 
     def execute(self, sql: str, params: tuple[object, ...] = ()):
         self.calls.append((sql, params))
@@ -57,6 +59,9 @@ class _FakeConn:
             )
         if sql.startswith("SELECT profile_id, cidr FROM pac_direct_dst_nets"):
             return _FakeResult(
+                self.direct_dst_net_rows
+                if self.direct_dst_net_rows is not None
+                else
                 [
                     {"profile_id": 11, "cidr": "10.0.0.0/8"},
                     {"profile_id": 12, "cidr": "192.168.1.0/24"},
@@ -149,6 +154,31 @@ def test_list_profiles_normalizes_stale_direct_domain_rows(monkeypatch) -> None:
         "xn--bcher-kva.example",
     ]
     assert profiles[1].direct_domains == ["*.media.example"]
+
+
+def test_list_profiles_normalizes_stale_direct_dst_net_rows(monkeypatch) -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    conn = _FakeConn(
+        direct_dst_net_rows=[
+            {"profile_id": 11, "cidr": "10.77.0.1/24"},
+            {"profile_id": 11, "cidr": "10.77.0.128/24"},
+            {"profile_id": 11, "cidr": "2001:db8::/32"},
+            {"profile_id": 11, "cidr": "not-a-cidr"},
+            {"profile_id": 12, "cidr": "192.168.1.7/24"},
+        ],
+    )
+    store = mod.PacProfilesStore()
+
+    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
+    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
+    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+
+    profiles = store.list_profiles()
+
+    assert profiles[0].direct_dst_nets == ["10.77.0.0/24"]
+    assert profiles[1].direct_dst_nets == ["192.168.1.0/24"]
 
 
 def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(
