@@ -162,3 +162,81 @@ def test_tracing_command_validates_documented_values() -> None:
 
     with pytest.raises(WinHttpBuilderError):
         build_tracing_command(state="enabled", output="syslog")
+
+
+@pytest.mark.parametrize(
+    ("form_update", "message"),
+    [
+        ({"proxy_host": 'proxy" & whoami'}, "Proxy host/IP"),
+        (
+            {
+                "use_custom_proxy_map": True,
+                "custom_proxy_map": 'http=proxy.example:3128" & whoami',
+            },
+            "Custom proxy map",
+        ),
+        ({"bypass_list": '*.example.local|"calc"'}, "Bypass list"),
+        ({"autoconfig_url": 'http://proxy.example/proxy.pac" & whoami'}, "Autoconfig URL"),
+    ],
+)
+def test_contract_output_rejects_unsafe_command_characters(
+    form_update: dict[str, object],
+    message: str,
+) -> None:
+    form: dict[str, object] = {
+        "proxy_host": "proxy.example",
+        "proxy_port": 3128,
+        "destination_schemes": ["http", "https"],
+    }
+    form.update(form_update)
+
+    with pytest.raises(WinHttpBuilderError, match=message):
+        build_contract_output(form)
+
+
+def test_contract_output_rejects_control_characters_after_normalization() -> None:
+    with pytest.raises(WinHttpBuilderError, match="Custom proxy map"):
+        build_contract_output(
+            {
+                "use_custom_proxy_map": True,
+                "custom_proxy_map": "http=proxy.example:3128\x7f",
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
+
+
+def test_command_safety_preserves_common_valid_values() -> None:
+    result = build_contract_output(
+        {
+            "use_custom_proxy_map": True,
+            "custom_proxy_map": "http=proxy.example:3128;https=proxy.example:3128",
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+            "bypass_list": "*.example.local <local>",
+            "autoconfig_url": "http://proxy.example/proxy.pac",
+            "trace_file_prefix": r"C:\Temp\winhttp",
+            "tracing_state": "enabled",
+            "tracing_output": "file",
+        },
+    )
+
+    assert result.proxy_string == "http=proxy.example:3128;https=proxy.example:3128"
+    assert result.bypass_string == "*.example.local;<local>"
+    assert "http://proxy.example/proxy.pac" in result.advproxy_json
+    assert 'trace-file-prefix="C:\\Temp\\winhttp"' in result.tracing_command
+
+
+@pytest.mark.parametrize(
+    "trace_file_prefix",
+    ['C:\\Temp\\win"http', "C:\\Temp\\winhttp&whoami"],
+)
+def test_tracing_command_rejects_unsafe_trace_file_prefix(
+    trace_file_prefix: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Trace file prefix"):
+        build_tracing_command(
+            state="enabled",
+            output="file",
+            trace_file_prefix=trace_file_prefix,
+        )

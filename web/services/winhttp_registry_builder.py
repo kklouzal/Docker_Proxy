@@ -24,6 +24,7 @@ DESTINATION_SCHEMES = ("http", "https", "ftp", "socks")
 TRACING_OUTPUTS = ("file", "debugger", "both")
 TRACING_LEVELS = ("default", "verbose")
 TRACING_FORMATS = ("ansi", "hex")
+COMMAND_UNSAFE_RE = re.compile(r'["&|\x00-\x1f\x7f]')
 
 
 class WinHttpBuilderError(ValueError):
@@ -65,6 +66,13 @@ class WinHttpContractOutput:
 
 def _quote_cmd(value: str) -> str:
     return '"' + str(value or "").replace('"', r"\"") + '"'
+
+
+def _validate_command_value(value: str, field_name: str) -> None:
+    _ascii_bytes(value)
+    if COMMAND_UNSAFE_RE.search(value or ""):
+        msg = f"{field_name} must not contain quotes, control characters, or command separators."
+        raise WinHttpBuilderError(msg)
 
 
 def _write_dword_le(out: list[int], value: int) -> None:
@@ -145,7 +153,7 @@ def normalize_bypass_list(
     if include_local and "<local>" not in seen:
         normalized.append("<local>")
     bypass = ";".join(normalized)
-    _ascii_bytes(bypass)
+    _validate_command_value(bypass, "Bypass list")
     return bypass
 
 
@@ -161,7 +169,7 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
     if "/" in value or any(ch.isspace() for ch in value):
         msg = "Proxy host/IP must not contain spaces or path separators."
         raise WinHttpBuilderError(msg)
-    _ascii_bytes(value)
+    _validate_command_value(value, "Proxy host/IP")
     return value, warning
 
 
@@ -205,7 +213,7 @@ def build_proxy_string(
         if not proxy_string:
             msg = "Custom proxy map is enabled but empty."
             raise WinHttpBuilderError(msg)
-        _ascii_bytes(proxy_string)
+        _validate_command_value(proxy_string, "Custom proxy map")
         for token in re.split(r"[;\s]+", proxy_string):
             if "=" not in token:
                 continue
@@ -349,7 +357,7 @@ def build_advproxy_settings_json(
         "AutoDetect": bool(autodetect),
     }
     for key in DOCUMENTED_ADVPROXY_KEYS:
-        _ascii_bytes(str(payload[key]))
+        _validate_command_value(str(payload[key]), key)
     return json.dumps(payload, separators=(",", ":"))
 
 
@@ -391,7 +399,7 @@ def build_tracing_command(
             raise WinHttpBuilderError(msg)
         parts.append(f"output={output_value}")
     if trace_file_prefix:
-        _ascii_bytes(trace_file_prefix)
+        _validate_command_value(trace_file_prefix, "Trace file prefix")
         parts.append(f"trace-file-prefix={_quote_cmd(trace_file_prefix)}")
     level_value = (level or "").strip().lower()
     if level_value:
@@ -464,7 +472,7 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
     if "<local>" not in bypass_string.lower().split(";"):
         warnings.append("<local> is not present in the bypass list.")
     if autoconfig_url:
-        _ascii_bytes(autoconfig_url)
+        _validate_command_value(autoconfig_url, "Autoconfig URL")
         warnings.append(
             "Autoconfig/PAC URL deployment is represented by advproxy JSON/commands, not by the basic static WinHttpSettings binary.",
         )
