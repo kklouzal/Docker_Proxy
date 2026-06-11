@@ -7,6 +7,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from services.pac_renderer import (
     PAC_MANIFEST_FILENAME,
@@ -190,6 +191,7 @@ def _public_target_from_manifest(value: object) -> tuple[str, str | None]:
     if not normalized:
         return "", None
     path, separator, query = normalized.partition("?")
+    path = unquote(path)
     return path, query if separator else None
 
 

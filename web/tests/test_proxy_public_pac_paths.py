@@ -54,6 +54,33 @@ def test_public_listener_serves_configured_pac_path(tmp_path, monkeypatch) -> No
     assert response.headers["Content-Disposition"] == 'inline; filename="wpad.dat"'
 
 
+def test_public_listener_serves_percent_encoded_configured_pac_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    from proxy import app as proxy_app  # type: ignore
+
+    pac_dir = tmp_path / "pac"
+    _write_pac_artifacts(pac_dir, public_pac_path="/download/%77pad.dat?site=lab")
+    monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    pac_http.pac_render_dir.cache_clear()
+    pac_http._CACHES.clear()
+
+    client = proxy_app.app.test_client()
+    response = client.get(
+        "/download/%77pad.dat?site=lab",
+        base_url="http://public-proxy.example",
+    )
+
+    assert response.status_code == 200
+    assert response.data == b"PAC public-proxy.example"
+    assert response.headers["Content-Disposition"] == 'inline; filename="wpad.dat"'
+
+
 def test_public_listener_rejects_wrong_query_for_configured_pac_path(
     tmp_path,
     monkeypatch,
