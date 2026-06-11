@@ -139,6 +139,89 @@ def test_request_host_uses_trusted_forwarded_host(monkeypatch) -> None:
     )
 
 
+def test_request_host_preserves_valid_authority_shapes(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert pac_http.request_host_from_headers({"Host": "192.0.2.10:8080"}) == (
+        "192.0.2.10:8080"
+    )
+    assert pac_http.request_host_from_headers({"Host": "[2001:db8::20]:8443"}) == (
+        "[2001:db8::20]:8443"
+    )
+    assert pac_http.request_host_from_headers({"Host": "2001:db8::20"}) == (
+        "2001:db8::20"
+    )
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "internal-proxy:5000",
+                "X-Forwarded-Host": "public-proxy.example:80",
+            },
+            "198.51.100.10",
+        )
+        == "public-proxy.example:80"
+    )
+
+
+def test_request_host_rejects_malformed_host_header_values() -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    bad_hosts = [
+        "",
+        "   ",
+        "bad host.example",
+        "bad\t.example",
+        "bad\x1f.example",
+        "bäd.example",
+        r"bad\host.example",
+        "proxy.example/path",
+        "proxy.example?x=1",
+        "proxy.example#frag",
+        "user@proxy.example",
+        "http://proxy.example:8080",
+        "//proxy.example:8080",
+        "proxy.example:bad",
+        "proxy.example:0",
+        "proxy.example:65536",
+        "[2001:db8::20",
+        "[2001:db8::20]:bad",
+    ]
+
+    for bad_host in bad_hosts:
+        assert pac_http.request_host_from_headers({"Host": bad_host}) == "127.0.0.1"
+
+
+def test_request_host_falls_back_when_trusted_forwarded_host_is_malformed(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services import pac_http  # type: ignore
+
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "internal-proxy:5000",
+                "X-Forwarded-Host": "http://public-proxy.example:80/proxy.pac",
+            },
+            "198.51.100.10",
+        )
+        == "internal-proxy:5000"
+    )
+    assert (
+        pac_http.request_host_from_headers(
+            {"Host": "bad host", "X-Forwarded-Host": "user@public.example"},
+            "198.51.100.10",
+        )
+        == "127.0.0.1"
+    )
+
+
 def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path) -> None:
     _add_repo_paths()
     from services import pac_http  # type: ignore

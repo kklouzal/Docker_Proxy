@@ -70,6 +70,98 @@ def _first_forwarded_ip(value: object | None) -> str:
         return ""
 
 
+def _valid_authority_port(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    try:
+        port = int(value)
+    except ValueError:
+        return False
+    return 1 <= port <= 65535
+
+
+def _valid_dns_host(value: str) -> bool:
+    candidate = value.rstrip(".").lower()
+    if not candidate or len(candidate) > 253:
+        return False
+    labels = candidate.split(".")
+    return not any(
+        not label
+        or len(label) > 63
+        or not ("a" <= label[0] <= "z" or "0" <= label[0] <= "9")
+        or not ("a" <= label[-1] <= "z" or "0" <= label[-1] <= "9")
+        or any(
+            not ("a" <= ch <= "z" or "0" <= ch <= "9" or ch == "-")
+            for ch in label
+        )
+        for label in labels
+    )
+
+
+def _valid_request_authority_host(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return _valid_dns_host(value)
+
+
+def _normalize_request_authority(value: object | None) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if (
+        any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in candidate)
+        or "\\" in candidate
+        or "/" in candidate
+        or "?" in candidate
+        or "#" in candidate
+        or "@" in candidate
+        or "://" in candidate
+        or candidate.startswith("//")
+    ):
+        return ""
+
+    if candidate.startswith("["):
+        end = candidate.find("]")
+        if end <= 1:
+            return ""
+        host = candidate[1:end]
+        suffix = candidate[end + 1 :]
+        if not suffix:
+            port = ""
+        elif suffix.startswith(":"):
+            port = suffix[1:]
+            if not _valid_authority_port(port):
+                return ""
+        else:
+            return ""
+        try:
+            parsed_ip = ipaddress.ip_address(host)
+        except ValueError:
+            return ""
+        if parsed_ip.version != 6:
+            return ""
+        return f"[{parsed_ip}]{f':{port}' if port else ''}"
+
+    if candidate.count(":") > 1:
+        try:
+            parsed_ip = ipaddress.ip_address(candidate)
+        except ValueError:
+            return ""
+        return str(parsed_ip) if parsed_ip.version == 6 else ""
+
+    if candidate.count(":") == 1:
+        host, port = candidate.rsplit(":", 1)
+        if not _valid_authority_port(port):
+            return ""
+        if not _valid_request_authority_host(host):
+            return ""
+        return f"{host}:{port}"
+
+    return candidate if _valid_request_authority_host(candidate) else ""
+
+
 def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
     if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
         xff = _first_forwarded_ip(headers.get("X-Forwarded-For"))
@@ -83,13 +175,14 @@ def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
 
 def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> str:
     if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
-        forwarded_host = _first_header_value(headers.get("X-Forwarded-Host"))
+        forwarded_host = _normalize_request_authority(
+            _first_header_value(headers.get("X-Forwarded-Host"))
+        )
         if forwarded_host:
             return forwarded_host
-    return (
-        str((headers.get("Host") if headers is not None else "") or "").strip()
-        or "127.0.0.1"
-    )
+    return _normalize_request_authority(
+        headers.get("Host") if headers is not None else ""
+    ) or "127.0.0.1"
 
 
 def _public_target_from_manifest(value: object) -> tuple[str, str | None]:
