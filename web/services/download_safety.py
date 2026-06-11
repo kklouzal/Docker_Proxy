@@ -16,6 +16,7 @@ def _is_forbidden_download_ip(address: str) -> bool:
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_unspecified
+        or not ip.is_global
     )
 
 

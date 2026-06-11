@@ -47,6 +47,54 @@ def test_validate_download_url_accepts_public_absolute_url(
 @pytest.mark.parametrize(
     "source_url",
     [
+        "http://100.64.0.1/feed.csv",
+        "http://100.127.255.254/feed.csv",
+    ],
+)
+def test_validate_download_url_rejects_non_global_ip_literals(
+    source_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("IP literals should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="internal/localhost"):
+        download_safety.validate_download_url(source_url)
+
+
+def test_validate_download_url_rejects_hostname_resolving_to_non_global_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("100.64.0.1", 0),
+            ),
+        ]
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ValueError, match="internal/localhost"):
+        download_safety.validate_download_url("https://public.example/feed.csv")
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
         "http://example.com\t/feed.csv",
         "http://example.com\n.evil/feed.csv",
         "https://public.example:bad/feed.csv",
