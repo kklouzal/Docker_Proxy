@@ -663,7 +663,10 @@ def safe_local_return_url(value: str | None) -> str | None:
     raw = (value or "").strip()
     if not raw:
         return None
-    parsed = urlsplit(raw)
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return None
     if parsed.scheme or parsed.netloc:
         return None
     if not parsed.path.startswith("/") or parsed.path.startswith("//"):
