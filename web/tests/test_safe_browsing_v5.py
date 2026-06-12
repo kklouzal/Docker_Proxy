@@ -2,6 +2,7 @@ import base64
 import hashlib
 from typing import NoReturn
 
+import pytest
 from services.safe_browsing_v5 import (
     SafeBrowsingLocalChecker,
     SafeBrowsingSettings,
@@ -62,6 +63,19 @@ def test_safe_browsing_canonicalization_normalizes_controls_path_ip_and_idn() ->
         == "http://192.168.1.1/a/c"
     )
     assert canonicalize_url("http://☃.example/%2525") == "http://xn--n3h.example/%25"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::1",
+        "http://user:pass@[::1",
+        "http://example.com]",
+    ],
+)
+def test_safe_browsing_malformed_bracket_urls_are_empty(url: str) -> None:
+    assert canonicalize_url(url) == ""
+    assert url_expressions(url) == []
 
 
 def test_safe_browsing_hashes_are_sha256_expression_hashes() -> None:

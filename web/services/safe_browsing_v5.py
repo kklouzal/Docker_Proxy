@@ -192,10 +192,14 @@ def canonicalize_url(value: str) -> str:
     raw = _recursive_unquote(raw)
     if "://" not in raw:
         raw = "http://" + raw
-    parsed = urllib.parse.urlsplit(raw)
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        hostname = parsed.hostname
+    except ValueError:
+        return ""
     scheme = (parsed.scheme or "http").lower()
     host = _normalize_host(
-        parsed.hostname or parsed.netloc.split("@")[-1].split(":")[0],
+        hostname or parsed.netloc.split("@")[-1].split(":")[0],
     )
     if not host:
         return ""
