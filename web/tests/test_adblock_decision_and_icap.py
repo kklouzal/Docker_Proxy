@@ -342,6 +342,104 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::1",
+        "http://user:pass@[::1",
+        "http://example.com]",
+    ],
+)
+def test_adblock_decision_malformed_request_urls_do_not_raise(
+    tmp_path: Path,
+    url: str,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^", "malformed-token"])
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=60, cache_max=10)
+
+    decision = engine.decide(url)
+
+    assert decision.blocked is False
+    assert decision.reason == "no-match"
+    assert decision.rule_id == ""
+
+
+@pytest.mark.parametrize(
+    ("headers", "source_url"),
+    [
+        ({"Referer": "http://source.example]"}, ""),
+        ({"Origin": "http://source.example]"}, ""),
+        ({}, "http://source.example]"),
+    ],
+)
+def test_adblock_decision_malformed_source_urls_do_not_match_scoped_rules(
+    tmp_path: Path,
+    headers: dict[str, str],
+    source_url: str,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||scoped.example^$domain=source.example",
+            "||thirdparty.example^$third-party",
+        ],
+    )
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    scoped = engine.decide(
+        "https://scoped.example/ad.js",
+        headers=headers,
+        source_url=source_url,
+    )
+    third_party = engine.decide(
+        "https://thirdparty.example/ad.js",
+        headers=headers,
+        source_url=source_url,
+    )
+
+    assert scoped.blocked is False
+    assert scoped.reason == "no-match"
+    assert third_party.blocked is False
+    assert third_party.reason == "no-match"
+
+
+def test_adblock_decision_valid_ipv6_literal_matching_still_works(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        ["||[2001:db8::20]^$third-party,domain=~[2001:db8::20]"],
+    )
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    assert (
+        engine.decide(
+            "https://[2001:db8::20]/banner.js",
+            headers={"referer": "https://[2001:db8::10]/"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
+            "https://[2001:db8::20]/banner.js",
+            headers={"referer": "https://[2001:db8:0:0:0:0:0:20]/"},
+        ).blocked
+        is False
+    )
+
+
 def _send_icap(port: int, payload: bytes) -> bytes:
     with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
         sock.settimeout(2.0)

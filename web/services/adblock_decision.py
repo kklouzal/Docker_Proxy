@@ -204,6 +204,15 @@ def _request_suffix(parsed: Any) -> str:
     return suffix
 
 
+def _safe_urlsplit(url: str) -> Any | None:
+    try:
+        parsed = urlsplit(url or "")
+        parsed.hostname
+        return parsed
+    except ValueError:
+        return None
+
+
 def infer_resource_type(
     method: str, url: str, headers: dict[str, str] | None = None
 ) -> str:
@@ -239,7 +248,8 @@ def infer_resource_type(
     if lower_headers.get("ping-to") or lower_headers.get("ping-from"):
         return "ping"
 
-    path = urlsplit(url or "").path.lower()
+    parsed = _safe_urlsplit(url)
+    path = (parsed.path if parsed is not None else "").lower()
     for resource_type, extensions in _RESOURCE_EXTENSIONS.items():
         if any(path.endswith(ext) for ext in extensions):
             return resource_type
@@ -333,6 +343,11 @@ class AdblockDecisionEngine:
         cached = self._get_cached(cache_key)
         if cached is not None:
             return cached
+
+        if _safe_urlsplit(url) is None:
+            decision = AdblockDecision(blocked=False)
+            self._put_cached(cache_key, decision)
+            return decision
 
         candidates = self.lookup.candidate_rules(
             url,
@@ -444,9 +459,14 @@ class AdblockDecisionEngine:
         source_url: str,
         third_party_hint: bool | None,
     ) -> bool:
-        parsed = urlsplit(url or "")
+        parsed = _safe_urlsplit(url)
+        if parsed is None:
+            return False
         request_host = _normalize_host(parsed.hostname or parsed.netloc or "")
-        source_host = _normalize_host(urlsplit(source_url or "").hostname or "")
+        source_parsed = _safe_urlsplit(source_url)
+        source_host = _normalize_host(
+            source_parsed.hostname if source_parsed is not None else "",
+        )
         if not self._options_match(
             rule,
             method=method,
