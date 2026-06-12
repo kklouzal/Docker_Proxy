@@ -106,6 +106,45 @@ def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
     assert target.proxy_chain == "PROXY pac.example:8080; DIRECT"
 
 
+@pytest.mark.parametrize(
+    "public_pac_url",
+    [
+        "ftp://proxy.example:9000/proxy.pac",
+        "https:///proxy.pac",
+    ],
+)
+def test_resolve_proxy_pac_target_ignores_invalid_absolute_public_pac_url(
+    monkeypatch,
+    public_pac_url: str,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    class _EmptyRegistry:
+        def get_proxy(self, _proxy_id):
+            return None
+
+    class _EmptyPacProfilesStore:
+        def list_proxy_chain_settings(self):
+            return type(
+                "PacProxyChainSettings",
+                (),
+                {"backup_proxies": [], "direct_enabled": True},
+            )()
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", public_pac_url)
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == ""
+    assert target.pac_scheme == "http"
+    assert target.pac_port == 80
+    assert target.pac_path == "/proxy.pac"
+    assert target.pac_url == ""
+
+
 def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_host(
     monkeypatch,
 ) -> None:

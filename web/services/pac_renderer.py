@@ -25,7 +25,11 @@ from services.proxy_context import (
     reset_proxy_id,
     set_proxy_id,
 )
-from services.proxy_registry import get_proxy_registry, normalize_public_pac_path
+from services.proxy_registry import (
+    _parse_public_pac_url,
+    get_proxy_registry,
+    normalize_public_pac_path,
+)
 from services.sslfilter_store import get_sslfilter_store
 
 if TYPE_CHECKING:
@@ -43,27 +47,6 @@ def _normalize_pac_scheme(value: object | None) -> str:
     if candidate in {"http", "https"}:
         return candidate
     return "http"
-
-
-def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
-    candidate = str(raw_url or "").strip()
-    if not candidate:
-        return "", "http", 80, "/proxy.pac"
-    if "://" not in candidate:
-        candidate = f"http://{candidate}"
-    try:
-        parsed = urlsplit(candidate)
-    except Exception:
-        return "", "http", 80, "/proxy.pac"
-    scheme = _normalize_pac_scheme(parsed.scheme)
-    host = str(parsed.hostname or "").strip()
-    default_port = 443 if scheme == "https" else 80
-    try:
-        parsed_port = parsed.port
-    except ValueError:
-        parsed_port = None
-    path = normalize_public_pac_path(candidate)
-    return host, scheme, int(parsed_port or default_port), path
 
 
 def _coerce_port(value: object | None, default: int) -> int:

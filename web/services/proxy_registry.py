@@ -173,14 +173,20 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     candidate = str(raw_url or "").strip()
     if not candidate:
         return "", "http", 80, "/proxy.pac"
+    has_absolute_scheme = "://" in candidate
     if "://" not in candidate:
         candidate = f"http://{candidate}"
     try:
         parsed = urlsplit(candidate)
     except Exception:
         return "", "http", 80, "/proxy.pac"
-    scheme = _normalize_public_scheme(parsed.scheme)
+    raw_scheme = str(parsed.scheme or "").lower()
+    if has_absolute_scheme and raw_scheme not in {"http", "https"}:
+        return "", "http", 80, "/proxy.pac"
     host = str(parsed.hostname or "").strip()
+    if has_absolute_scheme and not host:
+        return "", "http", 80, "/proxy.pac"
+    scheme = _normalize_public_scheme(raw_scheme)
     default_port = 443 if scheme == "https" else 80
     try:
         parsed_port = parsed.port

@@ -34,7 +34,13 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
     assert proxy_registry._parse_public_pac_url("") == ("", "http", 80, "/proxy.pac")
     assert proxy_registry._parse_public_pac_url(
         "ftp://proxy.example:9000/proxy.pac"
-    ) == ("proxy.example", "http", 9000, "/proxy.pac")
+    ) == ("", "http", 80, "/proxy.pac")
+    assert proxy_registry._parse_public_pac_url("https:///proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
     assert proxy_registry._parse_public_pac_url(
         "https://proxy.example:not-a-port/proxy.pac"
     ) == ("proxy.example", "https", 443, "/proxy.pac")
