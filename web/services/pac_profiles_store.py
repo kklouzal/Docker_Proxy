@@ -107,13 +107,19 @@ def _normalize_proxy_host_port(
         end = host.find("]")
         suffix = host[end + 1 :].strip()
         host = host[1:end]
-        if suffix.startswith(":") and suffix[1:].isdigit() and not parsed_port:
-            parsed_port = suffix[1:]
+        if not parsed_port:
+            if suffix.startswith(":") and suffix[1:].isdigit():
+                parsed_port = suffix[1:]
+            elif suffix:
+                return None, None, "Invalid proxy port."
     elif host.count(":") == 1:
         candidate_host, candidate_port = host.rsplit(":", 1)
-        if candidate_port.isdigit() and not parsed_port:
-            host = candidate_host
-            parsed_port = candidate_port
+        if not parsed_port:
+            if candidate_port.isdigit():
+                host = candidate_host
+                parsed_port = candidate_port
+            else:
+                return None, None, "Invalid proxy port."
 
     host = host.strip().strip("[]").lower()
     if not host or any(ch.isspace() for ch in host) or "/" in host:

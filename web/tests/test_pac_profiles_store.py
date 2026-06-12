@@ -238,3 +238,24 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
         3128,
         "",
     )
+    assert mod._normalize_proxy_host_port("backup.example", "9090") == (
+        "backup.example",
+        9090,
+        "",
+    )
+
+
+def test_backup_proxy_host_port_normalization_rejects_malformed_inline_ports() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    assert mod._normalize_proxy_host_port("backup.example:abc", None) == (
+        None,
+        None,
+        "Invalid proxy port.",
+    )
+    assert mod._normalize_proxy_host_port("[2001:db8::10]:abc", "") == (
+        None,
+        None,
+        "Invalid proxy port.",
+    )
