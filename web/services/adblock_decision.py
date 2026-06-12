@@ -207,7 +207,7 @@ def _request_suffix(parsed: Any) -> str:
 def _safe_urlsplit(url: str) -> Any | None:
     try:
         parsed = urlsplit(url or "")
-        parsed.hostname
+        _hostname = parsed.hostname
         return parsed
     except ValueError:
         return None
