@@ -552,11 +552,22 @@ def _env_bool(name: str, default: str = "0") -> bool:
 
 
 def _parse_database_url(url: str) -> DatabaseConfig:
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        msg = "Invalid DATABASE_URL for MySQL configuration."
+        raise ValueError(msg) from exc
     scheme = (parsed.scheme or "").lower()
     if not scheme.startswith("mysql"):
         msg = f"Unsupported DATABASE_URL scheme: {scheme}"
         raise ValueError(msg)
+
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        msg = "Invalid DATABASE_URL for MySQL configuration."
+        raise ValueError(msg) from exc
 
     db_name = (
         (parsed.path or "").lstrip("/")
@@ -564,8 +575,8 @@ def _parse_database_url(url: str) -> DatabaseConfig:
         or MYSQL_DEFAULT_DB
     )
     return DatabaseConfig(
-        host=parsed.hostname or os.environ.get("MYSQL_HOST") or "127.0.0.1",
-        port=int(parsed.port or int(os.environ.get("MYSQL_PORT") or 3306)),
+        host=hostname or os.environ.get("MYSQL_HOST") or "127.0.0.1",
+        port=int(port or int(os.environ.get("MYSQL_PORT") or 3306)),
         user=unquote(parsed.username or os.environ.get("MYSQL_USER") or "root"),
         password=unquote(parsed.password or os.environ.get("MYSQL_PASSWORD") or ""),
         database=db_name,

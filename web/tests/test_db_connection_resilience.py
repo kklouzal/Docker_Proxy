@@ -16,6 +16,46 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
+def test_parse_database_url_resolves_valid_mysql_url(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    monkeypatch.setenv("MYSQL_CHARSET", "utf8")
+    cfg = db._parse_database_url("mysql+pymysql://user:pass@db.example:3307/proxy")
+
+    assert cfg == db.DatabaseConfig(
+        host="db.example",
+        port=3307,
+        user="user",
+        password="pass",
+        database="proxy",
+        charset="utf8",
+    )
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "mysql://[bad/db",
+        "mysql://db.example:not-a-port/proxy",
+    ],
+)
+def test_parse_database_url_reports_malformed_url_as_mysql_config_error(
+    database_url,
+) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    with pytest.raises(
+        ValueError,
+        match="Invalid DATABASE_URL for MySQL configuration",
+    ) as exc_info:
+        db._parse_database_url(database_url)
+
+    assert "Invalid IPv6 URL" not in str(exc_info.value)
+    assert "Port could not be cast" not in str(exc_info.value)
+
+
 def test_context_manager_preserves_original_error_when_rollback_connection_is_lost() -> (
     None
 ):
