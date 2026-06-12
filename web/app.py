@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from flask import (
     Flask,
@@ -1257,6 +1257,21 @@ def _safe_next_url(next_url: str) -> str:
     # Backslashes are path separators for some clients/proxies and can turn a
     # path-looking redirect into an authority-looking URL after normalization.
     if "\\" in candidate:
+        return ""
+    decoded = candidate
+    for _ in range(3):
+        previous = decoded
+        decoded = unquote(previous, errors="replace")
+        if decoded == previous:
+            break
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded):
+        return ""
+    if "\\" in decoded or decoded.startswith("//"):
+        return ""
+    decoded_parsed = urlparse(decoded)
+    if decoded_parsed.scheme or decoded_parsed.netloc:
+        return ""
+    if decoded.count("/") > candidate.count("/"):
         return ""
     # Only allow app-local paths.
     if not candidate.startswith("/"):

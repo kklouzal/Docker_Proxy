@@ -127,6 +127,14 @@ def test_logout_requires_csrf_and_clears_session(monkeypatch, tmp_path) -> None:
         ("http://evil.example/path", ""),
         ("/\\evil", ""),
         ("/safe\\..\\login", ""),
+        ("/%2fevil.example/path", ""),
+        ("/%2F%2Fevil.example/path", ""),
+        ("/%5cevil.example/path", ""),
+        ("/safe%5c..%5clogin", ""),
+        ("/squid%2fconfig", ""),
+        ("/squid/config%0d%0aLocation:%20//evil.example", ""),
+        ("/squid/config%00", ""),
+        ("/%252fevil.example/path", ""),
     ],
 )
 def test_safe_next_url_edge_cases(
