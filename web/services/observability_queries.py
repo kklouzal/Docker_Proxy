@@ -2073,7 +2073,8 @@ class ObservabilityQueries:
                 {
                     "name": "Prometheus",
                     "status": "ready",
-                    "endpoint": "/observability/metrics",
+                    "endpoint": "/performance",
+                    "aliases": ["/observability/metrics"],
                 },
                 {
                     "name": "SIEM/syslog",

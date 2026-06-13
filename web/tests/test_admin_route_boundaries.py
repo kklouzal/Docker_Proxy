@@ -1466,10 +1466,15 @@ def test_observability_metrics_reuses_short_lived_section_cache(
     monkeypatch.setattr(loaded.module, "time", RouteClock())
 
     first = client.get("/observability/metrics?window=3600")
-    second = client.get("/observability/metrics?window=3600")
+    second = client.get("/performance?window=3600")
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert first.headers.get("Content-Type") == second.headers.get("Content-Type")
+    assert first.headers.get("Content-Type", "").startswith(
+        "text/plain; version=0.0.4"
+    )
+    assert first.get_data(as_text=True) == second.get_data(as_text=True)
     body = second.get_data(as_text=True)
     assert 'docker_proxy_observability_window_seconds{proxy_id="default"} 3600' in body
     assert 'docker_proxy_observability_requests{proxy_id="default"} 9' in body

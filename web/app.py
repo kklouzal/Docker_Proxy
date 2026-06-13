@@ -4362,8 +4362,7 @@ def observability_export():
         return _empty_observability_export_response(pane, export_format)
 
 
-@app.route("/observability/metrics", methods=["GET"])
-def observability_metrics():
+def _observability_metrics_response():
     queries = get_observability_queries()
     window_i = _query_int_arg(
         "window",
@@ -4643,6 +4642,16 @@ def observability_metrics():
         "\n".join(lines) + "\n",
         mimetype="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+@app.route("/observability/metrics", methods=["GET"])
+def observability_metrics():
+    return _observability_metrics_response()
+
+
+@app.route("/performance", methods=["GET"])
+def performance_metrics():
+    return _observability_metrics_response()
 
 
 def _prom_label(value: object) -> str:

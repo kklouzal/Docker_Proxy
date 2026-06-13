@@ -1277,10 +1277,12 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
     assert payload["per_group"][0]["group"].startswith("group-")
     assert payload["audit"]["summary"]["events"] >= 1
     assert payload["schedules"][0]["name"] == "Daily accountability digest"
-    assert any(
-        row["name"] == "Prometheus" and row["status"] == "ready"
-        for row in payload["export_contracts"]
+    prometheus_contract = next(
+        row for row in payload["export_contracts"] if row["name"] == "Prometheus"
     )
+    assert prometheus_contract["status"] == "ready"
+    assert prometheus_contract["endpoint"] == "/performance"
+    assert prometheus_contract["aliases"] == ["/observability/metrics"]
     assert any(
         row["name"] == "SIEM/syslog" and row["status"] == "ready"
         for row in payload["export_contracts"]
