@@ -243,6 +243,36 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
         9090,
         "",
     )
+    assert mod._normalize_proxy_host_port("Backup-01.Example", None) == (
+        "backup-01.example",
+        3128,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("2001:db8::10", None) == (
+        "2001:db8::10",
+        3128,
+        "",
+    )
+
+
+def test_backup_proxy_host_port_normalization_rejects_unsafe_hosts() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "backup.example;DIRECT",
+        "backup.example,DIRECT",
+        '"backup.example"',
+        "bad_host.example",
+        "-backup.example",
+        "backup-.example",
+        "backup..example",
+    ):
+        assert mod._normalize_proxy_host_port(host, None) == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
 
 
 def test_backup_proxy_host_port_normalization_rejects_malformed_inline_ports() -> None:

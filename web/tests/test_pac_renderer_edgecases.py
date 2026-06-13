@@ -69,6 +69,34 @@ def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> No
     )
 
 
+def test_proxy_chain_filters_stale_invalid_backup_hosts() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = pac_renderer.ProxyPacTarget(
+        "default",
+        "primary.example",
+        "http",
+        80,
+        3128,
+        backup_proxies=(
+            ("backup.example;DIRECT", 3128),
+            ("backup.example", 8080),
+            ("https://Backup-02.Example:8443/proxy.pac", None),
+            ("[2001:db8::10]:3130", None),
+            ("bad_host.example", 3128),
+        ),
+    )
+
+    assert (
+        target.proxy_chain
+        == "PROXY primary.example:3128; PROXY backup.example:8080; "
+        "PROXY backup-02.example:8443; PROXY [2001:db8::10]:3130; DIRECT"
+    )
+    assert "backup.example;DIRECT" not in target.proxy_chain
+    assert "bad_host" not in target.proxy_chain
+
+
 def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
     monkeypatch,
 ) -> None:
@@ -884,13 +912,13 @@ def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
             pac_scheme="http",
             pac_port=80,
             http_proxy_port=3128,
-            backup_proxies=(("backup'host.example", 8080),),
+            backup_proxies=(("backup.example", 8080),),
         ),
         include_private=False,
     )
 
     assert (
-        "return \"PROXY proxy'host.example:3128; PROXY backup'host.example:8080; DIRECT\";"
+        "return \"PROXY proxy'host.example:3128; PROXY backup.example:8080; DIRECT\";"
         in rendered
     )
     assert "return 'PROXY" not in rendered

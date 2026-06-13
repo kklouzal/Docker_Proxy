@@ -85,6 +85,29 @@ def _normalize_pac_dst_v4_cidr(cidr: str) -> tuple[str | None, str]:
     return str(net), ""
 
 
+def _is_valid_proxy_host(host: str) -> bool:
+    if not host or any(ch.isspace() for ch in host) or "/" in host:
+        return False
+    try:
+        ip_address(host)
+        return True
+    except Exception:
+        pass
+
+    if len(host) > 253:
+        return False
+    labels = host.split(".")
+    return all(
+        label
+        and len(label) <= 63
+        and label.isascii()
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(ch.isalnum() or ch == "-" for ch in label)
+        for label in labels
+    )
+
+
 def _normalize_proxy_host_port(
     proxy_host: str,
     proxy_port: object | None,
@@ -122,7 +145,7 @@ def _normalize_proxy_host_port(
                 return None, None, "Invalid proxy port."
 
     host = host.strip().strip("[]").lower()
-    if not host or any(ch.isspace() for ch in host) or "/" in host:
+    if not _is_valid_proxy_host(host):
         return None, None, "Invalid proxy host."
 
     try:
