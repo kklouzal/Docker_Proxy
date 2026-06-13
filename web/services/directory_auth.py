@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -313,7 +314,7 @@ class DirectoryAuthStore:
             else ""
         )
         timeout_seconds = self._bounded_int(payload.get("timeout_seconds"), 1, 30, 5)
-        server_urls = self._clean_required(payload.get("server_urls"), "Server URL")
+        server_urls = self._normalize_server_urls(payload.get("server_urls"))
         use_starttls = self._truthy(payload.get("use_starttls"))
         verify_tls = self._truthy(payload.get("verify_tls"), default=current.verify_tls)
         ca_bundle = self._ca_bundle_from_payload(payload, current.ca_bundle)
@@ -800,6 +801,46 @@ class DirectoryAuthStore:
             msg = f"{label} is required."
             raise ValueError(msg)
         return cleaned
+
+    def _normalize_server_urls(self, value: Any) -> str:
+        invalid_url_msg = (
+            "LDAP server URLs must be valid ldap:// or ldaps:// URLs with a host "
+            "and optional numeric port."
+        )
+        urls = []
+        for raw_line in str(value or "").splitlines():
+            source = raw_line.strip()
+            if not source:
+                continue
+            if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in source):
+                raise ValueError(invalid_url_msg)
+            try:
+                parsed = urlsplit(source)
+                hostname = parsed.hostname or ""
+                port = parsed.port
+            except ValueError as exc:
+                raise ValueError(invalid_url_msg) from exc
+            if parsed.scheme not in {"ldap", "ldaps"}:
+                msg = "Only ldap:// or ldaps:// directory server URLs are supported."
+                raise ValueError(msg)
+            if (
+                not parsed.netloc
+                or not hostname
+                or parsed.username
+                or parsed.password
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(invalid_url_msg)
+            url = f"{parsed.scheme}://{hostname}"
+            if port is not None:
+                url = f"{url}:{port}"
+            urls.append(url)
+        if not urls:
+            msg = "At least one LDAP server URL is required."
+            raise ValueError(msg)
+        return "\n".join(urls)
 
     def _ca_bundle_from_payload(
         self, payload: dict[str, Any], current_ca_bundle: str
