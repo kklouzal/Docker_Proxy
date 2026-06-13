@@ -2434,7 +2434,12 @@ def _handle_webfilter_post(store: Any, tab: str):
         if enabled and categories and not source_url:
             return _redirect_to("webfilter", tab="categories", err_source="1")
 
-        if source_url:
+        category_refresh_required = _webfilter_category_refresh_required(
+            current_settings,
+            enabled=enabled,
+        )
+
+        if source_url and category_refresh_required:
             try:
                 source_url = _validate_webfilter_source_url(source_url)
             except ValueError:
@@ -2469,10 +2474,7 @@ def _handle_webfilter_post(store: Any, tab: str):
             )
         except ValueError:
             return _redirect_to("webfilter", tab="categories", err_source="1")
-        if not _webfilter_category_refresh_required(
-            current_settings,
-            enabled=enabled,
-        ):
+        if not category_refresh_required:
             return _redirect_to("webfilter", tab="categories")
         return _redirect_after_policy_refresh(
             "webfilter",

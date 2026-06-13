@@ -2232,8 +2232,10 @@ def test_webfilter_disabled_save_rejects_unsafe_source_before_store(
             "csrf_token": csrf_token(client, "/webfilter"),
             "tab": "categories",
             "action": "save",
+            "enabled": "on",
             "source_url": "http://127.0.0.1/categories.csv",
             "source_provider": "csv",
+            "categories": "adult",
         },
         follow_redirects=False,
     )

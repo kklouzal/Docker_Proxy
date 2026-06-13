@@ -105,11 +105,7 @@ class WebFilterStore(WebFilterStoreBase):
     ) -> None:
         self.init_db()
         source_candidate = (source_url or "").strip()
-        source = (
-            validate_source_url(source_candidate)
-            if source_candidate
-            else source_candidate
-        )
+        source = source_candidate
         provider = (source_provider or "auto").strip().lower()
         if provider not in {"auto", "ut1", "category-dir", "csv"}:
             provider = "auto"
@@ -117,6 +113,8 @@ class WebFilterStore(WebFilterStoreBase):
             item.strip() for item in (blocked_categories or []) if (item or "").strip()
         ]
         categories = self._resolve_category_aliases(categories)
+        if source and enabled and categories:
+            source = validate_source_url(source)
         categories_csv = ",".join(sorted(set(categories)))
         if safe_browsing_lists is None:
             gsb_lists = SafeBrowsingStore.normalize_lists(DEFAULT_SAFE_BROWSING_LISTS)
@@ -158,6 +156,8 @@ class WebFilterStore(WebFilterStoreBase):
                 override_enabled=enabled,
                 override_blocked_categories=categories_csv,
             )
+            if source and category_build_needed:
+                source = validate_source_url(source)
             self._set(conn, "enabled", "1" if enabled else "0")
             self._set(conn, "source_url", source)
             self._set(conn, "source_provider", provider)

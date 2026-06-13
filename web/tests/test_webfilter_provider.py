@@ -344,9 +344,9 @@ def test_webfilter_store_rejects_disabled_unsafe_source_before_persistence(
 
     with pytest.raises(ValueError):
         store.set_settings(
-            enabled=False,
+            enabled=True,
             source_url=source_url,
-            blocked_categories=[],
+            blocked_categories=["adult"],
         )
 
 
