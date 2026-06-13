@@ -313,6 +313,18 @@ def test_pac_builder_noop_ids_do_not_queue_runtime_refresh(
     with loaded.module.app.test_request_context(
         "/pac",
         method="POST",
+        data={"action": "remove_backup_proxy", "backup_proxy_id": "not-int"},
+    ):
+        malformed_backup = loaded.module._handle_pac_builder_post(store)
+    params = _params(malformed_backup.location)
+    assert params["error"] == ["1"]
+    assert params["msg"] == ["Backup proxy not found."]
+    assert "ok" not in params
+    assert loaded.operation_ledger.operations == []
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
         data={
             "action": "move_backup_proxy",
             "backup_proxy_id": "999",
@@ -321,6 +333,22 @@ def test_pac_builder_noop_ids_do_not_queue_runtime_refresh(
     ):
         missing_move = loaded.module._handle_pac_builder_post(store)
     params = _params(missing_move.location)
+    assert params["error"] == ["1"]
+    assert params["msg"] == ["Backup proxy not found."]
+    assert "ok" not in params
+    assert loaded.operation_ledger.operations == []
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "move_backup_proxy",
+            "backup_proxy_id": "not-int",
+            "direction": "up",
+        },
+    ):
+        malformed_move = loaded.module._handle_pac_builder_post(store)
+    params = _params(malformed_move.location)
     assert params["error"] == ["1"]
     assert params["msg"] == ["Backup proxy not found."]
     assert "ok" not in params

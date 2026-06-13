@@ -2768,7 +2768,7 @@ def _handle_pac_builder_post(store: Any):
 
         if action == "remove_backup_proxy":
             changed = store.delete_backup_proxy(
-                int(request.form.get("backup_proxy_id") or "0")
+                _bounded_int(request.form.get("backup_proxy_id"), default=0)
             )
             if not changed:
                 return _redirect_to(
@@ -2778,7 +2778,7 @@ def _handle_pac_builder_post(store: Any):
 
         if action == "move_backup_proxy":
             changed = store.move_backup_proxy(
-                int(request.form.get("backup_proxy_id") or "0"),
+                _bounded_int(request.form.get("backup_proxy_id"), default=0),
                 request.form.get("direction") or "",
             )
             if not changed:
