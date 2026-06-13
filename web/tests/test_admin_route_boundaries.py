@@ -1373,18 +1373,67 @@ def test_observability_metrics_reuses_short_lived_section_cache(
         def __init__(self) -> None:
             self.summary_calls = 0
             self.cache_calls = 0
+            self.performance_calls = 0
             self.security_calls = 0
 
         def summary(self, **_kwargs):
             self.summary_calls += 1
             return {
                 "request_records": 9,
+                "cache_hits": 6,
+                "cache_misses": 3,
                 "cache_hit_pct": 66.7,
+                "clients": 2,
+                "destinations": 4,
+                "transactions": 5,
             }
 
         def cache_savings(self, **_kwargs):
             self.cache_calls += 1
-            return {"estimated_saved_bytes": 1234}
+            return {
+                "total_bytes": 9999,
+                "hit_bytes": 1234,
+                "miss_bytes": 8765,
+                "estimated_saved_bytes": 1234,
+            }
+
+        def performance_overview(self, **kwargs):
+            self.performance_calls += 1
+            assert kwargs["summary"]["request_records"] == 9
+            assert kwargs["summary"]["requests"] == 9
+            assert kwargs["summary"]["domains"] == 4
+            return {
+                "summary": {
+                    "requests": kwargs["summary"].get("requests") or 0,
+                    "transactions": kwargs["summary"].get("transactions") or 0,
+                    "icap_events": 4,
+                },
+                "av_icap_summary": {
+                    "events": 3,
+                    "avg_icap_time_ms": 12,
+                    "max_icap_time_ms": 30,
+                },
+                "adblock_icap_summary": {
+                    "events": 1,
+                    "avg_icap_time_ms": 8,
+                    "max_icap_time_ms": 8,
+                },
+                "slow_requests": [{"duration_ms": 2450}],
+                "slow_icap_events": [
+                    {"service_family": "av", "icap_time_ms": 55},
+                ],
+                "top_user_agents": [
+                    {"label": 'curl "quoted"', "count": 7},
+                    {"label": "overflow", "count": 99},
+                    {"label": "third", "count": 3},
+                    {"label": "fourth", "count": 2},
+                    {"label": "fifth", "count": 1},
+                    {"label": "sixth", "count": 1},
+                ],
+                "top_bump_modes": [{"label": "splice", "count": 5}],
+                "top_tls_server_versions": [{"label": "TLSv1.3", "count": 4}],
+                "top_policy_tags": [{"label": "Finance\\Restricted", "count": 2}],
+            }
 
         def security_overview(self, **_kwargs):
             self.security_calls += 1
@@ -1421,11 +1470,50 @@ def test_observability_metrics_reuses_short_lived_section_cache(
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert 'docker_proxy_observability_requests{proxy_id="default"} 9' in second.get_data(
-        as_text=True
+    body = second.get_data(as_text=True)
+    assert 'docker_proxy_observability_window_seconds{proxy_id="default"} 3600' in body
+    assert 'docker_proxy_observability_requests{proxy_id="default"} 9' in body
+    assert 'docker_proxy_observability_clients{proxy_id="default"} 2' in body
+    assert 'docker_proxy_observability_destinations{proxy_id="default"} 4' in body
+    assert 'docker_proxy_observability_transactions{proxy_id="default"} 5' in body
+    assert 'docker_proxy_observability_cache_hits{proxy_id="default"} 6' in body
+    assert 'docker_proxy_observability_cache_misses{proxy_id="default"} 3' in body
+    assert 'docker_proxy_observability_cache_hit_ratio{proxy_id="default"} 0.667' in body
+    assert 'docker_proxy_observability_cache_total_bytes{proxy_id="default"} 9999' in body
+    assert 'docker_proxy_observability_cache_hit_bytes{proxy_id="default"} 1234' in body
+    assert 'docker_proxy_observability_cache_miss_bytes{proxy_id="default"} 8765' in body
+    assert (
+        'docker_proxy_observability_icap_events{proxy_id="default",service="av"} 3'
+        in body
     )
+    assert (
+        'docker_proxy_observability_icap_avg_time_ms{proxy_id="default",service="av"} 12'
+        in body
+    )
+    assert (
+        'docker_proxy_observability_icap_max_time_ms{proxy_id="default",service="av"} 30'
+        in body
+    )
+    assert (
+        'docker_proxy_observability_slowest_http_request_duration_ms{proxy_id="default"} 2450'
+        in body
+    )
+    assert (
+        'docker_proxy_observability_slowest_icap_time_ms{proxy_id="default",service="av"} 55'
+        in body
+    )
+    assert (
+        'docker_proxy_observability_top_dimension_count{proxy_id="default",dimension="user_agent",rank="1",value="curl \\"quoted\\""} 7'
+        in body
+    )
+    assert (
+        'docker_proxy_observability_top_dimension_count{proxy_id="default",dimension="policy_tag",rank="1",value="Finance\\\\Restricted"} 2'
+        in body
+    )
+    assert 'dimension="user_agent",rank="6"' not in body
     assert observability_queries.summary_calls == 1
     assert observability_queries.cache_calls == 1
+    assert observability_queries.performance_calls == 1
     assert observability_queries.security_calls == 1
 
 

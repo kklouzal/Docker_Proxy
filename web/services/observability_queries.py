@@ -902,9 +902,15 @@ class ObservabilityQueries:
     ) -> dict[str, Any]:
         diagnostic_store = get_diagnostic_store()
         lim = max(3, min(20, int(limit)))
+        diagnostic_summary = summary or diagnostic_store.activity_summary(since=since)
+        if summary is not None:
+            diagnostic_summary = {
+                **summary,
+                "requests": summary.get("requests", summary.get("request_records")),
+                "domains": summary.get("domains", summary.get("destinations")),
+            }
         summary_payload = present_observability_summary(
-            diagnostic_summary=summary
-            or diagnostic_store.activity_summary(since=since),
+            diagnostic_summary=diagnostic_summary,
             ssl_summary={},
         )
         return {

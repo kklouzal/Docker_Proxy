@@ -1117,21 +1117,24 @@ def test_observability_performance_overview_reuses_precomputed_summary(
         since=2800,
         limit=5,
         summary={
-            "requests": 1,
+            "request_records": 9,
             "cache_hits": 1,
             "cache_misses": 0,
             "cache_hit_pct": 100.0,
             "clients": 1,
-            "destinations": 1,
-            "transactions": 1,
-            "icap_events": 0,
-            "av_icap_events": 0,
-            "adblock_icap_events": 0,
+            "destinations": 3,
+            "transactions": 2,
+            "icap_events": 4,
+            "av_icap_events": 3,
+            "adblock_icap_events": 1,
         },
     )
 
     assert fake_store.activity_summary_calls == 0
-    assert payload["summary"]["requests"] == 1
+    assert payload["summary"]["requests"] == 9
+    assert payload["summary"]["domains"] == 3
+    assert payload["summary"]["transactions"] == 2
+    assert payload["summary"]["icap_events"] == 4
 
 
 def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(

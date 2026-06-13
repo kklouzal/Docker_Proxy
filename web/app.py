@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import io
 import json
+import math
 import os
 import secrets
 import shutil
@@ -4372,8 +4373,28 @@ def observability_metrics():
     )
     since_ts = int(time.time()) - window_i
     proxy_id = get_proxy_id()
-    lines = []
+    lines = [
+        "# HELP docker_proxy_observability_window_seconds Observability scrape query window.",
+        "# TYPE docker_proxy_observability_window_seconds gauge",
+        f'docker_proxy_observability_window_seconds{{proxy_id="{_prom_label(proxy_id)}"}} {window_i}',
+    ]
+    emitted_metric_meta: set[str] = {"docker_proxy_observability_window_seconds"}
     scrape_errors: list[str] = []
+
+    def emit(
+        name: str,
+        help_text: str,
+        value: object,
+        labels: dict[str, object] | None = None,
+    ) -> None:
+        metric_labels = {"proxy_id": proxy_id, **(labels or {})}
+        label_text = ",".join(
+            f'{key}="{_prom_label(value)}"' for key, value in metric_labels.items()
+        )
+        if name not in emitted_metric_meta:
+            lines.extend([f"# HELP {name} {help_text}", f"# TYPE {name} gauge"])
+            emitted_metric_meta.add(name)
+        lines.append(f"{name}{{{label_text}}} {_prom_value(value)}")
 
     def collect(name: str, callback: Callable[[], Any]) -> Any:
         try:
@@ -4402,16 +4423,49 @@ def observability_metrics():
         ),
     )
     if isinstance(summary, dict):
-        lines.extend(
-            [
-                "# HELP docker_proxy_observability_requests Requests observed in the selected window.",
-                "# TYPE docker_proxy_observability_requests gauge",
-                f'docker_proxy_observability_requests{{proxy_id="{proxy_id}"}} {int(summary.get("request_records") or 0)}',
-                "# HELP docker_proxy_observability_cache_hit_ratio Cache hit percentage in the selected window.",
-                "# TYPE docker_proxy_observability_cache_hit_ratio gauge",
-                f'docker_proxy_observability_cache_hit_ratio{{proxy_id="{proxy_id}"}} {float(summary.get("cache_hit_pct") or 0.0)}',
-            ],
+        emit(
+            "docker_proxy_observability_requests",
+            "Requests observed in the selected window.",
+            summary.get("request_records"),
         )
+        emit(
+            "docker_proxy_observability_clients",
+            "Distinct clients observed in the selected window.",
+            summary.get("clients"),
+        )
+        emit(
+            "docker_proxy_observability_destinations",
+            "Distinct destinations observed in the selected window.",
+            summary.get("destinations"),
+        )
+        emit(
+            "docker_proxy_observability_transactions",
+            "Distinct transactions observed in the selected window.",
+            summary.get("transactions"),
+        )
+        emit(
+            "docker_proxy_observability_cache_hits",
+            "Cache hit requests observed in the selected window.",
+            summary.get("cache_hits"),
+        )
+        emit(
+            "docker_proxy_observability_cache_misses",
+            "Cache miss requests observed in the selected window.",
+            summary.get("cache_misses"),
+        )
+        emit(
+            "docker_proxy_observability_cache_hit_ratio",
+            "Cache hit ratio in the selected window.",
+            _ratio_from_percent(summary.get("cache_hit_pct")),
+        )
+
+    performance_summary_input = None
+    if isinstance(summary, dict):
+        performance_summary_input = {
+            **summary,
+            "requests": summary.get("requests", summary.get("request_records")),
+            "domains": summary.get("domains", summary.get("destinations")),
+        }
 
     cache = collect(
         "cache",
@@ -4427,13 +4481,121 @@ def observability_metrics():
         ),
     )
     if isinstance(cache, dict):
-        lines.extend(
-            [
-                "# HELP docker_proxy_observability_cache_saved_bytes Estimated cache-served response bytes in the selected window.",
-                "# TYPE docker_proxy_observability_cache_saved_bytes gauge",
-                f'docker_proxy_observability_cache_saved_bytes{{proxy_id="{proxy_id}"}} {int(cache.get("estimated_saved_bytes") or 0)}',
-            ],
+        emit(
+            "docker_proxy_observability_cache_total_bytes",
+            "Total response bytes observed in the selected window.",
+            cache.get("total_bytes"),
         )
+        emit(
+            "docker_proxy_observability_cache_hit_bytes",
+            "Cache hit response bytes observed in the selected window.",
+            cache.get("hit_bytes"),
+        )
+        emit(
+            "docker_proxy_observability_cache_miss_bytes",
+            "Cache miss response bytes observed in the selected window.",
+            cache.get("miss_bytes"),
+        )
+        emit(
+            "docker_proxy_observability_cache_saved_bytes",
+            "Estimated cache-served response bytes in the selected window.",
+            cache.get("estimated_saved_bytes"),
+        )
+
+    performance = collect(
+        "performance",
+        lambda: _cached_observability_result(
+            _observability_result_cache_key(
+                "observability",
+                "metrics",
+                "performance",
+                proxy_id,
+                window_i,
+            ),
+            lambda: queries.performance_overview(
+                since=since_ts,
+                limit=8,
+                summary=performance_summary_input,
+            ),
+        ),
+    )
+    if isinstance(performance, dict):
+        performance_summary = performance.get("summary") or {}
+        for key, metric_name, help_text in [
+            (
+                "requests",
+                "docker_proxy_observability_performance_requests",
+                "Requests included in the performance overview.",
+            ),
+            (
+                "transactions",
+                "docker_proxy_observability_performance_transactions",
+                "Transactions included in the performance overview.",
+            ),
+            (
+                "icap_events",
+                "docker_proxy_observability_performance_icap_events",
+                "ICAP events included in the performance overview.",
+            ),
+        ]:
+            emit(metric_name, help_text, performance_summary.get(key))
+
+        for service, payload in [
+            ("av", performance.get("av_icap_summary") or {}),
+            ("adblock", performance.get("adblock_icap_summary") or {}),
+        ]:
+            emit(
+                "docker_proxy_observability_icap_events",
+                "ICAP events observed by service in the selected window.",
+                payload.get("events"),
+                {"service": service},
+            )
+            emit(
+                "docker_proxy_observability_icap_avg_time_ms",
+                "Average ICAP adaptation time by service in the selected window.",
+                payload.get("avg_icap_time_ms"),
+                {"service": service},
+            )
+            emit(
+                "docker_proxy_observability_icap_max_time_ms",
+                "Maximum ICAP adaptation time by service in the selected window.",
+                payload.get("max_icap_time_ms"),
+                {"service": service},
+            )
+
+        slow_requests = performance.get("slow_requests") or []
+        if slow_requests:
+            emit(
+                "docker_proxy_observability_slowest_http_request_duration_ms",
+                "Slowest observed HTTP request duration in the selected window.",
+                slow_requests[0].get("duration_ms"),
+            )
+        slow_icap_events = performance.get("slow_icap_events") or []
+        if slow_icap_events:
+            emit(
+                "docker_proxy_observability_slowest_icap_time_ms",
+                "Slowest observed ICAP adaptation time in the selected window.",
+                slow_icap_events[0].get("icap_time_ms"),
+                {"service": slow_icap_events[0].get("service_family") or "unknown"},
+            )
+
+        for dimension, rows in [
+            ("user_agent", performance.get("top_user_agents") or []),
+            ("bump_mode", performance.get("top_bump_modes") or []),
+            ("tls_server_version", performance.get("top_tls_server_versions") or []),
+            ("policy_tag", performance.get("top_policy_tags") or []),
+        ]:
+            for rank, row in enumerate(rows[:5], start=1):
+                emit(
+                    "docker_proxy_observability_top_dimension_count",
+                    "Top bounded performance dimensions in the selected window.",
+                    row.get("count"),
+                    {
+                        "dimension": dimension,
+                        "rank": rank,
+                        "value": row.get("label") or row.get("full_label") or "",
+                    },
+                )
 
     security = collect(
         "security",
@@ -4450,15 +4612,15 @@ def observability_metrics():
     )
     if isinstance(security, dict):
         security_summary = security.get("summary") or {}
-        lines.extend(
-            [
-                "# HELP docker_proxy_observability_security_blocks Enforcement block events in the selected window.",
-                "# TYPE docker_proxy_observability_security_blocks gauge",
-                f'docker_proxy_observability_security_blocks{{proxy_id="{proxy_id}"}} {int(security_summary.get("combined_blocks") or 0)}',
-                "# HELP docker_proxy_observability_malware_attempts Potential AV findings in the selected window.",
-                "# TYPE docker_proxy_observability_malware_attempts gauge",
-                f'docker_proxy_observability_malware_attempts{{proxy_id="{proxy_id}"}} {int(security_summary.get("potential_findings") or 0)}',
-            ],
+        emit(
+            "docker_proxy_observability_security_blocks",
+            "Enforcement block events in the selected window.",
+            security_summary.get("combined_blocks"),
+        )
+        emit(
+            "docker_proxy_observability_malware_attempts",
+            "Potential AV findings in the selected window.",
+            security_summary.get("potential_findings"),
         )
 
     lines.extend(
@@ -4469,18 +4631,46 @@ def observability_metrics():
     )
     if scrape_errors:
         lines.extend(
-            f'docker_proxy_observability_scrape_error{{proxy_id="{proxy_id}",section="{section}"}} 1'
+            f'docker_proxy_observability_scrape_error{{proxy_id="{_prom_label(proxy_id)}",section="{_prom_label(section)}"}} 1'
             for section in scrape_errors
         )
     else:
         lines.append(
-            f'docker_proxy_observability_scrape_error{{proxy_id="{proxy_id}",section="none"}} 0',
+            f'docker_proxy_observability_scrape_error{{proxy_id="{_prom_label(proxy_id)}",section="none"}} 0',
         )
 
     return app.response_class(
         "\n".join(lines) + "\n",
         mimetype="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+def _prom_label(value: object) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _prom_value(value: object) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        number = 0.0
+    if not math.isfinite(number) or number < 0:
+        number = 0.0
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.6g}"
+
+
+def _ratio_from_percent(value: object) -> float:
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number) or number <= 0:
+        return 0.0
+    if number > 1:
+        return min(number / 100.0, 1.0)
+    return number
 
 
 @app.route("/requests", methods=["GET", "POST"])
