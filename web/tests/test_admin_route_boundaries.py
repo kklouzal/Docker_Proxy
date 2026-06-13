@@ -214,6 +214,7 @@ class RuntimeHealthEchoObservability:
         "/api/squid-config",
         "/proxies",
         "/observability",
+        "/observability/metrics",
         "/observability/export",
         "/ssl-errors",
         "/ssl-errors/export",
@@ -250,6 +251,19 @@ def test_health_is_public_and_json_has_no_csp(monkeypatch, tmp_path) -> None:
     assert response.json == {"ok": True}
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert "Content-Security-Policy" not in response.headers
+
+
+def test_performance_metrics_are_public_prometheus_text(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    response = loaded.module.app.test_client().get("/performance?window=3600")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith(
+        "text/plain; version=0.0.4"
+    )
+    assert 'docker_proxy_observability_window_seconds{proxy_id="default"} 3600' in body
+    assert "docker_proxy_observability_requests" in body
 
 
 def test_html_security_headers_are_present(monkeypatch, tmp_path) -> None:

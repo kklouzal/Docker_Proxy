@@ -1409,8 +1409,8 @@ def _inject_route_helpers():
 
 @app.before_request
 def _require_login_guard():
-    # Allow liveness and static assets unauthenticated.
-    if request.endpoint in {None, "static", "health"}:
+    # Allow liveness, scrape metrics, and static assets unauthenticated.
+    if request.endpoint in {None, "static", "health", "performance_metrics"}:
         return None
 
     # Allow auth routes.
