@@ -2434,7 +2434,7 @@ def _handle_webfilter_post(store: Any, tab: str):
         if enabled and categories and not source_url:
             return _redirect_to("webfilter", tab="categories", err_source="1")
 
-        if enabled and categories and source_url:
+        if source_url:
             try:
                 source_url = _validate_webfilter_source_url(source_url)
             except ValueError:

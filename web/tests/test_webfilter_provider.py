@@ -311,6 +311,45 @@ def test_webfilter_source_url_validation_reports_malformed_urls(
         m.validate_source_url(source_url)
 
 
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "http://127.0.0.1/feed.csv",
+        "https://feed-user:feed-pass@example.test/feed.csv",
+        r"https://example.test\path/feed.csv",
+    ],
+)
+def test_webfilter_store_rejects_disabled_unsafe_source_before_persistence(
+    source_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    m = _import_webfilter_store_module()
+    store = m.WebFilterStore()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("unsafe source should not reach persistence")
+        ),
+    )
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe source should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError):
+        store.set_settings(
+            enabled=False,
+            source_url=source_url,
+            blocked_categories=[],
+        )
+
+
 def test_webfilter_source_url_validation_rejects_unverifiable_dns(monkeypatch) -> None:
     m = _import_webfilter_store_module()
     download_safety = m.validate_source_url.__globals__["download_safety"]

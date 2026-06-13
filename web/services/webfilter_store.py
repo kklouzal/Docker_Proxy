@@ -105,6 +105,11 @@ class WebFilterStore(WebFilterStoreBase):
     ) -> None:
         self.init_db()
         source_candidate = (source_url or "").strip()
+        source = (
+            validate_source_url(source_candidate)
+            if source_candidate
+            else source_candidate
+        )
         provider = (source_provider or "auto").strip().lower()
         if provider not in {"auto", "ut1", "category-dir", "csv"}:
             provider = "auto"
@@ -153,12 +158,6 @@ class WebFilterStore(WebFilterStoreBase):
                 override_enabled=enabled,
                 override_blocked_categories=categories_csv,
             )
-            source = (
-                validate_source_url(source_candidate)
-                if source_candidate and (enabled or category_build_needed)
-                else source_candidate
-            )
-
             self._set(conn, "enabled", "1" if enabled else "0")
             self._set(conn, "source_url", source)
             self._set(conn, "source_provider", provider)

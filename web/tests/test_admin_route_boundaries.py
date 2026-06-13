@@ -2216,3 +2216,28 @@ def test_webfilter_enforcement_save_ignores_incomplete_safe_browsing_form(
     assert response.status_code in {302, 303}
     assert "err_safe_browsing_key=1" not in response.headers["Location"]
     assert store.last_set_settings["safe_browsing_enabled"] is False
+
+
+def test_webfilter_disabled_save_rejects_unsafe_source_before_store(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeWebfilterStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/webfilter?tab=categories",
+        data={
+            "csrf_token": csrf_token(client, "/webfilter"),
+            "tab": "categories",
+            "action": "save",
+            "source_url": "http://127.0.0.1/categories.csv",
+            "source_provider": "csv",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "err_source=1" in response.headers["Location"]
+    assert not hasattr(store, "last_set_settings")
