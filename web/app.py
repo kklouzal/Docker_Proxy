@@ -2767,14 +2767,24 @@ def _handle_pac_builder_post(store: Any):
             return _redirect_after_pac_refresh("pac_builder", ok="1")
 
         if action == "remove_backup_proxy":
-            store.delete_backup_proxy(int(request.form.get("backup_proxy_id") or "0"))
+            changed = store.delete_backup_proxy(
+                int(request.form.get("backup_proxy_id") or "0")
+            )
+            if not changed:
+                return _redirect_to(
+                    "pac_builder", error="1", msg="Backup proxy not found."
+                )
             return _redirect_after_pac_refresh("pac_builder", ok="1")
 
         if action == "move_backup_proxy":
-            store.move_backup_proxy(
+            changed = store.move_backup_proxy(
                 int(request.form.get("backup_proxy_id") or "0"),
                 request.form.get("direction") or "",
             )
+            if not changed:
+                return _redirect_to(
+                    "pac_builder", error="1", msg="Backup proxy not found."
+                )
             return _redirect_after_pac_refresh("pac_builder", ok="1")
 
         if action == "toggle_direct":
@@ -2796,7 +2806,11 @@ def _handle_pac_builder_post(store: Any):
 
         if action == "delete":
             pid = int(request.form.get("profile_id") or "0")
-            store.delete_profile(pid)
+            changed = store.delete_profile(pid)
+            if not changed:
+                return _redirect_to(
+                    "pac_builder", error="1", msg="Profile not found."
+                )
             return _redirect_after_pac_refresh("pac_builder", ok="1")
     except Exception as e:
         return _redirect_to("pac_builder", error="1", msg=public_error_message(e))

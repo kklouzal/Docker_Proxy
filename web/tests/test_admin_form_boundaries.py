@@ -280,6 +280,53 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     assert store.direct_enabled is False
 
 
+def test_pac_builder_noop_ids_do_not_queue_runtime_refresh(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakePacProfilesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, pac_profiles_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={"action": "delete", "profile_id": "999"},
+    ):
+        missing_profile = loaded.module._handle_pac_builder_post(store)
+    params = _params(missing_profile.location)
+    assert params["error"] == ["1"]
+    assert params["msg"] == ["Profile not found."]
+    assert "ok" not in params
+    assert loaded.operation_ledger.operations == []
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={"action": "remove_backup_proxy", "backup_proxy_id": "999"},
+    ):
+        missing_backup = loaded.module._handle_pac_builder_post(store)
+    params = _params(missing_backup.location)
+    assert params["error"] == ["1"]
+    assert params["msg"] == ["Backup proxy not found."]
+    assert "ok" not in params
+    assert loaded.operation_ledger.operations == []
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "move_backup_proxy",
+            "backup_proxy_id": "999",
+            "direction": "up",
+        },
+    ):
+        missing_move = loaded.module._handle_pac_builder_post(store)
+    params = _params(missing_move.location)
+    assert params["error"] == ["1"]
+    assert params["msg"] == ["Backup proxy not found."]
+    assert "ok" not in params
+    assert loaded.operation_ledger.operations == []
+
+
 def test_pac_builder_reports_reconcile_queue_failure(monkeypatch, tmp_path) -> None:
     store = FakePacProfilesStore()
     loaded = load_admin_app(monkeypatch, tmp_path, pac_profiles_store=store)

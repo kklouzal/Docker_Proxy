@@ -851,18 +851,20 @@ class FakePacProfilesStore:
         )
         return True, "", bid
 
-    def delete_backup_proxy(self, backup_proxy_id: int) -> None:
+    def delete_backup_proxy(self, backup_proxy_id: int) -> bool:
+        before = len(self.backup_proxies)
         self.backup_proxies = [
             item for item in self.backup_proxies if item.id != int(backup_proxy_id)
         ]
         for idx, item in enumerate(self.backup_proxies, start=1):
             item.position = idx
+        return len(self.backup_proxies) != before
 
-    def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> None:
+    def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> bool:
         bid = int(backup_proxy_id)
         ids = [item.id for item in self.backup_proxies]
         if bid not in ids:
-            return
+            return False
         index = ids.index(bid)
         if direction == "up" and index > 0:
             self.backup_proxies[index - 1], self.backup_proxies[index] = (
@@ -874,8 +876,11 @@ class FakePacProfilesStore:
                 self.backup_proxies[index],
                 self.backup_proxies[index + 1],
             )
+        else:
+            return False
         for idx, item in enumerate(self.backup_proxies, start=1):
             item.position = idx
+        return True
 
     def set_direct_enabled(self, enabled: bool) -> None:
         self.direct_enabled = bool(enabled)
@@ -911,8 +916,8 @@ class FakePacProfilesStore:
         )
         return True, "", pid
 
-    def delete_profile(self, profile_id: int) -> None:
-        self.profiles.pop(profile_id, None)
+    def delete_profile(self, profile_id: int) -> bool:
+        return self.profiles.pop(profile_id, None) is not None
 
 
 class FakeCertificateBundles:

@@ -354,18 +354,25 @@ class PacProfilesStore:
             )
         return ordered_ids
 
-    def delete_backup_proxy(self, backup_proxy_id: int) -> None:
+    def delete_backup_proxy(self, backup_proxy_id: int) -> bool:
         self.init_db()
         proxy_id = get_proxy_id()
         bid = int(backup_proxy_id)
         with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM pac_backup_proxies WHERE id=%s AND proxy_id=%s LIMIT 1",
+                (bid, proxy_id),
+            ).fetchone()
+            if existing is None:
+                return False
             conn.execute(
                 "DELETE FROM pac_backup_proxies WHERE id=%s AND proxy_id=%s",
                 (bid, proxy_id),
             )
             self._resequence_backup_proxies(conn, proxy_id)
+            return True
 
-    def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> None:
+    def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> bool:
         self.init_db()
         proxy_id = get_proxy_id()
         bid = int(backup_proxy_id)
@@ -373,7 +380,7 @@ class PacProfilesStore:
         with self._connect() as conn:
             ordered_ids = self._resequence_backup_proxies(conn, proxy_id)
             if bid not in ordered_ids:
-                return
+                return False
             index = ordered_ids.index(bid)
             if normalized_direction == "up" and index > 0:
                 ordered_ids[index - 1], ordered_ids[index] = (
@@ -386,12 +393,13 @@ class PacProfilesStore:
                     ordered_ids[index + 1],
                 )
             else:
-                return
+                return False
             for idx, proxy_id_value in enumerate(ordered_ids, start=1):
                 conn.execute(
                     "UPDATE pac_backup_proxies SET position=%s WHERE id=%s",
                     (idx, proxy_id_value),
                 )
+            return True
 
     def set_direct_enabled(self, enabled: bool) -> None:
         self.init_db()
@@ -490,7 +498,7 @@ class PacProfilesStore:
 
         return True, "", pid
 
-    def delete_profile(self, profile_id: int) -> None:
+    def delete_profile(self, profile_id: int) -> bool:
         self.init_db()
         pid = int(profile_id)
         proxy_id = get_proxy_id()
@@ -500,13 +508,14 @@ class PacProfilesStore:
                 (pid, proxy_id),
             ).fetchone()
             if row is None:
-                return
+                return False
             conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
             conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
             conn.execute(
                 "DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s",
                 (pid, proxy_id),
             )
+            return True
 
     def match_profile_for_client_ip(self, client_ip: str) -> PacProfile | None:
         """Return the effective profile for client_ip.
