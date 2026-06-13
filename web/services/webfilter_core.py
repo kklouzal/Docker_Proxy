@@ -157,6 +157,8 @@ def validate_source_url(source_url: str) -> str:
         detail = str(exc)
         if "embedded credentials" in detail:
             msg = "Web filter source URLs must not include embedded credentials."
+        elif "valid absolute HTTP/HTTPS" in detail:
+            msg = invalid_url_msg
         else:
             msg = (
                 "Web filter source URLs must not point at internal or localhost addresses."

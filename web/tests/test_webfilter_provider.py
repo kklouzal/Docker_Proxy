@@ -286,6 +286,31 @@ def test_webfilter_source_url_validation_reports_embedded_credentials(
         m.validate_source_url("https://feed-user:feed-pass@example.test/feed.csv")
 
 
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        r"https://example.test\@127.0.0.1/feed.csv",
+        r"https://example.test\path/feed.csv",
+    ],
+)
+def test_webfilter_source_url_validation_reports_malformed_urls(
+    source_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    m = _import_webfilter_store_module()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("malformed URLs should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="valid absolute HTTP/HTTPS"):
+        m.validate_source_url(source_url)
+
+
 def test_webfilter_source_url_validation_rejects_unverifiable_dns(monkeypatch) -> None:
     m = _import_webfilter_store_module()
     download_safety = m.validate_source_url.__globals__["download_safety"]
