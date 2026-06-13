@@ -4655,7 +4655,13 @@ def performance_metrics():
 
 
 def _prom_label(value: object) -> str:
-    return str(value or "").replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+    return (
+        str(value or "")
+        .replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace('"', '\\"')
+    )
 
 
 def _prom_value(value: object) -> str:

@@ -1438,7 +1438,7 @@ def test_observability_metrics_reuses_short_lived_section_cache(
                 ],
                 "top_user_agents": [
                     {"label": 'curl "quoted"', "count": 7},
-                    {"label": "overflow", "count": 99},
+                    {"label": "agent\rname", "count": 6},
                     {"label": "third", "count": 3},
                     {"label": "fourth", "count": 2},
                     {"label": "fifth", "count": 1},
@@ -1525,6 +1525,11 @@ def test_observability_metrics_reuses_short_lived_section_cache(
         'docker_proxy_observability_top_dimension_count{proxy_id="default",dimension="user_agent",rank="1",value="curl \\"quoted\\""} 7'
         in body
     )
+    assert (
+        'docker_proxy_observability_top_dimension_count{proxy_id="default",dimension="user_agent",rank="2",value="agent\\rname"} 6'
+        in body
+    )
+    assert "agent\rname" not in body
     assert (
         'docker_proxy_observability_top_dimension_count{proxy_id="default",dimension="policy_tag",rank="1",value="Finance\\\\Restricted"} 2'
         in body
