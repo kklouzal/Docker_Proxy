@@ -393,6 +393,78 @@ def test_download_if_changed_uses_conditional_headers_and_skips_on_304(
         assert metadata["checked_ts"] == "456"
 
 
+def test_download_if_changed_does_not_reuse_cross_origin_validators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+    _allow_public_example_dns(webcat_build, monkeypatch)
+
+    seen_headers: list[dict[str, str] | None] = []
+
+    class _Headers:
+        def __init__(self, values: dict[str, str]) -> None:
+            self._values = values
+
+        def get(self, name: str) -> str | None:
+            return self._values.get(name)
+
+    class _Response:
+        def __init__(self, headers: dict[str, str], final_url: str) -> None:
+            self.headers = _Headers(headers)
+            self._final_url = final_url
+            self._read = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, _size: int) -> bytes:
+            if self._read:
+                return b""
+            self._read = True
+            return b"domain.example,adult\n"
+
+        def geturl(self) -> str:
+            return self._final_url
+
+    def fake_open_download_url(_url, *, headers=None, **_kwargs):
+        seen_headers.append(headers)
+        return _Response(
+            {
+                "ETag": "mirror-etag",
+                "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT",
+            },
+            "https://mirror.example/feed.tar.gz",
+        )
+
+    monkeypatch.setattr(webcat_build, "_open_download_url", fake_open_download_url)
+
+    with tempfile.TemporaryDirectory(prefix="webcat_cross_origin_") as td:
+        dest = Path(td) / "feed.tar.gz"
+
+        downloaded, source_path = webcat_build._download_if_changed(
+            "https://public.example/feed.tar.gz",
+            dest,
+        )
+        assert downloaded is True
+        assert source_path == dest
+
+        metadata = webcat_build._load_download_metadata(dest)
+        assert metadata["final_url"] == "https://mirror.example/feed.tar.gz"
+        assert metadata.get("etag", "") == ""
+        assert metadata.get("last_modified", "") == ""
+
+        downloaded, source_path = webcat_build._download_if_changed(
+            "https://public.example/feed.tar.gz",
+            dest,
+        )
+        assert downloaded is True
+        assert source_path == dest
+        assert seen_headers == [{}, {}]
+
+
 def test_main_skips_rebuild_when_upstream_not_modified_and_db_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -208,6 +208,18 @@ def _save_download_metadata(dest: Path, metadata: dict[str, str]) -> None:
     meta_path.write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _download_origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlparse(url)
+    scheme = str(parsed.scheme or "").lower()
+    port = parsed.port
+    if port is None:
+        if scheme == "http":
+            port = 80
+        elif scheme == "https":
+            port = 443
+    return (scheme, str(parsed.hostname or "").lower().rstrip("."), port)
+
+
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     _validate_download_url(url)
@@ -301,11 +313,14 @@ def _download_if_changed(
             new_metadata = {
                 "url": url,
                 "final_url": response_url or url,
-                "etag": str(r.headers.get("ETag") or "").strip(),
-                "last_modified": str(r.headers.get("Last-Modified") or "").strip(),
                 "downloaded_ts": str(_now()),
                 "checked_ts": str(_now()),
             }
+            if _download_origin(response_url or url) == _download_origin(url):
+                new_metadata["etag"] = str(r.headers.get("ETag") or "").strip()
+                new_metadata["last_modified"] = str(
+                    r.headers.get("Last-Modified") or "",
+                ).strip()
 
         tmp.replace(dest)
         _save_download_metadata(dest, new_metadata)
