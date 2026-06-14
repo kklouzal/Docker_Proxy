@@ -143,6 +143,33 @@ def test_profile_save_normalizes_multiline_server_urls(tmp_path) -> None:
     assert profile.server_urls == "ldaps://ldap.example.org:636\nldap://dc.example.org"
 
 
+def test_profile_save_preserves_bracketed_ipv6_server_urls(tmp_path) -> None:
+    from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path
+
+    configure_test_mysql_env(tmp_path / "directory-auth-ipv6-url-normalize-test")
+    ensure_web_import_path()
+    from services.directory_auth import DirectoryAuthStore as RuntimeDirectoryAuthStore
+
+    store = RuntimeDirectoryAuthStore(lambda: "stable-secret")
+    profile = store.save_profile(
+        "ldap",
+        {
+            "server_urls": "LDAP://[2001:DB8::1]:389\nldaps://[2001:db8::2]",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert profile.server_urls == "ldap://[2001:db8::1]:389\nldaps://[2001:db8::2]"
+
+
 @pytest.mark.parametrize(
     ("server_urls", "message"),
     [
@@ -153,6 +180,7 @@ def test_profile_save_normalizes_multiline_server_urls(tmp_path) -> None:
         ("ldap://ldap.example.org#frag", "valid ldap:// or ldaps:// URLs"),
         ("ldap://user@ldap.example.org", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org:not-a-port", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://2001:db8::1", "valid ldap:// or ldaps:// URLs"),
     ],
 )
 def test_profile_save_rejects_invalid_server_urls(

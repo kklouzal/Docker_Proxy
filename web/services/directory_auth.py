@@ -833,7 +833,8 @@ class DirectoryAuthStore:
                 or parsed.fragment
             ):
                 raise ValueError(invalid_url_msg)
-            url = f"{parsed.scheme}://{hostname}"
+            host = f"[{hostname}]" if ":" in hostname else hostname
+            url = f"{parsed.scheme}://{host}"
             if port is not None:
                 url = f"{url}:{port}"
             urls.append(url)
