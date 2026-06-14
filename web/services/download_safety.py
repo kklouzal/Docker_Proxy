@@ -6,10 +6,9 @@ import urllib.error
 import urllib.request
 from urllib.parse import urljoin, urlparse
 
-
 _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
-    "if-modified-since",
-    "if-none-match",
+    "if-modified-since": "If-Modified-Since",
+    "if-none-match": "If-None-Match",
 }
 
 
@@ -77,10 +76,18 @@ def _safe_extra_download_headers(headers: dict[str, str] | None) -> dict[str, st
     for key, value in headers.items():
         if not key or not value:
             continue
-        name = str(key).strip()
-        if name.lower() not in _ALLOWED_DOWNLOAD_REQUEST_HEADERS:
+        name = str(key)
+        header_value = str(value)
+        if (
+            name != name.strip()
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in header_value)
+        ):
             continue
-        safe_headers[name] = str(value)
+        safe_name = _ALLOWED_DOWNLOAD_REQUEST_HEADERS.get(name.lower())
+        if safe_name is None:
+            continue
+        safe_headers[safe_name] = header_value
     return safe_headers
 
 
