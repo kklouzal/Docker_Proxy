@@ -1272,11 +1272,61 @@ class SquidController(_CoreSquidController):
             options.get("https_intercept_port"),
             3130 if explicit_port != 3130 else 3131,
         )
+        logical_lines = self._logical_config_lines(text)
+        unmanaged_listener_ports: set[int] = set()
+        found_replaced_explicit = False
+        scanning_managed_intercept = False
+        for physical_lines, logical in logical_lines:
+            if any(
+                "# BEGIN SQUID-UI INTERCEPT LISTENER" in line for line in physical_lines
+            ) or any(
+                "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" in line
+                for line in physical_lines
+            ):
+                scanning_managed_intercept = True
+            if scanning_managed_intercept:
+                if any(
+                    "# END SQUID-UI INTERCEPT LISTENER" in line
+                    for line in physical_lines
+                ) or any(
+                    "# END SQUID-UI HTTPS INTERCEPT LISTENER" in line
+                    for line in physical_lines
+                ):
+                    scanning_managed_intercept = False
+                continue
+
+            stripped = logical.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            lower = stripped.lower()
+            if not (lower.startswith("http_port ") or lower.startswith("https_port ")):
+                continue
+            parts = stripped.split()
+            if len(parts) < 2:
+                continue
+            port = self._extract_http_port_number(parts[1])
+            if port is None:
+                continue
+            modes = {part.strip().lower() for part in parts[2:]}
+            if (
+                lower.startswith("http_port ")
+                and "intercept" not in modes
+                and "tproxy" not in modes
+                and not found_replaced_explicit
+            ):
+                found_replaced_explicit = True
+                continue
+            unmanaged_listener_ports.add(port)
+
         if intercept_port == explicit_port:
             intercept_port = self._default_intercept_port(explicit_port)
             if intercept_port == explicit_port:
                 intercept_port = 3129 if explicit_port != 3129 else 3130
-        used_ports = {explicit_port, intercept_port if intercept_enabled else None}
+        used_ports = {
+            explicit_port,
+            intercept_port if intercept_enabled else None,
+            *unmanaged_listener_ports,
+        }
         https_intercept_port = self._first_available_port(
             https_intercept_port,
             used_ports,
@@ -1285,7 +1335,6 @@ class SquidController(_CoreSquidController):
         rendered_lines: list[str] = []
         replaced_explicit = False
         skipping_managed_intercept = False
-        logical_lines = self._logical_config_lines(text)
         for physical_lines, logical in logical_lines:
             stripped = logical.strip()
             if any(

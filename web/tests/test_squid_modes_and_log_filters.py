@@ -751,6 +751,46 @@ def test_squid_controller_resolves_three_way_listener_port_collision(tmp_path) -
     assert "https_port 0.0.0.0:3132 intercept ssl-bump" in rendered
 
 
+def test_squid_controller_avoids_unmanaged_listener_port_collision(tmp_path) -> None:
+    _add_web_to_path()
+
+    from services.squid_config_forms import build_template_options  # type: ignore
+    from services.squidctl import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template_text = (repo_root / "squid" / "squid.conf.template").read_text(
+        encoding="utf-8",
+    )
+    template_path = tmp_path / "squid.conf.template"
+    template_path.write_text(
+        template_text.replace(
+            "# Allow cache manager access from localhost",
+            "http_port 127.0.0.1:8082\n\n"
+            "# Allow cache manager access from localhost",
+        ),
+        encoding="utf-8",
+    )
+
+    ctl = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+    ctl.squid_conf_template_path = str(template_path)
+    options = build_template_options(
+        {
+            "explicit_proxy_port": 8080,
+            "intercept_enabled": True,
+            "intercept_port": 8081,
+            "https_intercept_enabled": True,
+            "https_intercept_port": 8082,
+        },
+        max_workers=4,
+    )
+
+    rendered = ctl.generate_config_from_template(options)
+
+    assert "http_port 127.0.0.1:8082" in rendered
+    assert "https_port 0.0.0.0:8082 intercept ssl-bump" not in rendered
+    assert "https_port 0.0.0.0:8083 intercept ssl-bump" in rendered
+
+
 def test_squid_controller_https_intercept_listener_does_not_splice_by_default(
     tmp_path,
 ) -> None:
