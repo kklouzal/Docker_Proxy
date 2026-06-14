@@ -161,6 +161,64 @@ def test_validate_download_url_preserves_scheme_error_without_dns(
         )
 
 
+def test_open_download_url_filters_unsafe_headers_on_first_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    seen_headers: list[dict[str, str]] = []
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            seen_headers.append(dict(req.header_items()))
+            msg = "stop"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(RuntimeError, match="stop"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+            headers={
+                "Authorization": "Bearer secret",
+                "Cookie": "session=secret",
+                "Host": "private.example",
+                "If-Modified-Since": "Mon, 01 Jan 2024 00:00:00 GMT",
+                "If-None-Match": "etag-1",
+                "Proxy-Authorization": "Basic secret",
+                "Set-Cookie": "session=secret",
+                "User-Agent": "caller-agent",
+            },
+        )
+
+    assert len(seen_headers) == 1
+    sent = {k.lower(): v for k, v in seen_headers[0].items()}
+    assert sent == {
+        "if-modified-since": "Mon, 01 Jan 2024 00:00:00 GMT",
+        "if-none-match": "etag-1",
+        "user-agent": "unit-test-agent",
+    }
+
+
 def test_open_download_url_strips_extra_headers_on_cross_origin_redirect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

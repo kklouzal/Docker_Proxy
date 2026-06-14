@@ -7,6 +7,12 @@ import urllib.request
 from urllib.parse import urljoin, urlparse
 
 
+_ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
+    "if-modified-since",
+    "if-none-match",
+}
+
+
 def _is_forbidden_download_ip(address: str) -> bool:
     ip = ipaddress.ip_address(address)
     return (
@@ -64,6 +70,20 @@ def _url_origin(parsed) -> tuple[str, str, int | None]:
     )
 
 
+def _safe_extra_download_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    if not headers:
+        return {}
+    safe_headers: dict[str, str] = {}
+    for key, value in headers.items():
+        if not key or not value:
+            continue
+        name = str(key).strip()
+        if name.lower() not in _ALLOWED_DOWNLOAD_REQUEST_HEADERS:
+            continue
+        safe_headers[name] = str(value)
+    return safe_headers
+
+
 def validate_download_url(
     url: str,
     *,
@@ -109,9 +129,8 @@ def open_download_url(
     current = url
     opener = urllib.request.build_opener(_NoRedirectHandler)
     base_headers = {"User-Agent": user_agent}
-    request_headers = dict(base_headers)
-    if headers:
-        request_headers.update({str(k): str(v) for k, v in headers.items() if k and v})
+    safe_headers = _safe_extra_download_headers(headers)
+    request_headers = {**safe_headers, **base_headers}
     for _ in range(max_redirects + 1):
         parsed = validate_download_url(current, scheme_error=scheme_error)
         req = urllib.request.Request(current, headers=request_headers)  # noqa: S310
