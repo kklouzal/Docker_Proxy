@@ -1299,7 +1299,7 @@ class SquidController(_CoreSquidController):
             if not stripped or stripped.startswith("#"):
                 continue
             lower = stripped.lower()
-            if not (lower.startswith("http_port ") or lower.startswith("https_port ")):
+            if not lower.startswith(("http_port ", "https_port ")):
                 continue
             parts = stripped.split()
             if len(parts) < 2:
