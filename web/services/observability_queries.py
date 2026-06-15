@@ -209,11 +209,13 @@ class ObservabilityQueries:
         search: str,
         request_search_column: str,
         icap_search_column: str,
+        request_table_alias: str = "r",
     ) -> tuple[str, list[Any], str, list[Any]]:
         proxy_id = get_proxy_id()
+        request_prefix = f"{request_table_alias}." if request_table_alias else ""
         request_where = [
-            "r.proxy_id = %s",
-            "r.ts >= %s",
+            f"{request_prefix}proxy_id = %s",
+            f"{request_prefix}ts >= %s",
             self._present_sql(request_present_column),
         ]
         request_params: list[Any] = [proxy_id, int(since)]
@@ -1779,16 +1781,20 @@ class ObservabilityQueries:
         summary: dict[str, Any] | None = None,
         runtime_health: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        proxy_id = get_proxy_id()
         lim = max(10, min(200, int(limit or 50)))
         search_value = (search or "").strip().lower()
         query_lim = 200 if search_value else lim
-        where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
-        params: list[Any] = [proxy_id, int(since)]
-        icap_where = ["proxy_id = %s", "ts >= %s", "domain <> ''"]
-        icap_params: list[Any] = [proxy_id, int(since)]
-        where_sql = "WHERE " + " AND ".join(where)
-        icap_where_sql = "WHERE " + " AND ".join(icap_where)
+        where_sql, params, icap_where_sql, icap_params = (
+            self._request_icap_rollup_filters(
+                since=since,
+                request_present_column="domain",
+                icap_present_column="domain",
+                search="",
+                request_search_column="domain",
+                icap_search_column="domain",
+                request_table_alias="",
+            )
+        )
         suggestions: list[dict[str, Any]] = self._runtime_health_suggestions(
             runtime_health
         )
