@@ -241,6 +241,19 @@ class ObservabilityQueries:
         )
 
     @staticmethod
+    def _request_search_filter(
+        search: str,
+        *,
+        columns: tuple[str, ...] = ("domain", "client_ip", "url"),
+    ) -> tuple[str, list[Any]]:
+        search_value = (search or "").strip().lower()
+        if not search_value:
+            return "", []
+        like = f"%{_escape_like(search_value)}%"
+        predicates = [f"LOWER({column}) LIKE %s ESCAPE '\\\\'" for column in columns]
+        return "(" + " OR ".join(predicates) + ")", [like] * len(columns)
+
+    @staticmethod
     def _av_status(summary: str, details: str) -> str:
         haystack = f"{summary} {details}".lower()
         if any(
@@ -1004,18 +1017,13 @@ class ObservabilityQueries:
 
     def cache_savings(self, *, since: int, search: str = "") -> dict[str, Any]:
         proxy_id = get_proxy_id()
-        search_value = (search or "").strip().lower()
         hit_sql = self._hit_sql("result_code")
         where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
         params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\'"
-                ")",
-            )
-            params.extend([like, like, like])
+        search_sql, search_params = self._request_search_filter(search)
+        if search_sql:
+            where.append(search_sql)
+            params.extend(search_params)
         where_sql = "WHERE " + " AND ".join(where)
         with self._connect() as conn:
             row = conn.execute(
@@ -1054,17 +1062,17 @@ class ObservabilityQueries:
     ) -> list[dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        search_value = (search or "").strip().lower()
         hit_sql = self._hit_sql("result_code")
         tx_sql = self._request_identity_sql("id", "master_xaction")
         where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
         params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "(LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\')",
-            )
-            params.extend([like, like, like])
+        search_sql, search_params = self._request_search_filter(
+            search,
+            columns=("client_ip", "domain", "url"),
+        )
+        if search_sql:
+            where.append(search_sql)
+            params.extend(search_params)
         where_sql = "WHERE " + " AND ".join(where)
         with self._connect() as conn:
             total_row = conn.execute(
@@ -1138,7 +1146,6 @@ class ObservabilityQueries:
     ) -> list[dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        search_value = (search or "").strip().lower()
         where = [
             "proxy_id = %s",
             "ts >= %s",
@@ -1146,12 +1153,10 @@ class ObservabilityQueries:
             "LOWER(COALESCE(bump_mode, '')) LIKE '%%splice%%'",
         ]
         params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\')",
-            )
-            params.extend([like, like, like])
+        search_sql, search_params = self._request_search_filter(search)
+        if search_sql:
+            where.append(search_sql)
+            params.extend(search_params)
         where_sql = "WHERE " + " AND ".join(where)
         with self._connect() as conn:
             rows = conn.execute(
