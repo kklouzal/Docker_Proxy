@@ -560,7 +560,6 @@ class ObservabilityQueries:
     ) -> list[dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        search_value = (search or "").strip().lower()
         hit_sql = self._hit_sql("result_code")
         reason_sql = self._not_cached_reason_sql()
         where = [
@@ -570,14 +569,10 @@ class ObservabilityQueries:
             f"NOT {hit_sql}",
         ]
         params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\'"
-                ")",
-            )
-            params.extend([like, like, like])
+        search_sql, search_params = self._request_search_filter(search)
+        if search_sql:
+            where.append(search_sql)
+            params.extend(search_params)
         where_sql = "WHERE " + " AND ".join(where)
 
         if sort == "recent":
@@ -1467,7 +1462,6 @@ class ObservabilityQueries:
     ) -> list[dict[str, Any]]:
         proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        search_value = (search or "").strip().lower()
         hit_sql = self._hit_sql("result_code")
         group_sql = (
             "CASE "
@@ -1476,12 +1470,13 @@ class ObservabilityQueries:
         )
         where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
         params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "(LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\')",
-            )
-            params.extend([like, like, like])
+        search_sql, search_params = self._request_search_filter(
+            search,
+            columns=("client_ip", "domain", "url"),
+        )
+        if search_sql:
+            where.append(search_sql)
+            params.extend(search_params)
         where_sql = "WHERE " + " AND ".join(where)
         with self._connect() as conn:
             rows = conn.execute(
