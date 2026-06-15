@@ -1658,7 +1658,7 @@ class ObservabilityQueries:
                 component="MySQL / observability ingestion",
                 severity="high",
                 title="Database or ingestion degradation observed",
-                count=1,
+                count=max(1, len(db_evidence_parts)),
                 confidence="medium",
                 recommended_action="Check MySQL health, credentials, connection limits, DB_POOL_SIZE, tailer pending-row warnings, and ingestion queue pressure before relying on trend data.",
                 evidence="; ".join(db_evidence_parts).strip()
