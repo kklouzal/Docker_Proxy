@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import ipaddress
 import json
 import os
 import pathlib
@@ -13,6 +12,17 @@ import sys
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+HERE = pathlib.Path(__file__).resolve().parent
+APP_ROOT = pathlib.Path(os.path.join(HERE, "..")).resolve()
+APP_ROOT_STR = str(APP_ROOT)
+if APP_ROOT_STR not in sys.path:
+    sys.path.insert(0, APP_ROOT_STR)
+
+from services.adblock_hosts import (  # noqa: E402
+    looks_like_adblock_host as _looks_like_host,
+)
+from services.adblock_hosts import normalize_adblock_host as _normalize_host  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -92,11 +102,6 @@ class _Aggregate:
     option_key_counts: dict[str, int]
     option_group_counts: dict[str, int]
 
-
-_HOST_RE = re.compile(
-    r"^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
-    re.IGNORECASE,
-)
 
 _KNOWN_TYPES: set[str] = {
     "script",
@@ -223,6 +228,11 @@ def _find_regex_delimiter(rule: str) -> int | None:
             if not tail or tail.startswith("$"):
                 return i
     return None
+
+
+def _subscription_list_path(lists_dir: pathlib.Path, key: str) -> str:
+    safe = "".join([c for c in (key or "") if c.isalnum() or c in {"-", "_"}])
+    return os.path.join(str(lists_dir), f"{safe}.txt")
 
 
 def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
@@ -418,61 +428,6 @@ def _option_groups(opt_parsed: dict[str, Any]) -> set[str]:
     if misc:
         groups.add("misc")
     return groups
-
-
-def _looks_like_host(s: str) -> bool:
-    h = _normalize_host(s)
-    if not h:
-        return False
-    try:
-        ipaddress.ip_address(h.strip("[]"))
-        return True
-    except ValueError:
-        pass
-    if "." not in h or ".." in h:
-        return False
-    return _HOST_RE.match(h) is not None
-
-
-def _normalize_host(host: str) -> str:
-    h = (host or "").strip().lower().rstrip(".")
-    if not h:
-        return ""
-    if h.startswith("[") and "]" in h:
-        literal = h[1:].split("]", 1)[0].strip()
-        try:
-            ip = ipaddress.ip_address(literal)
-            return (
-                f"[{ip.compressed.lower()}]"
-                if ip.version == 6
-                else ip.compressed.lower()
-            )
-        except ValueError:
-            return h.split("]", 1)[0] + "]"
-    if ":" in h:
-        try:
-            ip = ipaddress.ip_address(h)
-            return (
-                f"[{ip.compressed.lower()}]"
-                if ip.version == 6
-                else ip.compressed.lower()
-            )
-        except ValueError:
-            if h.count(":") == 1:
-                h = h.split(":", 1)[0]
-            else:
-                return h
-    try:
-        ip = ipaddress.ip_address(h)
-        return (
-            f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
-        )
-    except ValueError:
-        pass
-    try:
-        return h.encode("idna").decode("ascii").lower().rstrip(".")
-    except Exception:
-        return h
 
 
 def _abp_to_regex(pattern: str) -> str:
@@ -1503,20 +1458,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # Import AdblockStore from the app codebase.
     # This script lives in /app/tools; add /app to sys.path.
-    here = pathlib.Path(pathlib.Path(__file__).parent).resolve()
-    app_root = pathlib.Path(os.path.join(here, "..")).resolve()
-    app_root_str = str(app_root)
-    if app_root_str not in sys.path:
-        sys.path.insert(0, app_root_str)
-
-    try:
-        from services.adblock_store import AdblockStore  # type: ignore
-    except Exception:
-        return 2
-
-    store = AdblockStore(lists_dir=str(ns.lists_dir))
-    with suppress(Exception):
-        store.init_db()
+    if APP_ROOT_STR not in sys.path:
+        sys.path.insert(0, APP_ROOT_STR)
 
     explicit_enabled_lists = [
         str(item).strip() for item in (ns.enabled_lists or []) if str(item).strip()
@@ -1528,8 +1471,17 @@ def main(argv: list[str] | None = None) -> int:
             if key in seen:
                 continue
             seen.add(key)
-            enabled_paths.append((key, store.list_path(key)))
+            enabled_paths.append((key, _subscription_list_path(ns.lists_dir, key)))
     else:
+        try:
+            from services.adblock_store import AdblockStore  # type: ignore
+        except Exception:
+            return 2
+
+        store = AdblockStore(lists_dir=str(ns.lists_dir))
+        with suppress(Exception):
+            store.init_db()
+
         try:
             for st in store.list_statuses():
                 if not st.enabled:

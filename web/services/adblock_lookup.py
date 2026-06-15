@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fnmatch
-import ipaddress
 import json
 import re
 import sqlite3
@@ -10,6 +9,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from services.adblock_hosts import normalize_adblock_host as _normalize_host
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}", re.IGNORECASE)
 _DEFAULT_SQLITE_CACHE_KIB = 32768
@@ -36,47 +37,6 @@ class _HostPatternCandidate:
     def __init__(self, host_pattern: str, rule_id: str) -> None:
         self.host_pattern = host_pattern
         self.rule_id = rule_id
-
-
-def _normalize_host(host: str) -> str:
-    value = (host or "").strip().lower().rstrip(".")
-    if not value:
-        return ""
-    if value.startswith("[") and "]" in value:
-        literal = value[1:].split("]", 1)[0].strip()
-        try:
-            ip = ipaddress.ip_address(literal)
-            return (
-                f"[{ip.compressed.lower()}]"
-                if ip.version == 6
-                else ip.compressed.lower()
-            )
-        except ValueError:
-            return value.split("]", 1)[0] + "]"
-    if ":" in value:
-        try:
-            ip = ipaddress.ip_address(value)
-            return (
-                f"[{ip.compressed.lower()}]"
-                if ip.version == 6
-                else ip.compressed.lower()
-            )
-        except ValueError:
-            if value.count(":") == 1:
-                value = value.split(":", 1)[0]
-            else:
-                return value
-    try:
-        ip = ipaddress.ip_address(value)
-        return (
-            f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
-        )
-    except ValueError:
-        pass
-    try:
-        return value.encode("idna").decode("ascii").lower().rstrip(".")
-    except Exception:
-        return value
 
 
 def _host_suffix_candidates(host: str) -> list[str]:

@@ -105,6 +105,7 @@ COPY proxy /app/proxy
 COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
     web/services/adblock_decision.py \
+    web/services/adblock_hosts.py \
     web/services/adblock_lookup.py \
     web/services/adblock_store.py \
     web/services/certificate_bundles.py \

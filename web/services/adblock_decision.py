@@ -11,6 +11,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from services.adblock_hosts import normalize_adblock_host as _normalize_host
 from services.adblock_lookup import AdblockLookupIndex
 
 if TYPE_CHECKING:
@@ -60,47 +61,6 @@ class AdblockDecision:
     action: str = "allow"
     reason: str = "no-match"
     list_key: str = ""
-
-
-def _normalize_host(host: str) -> str:
-    value = (host or "").strip().lower().rstrip(".")
-    if not value:
-        return ""
-    if value.startswith("[") and "]" in value:
-        literal = value[1:].split("]", 1)[0].strip()
-        try:
-            ip = ipaddress.ip_address(literal)
-            return (
-                f"[{ip.compressed.lower()}]"
-                if ip.version == 6
-                else ip.compressed.lower()
-            )
-        except ValueError:
-            return value.split("]", 1)[0] + "]"
-    if ":" in value:
-        try:
-            ip = ipaddress.ip_address(value)
-            return (
-                f"[{ip.compressed.lower()}]"
-                if ip.version == 6
-                else ip.compressed.lower()
-            )
-        except ValueError:
-            if value.count(":") == 1:
-                value = value.split(":", 1)[0]
-            else:
-                return value
-    try:
-        ip = ipaddress.ip_address(value)
-        return (
-            f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
-        )
-    except ValueError:
-        pass
-    try:
-        return value.encode("idna").decode("ascii").lower().rstrip(".")
-    except Exception:
-        return value
 
 
 def _host_matches(host: str, rule_host: str) -> bool:

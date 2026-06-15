@@ -34,6 +34,7 @@ COPY web/app.py /app/app.py
 COPY web/wsgi.py /app/wsgi.py
 COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
+	web/services/adblock_hosts.py \
 	web/services/adblock_store.py \
 	web/services/audit_store.py \
 	web/services/auth_store.py \
