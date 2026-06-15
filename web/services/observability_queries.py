@@ -4,7 +4,10 @@ import contextlib
 import hashlib
 import time
 from collections import Counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from services.adblock_store import get_adblock_store
 from services.client_identity_cache import get_client_identity_cache
@@ -1907,42 +1910,55 @@ class ObservabilityQueries:
             )
             for row in aborted_rows
         )
-        for row in slow_icap_rows:
-            service = str(row[1] or "icap")
-            suggestions.append(
-                self._suggestion_row(
-                    kind="slow_icap",
-                    component=f"ICAP {service}",
-                    severity="medium",
-                    title="Slow ICAP adaptation observed",
-                    subject=str(row[0] or ""),
-                    count=int(row[2] or 0),
-                    clients=int(row[3] or 0),
-                    last_seen=int(row[4] or 0),
-                    confidence="medium",
-                    recommended_action="Check c-icap/clamd latency, tune scan policy by MIME/size/domain, or add an exclusion for latency-sensitive traffic.",
-                    evidence=f"Max ICAP latency {int(row[5] or 0)} ms",
-                ),
-            )
-        for row in icap_failure_rows:
-            service = str(row[1] or "icap")
-            suggestions.append(
-                self._suggestion_row(
-                    kind="icap_degraded",
-                    component=f"ICAP {service}",
-                    severity="high",
-                    title="ICAP degradation or bypass signal observed",
-                    subject=str(row[0] or ""),
-                    count=int(row[2] or 0),
-                    clients=int(row[3] or 0),
-                    last_seen=int(row[4] or 0),
-                    confidence="high",
-                    recommended_action="Check c-icap listener health, clamd reachability, fail-open/fail-closed policy, and proxy memory pressure.",
-                    evidence=str(
-                        row[5] or "ICAP trace contained failure/bypass language"
-                    )[:240],
-                ),
-            )
+
+        def add_icap_suggestions(
+            rows: list[Any],
+            *,
+            kind: str,
+            severity: str,
+            title: str,
+            confidence: str,
+            recommended_action: str,
+            evidence_for: Callable[[Any], str],
+        ) -> None:
+            for row in rows:
+                service = str(row[1] or "icap")
+                suggestions.append(
+                    self._suggestion_row(
+                        kind=kind,
+                        component=f"ICAP {service}",
+                        severity=severity,
+                        title=title,
+                        subject=str(row[0] or ""),
+                        count=int(row[2] or 0),
+                        clients=int(row[3] or 0),
+                        last_seen=int(row[4] or 0),
+                        confidence=confidence,
+                        recommended_action=recommended_action,
+                        evidence=evidence_for(row),
+                    ),
+                )
+
+        add_icap_suggestions(
+            slow_icap_rows,
+            kind="slow_icap",
+            severity="medium",
+            title="Slow ICAP adaptation observed",
+            confidence="medium",
+            recommended_action="Check c-icap/clamd latency, tune scan policy by MIME/size/domain, or add an exclusion for latency-sensitive traffic.",
+            evidence_for=lambda row: f"Max ICAP latency {int(row[5] or 0)} ms",
+        )
+        add_icap_suggestions(
+            icap_failure_rows,
+            kind="icap_degraded",
+            severity="high",
+            title="ICAP degradation or bypass signal observed",
+            confidence="high",
+            recommended_action="Check c-icap listener health, clamd reachability, fail-open/fail-closed policy, and proxy memory pressure.",
+            evidence_for=lambda row: str(
+                row[5] or "ICAP trace contained failure/bypass language"
+            )[:240],
+        )
 
         try:
             ssl_candidates: list[dict[str, Any]] = []

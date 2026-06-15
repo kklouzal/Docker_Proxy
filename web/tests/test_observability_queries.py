@@ -274,6 +274,79 @@ def test_remediation_search_does_not_hide_ssl_generated_actions(
     assert payload["summary"]["observations"] == 5
 
 
+def test_remediation_overview_builds_icap_suggestion_rows(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            sql_text = str(sql)
+            if "AND icap_time_ms >= 1000" in sql_text:
+                return FakeResult(
+                    [("scan.example", "av", 2, 1, 4300, 1500)],
+                )
+            if "adapt_summary" in sql_text:
+                return FakeResult(
+                    [
+                        (
+                            "scan.example",
+                            "av",
+                            1,
+                            1,
+                            4310,
+                            "virus_scan RESPMOD timeout",
+                        ),
+                    ],
+                )
+            return FakeResult([])
+
+    def _connect():
+        return FakeConnection()
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", _connect)
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=4200,
+        search="scan",
+        limit=10,
+        summary={"request_records": 0},
+    )
+    rows = {row["kind"]: row for row in payload["rows"]}
+
+    assert set(rows) == {"icap_degraded", "slow_icap"}
+    assert rows["slow_icap"]["component"] == "ICAP av"
+    assert rows["slow_icap"]["subject"] == "scan.example"
+    assert rows["slow_icap"]["count"] == 2
+    assert rows["slow_icap"]["clients"] == 1
+    assert rows["slow_icap"]["last_seen"] == 4300
+    assert rows["slow_icap"]["confidence"] == "medium"
+    assert rows["slow_icap"]["evidence"] == "Max ICAP latency 1500 ms"
+    assert rows["icap_degraded"]["component"] == "ICAP av"
+    assert rows["icap_degraded"]["severity"] == "high"
+    assert rows["icap_degraded"]["confidence"] == "high"
+    assert rows["icap_degraded"]["evidence"] == "virus_scan RESPMOD timeout"
+    assert payload["summary"]["observations"] == 3
+
+
 def test_remediation_summary_separates_domain_and_runtime_subjects(
     monkeypatch,
 ) -> None:
