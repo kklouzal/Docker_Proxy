@@ -86,8 +86,7 @@ ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 RUN apk add --no-cache squid python3 supervisor openssl ca-certificates libatomic \
         pcre2 \
         brotli-libs \
-        zstd-libs \
-        file
+        zstd-libs
 
 WORKDIR /app
 

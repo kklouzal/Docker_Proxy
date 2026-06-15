@@ -96,6 +96,8 @@ def test_proxy_cicap_build_enables_compression_support_and_strips_artifacts() ->
     assert "brotli-libs" in proxy
     assert "zstd-libs" in proxy
     assert "strip --strip-unneeded" in proxy
+    runtime_packages = proxy.split("FROM alpine:${ALPINE_VERSION}", 2)[-1]
+    assert " file" not in runtime_packages
 
 
 def test_repo_does_not_ship_stale_squid_mime_override() -> None:
@@ -131,6 +133,18 @@ def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
     assert "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE" in entrypoint
     assert "adaptation_access adblock_req_set allow icap_adblockable" in entrypoint
     assert "adaptation_access adblock_req_set deny all" in entrypoint
+
+
+def test_entrypoint_bootstrap_av_policy_matches_schema_safety_guards() -> None:
+    entrypoint = _read("docker/entrypoint.sh")
+
+    assert "acl file_security_range_request req_header Range .+" in entrypoint
+    assert "acl file_security_partial_response http_status 206" in entrypoint
+    assert "adaptation_access av_resp_set deny file_security_range_request" in entrypoint
+    assert (
+        "adaptation_access av_resp_set deny file_security_partial_response"
+        in entrypoint
+    )
 
 
 def test_linux_container_payloads_are_lf_only() -> None:
