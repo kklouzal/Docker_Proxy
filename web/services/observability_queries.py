@@ -648,6 +648,30 @@ class ObservabilityQueries:
             "hints": presented["hints"],
         }
 
+    @staticmethod
+    def _security_event_filters(
+        *,
+        since: int,
+        search: str,
+        base_conditions: list[str] | None = None,
+        search_columns: tuple[str, ...],
+    ) -> tuple[str, list[Any]]:
+        where = ["proxy_id = %s", "ts >= %s", *(base_conditions or [])]
+        params: list[Any] = [get_proxy_id(), int(since)]
+        search_value = (search or "").strip().lower()
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            where.append(
+                "("
+                + " OR ".join(
+                    f"LOWER({column}) LIKE %s ESCAPE '\\\\'"
+                    for column in search_columns
+                )
+                + ")",
+            )
+            params.extend([like] * len(search_columns))
+        return "WHERE " + " AND ".join(where), params
+
     def security_overview(
         self,
         *,
@@ -655,47 +679,37 @@ class ObservabilityQueries:
         search: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(100, int(limit)))
         search_value = (search or "").strip().lower()
         diagnostic_store = get_diagnostic_store()
         get_adblock_store().init_db()
         get_webfilter_store().init_db()
 
-        av_where = ["proxy_id = %s", "ts >= %s", "service_family = 'av'"]
-        av_params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            av_where.append(
-                "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
-                ")",
-            )
-            av_params.extend([like, like, like, like, like])
-        av_where_sql = "WHERE " + " AND ".join(av_where)
+        av_where_sql, av_params = self._security_event_filters(
+            since=since,
+            search=search,
+            base_conditions=["service_family = 'av'"],
+            search_columns=(
+                "domain",
+                "url",
+                "client_ip",
+                "adapt_summary",
+                "adapt_details",
+            ),
+        )
         av_finding_sql = self._av_finding_sql()
 
-        adblock_where = ["proxy_id = %s", "ts >= %s"]
-        adblock_params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            adblock_where.append(
-                "(LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\')",
-            )
-            adblock_params.extend([like, like])
-        adblock_where_sql = "WHERE " + " AND ".join(adblock_where)
+        adblock_where_sql, adblock_params = self._security_event_filters(
+            since=since,
+            search=search,
+            search_columns=("url", "src_ip"),
+        )
 
-        webfilter_where = ["proxy_id = %s", "ts >= %s"]
-        webfilter_params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            webfilter_where.append(
-                "("
-                "LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(src_ip) LIKE %s ESCAPE '\\\\' OR LOWER(category) LIKE %s ESCAPE '\\\\'"
-                ")",
-            )
-            webfilter_params.extend([like, like, like])
-        webfilter_where_sql = "WHERE " + " AND ".join(webfilter_where)
+        webfilter_where_sql, webfilter_params = self._security_event_filters(
+            since=since,
+            search=search,
+            search_columns=("url", "src_ip", "category"),
+        )
 
         with self._connect() as conn:
             av_summary_row = conn.execute(

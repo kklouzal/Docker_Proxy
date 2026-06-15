@@ -127,6 +127,37 @@ def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
     assert not ObservabilityQueries._suggestion_matches_search(row, "video")
 
 
+def test_security_event_filters_build_source_specific_search_sql(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    monkeypatch.setattr(observability_queries, "get_proxy_id", lambda: "proxy-a")
+
+    where_sql, params = observability_queries.ObservabilityQueries._security_event_filters(
+        since=1234,
+        search=" Ads_% ",
+        base_conditions=["service_family = 'av'"],
+        search_columns=("domain", "url", "client_ip"),
+    )
+
+    assert where_sql == (
+        "WHERE proxy_id = %s AND ts >= %s AND service_family = 'av' "
+        "AND (LOWER(domain) LIKE %s ESCAPE '\\\\' "
+        "OR LOWER(url) LIKE %s ESCAPE '\\\\' "
+        "OR LOWER(client_ip) LIKE %s ESCAPE '\\\\')"
+    )
+    assert params == ["proxy-a", 1234, "%ads\\_\\%%", "%ads\\_\\%%", "%ads\\_\\%%"]
+
+    where_sql, params = observability_queries.ObservabilityQueries._security_event_filters(
+        since=1234,
+        search="",
+        search_columns=("url", "src_ip"),
+    )
+
+    assert where_sql == "WHERE proxy_id = %s AND ts >= %s"
+    assert params == ["proxy-a", 1234]
+
+
 def test_remediation_search_does_not_hide_generated_suggestion_fields(
     monkeypatch,
 ) -> None:
