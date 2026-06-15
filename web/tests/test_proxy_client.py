@@ -182,6 +182,35 @@ def test_proxy_client_get_health_default_timeout_handles_cold_health_collection(
     assert captured["timeout"] == pytest.approx(5.0)
 
 
+def test_proxy_client_get_logs_uses_management_logs_endpoint(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import proxy_client  # type: ignore
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _Response({"ok": True, "content": "line\n"})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    payload = proxy_client.ProxyClient().get_logs(
+        "live",
+        log_key="../../etc/passwd",
+        timeout_seconds=4.0,
+    )
+
+    assert payload["ok"] is True
+    assert captured["url"] == (
+        "http://proxy-mgmt:5000/api/manage/logs?log=..%2F..%2Fetc%2Fpasswd"
+    )
+    assert captured["timeout"] == pytest.approx(4.0)
+
+
 def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
     _add_web_to_path()
     from services import proxy_client  # type: ignore
@@ -232,7 +261,7 @@ def test_proxy_client_http_error_rejects_non_object_json(monkeypatch) -> None:
     message = str(exc_info.value)
     assert "returned JSON that was not an object" in message
     assert "registered management URL" in message
-    assert "not\", \"a\", \"management" not in message
+    assert 'not", "a", "management' not in message
     assert "proxy=live" in message
 
 
@@ -320,7 +349,7 @@ def test_proxy_client_rejects_successful_non_object_json(monkeypatch) -> None:
     message = str(exc_info.value)
     assert "returned JSON that was not an object" in message
     assert "registered management URL" in message
-    assert "not\", \"a\", \"management" not in message
+    assert 'not", "a", "management' not in message
     assert "proxy=live" in message
 
 

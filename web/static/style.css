@@ -1209,6 +1209,12 @@ textarea.compact-textarea{
   min-height: 140px;
 }
 
+textarea.log-textarea{
+  min-height: 560px;
+  white-space: pre;
+  overflow: auto;
+}
+
 textarea:focus, input:focus{
   border-color: rgba(122,162,255,.45);
   box-shadow: 0 0 0 4px rgba(122,162,255,.14);

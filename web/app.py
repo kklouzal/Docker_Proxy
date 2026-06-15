@@ -3199,6 +3199,69 @@ def operations_status():
     )
 
 
+@app.route("/logs", methods=["GET"])
+def logs_status():
+    proxy_id = get_proxy_id()
+    selected_log = (request.args.get("log") or "access").strip() or "access"
+    try:
+        payload = get_proxy_client().get_logs(proxy_id, log_key=selected_log)
+    except ProxyClientError as exc:
+        payload = {
+            "ok": False,
+            "status": "unavailable",
+            "detail": str(exc),
+            "key": selected_log,
+            "label": selected_log,
+            "content": "",
+            "size_bytes": 0,
+            "truncated": False,
+            "max_bytes": 256 * 1024,
+            "logs": [],
+        }
+    logs = payload.get("logs") if isinstance(payload.get("logs"), list) else []
+    if logs and not any(
+        item.get("key") == payload.get("key") for item in logs if isinstance(item, dict)
+    ):
+        first_log = next((item for item in logs if isinstance(item, dict)), None)
+        if first_log is not None:
+            try:
+                payload = get_proxy_client().get_logs(
+                    proxy_id,
+                    log_key=first_log.get("key"),
+                )
+                logs = (
+                    payload.get("logs")
+                    if isinstance(payload.get("logs"), list)
+                    else logs
+                )
+            except ProxyClientError:
+                pass
+    return render_template("logs.html", log_payload=payload, logs=logs)
+
+
+@app.route("/api/logs", methods=["GET"])
+def api_logs_status():
+    proxy_id = get_proxy_id()
+    selected_log = (request.args.get("log") or "access").strip() or "access"
+    try:
+        payload = get_proxy_client().get_logs(proxy_id, log_key=selected_log)
+        status_code = (
+            200 if payload.get("ok") or payload.get("status") == "missing" else 404
+        )
+        return jsonify(payload), status_code
+    except ProxyClientError as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "status": "unavailable",
+                "detail": str(exc),
+                "key": selected_log,
+                "content": "",
+                "logs": [],
+            },
+        ), 503
+
+
 @app.route("/api/operations", methods=["GET"])
 def api_operations():
     proxy_id = get_proxy_id()

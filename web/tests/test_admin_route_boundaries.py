@@ -14,6 +14,7 @@ from .admin_route_test_utils import (
 class RecordingProxyClient:
     def __init__(self) -> None:
         self.health_calls: list[tuple[str, float | None]] = []
+        self.log_calls: list[tuple[str, str]] = []
 
     def get_health(
         self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
@@ -60,6 +61,54 @@ class RecordingProxyClient:
                 "clamd": {"ok": True, "detail": "ok"},
             },
             "health_scope": "clamav",
+        }
+
+    def get_logs(
+        self,
+        proxy_id: object,
+        *,
+        log_key: object | None = None,
+        timeout_seconds: float | None = None,
+        **__,
+    ) -> dict[str, object]:
+        key = str(log_key or "access")
+        self.log_calls.append((str(proxy_id), key))
+        logs = [
+            {
+                "key": "access",
+                "label": "Squid access log",
+                "available": True,
+                "path": "/var/log/squid/access.log",
+            },
+            {
+                "key": "cache",
+                "label": "Squid cache log",
+                "available": False,
+                "path": "/var/log/squid/cache.log",
+            },
+        ]
+        if key not in {"access", "cache"}:
+            return {
+                "ok": False,
+                "status": "not_found",
+                "detail": "Log file is not allowlisted.",
+                "key": key,
+                "content": "",
+                "logs": logs,
+            }
+        return {
+            "ok": key == "access",
+            "status": "ok" if key == "access" else "missing",
+            "detail": "Loaded current log file tail."
+            if key == "access"
+            else "Squid cache log is not available on this proxy.",
+            "key": key,
+            "label": "Squid access log" if key == "access" else "Squid cache log",
+            "content": f"{proxy_id}:{key}:line\n" if key == "access" else "",
+            "size_bytes": 19 if key == "access" else 0,
+            "truncated": False,
+            "max_bytes": 256 * 1024,
+            "logs": logs,
         }
 
 
@@ -374,6 +423,69 @@ def test_fleet_query_preserves_selected_proxy_in_scoped_links(
     assert 'href="/?proxy_id=edge-2"' in body
     assert 'href="/operations?proxy_id=edge-2"' in body
     assert 'href="/observability?proxy_id=edge-2"' in body
+    assert 'href="/logs?proxy_id=edge-2"' in body
+
+
+def test_logs_page_renders_status_nav_and_selected_proxy_log(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = RecordingProxyClient()
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=proxy_client,
+        registry=registry,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/logs?proxy_id=edge-2&log=access")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert proxy_client.log_calls == [("edge-2", "access")]
+    assert "Logs" in body
+    assert "edge-2:access:line" in body
+    assert 'href="/logs?proxy_id=edge-2"' in body
+
+
+def test_logs_api_uses_active_proxy_and_rejects_non_allowlisted_log(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = RecordingProxyClient()
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=proxy_client,
+        registry=registry,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    selected = client.get("/logs?proxy_id=edge-2")
+    response = client.get("/api/logs?log=../../etc/passwd")
+
+    assert selected.status_code == 200
+    assert response.status_code == 404
+    assert response.get_json()["status"] == "not_found"
+    assert proxy_client.log_calls[-1] == ("edge-2", "../../etc/passwd")
+
+
+def test_logs_api_treats_missing_allowlisted_log_as_graceful_empty_payload(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = RecordingProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/logs?log=cache")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "missing"
+    assert response.get_json()["content"] == ""
 
 
 def test_fleet_query_resolves_proxy_alias_for_live_health(

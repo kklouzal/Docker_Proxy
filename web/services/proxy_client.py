@@ -202,6 +202,23 @@ class ProxyClient:
             timeout_seconds=timeout_seconds,
         ).data
 
+    def get_logs(
+        self,
+        proxy_id: object | None,
+        *,
+        log_key: object | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        query = ""
+        if log_key is not None:
+            query = "?" + urllib.parse.urlencode({"log": str(log_key)})
+        return self._request(
+            proxy_id,
+            method="GET",
+            path=f"/api/manage/logs{query}",
+            timeout_seconds=timeout_seconds,
+        ).data
+
     def sync_proxy(
         self,
         proxy_id: object | None,

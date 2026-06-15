@@ -132,6 +132,7 @@ def test_proxy_management_api_requires_token_for_all_management_endpoints(
         ("POST", "/api/manage/cache/clear", {}),
         ("POST", "/api/manage/clamav/test-eicar", {}),
         ("POST", "/api/manage/clamav/test-icap", {}),
+        ("GET", "/api/manage/logs?log=access", None),
         ("POST", "/api/manage/test/supervisor/cicap_adblock/restart", {}),
     ]
     for method, path, payload in endpoints:
@@ -232,6 +233,34 @@ def test_proxy_management_sync_rejects_invalid_operation_id(monkeypatch) -> None
     assert response.get_json()["ok"] is False
     assert "operation_id" in response.get_json()["detail"]
     assert runtime.sync_operation_id is None
+
+
+def test_proxy_management_logs_endpoint_reads_allowlisted_log_tail(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "access.log").write_text("alpha\nbeta\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    allowed = _management_get(client, "/api/manage/logs?log=access", headers=headers)
+    rejected = _management_get(
+        client,
+        "/api/manage/logs?log=../../etc/passwd",
+        headers=headers,
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.get_json()["ok"] is True
+    assert allowed.get_json()["content"] == "alpha\nbeta\n"
+    assert rejected.status_code == 404
+    assert rejected.get_json()["status"] == "not_found"
 
 
 def test_proxy_management_health_degrades_without_leaking_traceback(

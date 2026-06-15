@@ -185,6 +185,7 @@ class FakeProxyClient:
         self.synced: list[tuple[str, bool]] = []
         self.validated: list[tuple[str, str]] = []
         self.cleared: list[str] = []
+        self.log_requests: list[tuple[str, str]] = []
 
     def _maybe_fail(self) -> None:
         if self.fail:
@@ -218,6 +219,48 @@ class FakeProxyClient:
 
     def get_clamav_health(self, proxy_id: object, *_, **__) -> dict[str, Any]:
         return self.get_health(proxy_id)
+
+    def get_logs(
+        self, proxy_id: object, *, log_key: object | None = None, **__
+    ) -> dict[str, Any]:
+        self._maybe_fail()
+        key = str(log_key or "access")
+        self.log_requests.append((str(proxy_id), key))
+        logs = [
+            {
+                "key": "access",
+                "label": "Squid access log",
+                "available": True,
+                "path": "/var/log/squid/access.log",
+            },
+            {
+                "key": "cache",
+                "label": "Squid cache log",
+                "available": True,
+                "path": "/var/log/squid/cache.log",
+            },
+        ]
+        if key not in {item["key"] for item in logs}:
+            return {
+                "ok": False,
+                "status": "not_found",
+                "detail": "Log file is not allowlisted.",
+                "key": key,
+                "content": "",
+                "logs": logs,
+            }
+        return {
+            "ok": True,
+            "status": "ok",
+            "detail": "Loaded current log file tail.",
+            "key": key,
+            "label": next(item["label"] for item in logs if item["key"] == key),
+            "content": f"{proxy_id}:{key}:raw log\n",
+            "size_bytes": 18,
+            "truncated": False,
+            "max_bytes": 256 * 1024,
+            "logs": logs,
+        }
 
     def validate_config(self, proxy_id: object, config_text: str) -> dict[str, Any]:
         self._maybe_fail()

@@ -1,0 +1,94 @@
+{% extends "layout.html" %}
+{% from "_scope_macros.html" import scope_notice %}
+
+{% block title %}Logs · Docker Proxy{% endblock %}
+
+{% block content %}
+<section class="page-hero">
+    <div class="page-hero-copy">
+        <span class="page-eyebrow">Status</span>
+        <h1 class="page-title">Logs</h1>
+        <p class="page-subtitle">Raw current log-file tail for {{ active_proxy.display_name }}.</p>
+        <div class="hero-badges">
+            <span class="badge {{ 'ok' if log_payload.ok else 'warn' }}">{{ log_payload.status }}</span>
+            <span class="badge">Last {{ (log_payload.max_bytes or 0) // 1024 }} KiB</span>
+        </div>
+    </div>
+    <div class="page-actions">
+        <a class="btn ghost" href="{{ url_for('index') }}">Status home</a>
+        <a class="btn ghost" href="{{ url_for('observability') }}">Observability</a>
+    </div>
+</section>
+
+{% call scope_notice('proxy', 'Selected proxy only', 'This page reads current allowlisted log files directly from ' ~ active_proxy.display_name ~ ' through its management API. Logs are not stored in the database.') %}
+<div>Refresh reads the current file tail only. Rotation remains owned by Squid and the container logrotate policy.</div>
+{% endcall %}
+
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">Raw log file</h2>
+        <span class="badge" id="log-size-badge">{{ log_payload.size_bytes or 0 }} bytes</span>
+    </div>
+    <div class="card-body stack-list" data-log-viewer>
+        <form class="filter-bar" id="log-viewer-form" action="{{ url_for('logs_status') }}" method="get" data-api-url="{{ url_for('api_logs_status') }}">
+            <label for="log-key">Log file</label>
+            <select id="log-key" name="log">
+                {% for log in logs %}
+                <option value="{{ log.key }}" {{ 'selected' if log.key == log_payload.key else '' }}>
+                    {{ log.label }}{% if not log.available %} (missing){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+            <button class="btn primary" id="log-refresh" type="button">Refresh</button>
+        </form>
+
+        <div class="surface-note small" id="log-detail">
+            {{ log_payload.detail }}
+            {% if log_payload.truncated %} Showing the last {{ (log_payload.max_bytes or 0) // 1024 }} KiB.{% endif %}
+        </div>
+
+        <textarea id="log-content" class="log-textarea" readonly spellcheck="false">{{ log_payload.content or '' }}</textarea>
+    </div>
+</section>
+
+<script>
+(() => {
+  const form = document.getElementById('log-viewer-form');
+  const select = document.getElementById('log-key');
+  const button = document.getElementById('log-refresh');
+  const content = document.getElementById('log-content');
+  const detail = document.getElementById('log-detail');
+  const badge = document.getElementById('log-size-badge');
+  if (!form || !select || !button || !content || !detail || !badge) return;
+
+  const refresh = async () => {
+    button.disabled = true;
+    button.textContent = 'Refreshing...';
+    const params = new URLSearchParams();
+    params.set('log', select.value || 'access');
+    try {
+      const apiUrl = form.dataset.apiUrl || '/api/logs';
+      const separator = apiUrl.includes('?') ? '&' : '?';
+      const response = await fetch(`${apiUrl}${separator}${params.toString()}`, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' },
+      });
+      const payload = await response.json();
+      content.value = payload.content || '';
+      badge.textContent = `${payload.size_bytes || 0} bytes`;
+      const cap = Math.floor((payload.max_bytes || 0) / 1024);
+      detail.textContent = `${payload.detail || 'Log unavailable.'}${payload.truncated ? ` Showing the last ${cap} KiB.` : ''}`;
+    } catch {
+      detail.textContent = 'Log refresh failed.';
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Refresh';
+    }
+  };
+
+  button.addEventListener('click', refresh);
+  select.addEventListener('change', refresh);
+})();
+</script>
+{% endblock %}
