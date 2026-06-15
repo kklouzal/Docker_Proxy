@@ -43,6 +43,12 @@ The project is designed for home labs, small offices, schools, managed LANs, and
 
 The admin UI can run with local or remote proxy runtimes. Each proxy registers its management URL and public PAC/proxy coordinates in MySQL. The admin UI targets the selected proxy for runtime checks and queues durable operations when policy changes need to be materialized.
 
+## Operator fit
+
+Docker Proxy is a good fit when you want a managed proxy appliance that can be operated from a browser, backed by an auditable SQL control plane, and deployed as one or more Dockerized proxy runtimes. It is meant for networks where clients are managed, proxy policy is intentional, and operators can own the surrounding infrastructure: DNS/WPAD or PAC distribution, firewall redirects for intercept modes, certificate trust, database backups, and management-plane exposure.
+
+It is not a DNS sinkhole, a personal VPN, a desktop privacy add-on, or a turnkey firewall. The proxy can enforce Squid policy, PAC routing, web category blocks, request-time adblock decisions, TLS-inspection policy, and ICAP antivirus scanning where traffic actually traverses it. It does not enroll devices, install router rules, bypass application certificate pinning, or make HTTPS interception appropriate for unmanaged users.
+
 ## Requirements
 
 - Docker Engine with Docker Compose v2.
@@ -224,8 +230,10 @@ audit depth or tighter storage bounds.
 
 - EasyList-style subscription download and compilation.
 - SQLite-backed REQMOD service at `icap://127.0.0.1:${CICAP_PORT:-14000}/adblockreq`.
-- Header-only adblock decisions for browsing, CONNECT tunnel setup, and common API methods.
-- Domain, URL-rule, and request-lookup SQLite artifacts staged locally in the proxy container.
+- Header-only adblock decisions for browsing, CONNECT tunnel setup, and common API methods; request bodies are bounded and drained only enough to keep ICAP transactions healthy.
+- ABP-style network rules, exceptions, resource-type options, third-party checks, domain scoping, wildcard hosts, regex rules, and `$badfilter` suppression are compiled into proxy-local lookup artifacts.
+- Domain, host-pattern, regex-token, generic-literal, resource-type, and domain-scope SQLite indexes are staged locally in the proxy container so request-path checks do not scan every parsed rule.
+- Cosmetic, scriptlet, and HTML-filter rules are parsed into artifact buckets for visibility and future use, but the proxy runtime does not inject browser-side cosmetic filtering.
 - Block counters, recent event logging, and artifact application tracking.
 
 ### ClamAV scanning
@@ -355,7 +363,9 @@ Teardown:
 docker compose -f docker-compose.yml -f docker-compose.live-tests.yml down -v
 ```
 
-The live harness starts MySQL, the admin UI, two proxy runtimes, a traffic fixture, and a dedicated pytest runner. It verifies real login, health, PAC, proxy management, sync, config apply, multi-proxy selection, cache clear, selected-proxy ClamAV reporting, and proxied request telemetry paths.
+Deterministic tests cover stores, route boundaries, Squid/config rendering, certificate handling, PAC rendering, web-filter and Safe Browsing helpers, adblock parsing/lookups/materialization, ICAP request behavior, runtime rollback/self-heal paths, packaging contracts, and operational data parsing without needing the live Compose stack.
+
+The live harness starts MySQL, the admin UI, two proxy runtimes, a traffic fixture, and a dedicated pytest runner. It verifies real login, public/admin health separation, PAC/WPAD serving, authenticated proxy management APIs, sync and config validation/apply paths, multi-proxy selection and scoping, certificate and policy workflows, adblock/web-filter enforcement, selected-proxy ClamAV reporting, cache clear, runtime disruption behavior, security headers/session/CSRF contracts, observability pages, exports, and proxied request telemetry paths.
 
 GitHub Actions runs the release gate on `main`: deterministic tests -> image build tests -> live tests -> GHCR publish.
 
