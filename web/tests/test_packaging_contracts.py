@@ -167,6 +167,13 @@ def test_entrypoint_bootstrap_av_policy_matches_schema_safety_guards() -> None:
     )
 
 
+def test_proxy_entrypoint_mirrors_auth_cache_guard_to_persisted_config() -> None:
+    entrypoint = _read("docker/entrypoint.sh")
+
+    assert "ensure_auth_cookie_cache_deny /etc/squid/squid.conf" in entrypoint
+    assert 'ensure_auth_cookie_cache_deny "$PERSISTED_SQUID_CONF_PATH"' in entrypoint
+
+
 def test_linux_container_payloads_are_lf_only() -> None:
     paths = [
         "docker/entrypoint.sh",

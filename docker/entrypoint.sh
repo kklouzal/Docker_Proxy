@@ -722,8 +722,13 @@ done
 
 # Stability + privacy: never cache requests that carry Authorization/Cookie.
 # This reduces Vary-related cache loops and prevents caching of authenticated content.
-if [ -f /etc/squid/squid.conf ] && ! grep -q "^acl has_auth req_header Authorization" /etc/squid/squid.conf 2>/dev/null; then
-    cat >> /etc/squid/squid.conf <<'EOF'
+ensure_auth_cookie_cache_deny() {
+    SQUID_CFG="$1"
+    if [ ! -f "$SQUID_CFG" ] || grep -q "^acl has_auth req_header Authorization" "$SQUID_CFG" 2>/dev/null; then
+        return 0
+    fi
+
+    cat >> "$SQUID_CFG" <<'EOF'
 
 # Never cache authenticated or cookie-bearing traffic.
 acl has_auth req_header Authorization .
@@ -731,7 +736,10 @@ acl has_cookie req_header Cookie .
 cache deny has_auth
 cache deny has_cookie
 EOF
-fi
+}
+
+ensure_auth_cookie_cache_deny /etc/squid/squid.conf
+ensure_auth_cookie_cache_deny "$PERSISTED_SQUID_CONF_PATH"
 
 # Stability: avoid problematic half-closed client connections.
 # We have observed Squid aborting with an internal assertion (SIGABRT) under some client
