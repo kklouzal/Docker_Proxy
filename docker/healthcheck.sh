@@ -147,6 +147,10 @@ clamav_required() {
     env_enabled "${CLAMAV_REQUIRED:-}" || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}"
 }
 
+adblock_icap_required() {
+    env_enabled "${ADBLOCK_ICAP_REQUIRED:-}"
+}
+
 # Check Squid liveness (internal check)
 if ! supervisor_program_running squid; then
     echo "supervisor reports squid is not RUNNING"
@@ -184,17 +188,21 @@ if ! python3 -c "import os, urllib.request; port=(os.environ.get('PAC_HTTP_PORT'
     exit 1
 fi
 
-# Check required c-icap liveness without generating synthetic OPTIONS traffic.
-# Adblock is part of the normal proxy path. AV is optional by default because
-# Squid ICAP uses bypass=on and should degrade cleanly when clamd is absent.
+# Check ICAP liveness without generating synthetic OPTIONS traffic. Squid renders
+# adblock ICAP with bypass=on, so the container healthcheck must not turn an
+# adblock helper outage into data-plane downtime unless explicitly required.
 if ! supervisor_program_running cicap_adblock; then
-    echo "supervisor reports cicap_adblock is not RUNNING"
-    exit 1
-fi
-
-if ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1; then
-    echo "cicap_adblock is not listening on its configured port"
-    exit 1
+    if adblock_icap_required; then
+        echo "ADBLOCK_ICAP_REQUIRED is set but supervisor reports cicap_adblock is not RUNNING"
+        exit 1
+    fi
+    echo "supervisor reports cicap_adblock is not RUNNING; Squid adblock ICAP is fail-open"
+elif ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1; then
+    if adblock_icap_required; then
+        echo "ADBLOCK_ICAP_REQUIRED is set but cicap_adblock is not listening on its configured port"
+        exit 1
+    fi
+    echo "cicap_adblock is not listening on its configured port; Squid adblock ICAP is fail-open"
 fi
 
 if clamav_required; then

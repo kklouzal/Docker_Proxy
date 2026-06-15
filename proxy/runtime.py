@@ -651,6 +651,7 @@ class ProxyRuntime:
         program_name: str,
         *,
         timeout_seconds: int = 10,
+        accepted_states: tuple[str, ...] = ("RUNNING",),
     ) -> tuple[bool, str]:
         try:
             status = subprocess.run(
@@ -675,7 +676,7 @@ class ProxyRuntime:
         for line in detail.splitlines():
             parts = line.split(None, 2)
             if parts and parts[0] == program_name:
-                return len(parts) > 1 and parts[1] == "RUNNING", detail
+                return len(parts) > 1 and parts[1] in accepted_states, detail
         return False, detail
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
@@ -1002,6 +1003,7 @@ class ProxyRuntime:
             status_ok, status_detail = self._supervisor_program_status(
                 program_name,
                 timeout_seconds=timeout_seconds,
+                accepted_states=("RUNNING", "STARTING"),
             )
             if status_detail:
                 details.append(status_detail)

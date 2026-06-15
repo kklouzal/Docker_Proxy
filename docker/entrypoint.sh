@@ -984,7 +984,10 @@ cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'
 [program:cicap_adblock]
 command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "${CICAP_PORT:-14000}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
 autostart=true
-autorestart=true
+autorestart=unexpected
+exitcodes=0
+startsecs=45
+startretries=2
 priority=10
 stderr_logfile=/dev/stderr
 stdout_logfile=/dev/stdout

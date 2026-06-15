@@ -466,6 +466,69 @@ def test_restart_supervisor_program_trusts_running_status_after_failed_start(
     assert "RUNNING" in detail
 
 
+def test_restart_supervisor_program_accepts_starting_after_startsecs_change(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    results = [
+        _cp(0, stdout="cicap_adblock: stopped"),
+        _cp(0, stdout="cicap_adblock STOPPED Jun 15 02:17 AM"),
+        _cp(0, stdout="cicap_adblock: started"),
+        _cp(0, stdout="cicap_adblock STARTING Jun 15 02:17 AM"),
+    ]
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return results.pop(0)
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    ok, detail = _runtime_shell()._restart_supervisor_program("cicap_adblock")
+
+    assert ok is True
+    assert "STARTING" in detail
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "cicap_adblock"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "cicap_adblock"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "cicap_adblock"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "cicap_adblock"],
+    ]
+
+
+@pytest.mark.parametrize("state", ["BACKOFF", "FATAL"])
+def test_restart_supervisor_program_rejects_unstable_post_start_states(
+    monkeypatch,
+    state: str,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if "stop" in args:
+            return _cp(0, stdout="cicap_adblock: stopped")
+        if "status" in args:
+            if len(calls) == 2:
+                return _cp(0, stdout="cicap_adblock STOPPED Jun 15 02:17 AM")
+            return _cp(3, stdout=f"cicap_adblock {state} exited too quickly")
+        return _cp(0, stdout="cicap_adblock: started")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    ok, detail = _runtime_shell()._restart_supervisor_program("cicap_adblock")
+
+    assert ok is False
+    assert state in detail
+    assert sum(1 for call in calls if "start" in call) == 5
+
+
 def test_restart_supervisor_program_accepts_supervisor_auto_restart_after_stop(
     monkeypatch,
 ) -> None:
@@ -2649,14 +2712,23 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
     assert calls[0][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "status"]
 
 
-def test_packaged_proxy_healthcheck_treats_clamav_as_optional_by_default() -> None:
+def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
         encoding="utf-8",
     )
 
     assert "clamav_required()" in healthcheck
-    assert "supervisor reports cicap_adblock is not RUNNING" in healthcheck
+    assert "adblock_icap_required()" in healthcheck
+    assert (
+        "ADBLOCK_ICAP_REQUIRED is set but supervisor reports cicap_adblock is not RUNNING"
+        in healthcheck
+    )
+    assert "Squid adblock ICAP is fail-open" in healthcheck
+    assert (
+        "cicap_adblock is not listening on its configured port; Squid adblock ICAP is fail-open"
+        in healthcheck
+    )
     assert (
         "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING"
         in healthcheck
@@ -2688,6 +2760,23 @@ def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
     assert "optional ClamAV backend" in entrypoint
     assert "exec sleep infinity" in entrypoint
     assert "i=0; while [ $i -lt 120 ]; do ping_clamd" in entrypoint
+
+
+def test_packaged_proxy_entrypoint_bounds_adblock_supervisor_restart_loop() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(
+        encoding="utf-8",
+    )
+    section = entrypoint.split("[program:cicap_adblock]", 1)[1].split(
+        "[program:cicap_av]",
+        1,
+    )[0]
+
+    assert "autorestart=unexpected" in section
+    assert "exitcodes=0" in section
+    assert "startsecs=45" in section
+    assert "startretries=2" in section
+    assert "bypass=on" in entrypoint
 
 
 def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:
