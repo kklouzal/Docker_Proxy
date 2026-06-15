@@ -144,27 +144,71 @@ def build_unavailable_runtime_health(
     }
 
 
-def _check_icap_target(
-    service_name: str,
+def _check_resolved_icap_target(
     icap_service: str,
     *,
-    host: str,
-    port: int,
+    host: str | None,
+    port: int | None,
+    port_env: str,
+    default_port: int,
     timeout: float,
     error_formatter: ErrorFormatter | None,
     user_agent: str = "squid-flask-proxy-ui",
     success_detail: str | None = None,
 ) -> dict[str, Any]:
-    result = check_icap_service(
+    resolved_host, resolved_port = _resolve_host_port_override(
         host=host,
         port=port,
+        host_env="CICAP_HOST",
+        port_env=port_env,
+        default_port=default_port,
+    )
+    result = check_icap_service(
+        host=resolved_host,
+        port=resolved_port,
         service=icap_service,
         timeout=timeout,
         user_agent=user_agent,
         success_detail=success_detail,
         error_formatter=error_formatter,
     )
-    return annotate_service_target(result, host=host, port=port, service=icap_service)
+    return annotate_service_target(
+        result,
+        host=resolved_host,
+        port=resolved_port,
+        service=icap_service,
+    )
+
+
+def _call_resolved_clamd_target(
+    probe: Any,
+    *,
+    host: str | None,
+    port: int | None,
+    timeout: float,
+    error_formatter: ErrorFormatter | None,
+    annotate: bool = False,
+) -> dict[str, Any]:
+    resolved_host, resolved_port = _resolve_host_port_override(
+        host=host,
+        port=port,
+        host_env="CLAMD_HOST",
+        port_env="CLAMD_PORT",
+        default_port=3310,
+    )
+    result = probe(
+        host=resolved_host,
+        port=resolved_port,
+        timeout=timeout,
+        error_formatter=error_formatter,
+    )
+    if annotate:
+        return annotate_service_target(
+            result,
+            host=resolved_host,
+            port=resolved_port,
+        )
+    return result
 
 
 def check_adblock_icap_health(
@@ -174,18 +218,12 @@ def check_adblock_icap_health(
     timeout: float = 0.8,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    resolved_host, resolved_port = _resolve_host_port_override(
+    return _check_resolved_icap_target(
+        "/adblockreq",
         host=host,
         port=port,
-        host_env="CICAP_HOST",
         port_env="CICAP_PORT",
         default_port=14000,
-    )
-    return _check_icap_target(
-        "adblock ICAP helper",
-        "/adblockreq",
-        host=resolved_host,
-        port=resolved_port,
         timeout=timeout,
         error_formatter=error_formatter,
     )
@@ -198,18 +236,12 @@ def check_av_icap_health(
     timeout: float = 0.8,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    resolved_host, resolved_port = _resolve_host_port_override(
+    return _check_resolved_icap_target(
+        "/avrespmod",
         host=host,
         port=port,
-        host_env="CICAP_HOST",
         port_env="CICAP_AV_PORT",
         default_port=14001,
-    )
-    return _check_icap_target(
-        "c-icap av",
-        "/avrespmod",
-        host=resolved_host,
-        port=resolved_port,
         timeout=timeout,
         error_formatter=error_formatter,
     )
@@ -222,20 +254,14 @@ def check_clamd_health(
     timeout: float = 0.8,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    resolved_host, resolved_port = _resolve_host_port_override(
+    return _call_resolved_clamd_target(
+        check_clamd,
         host=host,
         port=port,
-        host_env="CLAMD_HOST",
-        port_env="CLAMD_PORT",
-        default_port=3310,
-    )
-    result = check_clamd(
-        host=resolved_host,
-        port=resolved_port,
         timeout=timeout,
         error_formatter=error_formatter,
+        annotate=True,
     )
-    return annotate_service_target(result, host=resolved_host, port=resolved_port)
 
 
 def send_sample_av_icap(
@@ -268,16 +294,10 @@ def test_eicar(
     timeout: float = 2.0,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    resolved_host, resolved_port = _resolve_host_port_override(
+    return _call_resolved_clamd_target(
+        test_clamd_eicar,
         host=host,
         port=port,
-        host_env="CLAMD_HOST",
-        port_env="CLAMD_PORT",
-        default_port=3310,
-    )
-    return test_clamd_eicar(
-        host=resolved_host,
-        port=resolved_port,
         timeout=timeout,
         error_formatter=error_formatter,
     )
