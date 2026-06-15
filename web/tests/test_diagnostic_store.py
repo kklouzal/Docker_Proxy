@@ -1,6 +1,10 @@
 import ipaddress
 
-from services.diagnostic_store import DiagnosticStore
+from services.diagnostic_store import (
+    DiagnosticStore,
+    _normalize_icap_row,
+    _normalize_request_row,
+)
 
 
 def test_parse_request_log_line_extracts_tls_and_policy_fields() -> None:
@@ -36,6 +40,23 @@ def test_parse_request_log_line_ignores_dash_placeholders_for_domain() -> None:
     assert row["domain"] == "example.com"
 
 
+def test_parse_request_log_line_normalizes_dash_policy_placeholders() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777357408\t79\t192.0.2.10\tGET\thttp://example.com/\tTCP_MISS/200\t482"
+        "\t54\tHIER_DIRECT\t-\t-\t-\t-\t-\t-\texample.com\tcurl/8.19.0\t-"
+        "\t-\t-\t-\t-"
+    )
+
+    row = store._parse_request_log_line(line)
+
+    assert row is not None
+    assert row["exclusion_rule"] == ""
+    assert row["ssl_exception"] == ""
+    assert row["webfilter_allow"] == ""
+    assert row["cache_bypass"] == ""
+
+
 def test_parse_icap_log_line_classifies_av_service_family() -> None:
     store = DiagnosticStore()
     line = (
@@ -67,6 +88,22 @@ def test_parse_icap_log_line_ignores_dash_placeholders_for_domain() -> None:
     assert row["domain"] == "example.com"
 
 
+def test_parse_icap_log_line_normalizes_dash_policy_placeholders() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777357408\t54\t192.0.2.10\tHEAD\thttp://example.com/\t15"
+        "\t-\t-\texample.com\tcurl/8.19.0\t-\t-\t-\t-\t-"
+    )
+
+    row = store._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["exclusion_rule"] == ""
+    assert row["ssl_exception"] == ""
+    assert row["webfilter_allow"] == ""
+    assert row["cache_bypass"] == ""
+
+
 def test_log_parsers_share_policy_field_and_raw_line_normalization() -> None:
     store = DiagnosticStore()
     request_line = (
@@ -92,6 +129,96 @@ def test_log_parsers_share_policy_field_and_raw_line_normalization() -> None:
         assert row["webfilter_allow"] == "webfilter-rule"
         assert row["cache_bypass"] == "cache-rule"
         assert not row["raw"].endswith(("\r", "\n"))
+
+
+def test_normalized_stored_rows_do_not_emit_dash_policy_tags() -> None:
+    request_row = _normalize_request_row(
+        [
+            1777000000,
+            125,
+            "192.0.2.10",
+            "GET",
+            "http://example.com/",
+            "example.com",
+            "TCP_MISS/200",
+            200,
+            482,
+            "tx123",
+            "HIER_DIRECT",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "example.com",
+            "curl/8.19.0",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+        ]
+    )
+    icap_row = _normalize_icap_row(
+        [
+            1777000001,
+            "tx123",
+            "192.0.2.10",
+            "GET",
+            "http://example.com/",
+            "example.com",
+            15,
+            "-",
+            "-",
+            "example.com",
+            "curl/8.19.0",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "other",
+        ]
+    )
+
+    assert request_row["policy_tags"] == []
+    assert icap_row["policy_tags"] == []
+
+
+def test_top_policy_tags_sql_filters_dash_placeholders(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeCursor:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params):
+            captured["sql"] = sql
+            captured["params"] = params
+            return FakeCursor()
+
+    def fake_connect():
+        return FakeConnection()
+
+    store = DiagnosticStore()
+    monkeypatch.setattr(store, "_connect", fake_connect)
+
+    assert store.top_policy_tags(limit=3) == []
+
+    sql = str(captured["sql"])
+    assert "NULLIF(NULLIF(TRIM(exclusion_rule), ''), '-')" in sql
+    assert "NULLIF(NULLIF(TRIM(ssl_exception), ''), '-')" in sql
+    assert "NULLIF(NULLIF(TRIM(webfilter_allow), ''), '-')" in sql
+    assert "NULLIF(NULLIF(TRIM(cache_bypass), ''), '-')" in sql
+    assert captured["params"][-1] == 3
 
 
 def test_list_recent_transactions_attaches_related_icap_and_filters_service() -> None:

@@ -258,12 +258,17 @@ def _policy_tags(
     return tags
 
 
+def _policy_text(value: object) -> str:
+    text = _safe_text(value, max_len=64)
+    return "" if text == "-" else text
+
+
 def _policy_fields_from_row(row: list[str], start_index: int) -> dict[str, str]:
     return {
-        "exclusion_rule": _safe_text(row[start_index], max_len=64),
-        "ssl_exception": _safe_text(row[start_index + 1], max_len=64),
-        "webfilter_allow": _safe_text(row[start_index + 2], max_len=64),
-        "cache_bypass": _safe_text(row[start_index + 3], max_len=64),
+        "exclusion_rule": _policy_text(row[start_index]),
+        "ssl_exception": _policy_text(row[start_index + 1]),
+        "webfilter_allow": _policy_text(row[start_index + 2]),
+        "cache_bypass": _policy_text(row[start_index + 3]),
     }
 
 
@@ -343,10 +348,10 @@ def _normalize_request_row(row: Any) -> dict[str, Any]:
         "host": _safe_text(row[17], max_len=255),
         "user_agent": _safe_text(row[18], max_len=512),
         "referer": _safe_text(row[19], max_len=512),
-        "exclusion_rule": _safe_text(row[20], max_len=64),
-        "ssl_exception": _safe_text(row[21], max_len=64),
-        "webfilter_allow": _safe_text(row[22], max_len=64),
-        "cache_bypass": _safe_text(row[23], max_len=64),
+        "exclusion_rule": _policy_text(row[20]),
+        "ssl_exception": _policy_text(row[21]),
+        "webfilter_allow": _policy_text(row[22]),
+        "cache_bypass": _policy_text(row[23]),
     }
     data["target_display"] = _request_target_display(data)
     data["policy_tags"] = _policy_tags(
@@ -373,10 +378,10 @@ def _normalize_icap_row(row: Any) -> dict[str, Any]:
         "host": _safe_text(row[9], max_len=255),
         "user_agent": _safe_text(row[10], max_len=512),
         "sni": _safe_text(row[11], max_len=255),
-        "exclusion_rule": _safe_text(row[12], max_len=64),
-        "ssl_exception": _safe_text(row[13], max_len=64),
-        "webfilter_allow": _safe_text(row[14], max_len=64),
-        "cache_bypass": _safe_text(row[15], max_len=64),
+        "exclusion_rule": _policy_text(row[12]),
+        "ssl_exception": _policy_text(row[13]),
+        "webfilter_allow": _policy_text(row[14]),
+        "cache_bypass": _policy_text(row[15]),
         "service_family": _safe_text(row[16], max_len=32),
     }
     data["service_label"] = _service_label(data["service_family"])
@@ -1630,19 +1635,19 @@ class DiagnosticStore:
         FROM (
             SELECT CONCAT('exclude:', exclusion_rule) AS tag, ts
             FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(exclusion_rule), ''), '') <> ''{since_sql}
+            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(exclusion_rule), ''), '-'), '') <> ''{since_sql}
             UNION ALL
             SELECT CONCAT('ssl:', ssl_exception) AS tag, ts
             FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(ssl_exception), ''), '') <> ''{since_sql}
+            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(ssl_exception), ''), '-'), '') <> ''{since_sql}
             UNION ALL
             SELECT CONCAT('webfilter:', webfilter_allow) AS tag, ts
             FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(webfilter_allow), ''), '') <> ''{since_sql}
+            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(webfilter_allow), ''), '-'), '') <> ''{since_sql}
             UNION ALL
             SELECT CONCAT('cache:', cache_bypass) AS tag, ts
             FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(TRIM(cache_bypass), ''), '') <> ''{since_sql}
+            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(cache_bypass), ''), '-'), '') <> ''{since_sql}
         ) tags
         GROUP BY tag
         ORDER BY total DESC, last_seen DESC
