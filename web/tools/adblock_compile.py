@@ -22,7 +22,9 @@ if APP_ROOT_STR not in sys.path:
 from services.adblock_hosts import (  # noqa: E402
     looks_like_adblock_host as _looks_like_host,
 )
-from services.adblock_hosts import normalize_adblock_host as _normalize_host  # noqa: E402
+from services.adblock_hosts import (  # noqa: E402
+    normalize_adblock_host as _normalize_host,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
