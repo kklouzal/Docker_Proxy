@@ -253,6 +253,25 @@ class ObservabilityQueries:
         predicates = [f"LOWER({column}) LIKE %s ESCAPE '\\\\'" for column in columns]
         return "(" + " OR ".join(predicates) + ")", [like] * len(columns)
 
+    def _request_filters(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        base_conditions: list[str] | None = None,
+        search_columns: tuple[str, ...] = ("domain", "client_ip", "url"),
+    ) -> tuple[str, list[Any]]:
+        where = ["proxy_id = %s", "ts >= %s", *(base_conditions or [])]
+        params: list[Any] = [get_proxy_id(), int(since)]
+        search_sql, search_params = self._request_search_filter(
+            search,
+            columns=search_columns,
+        )
+        if search_sql:
+            where.append(search_sql)
+            params.extend(search_params)
+        return "WHERE " + " AND ".join(where), params
+
     @staticmethod
     def _av_status(summary: str, details: str) -> str:
         haystack = f"{summary} {details}".lower()
@@ -558,22 +577,14 @@ class ObservabilityQueries:
         limit: int = 50,
         sort: str = "requests",
     ) -> list[dict[str, Any]]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
         hit_sql = self._hit_sql("result_code")
         reason_sql = self._not_cached_reason_sql()
-        where = [
-            "proxy_id = %s",
-            "ts >= %s",
-            self._present_sql("domain"),
-            f"NOT {hit_sql}",
-        ]
-        params: list[Any] = [proxy_id, int(since)]
-        search_sql, search_params = self._request_search_filter(search)
-        if search_sql:
-            where.append(search_sql)
-            params.extend(search_params)
-        where_sql = "WHERE " + " AND ".join(where)
+        where_sql, params = self._request_filters(
+            since=since,
+            search=search,
+            base_conditions=[self._present_sql("domain"), f"NOT {hit_sql}"],
+        )
 
         if sort == "recent":
             order_by = "last_seen DESC, requests DESC"
@@ -1011,15 +1022,12 @@ class ObservabilityQueries:
         }
 
     def cache_savings(self, *, since: int, search: str = "") -> dict[str, Any]:
-        proxy_id = get_proxy_id()
         hit_sql = self._hit_sql("result_code")
-        where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
-        params: list[Any] = [proxy_id, int(since)]
-        search_sql, search_params = self._request_search_filter(search)
-        if search_sql:
-            where.append(search_sql)
-            params.extend(search_params)
-        where_sql = "WHERE " + " AND ".join(where)
+        where_sql, params = self._request_filters(
+            since=since,
+            search=search,
+            base_conditions=[self._present_sql("domain")],
+        )
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -1055,20 +1063,15 @@ class ObservabilityQueries:
         resolve_hostnames: bool = True,
         privacy: bool = False,
     ) -> list[dict[str, Any]]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
         hit_sql = self._hit_sql("result_code")
         tx_sql = self._request_identity_sql("id", "master_xaction")
-        where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
-        params: list[Any] = [proxy_id, int(since)]
-        search_sql, search_params = self._request_search_filter(
-            search,
-            columns=("client_ip", "domain", "url"),
+        where_sql, params = self._request_filters(
+            since=since,
+            search=search,
+            base_conditions=[self._present_sql("client_ip")],
+            search_columns=("client_ip", "domain", "url"),
         )
-        if search_sql:
-            where.append(search_sql)
-            params.extend(search_params)
-        where_sql = "WHERE " + " AND ".join(where)
         with self._connect() as conn:
             total_row = conn.execute(
                 f"SELECT COALESCE(SUM(bytes), 0) FROM diagnostic_requests {where_sql}",
@@ -1139,20 +1142,15 @@ class ObservabilityQueries:
         search: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        where = [
-            "proxy_id = %s",
-            "ts >= %s",
-            self._present_sql("domain"),
-            "LOWER(COALESCE(bump_mode, '')) LIKE '%%splice%%'",
-        ]
-        params: list[Any] = [proxy_id, int(since)]
-        search_sql, search_params = self._request_search_filter(search)
-        if search_sql:
-            where.append(search_sql)
-            params.extend(search_params)
-        where_sql = "WHERE " + " AND ".join(where)
+        where_sql, params = self._request_filters(
+            since=since,
+            search=search,
+            base_conditions=[
+                self._present_sql("domain"),
+                "LOWER(COALESCE(bump_mode, '')) LIKE '%%splice%%'",
+            ],
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1460,7 +1458,6 @@ class ObservabilityQueries:
         limit: int = 50,
         privacy: bool = False,
     ) -> list[dict[str, Any]]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
         hit_sql = self._hit_sql("result_code")
         group_sql = (
@@ -1468,16 +1465,12 @@ class ObservabilityQueries:
             "WHEN client_ip LIKE '%%.%%.%%.%%' THEN CONCAT(SUBSTRING_INDEX(client_ip, '.', 3), '.0/24') "
             "ELSE client_ip END"
         )
-        where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
-        params: list[Any] = [proxy_id, int(since)]
-        search_sql, search_params = self._request_search_filter(
-            search,
-            columns=("client_ip", "domain", "url"),
+        where_sql, params = self._request_filters(
+            since=since,
+            search=search,
+            base_conditions=[self._present_sql("client_ip")],
+            search_columns=("client_ip", "domain", "url"),
         )
-        if search_sql:
-            where.append(search_sql)
-            params.extend(search_params)
-        where_sql = "WHERE " + " AND ".join(where)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
