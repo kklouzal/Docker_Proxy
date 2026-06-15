@@ -1053,6 +1053,75 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     assert "Squid reconfigured for policy update." in recorded[0][2]
 
 
+def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
+    runtime = _runtime_shell()
+
+    class Controller:
+        def normalize_config_text(self, text):
+            return text
+
+        def apply_config_text(self, _text):
+            raise AssertionError("forced no-op should not reapply active config")
+
+        def set_adblock_icap_revision_token(self, token) -> None:
+            self.token = token
+
+        def materialize_clamav_runtime_files(self, _config_text):
+            return True, "ClamAV runtime files already current."
+
+        def get_current_config(self):
+            return "http_port 3128\n"
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id) -> None:
+            return None
+
+        def get_active_revision(self, _proxy_id):
+            raise AssertionError("forced no-op should not load active config")
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs):
+            raise AssertionError("forced no-op should not mark config apply result")
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._reload_for_policy_update = lambda: (_ for _ in ()).throw(
+        AssertionError("forced no-op should not reload policy includes"),
+    )
+
+    result = runtime.sync_from_db(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["config_changed"] is False
+    assert result["policy_changed"] is False
+    assert result["adblock_changed"] is False
+    assert result["detail"].endswith(
+        "Proxy is already using the active config revision.",
+    )
+    assert runtime.controller.token == "adblock-sha"
+
+
 def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

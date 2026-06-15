@@ -2944,7 +2944,10 @@ class ProxyRuntime:
                 "detail": detail,
             }
 
-        if not force and revision_meta.config_sha256 == current_sha:
+        sync_changed = changed_since_sync_start(
+            policy_config_changed=bool(policy_config_changed),
+        )
+        if revision_meta.config_sha256 == current_sha and (not force or not sync_changed):
             reload_ok = True
             if policy_reload_required or adblock_changed or clamav_runtime_changed:
                 reload_ok, reload_detail = self._reload_for_policy_update()
@@ -2967,9 +2970,7 @@ class ProxyRuntime:
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
-                "changed": changed_since_sync_start(
-                    policy_config_changed=bool(policy_config_changed),
-                ),
+                "changed": sync_changed,
                 "certificate_changed": cert_changed,
                 "policy_changed": policy_changed,
                 "adblock_changed": adblock_changed,
