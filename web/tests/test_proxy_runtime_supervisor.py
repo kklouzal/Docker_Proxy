@@ -1124,7 +1124,8 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
             return text
 
         def apply_config_text(self, _text):
-            raise AssertionError("forced no-op should not reapply active config")
+            msg = "forced no-op should not reapply active config"
+            raise AssertionError(msg)
 
         def set_adblock_icap_revision_token(self, token) -> None:
             self.token = token
@@ -1143,11 +1144,13 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
             return None
 
         def get_active_revision(self, _proxy_id):
-            raise AssertionError("forced no-op should not load active config")
+            msg = "forced no-op should not load active config"
+            raise AssertionError(msg)
 
     class Registry:
         def mark_apply_result(self, *_args, **_kwargs):
-            raise AssertionError("forced no-op should not mark config apply result")
+            msg = "forced no-op should not mark config apply result"
+            raise AssertionError(msg)
 
     runtime.controller = Controller()
     runtime.revisions = Revisions()
