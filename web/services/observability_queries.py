@@ -1961,7 +1961,7 @@ class ObservabilityQueries:
         )
 
         try:
-            ssl_candidates: list[dict[str, Any]] = []
+            ssl_candidates: list[tuple[str, dict[str, Any]]] = []
             seen_ssl_domains: set[str] = set()
 
             def add_ssl_candidates(payload: dict[str, Any]) -> None:
@@ -1970,7 +1970,7 @@ class ObservabilityQueries:
                     if not domain or domain in seen_ssl_domains:
                         continue
                     seen_ssl_domains.add(domain)
-                    ssl_candidates.append(candidate)
+                    ssl_candidates.append((domain, candidate))
 
             add_ssl_candidates(self.ssl_overview(since=since, search=search, limit=lim))
             if search_value:
@@ -1978,10 +1978,7 @@ class ObservabilityQueries:
                     self.ssl_overview(since=since, search="", limit=query_lim),
                 )
 
-            for row in ssl_candidates[:query_lim]:
-                domain = str(row.get("domain") or "")
-                if not domain:
-                    continue
+            for domain, row in ssl_candidates[:query_lim]:
                 event_count = _int_or(row.get("count") or row.get("total"), 0)
                 suggestions.append(
                     self._suggestion_row(
