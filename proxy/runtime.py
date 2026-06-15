@@ -1268,7 +1268,23 @@ class ProxyRuntime:
         status_ok, status_detail = self._supervisor_program_status(
             "cicap_adblock",
             timeout_seconds=5,
+            accepted_states=("RUNNING", "STARTING"),
         )
+        status_starting = any(
+            len(parts := line.split(None, 2)) > 1
+            and parts[0] == "cicap_adblock"
+            and parts[1] == "STARTING"
+            for line in str(status_detail or "").splitlines()
+        )
+        if status_ok and status_starting:
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "detail": status_detail
+                or "adblock ICAP helper is warming up under supervisor.",
+            }
+
         icap_health = _check_icap_adblock(timeout=0.8, error_formatter=str)
         if status_ok and bool(icap_health.get("ok")):
             return {

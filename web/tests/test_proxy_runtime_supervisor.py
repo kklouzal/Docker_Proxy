@@ -779,7 +779,7 @@ def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> No
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
-    runtime._supervisor_program_status = lambda program, timeout_seconds=5: (
+    runtime._supervisor_program_status = lambda program, **_kwargs: (
         False,
         "cicap_adblock BACKOFF",
     )
@@ -796,6 +796,45 @@ def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> No
     assert result["changed"] is True
     assert "BACKOFF" in result["detail"]
     assert "not listening" in result["detail"]
+
+
+def test_runtime_service_self_heal_waits_for_starting_adblock(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    status_calls: list[tuple[str, dict[str, object]]] = []
+
+    def supervisor_status(program, **kwargs):
+        status_calls.append((program, kwargs))
+        return True, "cicap_adblock STARTING Jun 15 02:17 AM"
+
+    runtime._supervisor_program_status = supervisor_status
+    runtime._restart_adblock_service = lambda: (_ for _ in ()).throw(
+        AssertionError("STARTING cicap_adblock should not be restarted"),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_icap_adblock",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("STARTING cicap_adblock should not be probed"),
+        ),
+    )
+
+    result = runtime.self_heal_runtime_services_if_needed(reason="test")
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert "STARTING" in result["detail"]
+    assert status_calls == [
+        (
+            "cicap_adblock",
+            {
+                "timeout_seconds": 5,
+                "accepted_states": ("RUNNING", "STARTING"),
+            },
+        )
+    ]
 
 
 def test_clear_cache_refreshes_adblock_runtime_after_disk_cache_clear(
