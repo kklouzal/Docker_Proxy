@@ -27,7 +27,9 @@ def test_current_component_status_counts_commits_behind_from_compare_api() -> No
         assert abs(timeout - 0.5) < 0.001
         return _json_response(
             {
-                "status": "behind",
+                "status": "ahead",
+                "ahead_by": 3,
+                "behind_by": 0,
                 "total_commits": 3,
                 "commits": [
                     {"sha": "badc0ffee"},
@@ -51,6 +53,69 @@ def test_current_component_status_counts_commits_behind_from_compare_api() -> No
     assert status["state"] == "outdated"
     assert status["commits_behind"] == 3
     assert status["latest_revision_short"] == "feedfacecafe"
+
+
+def test_compare_revision_identical_main_is_ok() -> None:
+    def urlopen(_request, *, timeout):
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
+
+    client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "ok"
+    assert status.commits_behind == 0
+    assert status.latest_revision == "abc123"
+
+
+def test_compare_revision_running_commit_ahead_of_main_warns() -> None:
+    def urlopen(_request, *, timeout):
+        return _json_response(
+            {
+                "status": "behind",
+                "ahead_by": 0,
+                "behind_by": 2,
+                "total_commits": 0,
+                "commits": [],
+            }
+        )
+
+    client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "warn"
+    assert status.commits_behind == 0
+    assert "2 commit(s) ahead" in status.detail
+
+
+def test_compare_revision_diverged_reports_main_and_running_counts() -> None:
+    def urlopen(_request, *, timeout):
+        return _json_response(
+            {
+                "status": "diverged",
+                "ahead_by": 4,
+                "behind_by": 2,
+                "total_commits": 4,
+                "commits": [{"sha": "feedfacecafebeef"}],
+            }
+        )
+
+    client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "warn"
+    assert status.commits_behind == 4
+    assert status.latest_revision == "feedfacecafebeef"
+    assert "(4 behind, 2 ahead)" in status.detail
 
 
 def test_compare_cache_survives_later_github_failure() -> None:

@@ -40,6 +40,13 @@ def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(int(minimum), min(int(maximum), value))
 
 
+def _int_or_zero(value: object | None) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def current_component_metadata(component: str) -> dict[str, str]:
     normalized_component = _clean(component).lower() or "unknown"
     version = (
@@ -180,31 +187,30 @@ class VersionStatusClient:
             latest_revision = _clean(
                 latest_commit.get("sha") if isinstance(latest_commit, dict) else ""
             )
-            commits_behind = (
-                int(total_commits or 0) if status in {"behind", "diverged"} else 0
-            )
+            main_commits_ahead = _int_or_zero(ahead_by or total_commits)
+            running_commits_ahead = _int_or_zero(behind_by)
             if status == "identical":
                 result = CompareResult("ok", 0, current, "Running commit matches main.")
-            elif status == "behind":
+            elif status == "ahead":
                 result = CompareResult(
                     "outdated",
-                    commits_behind,
+                    main_commits_ahead,
                     latest_revision,
-                    f"Running commit is {commits_behind} commit(s) behind main.",
+                    f"Running commit is {main_commits_ahead} commit(s) behind main.",
                 )
             elif status == "diverged":
                 result = CompareResult(
                     "warn",
-                    commits_behind,
+                    main_commits_ahead,
                     latest_revision,
-                    f"Running commit has diverged from main ({commits_behind} behind, {int(ahead_by or 0)} ahead).",
+                    f"Running commit has diverged from main ({main_commits_ahead} behind, {running_commits_ahead} ahead).",
                 )
-            elif status == "ahead":
+            elif status == "behind":
                 result = CompareResult(
                     "warn",
                     0,
                     latest_revision,
-                    f"Running commit is ahead of main ({int(behind_by or 0)} behind, {int(ahead_by or 0)} ahead).",
+                    f"Running commit is ahead of main ({running_commits_ahead} commit(s) ahead).",
                 )
             else:
                 result = CompareResult(
