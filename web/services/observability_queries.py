@@ -1184,23 +1184,13 @@ class ObservabilityQueries:
         limit: int = 50,
         privacy: bool = False,
     ) -> list[dict[str, Any]]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        search_value = (search or "").strip().lower()
-        where = [
-            "proxy_id = %s",
-            "ts >= %s",
-            "service_family = 'av'",
-            self._av_finding_sql(),
-        ]
-        params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "(LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\')",
-            )
-            params.extend([like, like, like, like])
-        where_sql = "WHERE " + " AND ".join(where)
+        where_sql, params = self._security_event_filters(
+            since=since,
+            search=search,
+            base_conditions=["service_family = 'av'", self._av_finding_sql()],
+            search_columns=("domain", "url", "client_ip", "adapt_summary"),
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
