@@ -32,10 +32,11 @@ class _RegexCandidate:
 
 
 class _HostPatternCandidate:
-    __slots__ = ("host_pattern", "rule_id")
+    __slots__ = ("host_pattern", "pattern_kind", "rule_id")
 
-    def __init__(self, host_pattern: str, rule_id: str) -> None:
+    def __init__(self, host_pattern: str, pattern_kind: str, rule_id: str) -> None:
         self.host_pattern = host_pattern
+        self.pattern_kind = pattern_kind
         self.rule_id = rule_id
 
 
@@ -341,7 +342,7 @@ class AdblockLookupIndex:
         return {
             candidate.rule_id
             for candidate in candidates
-            if fnmatch.fnmatchcase(host, candidate.host_pattern)
+            if _host_pattern_matches_candidate(host, candidate)
         }
 
     def _host_pattern_candidate_ids(
@@ -384,13 +385,19 @@ class AdblockLookupIndex:
         with self._host_patterns_lock:
             if self._host_patterns is not None:
                 return self._host_patterns
+            pattern_kind_expr = (
+                "pattern_kind"
+                if _table_column_exists(conn, "host_pattern_index", "pattern_kind")
+                else "'' AS pattern_kind"
+            )
             self._host_patterns = {
                 str(row["rule_id"] or ""): _HostPatternCandidate(
                     str(row["host_pattern"] or ""),
+                    str(row["pattern_kind"] or ""),
                     str(row["rule_id"] or ""),
                 )
                 for row in conn.execute(
-                    "SELECT host_pattern, rule_id FROM host_pattern_index",
+                    f"SELECT host_pattern, {pattern_kind_expr}, rule_id FROM host_pattern_index",
                 )
                 if row["host_pattern"] and row["rule_id"]
             }
@@ -494,6 +501,18 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _host_pattern_matches_candidate(
+    host: str,
+    candidate: _HostPatternCandidate,
+) -> bool:
+    if candidate.pattern_kind == "host_anchored_pattern":
+        return any(
+            fnmatch.fnmatchcase(host_suffix, candidate.host_pattern)
+            for host_suffix in _host_suffix_candidates(host)
+        )
+    return fnmatch.fnmatchcase(host, candidate.host_pattern)
 
 
 def _table_column_exists(

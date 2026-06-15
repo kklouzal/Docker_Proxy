@@ -189,6 +189,29 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
     assert "/tracker[.]example/$third-party" in regex_candidates
 
 
+def test_lookup_returns_domain_anchored_wildcard_host_subdomain_candidates(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        ["||google.*/pagead/lvz?$script"],
+    )
+
+    _add_web_to_path()
+    from services.adblock_lookup import AdblockLookupIndex
+
+    lookup = AdblockLookupIndex(db_path)
+
+    candidates = _raws(
+        lookup.candidate_rules(
+            "https://www.google.com/pagead/lvz?slot=1",
+            resource_type="script",
+        ),
+    )
+
+    assert "||google.*/pagead/lvz?$script" in candidates
+
+
 def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
     tmp_path: Path,
 ) -> None:
