@@ -2156,7 +2156,9 @@ def _publish_certificate_bundle_remote(
                 restore_detail = "Previous active certificate bundle was restored."
             else:
                 bundle_store.deactivate_revision(revision.revision_id)
-                restore_detail = "Unqueued certificate bundle revision was left inactive."
+                restore_detail = (
+                    "Unqueued certificate bundle revision was left inactive."
+                )
         except Exception:
             log_exception_throttled(
                 app.logger,
@@ -2221,9 +2223,7 @@ def _publish_certificate_bundle_remote(
         detail = f"Certificate revision {revision.revision_id} saved. Queued {queued_count} async {plural}."
     elif queued_count == 0:
         restore_previous_active_bundle()
-        detail = (
-            f"Certificate revision {revision.revision_id} saved, but no proxy reconciliation operations were queued."
-        )
+        detail = f"Certificate revision {revision.revision_id} saved, but no proxy reconciliation operations were queued."
         if failure_details:
             detail = f"{detail}\n{failure_details[0]}"
         if restore_detail:
@@ -2347,8 +2347,7 @@ def _redirect_adblock_queue_failure(detail: str):
     return _redirect_to(
         "adblock",
         error="1",
-        msg=detail
-        or "Adblock changes were saved, but runtime refresh was not queued.",
+        msg=detail or "Adblock changes were saved, but runtime refresh was not queued.",
     )
 
 
@@ -2551,7 +2550,9 @@ def _handle_webfilter_post(store: Any, tab: str):
             for c in request.form.getlist("safe_browsing_lists")
             if (c or "").strip()
         ]
-        safe_browsing_lists = list(SafeBrowsingStore.selected_lists(safe_browsing_lists))
+        safe_browsing_lists = list(
+            SafeBrowsingStore.selected_lists(safe_browsing_lists)
+        )
 
         if safe_browsing_enabled and not safe_browsing_lists:
             return _redirect_to(
@@ -2861,9 +2862,7 @@ def _handle_pac_builder_post(store: Any):
             pid = int(request.form.get("profile_id") or "0")
             changed = store.delete_profile(pid)
             if not changed:
-                return _redirect_to(
-                    "pac_builder", error="1", msg="Profile not found."
-                )
+                return _redirect_to("pac_builder", error="1", msg="Profile not found.")
             return _redirect_after_pac_refresh("pac_builder", ok="1")
     except Exception as e:
         return _redirect_to("pac_builder", error="1", msg=public_error_message(e))
@@ -3505,7 +3504,10 @@ def revert_operation(operation_id: int):
                     if not failure_detail:
                         failure_detail = public_error_message(exc)
                     continue
-                if getattr(operation, "operation_id", 0) and operation.status == "pending":
+                if (
+                    getattr(operation, "operation_id", 0)
+                    and operation.status == "pending"
+                ):
                     queued_count += 1
                 elif not failure_detail:
                     failure_detail = str(

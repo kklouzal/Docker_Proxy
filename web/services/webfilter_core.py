@@ -160,9 +160,7 @@ def validate_source_url(source_url: str) -> str:
         elif "valid absolute HTTP/HTTPS" in detail:
             msg = invalid_url_msg
         else:
-            msg = (
-                "Web filter source URLs must not point at internal or localhost addresses."
-            )
+            msg = "Web filter source URLs must not point at internal or localhost addresses."
         raise ValueError(msg) from exc
     return source
 

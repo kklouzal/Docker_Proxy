@@ -2373,8 +2373,10 @@ class ProxyRuntime:
                         self.proxy_id,
                     )
                     if active_revision_full is not None:
-                        normalized_active_config = self.controller.normalize_config_text(
-                            active_revision_full.config_text or "",
+                        normalized_active_config = (
+                            self.controller.normalize_config_text(
+                                active_revision_full.config_text or "",
+                            )
                         )
                         normalized_active_sha = hashlib.sha256(
                             normalized_active_config.encode(
@@ -2421,9 +2423,11 @@ class ProxyRuntime:
                 if drift_detail
             )
             if active_adblock_sha and active_adblock_sha == current_adblock_sha:
-                integrity_ok, integrity_detail = self._adblock_materialization_integrity(
-                    active_adblock_sha,
-                    current_sha=current_adblock_sha,
+                integrity_ok, integrity_detail = (
+                    self._adblock_materialization_integrity(
+                        active_adblock_sha,
+                        current_sha=current_adblock_sha,
+                    )
                 )
                 if not integrity_ok:
                     state_errors.append(f"adblock artifact: {integrity_detail}")
@@ -2952,7 +2956,9 @@ class ProxyRuntime:
         sync_changed = changed_since_sync_start(
             policy_config_changed=bool(policy_config_changed),
         )
-        if revision_meta.config_sha256 == current_sha and (not force or not sync_changed):
+        if revision_meta.config_sha256 == current_sha and (
+            not force or not sync_changed
+        ):
             reload_ok = True
             if policy_reload_required or adblock_changed or clamav_runtime_changed:
                 reload_ok, reload_detail = self._reload_for_policy_update()

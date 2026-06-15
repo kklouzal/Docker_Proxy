@@ -209,7 +209,9 @@ def test_requeue_stale_applying_restores_active_request_key(monkeypatch) -> None
             self.queries.append((compact, params))
             result = _Result()
             result.rowcount = (
-                3 if compact.startswith("UPDATE proxy_operations stale LEFT JOIN") else 0
+                3
+                if compact.startswith("UPDATE proxy_operations stale LEFT JOIN")
+                else 0
             )
             return result
 

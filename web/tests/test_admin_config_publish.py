@@ -509,9 +509,7 @@ def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.parametrize("status", ["pending", "applying", "applied", "superseded"])
-def test_revert_operation_requires_failed_status(
-    monkeypatch, tmp_path, status
-) -> None:
+def test_revert_operation_requires_failed_status(monkeypatch, tmp_path, status) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
 
     class Op:

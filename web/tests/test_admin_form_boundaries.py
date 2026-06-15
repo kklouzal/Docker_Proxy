@@ -139,8 +139,7 @@ def test_webfilter_save_validates_source_url_and_whitelist(
     assert "err_source" not in disabled_params
     assert store.last_set_settings["enabled"] is False
     assert (
-        store.last_set_settings["source_url"]
-        == "http://127.0.0.1/private-feed.tar.gz"
+        store.last_set_settings["source_url"] == "http://127.0.0.1/private-feed.tar.gz"
     )
     assert loaded.operation_ledger.operations == []
 

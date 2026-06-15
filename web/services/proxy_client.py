@@ -111,15 +111,11 @@ class ProxyClient:
                         raw,
                         status_code=int(response.status),
                     )
-                    msg = (
-                        f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
-                    )
+                    msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
                     raise ProxyClientError(msg) from exc
                 if not isinstance(data, dict):
                     detail = self._non_object_json_detail()
-                    msg = (
-                        f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
-                    )
+                    msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
                     raise ProxyClientError(msg)
                 return ProxyResponse(
                     ok=bool(data.get("ok", True)),

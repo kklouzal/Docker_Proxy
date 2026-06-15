@@ -89,8 +89,7 @@ def test_proxy_chain_filters_stale_invalid_backup_hosts() -> None:
     )
 
     assert (
-        target.proxy_chain
-        == "PROXY primary.example:3128; PROXY backup.example:8080; "
+        target.proxy_chain == "PROXY primary.example:3128; PROXY backup.example:8080; "
         "PROXY backup-02.example:8443; PROXY [2001:db8::10]:3130; DIRECT"
     )
     assert "backup.example;DIRECT" not in target.proxy_chain
@@ -420,8 +419,7 @@ def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
     assert target.proxy_id == "edge-b"
     assert target.public_host == "edge-b.example"
     assert (
-        target.proxy_chain
-        == "PROXY edge-b.example:3128; PROXY backup-b.example:8080"
+        target.proxy_chain == "PROXY edge-b.example:3128; PROXY backup-b.example:8080"
     )
     assert "backup-a" not in target.proxy_chain
     assert "DIRECT" not in target.proxy_chain
@@ -918,7 +916,7 @@ def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
     )
 
     assert (
-        "return \"PROXY proxy'host.example:3128; PROXY backup.example:8080; DIRECT\";"
+        'return "PROXY proxy\'host.example:3128; PROXY backup.example:8080; DIRECT";'
         in rendered
     )
     assert "return 'PROXY" not in rendered

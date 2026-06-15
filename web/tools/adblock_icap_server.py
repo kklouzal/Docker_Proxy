@@ -404,8 +404,10 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                 return
             request_count += 1
             header_blob, _, _rest = data.partition(b"\r\n\r\n")
-            close = read_close or _connection_close_requested(header_blob) or (
-                request_count >= max_keepalive_requests
+            close = (
+                read_close
+                or _connection_close_requested(header_blob)
+                or (request_count >= max_keepalive_requests)
             )
             lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()
             request_line = lines[0] if lines else ""
@@ -413,7 +415,9 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
             method = parts[0].upper() if parts else ""
             if method == "OPTIONS":
                 self.server.increment_stat("options")
-                if not _send_icap_response(self.request, _options_response(close=close)):
+                if not _send_icap_response(
+                    self.request, _options_response(close=close)
+                ):
                     return
                 if close:
                     return
@@ -601,8 +605,7 @@ def main(argv: list[str] | None = None) -> int:
         "--max-body-drain-bytes",
         type=int,
         default=int(
-            os.environ.get("ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES", "8388608")
-            or "8388608"
+            os.environ.get("ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES", "8388608") or "8388608"
         ),
     )
     parser.add_argument(

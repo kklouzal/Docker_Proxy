@@ -325,7 +325,9 @@ def test_admin_policy_requests_approval_duration_is_bounded(
         loaded.module, "_best_effort_refresh_managed_policy", lambda *a, **k: None
     )
 
-    def approve(duration_seconds: str, *, indefinite: bool = False) -> dict[str, object]:
+    def approve(
+        duration_seconds: str, *, indefinite: bool = False
+    ) -> dict[str, object]:
         data = {
             "action": "approve",
             "request_id": "1",

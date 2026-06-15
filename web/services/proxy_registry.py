@@ -104,10 +104,7 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
     query = parsed.query
     if query:
         decoded_query = unquote(query)
-        if any(
-            ch.isspace() or ord(ch) < 32 or ord(ch) == 127
-            for ch in decoded_query
-        ):
+        if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in decoded_query):
             return fallback
     return f"{path}?{query}" if query else path
 

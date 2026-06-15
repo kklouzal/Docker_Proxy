@@ -583,9 +583,7 @@ def test_safe_config_apply_failure_returns_to_active_form_tab(
     assert "error=1" in response.headers["Location"]
 
 
-def test_safe_config_apply_failure_shows_publish_detail(
-    monkeypatch, tmp_path
-) -> None:
+def test_safe_config_apply_failure_shows_publish_detail(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -1437,12 +1435,10 @@ def test_observability_export_reuses_summary_cache_for_same_window(
     monkeypatch.setattr(loaded.module, "time", RouteClock())
 
     assert (
-        client.get("/observability/export?pane=clients&window=3600").status_code
-        == 200
+        client.get("/observability/export?pane=clients&window=3600").status_code == 200
     )
     assert (
-        client.get("/observability/export?pane=clients&window=3600").status_code
-        == 200
+        client.get("/observability/export?pane=clients&window=3600").status_code == 200
     )
 
     assert observability_queries.summary_calls == 1
@@ -1597,9 +1593,7 @@ def test_observability_metrics_reuses_short_lived_section_cache(
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.headers.get("Content-Type") == second.headers.get("Content-Type")
-    assert first.headers.get("Content-Type", "").startswith(
-        "text/plain; version=0.0.4"
-    )
+    assert first.headers.get("Content-Type", "").startswith("text/plain; version=0.0.4")
     assert first.get_data(as_text=True) == second.get_data(as_text=True)
     body = second.get_data(as_text=True)
     assert 'docker_proxy_observability_window_seconds{proxy_id="default"} 3600' in body
@@ -1609,10 +1603,16 @@ def test_observability_metrics_reuses_short_lived_section_cache(
     assert 'docker_proxy_observability_transactions{proxy_id="default"} 5' in body
     assert 'docker_proxy_observability_cache_hits{proxy_id="default"} 6' in body
     assert 'docker_proxy_observability_cache_misses{proxy_id="default"} 3' in body
-    assert 'docker_proxy_observability_cache_hit_ratio{proxy_id="default"} 0.667' in body
-    assert 'docker_proxy_observability_cache_total_bytes{proxy_id="default"} 9999' in body
+    assert (
+        'docker_proxy_observability_cache_hit_ratio{proxy_id="default"} 0.667' in body
+    )
+    assert (
+        'docker_proxy_observability_cache_total_bytes{proxy_id="default"} 9999' in body
+    )
     assert 'docker_proxy_observability_cache_hit_bytes{proxy_id="default"} 1234' in body
-    assert 'docker_proxy_observability_cache_miss_bytes{proxy_id="default"} 8765' in body
+    assert (
+        'docker_proxy_observability_cache_miss_bytes{proxy_id="default"} 8765' in body
+    )
     assert (
         'docker_proxy_observability_icap_events{proxy_id="default",service="av"} 3'
         in body

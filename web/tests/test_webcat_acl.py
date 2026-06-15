@@ -343,9 +343,7 @@ def test_blocked_log_db_preserves_batch_when_connection_unavailable(
 
     assert conn is None
     assert flushed is False
-    assert batch == [
-        (123, "default", "192.0.2.10", "http://blocked.example/", "adult")
-    ]
+    assert batch == [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
 
 
 def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
@@ -379,6 +377,4 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
     assert db._conn is None
     assert rolled_back == [True]
     assert closed == [True]
-    assert batch == [
-        (123, "default", "192.0.2.10", "http://blocked.example/", "adult")
-    ]
+    assert batch == [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]

@@ -888,7 +888,9 @@ def test_build_active_artifact_preserves_previous_and_pending_on_compile_failure
         compiled_dir=str(tmp_path / "compiled"),
     )
     monkeypatch.setattr(artifact_store, "init_db", lambda: None)
-    monkeypatch.setattr(artifact_store, "get_active_artifact", lambda: previous_revision)
+    monkeypatch.setattr(
+        artifact_store, "get_active_artifact", lambda: previous_revision
+    )
 
     result = artifact_store.build_active_artifact(
         refresh_lists=False,

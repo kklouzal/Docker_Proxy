@@ -107,9 +107,7 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
-def test_sslfilter_forms_preserve_selected_proxy_context(
-    monkeypatch, tmp_path
-) -> None:
+def test_sslfilter_forms_preserve_selected_proxy_context(monkeypatch, tmp_path) -> None:
     loaded, client = _loaded(
         monkeypatch,
         tmp_path,

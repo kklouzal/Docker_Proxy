@@ -442,13 +442,21 @@ def _normalize_host(host: str) -> str:
         literal = h[1:].split("]", 1)[0].strip()
         try:
             ip = ipaddress.ip_address(literal)
-            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+            return (
+                f"[{ip.compressed.lower()}]"
+                if ip.version == 6
+                else ip.compressed.lower()
+            )
         except ValueError:
             return h.split("]", 1)[0] + "]"
     if ":" in h:
         try:
             ip = ipaddress.ip_address(h)
-            return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+            return (
+                f"[{ip.compressed.lower()}]"
+                if ip.version == 6
+                else ip.compressed.lower()
+            )
         except ValueError:
             if h.count(":") == 1:
                 h = h.split(":", 1)[0]
@@ -456,7 +464,9 @@ def _normalize_host(host: str) -> str:
                 return h
     try:
         ip = ipaddress.ip_address(h)
-        return f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        return (
+            f"[{ip.compressed.lower()}]" if ip.version == 6 else ip.compressed.lower()
+        )
     except ValueError:
         pass
     try:

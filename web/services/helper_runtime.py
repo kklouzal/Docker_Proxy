@@ -46,7 +46,9 @@ def helper_event(helper: str, event: str, **fields: Any) -> None:
             continue
         payload[str(key)] = value
     try:
-        sys.stderr.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+        sys.stderr.write(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+        )
         sys.stderr.flush()
     except Exception:
         pass
@@ -80,7 +82,9 @@ class HelperStats:
     emit_interval_seconds: float = 60.0
     counters: dict[str, int] = field(default_factory=dict)
     _last_emit: float = field(default_factory=_monotonic_now)
-    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
 
     def increment(self, key: str, amount: int = 1) -> None:
         if not key:

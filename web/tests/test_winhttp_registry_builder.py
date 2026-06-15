@@ -176,7 +176,10 @@ def test_tracing_command_validates_documented_values() -> None:
             "Custom proxy map",
         ),
         ({"bypass_list": '*.example.local|"calc"'}, "Bypass list"),
-        ({"autoconfig_url": 'http://proxy.example/proxy.pac" & whoami'}, "Autoconfig URL"),
+        (
+            {"autoconfig_url": 'http://proxy.example/proxy.pac" & whoami'},
+            "Autoconfig URL",
+        ),
     ],
 )
 def test_contract_output_rejects_unsafe_command_characters(

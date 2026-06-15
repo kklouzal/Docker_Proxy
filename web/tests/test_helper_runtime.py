@@ -19,7 +19,9 @@ def test_split_acl_channel_and_write_response(capsys) -> None:
     write_acl_response(None, False)
     write_acl_response("13", True, message="category=adult social")
 
-    assert capsys.readouterr().out == "12 OK\nERR\n13 OK message=category=adult%20social\n"
+    assert (
+        capsys.readouterr().out == "12 OK\nERR\n13 OK message=category=adult%20social\n"
+    )
 
 
 def test_helper_event_writes_json_to_stderr(capsys) -> None:

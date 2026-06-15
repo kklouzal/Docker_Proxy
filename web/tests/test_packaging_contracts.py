@@ -69,12 +69,10 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "squid_logs:" in _read("docker-compose.ghcr.yml")
     assert "ADBLOCK_CACHE_TTL: ${ADBLOCK_CACHE_TTL:-}" in proxy_block
     assert (
-        "ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES: "
-        "${ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES:-}"
+        "ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES: ${ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES:-}"
     ) in proxy_block
-    assert (
-        "--max-allowed-packet=${MYSQL_MAX_ALLOWED_PACKET:-256M}"
-        in _read("docker-compose.mysql.yml")
+    assert "--max-allowed-packet=${MYSQL_MAX_ALLOWED_PACKET:-256M}" in _read(
+        "docker-compose.mysql.yml"
     )
     mysql_conf = _read("config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf")
     assert "max_connections=160" in mysql_conf
@@ -145,7 +143,10 @@ def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
     entrypoint = _read("docker/entrypoint.sh")
 
     assert "adaptation_access adblock_req_set allow all" not in entrypoint
-    assert "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE" in entrypoint
+    assert (
+        "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
+        in entrypoint
+    )
     assert "adaptation_access adblock_req_set allow icap_adblockable" in entrypoint
     assert "adaptation_access adblock_req_set deny all" in entrypoint
 
@@ -155,7 +156,9 @@ def test_entrypoint_bootstrap_av_policy_matches_schema_safety_guards() -> None:
 
     assert "acl file_security_range_request req_header Range .+" in entrypoint
     assert "acl file_security_partial_response http_status 206" in entrypoint
-    assert "adaptation_access av_resp_set deny file_security_range_request" in entrypoint
+    assert (
+        "adaptation_access av_resp_set deny file_security_range_request" in entrypoint
+    )
     assert (
         "adaptation_access av_resp_set deny file_security_partial_response"
         in entrypoint

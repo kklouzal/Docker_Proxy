@@ -303,7 +303,9 @@ class ConfigRevisionStore:
                 (target_id, proxy_key),
             ).fetchone()
             if existing is None:
-                msg = f"Config revision {target_id} was not found for proxy {proxy_key}."
+                msg = (
+                    f"Config revision {target_id} was not found for proxy {proxy_key}."
+                )
                 raise ValueError(msg)
             conn.execute(
                 "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1",

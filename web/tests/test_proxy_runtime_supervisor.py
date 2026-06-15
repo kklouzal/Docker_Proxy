@@ -798,9 +798,9 @@ def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> No
     assert "not listening" in result["detail"]
 
 
-def test_clear_cache_refreshes_adblock_runtime_after_disk_cache_clear(monkeypatch) -> (
-    None
-):
+def test_clear_cache_refreshes_adblock_runtime_after_disk_cache_clear(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -920,9 +920,7 @@ def test_sync_from_db_accepts_normalized_active_revision_before_failed_apply_qua
     None
 ):
     active_config = "http_port 3128\nacl icap_adblockable method GET HEAD\n"
-    normalized_config = (
-        "http_port 3128\ninclude /etc/squid/conf.d/20-icap.conf\n"
-    )
+    normalized_config = "http_port 3128\ninclude /etc/squid/conf.d/20-icap.conf\n"
     active_sha = hashlib.sha256(active_config.encode()).hexdigest()
     normalized_sha = hashlib.sha256(normalized_config.encode()).hexdigest()
 
@@ -2071,7 +2069,9 @@ def test_sync_adblock_state_reports_cache_flush_as_runtime_change() -> None:
     assert recorded[-1]["ok"] is True
 
 
-def test_sync_adblock_state_cache_flush_does_not_fetch_current_artifact_archive() -> None:
+def test_sync_adblock_state_cache_flush_does_not_fetch_current_artifact_archive() -> (
+    None
+):
     recorded = []
 
     class Artifacts:
@@ -2660,7 +2660,9 @@ def test_local_runtime_service_health_uses_tcp_timeout_for_clamd(monkeypatch) ->
     assert result["clamd"]["ok"] is True
 
 
-def test_local_runtime_service_health_does_not_wait_for_stuck_probe(monkeypatch) -> None:
+def test_local_runtime_service_health_does_not_wait_for_stuck_probe(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -2715,7 +2717,9 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
     assert calls[0][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "status"]
 
 
-def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default() -> None:
+def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default() -> (
+    None
+):
     repo_root = Path(__file__).resolve().parents[2]
     healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
         encoding="utf-8",

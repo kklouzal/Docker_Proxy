@@ -56,8 +56,7 @@ class _FakeConn:
             return _FakeResult(
                 self.direct_domain_rows
                 if self.direct_domain_rows is not None
-                else
-                [
+                else [
                     {"profile_id": 11, "domain": "a.example"},
                     {"profile_id": 11, "domain": "b.example"},
                     {"profile_id": 12, "domain": "catch.example"},
@@ -67,8 +66,7 @@ class _FakeConn:
             return _FakeResult(
                 self.direct_dst_net_rows
                 if self.direct_dst_net_rows is not None
-                else
-                [
+                else [
                     {"profile_id": 11, "cidr": "10.0.0.0/8"},
                     {"profile_id": 12, "cidr": "192.168.1.0/24"},
                 ],
@@ -97,9 +95,7 @@ class _FakeConn:
                 [{"1": 1}] if int(params[0]) in self.backup_proxy_ids else []
             )
         if sql.startswith("SELECT 1 FROM pac_profiles"):
-            return _FakeResult(
-                [{"1": 1}] if int(params[0]) in self.profile_ids else []
-            )
+            return _FakeResult([{"1": 1}] if int(params[0]) in self.profile_ids else [])
         if sql.startswith("SELECT direct_enabled FROM pac_proxy_chain_settings"):
             return _FakeResult([{"direct_enabled": 0}])
         return _FakeResult([])

@@ -187,9 +187,9 @@ def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "script-entry.example" in (
-        out / "request_index_domain.jsonl"
-    ).read_text(encoding="utf-8")
+    assert "script-entry.example" in (out / "request_index_domain.jsonl").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_abp_regex_options_split_after_closing_delimiter() -> None:
@@ -455,9 +455,7 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
     assert unspecified_ipv6["domain_exclude_patterns"] == []
     assert unspecified_ipv6["domain_excludes"] == ["[::1]", "localhost"]
 
-    literal_ipv6 = domain_by_raw[
-        "||[2001:db8::20]^$third-party,domain=~[2001:db8::10]"
-    ]
+    literal_ipv6 = domain_by_raw["||[2001:db8::20]^$third-party,domain=~[2001:db8::10]"]
     assert literal_ipv6["pattern_kind"] == "domain_only"
     assert literal_ipv6["host"] == "[2001:db8::20]"
     assert literal_ipv6["domain_exclude_patterns"] == []

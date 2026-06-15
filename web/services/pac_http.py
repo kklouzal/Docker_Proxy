@@ -91,10 +91,7 @@ def _valid_dns_host(value: str) -> bool:
         or len(label) > 63
         or not ("a" <= label[0] <= "z" or "0" <= label[0] <= "9")
         or not ("a" <= label[-1] <= "z" or "0" <= label[-1] <= "9")
-        or any(
-            not ("a" <= ch <= "z" or "0" <= ch <= "9" or ch == "-")
-            for ch in label
-        )
+        or any(not ("a" <= ch <= "z" or "0" <= ch <= "9" or ch == "-") for ch in label)
         for label in labels
     )
 
@@ -181,9 +178,10 @@ def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> s
         )
         if forwarded_host:
             return forwarded_host
-    return _normalize_request_authority(
-        headers.get("Host") if headers is not None else ""
-    ) or "127.0.0.1"
+    return (
+        _normalize_request_authority(headers.get("Host") if headers is not None else "")
+        or "127.0.0.1"
+    )
 
 
 def _public_target_from_manifest(value: object) -> tuple[str, str | None]:

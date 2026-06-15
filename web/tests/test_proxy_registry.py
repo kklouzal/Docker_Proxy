@@ -192,9 +192,7 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
     assert proxy_registry.normalize_management_url("http://proxy:bad/api/manage") == ""
     assert proxy_registry.normalize_management_url("http://proxy:5000/../admin") == ""
     assert (
-        proxy_registry.normalize_management_url(
-            "http://proxy:5000/api%2fmanage/health"
-        )
+        proxy_registry.normalize_management_url("http://proxy:5000/api%2fmanage/health")
         == ""
     )
     assert (
@@ -204,8 +202,7 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
         == ""
     )
     assert (
-        proxy_registry.normalize_management_url("http://proxy:5000/root%5cadmin")
-        == ""
+        proxy_registry.normalize_management_url("http://proxy:5000/root%5cadmin") == ""
     )
     assert proxy_registry.normalize_management_url("http://proxy:5000/root\nx") == ""
 

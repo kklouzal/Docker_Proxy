@@ -217,7 +217,9 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     assert engine.decide("https://static.example/CasePath/banner.js").blocked is True
     assert engine.decide("https://static.example/casepath/banner.js").blocked is False
     assert engine.decide("https://static.example/modifier-token.js").blocked is False
-    analytics_tiktok = engine.decide("https://analytics.tiktok.com/i18n/pixel/events.js")
+    analytics_tiktok = engine.decide(
+        "https://analytics.tiktok.com/i18n/pixel/events.js"
+    )
     assert analytics_tiktok.blocked is True
     assert analytics_tiktok.raw == "||analytics.tiktok.com^"
     assert (
@@ -558,7 +560,9 @@ def test_adblock_icap_reads_preview_zero_chunk_before_responding() -> None:
         + str(len(http)).encode("ascii")
         + b"\r\n\r\n"
     )
-    sock = _ChunkedSocket([headers[:32], headers[32:] + http[:10], http[10:], b"0\r\n\r\n"])
+    sock = _ChunkedSocket(
+        [headers[:32], headers[32:] + http[:10], http[10:], b"0\r\n\r\n"]
+    )
 
     message, pending, force_close = _read_icap_message(
         sock,

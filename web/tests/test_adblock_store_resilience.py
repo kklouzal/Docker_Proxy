@@ -60,5 +60,8 @@ def test_adblock_set_enabled_retries_transient_deadlock(monkeypatch) -> None:
     store.set_enabled({"easylist": True, "easyprivacy": False})
 
     assert sum(1 for call in calls if "UPDATE adblock_lists" in call) == 2
-    assert any("settings_version" in call and "INSERT INTO adblock_meta" in call for call in calls)
+    assert any(
+        "settings_version" in call and "INSERT INTO adblock_meta" in call
+        for call in calls
+    )
     assert sleeps == [0.2]

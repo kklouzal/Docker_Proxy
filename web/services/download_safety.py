@@ -98,8 +98,10 @@ def validate_download_url(
 ):
     invalid_url_msg = "Download URLs must be valid absolute HTTP/HTTPS URLs."
     source = str(url or "")
-    if not source or "\\" in source or any(
-        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in source
+    if (
+        not source
+        or "\\" in source
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in source)
     ):
         raise ValueError(invalid_url_msg)
     try:

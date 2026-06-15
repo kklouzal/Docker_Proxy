@@ -521,7 +521,8 @@ class AdblockArtifactStore:
         available_enabled_statuses = [
             status
             for status in enabled_statuses
-            if settings_enabled and _list_file_has_rule_content(store.list_path(status.key))
+            if settings_enabled
+            and _list_file_has_rule_content(store.list_path(status.key))
         ]
         effective_enabled_lists = [status.key for status in available_enabled_statuses]
         if settings_enabled and len(available_enabled_statuses) < len(enabled_statuses):
