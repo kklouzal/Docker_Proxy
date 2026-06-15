@@ -147,6 +147,7 @@ COPY web/services/adblock_artifacts.py \
     /app/services/
 COPY web/tools/adblock_compile.py \
     web/tools/adblock_icap_server.py \
+    web/tools/apply_common.py \
     web/tools/sslfilter_apply.py \
     web/tools/webcat_acl.py \
     web/tools/safe_browsing_acl.py \

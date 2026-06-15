@@ -36,6 +36,7 @@ def test_proxy_dockerfile_copies_only_proxy_runtime_payload() -> None:
         "web/services/webfilter_core.py",
         "web/tools/webfilter_apply.py",
         "web/tools/adblock_icap_server.py",
+        "web/tools/apply_common.py",
         "web/tools/sslfilter_apply.py",
         "web/tools/webcat_acl.py",
         "scripts/generate_ca.sh",
