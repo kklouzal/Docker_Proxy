@@ -144,6 +144,13 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     )
     assert (
         engine.decide(
+            "https://sub.cdn.example.com/assets/ad.js?slot=1",
+            headers={"accept": "application/javascript"},
+        ).blocked
+        is True
+    )
+    assert (
+        engine.decide(
             "https://cdn.example.com/assets/ad.css",
             headers={"accept": "text/css"},
         ).blocked

@@ -269,14 +269,32 @@ class AdblockLookupIndex:
             )
         )
 
+        host_suffixes = _host_suffix_candidates(host)
         if host:
-            rule_ids.update(
-                str(row["rule_id"])
-                for row in conn.execute(
-                    "SELECT rule_id FROM host_index WHERE host=?",
-                    (host,),
+            if _table_column_exists(conn, "host_index", "pattern_kind"):
+                rule_ids.update(
+                    str(row["rule_id"])
+                    for row in conn.execute(
+                        "SELECT rule_id FROM host_index WHERE host=? AND pattern_kind='absolute_url'",
+                        (host,),
+                    )
                 )
-            )
+                rule_ids.update(
+                    str(row["rule_id"])
+                    for row in _query_by_values(
+                        conn,
+                        "SELECT rule_id FROM host_index WHERE pattern_kind='host_anchored' AND host IN ",
+                        host_suffixes,
+                    )
+                )
+            else:
+                rule_ids.update(
+                    str(row["rule_id"])
+                    for row in conn.execute(
+                        "SELECT rule_id FROM host_index WHERE host=?",
+                        (host,),
+                    )
+                )
 
             rule_ids.update(self._matching_host_pattern_ids(conn, host))
 
@@ -476,6 +494,18 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _table_column_exists(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    except sqlite3.DatabaseError:
+        return False
+    return any(str(row["name"] or "") == column_name for row in rows)
 
 
 def _rules_by_ids(conn: sqlite3.Connection, rule_ids: set[str]) -> list[sqlite3.Row]:
