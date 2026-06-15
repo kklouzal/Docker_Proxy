@@ -733,7 +733,31 @@ def _compile_and_extract_all(
     network_total = 0
     network_with_opts = 0
 
-    for raw in lines:
+    source_lines = list(lines)
+    disabled_by_badfilter: set[tuple[str, str, str]] = set()
+    for raw in source_lines:
+        s = (raw or "").strip()
+        if not s or _is_comment_or_header(s) or _is_cosmetic(s):
+            continue
+        is_exception = False
+        if s.startswith("@@"):
+            is_exception = True
+            s = s[2:].strip()
+        pattern, opts = _split_options(s)
+        _, opt_parsed = _parse_options(opts)
+        if "badfilter" not in opt_parsed:
+            continue
+        disabled_by_badfilter.add(
+            _badfilter_disable_key(
+                {
+                    "action": "allow" if is_exception else "block",
+                    "pattern": pattern,
+                    "options": opt_parsed,
+                },
+            ),
+        )
+
+    for raw in source_lines:
         total += 1
         s = (raw or "").strip()
         if not s:
@@ -921,19 +945,20 @@ def _compile_and_extract_all(
         else:
             _write_jsonl_rule(writers.network_kind_substring_jsonl, rec)
 
-        if pattern_kind == "domain_only":
-            _write_jsonl_rule(writers.request_index_domain_jsonl, rec)
-        elif pattern_kind in {
-            "absolute_url",
-            "absolute_url_pattern",
-            "host_anchored",
-            "host_anchored_pattern",
-        }:
-            _write_jsonl_rule(writers.request_index_host_jsonl, rec)
-        elif pattern_kind == "regex":
-            _write_jsonl_rule(writers.request_index_regex_jsonl, rec)
-        elif pattern_kind != "empty":
-            _write_jsonl_rule(writers.request_index_generic_jsonl, rec)
+        if not _request_index_disabled_by_badfilter(rec, disabled_by_badfilter):
+            if pattern_kind == "domain_only":
+                _write_jsonl_rule(writers.request_index_domain_jsonl, rec)
+            elif pattern_kind in {
+                "absolute_url",
+                "absolute_url_pattern",
+                "host_anchored",
+                "host_anchored_pattern",
+            }:
+                _write_jsonl_rule(writers.request_index_host_jsonl, rec)
+            elif pattern_kind == "regex":
+                _write_jsonl_rule(writers.request_index_regex_jsonl, rec)
+            elif pattern_kind != "empty":
+                _write_jsonl_rule(writers.request_index_generic_jsonl, rec)
 
         # Resource-type buckets
         if opt_parsed:
@@ -998,6 +1023,16 @@ def _badfilter_disable_key(rec: dict[str, Any]) -> tuple[str, str, str]:
         str(rec.get("action") or ""),
         str(rec.get("pattern") or ""),
         _json_compact(options),
+    )
+
+
+def _request_index_disabled_by_badfilter(
+    rec: dict[str, Any],
+    disabled_by_badfilter: set[tuple[str, str, str]],
+) -> bool:
+    return (
+        "badfilter" in set(rec.get("behavior_options") or [])
+        or _badfilter_disable_key(rec) in disabled_by_badfilter
     )
 
 

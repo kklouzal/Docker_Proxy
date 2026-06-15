@@ -382,6 +382,32 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
         conn.close()
 
 
+def test_request_indexes_skip_rules_disabled_by_badfilter(tmp_path: Path) -> None:
+    out = _compile_sample(
+        tmp_path,
+        [
+            "badfilter-target",
+            "badfilter-target$badfilter",
+            "@@||allow.example^",
+            "@@||allow.example^$badfilter",
+            "||kept.example^",
+        ],
+    )
+
+    assert _read_jsonl(out / "request_index_generic.jsonl") == []
+    domain_rules = _read_jsonl(out / "request_index_domain.jsonl")
+    assert [rule["raw"] for rule in domain_rules] == ["||kept.example^"]
+
+    network_rules = _read_jsonl(out / "network_rules.jsonl")
+    assert {rule["raw"] for rule in network_rules} == {
+        "badfilter-target",
+        "badfilter-target$badfilter",
+        "@@||allow.example^",
+        "@@||allow.example^$badfilter",
+        "||kept.example^",
+    }
+
+
 def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
     out = _compile_sample(
         tmp_path,
