@@ -62,6 +62,7 @@ from services.squid_core import SquidController
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
+from services.version_status import current_component_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -2214,6 +2215,7 @@ class ProxyRuntime:
             "listener_details": [dict(item) for item in listener_details],
             "stats": {},
             "services": services,
+            "version": current_component_metadata("proxy"),
             "current_config_sha": current_config_sha,
             "health_scope": "navigation",
             "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
@@ -2447,6 +2449,7 @@ class ProxyRuntime:
                 "listener_details": [dict(item) for item in listener_details],
                 "stats": stats,
                 "services": services,
+                "version": current_component_metadata("proxy"),
                 "active_revision_id": active_revision.revision_id
                 if active_revision
                 else None,

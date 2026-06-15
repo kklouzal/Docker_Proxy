@@ -1336,6 +1336,46 @@
     void fetchAndSwap(window.location.href, { push: false, method: 'GET' });
   };
 
+  const formatVersionStatusText = (component) => {
+    if (!component || typeof component !== 'object') return 'unknown';
+    const version = String(component.version || component.revision_short || 'unknown');
+    const behind = Number(component.commits_behind || 0);
+    if ((component.state === 'outdated' || component.state === 'warn') && behind > 0) {
+      return `${version} (${behind} behind)`;
+    }
+    return version;
+  };
+
+  const updateVersionChip = (root, name, component) => {
+    const chip = root.querySelector(`[data-version-component="${name}"]`);
+    if (!chip || !component || typeof component !== 'object') return;
+    const state = String(component.state || 'unknown');
+    chip.classList.remove('state-ok', 'state-outdated', 'state-warn', 'state-unknown');
+    chip.classList.add(`state-${state}`);
+    chip.setAttribute('title', String(component.detail || 'Version status unavailable.'));
+    const value = chip.querySelector('[data-version-field="version"]');
+    if (value) value.textContent = formatVersionStatusText(component);
+  };
+
+  const refreshVersionStatus = async () => {
+    const root = document.getElementById('version-status');
+    if (!root) return;
+    const url = root.getAttribute('data-version-status-url');
+    if (!url) return;
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin',
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      updateVersionChip(root, 'admin', payload.admin);
+      updateVersionChip(root, 'proxy', payload.proxy);
+    } catch {
+      // Keep the stamped values rendered by the server if refresh fails.
+    }
+  };
+
   const init = () => {
     // Mark initial nav state based on the current URL (useful after client-side swaps).
     currentSpaUrl = window.location.href;
@@ -1347,6 +1387,7 @@
     updateNavActive(window.location.href);
 
     enhanceContainer(getSpaContainer());
+    void refreshVersionStatus();
     startOperationPolling();
     document.addEventListener('click', (event) => {
       const refresh = event.target instanceof Element ? event.target.closest('[data-operation-refresh]') : null;

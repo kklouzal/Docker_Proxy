@@ -24,6 +24,16 @@
             </a>
 
             {% if session.get('user') %}
+            <div class="version-status" id="version-status" data-version-status-url="{{ url_for('api_version_status') }}" aria-label="Version status">
+                <span class="version-chip state-{{ version_header_status.admin.state }}" data-version-component="admin" title="{{ version_header_status.admin.detail }}">
+                    <span class="version-label">Admin</span>
+                    <span class="version-value" data-version-field="version">{{ version_header_status.admin.version }}</span>
+                </span>
+                <span class="version-chip state-{{ version_header_status.proxy.state }}" data-version-component="proxy" title="{{ version_header_status.proxy.detail }}">
+                    <span class="version-label">Proxy</span>
+                    <span class="version-value" data-version-field="version">{{ version_header_status.proxy.version }}</span>
+                </span>
+            </div>
             <div class="header-actions">
                 <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
                     Menu

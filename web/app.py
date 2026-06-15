@@ -156,6 +156,10 @@ from services.ui_support import (
 from services.ui_support import (
     window_label as _window_label,
 )
+from services.version_status import (
+    build_component_version_status,
+    current_component_metadata,
+)
 from services.webfilter_core import (
     _normalize_category_name as _normalize_webfilter_category_name,
 )
@@ -176,6 +180,7 @@ install_http_optimizations(app)
 _asset_version = str(int(time.time()))
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
 _PROXY_HEALTH_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+_ADMIN_VERSION_STATUS_CACHE: tuple[float, dict[str, Any]] | None = None
 
 
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
@@ -561,6 +566,50 @@ def _cached_proxy_health(
         return payload
     _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
     return payload
+
+
+def _cached_admin_version_status() -> dict[str, Any]:
+    global _ADMIN_VERSION_STATUS_CACHE
+    now = time.monotonic()
+    ttl_seconds = _env_float(
+        "VERSION_STATUS_CACHE_TTL_SECONDS",
+        3600.0,
+        minimum=60.0,
+        maximum=86400.0,
+    )
+    if _ADMIN_VERSION_STATUS_CACHE is not None:
+        cached_at, cached_payload = _ADMIN_VERSION_STATUS_CACHE
+        if now - cached_at <= ttl_seconds:
+            return dict(cached_payload)
+    payload = build_component_version_status(current_component_metadata("admin-ui"))
+    _ADMIN_VERSION_STATUS_CACHE = (now, dict(payload))
+    return payload
+
+
+def _proxy_version_status_from_health(health: dict[str, Any]) -> dict[str, Any]:
+    metadata = health.get("version") if isinstance(health, dict) else None
+    if not isinstance(metadata, dict):
+        metadata = {"component": "proxy", "version": "unknown"}
+    return build_component_version_status(metadata)
+
+
+def _initial_version_header_status() -> dict[str, Any]:
+    admin = current_component_metadata("admin-ui")
+    return {
+        "admin": {
+            **admin,
+            "state": "unknown",
+            "detail": "Latest version check has not run yet.",
+        },
+        "proxy": {
+            "component": "proxy",
+            "version": "unknown",
+            "revision": "",
+            "revision_short": "unknown",
+            "state": "unknown",
+            "detail": "Selected proxy metadata has not loaded yet.",
+        },
+    }
 
 
 def _prune_observability_result_cache() -> None:
@@ -1783,6 +1832,7 @@ def inject_now():
         "asset_version": _asset_version,
         "fmt_ts": fmt_ts,
         "observability_default_window": OBSERVABILITY_DEFAULT_WINDOW,
+        "version_header_status": _initial_version_header_status(),
     }
 
 
@@ -3040,6 +3090,31 @@ def index():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"ok": True}), 200
+
+
+@app.route("/api/version-status", methods=["GET"])
+def api_version_status():
+    admin_status = _cached_admin_version_status()
+    proxy_status = _initial_version_header_status()["proxy"]
+    proxy_id = normalize_proxy_id(
+        request.args.get("proxy_id") or session.get("active_proxy_id") or ""
+    )
+    if proxy_id:
+        try:
+            health = _cached_proxy_health(
+                proxy_id,
+                timeout_seconds=_proxy_health_timeout_seconds(),
+            )
+            proxy_status = _proxy_version_status_from_health(health)
+        except Exception as exc:
+            proxy_status = {
+                **proxy_status,
+                "detail": public_error_message(
+                    exc,
+                    default="Selected proxy version metadata is unavailable.",
+                ),
+            }
+    return jsonify({"ok": True, "admin": admin_status, "proxy": proxy_status})
 
 
 @app.route("/api/squid-config", methods=["GET"])

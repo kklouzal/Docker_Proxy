@@ -32,13 +32,27 @@ def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     assert "web/services/helper_runtime.py" in proxy
     assert "web/services/download_safety.py" in proxy
     assert "web/services/domain_normalization.py" in proxy
+    assert "web/services/version_status.py" in proxy
     assert "web/services/helper_runtime.py" in admin
     assert "web/services/download_safety.py" in admin
     assert "web/services/domain_normalization.py" in admin
+    assert "web/services/version_status.py" in admin
     assert "COPY web/app.py /app/app.py" in admin
     assert "COPY web/templates /app/templates" in admin
     assert "web/services/policy_materializer.py" not in admin
     assert "web/tools/webfilter_apply.py" not in admin
+    assert "ARG GIT_COMMIT=" in proxy
+    assert "ARG GIT_COMMIT=" in admin
+    assert "GIT_COMMIT=${GIT_COMMIT}" in proxy
+    assert "GIT_COMMIT=${GIT_COMMIT}" in admin
+
+
+def test_ghcr_publish_passes_runtime_version_build_args() -> None:
+    workflow = _read(".github/workflows/publish-ghcr.yml")
+
+    assert "APP_VERSION=${{ github.ref_name }}" in workflow
+    assert "GIT_COMMIT=${{ github.sha }}" in workflow
+    assert "GIT_REF_NAME=${{ github.ref_name }}" in workflow
 
 
 def test_admin_compose_and_cicap_startup_contracts() -> None:

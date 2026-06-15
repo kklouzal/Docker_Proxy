@@ -14,6 +14,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 FROM alpine:${ALPINE_VERSION}
 ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
+ARG APP_VERSION=unknown
+ARG GIT_COMMIT=
+ARG GIT_REF_NAME=
+ARG BUILD_DATE=
+
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_COMMIT=${GIT_COMMIT} \
+    GIT_REF_NAME=${GIT_REF_NAME} \
+    BUILD_DATE=${BUILD_DATE} \
+    IMAGE_NAME=admin-ui
 
 RUN apk add --no-cache python3 supervisor openssl ca-certificates libatomic file
 
@@ -71,6 +81,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/stats.py \
 	web/services/timeseries_store.py \
 	web/services/ui_support.py \
+	web/services/version_status.py \
 	web/services/webfilter_core.py \
 	web/services/webfilter_store.py \
 	web/services/winhttp_registry_builder.py \

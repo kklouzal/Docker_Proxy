@@ -22,6 +22,7 @@ from services.pac_http import (
 from services.policy_requests import get_policy_request_store
 from services.proxy_context import get_proxy_id
 from services.proxy_logs import read_proxy_log
+from services.version_status import current_component_metadata
 
 from proxy.agent import start_agent
 from proxy.runtime import get_runtime
@@ -244,6 +245,7 @@ def manage_health() -> Any:
                 "proxy_status": detail,
                 "stats": {},
                 "services": {},
+                "version": current_component_metadata("proxy"),
                 "state_errors": [detail],
                 "timestamp": int(time.time()),
             },
