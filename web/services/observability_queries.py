@@ -200,6 +200,46 @@ class ObservabilityQueries:
             status_column=status_column,
         )
 
+    def _request_icap_rollup_filters(
+        self,
+        *,
+        since: int,
+        request_present_column: str,
+        icap_present_column: str,
+        search: str,
+        request_search_column: str,
+        icap_search_column: str,
+    ) -> tuple[str, list[Any], str, list[Any]]:
+        proxy_id = get_proxy_id()
+        request_where = [
+            "r.proxy_id = %s",
+            "r.ts >= %s",
+            self._present_sql(request_present_column),
+        ]
+        request_params: list[Any] = [proxy_id, int(since)]
+        icap_where = [
+            "proxy_id = %s",
+            "ts >= %s",
+            self._present_sql(icap_present_column),
+        ]
+        icap_params: list[Any] = [proxy_id, int(since)]
+        search_value = (search or "").strip().lower()
+        if search_value:
+            like = f"%{_escape_like(search_value)}%"
+            request_where.append(
+                f"LOWER({request_search_column}) LIKE %s ESCAPE '\\\\'",
+            )
+            request_params.append(like)
+            icap_where.append(f"LOWER({icap_search_column}) LIKE %s ESCAPE '\\\\'")
+            icap_params.append(like)
+
+        return (
+            "WHERE " + " AND ".join(request_where),
+            request_params,
+            "WHERE " + " AND ".join(icap_where),
+            icap_params,
+        )
+
     @staticmethod
     def _av_status(summary: str, details: str) -> str:
         haystack = f"{summary} {details}".lower()
@@ -294,24 +334,19 @@ class ObservabilityQueries:
         sort: str = "requests",
         total_requests: int | None = None,
     ) -> list[dict[str, Any]]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        search_value = (search or "").strip().lower()
         hit_sql = self._hit_sql("r.result_code")
         tx_sql = self._request_identity_sql("r.id", "r.master_xaction")
-        request_where = ["r.proxy_id = %s", "r.ts >= %s", self._present_sql("r.domain")]
-        request_params: list[Any] = [proxy_id, int(since)]
-        icap_where = ["proxy_id = %s", "ts >= %s", self._present_sql("domain")]
-        icap_params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            request_where.append("LOWER(r.domain) LIKE %s ESCAPE '\\\\'")
-            request_params.append(like)
-            icap_where.append("LOWER(domain) LIKE %s ESCAPE '\\\\'")
-            icap_params.append(like)
-
-        request_where_sql = "WHERE " + " AND ".join(request_where)
-        icap_where_sql = "WHERE " + " AND ".join(icap_where)
+        request_where_sql, request_params, icap_where_sql, icap_params = (
+            self._request_icap_rollup_filters(
+                since=since,
+                request_present_column="r.domain",
+                icap_present_column="domain",
+                search=search,
+                request_search_column="r.domain",
+                icap_search_column="domain",
+            )
+        )
 
         if sort == "recent":
             order_by = "req.last_seen DESC, req.requests DESC"
@@ -397,24 +432,19 @@ class ObservabilityQueries:
         resolve_hostnames: bool = True,
         total_requests: int | None = None,
     ) -> list[dict[str, Any]]:
-        proxy_id = get_proxy_id()
         lim = max(5, min(200, int(limit)))
-        search_value = (search or "").strip().lower()
         hit_sql = self._hit_sql("r.result_code")
         tx_sql = self._request_identity_sql("r.id", "r.master_xaction")
-        request_where = ["r.proxy_id = %s", "r.ts >= %s", self._present_sql("r.domain")]
-        request_params: list[Any] = [proxy_id, int(since)]
-        icap_where = ["proxy_id = %s", "ts >= %s", self._present_sql("client_ip")]
-        icap_params: list[Any] = [proxy_id, int(since)]
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            request_where.append("LOWER(r.client_ip) LIKE %s ESCAPE '\\\\'")
-            request_params.append(like)
-            icap_where.append("LOWER(client_ip) LIKE %s ESCAPE '\\\\'")
-            icap_params.append(like)
-
-        request_where_sql = "WHERE " + " AND ".join(request_where)
-        icap_where_sql = "WHERE " + " AND ".join(icap_where)
+        request_where_sql, request_params, icap_where_sql, icap_params = (
+            self._request_icap_rollup_filters(
+                since=since,
+                request_present_column="r.domain",
+                icap_present_column="client_ip",
+                search=search,
+                request_search_column="r.client_ip",
+                icap_search_column="client_ip",
+            )
+        )
 
         if sort == "recent":
             order_by = "req.last_seen DESC, req.requests DESC"
