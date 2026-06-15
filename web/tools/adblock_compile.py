@@ -105,6 +105,10 @@ class _Aggregate:
     option_group_counts: dict[str, int]
 
 
+def _write_jsonl_rule(writer: Any, rule: dict[str, Any]) -> None:
+    writer.write(json.dumps(rule, ensure_ascii=False) + "\n")
+
+
 _KNOWN_TYPES: set[str] = {
     "script",
     "image",
@@ -758,64 +762,50 @@ def _compile_and_extract_all(
                 )
                 parsed["list_key"] = list_key
                 parsed["raw"] = s
-                writers.cosmetic_jsonl.write(
-                    json.dumps(parsed, ensure_ascii=False) + "\n",
-                )
+                _write_jsonl_rule(writers.cosmetic_jsonl, parsed)
 
                 # Cosmetic sub-buckets
                 k = parsed.get("kind") or "cosmetic"
                 if k == "elemhide":
-                    writers.cosmetic_elemhide_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_elemhide_jsonl, parsed)
                 elif k == "elemhide_exception":
-                    writers.cosmetic_elemhide_exception_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
+                    _write_jsonl_rule(
+                        writers.cosmetic_elemhide_exception_jsonl,
+                        parsed,
                     )
                 elif k == "extended_css":
-                    writers.cosmetic_extended_css_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_extended_css_jsonl, parsed)
                 elif k == "extended_css_exception":
-                    writers.cosmetic_extended_css_exception_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
+                    _write_jsonl_rule(
+                        writers.cosmetic_extended_css_exception_jsonl,
+                        parsed,
                     )
                 elif k == "html_filter":
-                    writers.cosmetic_html_filter_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_html_filter_jsonl, parsed)
                 elif k == "html_filter_exception":
-                    writers.cosmetic_html_filter_exception_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
+                    _write_jsonl_rule(
+                        writers.cosmetic_html_filter_exception_jsonl,
+                        parsed,
                     )
                 elif k == "scriptlet":
-                    writers.cosmetic_scriptlet_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_scriptlet_jsonl, parsed)
                 elif k == "scriptlet_exception":
-                    writers.cosmetic_scriptlet_exception_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
+                    _write_jsonl_rule(
+                        writers.cosmetic_scriptlet_exception_jsonl,
+                        parsed,
                     )
 
                 # Cosmetic scope and exception splits
                 domains = parsed.get("domains") or []
                 if domains:
-                    writers.cosmetic_scoped_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_scoped_jsonl, parsed)
                 else:
-                    writers.cosmetic_global_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_global_jsonl, parsed)
 
                 if is_cosmetic_exception:
-                    writers.cosmetic_exception_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_exception_jsonl, parsed)
                 else:
-                    writers.cosmetic_non_exception_jsonl.write(
-                        json.dumps(parsed, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.cosmetic_non_exception_jsonl, parsed)
 
                 agg.cosmetic_rules_total += 1
                 agg.cosmetic_rules_by_marker[parsed.get("marker") or "?"] = (
@@ -888,111 +878,71 @@ def _compile_and_extract_all(
         rec.update(_option_semantics(opt_tokens, opt_parsed))
         if extra:
             rec.update(extra)
-        writers.network_jsonl.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        _write_jsonl_rule(writers.network_jsonl, rec)
 
         # Network exception split
         if is_exception:
-            writers.network_exception_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_exception_jsonl, rec)
         else:
-            writers.network_block_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_block_jsonl, rec)
 
         # Options buckets
         if opts:
-            writers.network_with_options_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_with_options_jsonl, rec)
         else:
-            writers.network_no_options_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_no_options_jsonl, rec)
 
         groups = _option_groups(opt_parsed)
         if "domain" in groups:
-            writers.network_option_domain_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_option_domain_jsonl, rec)
         if "third_party" in groups:
-            writers.network_option_third_party_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_option_third_party_jsonl, rec)
         if "type" in groups:
-            writers.network_option_type_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_option_type_jsonl, rec)
         if "misc" in groups:
-            writers.network_option_misc_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_option_misc_jsonl, rec)
 
         # Pattern-kind buckets
         if pattern_kind == "domain_only":
-            writers.network_kind_domain_only_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_kind_domain_only_jsonl, rec)
         elif pattern_kind in {
             "absolute_url",
             "absolute_url_pattern",
             "host_anchored",
             "host_anchored_pattern",
         }:
-            writers.network_kind_host_anchored_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_kind_host_anchored_jsonl, rec)
         elif pattern_kind == "left_anchored":
-            writers.network_kind_left_anchored_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_kind_left_anchored_jsonl, rec)
         elif pattern_kind == "regex":
-            writers.network_kind_regex_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_kind_regex_jsonl, rec)
         elif pattern_kind == "wildcard":
-            writers.network_kind_wildcard_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_kind_wildcard_jsonl, rec)
         else:
-            writers.network_kind_substring_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.network_kind_substring_jsonl, rec)
 
         if pattern_kind == "domain_only":
-            writers.request_index_domain_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.request_index_domain_jsonl, rec)
         elif pattern_kind in {
             "absolute_url",
             "absolute_url_pattern",
             "host_anchored",
             "host_anchored_pattern",
         }:
-            writers.request_index_host_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.request_index_host_jsonl, rec)
         elif pattern_kind == "regex":
-            writers.request_index_regex_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.request_index_regex_jsonl, rec)
         elif pattern_kind != "empty":
-            writers.request_index_generic_jsonl.write(
-                json.dumps(rec, ensure_ascii=False) + "\n",
-            )
+            _write_jsonl_rule(writers.request_index_generic_jsonl, rec)
 
         # Resource-type buckets
         if opt_parsed:
             for t in _KNOWN_TYPES:
                 if t in opt_parsed and t in writers.network_type_pos_jsonl:
-                    writers.network_type_pos_jsonl[t].write(
-                        json.dumps(rec, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.network_type_pos_jsonl[t], rec)
                 neg = f"~{t}"
                 if neg in opt_parsed and t in writers.network_type_neg_jsonl:
-                    writers.network_type_neg_jsonl[t].write(
-                        json.dumps(rec, ensure_ascii=False) + "\n",
-                    )
+                    _write_jsonl_rule(writers.network_type_neg_jsonl[t], rec)
 
     return {
         "total": total,
