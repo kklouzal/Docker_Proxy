@@ -679,18 +679,13 @@ class ObservabilityQueries:
     ) -> tuple[str, list[Any]]:
         where = ["proxy_id = %s", "ts >= %s", *(base_conditions or [])]
         params: list[Any] = [get_proxy_id(), int(since)]
-        search_value = (search or "").strip().lower()
-        if search_value:
-            like = f"%{_escape_like(search_value)}%"
-            where.append(
-                "("
-                + " OR ".join(
-                    f"LOWER({column}) LIKE %s ESCAPE '\\\\'"
-                    for column in search_columns
-                )
-                + ")",
-            )
-            params.extend([like] * len(search_columns))
+        search_sql, search_params = ObservabilityQueries._request_search_filter(
+            search,
+            columns=search_columns,
+        )
+        if search_sql:
+            where.append(search_sql)
+            params.extend(search_params)
         return "WHERE " + " AND ".join(where), params
 
     def security_overview(
