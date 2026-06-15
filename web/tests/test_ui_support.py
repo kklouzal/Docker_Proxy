@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import pytest
-from services.ui_support import append_query_to_local_return, safe_local_return_url
+from services.ui_support import (
+    append_query_to_local_return,
+    present_top_tag_rows,
+    present_top_value_rows,
+    safe_local_return_url,
+)
 
 
 @pytest.mark.parametrize(
@@ -29,3 +34,34 @@ def test_append_query_to_local_return_preserves_and_replaces_query_values() -> N
         append_query_to_local_return("/admin?pane=old&keep=1#top", pane="ssl", ok=1)
         == "/admin?keep=1&pane=ssl&ok=1#top"
     )
+
+
+def test_present_top_value_rows_skips_empty_values_and_preserves_full_label() -> None:
+    rows = [
+        {"value": "  ", "count": 5, "last_seen": 100},
+        {"value": "client.example.test", "count": "7", "last_seen": "123"},
+    ]
+
+    assert present_top_value_rows(rows, max_label=10) == [
+        {
+            "label": "client.ex…",
+            "full_label": "client.example.test",
+            "count": 7,
+            "last_seen": 123,
+        },
+    ]
+
+
+def test_present_top_tag_rows_uses_tag_key_and_tag_label_default() -> None:
+    long_tag = f"cache:{'x' * 80}"
+
+    presented = present_top_tag_rows([{"tag": long_tag, "count": 2}])
+
+    assert presented == [
+        {
+            "label": f"cache:{'x' * 65}…",
+            "full_label": long_tag,
+            "count": 2,
+            "last_seen": 0,
+        },
+    ]

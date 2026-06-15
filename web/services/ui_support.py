@@ -421,6 +421,15 @@ def present_top_value_rows(
     key: str = "value",
     max_label: int = 64,
 ) -> list[dict[str, Any]]:
+    return _present_top_label_rows(rows, key=key, max_label=max_label)
+
+
+def _present_top_label_rows(
+    rows: Sequence[dict[str, Any]],
+    *,
+    key: str,
+    max_label: int,
+) -> list[dict[str, Any]]:
     presented: list[dict[str, Any]] = []
     for row in rows:
         value = str(row.get(key) or "").strip()
@@ -442,20 +451,7 @@ def present_top_tag_rows(
     *,
     max_label: int = 72,
 ) -> list[dict[str, Any]]:
-    presented: list[dict[str, Any]] = []
-    for row in rows:
-        tag = str(row.get("tag") or "").strip()
-        if not tag:
-            continue
-        presented.append(
-            {
-                "label": _truncate_text(tag, max_len=max_label),
-                "full_label": tag,
-                "count": int(row.get("count") or 0),
-                "last_seen": int(row.get("last_seen") or 0),
-            },
-        )
-    return presented
+    return _present_top_label_rows(rows, key="tag", max_label=max_label)
 
 
 def present_ssl_error_rows(rows: Sequence[Any]) -> dict[str, Any]:
