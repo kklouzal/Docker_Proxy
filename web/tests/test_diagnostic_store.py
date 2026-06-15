@@ -67,6 +67,33 @@ def test_parse_icap_log_line_ignores_dash_placeholders_for_domain() -> None:
     assert row["domain"] == "example.com"
 
 
+def test_log_parsers_share_policy_field_and_raw_line_normalization() -> None:
+    store = DiagnosticStore()
+    request_line = (
+        "1777000000\t125\t192.0.2.10\tCONNECT\texample.com:443\tTCP_TUNNEL/200\t1234"
+        "\ttx123\tDIRECT\tbump\texample.com\tTLSv1.3\tTLS_AES_256_GCM_SHA384"
+        "\tTLSv1.3\tTLS_AES_128_GCM_SHA256\texample.com\tMozilla/5.0\t-"
+        "\texclude-rule\tssl-rule\twebfilter-rule\tcache-rule\r\n"
+    )
+    icap_line = (
+        "1777000001\ttx123\t192.0.2.10\tGET\thttps://example.com/file.exe\t87"
+        "\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0\texample.com"
+        "\texclude-rule\tssl-rule\twebfilter-rule\tcache-rule\r\n"
+    )
+
+    request_row = store._parse_request_log_line(request_line)
+    icap_row = store._parse_icap_log_line(icap_line)
+
+    assert request_row is not None
+    assert icap_row is not None
+    for row in (request_row, icap_row):
+        assert row["exclusion_rule"] == "exclude-rule"
+        assert row["ssl_exception"] == "ssl-rule"
+        assert row["webfilter_allow"] == "webfilter-rule"
+        assert row["cache_bypass"] == "cache-rule"
+        assert not row["raw"].endswith(("\r", "\n"))
+
+
 def test_list_recent_transactions_attaches_related_icap_and_filters_service() -> None:
     store = DiagnosticStore()
 

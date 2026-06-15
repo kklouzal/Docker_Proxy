@@ -258,6 +258,19 @@ def _policy_tags(
     return tags
 
 
+def _policy_fields_from_row(row: list[str], start_index: int) -> dict[str, str]:
+    return {
+        "exclusion_rule": _safe_text(row[start_index], max_len=64),
+        "ssl_exception": _safe_text(row[start_index + 1], max_len=64),
+        "webfilter_allow": _safe_text(row[start_index + 2], max_len=64),
+        "cache_bypass": _safe_text(row[start_index + 3], max_len=64),
+    }
+
+
+def _bounded_raw_line(line: str) -> str:
+    return (line or "").strip("\r\n")[:4000]
+
+
 def _service_family(adapt_summary: str, adapt_details: str) -> str:
     haystack = f"{adapt_summary} {adapt_details}".lower()
     if any(
@@ -891,10 +904,7 @@ class DiagnosticStore:
         host = _safe_text(row[15], max_len=255)
         user_agent = _safe_text(row[16], max_len=512)
         referer = _safe_text(row[17], max_len=512)
-        exclusion_rule = _safe_text(row[18], max_len=64)
-        ssl_exception = _safe_text(row[19], max_len=64)
-        webfilter_allow = _safe_text(row[20], max_len=64)
-        cache_bypass = _safe_text(row[21], max_len=64)
+        policy_fields = _policy_fields_from_row(row, 18)
         response_content_type = _safe_text(
             row[22] if len(row) > 22 else "", max_len=255
         )
@@ -925,15 +935,12 @@ class DiagnosticStore:
             "host": host,
             "user_agent": user_agent,
             "referer": referer,
-            "exclusion_rule": exclusion_rule,
-            "ssl_exception": ssl_exception,
-            "webfilter_allow": webfilter_allow,
-            "cache_bypass": cache_bypass,
+            **policy_fields,
             "response_content_type": response_content_type,
             "response_server": response_server,
             "response_cf_mitigated": response_cf_mitigated,
             "response_alt_svc": response_alt_svc,
-            "raw": (line or "").strip("\r\n")[:4000],
+            "raw": _bounded_raw_line(line),
         }
 
     def _build_request_insert_params(self, line: str) -> tuple[Any, ...] | None:
@@ -1002,10 +1009,7 @@ class DiagnosticStore:
         host = _safe_text(row[8], max_len=255)
         user_agent = _safe_text(row[9], max_len=512)
         sni = _safe_text(row[10], max_len=255)
-        exclusion_rule = _safe_text(row[11], max_len=64)
-        ssl_exception = _safe_text(row[12], max_len=64)
-        webfilter_allow = _safe_text(row[13], max_len=64)
-        cache_bypass = _safe_text(row[14], max_len=64)
+        policy_fields = _policy_fields_from_row(row, 11)
         domain = _extract_domain(url, host=host, sni=sni)
         family = _service_family(adapt_summary, adapt_details)
 
@@ -1022,12 +1026,9 @@ class DiagnosticStore:
             "host": host,
             "user_agent": user_agent,
             "sni": sni,
-            "exclusion_rule": exclusion_rule,
-            "ssl_exception": ssl_exception,
-            "webfilter_allow": webfilter_allow,
-            "cache_bypass": cache_bypass,
+            **policy_fields,
             "service_family": family,
-            "raw": (line or "").strip("\r\n")[:4000],
+            "raw": _bounded_raw_line(line),
         }
 
     def _build_icap_insert_params(self, line: str) -> tuple[Any, ...] | None:
