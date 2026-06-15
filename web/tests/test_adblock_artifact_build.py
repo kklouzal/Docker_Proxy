@@ -40,6 +40,49 @@ def _read_zipped_sqlite(
     return sqlite3.connect(str(db_path))
 
 
+def test_artifact_revision_and_summary_share_json_property_parsing(
+    tmp_path: Path,
+) -> None:
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+
+    common = {
+        "artifact_sha256": "a" * 64,
+        "report_json": '{"ok": true}',
+        "settings_version": 3,
+        "source_kind": "compile",
+        "enabled_lists_json": '[" easylist ", "", "easyprivacy"]',
+        "created_by": "tester",
+        "created_ts": 123,
+        "is_active": True,
+    }
+    revision = artifacts_module.AdblockArtifactRevision(
+        revision_id=1,
+        archive_blob=b"archive",
+        **common,
+    )
+    summary = artifacts_module.AdblockArtifactSummary(revision_id=1, **common)
+
+    assert revision.enabled_lists == ["easylist", "easyprivacy"]
+    assert summary.enabled_lists == revision.enabled_lists
+    assert revision.report == {"ok": True}
+    assert summary.report == revision.report
+
+    malformed = {
+        **common,
+        "report_json": "[1, 2]",
+        "enabled_lists_json": "{",
+    }
+    revision = artifacts_module.AdblockArtifactRevision(
+        revision_id=2,
+        archive_blob=b"archive",
+        **malformed,
+    )
+    summary = artifacts_module.AdblockArtifactSummary(revision_id=2, **malformed)
+
+    assert revision.enabled_lists == summary.enabled_lists == []
+    assert revision.report == summary.report == {}
+
+
 def test_build_active_artifact_packages_compiled_lists_and_settings(
     tmp_path, monkeypatch
 ) -> None:

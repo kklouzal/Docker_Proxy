@@ -32,6 +32,24 @@ _DEFAULT_SETTINGS_FILENAME = "settings.json"
 _BUILDER_SOURCE_KINDS = {"background", "compile"}
 
 
+def _parse_enabled_lists_json(enabled_lists_json: str) -> list[str]:
+    try:
+        raw = json.loads(enabled_lists_json or "[]")
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _parse_report_json(report_json: str) -> dict[str, Any]:
+    try:
+        raw = json.loads(report_json or "{}")
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _list_file_has_rule_content(path: str | os.PathLike[str]) -> bool:
     try:
         with Path(path).open(encoding="utf-8", errors="replace") as handle:
@@ -72,21 +90,11 @@ class AdblockArtifactRevision:
 
     @property
     def enabled_lists(self) -> list[str]:
-        try:
-            raw = json.loads(self.enabled_lists_json or "[]")
-        except Exception:
-            return []
-        if not isinstance(raw, list):
-            return []
-        return [str(item).strip() for item in raw if str(item).strip()]
+        return _parse_enabled_lists_json(self.enabled_lists_json)
 
     @property
     def report(self) -> dict[str, Any]:
-        try:
-            raw = json.loads(self.report_json or "{}")
-        except Exception:
-            return {}
-        return raw if isinstance(raw, dict) else {}
+        return _parse_report_json(self.report_json)
 
 
 @dataclass(frozen=True)
@@ -115,21 +123,11 @@ class AdblockArtifactSummary:
 
     @property
     def enabled_lists(self) -> list[str]:
-        try:
-            raw = json.loads(self.enabled_lists_json or "[]")
-        except Exception:
-            return []
-        if not isinstance(raw, list):
-            return []
-        return [str(item).strip() for item in raw if str(item).strip()]
+        return _parse_enabled_lists_json(self.enabled_lists_json)
 
     @property
     def report(self) -> dict[str, Any]:
-        try:
-            raw = json.loads(self.report_json or "{}")
-        except Exception:
-            return {}
-        return raw if isinstance(raw, dict) else {}
+        return _parse_report_json(self.report_json)
 
 
 @dataclass(frozen=True)
