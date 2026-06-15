@@ -51,7 +51,10 @@ class LiveFixtureHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "public, max-age=60")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def do_GET(self) -> None:
         if self.path.startswith("/health"):
