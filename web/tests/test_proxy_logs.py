@@ -34,6 +34,29 @@ def test_proxy_logs_rejects_arbitrary_path_input(monkeypatch, tmp_path) -> None:
     assert "content" not in payload
 
 
+def test_proxy_logs_rejects_allowlisted_symlink_outside_log_dir(
+    monkeypatch, tmp_path
+) -> None:
+    from services import proxy_logs
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    outside = tmp_path / "outside.log"
+    outside.write_text("secret\n", encoding="utf-8")
+    (log_dir / "access.log").symlink_to(outside)
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    payload = proxy_logs.read_proxy_log("access")
+    logs = proxy_logs.list_proxy_logs()
+    access_log = next(item for item in logs if item["key"] == "access")
+
+    assert payload["ok"] is False
+    assert payload["status"] == "not_found"
+    assert "content" not in payload
+    assert access_log["available"] is False
+    assert access_log["path"] == str(log_dir / "access.log")
+
+
 def test_proxy_logs_missing_allowlisted_file_is_graceful(monkeypatch, tmp_path) -> None:
     from services import proxy_logs
 

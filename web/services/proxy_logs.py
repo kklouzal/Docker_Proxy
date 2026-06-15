@@ -38,17 +38,26 @@ def _tail_bytes(path: Path, *, max_bytes: int) -> tuple[str, int, bool]:
     return raw.decode("utf-8", errors="replace"), size, offset > 0
 
 
+def _safe_log_path(base: Path, relative_path: str) -> Path | None:
+    path = (base / relative_path).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return None
+    return path
+
+
 def list_proxy_logs() -> list[dict[str, Any]]:
     base = _log_dir().resolve()
     logs: list[dict[str, Any]] = []
     for spec in PROXY_LOG_SPECS:
-        path = (base / spec.path).resolve()
+        path = _safe_log_path(base, spec.path)
         logs.append(
             {
                 "key": spec.key,
                 "label": spec.label,
-                "path": str(path),
-                "available": path.is_file(),
+                "path": str(path if path is not None else base / spec.path),
+                "available": path is not None and path.is_file(),
             }
         )
     return logs
@@ -71,10 +80,8 @@ def read_proxy_log(
 
     cap = max(1, min(int(max_bytes or DEFAULT_LOG_TAIL_BYTES), DEFAULT_LOG_TAIL_BYTES))
     base = _log_dir().resolve()
-    path = (base / spec.path).resolve()
-    try:
-        path.relative_to(base)
-    except ValueError:
+    path = _safe_log_path(base, spec.path)
+    if path is None:
         return {
             "ok": False,
             "status": "not_found",
