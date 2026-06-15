@@ -155,6 +155,12 @@ _ALL_KNOWN_OPTIONS = (
 
 _DOMAIN_ONLY_RE = re.compile(r"^\|\|(?P<host>[a-z0-9.-]+)\^?$", re.IGNORECASE)
 _ABP_SEPARATOR_REGEX = r"(?:[^A-Za-z0-9_.%-]|$)"
+LOOKUP_STRATEGY = (
+    "domain suffix candidates -> domain_index; exact and host-suffix "
+    "candidates -> host_index; host-pattern/regex token prefilters before "
+    "payload verification; generic literal-key prefilter before payload "
+    "verification"
+)
 
 
 def _is_comment_or_header(s: str) -> bool:
@@ -1205,10 +1211,7 @@ def _write_request_lookup_index(
         )
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
-            (
-                "lookup_strategy",
-                "domain suffix candidates -> domain_index; exact host -> host_index; small host-pattern/regex sets; generic literal-key prefilter before payload verification",
-            ),
+            ("lookup_strategy", LOOKUP_STRATEGY),
         )
         with pathlib.Path(network_jsonl_path).open(
             encoding="utf-8",

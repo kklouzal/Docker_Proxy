@@ -315,6 +315,9 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
                 schema_version = lookup_conn.execute(
                     "SELECT value FROM metadata WHERE key='schema_version'"
                 ).fetchone()[0]
+                lookup_strategy = lookup_conn.execute(
+                    "SELECT value FROM metadata WHERE key='lookup_strategy'"
+                ).fetchone()[0]
             finally:
                 lookup_conn.close()
 
@@ -337,6 +340,8 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
         assert report["breakdowns"]["lookup_index_counts"]["rules"] == 0
         assert empty_rule_count == 0
         assert schema_version == "4"
+        assert "host-pattern/regex token prefilters" in lookup_strategy
+        assert "generic literal-key prefilter" in lookup_strategy
     finally:
         for key, value in env_backup.items():
             if value is None:

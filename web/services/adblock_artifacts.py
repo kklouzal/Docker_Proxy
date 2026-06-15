@@ -916,6 +916,8 @@ def _write_empty_output(out_dir: str) -> None:
 
 
 def _write_empty_request_lookup_db(path: Path) -> None:
+    from tools import adblock_compile  # type: ignore
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(FileNotFoundError):
         path.unlink()
@@ -1054,6 +1056,7 @@ def _write_empty_request_lookup_db(path: Path) -> None:
             "count_regex_token_index": "0",
             "count_resource_type_index": "0",
             "count_rules": "0",
+            "lookup_strategy": adblock_compile.LOOKUP_STRATEGY,
         }
         conn.executemany(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",

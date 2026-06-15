@@ -373,6 +373,11 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
         assert conn.execute(
             "SELECT COUNT(*) FROM domain_scope_index WHERE domain='example.com'"
         ).fetchone() == (1,)
+        lookup_strategy = conn.execute(
+            "SELECT value FROM metadata WHERE key='lookup_strategy'"
+        ).fetchone()[0]
+        assert "host-pattern/regex token prefilters" in lookup_strategy
+        assert "generic literal-key prefilter" in lookup_strategy
     finally:
         conn.close()
 
