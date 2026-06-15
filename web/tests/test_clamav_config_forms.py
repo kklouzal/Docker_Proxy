@@ -42,13 +42,13 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     assert options["file_security_preset"] == "balanced"
     assert options["file_security_scan_downloads"] is True
     assert options["file_security_scan_uploads"] is True
-    assert options["virus_scan_start_send_percent_after"] == "1K"
-    assert options["virus_scan_send_percent_data"] == 99
-    assert DEFAULTS["virus_scan_start_send_percent_after"] == "1K"
+    assert options["virus_scan_start_send_percent_after"] == "2M"
+    assert options["virus_scan_send_percent_data"] == 5
+    assert DEFAULTS["virus_scan_start_send_percent_after"] == "2M"
 
     rendered = render_virus_scan_config()
-    assert "virus_scan.StartSendPercentDataAfter 1K" in rendered
-    assert "virus_scan.SendPercentData 99" in rendered
+    assert "virus_scan.StartSendPercentDataAfter 2M" in rendered
+    assert "virus_scan.SendPercentData 5" in rendered
     assert "virus_scan.PassOnError on" in rendered
 
     policy = render_file_security_policy_config()
@@ -213,12 +213,12 @@ def test_packaged_virus_scan_config_matches_schema_streaming_defaults() -> None:
     assert (
         packaged["virus_scan.StartSendPercentDataAfter"]
         == rendered["virus_scan.StartSendPercentDataAfter"]
-        == "1K"
+        == "2M"
     )
     assert (
         packaged["virus_scan.SendPercentData"]
         == rendered["virus_scan.SendPercentData"]
-        == "99"
+        == "5"
     )
     assert (
         packaged["virus_scan.PassOnError"] == rendered["virus_scan.PassOnError"] == "on"
@@ -291,6 +291,6 @@ def test_squid_controller_materializes_clamav_runtime_files(
     )
     virus_conf = virus_path.read_text(encoding="utf-8")
     assert "virus_scan.PassOnError off" in virus_conf
-    assert "virus_scan.SendPercentData 99" in virus_conf
-    assert "virus_scan.StartSendPercentDataAfter 1K" in virus_conf
+    assert "virus_scan.SendPercentData 5" in virus_conf
+    assert "virus_scan.StartSendPercentDataAfter 2M" in virus_conf
     assert "virus_scan.MaxObjectSize 64M" in virus_conf

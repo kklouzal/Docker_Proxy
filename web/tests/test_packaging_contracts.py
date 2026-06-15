@@ -88,6 +88,16 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "MYSQL_MAX_ALLOWED_PACKET=256M" in env_example
 
 
+def test_proxy_cicap_build_enables_compression_support_and_strips_artifacts() -> None:
+    proxy = _read("docker/Dockerfile.proxy")
+
+    assert "brotli-dev" in proxy
+    assert "zstd-dev" in proxy
+    assert "brotli-libs" in proxy
+    assert "zstd-libs" in proxy
+    assert "strip --strip-unneeded" in proxy
+
+
 def test_repo_does_not_ship_stale_squid_mime_override() -> None:
     assert not (REPO_ROOT / "squid" / "mime.conf").exists()
 

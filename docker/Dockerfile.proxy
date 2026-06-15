@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 FROM alpine:${ALPINE_VERSION} AS cicap_builder
 
-ARG CICAP_GIT_REF=C_ICAP_0.6.4
+ARG CICAP_GIT_REF=C_ICAP_0.6.5
 ARG CICAP_MODULES_GIT_REF=C_ICAP_MODULES_0.5.7
 
 RUN apk add --no-cache \
@@ -31,6 +31,8 @@ RUN apk add --no-cache \
         zlib-dev \
         pcre2-dev \
         bzip2-dev \
+        brotli-dev \
+        zstd-dev \
         libxml2-dev
 
 WORKDIR /tmp/build
@@ -64,7 +66,8 @@ RUN set -eu; \
     if [ -d /usr/share/c_icap ]; then mkdir -p /out/usr/share; cp -a /usr/share/c_icap /out/usr/share/; fi; \
     if [ -d /etc/c-icap ]; then mkdir -p /out/etc; cp -a /etc/c-icap /out/etc/; fi; \
     if [ -f /etc/virus_scan.conf ]; then mkdir -p /out/etc; cp -a /etc/virus_scan.conf /out/etc/; fi; \
-    if [ -f /etc/clamd_mod.conf ]; then mkdir -p /out/etc; cp -a /etc/clamd_mod.conf /out/etc/; fi
+    if [ -f /etc/clamd_mod.conf ]; then mkdir -p /out/etc; cp -a /etc/clamd_mod.conf /out/etc/; fi; \
+    find /out -type f -exec sh -c 'file -b "$1" | grep -Eq "ELF.*(executable|shared object)" && strip --strip-unneeded "$1" || true' sh {} \;
 
 FROM alpine:${ALPINE_VERSION}
 ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
@@ -82,6 +85,8 @@ ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 RUN apk add --no-cache squid python3 supervisor openssl ca-certificates libatomic \
         pcre2 \
+        brotli-libs \
+        zstd-libs \
         file
 
 WORKDIR /app
