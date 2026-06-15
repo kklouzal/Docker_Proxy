@@ -385,10 +385,10 @@ class AdblockLookupIndex:
         with self._host_patterns_lock:
             if self._host_patterns is not None:
                 return self._host_patterns
-            pattern_kind_expr = (
-                "pattern_kind"
+            host_pattern_query = (
+                "SELECT host_pattern, pattern_kind, rule_id FROM host_pattern_index"
                 if _table_column_exists(conn, "host_pattern_index", "pattern_kind")
-                else "'' AS pattern_kind"
+                else "SELECT host_pattern, '' AS pattern_kind, rule_id FROM host_pattern_index"
             )
             self._host_patterns = {
                 str(row["rule_id"] or ""): _HostPatternCandidate(
@@ -396,9 +396,7 @@ class AdblockLookupIndex:
                     str(row["pattern_kind"] or ""),
                     str(row["rule_id"] or ""),
                 )
-                for row in conn.execute(
-                    f"SELECT host_pattern, {pattern_kind_expr}, rule_id FROM host_pattern_index",
-                )
+                for row in conn.execute(host_pattern_query)
                 if row["host_pattern"] and row["rule_id"]
             }
             return self._host_patterns
