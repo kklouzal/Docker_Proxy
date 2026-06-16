@@ -16,8 +16,8 @@ from typing import Any
 from services.db import (
     DATABASE_ERRORS,
     connect,
-    mysql_error_code,
     mysql_advisory_lock,
+    mysql_error_code,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )

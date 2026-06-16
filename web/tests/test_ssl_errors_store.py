@@ -7,8 +7,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.ssl_errors_store import _extract_domain  # type: ignore  # noqa: E402
-from services.ssl_errors_store import SslErrorsStore  # type: ignore  # noqa: E402
+from services.ssl_errors_store import (  # noqa: E402
+    SslErrorsStore,  # type: ignore
+    _extract_domain,  # type: ignore
+)
 
 
 def test_ssl_error_domain_extraction_accepts_peer_token() -> None:

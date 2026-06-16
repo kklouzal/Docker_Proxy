@@ -15,14 +15,11 @@ from urllib.parse import urlsplit
 
 from services.pac_profiles_store import (
     PacProfile,
-    _normalize_domain as _normalize_pac_direct_domain,
     _normalize_proxy_host_port,
     get_pac_profiles_store,
 )
-from services.public_endpoint import (
-    coerce_public_bool as _coerce_bool,
-    coerce_public_port as _coerce_port,
-    normalize_public_scheme as _normalize_pac_scheme,
+from services.pac_profiles_store import (
+    _normalize_domain as _normalize_pac_direct_domain,
 )
 from services.proxy_context import (
     get_proxy_id,
@@ -34,6 +31,12 @@ from services.proxy_registry import (
     _parse_public_pac_url,
     get_proxy_registry,
     normalize_public_pac_path,
+)
+from services.public_endpoint import (
+    coerce_public_port as _coerce_port,
+)
+from services.public_endpoint import (
+    normalize_public_scheme as _normalize_pac_scheme,
 )
 from services.sslfilter_store import get_sslfilter_store
 

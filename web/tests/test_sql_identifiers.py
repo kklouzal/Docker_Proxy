@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from services.sql_identifiers import quote_mysql_identifier
 
 

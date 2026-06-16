@@ -11,17 +11,18 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from services.db import (
     DATABASE_ERRORS,
     connect,
-    mysql_error_code,
     mysql_advisory_lock,
+    mysql_error_code,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
+from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 from services.public_endpoint import (
-    coerce_public_bool as _coerce_bool,
     coerce_public_port as _coerce_port,
+)
+from services.public_endpoint import (
     normalize_public_scheme as _normalize_public_scheme,
 )
-from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 
 
 def _quote_mysql_identifier(value: str) -> str:
