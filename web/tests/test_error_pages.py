@@ -8,6 +8,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 add_web_to_path()
 
+from services import error_pages  # type: ignore  # noqa: E402
+
 BLOCK_REASON_TEMPLATE_NAMES = {
     "ERR_ACCESS_DENIED",
     "ERR_ACL_TIME_QUOTA_EXCEEDED",
@@ -139,8 +141,6 @@ def test_admin_error_pages_route_lists_and_previews_templates(
 
 
 def test_read_template_is_cached_within_process(monkeypatch) -> None:
-    from services import error_pages
-
     error_pages.read_template.cache_clear()
 
     calls: list[str] = []
@@ -160,8 +160,6 @@ def test_read_template_is_cached_within_process(monkeypatch) -> None:
 
 
 def test_template_tokens_and_preview_are_cached(monkeypatch) -> None:
-    from services import error_pages
-
     error_pages.template_tokens.cache_clear()
     error_pages.render_preview.cache_clear()
 
