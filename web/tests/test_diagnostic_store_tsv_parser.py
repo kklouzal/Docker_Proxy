@@ -13,10 +13,11 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
-def test_split_tsv_fast_path_accepts_tab_separated_rows() -> None:
-    _add_repo_paths()
-    from services.diagnostic_store import _split_tsv  # type: ignore
+_add_repo_paths()
+from services.diagnostic_store import _split_tsv  # type: ignore  # noqa: E402
 
+
+def test_split_tsv_fast_path_accepts_tab_separated_rows() -> None:
     row = _split_tsv(
         "1710000000	15	10.0.0.5	GET	http://example.com/a	TCP_HIT/200	1234"
     )
@@ -33,9 +34,6 @@ def test_split_tsv_fast_path_accepts_tab_separated_rows() -> None:
 
 
 def test_split_tsv_fast_path_accepts_escaped_tab_rows() -> None:
-    _add_repo_paths()
-    from services.diagnostic_store import _split_tsv  # type: ignore
-
     row = _split_tsv(
         "1710000001\t20\t10.0.0.6\tPOST\thttp://example.org/login\tTCP_MISS/200\t42"
     )
