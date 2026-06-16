@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import time
 from collections import Counter
 from typing import TYPE_CHECKING, Any
@@ -13,6 +12,7 @@ from services.adblock_store import get_adblock_store
 from services.client_identity_cache import get_client_identity_cache
 from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
+from services.privacy_labels import pseudonymize
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import escape_like as _escape_like
@@ -136,16 +136,6 @@ def _correlate_policy_events_with_requests(
         except Exception:
             row["correlated_candidates"] = []
     return rows
-
-
-def _pseudonymize(value: object, *, namespace: str = "client") -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    digest = hashlib.sha256(
-        f"{get_proxy_id()}:{namespace}:{raw}".encode("utf-8", errors="replace"),
-    ).hexdigest()
-    return f"{namespace}-{digest[:10]}"
 
 
 def _next_schedule_run_ts(cadence: str, now: int | None = None) -> int:
@@ -1114,7 +1104,7 @@ class ObservabilityQueries:
             out.append(
                 {
                     "client_ip": "" if privacy else ip,
-                    "client_label": _pseudonymize(ip, namespace="user")
+                    "client_label": pseudonymize(ip, namespace="user")
                     if privacy
                     else ip,
                     "requests": int(row[1] or 0),
@@ -1216,7 +1206,7 @@ class ObservabilityQueries:
             {
                 "domain": str(row[0] or ""),
                 "client_ip": "" if privacy else str(row[1] or ""),
-                "client_label": _pseudonymize(row[1], namespace="user")
+                "client_label": pseudonymize(row[1], namespace="user")
                 if privacy
                 else str(row[1] or ""),
                 "attempts": int(row[2] or 0),
@@ -1493,7 +1483,7 @@ class ObservabilityQueries:
             ).fetchall()
         return [
             {
-                "group": _pseudonymize(row[0], namespace="group")
+                "group": pseudonymize(row[0], namespace="group")
                 if privacy
                 else str(row[0] or ""),
                 "requests": int(row[1] or 0),

@@ -102,6 +102,7 @@ from services.policy_requests import (
 from services.policy_requests import (
     get_policy_request_store as _default_get_policy_request_store,
 )
+from services.privacy_labels import pseudonymize
 from services.proxy_client import ProxyClientError
 from services.proxy_client import get_proxy_client as _default_get_proxy_client
 from services.proxy_context import (
@@ -997,16 +998,6 @@ def _observability_export_format_from_request() -> str:
         ("csv", "json", "jsonl"),
         "csv",
     )
-
-
-def _observability_pseudonym(value: object, *, namespace: str = "user") -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    digest = hashlib.sha256(
-        f"{get_proxy_id()}:{namespace}:{raw}".encode("utf-8", errors="replace"),
-    ).hexdigest()
-    return f"{namespace}-{digest[:10]}"
 
 
 def _empty_observability_summary() -> dict[str, Any]:
@@ -4268,7 +4259,7 @@ def observability_export():
             ]
             data_rows = (
                 [
-                    _observability_pseudonym(row.get("ip", ""), namespace="user")
+                    pseudonymize(row.get("ip", ""), namespace="user")
                     if privacy
                     else row.get("ip", ""),
                     "" if privacy else row.get("hostname", ""),
@@ -4352,7 +4343,7 @@ def observability_export():
                     [
                         "av",
                         row.get("ts", 0),
-                        _observability_pseudonym(
+                        pseudonymize(
                             row.get("client_ip", ""),
                             namespace="user",
                         )
@@ -4368,7 +4359,7 @@ def observability_export():
                     [
                         "adblock",
                         row.get("ts", 0),
-                        _observability_pseudonym(
+                        pseudonymize(
                             row.get("src_ip", ""),
                             namespace="user",
                         )
@@ -4384,7 +4375,7 @@ def observability_export():
                     [
                         "webfilter",
                         row.get("ts", 0),
-                        _observability_pseudonym(
+                        pseudonymize(
                             row.get("src_ip", ""),
                             namespace="user",
                         )
