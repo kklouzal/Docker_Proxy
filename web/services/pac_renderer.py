@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.pac_profiles_store import (
     PacProfile,
+    _normalize_domain as _normalize_pac_direct_domain,
     _normalize_proxy_host_port,
     get_pac_profiles_store,
 )
@@ -92,28 +92,8 @@ def _build_pac_url(
 
 
 def _normalize_domain_rule(domain: str) -> str:
-    raw = (domain or "").strip()
-    if not raw:
-        return ""
-    if any(ch.isspace() for ch in raw):
-        return ""
-    wildcard = raw.lower().startswith("*.") and "://" not in raw
-    raw = raw[2:] if wildcard else raw.removeprefix(".")
-    normalized = _shared_normalize_domain(raw)
-    if not normalized or ":" in normalized:
-        return ""
-    labels = normalized.split(".")
-    if any(
-        not label
-        or len(label) > 63
-        or not label.isascii()
-        or not label[0].isalnum()
-        or not label[-1].isalnum()
-        or any(not (ch.isalnum() or ch == "-") for ch in label)
-        for label in labels
-    ):
-        return ""
-    return f"*.{normalized}" if wildcard else normalized
+    normalized, _err = _normalize_pac_direct_domain(domain)
+    return normalized or ""
 
 
 def _domain_match_expression(domain: str) -> str:
