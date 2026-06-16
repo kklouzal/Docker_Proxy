@@ -12,15 +12,16 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
+_add_web_to_path()
+from services import certificate_core  # type: ignore  # noqa: E402
+
+
 CERT_A = "-----BEGIN CERTIFICATE-----\nCERTA\n-----END CERTIFICATE-----\n"
 CERT_B = "-----BEGIN CERTIFICATE-----\nCERTB\n-----END CERTIFICATE-----\n"
 KEY_A = "-----BEGIN PRIVATE KEY-----\nKEYA\n-----END PRIVATE KEY-----\n"
 
 
 def test_pem_helpers_normalize_extract_and_split_certificate_chains() -> None:
-    _add_web_to_path()
-    from services import certificate_core  # type: ignore
-
     messy = "\r\n  " + CERT_A.replace("\n", "\r\n") + CERT_B + "  "
 
     assert certificate_core._normalize_pem_text("  abc\r\n") == "abc\n"
@@ -31,9 +32,6 @@ def test_pem_helpers_normalize_extract_and_split_certificate_chains() -> None:
 
 
 def test_build_certificate_bundle_hashes_content_and_metadata(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import certificate_core  # type: ignore
-
     monkeypatch.setattr(
         certificate_core,
         "_extract_certificate_metadata",
@@ -69,9 +67,6 @@ def test_build_certificate_bundle_hashes_content_and_metadata(monkeypatch) -> No
 def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
-    from services import certificate_core  # type: ignore
-
     monkeypatch.setattr(
         certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
     )
@@ -104,9 +99,6 @@ def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
 def test_load_local_certificate_bundle_returns_none_for_missing_or_incomplete_material(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
-    from services import certificate_core  # type: ignore
-
     assert certificate_core.load_local_certificate_bundle(tmp_path) is None
     (tmp_path / "ca.crt").write_text(CERT_A, encoding="utf-8")
     (tmp_path / "ca.key").write_text("not a private key", encoding="utf-8")
