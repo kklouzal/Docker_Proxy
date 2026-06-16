@@ -5,6 +5,8 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 
 def _add_web_to_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
@@ -32,6 +34,14 @@ def _fake_connect(calls: list[str]):
         return _FakeConn(calls)
 
     return connect
+
+
+@pytest.fixture
+def housekeeping():
+    _add_web_to_path()
+    from services import housekeeping as module  # type: ignore
+
+    return module
 
 
 def test_prune_methods_initialize_tables_before_deleting(monkeypatch) -> None:
@@ -186,10 +196,9 @@ def test_timeseries_query_reinitializes_after_external_schema_wipe(monkeypatch) 
     assert sum(1 for call in calls if "CREATE TABLE IF NOT EXISTS" in call) == 7
 
 
-def test_housekeeping_resolves_current_retention_setting(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
+def test_housekeeping_resolves_current_retention_setting(
+    monkeypatch, housekeeping
+) -> None:
     monkeypatch.setattr(
         housekeeping,
         "get_observability_retention_settings",
@@ -199,10 +208,9 @@ def test_housekeeping_resolves_current_retention_setting(monkeypatch) -> None:
     assert housekeeping.current_retention_days(30) == 45
 
 
-def test_housekeeping_retention_setting_falls_back_to_default(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
+def test_housekeeping_retention_setting_falls_back_to_default(
+    monkeypatch, housekeeping
+) -> None:
     def fail():
         msg = "db unavailable"
         raise RuntimeError(msg)
@@ -213,11 +221,8 @@ def test_housekeeping_retention_setting_falls_back_to_default(monkeypatch) -> No
 
 
 def test_housekeeping_lock_retry_skips_sleep_after_final_failure(
-    monkeypatch,
+    monkeypatch, housekeeping
 ) -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
     sleeps: list[float] = []
 
     monkeypatch.setattr(housekeeping, "OPERATIONAL_ERRORS", (RuntimeError,))
@@ -242,10 +247,9 @@ def test_housekeeping_lock_retry_skips_sleep_after_final_failure(
     assert sleeps == [0.5, 1.0]
 
 
-def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
+def test_housekeeping_full_run_prunes_then_maintains_tables(
+    monkeypatch, housekeeping
+) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(
@@ -299,11 +303,8 @@ def test_housekeeping_full_run_prunes_then_maintains_tables(monkeypatch) -> None
 
 
 def test_housekeeping_maintenance_continues_after_observability_failure(
-    monkeypatch,
+    monkeypatch, housekeeping
 ) -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
     calls: list[str] = []
 
     monkeypatch.setattr(
@@ -375,10 +376,9 @@ def test_housekeeping_maintenance_continues_after_observability_failure(
     )
 
 
-def test_housekeeping_prune_continues_after_step_failure(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
+def test_housekeeping_prune_continues_after_step_failure(
+    monkeypatch, housekeeping
+) -> None:
     calls: list[str] = []
 
     class Store:
@@ -433,10 +433,7 @@ def test_housekeeping_prune_continues_after_step_failure(monkeypatch) -> None:
     ]
 
 
-def test_housekeeping_schedules_next_daily_and_weekly_runs() -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
+def test_housekeeping_schedules_next_daily_and_weekly_runs(housekeeping) -> None:
     saturday = datetime(2026, 5, 23, 1, 30, tzinfo=UTC)
     daily = housekeeping._next_local_run(hour=2, now=saturday)
     weekly = housekeeping._next_local_run(
@@ -449,10 +446,9 @@ def test_housekeeping_schedules_next_daily_and_weekly_runs() -> None:
     assert weekly == datetime(2026, 5, 24, 3, 0, tzinfo=UTC)
 
 
-def test_housekeeping_scheduled_due_runs_advance_after_failures(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import housekeeping  # type: ignore
-
+def test_housekeeping_scheduled_due_runs_advance_after_failures(
+    monkeypatch, housekeeping
+) -> None:
     calls: list[tuple[int, bool, bool]] = []
 
     def run_once(
