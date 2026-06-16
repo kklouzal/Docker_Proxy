@@ -112,16 +112,22 @@ class _FakeStore:
         return False
 
 
-def test_list_profiles_batches_child_queries(monkeypatch) -> None:
+def _patched_store(monkeypatch, conn: _FakeConn | None = None):
     _add_web_path()
     import services.pac_profiles_store as mod
 
-    conn = _FakeConn()
+    conn = conn or _FakeConn()
     store = mod.PacProfilesStore()
 
     monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
     monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
     monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+
+    return mod, conn, store
+
+
+def test_list_profiles_batches_child_queries(monkeypatch) -> None:
+    _, conn, store = _patched_store(monkeypatch)
 
     profiles = store.list_profiles()
 
@@ -139,23 +145,18 @@ def test_list_profiles_batches_child_queries(monkeypatch) -> None:
 
 
 def test_list_profiles_normalizes_stale_direct_domain_rows(monkeypatch) -> None:
-    _add_web_path()
-    import services.pac_profiles_store as mod
-
-    conn = _FakeConn(
-        direct_domain_rows=[
-            {"profile_id": 11, "domain": "Example.COM"},
-            {"profile_id": 11, "domain": ".example.com"},
-            {"profile_id": 11, "domain": "https://Bücher.Example:443/path"},
-            {"profile_id": 11, "domain": "bad domain.example"},
-            {"profile_id": 12, "domain": "*.Media.Example"},
-        ],
+    _, _, store = _patched_store(
+        monkeypatch,
+        _FakeConn(
+            direct_domain_rows=[
+                {"profile_id": 11, "domain": "Example.COM"},
+                {"profile_id": 11, "domain": ".example.com"},
+                {"profile_id": 11, "domain": "https://Bücher.Example:443/path"},
+                {"profile_id": 11, "domain": "bad domain.example"},
+                {"profile_id": 12, "domain": "*.Media.Example"},
+            ],
+        ),
     )
-    store = mod.PacProfilesStore()
-
-    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
-    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
-    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
 
     profiles = store.list_profiles()
 
@@ -167,23 +168,18 @@ def test_list_profiles_normalizes_stale_direct_domain_rows(monkeypatch) -> None:
 
 
 def test_list_profiles_normalizes_stale_direct_dst_net_rows(monkeypatch) -> None:
-    _add_web_path()
-    import services.pac_profiles_store as mod
-
-    conn = _FakeConn(
-        direct_dst_net_rows=[
-            {"profile_id": 11, "cidr": "10.77.0.1/24"},
-            {"profile_id": 11, "cidr": "10.77.0.128/24"},
-            {"profile_id": 11, "cidr": "2001:db8::/32"},
-            {"profile_id": 11, "cidr": "not-a-cidr"},
-            {"profile_id": 12, "cidr": "192.168.1.7/24"},
-        ],
+    _, _, store = _patched_store(
+        monkeypatch,
+        _FakeConn(
+            direct_dst_net_rows=[
+                {"profile_id": 11, "cidr": "10.77.0.1/24"},
+                {"profile_id": 11, "cidr": "10.77.0.128/24"},
+                {"profile_id": 11, "cidr": "2001:db8::/32"},
+                {"profile_id": 11, "cidr": "not-a-cidr"},
+                {"profile_id": 12, "cidr": "192.168.1.7/24"},
+            ],
+        ),
     )
-    store = mod.PacProfilesStore()
-
-    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
-    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
-    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
 
     profiles = store.list_profiles()
 
@@ -194,15 +190,7 @@ def test_list_profiles_normalizes_stale_direct_dst_net_rows(monkeypatch) -> None
 def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(
     monkeypatch,
 ) -> None:
-    _add_web_path()
-    import services.pac_profiles_store as mod
-
-    conn = _FakeConn()
-    store = mod.PacProfilesStore()
-
-    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
-    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
-    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+    _, _, store = _patched_store(monkeypatch)
 
     settings = store.list_proxy_chain_settings()
 
@@ -215,15 +203,7 @@ def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(
 
 
 def test_backup_proxy_mutations_report_changed_status(monkeypatch) -> None:
-    _add_web_path()
-    import services.pac_profiles_store as mod
-
-    conn = _FakeConn()
-    store = mod.PacProfilesStore()
-
-    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
-    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
-    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+    _, _, store = _patched_store(monkeypatch)
 
     assert store.move_backup_proxy(22, "up") is True
     assert store.move_backup_proxy(22, "down") is False
@@ -233,15 +213,7 @@ def test_backup_proxy_mutations_report_changed_status(monkeypatch) -> None:
 
 
 def test_delete_profile_reports_changed_status(monkeypatch) -> None:
-    _add_web_path()
-    import services.pac_profiles_store as mod
-
-    conn = _FakeConn()
-    store = mod.PacProfilesStore()
-
-    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
-    monkeypatch.setattr(mod, "get_proxy_id", lambda: "default")
-    monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
+    _, _, store = _patched_store(monkeypatch)
 
     assert store.delete_profile(11) is True
     assert store.delete_profile(999) is False
