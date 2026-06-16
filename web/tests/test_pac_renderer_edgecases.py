@@ -461,6 +461,7 @@ def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
         direct_domains=[
             "https://Bücher.Example:443/path",
             "*.Media.Example",
+            ".Legacy.Example",
             "bad domain.example",
             "2001:db8::1",
         ],
@@ -470,6 +471,7 @@ def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
 
     assert 'host === "xn--bcher-kva.example"' in rendered
     assert 'dnsDomainIs(host, ".media.example")' in rendered
+    assert 'host === "legacy.example"' in rendered
     assert "bad domain" not in rendered
     assert "2001:db8" not in rendered
 
