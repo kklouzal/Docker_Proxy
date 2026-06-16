@@ -673,6 +673,10 @@ class _FakeSslfilterStore:
         return self._rules
 
 
+def _sslfilter_rules_with_private_exclusions():
+    return SimpleNamespace(exclude_private_nets=True)
+
+
 def _default_proxy_pac_target(pac_renderer):
     return pac_renderer.ProxyPacTarget(
         proxy_id="default",
@@ -722,7 +726,7 @@ def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(
     from services import pac_renderer  # type: ignore
     from services.pac_profiles_store import PacProfile  # type: ignore
 
-    rules = type("SslFilterRules", (), {"exclude_private_nets": True})()
+    rules = _sslfilter_rules_with_private_exclusions()
     monkeypatch.setattr(
         pac_renderer, "get_sslfilter_store", lambda: _FakeSslfilterStore(rules)
     )
@@ -754,7 +758,7 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
 
         def list_all(self):
             self.calls += 1
-            return type("SslFilterRules", (), {"exclude_private_nets": True})()
+            return _sslfilter_rules_with_private_exclusions()
 
     class _FakePacProfilesStore:
         def list_profiles(self):
