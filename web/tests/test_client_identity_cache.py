@@ -10,12 +10,13 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
+_add_web_to_path()
+from services.client_identity_cache import ClientIdentityCache  # type: ignore  # noqa: E402
+
+
 def test_client_identity_cache_invalid_ip_returns_invalid_without_lookup(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services.client_identity_cache import ClientIdentityCache  # type: ignore
-
     cache = ClientIdentityCache()
     monkeypatch.setattr(
         cache,
@@ -31,9 +32,6 @@ def test_client_identity_cache_invalid_ip_returns_invalid_without_lookup(
 
 
 def test_client_identity_cache_resolve_uses_lookup_once_then_cache(monkeypatch) -> None:
-    _add_web_to_path()
-    from services.client_identity_cache import ClientIdentityCache  # type: ignore
-
     cache = ClientIdentityCache(success_ttl_seconds=30.0)
     calls: list[str] = []
 
@@ -51,9 +49,6 @@ def test_client_identity_cache_resolve_uses_lookup_once_then_cache(monkeypatch) 
 def test_client_identity_cache_resolve_many_deduplicates_and_records_failures(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services.client_identity_cache import ClientIdentityCache  # type: ignore
-
     cache = ClientIdentityCache(failure_ttl_seconds=10.0)
     calls: list[str] = []
 
@@ -71,9 +66,6 @@ def test_client_identity_cache_resolve_many_deduplicates_and_records_failures(
 
 
 def test_client_identity_cache_evicts_oldest_entry_when_full(monkeypatch) -> None:
-    _add_web_to_path()
-    from services.client_identity_cache import ClientIdentityCache  # type: ignore
-
     cache = ClientIdentityCache(max_entries=1)
     # max_entries is clamped to at least 64; shrink after construction to exercise eviction deterministically.
     cache.max_entries = 1
