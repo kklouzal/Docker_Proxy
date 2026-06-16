@@ -7,10 +7,14 @@ from pathlib import Path
 import pytest
 
 
-def _import_webfilter_store_module():
+def _ensure_web_import_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
     if str(web_dir) not in sys.path:
         sys.path.insert(0, str(web_dir))
+
+
+def _import_webfilter_store_module():
+    _ensure_web_import_path()
     from services import webfilter_store  # type: ignore
 
     return webfilter_store
@@ -47,9 +51,7 @@ def test_webfilter_whitelist_remove_normalizes_like_add(monkeypatch) -> None:
 
 
 def test_sslfilter_domain_policy_uses_shared_idna_normalization() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
+    _ensure_web_import_path()
     from services import sslfilter_store  # type: ignore
 
     assert sslfilter_store._normalize_domain_rule(
