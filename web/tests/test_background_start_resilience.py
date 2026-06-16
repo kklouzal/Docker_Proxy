@@ -13,14 +13,20 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
+_add_repo_paths()
+
+from services import (  # type: ignore  # noqa: E402
+    adblock_artifacts,
+    safe_browsing_v5,
+    webfilter_store,
+)
+
+
 def _noop_init_schema(_conn) -> None:
     return None
 
 
 def test_adblock_artifact_background_start_defers_database_init(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import adblock_artifacts  # type: ignore
-
     store = adblock_artifacts.AdblockArtifactStore()
     started: list[bool] = []
     targets: list[object] = []
@@ -51,9 +57,6 @@ def test_adblock_artifact_background_start_defers_database_init(monkeypatch) -> 
 
 
 def test_webfilter_background_start_defers_database_init(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import safe_browsing_v5, webfilter_store  # type: ignore
-
     store = webfilter_store.WebFilterStore()
     started: list[bool] = []
     targets: list[object] = []
@@ -91,9 +94,6 @@ def test_webfilter_background_start_defers_database_init(monkeypatch) -> None:
 
 
 def test_safe_browsing_background_start_defers_database_init(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import safe_browsing_v5  # type: ignore
-
     store = safe_browsing_v5.SafeBrowsingStore()
     started: list[bool] = []
     targets: list[object] = []
@@ -126,9 +126,6 @@ def test_safe_browsing_background_start_defers_database_init(monkeypatch) -> Non
 def test_safe_browsing_local_checker_close_releases_cached_connection(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
-    from services import safe_browsing_v5  # type: ignore
-
     closed: list[bool] = []
 
     class FakeConn:
@@ -153,9 +150,6 @@ def test_safe_browsing_local_checker_close_releases_cached_connection(
 
 
 def test_safe_browsing_local_checker_context_manager_closes(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import safe_browsing_v5  # type: ignore
-
     closed: list[bool] = []
 
     class FakeConn:
@@ -180,9 +174,6 @@ def test_safe_browsing_local_checker_context_manager_closes(monkeypatch) -> None
 def test_safe_browsing_local_checker_discards_cached_connection_on_db_error(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
-    from services import safe_browsing_v5  # type: ignore
-
     closed: list[bool] = []
 
     class FakeConn:
