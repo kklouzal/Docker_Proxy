@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
+import pytest
+
 
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
@@ -15,10 +17,14 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
+@pytest.fixture(autouse=True)
+def _repo_paths_available() -> None:
+    _add_repo_paths()
+
+
 def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_fail(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from proxy import agent  # type: ignore
 
     calls: list[str] = []
@@ -72,7 +78,6 @@ def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_f
 
 
 def test_proxy_agent_sync_loop_retries_background_tasks_before_sync() -> None:
-    _add_repo_paths()
     from proxy import agent  # type: ignore
 
     calls: list[str] = []
@@ -92,7 +97,6 @@ def test_proxy_agent_sync_loop_retries_background_tasks_before_sync() -> None:
 
 
 def test_proxy_agent_logs_database_outages_without_traceback(monkeypatch) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
 
     from proxy import agent  # type: ignore
@@ -125,7 +129,6 @@ def test_proxy_agent_logs_database_outages_without_traceback(monkeypatch) -> Non
 
 
 def test_proxy_agent_logs_unexpected_errors_with_traceback(monkeypatch) -> None:
-    _add_repo_paths()
     from proxy import agent  # type: ignore
 
     calls: list[tuple[object, ...]] = []
@@ -147,7 +150,6 @@ def test_proxy_agent_logs_unexpected_errors_with_traceback(monkeypatch) -> None:
 def test_proxy_runtime_construction_does_not_initialize_database_backed_stores(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import (
         adblock_artifacts,  # type: ignore
         adblock_store,  # type: ignore
@@ -199,7 +201,6 @@ def test_proxy_runtime_construction_does_not_initialize_database_backed_stores(
 def test_proxy_runtime_background_task_startup_is_isolated_and_retryable(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from proxy.runtime import ProxyRuntime  # type: ignore
 
     runtime = ProxyRuntime.__new__(ProxyRuntime)
