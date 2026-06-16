@@ -40,6 +40,20 @@ def _read_zipped_sqlite(
     return sqlite3.connect(str(db_path))
 
 
+def _enable_first_default_list(store, tmp_path: Path, *, enabled: bool = True) -> str:
+    store.lists_dir = str(tmp_path / "lists")
+    Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
+    store.init_db()
+
+    statuses = store.list_statuses()
+    assert statuses, "expected default adblock lists to be present"
+    selected = statuses[0].key
+
+    store.set_enabled({status.key: status.key == selected for status in statuses})
+    store.set_settings(enabled=enabled, cache_ttl=120, cache_max=4096)
+    return selected
+
+
 def test_artifact_revision_and_summary_share_json_property_parsing(
     tmp_path: Path,
 ) -> None:
@@ -91,16 +105,7 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
         store = store_module.get_adblock_store()
-        store.lists_dir = str(tmp_path / "lists")
-        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
-        store.init_db()
-
-        statuses = store.list_statuses()
-        assert statuses, "expected default adblock lists to be present"
-        selected = statuses[0].key
-
-        store.set_enabled({status.key: status.key == selected for status in statuses})
-        store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+        selected = _enable_first_default_list(store, tmp_path)
 
         Path(store.list_path(selected)).write_text(
             "! comment\n||ads.example^\n@@||allow.example^\n/tracker[.]example/\n",
@@ -203,16 +208,7 @@ def test_build_active_artifact_reports_download_pending_when_due_download_fails_
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
         store = store_module.get_adblock_store()
-        store.lists_dir = str(tmp_path / "lists")
-        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
-        store.init_db()
-
-        statuses = store.list_statuses()
-        assert statuses, "expected default adblock lists to be present"
-        selected = statuses[0].key
-
-        store.set_enabled({status.key: status.key == selected for status in statuses})
-        store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+        selected = _enable_first_default_list(store, tmp_path)
 
         Path(store.list_path(selected)).write_text(
             "||ads.example^\n",
@@ -319,16 +315,7 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
         store = store_module.get_adblock_store()
-        store.lists_dir = str(tmp_path / "lists")
-        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
-        store.init_db()
-
-        statuses = store.list_statuses()
-        assert statuses, "expected default adblock lists to be present"
-        selected = statuses[0].key
-
-        store.set_enabled({status.key: status.key == selected for status in statuses})
-        store.set_settings(enabled=False, cache_ttl=120, cache_max=4096)
+        _enable_first_default_list(store, tmp_path, enabled=False)
         monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
 
         result = artifacts_module.get_adblock_artifacts().build_active_artifact(
@@ -706,16 +693,7 @@ def test_build_active_artifact_preserves_previous_when_enabled_list_missing(
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
         store = store_module.get_adblock_store()
-        store.lists_dir = str(tmp_path / "lists")
-        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
-        store.init_db()
-
-        statuses = store.list_statuses()
-        assert statuses, "expected default adblock lists to be present"
-        selected = statuses[0].key
-
-        store.set_enabled({status.key: status.key == selected for status in statuses})
-        store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+        selected = _enable_first_default_list(store, tmp_path)
         list_path = Path(store.list_path(selected))
         list_path.write_text("||cached.example^\n", encoding="utf-8")
         monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
@@ -762,16 +740,7 @@ def test_build_active_artifact_preserves_previous_when_enabled_list_empty(
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
         store = store_module.get_adblock_store()
-        store.lists_dir = str(tmp_path / "lists")
-        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
-        store.init_db()
-
-        statuses = store.list_statuses()
-        assert statuses, "expected default adblock lists to be present"
-        selected = statuses[0].key
-
-        store.set_enabled({status.key: status.key == selected for status in statuses})
-        store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+        selected = _enable_first_default_list(store, tmp_path)
         list_path = Path(store.list_path(selected))
         list_path.write_text("||cached.example^\n", encoding="utf-8")
         monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
@@ -819,16 +788,7 @@ def test_build_active_artifact_preserves_previous_when_enabled_list_has_no_reque
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
         store = store_module.get_adblock_store()
-        store.lists_dir = str(tmp_path / "lists")
-        Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
-        store.init_db()
-
-        statuses = store.list_statuses()
-        assert statuses, "expected default adblock lists to be present"
-        selected = statuses[0].key
-
-        store.set_enabled({status.key: status.key == selected for status in statuses})
-        store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+        selected = _enable_first_default_list(store, tmp_path)
         list_path = Path(store.list_path(selected))
         list_path.write_text("||cached.example^\n", encoding="utf-8")
         monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
