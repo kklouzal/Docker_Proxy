@@ -93,7 +93,7 @@ def _normalize_backup_proxy_entry(
     )
     if host is None or port is None:
         return None
-    return format_proxy_host(host), int(port)
+    return _format_host_only_for_pac(host), int(port)
 
 
 @dataclass(frozen=True)
@@ -204,6 +204,10 @@ def _request_host_only(raw_host: str) -> str:
 
 def format_proxy_host(raw_host: str) -> str:
     host = _request_host_only(raw_host)
+    return _format_host_only_for_pac(host)
+
+
+def _format_host_only_for_pac(host: str) -> str:
     if ":" in host and not host.startswith("["):
         return f"[{host}]"
     return host or "127.0.0.1"
