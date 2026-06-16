@@ -20,9 +20,9 @@ from services.pac_profiles_store import (
     get_pac_profiles_store,
 )
 from services.public_endpoint import (
-    coerce_public_bool,
-    coerce_public_port,
-    normalize_public_scheme,
+    coerce_public_bool as _coerce_bool,
+    coerce_public_port as _coerce_port,
+    normalize_public_scheme as _normalize_pac_scheme,
 )
 from services.proxy_context import (
     get_proxy_id,
@@ -45,18 +45,6 @@ PAC_MANIFEST_FILENAME = "manifest.json"
 PAC_STATE_SHA_FILENAME = ".state-sha256"
 PAC_RENDER_DIR = "/var/lib/squid-flask-proxy/pac"
 LOCAL_DOMAIN_SUFFIXES = (".local", ".localdomain", ".home.arpa", ".localhost")
-
-
-def _normalize_pac_scheme(value: object | None) -> str:
-    return normalize_public_scheme(value)
-
-
-def _coerce_port(value: object | None, default: int) -> int:
-    return coerce_public_port(value, default)
-
-
-def _coerce_bool(value: object | None, default: bool) -> bool:
-    return coerce_public_bool(value, default)
 
 
 def _build_pac_url(

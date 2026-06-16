@@ -17,9 +17,9 @@ from services.db import (
     run_mysql_operation_with_retry,
 )
 from services.public_endpoint import (
-    coerce_public_bool,
-    coerce_public_port,
-    normalize_public_scheme,
+    coerce_public_bool as _coerce_bool,
+    coerce_public_port as _coerce_port,
+    normalize_public_scheme as _normalize_public_scheme,
 )
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 
@@ -30,18 +30,6 @@ def _quote_mysql_identifier(value: str) -> str:
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
     return mysql_error_code(exc) in codes
-
-
-def _normalize_public_scheme(value: object | None) -> str:
-    return normalize_public_scheme(value)
-
-
-def _coerce_port(value: object | None, default: int) -> int:
-    return coerce_public_port(value, default)
-
-
-def _coerce_bool(value: object | None, default: bool) -> bool:
-    return coerce_public_bool(value, default)
 
 
 def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac") -> str:
