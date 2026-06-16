@@ -56,6 +56,22 @@ def test_parse_database_url_reports_malformed_url_as_mysql_config_error(
     assert "Port could not be cast" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (Exception(1060, "Duplicate column"), 1060),
+        (Exception("1062", "Duplicate key"), 1062),
+        (Exception("not-a-code"), None),
+        (Exception(), None),
+    ],
+)
+def test_mysql_error_code_extracts_first_numeric_arg(exc, expected) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    assert db.mysql_error_code(exc) == expected
+
+
 def test_context_manager_preserves_original_error_when_rollback_connection_is_lost() -> (
     None
 ):

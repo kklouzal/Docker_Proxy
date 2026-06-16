@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from services.db import DATABASE_ERRORS, connect
+from services.db import DATABASE_ERRORS, connect, mysql_error_code
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
@@ -63,16 +63,6 @@ def _list_file_has_rule_content(path: str | os.PathLike[str]) -> bool:
     except OSError:
         return False
     return False
-
-
-def _mysql_error_code(exc: BaseException) -> int | None:
-    args = getattr(exc, "args", ())
-    if args:
-        try:
-            return int(args[0])
-        except (TypeError, ValueError):
-            return None
-    return None
 
 
 @dataclass(frozen=True)
@@ -206,7 +196,7 @@ class AdblockArtifactStore:
                         "ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
                     )
                 except DATABASE_ERRORS as exc:
-                    if _mysql_error_code(exc) != 1060:
+                    if mysql_error_code(exc) != 1060:
                         raise
 
     def _row_to_revision(self, row: object | None) -> AdblockArtifactRevision | None:

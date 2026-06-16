@@ -17,6 +17,7 @@ from services.db import (
     DATABASE_ERRORS,
     INTEGRITY_ERRORS,
     connect,
+    mysql_error_code,
     run_mysql_operation_with_retry,
 )
 from services.errors import public_error_message
@@ -29,12 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_duplicate_key_error(exc: BaseException) -> bool:
-    try:
-        if getattr(exc, "args", None):
-            return int(exc.args[0]) == 1062
-    except Exception:
-        return False
-    return False
+    return mysql_error_code(exc) == 1062
 
 
 def _is_internal_host(hostname: str) -> bool:

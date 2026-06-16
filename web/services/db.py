@@ -186,13 +186,17 @@ _pooled_connections: dict[
 def _is_retryable_mysql_error(exc: BaseException) -> bool:
     if not isinstance(exc, pymysql.MySQLError):
         return False
-    code = None
+    return mysql_error_code(exc) in {1040, 2002, 2003, 2006, 2013, 1205, 1213}
+
+
+def mysql_error_code(exc: BaseException) -> int | None:
+    args = getattr(exc, "args", ())
+    if not args:
+        return None
     try:
-        if getattr(exc, "args", None):
-            code = int(exc.args[0])
-    except Exception:
-        code = None
-    return code in {1040, 2002, 2003, 2006, 2013, 1205, 1213}
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def _mysql_connect_retries() -> int:

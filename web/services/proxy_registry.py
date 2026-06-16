@@ -11,6 +11,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from services.db import (
     DATABASE_ERRORS,
     connect,
+    mysql_error_code,
     mysql_advisory_lock,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
@@ -27,17 +28,8 @@ def _quote_mysql_identifier(value: str) -> str:
     return "`" + str(value).replace("`", "``") + "`"
 
 
-def _mysql_error_code(exc: BaseException) -> int | None:
-    try:
-        if getattr(exc, "args", None):
-            return int(exc.args[0])
-    except Exception:
-        return None
-    return None
-
-
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
-    return _mysql_error_code(exc) in codes
+    return mysql_error_code(exc) in codes
 
 
 def _normalize_public_scheme(value: object | None) -> str:

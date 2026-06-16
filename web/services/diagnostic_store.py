@@ -16,6 +16,7 @@ from typing import Any
 from services.db import (
     DATABASE_ERRORS,
     connect,
+    mysql_error_code,
     mysql_advisory_lock,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
@@ -30,15 +31,6 @@ from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
-
-
-def _mysql_error_code(exc: BaseException) -> int | None:
-    try:
-        if getattr(exc, "args", None):
-            return int(exc.args[0])
-    except Exception:
-        return None
-    return None
 
 
 _INTERNAL_NETWORK_CACHE: tuple[float, tuple[Any, ...]] = (0.0, ())
@@ -550,7 +542,7 @@ class DiagnosticStore:
                                 try:
                                     conn.execute(ddl)
                                 except DATABASE_ERRORS as exc:
-                                    if _mysql_error_code(exc) != 1060:
+                                    if mysql_error_code(exc) != 1060:
                                         raise
                         for table, index_name, ddl in (
                             (
