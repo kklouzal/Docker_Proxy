@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,18 @@ def _add_web_to_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
     if str(web_dir) not in sys.path:
         sys.path.insert(0, str(web_dir))
+
+
+def _proxy_record(public_host: str, **overrides: object) -> SimpleNamespace:
+    data = {
+        "public_host": public_host,
+        "public_pac_scheme": "http",
+        "public_pac_port": 80,
+        "public_pac_path": "/proxy.pac",
+        "public_http_proxy_port": 3128,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:
@@ -176,18 +189,12 @@ def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_
     monkeypatch,
 ) -> None:
     _add_web_to_path()
-    from types import SimpleNamespace
 
     from services import pac_renderer  # type: ignore
 
     class _RegistryWithBlankPublicHost:
         def get_proxy(self, _proxy_id):
-            return SimpleNamespace(
-                public_host="",
-                public_pac_scheme="http",
-                public_pac_port=80,
-                public_http_proxy_port=3128,
-            )
+            return _proxy_record("")
 
     class _EmptyPacProfilesStore:
         def list_proxy_chain_settings(self):
@@ -320,18 +327,15 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     monkeypatch,
 ) -> None:
     _add_web_to_path()
-    from types import SimpleNamespace
 
     from services import pac_renderer  # type: ignore
 
     class _RegistryWithPublicHost:
         def get_proxy(self, _proxy_id):
-            return SimpleNamespace(
-                public_host="registry.example",
-                public_pac_scheme="http",
+            return _proxy_record(
+                "registry.example",
                 public_pac_port=8080,
                 public_pac_path="/registered/wpad.dat?site=a",
-                public_http_proxy_port=3128,
             )
 
     class _EmptyPacProfilesStore:
@@ -361,7 +365,6 @@ def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
     monkeypatch,
 ) -> None:
     _add_web_to_path()
-    from types import SimpleNamespace
 
     from services import pac_renderer  # type: ignore
     from services.proxy_context import (  # type: ignore
@@ -372,13 +375,7 @@ def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
 
     class _Registry:
         def get_proxy(self, proxy_id):
-            return SimpleNamespace(
-                public_host=f"{proxy_id}.example",
-                public_pac_scheme="http",
-                public_pac_port=80,
-                public_pac_path="/proxy.pac",
-                public_http_proxy_port=3128,
-            )
+            return _proxy_record(f"{proxy_id}.example")
 
     class _ScopedPacProfilesStore:
         def list_proxy_chain_settings(self):
