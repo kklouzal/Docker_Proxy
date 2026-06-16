@@ -673,6 +673,16 @@ class _FakeSslfilterStore:
         return self._rules
 
 
+def _default_proxy_pac_target(pac_renderer):
+    return pac_renderer.ProxyPacTarget(
+        proxy_id="default",
+        public_host="proxy.example",
+        pac_scheme="http",
+        pac_port=80,
+        http_proxy_port=3128,
+    )
+
+
 def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rules(
     monkeypatch,
 ) -> None:
@@ -695,13 +705,7 @@ def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rul
     )
 
     rendered = pac_renderer._render_fallback_pac(
-        pac_renderer.ProxyPacTarget(
-            proxy_id="default",
-            public_host="proxy.example",
-            pac_scheme="http",
-            pac_port=80,
-            http_proxy_port=3128,
-        ),
+        _default_proxy_pac_target(pac_renderer),
     )
 
     assert "no-bump.example" not in rendered
@@ -732,13 +736,7 @@ def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(
             direct_dst_nets=["10.20.0.0/16"],
             created_ts=0,
         ),
-        pac_renderer.ProxyPacTarget(
-            proxy_id="default",
-            public_host="proxy.example",
-            pac_scheme="http",
-            pac_port=80,
-            http_proxy_port=3128,
-        ),
+        _default_proxy_pac_target(pac_renderer),
     )
 
     assert "intranet.example" in rendered
