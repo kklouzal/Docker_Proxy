@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
@@ -30,20 +32,27 @@ def _write_pac_artifacts(pac_dir: Path, *, public_pac_path: str) -> None:
     (pac_dir / "fallback.pac").write_text("PAC __PAC_PROXY_HOST__", encoding="utf-8")
 
 
-def test_public_listener_serves_configured_pac_path(tmp_path, monkeypatch) -> None:
+@pytest.fixture
+def public_pac_client(monkeypatch):
     _add_repo_paths()
     from services import pac_http  # type: ignore
 
     from proxy import app as proxy_app  # type: ignore
 
+    def build_client(pac_dir: Path):
+        monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))
+        monkeypatch.setenv("PAC_HTTP_PORT", "80")
+        pac_http.pac_render_dir.cache_clear()
+        pac_http._CACHES.clear()
+        return proxy_app.app.test_client()
+
+    return build_client
+
+
+def test_public_listener_serves_configured_pac_path(tmp_path, public_pac_client) -> None:
     pac_dir = tmp_path / "pac"
     _write_pac_artifacts(pac_dir, public_pac_path="/download/wpad.dat?site=lab")
-    monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    pac_http.pac_render_dir.cache_clear()
-    pac_http._CACHES.clear()
-
-    client = proxy_app.app.test_client()
+    client = public_pac_client(pac_dir)
     response = client.get(
         "/download/wpad.dat?site=lab",
         base_url="http://public-proxy.example",
@@ -56,21 +65,11 @@ def test_public_listener_serves_configured_pac_path(tmp_path, monkeypatch) -> No
 
 def test_public_listener_serves_percent_encoded_configured_pac_path(
     tmp_path,
-    monkeypatch,
+    public_pac_client,
 ) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
-    from proxy import app as proxy_app  # type: ignore
-
     pac_dir = tmp_path / "pac"
     _write_pac_artifacts(pac_dir, public_pac_path="/download/%77pad.dat?site=lab")
-    monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    pac_http.pac_render_dir.cache_clear()
-    pac_http._CACHES.clear()
-
-    client = proxy_app.app.test_client()
+    client = public_pac_client(pac_dir)
     response = client.get(
         "/download/%77pad.dat?site=lab",
         base_url="http://public-proxy.example",
@@ -83,21 +82,11 @@ def test_public_listener_serves_percent_encoded_configured_pac_path(
 
 def test_public_listener_rejects_wrong_query_for_configured_pac_path(
     tmp_path,
-    monkeypatch,
+    public_pac_client,
 ) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
-    from proxy import app as proxy_app  # type: ignore
-
     pac_dir = tmp_path / "pac"
     _write_pac_artifacts(pac_dir, public_pac_path="/download/wpad.dat?site=lab")
-    monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    pac_http.pac_render_dir.cache_clear()
-    pac_http._CACHES.clear()
-
-    client = proxy_app.app.test_client()
+    client = public_pac_client(pac_dir)
 
     assert (
         client.get(
@@ -115,20 +104,13 @@ def test_public_listener_rejects_wrong_query_for_configured_pac_path(
     )
 
 
-def test_public_listener_rejects_unconfigured_pac_path(tmp_path, monkeypatch) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
-    from proxy import app as proxy_app  # type: ignore
-
+def test_public_listener_rejects_unconfigured_pac_path(
+    tmp_path,
+    public_pac_client,
+) -> None:
     pac_dir = tmp_path / "pac"
     _write_pac_artifacts(pac_dir, public_pac_path="/download/wpad.dat")
-    monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    pac_http.pac_render_dir.cache_clear()
-    pac_http._CACHES.clear()
-
-    client = proxy_app.app.test_client()
+    client = public_pac_client(pac_dir)
     response = client.get("/download/other.pac", base_url="http://public-proxy.example")
 
     assert response.status_code == 404
@@ -136,13 +118,8 @@ def test_public_listener_rejects_unconfigured_pac_path(tmp_path, monkeypatch) ->
 
 def test_public_listener_rejects_manifest_backslash_traversal(
     tmp_path,
-    monkeypatch,
+    public_pac_client,
 ) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
-    from proxy import app as proxy_app  # type: ignore
-
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / "subdir").mkdir()
@@ -161,12 +138,7 @@ def test_public_listener_rejects_manifest_backslash_traversal(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    pac_http.pac_render_dir.cache_clear()
-    pac_http._CACHES.clear()
-
-    client = proxy_app.app.test_client()
+    client = public_pac_client(pac_dir)
     response = client.get("/proxy.pac", base_url="http://public-proxy.example")
 
     assert response.status_code == 200
