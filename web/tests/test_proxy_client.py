@@ -17,6 +17,14 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
+@pytest.fixture
+def proxy_client_module():
+    _add_web_to_path()
+    from services import proxy_client  # type: ignore
+
+    return proxy_client
+
+
 class _Registry:
     def __init__(self, management_url: str | None) -> None:
         self.management_url = management_url
@@ -45,20 +53,20 @@ class _Response:
         return json.dumps(self._payload).encode("utf-8")
 
 
-def test_proxy_client_requires_registered_management_url(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_requires_registered_management_url(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(proxy_client, "get_proxy_registry", lambda: _Registry(None))
 
     with pytest.raises(proxy_client.ProxyClientError, match="not registered"):
         proxy_client.ProxyClient().get_health("missing")
 
 
-def test_proxy_client_sets_bearer_auth_and_json_body(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_sets_bearer_auth_and_json_body(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     captured: dict[str, object] = {}
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret-token")
     monkeypatch.setattr(
@@ -91,10 +99,10 @@ def test_proxy_client_sets_bearer_auth_and_json_body(monkeypatch) -> None:
     assert captured["timeout"] == pytest.approx(9.5)
 
 
-def test_proxy_client_canonicalizes_endpoint_shaped_management_url(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_canonicalizes_endpoint_shaped_management_url(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         proxy_client,
@@ -112,10 +120,10 @@ def test_proxy_client_canonicalizes_endpoint_shaped_management_url(monkeypatch) 
     assert captured["url"] == "http://proxy-mgmt:5000/api/manage/sync"
 
 
-def test_proxy_client_can_request_config_validation_and_rollback(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_can_request_config_validation_and_rollback(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     captured: list[dict[str, object]] = []
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
@@ -158,11 +166,9 @@ def test_proxy_client_can_request_config_validation_and_rollback(monkeypatch) ->
 
 
 def test_proxy_client_get_health_default_timeout_handles_cold_health_collection(
-    monkeypatch,
+    monkeypatch, proxy_client_module
 ) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+    proxy_client = proxy_client_module
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
@@ -182,10 +188,10 @@ def test_proxy_client_get_health_default_timeout_handles_cold_health_collection(
     assert captured["timeout"] == pytest.approx(5.0)
 
 
-def test_proxy_client_get_logs_uses_management_logs_endpoint(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_get_logs_uses_management_logs_endpoint(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
@@ -211,10 +217,10 @@ def test_proxy_client_get_logs_uses_management_logs_endpoint(monkeypatch) -> Non
     assert captured["timeout"] == pytest.approx(4.0)
 
 
-def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_http_error_uses_json_detail(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
@@ -235,10 +241,10 @@ def test_proxy_client_http_error_uses_json_detail(monkeypatch) -> None:
         proxy_client.ProxyClient().sync_proxy("live")
 
 
-def test_proxy_client_http_error_rejects_non_object_json(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_http_error_rejects_non_object_json(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
@@ -265,10 +271,10 @@ def test_proxy_client_http_error_rejects_non_object_json(monkeypatch) -> None:
     assert "proxy=live" in message
 
 
-def test_proxy_client_sanitizes_html_management_auth_error(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_sanitizes_html_management_auth_error(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
@@ -297,10 +303,10 @@ def test_proxy_client_sanitizes_html_management_auth_error(monkeypatch) -> None:
     assert "proxy=live" in message
 
 
-def test_proxy_client_sanitizes_successful_html_response(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_sanitizes_successful_html_response(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
@@ -325,10 +331,10 @@ def test_proxy_client_sanitizes_successful_html_response(monkeypatch) -> None:
     assert "proxy=live" in message
 
 
-def test_proxy_client_rejects_successful_non_object_json(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_rejects_successful_non_object_json(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
@@ -360,10 +366,10 @@ def test_proxy_client_rejects_successful_non_object_json(monkeypatch) -> None:
         urllib.error.URLError(TimeoutError("timed out")),
     ],
 )
-def test_proxy_client_timeout_error_is_actionable(monkeypatch, raised) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_timeout_error_is_actionable(
+    monkeypatch, raised, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
@@ -384,10 +390,8 @@ def test_proxy_client_timeout_error_is_actionable(monkeypatch, raised) -> None:
     assert "reachable from the Admin UI container" in message
 
 
-def test_proxy_client_url_error_surfaces_reason(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_client  # type: ignore
-
+def test_proxy_client_url_error_surfaces_reason(monkeypatch, proxy_client_module) -> None:
+    proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
