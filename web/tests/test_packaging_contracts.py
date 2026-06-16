@@ -43,9 +43,13 @@ def _python_module_imports_services(path: str) -> set[str]:
     return imports
 
 
+def _image_payload(dockerfile: str, pattern: str) -> set[str]:
+    text = _read(dockerfile)
+    return {match.rsplit("/", 1)[-1] for match in re.findall(pattern, text)}
+
+
 def _proxy_image_payload(pattern: str) -> set[str]:
-    proxy = _read("docker/Dockerfile.proxy")
-    return {match.rsplit("/", 1)[-1] for match in re.findall(pattern, proxy)}
+    return _image_payload("docker/Dockerfile.proxy", pattern)
 
 
 def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
@@ -86,6 +90,26 @@ def test_proxy_dockerfile_includes_direct_service_import_dependencies() -> None:
         "proxy/agent.py",
         "proxy/app.py",
         "proxy/runtime.py",
+        *(f"web/services/{name}" for name in copied_services if name != "__init__.py"),
+        *(f"web/tools/{name}" for name in copied_tools),
+    ]
+
+    required_services: set[str] = set()
+    for path in copied_roots:
+        required_services.update(_python_module_imports_services(path))
+
+    assert sorted(required_services - copied_services) == []
+
+
+def test_admin_dockerfile_includes_direct_service_import_dependencies() -> None:
+    copied_services = _image_payload(
+        "docker/Dockerfile.admin",
+        r"web/services/[\w_]+\.py",
+    )
+    copied_tools = _image_payload("docker/Dockerfile.admin", r"web/tools/[\w_]+\.py")
+    copied_roots = [
+        "web/app.py",
+        "web/wsgi.py",
         *(f"web/services/{name}" for name in copied_services if name != "__init__.py"),
         *(f"web/tools/{name}" for name in copied_tools),
     ]
