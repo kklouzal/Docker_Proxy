@@ -13,10 +13,12 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
-def test_parse_access_log_line_fast_path_accepts_tab_separated_liveui_rows() -> None:
-    _add_repo_paths()
-    from services.live_stats import _parse_access_log_line  # type: ignore
+_add_repo_paths()
 
+from services.live_stats import _parse_access_log_line  # type: ignore  # noqa: E402
+
+
+def test_parse_access_log_line_fast_path_accepts_tab_separated_liveui_rows() -> None:
     row = _parse_access_log_line(
         "1710000000\t0.0\t10.0.0.5\tGET\thttp://example.com/a\tTCP_HIT/200\t1234"
     )
@@ -25,9 +27,6 @@ def test_parse_access_log_line_fast_path_accepts_tab_separated_liveui_rows() -> 
 
 
 def test_parse_access_log_line_fast_path_accepts_escaped_tab_rows() -> None:
-    _add_repo_paths()
-    from services.live_stats import _parse_access_log_line  # type: ignore
-
     row = _parse_access_log_line(
         "1710000001\\t0.0\\t10.0.0.6\\tPOST\\thttp://example.org/login\\tTCP_MISS/200\\t42"
     )
