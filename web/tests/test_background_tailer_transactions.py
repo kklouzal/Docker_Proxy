@@ -23,12 +23,41 @@ def _stop_sleep(_seconds: float) -> None:
     raise StopLoop
 
 
-def test_live_stats_tailer_does_not_open_db_connection_while_idle(
-    monkeypatch, tmp_path
-) -> None:
+@pytest.fixture
+def adblock_store():
     _add_repo_paths()
-    from services import live_stats  # type: ignore
+    from services import adblock_store as module  # type: ignore
 
+    return module
+
+
+@pytest.fixture
+def diagnostic_store():
+    _add_repo_paths()
+    from services import diagnostic_store as module  # type: ignore
+
+    return module
+
+
+@pytest.fixture
+def live_stats():
+    _add_repo_paths()
+    from services import live_stats as module  # type: ignore
+
+    return module
+
+
+@pytest.fixture
+def ssl_errors_store():
+    _add_repo_paths()
+    from services import ssl_errors_store as module  # type: ignore
+
+    return module
+
+
+def test_live_stats_tailer_does_not_open_db_connection_while_idle(
+    monkeypatch, tmp_path, live_stats
+) -> None:
     log_path = tmp_path / "access.log"
     log_path.write_text("", encoding="utf-8")
     store = live_stats.LiveStatsStore(access_log_path=str(log_path))
@@ -47,11 +76,8 @@ def test_live_stats_tailer_does_not_open_db_connection_while_idle(
 
 
 def test_diagnostic_tailer_does_not_open_db_connection_while_idle(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, diagnostic_store
 ) -> None:
-    _add_repo_paths()
-    from services import diagnostic_store  # type: ignore
-
     log_path = tmp_path / "diagnostic.log"
     log_path.write_text("", encoding="utf-8")
     store = diagnostic_store.DiagnosticStore(
@@ -76,11 +102,8 @@ def test_diagnostic_tailer_does_not_open_db_connection_while_idle(
 
 
 def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, ssl_errors_store
 ) -> None:
-    _add_repo_paths()
-    from services import ssl_errors_store  # type: ignore
-
     log_path = tmp_path / "cache.log"
     log_path.write_text("", encoding="utf-8")
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
@@ -107,11 +130,8 @@ def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
 
 
 def test_ssl_errors_tailer_does_not_initialize_db_when_log_missing(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, ssl_errors_store
 ) -> None:
-    _add_repo_paths()
-    from services import ssl_errors_store  # type: ignore
-
     store = ssl_errors_store.SslErrorsStore(
         cache_log_path=str(tmp_path / "missing-cache.log")
     )
@@ -129,11 +149,8 @@ def test_ssl_errors_tailer_does_not_initialize_db_when_log_missing(
 
 
 def test_ssl_errors_tailer_ignores_irrelevant_lines_without_database(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, ssl_errors_store
 ) -> None:
-    _add_repo_paths()
-    from services import ssl_errors_store  # type: ignore
-
     log_path = tmp_path / "cache.log"
     log_path.write_text("", encoding="utf-8")
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
@@ -155,11 +172,8 @@ def test_ssl_errors_tailer_ignores_irrelevant_lines_without_database(
 
 
 def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, adblock_store
 ) -> None:
-    _add_repo_paths()
-    from services import adblock_store  # type: ignore
-
     store = adblock_store.AdblockStore(
         cicap_access_log_path=str(tmp_path / "missing-cicap.log")
     )
@@ -177,11 +191,8 @@ def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
 
 
 def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(
-    monkeypatch,
+    monkeypatch, adblock_store
 ) -> None:
-    _add_repo_paths()
-    from services import adblock_store  # type: ignore
-
     calls: list[tuple[str, tuple[object, ...]]] = []
 
     class Conn:
@@ -212,10 +223,9 @@ def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(
     ]
 
 
-def test_adblock_proxy_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import adblock_store  # type: ignore
-
+def test_adblock_proxy_meta_insert_duplicate_falls_back_to_update(
+    monkeypatch, adblock_store
+) -> None:
     class DuplicateKeyError(Exception):
         def __init__(self) -> None:
             super().__init__(
@@ -257,10 +267,9 @@ def test_adblock_proxy_meta_insert_duplicate_falls_back_to_update(monkeypatch) -
     ]
 
 
-def test_adblock_tailer_keeps_partial_line_until_newline(monkeypatch, tmp_path) -> None:
-    _add_repo_paths()
-    from services import adblock_store  # type: ignore
-
+def test_adblock_tailer_keeps_partial_line_until_newline(
+    monkeypatch, tmp_path, adblock_store
+) -> None:
     log_path = tmp_path / "cicap-access.log"
     partial = (
         "1710000000\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
@@ -324,10 +333,9 @@ def test_adblock_tailer_keeps_partial_line_until_newline(monkeypatch, tmp_path) 
     assert meta["cicap_access_pos"] == str(log_path.stat().st_size)
 
 
-def test_adblock_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import adblock_store  # type: ignore
-
+def test_adblock_meta_insert_duplicate_falls_back_to_update(
+    monkeypatch, adblock_store
+) -> None:
     class DuplicateKeyError(Exception):
         def __init__(self) -> None:
             super().__init__(
@@ -359,11 +367,9 @@ def test_adblock_meta_insert_duplicate_falls_back_to_update(monkeypatch) -> None
 
 
 def test_adblock_blocklog_tailer_logs_database_outage_without_traceback(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, adblock_store
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
-    from services import adblock_store  # type: ignore
 
     log_path = tmp_path / "cicap.log"
     log_path.write_text("", encoding="utf-8")
@@ -402,11 +408,9 @@ def test_adblock_blocklog_tailer_logs_database_outage_without_traceback(
 
 
 def test_live_stats_tailer_logs_database_outage_without_traceback(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, live_stats
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
-    from services import live_stats  # type: ignore
 
     log_path = tmp_path / "access.log"
     log_path.write_text("", encoding="utf-8")
@@ -472,11 +476,9 @@ def test_live_stats_tailer_logs_database_outage_without_traceback(
 
 
 def test_diagnostic_tailer_logs_database_outage_without_traceback(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, diagnostic_store
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
-    from services import diagnostic_store  # type: ignore
 
     log_path = tmp_path / "diagnostic.log"
     log_path.write_text("", encoding="utf-8")
