@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import ModuleType
 
 from .mysql_test_utils import configure_test_mysql_env
 
@@ -12,9 +13,15 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
-def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> None:
+def _proxy_registry() -> ModuleType:
     _add_web_to_path()
     from services import proxy_registry  # type: ignore
+
+    return proxy_registry
+
+
+def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> None:
+    proxy_registry = _proxy_registry()
 
     assert proxy_registry._parse_public_pac_url("proxy.example") == (
         "proxy.example",
@@ -47,8 +54,7 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
 
 
 def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     assert (
         proxy_registry.normalize_public_pac_path("download/wpad.dat?site=lab")
@@ -97,8 +103,7 @@ def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
 def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_url(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     monkeypatch.setenv(
         "PROXY_PUBLIC_PAC_URL", "https://from-url.example:8443/proxy.pac"
@@ -120,8 +125,7 @@ def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_
 def test_resolve_local_proxy_public_fields_falls_back_to_public_pac_url_and_port_defaults(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://pac.example/wpad.dat?site=lab")
     monkeypatch.delenv("PROXY_PUBLIC_HOST", raising=False)
@@ -139,8 +143,7 @@ def test_resolve_local_proxy_public_fields_falls_back_to_public_pac_url_and_port
 
 
 def test_resolve_local_proxy_management_url_prefers_explicit_url(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     monkeypatch.setenv("PROXY_MANAGEMENT_URL", "http://custom-proxy:9443/root/")
     monkeypatch.setenv("PROXY_MANAGEMENT_HOST", "ignored-host")
@@ -152,8 +155,7 @@ def test_resolve_local_proxy_management_url_prefers_explicit_url(monkeypatch) ->
 
 
 def test_management_url_normalization_canonicalizes_listener_base() -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     assert (
         proxy_registry.normalize_management_url("proxy-mgmt:5000")
@@ -184,8 +186,7 @@ def test_management_url_normalization_canonicalizes_listener_base() -> None:
 
 
 def test_management_url_normalization_rejects_unsafe_shapes() -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     assert proxy_registry.normalize_management_url("ftp://proxy-mgmt:5000") == ""
     assert proxy_registry.normalize_management_url("http://user:pass@proxy:5000") == ""
@@ -208,8 +209,7 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
 
 
 def test_resolve_local_proxy_management_url_derives_from_proxy_id(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     monkeypatch.delenv("PROXY_MANAGEMENT_URL", raising=False)
     monkeypatch.delenv("PROXY_MANAGEMENT_HOST", raising=False)
@@ -230,8 +230,7 @@ def test_resolve_local_proxy_management_url_derives_from_proxy_id(monkeypatch) -
 def test_resolve_local_proxy_management_url_supports_host_scheme_and_port(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     monkeypatch.delenv("PROXY_MANAGEMENT_URL", raising=False)
     monkeypatch.setenv("PROXY_MANAGEMENT_HOST", "edge-mgmt")
@@ -247,8 +246,7 @@ def test_resolve_local_proxy_management_url_supports_host_scheme_and_port(
 def test_resolve_local_proxy_management_url_uses_public_host_before_proxy_id(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     monkeypatch.delenv("PROXY_MANAGEMENT_URL", raising=False)
     monkeypatch.delenv("PROXY_MANAGEMENT_HOST", raising=False)
@@ -260,8 +258,7 @@ def test_resolve_local_proxy_management_url_uses_public_host_before_proxy_id(
 
 
 def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     row = {
         "proxy_id": "edge-2",
@@ -294,9 +291,8 @@ def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
 
 
 def test_init_db_tolerates_concurrent_column_add_race() -> None:
-    _add_web_to_path()
+    proxy_registry = _proxy_registry()
     import pymysql  # type: ignore
-    from services import proxy_registry  # type: ignore
 
     class Result:
         def fetchall(self):
@@ -340,8 +336,7 @@ def test_register_local_proxy_reconciles_stale_identity_by_management_url(
     monkeypatch, tmp_path
 ):
     configure_test_mysql_env(tmp_path / "proxy-identity-reconcile")
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy(
@@ -368,8 +363,7 @@ def test_register_local_proxy_reconciles_stale_identity_by_management_url(
 
 def test_rename_proxy_rewrites_other_proxy_id_tables(tmp_path):
     configure_test_mysql_env(tmp_path / "proxy-identity-rename")
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     registry = proxy_registry.ProxyRegistry()
     registry.init_db()
@@ -397,8 +391,7 @@ def test_rename_proxy_rewrites_other_proxy_id_tables(tmp_path):
 
 def test_resolve_proxy_id_honors_rename_alias(tmp_path):
     configure_test_mysql_env(tmp_path / "proxy-identity-alias")
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("Proxy-P", display_name="Proxy-P")
@@ -411,8 +404,7 @@ def test_resolve_proxy_id_honors_rename_alias(tmp_path):
 
 def test_remove_proxy_deletes_registry_aliases_and_proxy_scoped_rows(tmp_path):
     configure_test_mysql_env(tmp_path / "proxy-remove")
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-2", display_name="Edge")
@@ -458,8 +450,7 @@ def test_remove_proxy_deletes_registry_aliases_and_proxy_scoped_rows(tmp_path):
 
 def test_remove_proxy_rejects_unknown_proxy(tmp_path):
     configure_test_mysql_env(tmp_path / "proxy-remove-missing")
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("default")
@@ -474,8 +465,7 @@ def test_remove_proxy_rejects_unknown_proxy(tmp_path):
 
 
 def test_init_db_preserves_retired_socks_storage() -> None:
-    _add_web_to_path()
-    from services import proxy_registry  # type: ignore
+    proxy_registry = _proxy_registry()
 
     required_columns = {
         "proxy_id",
