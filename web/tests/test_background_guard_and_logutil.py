@@ -12,10 +12,12 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
-def test_acquire_background_lock_force_skips_filesystem(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import background_guard  # type: ignore
+_add_web_to_path()
 
+from services import background_guard, logutil  # type: ignore  # noqa: E402
+
+
+def test_acquire_background_lock_force_skips_filesystem(monkeypatch) -> None:
     monkeypatch.setenv("BACKGROUND_FORCE", "1")
     monkeypatch.setattr(
         background_guard.os,
@@ -29,9 +31,6 @@ def test_acquire_background_lock_force_skips_filesystem(monkeypatch) -> None:
 def test_acquire_background_lock_allows_when_lock_directory_cannot_be_created(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services import background_guard  # type: ignore
-
     monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
     monkeypatch.setenv("BACKGROUND_LOCK_PATH", "/unwritable/background.lock")
     monkeypatch.setattr(
@@ -44,9 +43,6 @@ def test_acquire_background_lock_allows_when_lock_directory_cannot_be_created(
 
 
 def test_acquire_background_lock_non_posix_allows_and_closes_fd(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import background_guard  # type: ignore
-
     closed: list[int] = []
     real_import = builtins.__import__
 
@@ -67,9 +63,6 @@ def test_acquire_background_lock_non_posix_allows_and_closes_fd(monkeypatch) -> 
 
 
 def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import logutil  # type: ignore
-
     logutil._last_log.clear()
     current = {"value": 100.0}
     monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
@@ -84,9 +77,6 @@ def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
 def test_log_exception_throttled_never_raises_and_respects_interval(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services import logutil  # type: ignore
-
     logutil._last_log.clear()
     current = {"value": 200.0}
     calls: list[str] = []
