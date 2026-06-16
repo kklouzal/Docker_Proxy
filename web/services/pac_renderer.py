@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from services.pac_profiles_store import (
     PacProfile,
+    _normalize_pac_dst_v4_cidr,
     _normalize_proxy_host_port,
     get_pac_profiles_store,
 )
@@ -381,15 +382,12 @@ def _render_pac(
 
     seen_dst_nets: set[str] = set()
     for cidr in direct_dst_nets:
-        try:
-            net = ipaddress.ip_network(cidr, strict=False)
-        except Exception:
+        canonical_cidr, _err = _normalize_pac_dst_v4_cidr(cidr)
+        if not canonical_cidr:
             continue
-        if net.version != 4:
-            continue
-        canonical_cidr = str(net)
         if canonical_cidr in seen_dst_nets:
             continue
+        net = ipaddress.ip_network(canonical_cidr, strict=False)
         seen_dst_nets.add(canonical_cidr)
         lines.append(
             f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(canonical_cidr)}')) return 'DIRECT';",
