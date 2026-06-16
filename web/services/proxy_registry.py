@@ -30,6 +30,26 @@ def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
     return mysql_error_code(exc) in codes
 
 
+def _has_unsafe_url_text(value: str) -> bool:
+    return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
+def _safe_decoded_path_segments(path: str) -> list[str] | None:
+    raw_segments = path.split("/")
+    decoded_segments = [unquote(segment) for segment in raw_segments]
+    if any(
+        "/" in segment
+        or "\\" in segment
+        or _has_unsafe_url_text(segment)
+        for segment in decoded_segments
+    ):
+        return None
+    segments = [segment for segment in decoded_segments if segment]
+    if any(segment in {".", ".."} for segment in segments):
+        return None
+    return decoded_segments
+
+
 def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac") -> str:
     fallback = str(default if default is not None else "/proxy.pac").strip()
     if fallback and not fallback.startswith("/"):
@@ -37,7 +57,7 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
     candidate = str(value or "").strip()
     if not candidate:
         return fallback
-    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+    if _has_unsafe_url_text(candidate):
         return fallback
     try:
         parsed = urlsplit(candidate)
@@ -50,24 +70,14 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
     path = parsed.path or fallback
     if path.startswith("//") or "\\" in path:
         return fallback
-    raw_segments = path.split("/")
-    decoded_segments = [unquote(segment) for segment in raw_segments]
-    if any(
-        "/" in segment
-        or "\\" in segment
-        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in segment)
-        for segment in decoded_segments
-    ):
-        return fallback
     if not path.startswith("/"):
         path = f"/{path}"
-    segments = [segment for segment in decoded_segments if segment]
-    if any(segment in {".", ".."} for segment in segments):
+    if _safe_decoded_path_segments(path) is None:
         return fallback
     query = parsed.query
     if query:
         decoded_query = unquote(query)
-        if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in decoded_query):
+        if _has_unsafe_url_text(decoded_query):
             return fallback
     return f"{path}?{query}" if query else path
 
@@ -76,7 +86,7 @@ def normalize_management_url(value: object | None) -> str:
     candidate = str(value or "").strip()
     if not candidate:
         return ""
-    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+    if _has_unsafe_url_text(candidate):
         return ""
     if "://" not in candidate:
         candidate = f"http://{candidate}"
@@ -91,17 +101,7 @@ def normalize_management_url(value: object | None) -> str:
     host = str(parsed.hostname or "").strip().lower()
     if not host or parsed.username or parsed.password:
         return ""
-    raw_segments = (parsed.path or "").split("/")
-    decoded_segments = [unquote(segment) for segment in raw_segments]
-    if any(
-        "/" in segment
-        or "\\" in segment
-        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in segment)
-        for segment in decoded_segments
-    ):
-        return ""
-    segments = [segment for segment in decoded_segments if segment]
-    if any(segment in {".", ".."} for segment in segments):
+    if _safe_decoded_path_segments(parsed.path or "") is None:
         return ""
 
     path = (parsed.path or "").rstrip("/")

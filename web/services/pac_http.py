@@ -7,7 +7,6 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
 from services.pac_renderer import (
     PAC_MANIFEST_FILENAME,
@@ -17,7 +16,7 @@ from services.pac_renderer import (
     select_manifest_file,
     substitute_request_host,
 )
-from services.proxy_registry import normalize_public_pac_path
+from services.proxy_registry import _safe_decoded_path_segments, normalize_public_pac_path
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
@@ -189,8 +188,8 @@ def _public_target_from_manifest(value: object) -> tuple[str, str | None]:
     if not normalized:
         return "", None
     path, separator, query = normalized.partition("?")
-    decoded_segments = [unquote(segment) for segment in path.split("/")]
-    if any("/" in segment or "\\" in segment for segment in decoded_segments):
+    decoded_segments = _safe_decoded_path_segments(path)
+    if decoded_segments is None:
         return "", None
     path = "/".join(decoded_segments)
     return path, query if separator else None
