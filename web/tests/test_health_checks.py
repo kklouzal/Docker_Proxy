@@ -10,6 +10,20 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
+def _health_checks_module():
+    _add_web_to_path()
+    from services import health_checks  # type: ignore
+
+    return health_checks
+
+
+def _proxy_health_module():
+    _add_web_to_path()
+    from services import proxy_health  # type: ignore
+
+    return proxy_health
+
+
 class _FakeSocket:
     def __init__(self, chunks: list[bytes] | None = None) -> None:
         self.chunks = list(chunks or [])
@@ -41,8 +55,7 @@ class _FakeSocket:
 def test_health_check_local_host_listener_and_target_helpers(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
-    from services import health_checks  # type: ignore
+    health_checks = _health_checks_module()
 
     assert health_checks.is_local_host("") is True
     assert health_checks.is_local_host("LOCALHOST") is True
@@ -79,8 +92,7 @@ def test_health_check_local_host_listener_and_target_helpers(
 
 
 def test_recv_clamd_reply_stops_on_null_or_newline() -> None:
-    _add_web_to_path()
-    from services import health_checks  # type: ignore
+    health_checks = _health_checks_module()
 
     assert (
         health_checks._recv_clamd_reply(_FakeSocket([b"PONG\0extra"]), max_bytes=64)
@@ -97,8 +109,7 @@ def test_recv_clamd_reply_stops_on_null_or_newline() -> None:
 
 
 def test_recv_status_line_handles_fragmented_icap_replies() -> None:
-    _add_web_to_path()
-    from services import health_checks  # type: ignore
+    health_checks = _health_checks_module()
 
     assert (
         health_checks._recv_status_line(
@@ -115,8 +126,7 @@ def test_recv_status_line_handles_fragmented_icap_replies() -> None:
 
 
 def test_check_tcp_success_and_failure(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import health_checks  # type: ignore
+    health_checks = _health_checks_module()
 
     monkeypatch.setattr(
         health_checks.socket,
@@ -142,8 +152,7 @@ def test_check_tcp_success_and_failure(monkeypatch) -> None:
 
 
 def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import health_checks  # type: ignore
+    health_checks = _health_checks_module()
 
     icap_sock = _FakeSocket([b"ICAP/1.0 200 OK\r\n\r\n"])
     monkeypatch.setattr(
@@ -192,8 +201,7 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
 
 
 def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_health  # type: ignore
+    proxy_health = _proxy_health_module()
 
     calls = []
 
@@ -231,8 +239,7 @@ def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) ->
 
 
 def test_remote_clamav_view_surfaces_stale_cached_health_source() -> None:
-    _add_web_to_path()
-    from services import proxy_health  # type: ignore
+    proxy_health = _proxy_health_module()
 
     view = proxy_health.build_remote_clamav_view(
         {
@@ -255,8 +262,7 @@ def test_remote_clamav_view_surfaces_stale_cached_health_source() -> None:
 
 
 def test_remote_clamav_view_surfaces_unavailable_cached_health_source() -> None:
-    _add_web_to_path()
-    from services import proxy_health  # type: ignore
+    proxy_health = _proxy_health_module()
 
     view = proxy_health.build_remote_clamav_view(
         {
@@ -272,8 +278,7 @@ def test_remote_clamav_view_surfaces_unavailable_cached_health_source() -> None:
 
 
 def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_health  # type: ignore
+    proxy_health = _proxy_health_module()
 
     calls: dict[str, float] = {}
 
