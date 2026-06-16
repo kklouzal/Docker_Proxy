@@ -14,9 +14,15 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
-def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch) -> None:
+def _auth_store_module():
     _add_web_to_path()
     from services import auth_store  # type: ignore
+
+    return auth_store
+
+
+def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch) -> None:
+    auth_store = _auth_store_module()
 
     sentinel = object()
     captured: dict[str, object] = {"args": (), "kwargs": {}}
@@ -35,10 +41,8 @@ def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch) -> N
 
 
 def test_auth_store_username_and_password_validation(tmp_path) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "secret.key")
-
-    from services.auth_store import AuthStore  # type: ignore
+    AuthStore = _auth_store_module().AuthStore
 
     store = AuthStore(secret_path=str(tmp_path / "secret.key"))
 
