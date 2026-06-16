@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import json
 
+from services import helper_runtime
+from services.helper_runtime import (
+    helper_event,
+    helper_failure_event,
+    split_acl_channel,
+    write_acl_response,
+)
+
 
 def test_split_acl_channel_and_write_response(capsys) -> None:
-    from services.helper_runtime import split_acl_channel, write_acl_response
-
     assert split_acl_channel("12 src.example category") == (
         "12",
         ["src.example", "category"],
@@ -25,8 +31,6 @@ def test_split_acl_channel_and_write_response(capsys) -> None:
 
 
 def test_helper_event_writes_json_to_stderr(capsys) -> None:
-    from services.helper_runtime import helper_event
-
     helper_event("sample", "startup", value=3, skipped=None)
 
     payload = json.loads(capsys.readouterr().err)
@@ -37,8 +41,6 @@ def test_helper_event_writes_json_to_stderr(capsys) -> None:
 
 
 def test_helper_failure_event_sanitizes_non_validation_errors(capsys) -> None:
-    from services.helper_runtime import helper_failure_event
-
     msg = "database password=secret unavailable"
     helper_failure_event("sample", "apply_failed", RuntimeError(msg))
 
@@ -53,8 +55,6 @@ def test_helper_failure_event_sanitizes_non_validation_errors(capsys) -> None:
 def test_helper_stats_emits_snapshot_without_blocking_increments(
     monkeypatch, capsys
 ) -> None:
-    from services import helper_runtime
-
     clock = {"now": 10.0}
     monkeypatch.setattr(helper_runtime.time, "monotonic", lambda: clock["now"])
     stats = helper_runtime.HelperStats("sample", emit_interval_seconds=5.0)
@@ -76,8 +76,6 @@ def test_helper_stats_emits_snapshot_without_blocking_increments(
 
 
 def test_ttl_lru_cache_expires_and_evicts(monkeypatch) -> None:
-    from services import helper_runtime
-
     clock = {"now": 10.0}
     monkeypatch.setattr(helper_runtime.time, "monotonic", lambda: clock["now"])
     cache = helper_runtime.TtlLruCache(max_entries=2, ttl_seconds=5.0)
