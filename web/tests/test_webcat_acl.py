@@ -12,6 +12,13 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, web_dir)
 
 
+def _webcat_acl_module():
+    _add_web_to_path()
+    from tools import webcat_acl  # type: ignore
+
+    return webcat_acl
+
+
 def test_webcat_acl_uses_local_snapshot_for_parent_domain_lookups(
     tmp_path, monkeypatch
 ) -> None:
@@ -19,8 +26,8 @@ def test_webcat_acl_uses_local_snapshot_for_parent_domain_lookups(
     configure_test_mysql_env(tmp_path / "webcat-acl")
 
     from services.db import connect  # type: ignore
-    from tools import webcat_acl  # type: ignore
 
+    webcat_acl = _webcat_acl_module()
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS webcat_domains (domain VARCHAR(255) PRIMARY KEY, categories TEXT NOT NULL)"
@@ -57,8 +64,8 @@ def test_webcat_acl_refreshes_stale_disk_snapshot_before_negative_lookup(
     configure_test_mysql_env(tmp_path / "webcat-acl-stale-snapshot")
 
     from services.db import connect  # type: ignore
-    from tools import webcat_acl  # type: ignore
 
+    webcat_acl = _webcat_acl_module()
     snapshot_dir = tmp_path / "snapshot"
     monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(snapshot_dir))
     db = webcat_acl._Db()
@@ -99,8 +106,7 @@ def test_webcat_acl_refreshes_snapshot_lock_while_building(
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "webcat-acl-lock-refresh")
 
-    from tools import webcat_acl  # type: ignore
-
+    webcat_acl = _webcat_acl_module()
     snapshot_dir = tmp_path / "snapshot"
     monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(snapshot_dir))
     db = webcat_acl._Db()
@@ -144,9 +150,7 @@ def test_webcat_acl_refreshes_snapshot_lock_while_building(
 
 
 def test_webcat_acl_normalizes_explicit_proxy_uri_host() -> None:
-    _add_web_to_path()
-
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     assert (
         webcat_acl._norm_domain("http://traffic-fixture:8080/live.js")
@@ -156,9 +160,7 @@ def test_webcat_acl_normalizes_explicit_proxy_uri_host() -> None:
 
 
 def test_webcat_acl_prefers_uri_host_over_dst_field() -> None:
-    _add_web_to_path()
-
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     channel, src_ip, domain, url, category = webcat_acl._parse_line(
         "7 172.18.0.4 93.184.216.34 http://traffic-fixture:8080/live.js malware",
@@ -172,9 +174,7 @@ def test_webcat_acl_prefers_uri_host_over_dst_field() -> None:
 
 
 def test_webcat_acl_response_can_include_matched_category(capsys) -> None:
-    _add_web_to_path()
-
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     webcat_acl._write_response("7", True, message="category=adult")
 
@@ -182,9 +182,7 @@ def test_webcat_acl_response_can_include_matched_category(capsys) -> None:
 
 
 def test_webcat_acl_discards_stale_remote_connection_after_lookup_error() -> None:
-    _add_web_to_path()
-
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     class BrokenConn:
         def __init__(self) -> None:
@@ -207,9 +205,7 @@ def test_webcat_acl_discards_stale_remote_connection_after_lookup_error() -> Non
 
 
 def test_webcat_acl_discards_stale_remote_connection_after_metadata_error() -> None:
-    _add_web_to_path()
-
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     class BrokenConn:
         def __init__(self) -> None:
@@ -232,9 +228,7 @@ def test_webcat_acl_discards_stale_remote_connection_after_metadata_error() -> N
 
 
 def test_webcat_acl_clears_cached_remote_connection_after_metadata_lookup() -> None:
-    _add_web_to_path()
-
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     class Result:
         def fetchone(self):
@@ -260,9 +254,7 @@ def test_webcat_acl_clears_cached_remote_connection_after_metadata_lookup() -> N
 
 
 def test_webcat_acl_clears_cached_remote_connection_after_category_lookup() -> None:
-    _add_web_to_path()
-
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     class Result:
         def fetchone(self):
@@ -288,8 +280,7 @@ def test_webcat_acl_clears_cached_remote_connection_after_category_lookup() -> N
 
 
 def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) -> None:
-    _add_web_to_path()
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     closed: list[bool] = []
 
@@ -311,8 +302,7 @@ def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) ->
 
 
 def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> None:
-    _add_web_to_path()
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     db = webcat_acl._BlockedLogDb(max_rows=10)
     monkeypatch.setattr(db, "start", lambda: None)
@@ -332,8 +322,7 @@ def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> N
 def test_blocked_log_db_preserves_batch_when_connection_unavailable(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     db = webcat_acl._BlockedLogDb(max_rows=10)
     batch = [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
@@ -347,8 +336,7 @@ def test_blocked_log_db_preserves_batch_when_connection_unavailable(
 
 
 def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
-    _add_web_to_path()
-    from tools import webcat_acl  # type: ignore
+    webcat_acl = _webcat_acl_module()
 
     closed: list[bool] = []
     rolled_back: list[bool] = []
