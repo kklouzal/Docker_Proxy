@@ -235,6 +235,51 @@ class ObservabilityQueries:
             icap_params,
         )
 
+    def _request_icap_rollup_source_search_filters(
+        self,
+        *,
+        since: int,
+        request_present_column: str,
+        icap_present_column: str,
+        search: str,
+        request_search_columns: tuple[str, ...],
+        icap_search_columns: tuple[str, ...],
+        request_table_alias: str = "",
+    ) -> tuple[str, list[Any], str, list[Any]]:
+        request_prefix = f"{request_table_alias}." if request_table_alias else ""
+        request_columns = tuple(
+            f"{request_prefix}{column}"
+            if request_prefix and "." not in column
+            else column
+            for column in request_search_columns
+        )
+        request_where_sql, request_params, icap_where_sql, icap_params = (
+            self._request_icap_rollup_filters(
+                since=since,
+                request_present_column=request_present_column,
+                icap_present_column=icap_present_column,
+                search="",
+                request_search_column=request_columns[0],
+                icap_search_column=icap_search_columns[0],
+                request_table_alias=request_table_alias,
+            )
+        )
+        request_search_sql, request_search_params = self._request_search_filter(
+            search,
+            columns=request_columns,
+        )
+        if request_search_sql:
+            request_where_sql = f"{request_where_sql} AND {request_search_sql}"
+            request_params.extend(request_search_params)
+        icap_search_sql, icap_search_params = self._request_search_filter(
+            search,
+            columns=icap_search_columns,
+        )
+        if icap_search_sql:
+            icap_where_sql = f"{icap_where_sql} AND {icap_search_sql}"
+            icap_params.extend(icap_search_params)
+        return request_where_sql, request_params, icap_where_sql, icap_params
+
     @staticmethod
     def _request_search_filter(
         search: str,
@@ -1787,6 +1832,7 @@ class ObservabilityQueries:
         suggestions: list[dict[str, Any]] = self._runtime_health_suggestions(
             runtime_health
         )
+        source_search_matches: set[tuple[str, str]] = set()
 
         with self._connect() as conn:
             cf_rows = conn.execute(
@@ -1862,6 +1908,168 @@ class ObservabilityQueries:
                 """,
                 (*icap_params, query_lim),
             ).fetchall()
+
+            if search_value:
+                (
+                    source_where_sql,
+                    source_params,
+                    source_icap_where_sql,
+                    source_icap_params,
+                ) = self._request_icap_rollup_source_search_filters(
+                    since=since,
+                    request_present_column="domain",
+                    icap_present_column="domain",
+                    search=search_value,
+                    request_search_columns=(
+                        "domain",
+                        "url",
+                        "client_ip",
+                        "result_code",
+                        "response_content_type",
+                        "response_server",
+                        "response_cf_mitigated",
+                        "response_alt_svc",
+                    ),
+                    icap_search_columns=(
+                        "domain",
+                        "url",
+                        "client_ip",
+                        "service_family",
+                        "adapt_summary",
+                        "adapt_details",
+                    ),
+                    request_table_alias="",
+                )
+
+                def add_request_source_rows(
+                    kind: str,
+                    rows: list[Any],
+                    seen_domains: set[str],
+                    sql: str,
+                    sql_params: list[Any],
+                ) -> None:
+                    for row in conn.execute(
+                        sql,
+                        (*sql_params, query_lim),
+                    ).fetchall():
+                        domain = str(row[0] or "")
+                        source_search_matches.add((kind, domain))
+                        if domain and domain not in seen_domains:
+                            rows.append(row)
+                            seen_domains.add(domain)
+
+                add_request_source_rows(
+                    "cloudflare_challenge",
+                    cf_rows,
+                    {str(row[0] or "") for row in cf_rows},
+                    f"""
+                    SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
+                           MAX(COALESCE(response_server, '')) AS sample_server
+                    FROM diagnostic_requests
+                    {source_where_sql}
+                      AND (
+                        LOWER(COALESCE(response_cf_mitigated, '')) = 'challenge'
+                        OR (http_status = 403 AND LOWER(COALESCE(response_server, '')) LIKE '%%cloudflare%%')
+                      )
+                    GROUP BY domain
+                    ORDER BY observations DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    source_params,
+                )
+                add_request_source_rows(
+                    "http3_alt_svc",
+                    h3_rows,
+                    {str(row[0] or "") for row in h3_rows},
+                    f"""
+                    SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
+                           MAX(COALESCE(response_alt_svc, '')) AS sample_alt_svc
+                    FROM diagnostic_requests
+                    {source_where_sql}
+                      AND LOWER(COALESCE(response_alt_svc, '')) REGEXP '(^|[^a-z0-9])h3[-=]'
+                    GROUP BY domain
+                    ORDER BY observations DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    source_params,
+                )
+                add_request_source_rows(
+                    "aborted_media_segments",
+                    aborted_rows,
+                    {str(row[0] or "") for row in aborted_rows},
+                    f"""
+                    SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
+                           MAX(COALESCE(response_content_type, '')) AS sample_type
+                    FROM diagnostic_requests
+                    {source_where_sql}
+                      AND result_code LIKE 'TCP_MISS_ABORTED/%%'
+                      AND (
+                        LOWER(COALESCE(response_content_type, '')) REGEXP 'video|audio|mpegurl|dash'
+                        OR LOWER(url) REGEXP '\\\\.(m4s|mp4|m3u8|mpd|ts)(\\\\?|$)'
+                      )
+                    GROUP BY domain
+                    HAVING observations >= 3
+                    ORDER BY observations DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    source_params,
+                )
+
+                def add_icap_source_rows(
+                    kind: str,
+                    rows: list[Any],
+                    seen_keys: set[tuple[str, str]],
+                    sql: str,
+                    sql_params: list[Any],
+                ) -> None:
+                    for row in conn.execute(
+                        sql,
+                        (*sql_params, query_lim),
+                    ).fetchall():
+                        key = (str(row[0] or ""), str(row[1] or ""))
+                        source_search_matches.add((kind, key[0]))
+                        if key[0] and key not in seen_keys:
+                            rows.append(row)
+                            seen_keys.add(key)
+
+                add_icap_source_rows(
+                    "slow_icap",
+                    slow_icap_rows,
+                    {
+                        (str(row[0] or ""), str(row[1] or ""))
+                        for row in slow_icap_rows
+                    },
+                    f"""
+                    SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                           MAX(ts) AS last_seen, MAX(icap_time_ms) AS max_icap_ms
+                    FROM diagnostic_icap_events
+                    {source_icap_where_sql}
+                      AND icap_time_ms >= 1000
+                    GROUP BY domain, service_family
+                    ORDER BY observations DESC, max_icap_ms DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    source_icap_params,
+                )
+                add_icap_source_rows(
+                    "icap_degraded",
+                    icap_failure_rows,
+                    {
+                        (str(row[0] or ""), str(row[1] or ""))
+                        for row in icap_failure_rows
+                    },
+                    f"""
+                    SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                           MAX(ts) AS last_seen, MAX(adapt_summary) AS sample_summary
+                    FROM diagnostic_icap_events
+                    {source_icap_where_sql}
+                      AND LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, ''))) REGEXP 'fail|error|timeout|unreachable|bypass'
+                    GROUP BY domain, service_family
+                    ORDER BY observations DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    source_icap_params,
+                )
 
         suggestions.extend(
             self._suggestion_row(
@@ -2008,6 +2216,11 @@ class ObservabilityQueries:
                 row
                 for row in suggestions
                 if self._suggestion_matches_search(row, search_value)
+                or (
+                    str(row.get("kind") or ""),
+                    str(row.get("subject") or ""),
+                )
+                in source_search_matches
                 or self._suggestion_visible_during_search(row)
             ]
         suggestions.sort(key=lambda row: self._remediation_sort_key(row, sort))

@@ -209,7 +209,82 @@ def test_remediation_search_does_not_hide_generated_suggestion_fields(
 
     assert [row["kind"] for row in payload["rows"]] == ["http3_alt_svc"]
     assert payload["rows"][0]["component"] == "HTTP/3 / QUIC routing"
-    assert all("LOWER(domain) LIKE" not in sql for sql in fake_conn.executed_sql)
+    h3_queries = [
+        sql
+        for sql in fake_conn.executed_sql
+        if "response_alt_svc" in sql and "REGEXP '(^|[^a-z0-9])h3[-=]'" in sql
+    ]
+    assert "LOWER(domain) LIKE" not in h3_queries[0]
+    assert any("LOWER(domain) LIKE" in sql for sql in h3_queries[1:])
+
+
+def test_remediation_source_search_includes_match_outside_unfiltered_top_set(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            sql_text = str(sql)
+            is_source_search = "LOWER(domain) LIKE" in sql_text
+            is_h3_query = (
+                "response_alt_svc" in sql_text
+                and "REGEXP '(^|[^a-z0-9])h3[-=]'" in sql_text
+            )
+            if (
+                is_h3_query
+                and is_source_search
+                and "%buried-path%" in tuple(_params or ())
+            ):
+                return FakeResult(
+                    [("buried.example", 1, 1, 3999, 'h3=":443"; ma=86400')],
+                )
+            if is_h3_query:
+                return FakeResult(
+                    [
+                        (
+                            f"top-{idx}.example",
+                            10 - idx,
+                            1,
+                            4100 - idx,
+                            'h3=":443"',
+                        )
+                        for idx in range(10)
+                    ],
+                )
+            return FakeResult([])
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=3900,
+        search="buried-path",
+        limit=10,
+        summary={"requests": 0},
+    )
+
+    assert [row["subject"] for row in payload["rows"]] == ["buried.example"]
+    assert payload["rows"][0]["kind"] == "http3_alt_svc"
 
 
 def test_remediation_search_does_not_hide_ssl_generated_actions(
@@ -697,7 +772,7 @@ def test_remediation_search_keeps_database_degradation_visible(monkeypatch) -> N
             return False
 
         def execute(self, sql, _params=()):
-            if "response_alt_svc" in str(sql):
+            if "REGEXP '(^|[^a-z0-9])h3[-=]'" in str(sql):
                 return FakeResult(
                     [("quic.example", 2, 1, 5300, 'h3=":443"; ma=86400')],
                 )
