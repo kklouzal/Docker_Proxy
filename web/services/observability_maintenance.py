@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
+from services.sql_identifiers import quote_mysql_identifier
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -48,14 +49,6 @@ class ObservabilityMaintenanceAlreadyRunningError(RuntimeError):
     """Raised when another scheduled or manual maintenance run is active."""
 
 
-def _quote_identifier(identifier: str) -> str:
-    value = (identifier or "").strip()
-    if not value or not value.replace("_", "").isalnum():
-        msg = f"Unsafe MySQL identifier: {identifier!r}"
-        raise ValueError(msg)
-    return f"`{value}`"
-
-
 def _looks_like_stale_connection(exc: BaseException) -> bool:
     name = exc.__class__.__name__.lower()
     text = str(exc).lower()
@@ -96,7 +89,7 @@ def _table_exists(table: str) -> bool:
 
 
 def _truncate_table(table: str) -> None:
-    quoted = _quote_identifier(table)
+    quoted = quote_mysql_identifier(table)
 
     def truncate() -> None:
         with connect() as conn:
@@ -111,7 +104,7 @@ def _truncate_table(table: str) -> None:
 
 
 def _delete_table(table: str) -> int:
-    quoted = _quote_identifier(table)
+    quoted = quote_mysql_identifier(table)
 
     def delete() -> int:
         with connect() as conn:
@@ -122,7 +115,7 @@ def _delete_table(table: str) -> int:
 
 
 def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
-    quoted = _quote_identifier(table)
+    quoted = quote_mysql_identifier(table)
     actions: list[str] = []
 
     def run() -> None:

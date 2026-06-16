@@ -8,6 +8,7 @@ from typing import Any
 
 from services.db import DATABASE_ERRORS, connect, table_exists
 from services.observability_maintenance import public_detail
+from services.sql_identifiers import quote_mysql_identifier
 
 DEFAULT_CONTROL_PLANE_RETENTION_DAYS = 90
 MIN_CONTROL_PLANE_RETENTION_DAYS = 1
@@ -62,14 +63,6 @@ def normalize_control_plane_retention_days(value: object) -> int:
     )
 
 
-def _quote_identifier(identifier: str) -> str:
-    value = (identifier or "").strip()
-    if not value or not value.replace("_", "").isalnum():
-        msg = f"Unsafe MySQL identifier: {identifier!r}"
-        raise ValueError(msg)
-    return f"`{value}`"
-
-
 def _table_exists(table: str) -> bool:
     with connect() as conn:
         return table_exists(conn, table)
@@ -85,10 +78,10 @@ def _delete_ranked_rows(
     where_sql: str = "",
     where_params: tuple[object, ...] = (),
 ) -> int:
-    quoted = _quote_identifier(table)
-    ts_col = _quote_identifier(timestamp_column)
+    quoted = quote_mysql_identifier(table)
+    ts_col = quote_mysql_identifier(timestamp_column)
     partition = (
-        f"PARTITION BY {_quote_identifier(partition_column)} "
+        f"PARTITION BY {quote_mysql_identifier(partition_column)} "
         if partition_column
         else ""
     )
@@ -118,11 +111,11 @@ def _delete_revision_rows(
     keep_rows: int,
     partition_column: str | None = None,
 ) -> int:
-    quoted = _quote_identifier(table)
-    ts_col = _quote_identifier(timestamp_column)
-    active_col = _quote_identifier(active_column)
+    quoted = quote_mysql_identifier(table)
+    ts_col = quote_mysql_identifier(timestamp_column)
+    active_col = quote_mysql_identifier(active_column)
     partition = (
-        f"PARTITION BY {_quote_identifier(partition_column)} "
+        f"PARTITION BY {quote_mysql_identifier(partition_column)} "
         if partition_column
         else ""
     )
@@ -143,7 +136,7 @@ def _delete_revision_rows(
 
 
 def _delete_expired_cache(table: str, *, now_ts: int) -> int:
-    quoted = _quote_identifier(table)
+    quoted = quote_mysql_identifier(table)
     with connect() as conn:
         result = conn.execute(
             f"DELETE FROM {quoted} WHERE expires_ts < %s",
@@ -355,7 +348,7 @@ def prune_control_plane_tables(*, retention_days: object = None) -> dict[str, An
 
 
 def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
-    quoted = _quote_identifier(table)
+    quoted = quote_mysql_identifier(table)
     actions: list[str] = []
     with connect() as conn:
         if analyze:
