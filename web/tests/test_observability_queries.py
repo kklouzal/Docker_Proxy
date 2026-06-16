@@ -269,7 +269,7 @@ def test_remediation_source_search_includes_match_outside_unfiltered_top_set(
             return FakeResult([])
 
     queries = observability_queries.ObservabilityQueries()
-    monkeypatch.setattr(queries, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(queries, "_connect", FakeConnection)
     monkeypatch.setattr(
         queries,
         "ssl_overview",
