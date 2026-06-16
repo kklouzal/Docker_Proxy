@@ -90,24 +90,50 @@ class FakeRegistry:
         proxy_ids: list[str] | None = None,
         *,
         management_url: str = "http://proxy:5000",
+        public_pac_scheme: object | None = "http",
+        public_pac_port: object | None = 80,
+        public_pac_path: object | None = "/proxy.pac",
+        public_http_proxy_port: object | None = 3128,
     ) -> None:
         self.proxies = [
-            self._proxy(proxy_id, management_url=management_url)
+            self._proxy(
+                proxy_id,
+                management_url=management_url,
+                public_pac_scheme=public_pac_scheme,
+                public_pac_port=public_pac_port,
+                public_pac_path=public_pac_path,
+                public_http_proxy_port=public_http_proxy_port,
+            )
             for proxy_id in (proxy_ids or ["default"])
         ]
 
     def _proxy(
-        self, proxy_id: str, *, management_url: str = "http://proxy:5000"
+        self,
+        proxy_id: str,
+        *,
+        management_url: str = "http://proxy:5000",
+        public_pac_scheme: object | None = "http",
+        public_pac_port: object | None = 80,
+        public_pac_path: object | None = "/proxy.pac",
+        public_http_proxy_port: object | None = 3128,
     ) -> Any:
+        add_web_to_path()
+        from services.proxy_registry import normalize_public_pac_path  # type: ignore
+        from services.public_endpoint import (  # type: ignore
+            coerce_public_port,
+            normalize_public_scheme,
+        )
+
         return SimpleNamespace(
             proxy_id=proxy_id,
             display_name=proxy_id.title(),
             hostname=f"{proxy_id}.example.test",
             management_url=management_url,
             public_host="proxy",
-            public_pac_scheme="http",
-            public_pac_port=80,
-            public_http_proxy_port=3128,
+            public_pac_scheme=normalize_public_scheme(public_pac_scheme),
+            public_pac_port=coerce_public_port(public_pac_port, 80),
+            public_pac_path=normalize_public_pac_path(public_pac_path),
+            public_http_proxy_port=coerce_public_port(public_http_proxy_port, 3128),
             status="healthy",
             last_heartbeat=1,
             last_apply_ts=1,
