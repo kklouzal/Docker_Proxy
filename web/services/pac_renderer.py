@@ -19,6 +19,11 @@ from services.pac_profiles_store import (
     _normalize_proxy_host_port,
     get_pac_profiles_store,
 )
+from services.public_endpoint import (
+    coerce_public_bool,
+    coerce_public_port,
+    normalize_public_scheme,
+)
 from services.proxy_context import (
     get_proxy_id,
     normalize_proxy_id,
@@ -43,35 +48,15 @@ LOCAL_DOMAIN_SUFFIXES = (".local", ".localdomain", ".home.arpa", ".localhost")
 
 
 def _normalize_pac_scheme(value: object | None) -> str:
-    candidate = str(value or "").strip().lower()
-    if candidate in {"http", "https"}:
-        return candidate
-    return "http"
+    return normalize_public_scheme(value)
 
 
 def _coerce_port(value: object | None, default: int) -> int:
-    try:
-        parsed = int(str(value or "").strip() or str(default))
-    except Exception:
-        parsed = int(default)
-    if parsed < 1 or parsed > 65535:
-        return int(default)
-    return parsed
+    return coerce_public_port(value, default)
 
 
 def _coerce_bool(value: object | None, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return bool(default)
-    candidate = str(value).strip().lower()
-    if not candidate:
-        return bool(default)
-    if candidate in {"1", "true", "yes", "on"}:
-        return True
-    if candidate in {"0", "false", "no", "off"}:
-        return False
-    return bool(default)
+    return coerce_public_bool(value, default)
 
 
 def _build_pac_url(
