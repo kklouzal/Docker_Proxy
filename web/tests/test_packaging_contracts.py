@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import os
+import re
 import subprocess
 import sys
 
@@ -17,6 +19,33 @@ def _entrypoint_listener_normalizer_script() -> str:
     start = text.index(start_marker) + len(start_marker)
     end = text.index("\nPY\n}", start)
     return text[start:end]
+
+
+def _python_module_imports_services(path: str) -> set[str]:
+    tree = ast.parse(_read(path), filename=path)
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            parts = node.module.split(".")
+            if len(parts) >= 2 and parts[0] == "services":
+                imports.add(f"{parts[1]}.py")
+            elif node.module == "services":
+                imports.update(
+                    f"{alias.name.split('.', 1)[0]}.py"
+                    for alias in node.names
+                    if alias.name != "*"
+                )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                if len(parts) >= 2 and parts[0] == "services":
+                    imports.add(f"{parts[1]}.py")
+    return imports
+
+
+def _proxy_image_payload(pattern: str) -> set[str]:
+    proxy = _read("docker/Dockerfile.proxy")
+    return {match.rsplit("/", 1)[-1] for match in re.findall(pattern, proxy)}
 
 
 def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
@@ -48,6 +77,24 @@ def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     assert "ARG GIT_COMMIT=" in admin
     assert "GIT_COMMIT=${GIT_COMMIT}" in proxy
     assert "GIT_COMMIT=${GIT_COMMIT}" in admin
+
+
+def test_proxy_dockerfile_includes_direct_service_import_dependencies() -> None:
+    copied_services = _proxy_image_payload(r"web/services/[\w_]+\.py")
+    copied_tools = _proxy_image_payload(r"web/tools/[\w_]+\.py")
+    copied_roots = [
+        "proxy/agent.py",
+        "proxy/app.py",
+        "proxy/runtime.py",
+        *(f"web/services/{name}" for name in copied_services if name != "__init__.py"),
+        *(f"web/tools/{name}" for name in copied_tools),
+    ]
+
+    required_services: set[str] = set()
+    for path in copied_roots:
+        required_services.update(_python_module_imports_services(path))
+
+    assert sorted(required_services - copied_services) == []
 
 
 def test_ghcr_publish_passes_runtime_version_build_args() -> None:
