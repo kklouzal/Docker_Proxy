@@ -39,6 +39,11 @@ class _EmptyPacProfilesStore:
         return SimpleNamespace(backup_proxies=[], direct_enabled=True)
 
 
+class _EmptySslFilterStore:
+    def list_all(self):
+        return None
+
+
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
@@ -210,10 +215,6 @@ def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
 
-    class _EmptySslFilterStore:
-        def list_all(self):
-            return None
-
     monkeypatch.setattr(
         pac_renderer,
         "get_sslfilter_store",
@@ -244,10 +245,6 @@ def test_build_proxy_pac_state_manifest_rejects_encoded_public_pac_separator(
 ) -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
-
-    class _EmptySslFilterStore:
-        def list_all(self):
-            return None
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
