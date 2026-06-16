@@ -874,13 +874,11 @@ class FakePacProfilesStore:
     def add_backup_proxy(
         self, *, proxy_host: str, proxy_port: object | None = None
     ) -> tuple[bool, str, int | None]:
-        host = (proxy_host or "").strip()
-        if not host:
-            return False, "Proxy host is required.", None
-        try:
-            port = int(str(proxy_port or "3128").strip() or "3128")
-        except Exception:
-            return False, "Invalid proxy port.", None
+        from services.pac_profiles_store import _normalize_proxy_host_port
+
+        host, port, err = _normalize_proxy_host_port(proxy_host, proxy_port)
+        if host is None or port is None:
+            return False, err, None
         bid = self.next_backup_id
         self.next_backup_id += 1
         self.backup_proxies.append(
