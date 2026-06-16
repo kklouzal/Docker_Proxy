@@ -5,27 +5,11 @@ from types import SimpleNamespace
 from .mysql_test_utils import ensure_proxy_runtime_import_path
 
 
-def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current(
-    tmp_path, monkeypatch
-) -> None:
-    ensure_proxy_runtime_import_path()
+def _build_runtime_services(tmp_path, policy_file, policy_sha):
+    from services.policy_materializer import ProxyPolicyState  # type: ignore
+    from proxy.runtime import ProxyRuntimeServices  # type: ignore
 
-    from services.policy_materializer import (  # type: ignore
-        MaterializedPolicyFile,
-        ProxyPolicyState,
-        calculate_policy_sha,
-    )
-
-    from proxy.runtime import ProxyRuntime, ProxyRuntimeServices  # type: ignore
-
-    policy_file = MaterializedPolicyFile(
-        path=str(tmp_path / "30-webfilter.conf"),
-        content="# webfilter\nexternal_acl_type webcat_deadbeef children=2 ttl=0 negative_ttl=1 %SRC %DST %URI /usr/bin/python3 /app/tools/webcat_acl.py --fail open\n",
-    )
-    (tmp_path / "30-webfilter.conf").write_text(policy_file.content, encoding="utf-8")
-    policy_sha = calculate_policy_sha((policy_file,))
-
-    services = ProxyRuntimeServices(
+    return ProxyRuntimeServices(
         controller=SimpleNamespace(),
         registry=SimpleNamespace(),
         revisions=SimpleNamespace(),
@@ -45,6 +29,28 @@ def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current
         pac_state_builder=lambda proxy_id: None,
         current_policy_sha_reader=lambda: policy_sha,
     )
+
+
+def test_proxy_policy_sync_reports_webcat_snapshot_degraded_when_already_current(
+    tmp_path, monkeypatch
+) -> None:
+    ensure_proxy_runtime_import_path()
+
+    from services.policy_materializer import (  # type: ignore
+        MaterializedPolicyFile,
+        calculate_policy_sha,
+    )
+
+    from proxy.runtime import ProxyRuntime  # type: ignore
+
+    policy_file = MaterializedPolicyFile(
+        path=str(tmp_path / "30-webfilter.conf"),
+        content="# webfilter\nexternal_acl_type webcat_deadbeef children=2 ttl=0 negative_ttl=1 %SRC %DST %URI /usr/bin/python3 /app/tools/webcat_acl.py --fail open\n",
+    )
+    (tmp_path / "30-webfilter.conf").write_text(policy_file.content, encoding="utf-8")
+    policy_sha = calculate_policy_sha((policy_file,))
+
+    services = _build_runtime_services(tmp_path, policy_file, policy_sha)
     runtime = ProxyRuntime(services=services)
     monkeypatch.setattr(
         runtime,
@@ -67,11 +73,10 @@ def test_proxy_policy_sync_skips_webcat_snapshot_when_policy_does_not_need_it(
 
     from services.policy_materializer import (  # type: ignore
         MaterializedPolicyFile,
-        ProxyPolicyState,
         calculate_policy_sha,
     )
 
-    from proxy.runtime import ProxyRuntime, ProxyRuntimeServices  # type: ignore
+    from proxy.runtime import ProxyRuntime  # type: ignore
 
     policy_file = MaterializedPolicyFile(
         path=str(tmp_path / "30-webfilter.conf"),
@@ -81,26 +86,7 @@ def test_proxy_policy_sync_skips_webcat_snapshot_when_policy_does_not_need_it(
     policy_sha = calculate_policy_sha((policy_file,))
     snapshot_calls: list[bool] = []
 
-    services = ProxyRuntimeServices(
-        controller=SimpleNamespace(),
-        registry=SimpleNamespace(),
-        revisions=SimpleNamespace(),
-        certificate_bundles=SimpleNamespace(),
-        adblock_artifacts=SimpleNamespace(compiled_dir=str(tmp_path / "adblock")),
-        cert_manager=SimpleNamespace(),
-        adblock_store=SimpleNamespace(),
-        live_stats_store=SimpleNamespace(),
-        diagnostic_store=SimpleNamespace(),
-        timeseries_store=SimpleNamespace(),
-        ssl_errors_store=SimpleNamespace(),
-        stats_provider=dict,
-        runtime_services_builder=dict,
-        policy_state_builder=lambda proxy_id: ProxyPolicyState(
-            proxy_id=proxy_id, policy_sha256=policy_sha, files=(policy_file,)
-        ),
-        pac_state_builder=lambda proxy_id: None,
-        current_policy_sha_reader=lambda: policy_sha,
-    )
+    services = _build_runtime_services(tmp_path, policy_file, policy_sha)
     runtime = ProxyRuntime(services=services)
     monkeypatch.setattr(
         runtime,
