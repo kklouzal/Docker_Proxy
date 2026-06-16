@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.ssl_errors_store import _extract_domain  # type: ignore  # noqa: E402
+from services.ssl_errors_store import SslErrorsStore  # type: ignore  # noqa: E402
 
 
 def test_ssl_error_domain_extraction_accepts_peer_token() -> None:
@@ -28,6 +29,23 @@ def test_ssl_error_domain_extraction_accepts_bracketed_ipv6_peer_token() -> None
 def test_ssl_error_domain_extraction_accepts_server_name_token() -> None:
     line = "kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT server_name=api.steampowered.com"
     assert _extract_domain(line) == "api.steampowered.com"
+
+
+def test_ssl_errors_filtered_where_reuses_proxy_since_search_and_domain_filters(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "edge-1")
+    where_sql, params = SslErrorsStore()._filtered_errors_where(
+        since=123,
+        search="steam_%/host",
+        require_domain=True,
+    )
+
+    assert where_sql == (
+        "WHERE proxy_id = %s AND domain <> '' AND last_seen >= %s "
+        "AND domain LIKE %s ESCAPE '\\\\'"
+    )
+    assert params == ("edge-1", 123, "%steam\\_\\%/host%")
 
 
 def test_steam_compatibility_preset_is_shipped_once() -> None:

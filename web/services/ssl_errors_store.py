@@ -664,6 +664,25 @@ class SslErrorsStore:
                 self._ingest_line_with_conn(conn, line)
             self._flush_pending_error(conn)
 
+    def _filtered_errors_where(
+        self,
+        *,
+        since: int | None,
+        search: str,
+        require_domain: bool = False,
+    ) -> tuple[str, tuple[Any, ...]]:
+        where = ["proxy_id = %s"]
+        params: list[Any] = [get_proxy_id()]
+        if require_domain:
+            where.append("domain <> ''")
+        if since is not None:
+            where.append("last_seen >= %s")
+            params.append(int(since))
+        if search:
+            where.append("domain LIKE %s ESCAPE '\\\\'")
+            params.append(f"%{_escape_like(search)}%")
+        return "WHERE " + " AND ".join(where), tuple(params)
+
     def list_recent(
         self,
         *,
@@ -672,15 +691,7 @@ class SslErrorsStore:
         limit: int = 200,
     ) -> list[SslErrorRow]:
         self.init_db()
-        where = ["proxy_id = %s"]
-        params: list[Any] = [get_proxy_id()]
-        if since is not None:
-            where.append("last_seen >= %s")
-            params.append(int(since))
-        if search:
-            where.append("domain LIKE %s ESCAPE '\\\\'")
-            params.append(f"%{_escape_like(search)}%")
-        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        where_sql, params = self._filtered_errors_where(since=since, search=search)
         lim = max(10, min(500, int(limit)))
         with self._connect() as conn:
             rows = conn.execute(
@@ -708,15 +719,7 @@ class SslErrorsStore:
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         self.init_db()
-        where = ["proxy_id = %s"]
-        params: list[Any] = [get_proxy_id()]
-        if since is not None:
-            where.append("last_seen >= %s")
-            params.append(int(since))
-        if search:
-            where.append("domain LIKE %s ESCAPE '\\\\'")
-            params.append(f"%{_escape_like(search)}%")
-        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        where_sql, params = self._filtered_errors_where(since=since, search=search)
         lim = max(5, min(100, int(limit)))
         with self._connect() as conn:
             rows = conn.execute(
@@ -750,15 +753,11 @@ class SslErrorsStore:
     ) -> list[dict[str, Any]]:
         """Return advisory destination-splice candidates based on repeated TLS failures."""
         self.init_db()
-        where = ["proxy_id = %s", "domain <> ''"]
-        params: list[Any] = [get_proxy_id()]
-        if since is not None:
-            where.append("last_seen >= %s")
-            params.append(int(since))
-        if search:
-            where.append("domain LIKE %s ESCAPE '\\\\'")
-            params.append(f"%{_escape_like(search)}%")
-        where_sql = "WHERE " + " AND ".join(where)
+        where_sql, params = self._filtered_errors_where(
+            since=since,
+            search=search,
+            require_domain=True,
+        )
         lim = max(5, min(100, int(limit)))
         threshold = max(1, int(min_events))
         with self._connect() as conn:
