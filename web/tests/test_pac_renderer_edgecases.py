@@ -26,6 +26,19 @@ def _proxy_record(public_host: str, **overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**data)
 
 
+class _EmptyRegistry:
+    def get_proxy(self, _proxy_id):
+        return None
+
+
+class _EmptyPacProfilesStore:
+    def list_profiles(self):
+        return []
+
+    def list_proxy_chain_settings(self):
+        return SimpleNamespace(backup_proxies=[], direct_enabled=True)
+
+
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
@@ -115,18 +128,6 @@ def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
-    class _EmptyRegistry:
-        def get_proxy(self, _proxy_id):
-            return None
-
-    class _EmptyPacProfilesStore:
-        def list_proxy_chain_settings(self):
-            return type(
-                "PacProxyChainSettings",
-                (),
-                {"backup_proxies": [], "direct_enabled": True},
-            )()
-
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
     monkeypatch.setenv(
@@ -160,18 +161,6 @@ def test_resolve_proxy_pac_target_ignores_invalid_absolute_public_pac_url(
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
-    class _EmptyRegistry:
-        def get_proxy(self, _proxy_id):
-            return None
-
-    class _EmptyPacProfilesStore:
-        def list_proxy_chain_settings(self):
-            return type(
-                "PacProxyChainSettings",
-                (),
-                {"backup_proxies": [], "direct_enabled": True},
-            )()
-
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
     monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", public_pac_url)
@@ -196,14 +185,6 @@ def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_
         def get_proxy(self, _proxy_id):
             return _proxy_record("")
 
-    class _EmptyPacProfilesStore:
-        def list_proxy_chain_settings(self):
-            return type(
-                "PacProxyChainSettings",
-                (),
-                {"backup_proxies": [], "direct_enabled": True},
-            )()
-
     monkeypatch.setattr(
         pac_renderer, "get_proxy_registry", _RegistryWithBlankPublicHost
     )
@@ -225,21 +206,6 @@ def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
 ) -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
-
-    class _EmptyRegistry:
-        def get_proxy(self, _proxy_id):
-            return None
-
-    class _EmptyPacProfilesStore:
-        def list_profiles(self):
-            return []
-
-        def list_proxy_chain_settings(self):
-            return type(
-                "PacProxyChainSettings",
-                (),
-                {"backup_proxies": [], "direct_enabled": True},
-            )()
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
@@ -278,21 +244,6 @@ def test_build_proxy_pac_state_manifest_rejects_encoded_public_pac_separator(
 ) -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
-
-    class _EmptyRegistry:
-        def get_proxy(self, _proxy_id):
-            return None
-
-    class _EmptyPacProfilesStore:
-        def list_profiles(self):
-            return []
-
-        def list_proxy_chain_settings(self):
-            return type(
-                "PacProxyChainSettings",
-                (),
-                {"backup_proxies": [], "direct_enabled": True},
-            )()
 
     class _EmptySslFilterStore:
         def list_all(self):
@@ -337,14 +288,6 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
                 public_pac_port=8080,
                 public_pac_path="/registered/wpad.dat?site=a",
             )
-
-    class _EmptyPacProfilesStore:
-        def list_proxy_chain_settings(self):
-            return type(
-                "PacProxyChainSettings",
-                (),
-                {"backup_proxies": [], "direct_enabled": True},
-            )()
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _RegistryWithPublicHost)
     monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
