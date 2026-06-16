@@ -9,8 +9,9 @@ from .mysql_test_utils import configure_test_mysql_env
 
 def _add_web_to_path() -> None:
     web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
+    web_dir_str = str(web_dir)
+    if web_dir_str not in sys.path:
+        sys.path.insert(0, web_dir_str)
 
 
 def _request_line(
@@ -55,11 +56,9 @@ def _insert_request(diag_store, line: str) -> None:
         assert diag_store._ingest_request_line_with_conn(conn, line)
 
 
-def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_tables(
-    tmp_path,
-) -> None:
+def _init_stats_stores(tmp_path, env_name: str):
     _add_web_to_path()
-    configure_test_mysql_env(tmp_path / "stats-window")
+    configure_test_mysql_env(tmp_path / env_name)
 
     from services.diagnostic_store import DiagnosticStore  # type: ignore
     from services.live_stats import LiveStatsStore  # type: ignore
@@ -68,6 +67,13 @@ def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_
     diag_store.init_db()
     live_store = LiveStatsStore()
     live_store.init_db()
+    return diag_store, live_store
+
+
+def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_tables(
+    tmp_path,
+) -> None:
+    diag_store, live_store = _init_stats_stores(tmp_path, "stats-window")
 
     with live_store._connect() as conn:
         conn.execute(
@@ -150,16 +156,7 @@ def test_stats_windowed_totals_and_lists_use_diagnostic_requests_not_cumulative_
 def test_stats_windowed_client_details_and_reasons_use_diagnostic_requests(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
-    configure_test_mysql_env(tmp_path / "stats-reasons")
-
-    from services.diagnostic_store import DiagnosticStore  # type: ignore
-    from services.live_stats import LiveStatsStore  # type: ignore
-
-    diag_store = DiagnosticStore()
-    diag_store.init_db()
-    live_store = LiveStatsStore()
-    live_store.init_db()
+    diag_store, live_store = _init_stats_stores(tmp_path, "stats-reasons")
 
     with live_store._connect() as conn:
         conn.execute(
