@@ -23,10 +23,7 @@ from services.public_endpoint import (
 from services.public_endpoint import (
     normalize_public_scheme as _normalize_public_scheme,
 )
-
-
-def _quote_mysql_identifier(value: str) -> str:
-    return "`" + str(value).replace("`", "``") + "`"
+from services.sql_identifiers import quote_mysql_identifier
 
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
@@ -610,7 +607,7 @@ class ProxyRegistry:
                         if table_name == "proxy_instances":
                             continue
                         conn.execute(
-                            f"UPDATE {_quote_mysql_identifier(table_name)} SET proxy_id=%s WHERE proxy_id=%s",
+                            f"UPDATE {quote_mysql_identifier(table_name)} SET proxy_id=%s WHERE proxy_id=%s",
                             (new_key, old_key),
                         )
                     conn.execute(
@@ -665,7 +662,7 @@ class ProxyRegistry:
                         if table_name == "proxy_instances":
                             continue
                         result = conn.execute(
-                            f"DELETE FROM {_quote_mysql_identifier(table_name)} WHERE proxy_id=%s",
+                            f"DELETE FROM {quote_mysql_identifier(table_name)} WHERE proxy_id=%s",
                             (proxy_key,),
                         )
                         deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
