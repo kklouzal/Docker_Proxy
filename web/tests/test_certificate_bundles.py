@@ -11,10 +11,14 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
-def test_certificate_bundle_revision_fullchain_and_to_bundle() -> None:
-    _add_web_to_path()
-    from services.certificate_bundles import CertificateBundleRevision  # type: ignore
+_add_web_to_path()
+from services import certificate_bundles  # type: ignore  # noqa: E402
 
+CertificateBundleRevision = certificate_bundles.CertificateBundleRevision
+CertificateBundleStore = certificate_bundles.CertificateBundleStore
+
+
+def test_certificate_bundle_revision_fullchain_and_to_bundle() -> None:
     revision = CertificateBundleRevision(
         revision_id=7,
         bundle_sha256="bundle",
@@ -43,9 +47,6 @@ def test_certificate_bundle_revision_fullchain_and_to_bundle() -> None:
 
 
 def test_certificate_bundle_store_row_converters_handle_nulls_and_types() -> None:
-    _add_web_to_path()
-    from services import certificate_bundles  # type: ignore
-
     store = certificate_bundles.CertificateBundleStore()
     assert store._row_to_revision(None) is None
     assert store._row_to_application(None) is None
@@ -154,9 +155,6 @@ class _ActivationConn:
 def test_certificate_bundle_activate_checks_target_before_deactivating_current(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services.certificate_bundles import CertificateBundleStore  # type: ignore
-
     store = CertificateBundleStore()
     calls: list[str] = []
 
@@ -177,9 +175,6 @@ def test_certificate_bundle_activate_checks_target_before_deactivating_current(
 
 
 def test_certificate_bundle_activate_switches_active_revision(monkeypatch) -> None:
-    _add_web_to_path()
-    from services.certificate_bundles import CertificateBundleStore  # type: ignore
-
     store = CertificateBundleStore()
     calls: list[str] = []
 
