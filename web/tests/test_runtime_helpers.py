@@ -1,5 +1,6 @@
 from services.runtime_helpers import (
     decode_bytes,
+    env_int,
     extract_domain,
     normalize_hostish,
     not_cached_reason,
@@ -10,6 +11,25 @@ def test_decode_bytes_handles_bytes_strings_and_none() -> None:
     assert decode_bytes(b"decoded\n") == "decoded"
     assert decode_bytes("  already text  ") == "already text"
     assert decode_bytes(None) == ""
+
+
+def test_env_int_uses_default_for_missing_blank_and_invalid_values(monkeypatch) -> None:
+    monkeypatch.delenv("HELPER_INT", raising=False)
+    assert env_int("HELPER_INT", 7) == 7
+
+    monkeypatch.setenv("HELPER_INT", "  ")
+    assert env_int("HELPER_INT", 7) == 7
+
+    monkeypatch.setenv("HELPER_INT", "invalid")
+    assert env_int("HELPER_INT", 7) == 7
+
+
+def test_env_int_clamps_to_optional_bounds(monkeypatch) -> None:
+    monkeypatch.setenv("HELPER_INT", "0")
+    assert env_int("HELPER_INT", 7, minimum=2, maximum=10) == 2
+
+    monkeypatch.setenv("HELPER_INT", "42")
+    assert env_int("HELPER_INT", 7, minimum=2, maximum=10) == 10
 
 
 def test_normalize_hostish_handles_placeholders_and_ports() -> None:

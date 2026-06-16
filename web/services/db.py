@@ -11,6 +11,8 @@ from urllib.parse import unquote, urlparse
 
 import pymysql  # type: ignore
 
+from services.runtime_helpers import env_int as _env_int
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
@@ -179,24 +181,6 @@ _pooled_connections: dict[
     tuple[str, int, str, str, str, str, int, int, int],
     _PoolState,
 ] = {}
-
-
-def _env_int(
-    name: str,
-    default: int,
-    *,
-    minimum: int | None = None,
-    maximum: int | None = None,
-) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    if minimum is not None:
-        value = max(int(minimum), value)
-    if maximum is not None:
-        value = min(int(maximum), value)
-    return value
 
 
 def _is_retryable_mysql_error(exc: BaseException) -> bool:
