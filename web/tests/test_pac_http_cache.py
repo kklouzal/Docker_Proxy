@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
@@ -13,10 +15,15 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
-def test_pac_render_dir_is_cached_until_explicitly_cleared(monkeypatch) -> None:
+@pytest.fixture
+def pac_http():
     _add_repo_paths()
-    from services import pac_http  # type: ignore
+    from services import pac_http as module  # type: ignore
 
+    return module
+
+
+def test_pac_render_dir_is_cached_until_explicitly_cleared(monkeypatch, pac_http) -> None:
     pac_http.pac_render_dir.cache_clear()
     monkeypatch.setenv("PAC_RENDER_DIR", "/tmp/pac-one")
 
@@ -31,10 +38,7 @@ def test_pac_render_dir_is_cached_until_explicitly_cleared(monkeypatch) -> None:
     assert pac_http.pac_render_dir() == "/tmp/pac-two"
 
 
-def test_client_ip_ignores_untrusted_forwarded_headers(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_client_ip_ignores_untrusted_forwarded_headers(monkeypatch, pac_http) -> None:
     monkeypatch.delenv("PAC_TRUSTED_PROXY_CIDRS", raising=False)
 
     assert (
@@ -46,10 +50,7 @@ def test_client_ip_ignores_untrusted_forwarded_headers(monkeypatch) -> None:
     )
 
 
-def test_client_ip_honors_forwarded_headers_from_trusted_proxy(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_client_ip_honors_forwarded_headers_from_trusted_proxy(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24, 2001:db8::/32")
 
     assert (
@@ -65,10 +66,7 @@ def test_client_ip_honors_forwarded_headers_from_trusted_proxy(monkeypatch) -> N
     )
 
 
-def test_client_ip_rejects_invalid_forwarded_headers(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_client_ip_rejects_invalid_forwarded_headers(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 
     assert (
@@ -80,10 +78,7 @@ def test_client_ip_rejects_invalid_forwarded_headers(monkeypatch) -> None:
     )
 
 
-def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(tmp_path) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(tmp_path, pac_http) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (tmp_path / "secret.pac").write_text("SECRET", encoding="utf-8")
@@ -106,10 +101,7 @@ def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(tmp_path) -> Non
     assert b"SECRET" not in (data or b"")
 
 
-def test_request_host_ignores_untrusted_forwarded_host(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_request_host_ignores_untrusted_forwarded_host(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
 
     assert (
@@ -121,10 +113,7 @@ def test_request_host_ignores_untrusted_forwarded_host(monkeypatch) -> None:
     )
 
 
-def test_request_host_uses_trusted_forwarded_host(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_request_host_uses_trusted_forwarded_host(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
 
     assert (
@@ -139,10 +128,7 @@ def test_request_host_uses_trusted_forwarded_host(monkeypatch) -> None:
     )
 
 
-def test_request_host_preserves_valid_authority_shapes(monkeypatch) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_request_host_preserves_valid_authority_shapes(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
 
     assert pac_http.request_host_from_headers({"Host": "192.0.2.10:8080"}) == (
@@ -166,10 +152,7 @@ def test_request_host_preserves_valid_authority_shapes(monkeypatch) -> None:
     )
 
 
-def test_request_host_rejects_malformed_host_header_values() -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_request_host_rejects_malformed_host_header_values(pac_http) -> None:
     bad_hosts = [
         "",
         "   ",
@@ -196,11 +179,8 @@ def test_request_host_rejects_malformed_host_header_values() -> None:
 
 
 def test_request_host_falls_back_when_trusted_forwarded_host_is_malformed(
-    monkeypatch,
+    monkeypatch, pac_http
 ) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
 
     assert (
@@ -222,10 +202,7 @@ def test_request_host_falls_back_when_trusted_forwarded_host_is_malformed(
     )
 
 
-def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path, pac_http) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
@@ -240,10 +217,9 @@ def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path) -> None:
     )
 
 
-def test_local_pac_cache_matches_percent_encoded_public_pac_path(tmp_path) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_local_pac_cache_matches_percent_encoded_public_pac_path(
+    tmp_path, pac_http
+) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
@@ -260,11 +236,8 @@ def test_local_pac_cache_matches_percent_encoded_public_pac_path(tmp_path) -> No
 
 
 def test_local_pac_cache_rejects_public_pac_path_with_encoded_separator(
-    tmp_path,
+    tmp_path, pac_http
 ) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
@@ -280,10 +253,9 @@ def test_local_pac_cache_rejects_public_pac_path_with_encoded_separator(
     assert cache.public_request_allowed("/download/wpad.dat") is False
 
 
-def test_local_pac_cache_requires_configured_public_pac_query(tmp_path) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_local_pac_cache_requires_configured_public_pac_query(
+    tmp_path, pac_http
+) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
@@ -302,10 +274,9 @@ def test_local_pac_cache_requires_configured_public_pac_query(tmp_path) -> None:
     assert cache.public_request_allowed("/proxy.pac", "any=query") is True
 
 
-def test_local_pac_cache_reloads_when_materialized_files_change(tmp_path) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_local_pac_cache_reloads_when_materialized_files_change(
+    tmp_path, pac_http
+) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
@@ -344,10 +315,9 @@ def test_local_pac_cache_reloads_when_materialized_files_change(tmp_path) -> Non
     )
 
 
-def test_local_pac_cache_reloads_when_referenced_pac_file_changes(tmp_path) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_local_pac_cache_reloads_when_referenced_pac_file_changes(
+    tmp_path, pac_http
+) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
@@ -376,10 +346,7 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_changes(tmp_path) -> N
     )
 
 
-def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(tmp_path) -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(tmp_path, pac_http) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-two\n", encoding="utf-8")
@@ -398,10 +365,7 @@ def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(tmp_path) -> None:
     assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
 
 
-def test_pac_content_disposition_uses_requested_filename() -> None:
-    _add_repo_paths()
-    from services import pac_http  # type: ignore
-
+def test_pac_content_disposition_uses_requested_filename(pac_http) -> None:
     assert (
         pac_http.pac_content_disposition("/download/wpad.dat?site=lab")
         == 'inline; filename="wpad.dat"'
