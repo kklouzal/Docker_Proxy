@@ -11,7 +11,9 @@ def _add_web_to_path() -> None:
 
 
 _add_web_to_path()
-from services.client_identity_cache import ClientIdentityCache  # type: ignore  # noqa: E402
+from services.client_identity_cache import (  # type: ignore  # noqa: E402
+    ClientIdentityCache,
+)
 
 
 def test_client_identity_cache_invalid_ip_returns_invalid_without_lookup(

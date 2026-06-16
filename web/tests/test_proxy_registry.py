@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import ModuleType
+from typing import TYPE_CHECKING
 
 from .mysql_test_utils import configure_test_mysql_env
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 
 def _add_web_to_path() -> None:

@@ -15,7 +15,6 @@ def _add_web_to_path() -> None:
 _add_web_to_path()
 from services import certificate_core  # type: ignore  # noqa: E402
 
-
 CERT_A = "-----BEGIN CERTIFICATE-----\nCERTA\n-----END CERTIFICATE-----\n"
 CERT_B = "-----BEGIN CERTIFICATE-----\nCERTB\n-----END CERTIFICATE-----\n"
 KEY_A = "-----BEGIN PRIVATE KEY-----\nKEYA\n-----END PRIVATE KEY-----\n"

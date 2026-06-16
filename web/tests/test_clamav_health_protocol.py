@@ -16,6 +16,8 @@ def _add_web_to_path() -> None:
 _add_web_to_path()
 from services.proxy_health import (  # type: ignore  # noqa: E402
     check_clamd_health,
+)
+from services.proxy_health import (  # type: ignore  # noqa: E402
     test_eicar as proxy_health_test_eicar,
 )
 

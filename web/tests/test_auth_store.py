@@ -42,9 +42,9 @@ def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch) -> N
 
 def test_auth_store_username_and_password_validation(tmp_path) -> None:
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "secret.key")
-    AuthStore = _auth_store_module().AuthStore
+    auth_store_cls = _auth_store_module().AuthStore
 
-    store = AuthStore(secret_path=str(tmp_path / "secret.key"))
+    store = auth_store_cls(secret_path=str(tmp_path / "secret.key"))
 
     for username in ("", "has space", "bad@name", "x" * 65):
         with pytest.raises(ValueError):

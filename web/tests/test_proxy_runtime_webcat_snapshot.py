@@ -7,6 +7,7 @@ from .mysql_test_utils import ensure_proxy_runtime_import_path
 
 def _build_runtime_services(tmp_path, policy_file, policy_sha):
     from services.policy_materializer import ProxyPolicyState  # type: ignore
+
     from proxy.runtime import ProxyRuntimeServices  # type: ignore
 
     return ProxyRuntimeServices(

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from services.stats import parse_access_log_hit_rate
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write_log(tmp_path: Path, line: str) -> str:

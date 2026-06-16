@@ -16,7 +16,10 @@ from services.pac_renderer import (
     select_manifest_file,
     substitute_request_host,
 )
-from services.proxy_registry import _safe_decoded_path_segments, normalize_public_pac_path
+from services.proxy_registry import (
+    _safe_decoded_path_segments,
+    normalize_public_pac_path,
+)
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
