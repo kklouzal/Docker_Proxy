@@ -25,6 +25,7 @@ from services.adblock_hosts import (  # noqa: E402
 from services.adblock_hosts import (  # noqa: E402
     normalize_adblock_host as _normalize_host,
 )
+from services.adblock_patterns import abp_to_regex as _abp_to_regex  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -158,7 +159,6 @@ _ALL_KNOWN_OPTIONS = (
 
 
 _DOMAIN_ONLY_RE = re.compile(r"^\|\|(?P<host>[a-z0-9.-]+)\^?$", re.IGNORECASE)
-_ABP_SEPARATOR_REGEX = r"(?:[^A-Za-z0-9_.%-]|$)"
 LOOKUP_STRATEGY = (
     "domain suffix candidates -> domain_index; exact and host-suffix "
     "candidates -> host_index; host-pattern/regex token prefilters before "
@@ -440,31 +440,6 @@ def _option_groups(opt_parsed: dict[str, Any]) -> set[str]:
     if misc:
         groups.add("misc")
     return groups
-
-
-def _abp_to_regex(pattern: str) -> str:
-    p = pattern or ""
-    left_anchored = p.startswith("|") and not p.startswith("||")
-    right_anchored = p.endswith("|") and not p.endswith(r"\|")
-    if left_anchored:
-        p = p[1:]
-    if right_anchored:
-        p = p[:-1]
-
-    parts: list[str] = []
-    for ch in p:
-        if ch == "*":
-            parts.append(".*")
-        elif ch == "^":
-            parts.append(_ABP_SEPARATOR_REGEX)
-        else:
-            parts.append(re.escape(ch))
-    body = "".join(parts)
-    if left_anchored:
-        body = "^" + body
-    if right_anchored:
-        body += "$"
-    return body
 
 
 def _host_pattern_to_regex(host_pattern: str) -> str:

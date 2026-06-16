@@ -13,11 +13,11 @@ from urllib.parse import urlsplit
 
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
 from services.adblock_lookup import AdblockLookupIndex
+from services.adblock_patterns import abp_to_regex as _abp_to_regex
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-_ABP_SEPARATOR_RE = r"(?:[^A-Za-z0-9_.%-]|$)"
 _RESOURCE_EXTENSIONS = {
     "font": {".eot", ".otf", ".ttf", ".woff", ".woff2"},
     "image": {
@@ -125,31 +125,6 @@ def _header_value(headers: dict[str, str], key: str) -> str:
         if str(candidate).lower() == key_lower:
             return str(value).strip()
     return ""
-
-
-def _abp_to_regex(pattern: str) -> str:
-    p = pattern or ""
-    left_anchored = p.startswith("|") and not p.startswith("||")
-    right_anchored = p.endswith("|") and not p.endswith(r"\|")
-    if left_anchored:
-        p = p[1:]
-    if right_anchored:
-        p = p[:-1]
-
-    parts: list[str] = []
-    for ch in p:
-        if ch == "*":
-            parts.append(".*")
-        elif ch == "^":
-            parts.append(_ABP_SEPARATOR_RE)
-        else:
-            parts.append(re.escape(ch))
-    body = "".join(parts)
-    if left_anchored:
-        body = "^" + body
-    if right_anchored:
-        body += "$"
-    return body
 
 
 @lru_cache(maxsize=50000)
