@@ -14,6 +14,10 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
+_add_web_to_path()
+from services.config_revisions import ConfigRevisionStore  # type: ignore  # noqa: E402
+
+
 class _ConfigRevisionConn:
     def __init__(self, calls: list[str], *, fail_insert_once: bool) -> None:
         self.calls = calls
@@ -55,9 +59,6 @@ class _ConfigRevisionConn:
 
 
 def test_config_revision_create_retries_transient_deadlock(monkeypatch) -> None:
-    _add_web_to_path()
-    from services.config_revisions import ConfigRevisionStore  # type: ignore
-
     store = ConfigRevisionStore()
     calls: list[str] = []
     first = _ConfigRevisionConn(calls, fail_insert_once=True)
@@ -78,9 +79,6 @@ def test_config_revision_create_retries_transient_deadlock(monkeypatch) -> None:
 
 
 def test_config_revision_lock_retry_exhaustion_preserves_exception(monkeypatch) -> None:
-    _add_web_to_path()
-    from services.config_revisions import ConfigRevisionStore  # type: ignore
-
     store = ConfigRevisionStore()
     attempts = {"count": 0}
     sleeps: list[float] = []
@@ -108,9 +106,6 @@ def test_config_revision_lock_retry_exhaustion_preserves_exception(monkeypatch) 
 def test_config_revision_retry_does_not_retry_non_lock_operational_errors(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services.config_revisions import ConfigRevisionStore  # type: ignore
-
     store = ConfigRevisionStore()
     attempts = {"count": 0}
 
@@ -135,9 +130,6 @@ def test_config_revision_retry_does_not_retry_non_lock_operational_errors(
 
 
 def test_config_revision_lock_retry_backoff_is_capped(monkeypatch) -> None:
-    _add_web_to_path()
-    from services.config_revisions import ConfigRevisionStore  # type: ignore
-
     store = ConfigRevisionStore()
     sleeps: list[float] = []
     attempts = {"count": 0}
@@ -193,9 +185,6 @@ class _ActivationConn:
 def test_activate_revision_checks_target_before_deactivating_current(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
-    from services.config_revisions import ConfigRevisionStore  # type: ignore
-
     store = ConfigRevisionStore()
     calls: list[str] = []
 
@@ -216,9 +205,6 @@ def test_activate_revision_checks_target_before_deactivating_current(
 
 
 def test_activate_revision_switches_active_revision(monkeypatch) -> None:
-    _add_web_to_path()
-    from services.config_revisions import ConfigRevisionStore  # type: ignore
-
     store = ConfigRevisionStore()
     calls: list[str] = []
 
