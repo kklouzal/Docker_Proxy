@@ -2164,6 +2164,7 @@ class SquidController(_CoreSquidController):
                 "happy_eyeballs_connect_gap",
                 "happy_eyeballs_connect_limit",
                 "http_port",
+                "https_port",
             ),
         )
 

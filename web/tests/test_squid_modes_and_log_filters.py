@@ -495,6 +495,32 @@ max_open_disk_fds 512
     assert options["max_open_disk_fds"] == 512
 
 
+def test_squid_controller_network_lines_include_https_intercept_ports() -> None:
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+
+    lines = ctl.get_network_lines(
+        """
+# listener directives
+http_port 0.0.0.0:3128 ssl-bump dynamic_cert_mem_cache_size=256MB
+http_port 0.0.0.0:3129 intercept
+https_port 0.0.0.0:3130 intercept ssl-bump name=https_intercept dynamic_cert_mem_cache_size=256MB
+acl https_intercept_listener myportname https_intercept
+client_lifetime 1 day
+""".strip(),
+    )
+
+    assert lines == [
+        "http_port 0.0.0.0:3128 ssl-bump dynamic_cert_mem_cache_size=256MB",
+        "http_port 0.0.0.0:3129 intercept",
+        "https_port 0.0.0.0:3130 intercept ssl-bump name=https_intercept dynamic_cert_mem_cache_size=256MB",
+        "client_lifetime 1 day",
+    ]
+
+
 def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path) -> None:
     _add_web_to_path()
 
