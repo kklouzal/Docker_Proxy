@@ -4,16 +4,14 @@ import sys
 from pathlib import Path
 
 
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
+WEB_DIR = Path(__file__).resolve().parents[1]
+if str(WEB_DIR) not in sys.path:
+    sys.path.insert(0, str(WEB_DIR))
+
+from services import proxy_context  # type: ignore  # noqa: E402
 
 
 def test_normalize_proxy_id_sanitizes_defaults_and_truncates() -> None:
-    _add_web_to_path()
-    from services import proxy_context  # type: ignore
-
     assert proxy_context.normalize_proxy_id(None) == "default"
     assert proxy_context.normalize_proxy_id("  edge-2  ") == "edge-2"
     assert proxy_context.normalize_proxy_id(" bad value!* ") == "bad-value"
@@ -22,9 +20,6 @@ def test_normalize_proxy_id_sanitizes_defaults_and_truncates() -> None:
 
 
 def test_get_default_proxy_id_env_precedence_and_context_reset(monkeypatch) -> None:
-    _add_web_to_path()
-    from services import proxy_context  # type: ignore
-
     monkeypatch.setenv("DEFAULT_PROXY_ID", "default-env")
     monkeypatch.setenv("PROXY_INSTANCE_ID", "instance-env")
     monkeypatch.setenv("PROXY_ID", "proxy-env")
