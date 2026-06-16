@@ -13,10 +13,14 @@ def _add_web_to_path() -> None:
         sys.path.insert(0, str(web_dir))
 
 
-def test_check_clamd_uses_tcp_ping() -> None:
-    _add_web_to_path()
-    from services.proxy_health import check_clamd_health  # type: ignore
+_add_web_to_path()
+from services.proxy_health import (  # type: ignore  # noqa: E402
+    check_clamd_health,
+    test_eicar as proxy_health_test_eicar,
+)
 
+
+def test_check_clamd_uses_tcp_ping() -> None:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -48,9 +52,6 @@ def test_check_clamd_uses_tcp_ping() -> None:
 
 
 def test_eicar_uses_clamd_instream_protocol() -> None:
-    _add_web_to_path()
-    from services.proxy_health import test_eicar  # type: ignore
-
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -95,7 +96,7 @@ def test_eicar_uses_clamd_instream_protocol() -> None:
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     try:
-        result = test_eicar(host="127.0.0.1", port=port, timeout=1.0)
+        result = proxy_health_test_eicar(host="127.0.0.1", port=port, timeout=1.0)
         assert result.get("ok") is True
         assert "FOUND" in str(result.get("detail") or "")
         assert captured["command"] == b"zINSTREAM\0"
@@ -108,9 +109,6 @@ def test_eicar_uses_clamd_instream_protocol() -> None:
 def test_eicar_reports_socket_failure_without_filesystem_side_effects(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
-    from services.proxy_health import test_eicar  # type: ignore
-
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
@@ -118,7 +116,7 @@ def test_eicar_reports_socket_failure_without_filesystem_side_effects(
 
     before = set(os.listdir(tmp_path))
     monkeypatch.chdir(tmp_path)
-    result = test_eicar(host="127.0.0.1", port=port, timeout=0.2)
+    result = proxy_health_test_eicar(host="127.0.0.1", port=port, timeout=0.2)
     assert result.get("ok") is False
     assert f"127.0.0.1:{port}" in str(result.get("detail") or "")
     assert set(os.listdir(tmp_path)) == before
