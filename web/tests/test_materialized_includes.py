@@ -42,6 +42,13 @@ def _import_tool_module(module_name: str):
     return importlib.reload(module)
 
 
+def _import_materialized_files_module():
+    _add_repo_paths()
+    from services import materialized_files  # type: ignore
+
+    return materialized_files
+
+
 def test_apply_helpers_import_shared_common_when_executed_from_app_tools(
     tmp_path,
 ) -> None:
@@ -583,8 +590,7 @@ def test_webfilter_materialized_safe_browsing_helper_receives_selected_lists(
 def test_write_managed_text_files_restores_previous_files_when_late_replace_fails(
     tmp_path, monkeypatch
 ) -> None:
-    _add_repo_paths()
-    from services import materialized_files  # type: ignore
+    materialized_files = _import_materialized_files_module()
 
     first = tmp_path / "first.conf"
     second = tmp_path / "second.conf"
@@ -620,8 +626,7 @@ def test_write_managed_text_files_restores_previous_files_when_late_replace_fail
 def test_write_managed_text_files_restores_via_staged_replace(
     tmp_path, monkeypatch
 ) -> None:
-    _add_repo_paths()
-    from services import materialized_files  # type: ignore
+    materialized_files = _import_materialized_files_module()
 
     first = tmp_path / "first.conf"
     second = tmp_path / "second.conf"
@@ -659,8 +664,7 @@ def test_write_managed_text_files_restores_via_staged_replace(
 def test_write_managed_text_files_restores_previous_file_mode_on_rollback(
     tmp_path, monkeypatch
 ) -> None:
-    _add_repo_paths()
-    from services import materialized_files  # type: ignore
+    materialized_files = _import_materialized_files_module()
 
     first = tmp_path / "first.conf"
     second = tmp_path / "second.conf"
@@ -695,8 +699,7 @@ def test_write_managed_text_files_restores_previous_file_mode_on_rollback(
 
 
 def test_write_managed_text_files_keeps_runtime_files_world_readable(tmp_path) -> None:
-    _add_repo_paths()
-    from services import materialized_files  # type: ignore
+    materialized_files = _import_materialized_files_module()
 
     include_path = tmp_path / "conf.d" / "30-webfilter.conf"
     list_path = tmp_path / "webfilter_whitelist.txt"
