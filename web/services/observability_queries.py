@@ -1600,7 +1600,9 @@ class ObservabilityQueries:
         ) in {
             "mysql_degraded",
             "proxy_health_unreachable",
+            "runtime_icap_degraded",
             "runtime_state_degraded",
+            "memory_pressure",
         }
 
     @staticmethod
