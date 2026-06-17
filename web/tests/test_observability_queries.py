@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
+from typing import Self
 
 import pytest
 
@@ -179,7 +180,7 @@ def test_remediation_overview_does_not_keep_runtime_rows_for_unrelated_search(
             return []
 
     class EmptyConnection:
-        def __enter__(self) -> "EmptyConnection":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *args: object) -> None:
@@ -202,7 +203,7 @@ def test_remediation_overview_does_not_keep_runtime_rows_for_unrelated_search(
         "state_errors": ["MySQL lock wait timeout while reading policy state"],
     }
     queries = observability_queries.ObservabilityQueries()
-    monkeypatch.setattr(queries, "_connect", lambda: EmptyConnection())
+    monkeypatch.setattr(queries, "_connect", EmptyConnection)
 
     payload = queries.remediation_overview(
         since=2990,
