@@ -127,6 +127,95 @@ def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
     assert not ObservabilityQueries._suggestion_matches_search(row, "video")
 
 
+def test_runtime_remediation_suggestions_must_match_search_terms() -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    runtime_health = {
+        "proxy_id": "livingroom",
+        "status": "degraded",
+        "timestamp": 3030,
+        "services": {"clamd": {"ok": False, "detail": "clamd unreachable"}},
+        "stats": {
+            "memory": {
+                "used_percent": 91.5,
+                "available_bytes": 128 * 1024 * 1024,
+            },
+        },
+        "state_errors": ["MySQL lock wait timeout while reading policy state"],
+    }
+
+    rows = observability_queries.ObservabilityQueries._runtime_health_suggestions(
+        runtime_health,
+    )
+
+    assert {
+        row["kind"]
+        for row in rows
+        if observability_queries.ObservabilityQueries._suggestion_matches_search(
+            row,
+            "clamd",
+        )
+    } == {"runtime_icap_degraded"}
+    assert not [
+        row
+        for row in rows
+        if observability_queries.ObservabilityQueries._suggestion_matches_search(
+            row,
+            "video",
+        )
+    ]
+
+
+def test_remediation_overview_does_not_keep_runtime_rows_for_unrelated_search(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import observability_queries  # type: ignore
+
+    class EmptyResult:
+        def fetchall(self) -> list[object]:
+            return []
+
+    class EmptyConnection:
+        def __enter__(self) -> "EmptyConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, *_args: object, **_kwargs: object) -> EmptyResult:
+            return EmptyResult()
+
+    runtime_health = {
+        "proxy_id": "livingroom",
+        "status": "degraded",
+        "timestamp": 3030,
+        "services": {"clamd": {"ok": False, "detail": "clamd unreachable"}},
+        "stats": {
+            "memory": {
+                "used_percent": 91.5,
+                "available_bytes": 128 * 1024 * 1024,
+            },
+        },
+        "state_errors": ["MySQL lock wait timeout while reading policy state"],
+    }
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: EmptyConnection())
+
+    payload = queries.remediation_overview(
+        since=2990,
+        search="video",
+        limit=20,
+        summary={"request_records": 0},
+        runtime_health=runtime_health,
+    )
+
+    assert payload["rows"] == []
+    assert payload["summary"]["suggestions"] == 0
+
+
 def test_security_event_filters_build_source_specific_search_sql(monkeypatch) -> None:
     _add_web_to_path()
     from services import observability_queries  # type: ignore
@@ -638,10 +727,7 @@ def test_remediation_runtime_state_errors_surface_generated_state_drift(
         },
     )
 
-    assert {row["kind"] for row in payload["rows"]} == {
-        "mysql_degraded",
-        "runtime_state_degraded",
-    }
+    assert {row["kind"] for row in payload["rows"]} == {"runtime_state_degraded"}
     state_row = next(
         row for row in payload["rows"] if row["kind"] == "runtime_state_degraded"
     )
@@ -651,9 +737,28 @@ def test_remediation_runtime_state_errors_surface_generated_state_drift(
     assert state_row["component"] == "Proxy generated state"
     assert "PAC drift" in state_row["evidence"]
     assert "MySQL" not in state_row["evidence"]
-    db_row = next(row for row in payload["rows"] if row["kind"] == "mysql_degraded")
-    assert "MySQL lock wait" in db_row["evidence"]
     assert payload["summary"]["runtime_subjects"] == 1
+
+    db_payload = queries.remediation_overview(
+        since=5000,
+        search="mysql",
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 5200,
+            "state_errors": [
+                "config drift: active revision does not match runtime",
+                "PAC drift: desired state does not match runtime",
+                "MySQL lock wait timeout while reading policy state",
+            ],
+        },
+    )
+    assert {row["kind"] for row in db_payload["rows"]} == {"mysql_degraded"}
+    db_row = db_payload["rows"][0]
+    assert "MySQL lock wait" in db_row["evidence"]
+    assert db_payload["summary"]["runtime_subjects"] == 1
 
 
 def test_remediation_runtime_state_errors_accept_scalar_payload(
@@ -813,7 +918,9 @@ def test_remediation_runtime_detail_database_degradation_counts_once(
     assert payload["summary"]["runtime_subjects"] == 1
 
 
-def test_remediation_search_keeps_database_degradation_visible(monkeypatch) -> None:
+def test_remediation_search_filters_database_degradation_until_it_matches(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
     from services import observability_queries  # type: ignore
 
@@ -864,15 +971,31 @@ def test_remediation_search_keeps_database_degradation_visible(monkeypatch) -> N
         },
     )
 
-    assert {row["kind"] for row in payload["rows"]} == {
-        "http3_alt_svc",
-        "mysql_degraded",
-    }
+    assert {row["kind"] for row in payload["rows"]} == {"http3_alt_svc"}
     assert payload["summary"]["domains"] == 1
-    assert payload["summary"]["runtime_subjects"] == 1
+    assert payload["summary"]["runtime_subjects"] == 0
+
+    db_payload = queries.remediation_overview(
+        since=5000,
+        search="packet",
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 5301,
+            "state_errors": [
+                "Got a packet bigger than max_allowed_packet bytes",
+            ],
+        },
+    )
+    assert "mysql_degraded" in {row["kind"] for row in db_payload["rows"]}
+    assert db_payload["summary"]["runtime_subjects"] == 1
 
 
-def test_remediation_search_keeps_runtime_state_drift_visible(monkeypatch) -> None:
+def test_remediation_search_filters_runtime_state_drift_until_it_matches(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
     from services import observability_queries  # type: ignore
 
@@ -924,15 +1047,12 @@ def test_remediation_search_keeps_runtime_state_drift_visible(monkeypatch) -> No
         },
     )
 
-    assert {row["kind"] for row in payload["rows"]} == {
-        "aborted_media_segments",
-        "runtime_state_degraded",
-    }
+    assert {row["kind"] for row in payload["rows"]} == {"aborted_media_segments"}
     assert payload["summary"]["domains"] == 1
-    assert payload["summary"]["runtime_subjects"] == 1
+    assert payload["summary"]["runtime_subjects"] == 0
 
 
-def test_remediation_search_keeps_runtime_icap_and_memory_visible(
+def test_remediation_search_filters_runtime_icap_and_memory_until_they_match(
     monkeypatch,
 ) -> None:
     _add_web_to_path()
@@ -990,13 +1110,32 @@ def test_remediation_search_keeps_runtime_icap_and_memory_visible(
         },
     )
 
-    assert {row["kind"] for row in payload["rows"]} == {
-        "aborted_media_segments",
-        "memory_pressure",
-        "runtime_icap_degraded",
-    }
+    assert {row["kind"] for row in payload["rows"]} == {"aborted_media_segments"}
     assert payload["summary"]["domains"] == 1
-    assert payload["summary"]["runtime_subjects"] == 1
+    assert payload["summary"]["runtime_subjects"] == 0
+
+    clamd_payload = queries.remediation_overview(
+        since=5000,
+        search="clamd",
+        limit=10,
+        summary={"request_records": 0},
+        runtime_health={
+            "proxy_id": "livingroom",
+            "status": "degraded",
+            "timestamp": 5301,
+            "services": {"clamd": {"ok": False, "detail": "clamd unreachable"}},
+            "stats": {
+                "memory": {
+                    "used_percent": 91.5,
+                    "available_bytes": 128 * 1024 * 1024,
+                },
+            },
+        },
+    )
+    assert "runtime_icap_degraded" in {
+        row["kind"] for row in clamd_payload["rows"]
+    }
+    assert clamd_payload["summary"]["runtime_subjects"] == 1
 
 
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(

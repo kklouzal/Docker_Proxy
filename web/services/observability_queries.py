@@ -1594,18 +1594,6 @@ class ObservabilityQueries:
         return needle in haystack
 
     @staticmethod
-    def _suggestion_visible_during_search(row: dict[str, Any]) -> bool:
-        return (row.get("subject_type") or "domain") == "proxy" and row.get(
-            "kind",
-        ) in {
-            "mysql_degraded",
-            "proxy_health_unreachable",
-            "runtime_icap_degraded",
-            "runtime_state_degraded",
-            "memory_pressure",
-        }
-
-    @staticmethod
     def _runtime_health_suggestions(
         runtime_health: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
@@ -2223,7 +2211,6 @@ class ObservabilityQueries:
                     str(row.get("subject") or ""),
                 )
                 in source_search_matches
-                or self._suggestion_visible_during_search(row)
             ]
         suggestions.sort(key=lambda row: self._remediation_sort_key(row, sort))
         all_rows = suggestions
