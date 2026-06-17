@@ -2224,31 +2224,32 @@ class ObservabilityQueries:
                 or self._suggestion_visible_during_search(row)
             ]
         suggestions.sort(key=lambda row: self._remediation_sort_key(row, sort))
+        all_rows = suggestions
         rows = suggestions[:lim]
-        by_component = Counter(str(row.get("component") or "Other") for row in rows)
-        by_kind = Counter(str(row.get("kind") or "other") for row in rows)
+        by_component = Counter(str(row.get("component") or "Other") for row in all_rows)
+        by_kind = Counter(str(row.get("kind") or "other") for row in all_rows)
         domain_subjects = {
             str(row.get("subject") or "")
-            for row in rows
+            for row in all_rows
             if row.get("subject") and (row.get("subject_type") or "domain") == "domain"
         }
         runtime_subjects = {
             str(row.get("subject") or "")
-            for row in rows
+            for row in all_rows
             if row.get("subject") and (row.get("subject_type") or "domain") != "domain"
         }
         return {
             "summary": {
-                "suggestions": len(rows),
+                "suggestions": len(all_rows),
                 "high_confidence": sum(
-                    1 for row in rows if row.get("confidence") == "high"
+                    1 for row in all_rows if row.get("confidence") == "high"
                 ),
-                "observations": sum(int(row.get("count") or 0) for row in rows),
+                "observations": sum(int(row.get("count") or 0) for row in all_rows),
                 "domains": len(domain_subjects),
                 "runtime_subjects": len(runtime_subjects),
-                "latest": max([int(row.get("last_seen") or 0) for row in rows] or [0]),
+                "latest": max([int(row.get("last_seen") or 0) for row in all_rows] or [0]),
                 "http3_candidates": sum(
-                    1 for row in rows if row.get("kind") == "http3_alt_svc"
+                    1 for row in all_rows if row.get("kind") == "http3_alt_svc"
                 ),
             },
             "rows": rows,

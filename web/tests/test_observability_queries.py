@@ -481,6 +481,66 @@ def test_remediation_summary_separates_domain_and_runtime_subjects(
     assert payload["summary"]["runtime_subjects"] == 1
 
 
+def test_remediation_summary_counts_candidates_beyond_visible_limit(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            sql_text = str(sql)
+            if "LOWER(COALESCE(response_cf_mitigated, '')) = 'challenge'" in sql_text:
+                return FakeResult(
+                    [
+                        (f"challenge-{idx}.example", 5, 1, 5000 - idx, "cloudflare")
+                        for idx in range(10)
+                    ],
+                )
+            if "REGEXP '(^|[^a-z0-9])h3[-=]'" in sql_text:
+                return FakeResult(
+                    [
+                        (f"h3-{idx}.example", 1, 1, 4900 - idx, 'h3=":443"')
+                        for idx in range(2)
+                    ],
+                )
+            return FakeResult([])
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", FakeConnection)
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=4800,
+        limit=10,
+        summary={"request_records": 0},
+    )
+
+    assert len(payload["rows"]) == 10
+    assert {row["kind"] for row in payload["rows"]} == {"cloudflare_challenge"}
+    assert payload["summary"]["suggestions"] == 12
+    assert payload["summary"]["http3_candidates"] == 2
+    assert payload["summary"]["domains"] == 12
+    top_kinds = {row["label"]: row["count"] for row in payload["top_kinds"]}
+    assert top_kinds["cloudflare_challenge"] == 10
+    assert top_kinds["http3_alt_svc"] == 2
+
+
 def test_remediation_runtime_health_bad_timestamp_degrades_safely(
     monkeypatch,
 ) -> None:
