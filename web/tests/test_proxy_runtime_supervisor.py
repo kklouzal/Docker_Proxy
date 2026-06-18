@@ -1007,7 +1007,7 @@ def test_sync_from_db_accepts_normalized_active_revision_before_failed_apply_qua
     runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False}
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: normalized_sha
-    runtime._reload_for_policy_update = lambda: (_ for _ in ()).throw(
+    runtime._reload_for_policy_update = lambda **_kwargs: (_ for _ in ()).throw(
         AssertionError("no policy reload should be needed"),
     )
 
@@ -1064,8 +1064,8 @@ def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._reload_for_policy_update = lambda: (
-        reloads.append(True)
+    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
+        reloads.append(wait_for_adblock_icap)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -1133,8 +1133,8 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False}
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._reload_for_policy_update = lambda: (
-        reloads.append(True)
+    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
+        reloads.append(wait_for_adblock_icap)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -1148,7 +1148,7 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     assert result["policy_changed"] is True
     assert applies == ["http_port 3128\n"]
     assert len(invalidations) >= 2
-    assert reloads == [True]
+    assert reloads == [False]
     assert recorded
     assert "Squid reconfigured for policy update." in recorded[0][2]
 
@@ -1208,7 +1208,7 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._reload_for_policy_update = lambda: (_ for _ in ()).throw(
+    runtime._reload_for_policy_update = lambda **_kwargs: (_ for _ in ()).throw(
         AssertionError("forced no-op should not reload policy includes"),
     )
 
@@ -1223,6 +1223,35 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
         "Proxy is already using the active config revision.",
     )
     assert runtime.controller.token == "adblock-sha"
+
+
+def test_reload_for_policy_update_can_skip_adblock_icap_health(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+
+    class Controller:
+        def _run(self, args, **_kwargs):
+            assert args == ["squid", "-k", "reconfigure"]
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout) -> bool:
+            assert timeout == pytest.approx(10.0)
+            return True
+
+    def fail_icap(**_kwargs) -> NoReturn:
+        msg = "policy-only reload should not probe adblock ICAP"
+        raise AssertionError(msg)
+
+    runtime.controller = Controller()
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", fail_icap)
+
+    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=False)
+
+    assert ok is True
+    assert "reconfigured" in detail
+    assert "Squid reconfigured for policy update." in detail
 
 
 def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> None:
@@ -1250,7 +1279,7 @@ def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> 
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", fake_icap)
     monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
 
-    ok, detail = runtime._reload_for_policy_update()
+    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
 
     assert ok is True
     assert "reconfigured" in detail
@@ -1290,7 +1319,7 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
         lambda seconds: now.__setitem__("value", now["value"] + seconds + 1.0),
     )
 
-    ok, detail = runtime._reload_for_policy_update()
+    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
 
     assert ok is False
     assert "reconfigured" in detail
@@ -2934,8 +2963,8 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
     runtime.controller.get_current_config = lambda: "http_port 3128\n"
-    runtime._reload_for_policy_update = lambda: (
-        reloads.append(True)
+    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
+        reloads.append(wait_for_adblock_icap)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -2946,7 +2975,7 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
 
     assert result["ok"] is True
     assert result["changed"] is True
-    assert reloads == [True]
+    assert reloads == [False]
     assert runtime.controller.token == "adblock-sha"
     assert "ClamAV runtime files updated" in result["detail"]
     assert "Squid reconfigured for policy update." in result["detail"]
@@ -3017,8 +3046,8 @@ def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() ->
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "normalized-sha"
-    runtime._reload_for_policy_update = lambda: (
-        reloads.append(True)
+    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
+        reloads.append(wait_for_adblock_icap)
         or (
             True,
             "Squid reconfigured for policy update.",

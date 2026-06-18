@@ -1125,7 +1125,11 @@ class ProxyRuntime:
             False,
         )
 
-    def _reload_for_policy_update(self) -> tuple[bool, str]:
+    def _reload_for_policy_update(
+        self,
+        *,
+        wait_for_adblock_icap: bool = True,
+    ) -> tuple[bool, str]:
         # Policy materialization changes included ACL files, external ACL inputs,
         # and the local adblock ICAP service revision. A full Squid process restart is too
         # disruptive during live policy churn: Squid drains helper children slowly
@@ -1151,7 +1155,7 @@ class ProxyRuntime:
                 ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
             except Exception:
                 ok = True
-        if ok:
+        if ok and wait_for_adblock_icap:
             # Squid can accept TCP connections before ICAP OPTIONS/helper state has
             # fully converged after rapid policy/adblock churn. Wait for the local
             # adblock ICAP service too so the sync API does not hand traffic back to
@@ -2835,7 +2839,9 @@ class ProxyRuntime:
         if revision_meta is None:
             reload_ok = True
             if policy_reload_required or adblock_changed or clamav_runtime_changed:
-                reload_ok, reload_detail = self._reload_for_policy_update()
+                reload_ok, reload_detail = self._reload_for_policy_update(
+                    wait_for_adblock_icap=adblock_changed,
+                )
                 if reload_detail:
                     detail_parts.append(reload_detail)
             detail = (
@@ -2898,7 +2904,9 @@ class ProxyRuntime:
         if normalized_config_current:
             reload_ok = True
             if policy_reload_required or adblock_changed or clamav_runtime_changed:
-                reload_ok, reload_detail = self._reload_for_policy_update()
+                reload_ok, reload_detail = self._reload_for_policy_update(
+                    wait_for_adblock_icap=adblock_changed,
+                )
                 if reload_detail:
                     detail_parts.append(reload_detail)
             detail = "Proxy is already using the active config revision."
@@ -2977,7 +2985,9 @@ class ProxyRuntime:
         ):
             reload_ok = True
             if policy_reload_required or adblock_changed or clamav_runtime_changed:
-                reload_ok, reload_detail = self._reload_for_policy_update()
+                reload_ok, reload_detail = self._reload_for_policy_update(
+                    wait_for_adblock_icap=adblock_changed,
+                )
                 if reload_detail:
                     detail_parts.append(reload_detail)
             detail = "Proxy is already using the active config revision."
@@ -3045,7 +3055,9 @@ class ProxyRuntime:
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
         if ok and (policy_reload_required or adblock_changed or clamav_runtime_changed):
-            policy_reload_ok, policy_reload_detail = self._reload_for_policy_update()
+            policy_reload_ok, policy_reload_detail = self._reload_for_policy_update(
+                wait_for_adblock_icap=adblock_changed,
+            )
             ok = bool(policy_reload_ok)
             if policy_reload_detail.strip():
                 detail_parts.append(policy_reload_detail.strip())
