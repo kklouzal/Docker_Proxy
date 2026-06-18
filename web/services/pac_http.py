@@ -23,6 +23,7 @@ from services.proxy_registry import (
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
+_FileSignature = tuple[str, int, int, int, int]
 
 
 @lru_cache(maxsize=1)
@@ -239,8 +240,8 @@ class LocalPacCache:
         self._state_sha = ""
         self._manifest: dict[str, object] = {}
         self._files: dict[str, str] = {}
-        self._state_signatures: tuple[tuple[str, int, int], ...] = ()
-        self._file_signatures: tuple[tuple[str, int, int], ...] = ()
+        self._state_signatures: tuple[_FileSignature, ...] = ()
+        self._file_signatures: tuple[_FileSignature, ...] = ()
 
     def _read_state_sha(self) -> str:
         try:
@@ -252,23 +253,31 @@ class LocalPacCache:
         except Exception:
             return ""
 
-    def _state_file_signatures(self) -> tuple[tuple[str, int, int], ...]:
-        signatures: list[tuple[str, int, int]] = []
+    def _state_file_signatures(self) -> tuple[_FileSignature, ...]:
+        signatures: list[_FileSignature] = []
         for rel_path in (PAC_STATE_SHA_FILENAME, PAC_MANIFEST_FILENAME):
             path = self.pac_dir / rel_path
             try:
                 stat = path.stat()
             except OSError:
-                signatures.append((rel_path, -1, -1))
+                signatures.append((rel_path, -1, -1, -1, -1))
                 continue
-            signatures.append((rel_path, int(stat.st_mtime_ns), int(stat.st_size)))
+            signatures.append(
+                (
+                    rel_path,
+                    int(stat.st_mtime_ns),
+                    int(stat.st_size),
+                    int(getattr(stat, "st_dev", 0) or 0),
+                    int(getattr(stat, "st_ino", 0) or 0),
+                )
+            )
         return tuple(signatures)
 
     def _pac_file_signatures(
         self,
         rel_paths: object,
-    ) -> tuple[tuple[str, int, int], ...]:
-        signatures: list[tuple[str, int, int]] = []
+    ) -> tuple[_FileSignature, ...]:
+        signatures: list[_FileSignature] = []
         if not isinstance(rel_paths, (list, set, tuple, frozenset)):
             return ()
         for rel_path in sorted(str(item) for item in rel_paths):
@@ -279,9 +288,17 @@ class LocalPacCache:
             try:
                 stat = path.stat()
             except OSError:
-                signatures.append((safe_path, -1, -1))
+                signatures.append((safe_path, -1, -1, -1, -1))
                 continue
-            signatures.append((safe_path, int(stat.st_mtime_ns), int(stat.st_size)))
+            signatures.append(
+                (
+                    safe_path,
+                    int(stat.st_mtime_ns),
+                    int(stat.st_size),
+                    int(getattr(stat, "st_dev", 0) or 0),
+                    int(getattr(stat, "st_ino", 0) or 0),
+                )
+            )
         return tuple(signatures)
 
     def _load_locked(self) -> bool:

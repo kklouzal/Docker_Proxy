@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -343,6 +344,38 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_changes(
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
         b'function FindProxyForURL(){return "PROXY two repaired";}\n'
+    )
+
+
+def test_local_pac_cache_reloads_when_referenced_pac_file_is_replaced_same_signature(
+    tmp_path, pac_http
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
+        encoding="utf-8",
+    )
+    fallback = pac_dir / "fallback.pac"
+    old_content = 'function FindProxyForURL(){return "PROXY one";}\n'
+    new_content = 'function FindProxyForURL(){return "DIRECTtwo";}\n'
+    assert len(old_content) == len(new_content)
+    fallback.write_text(old_content, encoding="utf-8")
+    stat = fallback.stat()
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
+        old_content.encode("utf-8")
+    )
+
+    replacement = pac_dir / ".fallback.pac.tmp"
+    replacement.write_text(new_content, encoding="utf-8")
+    replacement.replace(fallback)
+    os.utime(fallback, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
+        new_content.encode("utf-8")
     )
 
 
