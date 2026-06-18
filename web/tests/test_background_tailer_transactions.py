@@ -600,12 +600,21 @@ def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
             return self.lines.pop(0) if self.lines else ""
 
     handles = iter([Handle(["diagnostic line\n"]), Handle([])])
-    inodes = iter([1, 2, 2, 2, 2])
+    log_path_stats = iter([1, 2, 2])
     times = iter([100.0, 100.1, 100.2, 101.5, 101.6])
+
+    def fake_time() -> float:
+        return next(times, 101.6)
+
+    def fake_stat(path):
+        if str(path) == str(log_path):
+            return SimpleNamespace(st_ino=next(log_path_stats, 2), st_size=0)
+        return SimpleNamespace(st_ino=2, st_size=0)
+
     outage_logs: list[tuple[str, str]] = []
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
     monkeypatch.setattr(store, "_connect", connect)
-    monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times))
+    monkeypatch.setattr(diagnostic_store.time, "time", fake_time)
     monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
     monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
@@ -613,11 +622,7 @@ def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
         "open",
         lambda *_args, **_kwargs: next(handles),
     )
-    monkeypatch.setattr(
-        diagnostic_store.os,
-        "stat",
-        lambda _path: SimpleNamespace(st_ino=next(inodes), st_size=0),
-    )
+    monkeypatch.setattr(diagnostic_store.os, "stat", fake_stat)
     monkeypatch.setattr(
         diagnostic_store,
         "log_database_unavailable",

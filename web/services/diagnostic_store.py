@@ -787,7 +787,7 @@ class DiagnosticStore:
                                         f"Diagnostic tailer deferred batch flush in {loop_name} while MySQL is unavailable",
                                         exc,
                                     )
-                                    last_commit = now
+                                    last_commit = 0.0
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
@@ -809,7 +809,7 @@ class DiagnosticStore:
                                     f"Diagnostic tailer deferred idle flush in {loop_name} while MySQL is unavailable",
                                     exc,
                                 )
-                                last_commit = now
+                                last_commit = 0.0
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -850,6 +850,7 @@ class DiagnosticStore:
                                     f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable",
                                     exc,
                                 )
+                                last_commit = 0.0
                             except Exception:
                                 log_exception_throttled(
                                     logger,
