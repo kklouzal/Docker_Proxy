@@ -112,7 +112,7 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
     )
     partial = "diagnostic line"
     suffix = "\n"
-    completed = False
+    sleep_calls = 0
     build_calls: list[str] = []
     flushed_rows: list[tuple[object, ...]] = []
 
@@ -123,38 +123,16 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
         def __exit__(self, *_args):
             return False
 
-    class Handle:
-        def __init__(self) -> None:
-            self.pos = 0
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def seek(self, offset, whence=0):
-            if whence == 2:
-                self.pos = 0
-            else:
-                self.pos = int(offset)
-            return self.pos
-
-        def tell(self) -> int:
-            return self.pos
-
-        def readline(self) -> str:
-            text = partial + (suffix if completed else "")
-            if self.pos >= len(text):
-                return ""
-            line = text[self.pos :]
-            self.pos = len(text)
-            return line
-
     def sleep(_seconds: float) -> None:
-        nonlocal completed
-        if not completed:
-            completed = True
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            log_path.write_text(partial, encoding="utf-8")
+            return
+        if sleep_calls == 2:
+            assert build_calls == []
+            assert flushed_rows == []
+            log_path.write_text(partial + suffix, encoding="utf-8")
             return
         raise StopLoop
 
@@ -165,21 +143,11 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
     def flush_rows(_conn, rows):
         flushed_rows.extend(rows)
 
-    def fake_path_stat(_path):
-        size = len(partial) + (len(suffix) if completed else 0)
-        return SimpleNamespace(st_ino=1, st_size=size)
-
-    times = iter([100.0, 101.0])
+    times = iter([100.0, 101.0, 101.1, 102.1, 102.2])
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
     monkeypatch.setattr(store, "_connect", Conn)
     monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times, 101.0))
     monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
-    monkeypatch.setattr(diagnostic_store.pathlib.Path, "stat", fake_path_stat)
-    monkeypatch.setattr(
-        diagnostic_store.pathlib.Path,
-        "open",
-        lambda *_args, **_kwargs: Handle(),
-    )
 
     with pytest.raises(StopLoop):
         store._tail_file_loop(
@@ -191,6 +159,63 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
 
     assert build_calls == [partial + suffix]
     assert flushed_rows == [("row", partial + suffix)]
+
+
+def test_diagnostic_tailer_recovers_when_partial_line_rotates(
+    monkeypatch, tmp_path, diagnostic_store
+) -> None:
+    log_path = tmp_path / "diagnostic.log"
+    rotated_path = tmp_path / "diagnostic.log.1"
+    log_path.write_text("", encoding="utf-8")
+    store = diagnostic_store.DiagnosticStore(
+        access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
+    )
+    sleep_calls = 0
+    build_calls: list[str] = []
+    flushes: list[list[tuple[str, str]]] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            log_path.write_text("ready\npartial", encoding="utf-8")
+            return
+        if sleep_calls == 2:
+            log_path.rename(rotated_path)
+            log_path.write_text("after\n", encoding="utf-8")
+            return
+        raise StopLoop
+
+    def build_row(line: str):
+        build_calls.append(line)
+        return ("row", line)
+
+    def flush_rows(_conn, rows):
+        flushes.append(list(rows))
+
+    times = iter([100.0, 100.1, 100.2, 100.3, 101.6, 101.7])
+    monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "0.25")
+    monkeypatch.setattr(store, "_connect", Conn)
+    monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times, 101.1))
+    monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
+
+    with pytest.raises(StopLoop):
+        store._tail_file_loop(
+            str(log_path),
+            build_row,
+            flush_rows,
+            "test-diagnostic",
+        )
+
+    assert build_calls == ["ready\n", "after\n"]
+    assert flushes == [[("row", "ready\n")], [("row", "after\n")]]
 
 
 def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(

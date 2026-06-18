@@ -723,6 +723,7 @@ class DiagnosticStore:
         pending_rows: list[tuple[Any, ...]] = []
         drop_state: dict[str, Any] = {"dropped": 0, "last_log_ts": 0.0}
         last_commit = time.time()
+        reopen_from_start = False
 
         while True:
             try:
@@ -751,13 +752,46 @@ class DiagnosticStore:
                     encoding="utf-8",
                     errors="replace",
                 ) as handle:
-                    handle.seek(0, os.SEEK_END)
+                    if reopen_from_start:
+                        handle.seek(0, os.SEEK_SET)
+                        reopen_from_start = False
+                    else:
+                        handle.seek(0, os.SEEK_END)
                     while True:
                         line_pos = handle.tell()
                         line = handle.readline()
                         if line:
                             if not line.endswith("\n"):
                                 handle.seek(line_pos, os.SEEK_SET)
+                                try:
+                                    inode_now = getattr(os.stat(path), "st_ino", None)
+                                except OSError:
+                                    inode_now = None
+                                if (
+                                    inode_now is not None
+                                    and last_inode is not None
+                                    and inode_now != last_inode
+                                ):
+                                    last_inode = inode_now
+                                    try:
+                                        flush_pending()
+                                    except DATABASE_ERRORS as exc:
+                                        log_database_unavailable(
+                                            logger,
+                                            f"diagnostic_store.rotate.{loop_name}.db",
+                                            f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable",
+                                            exc,
+                                        )
+                                        last_commit = 0.0
+                                    except Exception:
+                                        log_exception_throttled(
+                                            logger,
+                                            f"diagnostic_store.rotate.{loop_name}",
+                                            interval_seconds=300.0,
+                                            message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
+                                        )
+                                    reopen_from_start = True
+                                    break
                                 time.sleep(poll_interval)
                                 continue
                             try:
@@ -863,6 +897,7 @@ class DiagnosticStore:
                                     interval_seconds=300.0,
                                     message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
                                 )
+                            reopen_from_start = True
                             break
 
                         time.sleep(poll_interval)
