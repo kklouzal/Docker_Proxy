@@ -719,6 +719,10 @@ class DiagnosticStore:
             maximum=100000,
         )
         last_inode: int | None = None
+        pending = 0
+        pending_rows: list[tuple[Any, ...]] = []
+        drop_state: dict[str, Any] = {"dropped": 0, "last_log_ts": 0.0}
+        last_commit = time.time()
 
         while True:
             try:
@@ -730,11 +734,6 @@ class DiagnosticStore:
                 inode = getattr(st, "st_ino", None)
                 if last_inode is None:
                     last_inode = inode
-
-                pending = 0
-                pending_rows: list[tuple[Any, ...]] = []
-                drop_state: dict[str, Any] = {"dropped": 0, "last_log_ts": 0.0}
-                last_commit = time.time()
 
                 def flush_pending() -> None:
                     nonlocal pending, last_commit

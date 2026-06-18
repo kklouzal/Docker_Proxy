@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -545,5 +546,97 @@ def test_diagnostic_tailer_logs_database_outage_without_traceback(
         (
             "diagnostic_store.idle_commit.test-diagnostic.db",
             "Diagnostic tailer deferred idle flush in test-diagnostic while MySQL is unavailable",
+        )
+    ]
+
+
+def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
+    monkeypatch, tmp_path, diagnostic_store
+) -> None:
+    import pymysql  # type: ignore
+
+    log_path = tmp_path / "diagnostic.log"
+    log_path.write_text("", encoding="utf-8")
+    store = diagnostic_store.DiagnosticStore(
+        access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
+    )
+    rows_flushed: list[tuple[object, ...]] = []
+    flush_attempts = 0
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def connect():
+        nonlocal flush_attempts
+        flush_attempts += 1
+        if flush_attempts == 1:
+            raise pymysql.err.OperationalError(2003, "connect timed out")
+        return Conn()
+
+    def flush_rows(_conn, rows):
+        rows_flushed.extend(rows)
+
+    class Handle:
+        def __init__(self, lines: list[str]) -> None:
+            self.lines = lines
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def seek(self, *_args):
+            return 0
+
+        def tell(self) -> int:
+            return 0
+
+        def readline(self) -> str:
+            return self.lines.pop(0) if self.lines else ""
+
+    handles = iter([Handle(["diagnostic line\n"]), Handle([])])
+    inodes = iter([1, 2, 2, 2, 2])
+    times = iter([100.0, 100.1, 100.2, 101.5, 101.6])
+    outage_logs: list[tuple[str, str]] = []
+    monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
+    monkeypatch.setattr(store, "_connect", connect)
+    monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times))
+    monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
+    monkeypatch.setattr(
+        diagnostic_store.pathlib.Path,
+        "open",
+        lambda *_args, **_kwargs: next(handles),
+    )
+    monkeypatch.setattr(
+        diagnostic_store.os,
+        "stat",
+        lambda _path: SimpleNamespace(st_ino=next(inodes), st_size=0),
+    )
+    monkeypatch.setattr(
+        diagnostic_store,
+        "log_database_unavailable",
+        lambda _logger, key, message, _exc: outage_logs.append((key, message)),
+    )
+
+    with pytest.raises(StopLoop):
+        store._tail_file_loop(
+            str(log_path),
+            lambda _line: ("retained-row",),
+            flush_rows,
+            "test-diagnostic",
+        )
+
+    assert rows_flushed == [("retained-row",)]
+    assert flush_attempts == 2
+    assert outage_logs == [
+        (
+            "diagnostic_store.rotate.test-diagnostic.db",
+            "Diagnostic tailer deferred rotation flush for test-diagnostic while MySQL is unavailable",
         )
     ]
