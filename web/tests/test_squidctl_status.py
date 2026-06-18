@@ -73,11 +73,13 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     cache_dir.mkdir()
     (cache_dir / "swap.state").write_text("cached\n", encoding="utf-8")
     ready_timeouts: list[float] = []
+    prepare_timeouts: list[float] = []
 
-    def fake_run(args, **_kwargs):
+    def fake_run(args, **kwargs):
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
         if args[:2] == ["squid", "-z"]:
+            prepare_timeouts.append(float(kwargs["timeout"]))
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         msg = f"unexpected command: {args!r}"
         raise AssertionError(msg)
@@ -105,8 +107,61 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
 
     assert ok is True
     assert ready_timeouts == [20.0]
+    assert prepare_timeouts == [90.0]
     assert not (cache_dir / "swap.state").exists()
     assert "restarted" in detail
+
+
+def test_clear_disk_cache_fails_fast_when_listener_never_releases(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "swap.state").write_text("cached\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    absent_checks: list[float] = []
+    orphan_timeouts: list[float] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout=b"ok\n", stderr=b"")
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_dir} 100 16 256\n",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: absent_checks.append(float(timeout)) or False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_terminate_orphaned_http_listener_processes",
+        lambda *, timeout: orphan_timeouts.append(float(timeout)) or "no orphans",
+    )
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0: (True, "unexpected restart"),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is False
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["squid", "-k", "shutdown"],
+    ]
+    assert absent_checks == [8.0, 8.0, 8.0]
+    assert orphan_timeouts == [6.0]
+    assert (cache_dir / "swap.state").exists()
+    assert "did not release before cache clear" in detail
 
 
 def test_restart_squid_accepts_supervisor_auto_restart_race(monkeypatch) -> None:

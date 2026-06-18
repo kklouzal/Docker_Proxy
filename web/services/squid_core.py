@@ -1115,24 +1115,36 @@ class SquidController:
             detail_parts.append(
                 self._decode_completed(stop) or "supervisorctl stop squid",
             )
-            if not self._wait_for_http_listener_absent(timeout=30.0):
-                detail_parts.append(
-                    "Squid HTTP listener stayed bound after stop; requesting shutdown fallback.",
-                )
-                self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
-                self._wait_for_http_listener_absent(timeout=30.0)
         except Exception as exc:
             detail_parts.append(f"stop failed: {exc}")
+
+        if not self._wait_for_http_listener_absent(timeout=8.0):
+            detail_parts.append(
+                "Squid HTTP listener stayed bound after stop; requesting shutdown fallback.",
+            )
             try:
-                self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=10)
-                self._wait_for_http_listener_absent(timeout=30.0)
-            except Exception:
+                self._run(["squid", "-k", "shutdown"], capture_output=True, timeout=8)
+            except Exception as exc:
+                detail_parts.append(f"squid shutdown fallback failed: {exc}")
                 log_exception_throttled(
                     logger,
                     "squid_core.shutdown_fallback",
                     interval_seconds=300.0,
                     message="Squid shutdown fallback failed while clearing disk cache",
                 )
+            if not self._wait_for_http_listener_absent(timeout=8.0):
+                detail_parts.append(
+                    self._terminate_orphaned_http_listener_processes(timeout=6.0),
+                )
+            if not self._wait_for_http_listener_absent(timeout=8.0):
+                return False, "\n".join(
+                    part
+                    for part in [
+                        *detail_parts,
+                        "Squid HTTP listener did not release before cache clear.",
+                    ]
+                    if part
+                ).strip()
 
         try:
             if Path(cache_path).is_dir():
