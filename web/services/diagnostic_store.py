@@ -753,8 +753,13 @@ class DiagnosticStore:
                 ) as handle:
                     handle.seek(0, os.SEEK_END)
                     while True:
+                        line_pos = handle.tell()
                         line = handle.readline()
                         if line:
+                            if not line.endswith("\n"):
+                                handle.seek(line_pos, os.SEEK_SET)
+                                time.sleep(poll_interval)
+                                continue
                             try:
                                 row = build_row_fn(line)
                                 if row is not None:
