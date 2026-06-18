@@ -278,12 +278,18 @@ def send_sample_av_icap(
         port_env="CICAP_AV_PORT",
         default_port=14001,
     )
-    return send_sample_respmod_to(
+    result = send_sample_respmod_to(
         host=resolved_host,
         port=resolved_port,
         service="/avrespmod",
         timeout=timeout,
         error_formatter=error_formatter,
+    )
+    return annotate_service_target(
+        result,
+        host=resolved_host,
+        port=resolved_port,
+        service="/avrespmod",
     )
 
 
@@ -300,6 +306,7 @@ def test_eicar(
         port=port,
         timeout=timeout,
         error_formatter=error_formatter,
+        annotate=True,
     )
 
 

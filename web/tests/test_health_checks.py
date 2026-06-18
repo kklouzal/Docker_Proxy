@@ -306,3 +306,42 @@ def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
     assert calls == {"adblock": 0.9, "av_icap": 0.9, "clamd": 0.2}
     assert result["clamd"] == {"ok": True, "detail": "clamd ok"}
     assert result["clamav"]["ok"] is True
+
+
+def test_clamav_diagnostic_actions_include_resolved_targets(monkeypatch) -> None:
+    proxy_health = _proxy_health_module()
+
+    monkeypatch.setenv("CICAP_HOST", "av-proxy")
+    monkeypatch.setenv("CICAP_AV_PORT", "15001")
+    monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
+    monkeypatch.setenv("CLAMD_PORT", "13310")
+
+    def fake_sample(**kwargs):
+        assert kwargs["host"] == "av-proxy"
+        assert kwargs["port"] == 15001
+        assert kwargs["service"] == "/avrespmod"
+        return {"ok": True, "detail": "ICAP/1.0 204 No Content"}
+
+    def fake_eicar(**kwargs):
+        assert kwargs["host"] == "clamd-proxy"
+        assert kwargs["port"] == 13310
+        return {"ok": True, "detail": "stream: Eicar-Test-Signature FOUND"}
+
+    monkeypatch.setattr(proxy_health, "send_sample_respmod_to", fake_sample)
+    monkeypatch.setattr(proxy_health, "test_clamd_eicar", fake_eicar)
+
+    assert proxy_health.send_sample_av_icap() == {
+        "ok": True,
+        "detail": "ICAP/1.0 204 No Content",
+        "host": "av-proxy",
+        "port": 15001,
+        "target": "av-proxy:15001",
+        "service": "/avrespmod",
+    }
+    assert proxy_health.test_eicar() == {
+        "ok": True,
+        "detail": "stream: Eicar-Test-Signature FOUND",
+        "host": "clamd-proxy",
+        "port": 13310,
+        "target": "clamd-proxy:13310",
+    }
