@@ -252,7 +252,7 @@ class SquidController:
             flags=re.MULTILINE,
         )
         managed_patterns = (
-            r"^\s*icap_service\s+(?:adblock_req(?:_[A-Za-z0-9]+)?|av_req|av_resp)\b.*$\n?",
+            r"^\s*icap_service\s+(?:adblock_req(?:_[A-Za-z0-9_.-]+)?|av_req|av_resp)\b.*$\n?",
             r"^\s*adaptation_service_set\s+(?:adblock_req_set|av_req_set|av_resp_set)\b.*$\n?",
             r"^\s*acl\s+icap_adblockable\s+method\b.*$\n?",
             r"^\s*acl\s+file_security_[A-Za-z0-9_]+\b.*$\n?",

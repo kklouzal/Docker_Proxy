@@ -1190,6 +1190,33 @@ def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_incl
     ) < normalized.index("http_access allow all")
 
 
+def test_squid_normalize_migrates_hyphenated_versioned_adblock_service() -> None:
+    _add_web_to_path()
+    from services.squid_core import SquidController  # type: ignore
+
+    controller = SquidController.__new__(SquidController)
+    legacy = (
+        "http_port 3128\n"
+        "icap_service adblock_req_rev-2026.06 reqmod_precache "
+        "icap://127.0.0.1:14000/adblockreq bypass=on\n"
+        "adaptation_service_set adblock_req_set adblock_req_rev-2026.06\n"
+        "adaptation_access adblock_req_set allow icap_adblockable\n"
+        "adaptation_access adblock_req_set deny all\n"
+        "http_access allow all\n"
+    )
+
+    normalized = controller.normalize_config_text(legacy)
+
+    assert normalized.count("include /etc/squid/conf.d/20-icap.conf") == 1
+    assert "icap_service adblock_req_rev-2026.06" not in normalized
+    assert "adaptation_service_set adblock_req_set adblock_req_rev-2026.06" not in normalized
+    assert "adaptation_access adblock_req_set allow icap_adblockable" not in normalized
+    assert "adaptation_access adblock_req_set deny all" not in normalized
+    assert normalized.index(
+        "include /etc/squid/conf.d/20-icap.conf"
+    ) < normalized.index("http_access allow all")
+
+
 def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
     _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
