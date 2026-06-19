@@ -112,6 +112,104 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     assert "restarted" in detail
 
 
+def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "swap.state").write_text("cached\n", encoding="utf-8")
+    restart_calls: list[float] = []
+
+    def fake_run(args, **_kwargs):
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[:2] == ["squid", "-z"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout=b"",
+                stderr=b"cache_dir init failed\n",
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_dir} 100 16 256\n",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0: (
+            restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
+        ),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is False
+    assert restart_calls == []
+    assert not (cache_dir / "swap.state").exists()
+    assert "cache_dir init failed" in detail
+    assert "unexpected restart" not in detail
+
+
+def test_clear_disk_cache_fails_when_squid_z_raises(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "swap.state").write_text("cached\n", encoding="utf-8")
+    restart_calls: list[float] = []
+
+    def fake_run(args, **_kwargs):
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[:2] == ["squid", "-z"]:
+            raise RuntimeError("spawn failed")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_dir} 100 16 256\n",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0: (
+            restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
+        ),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is False
+    assert restart_calls == []
+    assert not (cache_dir / "swap.state").exists()
+    assert "squid -z error: spawn failed" in detail
+    assert "unexpected restart" not in detail
+
+
 def test_clear_disk_cache_fails_fast_when_listener_never_releases(
     monkeypatch,
     tmp_path,

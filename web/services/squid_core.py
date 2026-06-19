@@ -1179,6 +1179,9 @@ class SquidController:
                 detail_parts.append(
                     self._decode_completed(prepare) or "squid -z failed",
                 )
+                return False, "\n".join(
+                    part for part in detail_parts if part
+                ).strip()
             else:
                 detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
             if self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0):
@@ -1187,6 +1190,7 @@ class SquidController:
                     detail_parts.append(stale_pid_detail)
         except Exception as exc:
             detail_parts.append(f"squid -z error: {exc}")
+            return False, "\n".join(part for part in detail_parts if part).strip()
 
         ok_restart, restart_detail = self.restart_squid(ready_timeout=20.0)
         detail_parts.append(
