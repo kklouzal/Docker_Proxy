@@ -122,6 +122,63 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     assert "restarted" in detail
 
 
+def test_clear_disk_cache_clears_all_configured_cache_dirs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    cache_a.mkdir()
+    cache_b.mkdir()
+    (cache_a / "swap.state").write_text("cached-a\n", encoding="utf-8")
+    (cache_b / "swap.state").write_text("cached-b\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[:3] == ["squid", "-N", "-z"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: (
+            f"cache_dir rock {cache_a} 100 slot-size=32768\n"
+            f"cache_dir ufs {cache_b} 100 16 256\n"
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0: (True, "restarted"),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is True
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+    ]
+    assert not (cache_a / "swap.state").exists()
+    assert not (cache_b / "swap.state").exists()
+    assert f"cleared: {cache_a}" in detail
+    assert f"cleared: {cache_b}" in detail
+    assert "restarted" in detail
+
+
 def test_clear_disk_cache_cleans_live_prepare_pid_before_restart(
     monkeypatch,
     tmp_path,

@@ -1076,15 +1076,23 @@ class SquidController:
             return False, "\n".join([*detail_parts, str(exc)]).strip()
 
     def _get_first_cache_dir_path(self, config_text: str | None = None) -> str:
+        paths = self._get_cache_dir_paths(config_text)
+        return paths[0] if paths else "/var/spool/squid"
+
+    def _get_cache_dir_paths(self, config_text: str | None = None) -> tuple[str, ...]:
         text = config_text if config_text is not None else self.get_current_config()
+        paths: list[str] = []
+        seen: set[str] = set()
         try:
-            match = re.search(
+            for match in re.finditer(
                 r"^\s*cache_dir\s+\S+\s+(\S+)(?:\s|$)",
                 text or "",
                 re.MULTILINE | re.IGNORECASE,
-            )
-            if match:
-                return (match.group(1) or "").strip()
+            ):
+                path = (match.group(1) or "").strip()
+                if path and path not in seen:
+                    seen.add(path)
+                    paths.append(path)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -1092,7 +1100,7 @@ class SquidController:
                 interval_seconds=300.0,
                 message="Failed to parse cache_dir from squid config; using default",
             )
-        return "/var/spool/squid"
+        return tuple(paths) or ("/var/spool/squid",)
 
     def _cache_dir_path_is_safe_to_clear(self, cache_path: str) -> bool:
         raw_path = (cache_path or "").strip()
@@ -1180,9 +1188,10 @@ class SquidController:
         return True
 
     def clear_disk_cache(self) -> tuple[bool, str]:
-        cache_path = self._get_first_cache_dir_path()
-        if not self._cache_dir_path_is_safe_to_clear(cache_path):
-            return False, f"Refusing to clear cache_dir at unsafe path: {cache_path}"
+        cache_paths = self._get_cache_dir_paths()
+        for cache_path in cache_paths:
+            if not self._cache_dir_path_is_safe_to_clear(cache_path):
+                return False, f"Refusing to clear cache_dir at unsafe path: {cache_path}"
 
         detail_parts: list[str] = []
         try:
@@ -1226,24 +1235,25 @@ class SquidController:
                 ).strip()
 
         try:
-            if Path(cache_path).is_dir():
-                for name in os.listdir(cache_path):
-                    candidate = os.path.join(cache_path, name)
-                    try:
-                        if (
-                            Path(candidate).is_dir()
-                            and not Path(candidate).is_symlink()
-                        ):
+            for cache_path in cache_paths:
+                if Path(cache_path).is_dir():
+                    for name in os.listdir(cache_path):
+                        candidate = os.path.join(cache_path, name)
+                        try:
+                            if (
+                                Path(candidate).is_dir()
+                                and not Path(candidate).is_symlink()
+                            ):
+                                shutil.rmtree(candidate, ignore_errors=True)
+                            else:
+                                Path(candidate).unlink()
+                        except IsADirectoryError:
                             shutil.rmtree(candidate, ignore_errors=True)
-                        else:
-                            Path(candidate).unlink()
-                    except IsADirectoryError:
-                        shutil.rmtree(candidate, ignore_errors=True)
-                    except FileNotFoundError:
-                        pass
-            else:
-                Path(cache_path).mkdir(exist_ok=True, parents=True)
-            detail_parts.append(f"cleared: {cache_path}")
+                        except FileNotFoundError:
+                            pass
+                else:
+                    Path(cache_path).mkdir(exist_ok=True, parents=True)
+                detail_parts.append(f"cleared: {cache_path}")
         except Exception as exc:
             prefix = "\n".join(detail_parts) + "\n" if detail_parts else ""
             return False, prefix + f"cache delete failed: {exc}"
