@@ -1143,7 +1143,23 @@ class SquidController:
             return False
         return len(normalized.parts) >= 3
 
-    def _cleanup_after_cache_prepare(self, detail_parts: list[str]) -> bool:
+    def _cleanup_cache_prepare_boundary(
+        self,
+        detail_parts: list[str],
+        *,
+        live_message: str,
+        shutdown_ok_message: str,
+        shutdown_error_message: str,
+        listener_error_message: str,
+        pid_error_message: str,
+        initial_stale_pid_cleanup: bool = False,
+        terminate_listener_orphans: bool = False,
+    ) -> bool:
+        if initial_stale_pid_cleanup:
+            stale_pid_detail = self._remove_stale_squid_pidfile()
+            if stale_pid_detail:
+                detail_parts.append(stale_pid_detail)
+
         pidfile_stale = self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
         listener_absent = self._wait_for_http_listener_absent(timeout=1.0)
         if pidfile_stale and listener_absent:
@@ -1152,40 +1168,72 @@ class SquidController:
                 detail_parts.append(stale_pid_detail)
             return True
 
-        detail_parts.append(
-            "Squid cache preparation left a live PID file or listener; requesting shutdown before restart.",
-        )
+        detail_parts.append(live_message)
         try:
             shutdown = self._run(
                 ["squid", "-k", "shutdown"],
                 capture_output=True,
                 timeout=12,
             )
-            detail_parts.append(
-                self._decode_completed(shutdown)
-                or "squid shutdown requested after cache preparation",
-            )
+            detail_parts.append(self._decode_completed(shutdown) or shutdown_ok_message)
         except Exception as exc:
-            detail_parts.append(
-                f"squid shutdown after cache preparation failed: {exc}",
-            )
+            detail_parts.append(f"{shutdown_error_message}: {exc}")
 
         listener_absent = self._wait_for_http_listener_absent(timeout=20.0)
+        if terminate_listener_orphans and not listener_absent:
+            detail_parts.append(
+                self._terminate_orphaned_http_listener_processes(timeout=6.0),
+            )
+            listener_absent = self._wait_for_http_listener_absent(timeout=8.0)
         self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
         stale_pid_detail = self._remove_stale_squid_pidfile()
         if stale_pid_detail:
             detail_parts.append(stale_pid_detail)
         if not listener_absent:
-            detail_parts.append(
-                "Squid HTTP listener stayed bound after cache preparation cleanup.",
-            )
+            detail_parts.append(listener_error_message)
             return False
         if not self._wait_for_squid_pidfile_stale_or_absent(timeout=1.0):
-            detail_parts.append(
-                "Squid PID file still points to a live process after cache preparation cleanup.",
-            )
+            detail_parts.append(pid_error_message)
             return False
         return True
+
+    def _cleanup_after_cache_prepare(self, detail_parts: list[str]) -> bool:
+        return self._cleanup_cache_prepare_boundary(
+            detail_parts,
+            live_message=(
+                "Squid cache preparation left a live PID file or listener; "
+                "requesting shutdown before restart."
+            ),
+            shutdown_ok_message="squid shutdown requested after cache preparation",
+            shutdown_error_message="squid shutdown after cache preparation failed",
+            listener_error_message=(
+                "Squid HTTP listener stayed bound after cache preparation cleanup."
+            ),
+            pid_error_message=(
+                "Squid PID file still points to a live process after cache "
+                "preparation cleanup."
+            ),
+        )
+
+    def _cleanup_before_cache_prepare(self, detail_parts: list[str]) -> bool:
+        return self._cleanup_cache_prepare_boundary(
+            detail_parts,
+            live_message=(
+                "Squid still has a live PID file or listener before cache "
+                "preparation; requesting shutdown before cache clear."
+            ),
+            shutdown_ok_message="squid shutdown requested before cache preparation",
+            shutdown_error_message="squid shutdown before cache preparation failed",
+            listener_error_message=(
+                "Squid HTTP listener stayed bound before cache preparation."
+            ),
+            pid_error_message=(
+                "Squid PID file still points to a live process before cache "
+                "preparation."
+            ),
+            initial_stale_pid_cleanup=True,
+            terminate_listener_orphans=True,
+        )
 
     def clear_disk_cache(self) -> tuple[bool, str]:
         cache_paths = self._get_cache_dir_paths()
@@ -1233,6 +1281,9 @@ class SquidController:
                     ]
                     if part
                 ).strip()
+
+        if not self._cleanup_before_cache_prepare(detail_parts):
+            return False, "\n".join(part for part in detail_parts if part).strip()
 
         try:
             for cache_path in cache_paths:

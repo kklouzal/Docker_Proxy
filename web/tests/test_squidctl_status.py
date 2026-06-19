@@ -102,6 +102,12 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     )
     monkeypatch.setattr(
         controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(
+        controller,
         "restart_squid",
         lambda *, ready_timeout=45.0: (
             ready_timeouts.append(float(ready_timeout)) or (True, "restarted")
@@ -117,7 +123,7 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     ]
     assert ready_timeouts == [20.0]
     assert prepare_timeouts == [90.0]
-    assert absent_checks == [8.0, 1.0]
+    assert absent_checks == [8.0, 1.0, 1.0]
     assert not (cache_dir / "swap.state").exists()
     assert "restarted" in detail
 
@@ -161,6 +167,12 @@ def test_clear_disk_cache_clears_all_configured_cache_dirs(
     )
     monkeypatch.setattr(
         controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(
+        controller,
         "restart_squid",
         lambda *, ready_timeout=45.0: (True, "restarted"),
     )
@@ -179,7 +191,7 @@ def test_clear_disk_cache_clears_all_configured_cache_dirs(
     assert "restarted" in detail
 
 
-def test_clear_disk_cache_cleans_live_prepare_pid_before_restart(
+def test_clear_disk_cache_cleans_live_pid_before_prepare(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -247,15 +259,81 @@ def test_clear_disk_cache_cleans_live_prepare_pid_before_restart(
     assert ok is True
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["squid", "-k", "shutdown"],
         ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+    ]
+    assert stale_checks == [10.0, 10.0, 1.0, 10.0]
+    assert absent_checks == [8.0, 1.0, 20.0, 1.0]
+    assert removed == ["pidfile", "pidfile", "pidfile"]
+    assert ready_timeouts == [20.0]
+    assert "before cache preparation" in detail
+    assert "restarted" in detail
+
+
+def test_clear_disk_cache_fails_before_prepare_when_live_pid_persists(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "swap.state").write_text("cached\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    stale_checks: list[float] = []
+    restart_calls: list[float] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args == ["squid", "-k", "shutdown"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=b"squid shutdown requested\n",
+                stderr=b"",
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_dir} 100 16 256\n",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: stale_checks.append(float(timeout)) or False,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0: (
+            restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
+        ),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is False
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["squid", "-k", "shutdown"],
     ]
     assert stale_checks == [10.0, 10.0, 1.0]
-    assert absent_checks == [8.0, 1.0, 20.0]
-    assert removed == ["pidfile"]
-    assert ready_timeouts == [20.0]
-    assert "left a live PID file or listener" in detail
-    assert "restarted" in detail
+    assert restart_calls == []
+    assert (cache_dir / "swap.state").exists()
+    assert "before cache preparation" in detail
+    assert "still points to a live process" in detail
+    assert "unexpected restart" not in detail
 
 
 def test_clear_disk_cache_fails_when_prepare_listener_stays_bound(
@@ -320,12 +398,11 @@ def test_clear_disk_cache_fails_when_prepare_listener_stays_bound(
     assert ok is False
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
         ["squid", "-k", "shutdown"],
     ]
-    assert absent_checks == [8.0, 1.0, 20.0]
+    assert absent_checks == [8.0, 1.0, 20.0, 8.0]
     assert restart_calls == []
-    assert "left a live PID file or listener" in detail
+    assert "before cache preparation" in detail
     assert "listener stayed bound" in detail
 
 
@@ -403,6 +480,12 @@ def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(
     )
     monkeypatch.setattr(
         controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(
+        controller,
         "restart_squid",
         lambda *, ready_timeout=45.0: (
             restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
@@ -449,6 +532,12 @@ def test_clear_disk_cache_fails_when_squid_z_raises(
         "_wait_for_http_listener_absent",
         lambda *, timeout: True,
     )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
     monkeypatch.setattr(
         controller,
         "restart_squid",
