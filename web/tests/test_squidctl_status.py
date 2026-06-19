@@ -76,11 +76,14 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     (cache_dir / "swap.state").write_text("cached\n", encoding="utf-8")
     ready_timeouts: list[float] = []
     prepare_timeouts: list[float] = []
+    calls: list[list[str]] = []
+    absent_checks: list[float] = []
 
     def fake_run(args, **kwargs):
+        calls.append(list(args))
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:2] == ["squid", "-z"]:
+        if args[:3] == ["squid", "-N", "-z"]:
             prepare_timeouts.append(float(kwargs["timeout"]))
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         msg = f"unexpected command: {args!r}"
@@ -95,7 +98,7 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     monkeypatch.setattr(
         controller,
         "_wait_for_http_listener_absent",
-        lambda *, timeout: True,
+        lambda *, timeout: absent_checks.append(float(timeout)) or True,
     )
     monkeypatch.setattr(
         controller,
@@ -108,10 +111,165 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     ok, detail = controller.clear_disk_cache()
 
     assert ok is True
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+    ]
     assert ready_timeouts == [20.0]
     assert prepare_timeouts == [90.0]
+    assert absent_checks == [8.0, 1.0]
     assert not (cache_dir / "swap.state").exists()
     assert "restarted" in detail
+
+
+def test_clear_disk_cache_cleans_live_prepare_pid_before_restart(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    calls: list[list[str]] = []
+    stale_checks: list[float] = []
+    absent_checks: list[float] = []
+    ready_timeouts: list[float] = []
+    removed: list[str] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[:3] == ["squid", "-N", "-z"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
+        if args == ["squid", "-k", "shutdown"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=b"squid shutdown requested\n",
+                stderr=b"",
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_dir} 100 16 256\n",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: absent_checks.append(float(timeout)) or True,
+    )
+
+    def wait_for_stale(*, timeout):
+        stale_checks.append(float(timeout))
+        return len(stale_checks) > 1
+
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        wait_for_stale,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_remove_stale_squid_pidfile",
+        lambda: removed.append("pidfile") or "Removed stale Squid PID file /var/run/squid.pid.",
+    )
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0: (
+            ready_timeouts.append(float(ready_timeout)) or (True, "restarted")
+        ),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is True
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "-k", "shutdown"],
+    ]
+    assert stale_checks == [10.0, 10.0, 1.0]
+    assert absent_checks == [8.0, 1.0, 20.0]
+    assert removed == ["pidfile"]
+    assert ready_timeouts == [20.0]
+    assert "left a live PID file or listener" in detail
+    assert "restarted" in detail
+
+
+def test_clear_disk_cache_fails_when_prepare_listener_stays_bound(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    calls: list[list[str]] = []
+    absent_checks: list[float] = []
+    restart_calls: list[float] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[:3] == ["squid", "-N", "-z"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
+        if args == ["squid", "-k", "shutdown"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=b"squid shutdown requested\n",
+                stderr=b"",
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_dir} 100 16 256\n",
+    )
+
+    def listener_absent(*, timeout):
+        absent_checks.append(float(timeout))
+        return len(absent_checks) == 1
+
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        listener_absent,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0: (
+            restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
+        ),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is False
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "-k", "shutdown"],
+    ]
+    assert absent_checks == [8.0, 1.0, 20.0]
+    assert restart_calls == []
+    assert "left a live PID file or listener" in detail
+    assert "listener stayed bound" in detail
 
 
 @pytest.mark.parametrize(
@@ -166,7 +324,7 @@ def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(
     def fake_run(args, **_kwargs):
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:2] == ["squid", "-z"]:
+        if args[:3] == ["squid", "-N", "-z"]:
             return SimpleNamespace(
                 returncode=1,
                 stdout=b"",
@@ -217,7 +375,7 @@ def test_clear_disk_cache_fails_when_squid_z_raises(
     def fake_run(args, **_kwargs):
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:2] == ["squid", "-z"]:
+        if args[:3] == ["squid", "-N", "-z"]:
             msg = "spawn failed"
             raise RuntimeError(msg)
         msg = f"unexpected command: {args!r}"

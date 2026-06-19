@@ -1135,6 +1135,50 @@ class SquidController:
             return False
         return len(normalized.parts) >= 3
 
+    def _cleanup_after_cache_prepare(self, detail_parts: list[str]) -> bool:
+        pidfile_stale = self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
+        listener_absent = self._wait_for_http_listener_absent(timeout=1.0)
+        if pidfile_stale and listener_absent:
+            stale_pid_detail = self._remove_stale_squid_pidfile()
+            if stale_pid_detail:
+                detail_parts.append(stale_pid_detail)
+            return True
+
+        detail_parts.append(
+            "Squid cache preparation left a live PID file or listener; requesting shutdown before restart.",
+        )
+        try:
+            shutdown = self._run(
+                ["squid", "-k", "shutdown"],
+                capture_output=True,
+                timeout=12,
+            )
+            detail_parts.append(
+                self._decode_completed(shutdown)
+                or "squid shutdown requested after cache preparation",
+            )
+        except Exception as exc:
+            detail_parts.append(
+                f"squid shutdown after cache preparation failed: {exc}",
+            )
+
+        listener_absent = self._wait_for_http_listener_absent(timeout=20.0)
+        self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
+        stale_pid_detail = self._remove_stale_squid_pidfile()
+        if stale_pid_detail:
+            detail_parts.append(stale_pid_detail)
+        if not listener_absent:
+            detail_parts.append(
+                "Squid HTTP listener stayed bound after cache preparation cleanup.",
+            )
+            return False
+        if not self._wait_for_squid_pidfile_stale_or_absent(timeout=1.0):
+            detail_parts.append(
+                "Squid PID file still points to a live process after cache preparation cleanup.",
+            )
+            return False
+        return True
+
     def clear_disk_cache(self) -> tuple[bool, str]:
         cache_path = self._get_first_cache_dir_path()
         if not self._cache_dir_path_is_safe_to_clear(cache_path):
@@ -1206,7 +1250,7 @@ class SquidController:
 
         try:
             prepare = self._run(
-                ["squid", "-z", "-f", self.squid_conf_path],
+                ["squid", "-N", "-z", "-f", self.squid_conf_path],
                 capture_output=True,
                 timeout=90,
             )
@@ -1218,10 +1262,10 @@ class SquidController:
                     part for part in detail_parts if part
                 ).strip()
             detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
-            if self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0):
-                stale_pid_detail = self._remove_stale_squid_pidfile()
-                if stale_pid_detail:
-                    detail_parts.append(stale_pid_detail)
+            if not self._cleanup_after_cache_prepare(detail_parts):
+                return False, "\n".join(
+                    part for part in detail_parts if part
+                ).strip()
         except Exception as exc:
             detail_parts.append(f"squid -z error: {exc}")
             return False, "\n".join(part for part in detail_parts if part).strip()
