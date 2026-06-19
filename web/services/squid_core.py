@@ -1182,8 +1182,7 @@ class SquidController:
                 return False, "\n".join(
                     part for part in detail_parts if part
                 ).strip()
-            else:
-                detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
+            detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
             if self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0):
                 stale_pid_detail = self._remove_stale_squid_pidfile()
                 if stale_pid_detail:

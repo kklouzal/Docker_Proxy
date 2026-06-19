@@ -178,7 +178,8 @@ def test_clear_disk_cache_fails_when_squid_z_raises(
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
         if args[:2] == ["squid", "-z"]:
-            raise RuntimeError("spawn failed")
+            msg = "spawn failed"
+            raise RuntimeError(msg)
         msg = f"unexpected command: {args!r}"
         raise AssertionError(msg)
 
