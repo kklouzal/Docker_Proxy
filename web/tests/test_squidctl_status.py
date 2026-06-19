@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_get_status_ignores_stderr_when_squid_check_succeeds() -> None:
     from services import squidctl  # type: ignore
@@ -110,6 +112,44 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     assert prepare_timeouts == [90.0]
     assert not (cache_dir / "swap.state").exists()
     assert "restarted" in detail
+
+
+@pytest.mark.parametrize(
+    "cache_path",
+    [
+        "/",
+        "/var",
+        "/var/lib",
+        "/var/log",
+        "/var/spool",
+        "/tmp",
+        "relative/cache",
+    ],
+)
+def test_clear_disk_cache_refuses_broad_or_relative_cache_dirs(
+    monkeypatch,
+    cache_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout=b"unexpected\n", stderr=b"")
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_path} 100 16 256\n",
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is False
+    assert calls == []
+    assert f"Refusing to clear cache_dir at unsafe path: {cache_path}" == detail
 
 
 def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(

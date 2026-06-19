@@ -1079,7 +1079,7 @@ class SquidController:
         text = config_text if config_text is not None else self.get_current_config()
         try:
             match = re.search(
-                r"^\s*cache_dir\s+\w+\s+(\S+)\b",
+                r"^\s*cache_dir\s+\S+\s+(\S+)(?:\s|$)",
                 text or "",
                 re.MULTILINE | re.IGNORECASE,
             )
@@ -1094,15 +1094,50 @@ class SquidController:
             )
         return "/var/spool/squid"
 
+    def _cache_dir_path_is_safe_to_clear(self, cache_path: str) -> bool:
+        raw_path = (cache_path or "").strip()
+        if not raw_path or not raw_path.startswith("/"):
+            return False
+
+        try:
+            normalized = Path(raw_path).resolve(strict=False)
+        except OSError:
+            normalized = Path(raw_path).absolute()
+
+        forbidden_roots = {
+            Path(path)
+            for path in (
+                "/",
+                "/bin",
+                "/boot",
+                "/dev",
+                "/etc",
+                "/home",
+                "/lib",
+                "/lib64",
+                "/opt",
+                "/proc",
+                "/root",
+                "/run",
+                "/sbin",
+                "/sys",
+                "/tmp",  # noqa: S108 - forbidden cache root, not a temp file use
+                "/usr",
+                "/var",
+                "/var/cache",
+                "/var/lib",
+                "/var/log",
+                "/var/run",
+                "/var/spool",
+            )
+        }
+        if normalized in forbidden_roots:
+            return False
+        return len(normalized.parts) >= 3
+
     def clear_disk_cache(self) -> tuple[bool, str]:
         cache_path = self._get_first_cache_dir_path()
-        if not cache_path.startswith("/") or cache_path in {
-            "/",
-            "/etc",
-            "/bin",
-            "/usr",
-            "/var",
-        }:
+        if not self._cache_dir_path_is_safe_to_clear(cache_path):
             return False, f"Refusing to clear cache_dir at unsafe path: {cache_path}"
 
         detail_parts: list[str] = []
