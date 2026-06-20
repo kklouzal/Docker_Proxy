@@ -147,6 +147,12 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
 ) -> None:
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (restart_calls.append(True) or (True, "restart requested")),
+    )
     client = loaded.module.app.test_client()
     login_client(client)
     token = csrf_token(client, "/certs")
@@ -167,6 +173,37 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert bundles.admin_ui_https_settings.certfile == "/etc/squid/ssl/certs/ca.crt"
     assert bundles.admin_ui_https_settings.keyfile == "/etc/squid/ssl/certs/ca.key"
     assert bundles.admin_ui_https_settings.updated_by == "admin"
+    assert restart_calls == [True]
+
+
+def test_admin_ui_https_preference_reports_restart_failure(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (False, "supervisorctl is not available in this runtime."),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+            "cert_source": "active_bundle",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "supervisorctl is not available" in _location_params(response)["msg"][0]
+    assert bundles.admin_ui_https_settings.enabled is True
 
 
 def test_admin_ui_https_preference_requires_bundle_for_default_material(

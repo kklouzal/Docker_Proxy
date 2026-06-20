@@ -143,7 +143,7 @@
                     <input type="hidden" name="enabled" value="0">
                     <label class="checkbox-row">
                         <input type="checkbox" name="enabled" value="1" {{ 'checked' if admin_ui_https.desired_enabled else '' }}>
-                        Enable HTTPS for the Admin UI after restart
+                        Enable HTTPS for the Admin UI
                     </label>
                     <div>
                         <label for="admin-ui-cert-source">Certificate material</label>
@@ -164,7 +164,7 @@
                         </div>
                     </div>
                     <div class="surface-note small">
-                        Saved values are deployment guidance. Apply them in the root <code class="mono">.env</code>, shell environment, or mounted <code class="mono">/config/app.env</code>, then restart <code class="mono">admin-ui</code>.
+                        Saving stores the preference and restarts the Admin UI web process under supervisor. Environment values remain bootstrap fallbacks if the saved setting cannot be loaded.
                         {% if admin_ui_https_env_lines %}
                             <div><code class="mono">{{ admin_ui_https_env_lines|join(' · ') }}</code></div>
                         {% endif %}

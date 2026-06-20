@@ -297,11 +297,11 @@ Both containers also load `/config/app.env` at startup when mounted. Use this fo
 
 ### Admin UI HTTPS
 
-The Admin UI serves plain HTTP on container port 5000 by default. To make the Admin UI speak HTTPS directly, set `ADMIN_UI_HTTPS_ENABLED=1`. When enabled and no explicit paths are provided, gunicorn uses `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`, which are the generated or uploaded Squid SSL-bump CA material mounted into the Admin UI container read-only by the default Compose stack.
+The Admin UI serves plain HTTP on container port 5000 by default. To make the Admin UI speak HTTPS directly at bootstrap, set `ADMIN_UI_HTTPS_ENABLED=1`. When enabled and no explicit paths are provided, gunicorn uses `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`, which are the generated or uploaded Squid SSL-bump CA material mounted into the Admin UI container read-only by the default Compose stack.
 
 For production management-plane TLS, prefer a server certificate whose subject/SAN matches the Admin UI hostname and set `ADMIN_UI_SSL_CERTFILE` plus `ADMIN_UI_SSL_KEYFILE` to that certificate/key pair. Reusing the SSL-bump CA certificate as the web server certificate is supported for local or controlled deployments, but it gives the Admin UI a CA identity rather than a purpose-specific server identity and may not satisfy hostname validation.
 
-The Certificates page includes an Admin UI HTTPS panel that records the desired HTTPS mode and certificate paths next to the active CA bundle status. This is intentionally a deployment control surface: saving the preference does not rewrite Compose files or mutate the running gunicorn process. Apply the displayed `ADMIN_UI_HTTPS_ENABLED`, `ADMIN_UI_SSL_CERTFILE`, and `ADMIN_UI_SSL_KEYFILE` values through your root `.env`, shell environment, or mounted `/config/app.env`, then restart `admin-ui`.
+The Certificates page includes an Admin UI HTTPS panel that records the desired HTTPS mode and certificate paths next to the active CA bundle status. Saving the preference does not rewrite Compose files or mutate `.env`; it stores the setting in the control-plane DB and asks supervisor to restart only the Admin UI web process so gunicorn re-execs with HTTP or HTTPS. On startup, the saved DB setting is the source of truth after the first UI save. `ADMIN_UI_HTTPS_ENABLED`, `ADMIN_UI_SSL_CERTFILE`, and `ADMIN_UI_SSL_KEYFILE` remain bootstrap fallbacks when the DB is unavailable or no UI preference has been saved yet.
 
 ### Bounded logging and optional bundled MySQL
 

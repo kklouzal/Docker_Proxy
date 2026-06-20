@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import re
 import subprocess
 import sys
+from types import SimpleNamespace
 
 from .mysql_test_utils import REPO_ROOT
 
 
 def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _load_start_admin_ui_module():
+    path = REPO_ROOT / "web" / "tools" / "start_admin_ui.py"
+    spec = importlib.util.spec_from_file_location("start_admin_ui_test_module", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _entrypoint_listener_normalizer_script() -> str:
@@ -193,14 +206,14 @@ def test_repo_does_not_ship_stale_squid_mime_override() -> None:
 def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     entrypoint = _read("docker/entrypoint.admin.sh")
     supervisord = _read("docker/supervisord.admin.conf")
-    startup = _read("docker/start-admin-ui.sh")
     env_example = _read("config/app.env.example")
 
     assert "command=/usr/local/bin/start-admin-ui.sh" in supervisord
     assert "COPY --chmod=755 docker/start-admin-ui.sh" in _read(
         "docker/Dockerfile.admin"
     )
-    assert 'threads="${WEB_THREADS:-2}"' in startup
+    launcher = _read("web/tools/start_admin_ui.py")
+    assert 'environ.get("WEB_THREADS") or "2"' in launcher
     assert "# WEB_THREADS=2" in env_example
     assert 'web_threads="${WEB_THREADS:-2}"' in entrypoint
     assert "web_workers" not in entrypoint
@@ -220,79 +233,91 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert "ADMIN_UI_HTTPS_ENABLED: ${ADMIN_UI_HTTPS_ENABLED:-0}" in admin_block
     assert "ADMIN_UI_SSL_CERTFILE: ${ADMIN_UI_SSL_CERTFILE:-}" in admin_block
     assert "ADMIN_UI_SSL_KEYFILE: ${ADMIN_UI_SSL_KEYFILE:-}" in admin_block
-    assert 'certfile="${certfile:-/etc/squid/ssl/certs/ca.crt}"' in startup
-    assert 'keyfile="${keyfile:-/etc/squid/ssl/certs/ca.key}"' in startup
-    assert '--certfile "$certfile" --keyfile "$keyfile"' in startup
+    assert "exec python3 /app/tools/start_admin_ui.py" in startup
+    assert "web/tools/start_admin_ui.py" in _read("docker/Dockerfile.admin")
+    launcher = _read("web/tools/start_admin_ui.py")
+    assert 'DEFAULT_CERTFILE = "/etc/squid/ssl/certs/ca.crt"' in launcher
+    assert 'DEFAULT_KEYFILE = "/etc/squid/ssl/certs/ca.key"' in launcher
+    assert '"--certfile", config.certfile, "--keyfile", config.keyfile' in launcher
     assert "# ADMIN_UI_HTTPS_ENABLED=0" in env_example
     assert "# ADMIN_UI_SSL_CERTFILE=/etc/squid/ssl/certs/ca.crt" in env_example
     assert "prefer a server certificate whose subject/SAN matches" in readme
+    assert "saved DB setting is the source of truth" in readme
 
 
-def test_admin_ui_startup_adds_tls_args_only_when_enabled(tmp_path) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    args_file = tmp_path / "args.txt"
-    fake_python = fake_bin / "python3"
-    fake_python.write_text(
-        "#!/bin/sh\n"
-        'printf "%s\\n" "$@" > "$ADMIN_UI_ARGS_FILE"\n',
-        encoding="utf-8",
+def test_admin_ui_startup_adds_tls_args_only_when_enabled() -> None:
+    module = _load_start_admin_ui_module()
+
+    config = module.resolve_admin_ui_https_config(
+        {"ADMIN_UI_HTTPS_ENABLED": "0"},
+        settings_loader=lambda: None,
     )
-    fake_python.chmod(0o755)
-
-    env = os.environ.copy()
-    env.update(
-        {
-            "PATH": f"{fake_bin}:{env.get('PATH', '')}",
-            "ADMIN_UI_ARGS_FILE": str(args_file),
-            "ADMIN_UI_HTTPS_ENABLED": "0",
-        },
-    )
-    for key in (
-        "ADMIN_UI_SSL_CERTFILE",
-        "ADMIN_UI_SSL_KEYFILE",
-        "WEB_WORKERS",
-        "WEB_THREADS",
-        "WEB_TIMEOUT",
-        "WEB_GRACEFUL_TIMEOUT",
-        "WEB_KEEPALIVE",
-    ):
-        env.pop(key, None)
-
-    subprocess.run(
-        [str(REPO_ROOT / "docker" / "start-admin-ui.sh")],
-        cwd=REPO_ROOT / "web",
-        env=env,
-        check=True,
-    )
-    args = args_file.read_text(encoding="utf-8").splitlines()
-    assert args[:4] == ["-m", "gunicorn", "-b", "0.0.0.0:5000"]
+    args = module.build_gunicorn_argv({}, config)
+    assert args[:5] == ["python3", "-m", "gunicorn", "-b", "0.0.0.0:5000"]
     assert "--certfile" not in args
     assert "--keyfile" not in args
 
-    cert = tmp_path / "admin.crt"
-    key = tmp_path / "admin.key"
-    cert.write_text("cert", encoding="utf-8")
-    key.write_text("key", encoding="utf-8")
-    env.update(
+    config = module.resolve_admin_ui_https_config(
         {
             "ADMIN_UI_HTTPS_ENABLED": "yes",
-            "ADMIN_UI_SSL_CERTFILE": str(cert),
-            "ADMIN_UI_SSL_KEYFILE": str(key),
-            "WEB_THREADS": "4",
+            "ADMIN_UI_SSL_CERTFILE": "/certs/admin.crt",
+            "ADMIN_UI_SSL_KEYFILE": "/certs/admin.key",
         },
+        settings_loader=lambda: None,
     )
-    subprocess.run(
-        [str(REPO_ROOT / "docker" / "start-admin-ui.sh")],
-        cwd=REPO_ROOT / "web",
-        env=env,
-        check=True,
-    )
-    args = args_file.read_text(encoding="utf-8").splitlines()
+    args = module.build_gunicorn_argv({"WEB_THREADS": "4"}, config)
     assert "--threads" in args
     assert args[args.index("--threads") + 1] == "4"
-    assert args[args.index("--certfile") + 1] == str(cert)
-    assert args[args.index("--keyfile") + 1] == str(key)
+    assert args[args.index("--certfile") + 1] == "/certs/admin.crt"
+    assert args[args.index("--keyfile") + 1] == "/certs/admin.key"
+
+
+def test_admin_ui_startup_uses_saved_https_settings_after_first_save() -> None:
+    module = _load_start_admin_ui_module()
+
+    config = module.resolve_admin_ui_https_config(
+        {
+            "ADMIN_UI_HTTPS_ENABLED": "1",
+            "ADMIN_UI_SSL_CERTFILE": "/env/admin.crt",
+            "ADMIN_UI_SSL_KEYFILE": "/env/admin.key",
+        },
+        settings_loader=lambda: SimpleNamespace(
+            enabled=False,
+            certfile="/db/admin.crt",
+            keyfile="/db/admin.key",
+            updated_ts=7,
+        ),
+    )
+
+    assert config.source == "db"
+    assert config.enabled is False
+    assert config.certfile == ""
+    assert config.keyfile == ""
+
+
+def test_admin_ui_startup_falls_back_to_env_before_saved_setting_or_db_failure() -> None:
+    module = _load_start_admin_ui_module()
+
+    seeded = module.resolve_admin_ui_https_config(
+        {"ADMIN_UI_HTTPS_ENABLED": "yes"},
+        settings_loader=lambda: SimpleNamespace(
+            enabled=False,
+            certfile="",
+            keyfile="",
+            updated_ts=0,
+        ),
+    )
+    failed = module.resolve_admin_ui_https_config(
+        {"ADMIN_UI_HTTPS_ENABLED": "yes"},
+        settings_loader=lambda: (_ for _ in ()).throw(RuntimeError("db down")),
+    )
+
+    assert seeded.source == "env"
+    assert seeded.enabled is True
+    assert seeded.certfile == "/etc/squid/ssl/certs/ca.crt"
+    assert seeded.keyfile == "/etc/squid/ssl/certs/ca.key"
+    assert failed.source == "env"
+    assert failed.enabled is True
 
 
 def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:
@@ -301,6 +326,7 @@ def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:
     assert "urllib.request" not in healthcheck
     assert "[g]unicorn.*wsgi:app" in healthcheck
     assert "socket.create_connection" in healthcheck
+    assert "whether gunicorn is currently speaking HTTP or HTTPS" in healthcheck
 
 
 def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:

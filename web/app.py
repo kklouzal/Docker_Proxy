@@ -9,6 +9,8 @@ import os
 import pathlib
 import secrets
 import shutil
+import subprocess
+import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -2602,13 +2604,17 @@ def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
 def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
     default_certfile = "/etc/squid/ssl/certs/ca.crt"
     default_keyfile = "/etc/squid/ssl/certs/ca.key"
-    runtime_enabled = _truthy_env(os.environ.get("ADMIN_UI_HTTPS_ENABLED"))
-    runtime_certfile = os.environ.get("ADMIN_UI_SSL_CERTFILE") or (
-        default_certfile if runtime_enabled else ""
+    runtime_enabled = _truthy_env(
+        os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED")
+        if os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED") is not None
+        else os.environ.get("ADMIN_UI_HTTPS_ENABLED"),
     )
-    runtime_keyfile = os.environ.get("ADMIN_UI_SSL_KEYFILE") or (
-        default_keyfile if runtime_enabled else ""
-    )
+    runtime_certfile = os.environ.get("ADMIN_UI_EFFECTIVE_SSL_CERTFILE") or os.environ.get(
+        "ADMIN_UI_SSL_CERTFILE",
+    ) or (default_certfile if runtime_enabled else "")
+    runtime_keyfile = os.environ.get("ADMIN_UI_EFFECTIVE_SSL_KEYFILE") or os.environ.get(
+        "ADMIN_UI_SSL_KEYFILE",
+    ) or (default_keyfile if runtime_enabled else "")
     try:
         desired = get_certificate_bundles().get_admin_ui_https_settings()
         desired_error = ""
@@ -2661,6 +2667,35 @@ def _admin_ui_https_env_lines(*, enabled: bool, certfile: str, keyfile: str) -> 
         f"ADMIN_UI_SSL_CERTFILE={certfile if enabled else ''}",
         f"ADMIN_UI_SSL_KEYFILE={keyfile if enabled else ''}",
     ]
+
+
+def _restart_admin_ui_web_process() -> tuple[bool, str]:
+    supervisorctl = shutil.which("supervisorctl")
+    if not supervisorctl:
+        return False, "supervisorctl is not available in this runtime."
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess, time; "
+                    "time.sleep(0.2); "
+                    f"subprocess.run([{supervisorctl!r}, '-c', '/etc/supervisord.conf', 'restart', 'web'])"
+                ),
+            ],
+            close_fds=True,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return False, public_error_message(
+            exc,
+            default="Failed to request Admin UI web restart.",
+        )
+    return True, "Admin UI web restart requested; reconnect using the selected scheme."
 
 
 def _webfilter_category_refresh_required(
@@ -6287,23 +6322,25 @@ def update_admin_ui_https():
         )
 
     try:
-        settings = get_certificate_bundles().set_admin_ui_https_settings(
+        get_certificate_bundles().set_admin_ui_https_settings(
             enabled=enabled,
             certfile=certfile,
             keyfile=keyfile,
             updated_by=str(session.get("user") or ""),
         )
-        env_lines = _admin_ui_https_env_lines(
-            enabled=settings.enabled,
-            certfile=settings.certfile or "/etc/squid/ssl/certs/ca.crt",
-            keyfile=settings.keyfile or "/etc/squid/ssl/certs/ca.key",
+        restart_ok, restart_detail = _restart_admin_ui_web_process()
+        detail = "Saved Admin UI HTTPS preference. "
+        detail += (
+            restart_detail
+            if restart_ok
+            else f"{restart_detail} Restart the admin-ui web process or container for it to take effect."
         )
-        detail = (
-            "Saved Admin UI HTTPS preference. Update the deployment environment with "
-            f"{'; '.join(env_lines)} and restart the admin-ui container for it to take effect."
+        _record_audit_event(
+            "admin_ui_https_settings_save",
+            ok=restart_ok,
+            detail=detail,
         )
-        _record_audit_event("admin_ui_https_settings_save", ok=True, detail=detail)
-        return _redirect_with_message("certs", ok=True, msg=detail)
+        return _redirect_with_message("certs", ok=restart_ok, msg=detail)
     except Exception as exc:
         app.logger.exception("Failed to save Admin UI HTTPS settings")
         detail = public_error_message(

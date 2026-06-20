@@ -7,6 +7,7 @@ if ! ps | grep -E '[g]unicorn.*wsgi:app' >/dev/null 2>&1; then
     exit 1
 fi
 
+# A raw TCP connect works whether gunicorn is currently speaking HTTP or HTTPS.
 python3 - <<'PY'
 import socket
 

@@ -115,6 +115,7 @@ COPY web/templates /app/templates
 COPY web/tools/adblock_compile.py \
 	web/tools/webcat_acl.py \
 	web/tools/webcat_build.py \
+	web/tools/start_admin_ui.py \
 	/app/tools/
 COPY squid /squid
 COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
