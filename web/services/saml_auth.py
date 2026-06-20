@@ -585,7 +585,7 @@ def parse_saml_metadata(raw_xml: str) -> dict[str, Any]:
 
     try:
         if _DEFUSEDXML_AVAILABLE:
-            root = ElementTree.fromstring(raw_xml, forbid_dtd=True)
+            root = ElementTree.fromstring(raw_xml, forbid_dtd=True)  # noqa: S314
         else:  # pragma: no cover - production image installs defusedxml.
             root = ElementTree.fromstring(raw_xml)  # noqa: S314
     except DefusedXmlException as exc:
