@@ -869,6 +869,10 @@ def _record_audit_event(
         get_audit_store().record(**payload)
 
 
+def _audit_safe_detail(value: Any, *, limit: int = 500) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
 def _normalize_choice(
     value: str | None,
     allowed: tuple[str, ...] | list[str] | set[str],
@@ -1624,7 +1628,15 @@ def login():
             )
             return redirect(next_url or url_for("index"))
         # Log failed login attempt for security auditing
-        _record_audit_event("login_failed", ok=False, detail=f"user={username}")
+        failure_detail = f"user={username}"
+        if directory_result is not None and directory_attempted:
+            directory_detail = _audit_safe_detail(
+                getattr(directory_result, "detail", "")
+            )
+            failure_detail += f" provider={directory_provider}"
+            if directory_detail:
+                failure_detail += f" directory_detail={directory_detail}"
+        _record_audit_event("login_failed", ok=False, detail=failure_detail)
         return render_template(
             "login.html",
             error="Invalid username or password.",

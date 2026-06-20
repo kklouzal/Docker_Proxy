@@ -3,7 +3,12 @@ from __future__ import annotations
 import io
 from types import SimpleNamespace
 
-from .admin_route_test_utils import csrf_token, load_admin_app, login_client
+from .admin_route_test_utils import (
+    FakeAuditStore,
+    csrf_token,
+    load_admin_app,
+    login_client,
+)
 
 
 class FakeDirectoryAuthStore:
@@ -12,6 +17,8 @@ class FakeDirectoryAuthStore:
         self.disabled = []
         self.tested = []
         self.login_ok = False
+        self.login_provider = "local"
+        self.login_detail = "No active directory provider."
 
     def ensure_default_profiles(self) -> None:
         return None
@@ -27,9 +34,9 @@ class FakeDirectoryAuthStore:
             )
         return SimpleNamespace(
             ok=False,
-            provider="local",
+            provider=self.login_provider,
             username=username,
-            detail="No active directory provider.",
+            detail=self.login_detail,
         )
 
     def get_status(self):
@@ -180,6 +187,38 @@ def test_login_accepts_active_directory_provider(monkeypatch, tmp_path) -> None:
     with client.session_transaction() as sess:
         assert sess["user"] == "ldap-user"
         assert sess["auth_provider"] == "ldap"
+
+
+def test_login_records_directory_failure_diagnostic_detail(
+    monkeypatch, tmp_path
+) -> None:
+    audit = FakeAuditStore()
+    directory_store = FakeDirectoryAuthStore()
+    directory_store.login_provider = "ldap"
+    directory_store.login_detail = "User is not in the required admin group.\n"
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        audit_store=audit,
+        directory_auth_store=directory_store,
+    )
+    client = loaded.module.app.test_client()
+    token = csrf_token(client, "/login")
+
+    response = client.post(
+        "/login",
+        data={"username": "ldap-user", "password": "wrong", "csrf_token": token},
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Invalid username or password" in body
+    assert "required admin group" not in body
+    assert audit.records[-1]["kind"] == "login_failed"
+    assert audit.records[-1]["detail"] == (
+        "user=ldap-user provider=ldap "
+        "directory_detail=User is not in the required admin group."
+    )
 
 
 def test_auth_provider_save_is_scoped_to_one_provider(monkeypatch, tmp_path) -> None:
