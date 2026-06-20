@@ -159,6 +159,8 @@ docker compose up -d --build admin-ui
 
 The admin UI still requires MySQL. Proxy-specific actions become available after proxy runtimes register management URLs and public PAC/proxy metadata. On admin-UI-only hosts, keep the proxy service out of the active Compose project and use `--remove-orphans` during updates so an old local proxy container is not recreated accidentally.
 
+Admin-UI HTTPS still depends on the active SSL inspection CA material at `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`. The packaged Compose definitions mount `./squid/ssl/certs` into the admin UI for this purpose; standalone admin-UI deployments must keep that same mount available when using the Certificates page HTTPS toggle.
+
 ### Multi-proxy deployments
 
 When multiple proxy runtimes share one MySQL/admin-ui control plane, every proxy
@@ -291,17 +293,15 @@ The Compose files expose the common production knobs as environment variables. T
 | Web filtering helpers | `WEBFILTER_HELPERS`, `WEBFILTER_CACHE_ENTRIES`, `WEBFILTER_CACHE_TTL_SECONDS`, `WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS`, `WEBFILTER_SNAPSHOT_REFRESH_SECONDS`, `WEBFILTER_FAIL`, `SAFE_BROWSING_POLL_SECONDS`, `SAFE_BROWSING_HELPER_CACHE_ENTRIES`, `SAFE_BROWSING_HELPER_PREFIX_HIT_TTL_SECONDS`, `SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS`, `SAFE_BROWSING_FAIL` |
 | Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_PENDING_MAX_ROWS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS` |
 | Background and housekeeping | `DISABLE_BACKGROUND`, `BACKGROUND_LOCK_PATH`, `BACKGROUND_FORCE`, `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`, `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` |
-| Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE`, `ADMIN_UI_HTTPS_ENABLED`, `ADMIN_UI_SSL_CERTFILE`, `ADMIN_UI_SSL_KEYFILE` |
+| Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE`, `ADMIN_UI_HTTPS_ENABLED` |
 
 Both containers also load `/config/app.env` at startup when mounted. Use this for host-managed deployments that prefer a mounted environment file over a root `.env`.
 
 ### Admin UI HTTPS
 
-The Admin UI serves plain HTTP on container port 5000 by default. To make the Admin UI speak HTTPS directly at bootstrap, set `ADMIN_UI_HTTPS_ENABLED=1`. When enabled and no explicit paths are provided, gunicorn uses `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`, which are the generated or uploaded Squid SSL-bump CA material mounted into the Admin UI container read-only by the default Compose stack.
+The Admin UI serves plain HTTP on container port 5000 by default. The Certificates page includes an Admin UI HTTPS toggle that uses the active generated or uploaded SSL inspection CA bundle. When enabled, gunicorn reads `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`, which are mounted into the Admin UI container read-only by the default Compose stack and shared with the proxy container.
 
-For production management-plane TLS, prefer a server certificate whose subject/SAN matches the Admin UI hostname and set `ADMIN_UI_SSL_CERTFILE` plus `ADMIN_UI_SSL_KEYFILE` to that certificate/key pair. Reusing the SSL-bump CA certificate as the web server certificate is supported for local or controlled deployments, but it gives the Admin UI a CA identity rather than a purpose-specific server identity and may not satisfy hostname validation.
-
-The Certificates page includes an Admin UI HTTPS panel that records the desired HTTPS mode and certificate paths next to the active CA bundle status. Saving the preference does not rewrite Compose files or mutate `.env`; it stores the setting in the control-plane DB and asks supervisor to restart only the Admin UI web process so gunicorn re-execs with HTTP or HTTPS. On startup, the saved DB setting is the source of truth after the first UI save. `ADMIN_UI_HTTPS_ENABLED`, `ADMIN_UI_SSL_CERTFILE`, and `ADMIN_UI_SSL_KEYFILE` remain bootstrap fallbacks when the DB is unavailable or no UI preference has been saved yet.
+Saving the preference does not rewrite Compose files or mutate `.env`; it stores the setting in the control-plane DB and asks supervisor to restart only the Admin UI web process so gunicorn re-execs with HTTP or HTTPS. Enabling is rejected until a generated or uploaded SSL inspection CA bundle is active. On startup, the saved DB setting is the source of truth after the first UI save. `ADMIN_UI_HTTPS_ENABLED` remains a bootstrap fallback when the DB is unavailable or no UI preference has been saved yet; `ADMIN_UI_SSL_CERTFILE` and `ADMIN_UI_SSL_KEYFILE` are internal fallback knobs for custom launchers, not part of the packaged UI workflow.
 
 ### Bounded logging and optional bundled MySQL
 

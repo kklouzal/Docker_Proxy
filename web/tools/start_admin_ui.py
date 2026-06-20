@@ -90,11 +90,9 @@ def resolve_admin_ui_https_config(
         return fallback
 
     enabled = bool(getattr(settings, "enabled", False))
-    certfile = str(getattr(settings, "certfile", "") or "").strip()
-    keyfile = str(getattr(settings, "keyfile", "") or "").strip()
     if enabled:
-        certfile = certfile or DEFAULT_CERTFILE
-        keyfile = keyfile or DEFAULT_KEYFILE
+        certfile = DEFAULT_CERTFILE
+        keyfile = DEFAULT_KEYFILE
     else:
         certfile = ""
         keyfile = ""

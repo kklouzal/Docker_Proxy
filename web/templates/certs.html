@@ -145,26 +145,15 @@
                         <input type="checkbox" name="enabled" value="1" {{ 'checked' if admin_ui_https.desired_enabled else '' }}>
                         Enable HTTPS for the Admin UI
                     </label>
-                    <div>
-                        <label for="admin-ui-cert-source">Certificate material</label>
-                        <select id="admin-ui-cert-source" name="cert_source">
-                            <option value="active_bundle" {{ 'selected' if admin_ui_https.desired_certfile in ['', admin_ui_https.default_certfile] else '' }}>Use active generated/uploaded CA material</option>
-                            <option value="custom" {{ 'selected' if admin_ui_https.desired_certfile not in ['', admin_ui_https.default_certfile] else '' }}>Use custom container paths</option>
-                        </select>
-                        <div class="field-note">The default Compose stack mounts the active CA material at <code class="mono">{{ admin_ui_https.default_certfile }}</code> and <code class="mono">{{ admin_ui_https.default_keyfile }}</code>.</div>
-                    </div>
-                    <div class="grid two-col">
+                    <div class="surface-note small">
                         <div>
-                            <label for="admin-ui-certfile">Certificate path</label>
-                            <input id="admin-ui-certfile" name="certfile" type="text" value="{{ admin_ui_https.desired_certfile }}" placeholder="{{ admin_ui_https.default_certfile }}">
+                            <strong>Certificate material:</strong>
+                            <span class="badge {{ 'ok' if admin_ui_https.active_bundle_available else 'warn' }}">{{ 'active SSL inspection CA bundle' if admin_ui_https.active_bundle_available else 'no active SSL inspection CA bundle' }}</span>
                         </div>
-                        <div>
-                            <label for="admin-ui-keyfile">Private key path</label>
-                            <input id="admin-ui-keyfile" name="keyfile" type="text" value="{{ admin_ui_https.desired_keyfile }}" placeholder="{{ admin_ui_https.default_keyfile }}">
-                        </div>
+                        <div>HTTPS uses the currently active generated or uploaded SSL inspection CA certificate and key. Generate or upload a CA bundle before enabling HTTPS.</div>
                     </div>
                     <div class="surface-note small">
-                        Saving stores the preference and restarts the Admin UI web process under supervisor. Environment values remain bootstrap fallbacks if the saved setting cannot be loaded.
+                        Saving stores the preference and restarts the Admin UI web process under supervisor.
                         {% if admin_ui_https_env_lines %}
                             <div><code class="mono">{{ admin_ui_https_env_lines|join(' · ') }}</code></div>
                         {% endif %}

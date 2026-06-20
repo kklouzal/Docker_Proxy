@@ -240,8 +240,9 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert 'DEFAULT_KEYFILE = "/etc/squid/ssl/certs/ca.key"' in launcher
     assert '"--certfile", config.certfile, "--keyfile", config.keyfile' in launcher
     assert "# ADMIN_UI_HTTPS_ENABLED=0" in env_example
-    assert "# ADMIN_UI_SSL_CERTFILE=/etc/squid/ssl/certs/ca.crt" in env_example
-    assert "prefer a server certificate whose subject/SAN matches" in readme
+    assert "ADMIN_UI_SSL_CERTFILE and ADMIN_UI_SSL_KEYFILE are internal bootstrap" in env_example
+    assert "prefer a server certificate whose subject/SAN matches" not in readme
+    assert "active generated or uploaded SSL inspection CA bundle" in readme
     assert "saved DB setting is the source of truth" in readme
 
 
@@ -322,6 +323,25 @@ def test_admin_ui_startup_uses_saved_https_settings_after_first_save() -> None:
     assert config.enabled is False
     assert config.certfile == ""
     assert config.keyfile == ""
+
+    enabled = module.resolve_admin_ui_https_config(
+        {
+            "ADMIN_UI_HTTPS_ENABLED": "0",
+            "ADMIN_UI_SSL_CERTFILE": "/env/admin.crt",
+            "ADMIN_UI_SSL_KEYFILE": "/env/admin.key",
+        },
+        settings_loader=lambda: SimpleNamespace(
+            enabled=True,
+            certfile="/old/custom.crt",
+            keyfile="/old/custom.key",
+            updated_ts=8,
+        ),
+    )
+
+    assert enabled.source == "db"
+    assert enabled.enabled is True
+    assert enabled.certfile == "/etc/squid/ssl/certs/ca.crt"
+    assert enabled.keyfile == "/etc/squid/ssl/certs/ca.key"
 
 
 def test_admin_ui_startup_falls_back_to_env_before_saved_setting_or_db_failure() -> None:

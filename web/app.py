@@ -2627,11 +2627,8 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         )
 
     desired_enabled = bool(getattr(desired, "enabled", False))
-    desired_certfile = getattr(desired, "certfile", "") if desired is not None else ""
-    desired_keyfile = getattr(desired, "keyfile", "") if desired is not None else ""
-    if desired_enabled:
-        desired_certfile = desired_certfile or default_certfile
-        desired_keyfile = desired_keyfile or default_keyfile
+    desired_certfile = default_certfile if desired_enabled else ""
+    desired_keyfile = default_keyfile if desired_enabled else ""
     pending_restart = (
         desired is not None
         and (
@@ -2662,11 +2659,7 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
 
 
 def _admin_ui_https_env_lines(*, enabled: bool, certfile: str, keyfile: str) -> list[str]:
-    return [
-        f"ADMIN_UI_HTTPS_ENABLED={1 if enabled else 0}",
-        f"ADMIN_UI_SSL_CERTFILE={certfile if enabled else ''}",
-        f"ADMIN_UI_SSL_KEYFILE={keyfile if enabled else ''}",
-    ]
+    return [f"ADMIN_UI_HTTPS_ENABLED={1 if enabled else 0}"]
 
 
 def _restart_admin_ui_web_process() -> tuple[bool, str]:
@@ -6299,27 +6292,15 @@ def upload_certificate_pfx():
 @app.route("/certs/admin-ui-https", methods=["POST"])
 def update_admin_ui_https():
     enabled = request.form.get("enabled") == "1"
-    cert_source = (request.form.get("cert_source") or "active_bundle").strip()
-    if cert_source == "custom":
-        certfile = (request.form.get("certfile") or "").strip()
-        keyfile = (request.form.get("keyfile") or "").strip()
-        if enabled and (not certfile or not keyfile):
-            return _redirect_with_message(
-                "certs",
-                ok=False,
-                msg="Custom Admin UI HTTPS certificate and key paths are required.",
-            )
-    else:
-        certfile = "/etc/squid/ssl/certs/ca.crt" if enabled else ""
-        keyfile = "/etc/squid/ssl/certs/ca.key" if enabled else ""
-
     bundle = get_certificate_bundles().get_active_bundle()
-    if enabled and cert_source != "custom" and bundle is None:
+    if enabled and bundle is None:
         return _redirect_with_message(
             "certs",
             ok=False,
-            msg="Generate or upload a CA bundle before selecting the active certificate material.",
+            msg="Generate or upload an SSL inspection CA bundle before enabling Admin UI HTTPS.",
         )
+    certfile = "/etc/squid/ssl/certs/ca.crt" if enabled else ""
+    keyfile = "/etc/squid/ssl/certs/ca.key" if enabled else ""
 
     try:
         get_certificate_bundles().set_admin_ui_https_settings(

@@ -140,6 +140,9 @@ def test_certificates_page_shows_admin_ui_https_status(monkeypatch, tmp_path) ->
     assert "restart pending" in html
     assert "/certs/ui.crt" in html
     assert "ADMIN_UI_HTTPS_ENABLED=1" in html
+    assert "Use custom container paths" not in html
+    assert 'name="certfile"' not in html
+    assert 'name="keyfile"' not in html
 
 
 def test_admin_ui_https_preference_uses_active_bundle_paths(
@@ -162,7 +165,6 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
         data={
             "csrf_token": token,
             "enabled": "1",
-            "cert_source": "active_bundle",
         },
         follow_redirects=False,
     )
@@ -195,7 +197,6 @@ def test_admin_ui_https_preference_reports_restart_failure(
         data={
             "csrf_token": token,
             "enabled": "1",
-            "cert_source": "active_bundle",
         },
         follow_redirects=False,
     )
@@ -220,22 +221,28 @@ def test_admin_ui_https_preference_requires_bundle_for_default_material(
         data={
             "csrf_token": token,
             "enabled": "1",
-            "cert_source": "active_bundle",
         },
         follow_redirects=False,
     )
 
     assert response.status_code in {301, 302, 303}
     assert _location_params(response)["ok"] == ["0"]
-    assert "Generate or upload a CA bundle" in _location_params(response)["msg"][0]
+    assert "Generate or upload an SSL inspection CA bundle" in _location_params(response)[
+        "msg"
+    ][0]
     assert bundles.admin_ui_https_settings.enabled is False
 
 
-def test_admin_ui_https_custom_paths_require_cert_and_key(
+def test_admin_ui_https_ignores_posted_custom_paths_for_active_bundle(
     monkeypatch, tmp_path
 ) -> None:
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (True, "restart requested"),
+    )
     client = loaded.module.app.test_client()
     login_client(client)
     token = csrf_token(client, "/certs")
@@ -247,13 +254,16 @@ def test_admin_ui_https_custom_paths_require_cert_and_key(
             "enabled": "1",
             "cert_source": "custom",
             "certfile": "/certs/ui.crt",
+            "keyfile": "/certs/ui.key",
         },
         follow_redirects=False,
     )
 
     assert response.status_code in {301, 302, 303}
-    assert _location_params(response)["ok"] == ["0"]
-    assert "certificate and key paths are required" in _location_params(response)["msg"][0]
+    assert _location_params(response)["ok"] == ["1"]
+    assert bundles.admin_ui_https_settings.enabled is True
+    assert bundles.admin_ui_https_settings.certfile == "/etc/squid/ssl/certs/ca.crt"
+    assert bundles.admin_ui_https_settings.keyfile == "/etc/squid/ssl/certs/ca.key"
 
 
 def test_certificate_publish_restores_previous_bundle_when_no_reconcile_queued(
