@@ -547,12 +547,13 @@ class DirectoryAuthStore:
             return DirectoryAuthResult(
                 False, profile.provider, username, "Username and password are required."
             )
+        lookup_username = self._lookup_username(profile, username)
         conn = None
         try:
             conn, ldap3 = self._service_connection(profile)
             escape_filter_chars = ldap3.utils.conv.escape_filter_chars
             user_filter = profile.user_filter.format(
-                username=escape_filter_chars(username),
+                username=escape_filter_chars(lookup_username),
             )
             user_base = self._join_dn(profile.user_search_base, profile.base_dn)
             if not conn.search(
@@ -580,7 +581,9 @@ class DirectoryAuthStore:
                     username,
                     "Directory password check failed.",
                 )
-            groups = self._groups_for_user(profile, conn, user_dn, username, ldap3)
+            groups = self._groups_for_user(
+                profile, conn, user_dn, lookup_username, ldap3
+            )
             if not self._required_group_matches(profile.required_admin_group, groups):
                 return DirectoryAuthResult(
                     False,
@@ -607,6 +610,14 @@ class DirectoryAuthStore:
             )
         finally:
             self._safe_unbind(conn)
+
+    def _lookup_username(self, profile: DirectoryProfile, username: str) -> str:
+        if profile.provider != PROVIDER_ACTIVE_DIRECTORY or "@" in username:
+            return username
+        for separator in ("\\", "/"):
+            if separator in username:
+                return username.rsplit(separator, 1)[-1] or username
+        return username
 
     def _groups_for_user(
         self,

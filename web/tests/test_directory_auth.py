@@ -338,6 +338,121 @@ def test_scan_directory_returns_ou_and_group_choices(monkeypatch) -> None:
     assert result.admin_groups == ("cn=admins,ou=groups,dc=example,dc=org",)
 
 
+@pytest.mark.parametrize(
+    ("login_username", "lookup_username"),
+    [
+        ("AD\\kklouzal", "kklouzal"),
+        ("AD/kklouzal", "kklouzal"),
+        ("kklouzal@ad.kklouzal.com", "kklouzal@ad.kklouzal.com"),
+        ("kklouzal", "kklouzal"),
+    ],
+)
+def test_active_directory_auth_uses_normalized_lookup_username(
+    monkeypatch, login_username: str, lookup_username: str
+) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("active_directory"),
+        base_dn="dc=ad,dc=kklouzal,dc=com",
+        user_filter="(|(sAMAccountName={username})(userPrincipalName={username}))",
+        group_filter="(memberUid={username})",
+        required_admin_group="cn=admins,dc=ad,dc=kklouzal,dc=com",
+    )
+    searches = []
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def search(self, base, search_filter, **_kwargs):
+            searches.append((base, search_filter))
+            if search_filter.startswith("(|(sAMAccountName="):
+                self.entries = [
+                    SimpleNamespace(
+                        entry_dn="cn=kklouzal,cn=users,dc=ad,dc=kklouzal,dc=com"
+                    )
+                ]
+            elif search_filter.startswith("(memberUid="):
+                self.entries = [
+                    SimpleNamespace(entry_dn="cn=admins,dc=ad,dc=kklouzal,dc=com")
+                ]
+            else:
+                self.entries = []
+            return bool(self.entries)
+
+        def unbind(self):
+            return None
+
+    fake_ldap3 = SimpleNamespace(
+        utils=SimpleNamespace(
+            conv=SimpleNamespace(escape_filter_chars=lambda value: value)
+        )
+    )
+    monkeypatch.setattr(
+        store,
+        "_service_connection",
+        lambda _profile: (FakeConn(), fake_ldap3),
+    )
+    monkeypatch.setattr(store, "_user_bind", lambda *_args: True)
+
+    result = store.authenticate(profile, login_username, "secret")
+
+    assert result.ok is True
+    assert result.username == login_username
+    assert searches[0][1] == (
+        f"(|(sAMAccountName={lookup_username})"
+        f"(userPrincipalName={lookup_username}))"
+    )
+    assert searches[1][1] == f"(memberUid={lookup_username})"
+
+
+def test_ldap_auth_preserves_domain_qualified_username_lookup(monkeypatch) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("ldap"),
+        user_filter="(uid={username})",
+        group_filter="(memberUid={username})",
+        required_admin_group="cn=admins,dc=example,dc=org",
+    )
+    searches = []
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def search(self, _base, search_filter, **_kwargs):
+            searches.append(search_filter)
+            if search_filter == "(uid=AD\\kklouzal)":
+                self.entries = [SimpleNamespace(entry_dn="uid=AD\\kklouzal,ou=people")]
+            elif search_filter == "(memberUid=AD\\kklouzal)":
+                self.entries = [
+                    SimpleNamespace(entry_dn="cn=admins,dc=example,dc=org")
+                ]
+            else:
+                self.entries = []
+            return bool(self.entries)
+
+        def unbind(self):
+            return None
+
+    fake_ldap3 = SimpleNamespace(
+        utils=SimpleNamespace(
+            conv=SimpleNamespace(escape_filter_chars=lambda value: value)
+        )
+    )
+    monkeypatch.setattr(
+        store,
+        "_service_connection",
+        lambda _profile: (FakeConn(), fake_ldap3),
+    )
+    monkeypatch.setattr(store, "_user_bind", lambda *_args: True)
+
+    result = store.authenticate(profile, "AD\\kklouzal", "secret")
+
+    assert result.ok is True
+    assert searches == ["(uid=AD\\kklouzal)", "(memberUid=AD\\kklouzal)"]
+
+
 def test_plain_ldap_user_bind_does_not_require_tls(monkeypatch) -> None:
     calls = []
 
