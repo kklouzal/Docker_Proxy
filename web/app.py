@@ -1622,7 +1622,7 @@ def login():
         directory_attempted = directory_provider != "local"
         local_ok = (
             False
-            if directory_ok or directory_attempted
+            if directory_ok
             else _auth_store.verify_user(username, password)
         )
         if directory_ok or local_ok:

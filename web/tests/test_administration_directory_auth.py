@@ -354,7 +354,7 @@ class RejectingActiveDirectoryAuthStore(FakeDirectoryAuthStore):
         )
 
 
-def test_active_directory_rejection_does_not_fall_back_to_local_login(
+def test_active_directory_rejection_falls_back_to_local_login(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -371,10 +371,10 @@ def test_active_directory_rejection_does_not_fall_back_to_local_login(
         data={"username": "admin", "password": "admin", "csrf_token": token},
     )
 
-    assert response.status_code == 200
-    assert "Invalid username or password." in response.get_data(as_text=True)
+    assert response.status_code in {302, 303}
     with client.session_transaction() as sess:
-        assert "user" not in sess
+        assert sess["user"] == "admin"
+        assert sess["auth_provider"] == "local"
 
 
 class StatusFailingDirectoryAuthStore(FakeDirectoryAuthStore):
