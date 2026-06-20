@@ -326,7 +326,64 @@ def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:
     assert "urllib.request" not in healthcheck
     assert "[g]unicorn.*wsgi:app" in healthcheck
     assert "socket.create_connection" in healthcheck
+    assert 'os.environ.get("ADMIN_UI_BIND")' in healthcheck
+    assert 'os.environ.get("ADMIN_UI_PORT")' in healthcheck
+    assert '("127.0.0.1", _health_port())' in healthcheck
+    assert '("127.0.0.1", 5000)' not in healthcheck
     assert "whether gunicorn is currently speaking HTTP or HTTPS" in healthcheck
+
+
+def test_admin_healthcheck_resolves_runtime_port_from_launcher_env() -> None:
+    healthcheck = _read("docker/healthcheck.admin.sh")
+    script = healthcheck.split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+
+    harness = (
+        "import json\n"
+        "captures = []\n"
+        "class _Connection:\n"
+        "    def __enter__(self):\n"
+        "        return self\n"
+        "    def __exit__(self, exc_type, exc, tb):\n"
+        "        return False\n"
+        "def _capture(address, timeout):\n"
+        "    captures.append([address[0], address[1], timeout])\n"
+        "    return _Connection()\n"
+    )
+    script = script.replace(
+        "import socket\n",
+        "import socket\nsocket.create_connection = _capture\n",
+        1,
+    )
+
+    cases = [
+        ({}, 5000),
+        ({"ADMIN_UI_PORT": "8443"}, 8443),
+        ({"ADMIN_UI_BIND": "0.0.0.0:9443", "ADMIN_UI_PORT": "8443"}, 9443),
+        ({"ADMIN_UI_BIND": "127.0.0.1:7443"}, 7443),
+        ({"ADMIN_UI_BIND": "[::]:6443"}, 6443),
+        ({"ADMIN_UI_BIND": ":5443"}, 5443),
+        ({"ADMIN_UI_BIND": "4443"}, 4443),
+    ]
+
+    for env_overrides, expected_port in cases:
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"ADMIN_UI_BIND", "ADMIN_UI_PORT"}
+        }
+        env.update(env_overrides)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                f"{harness}\n{script}\nprint(json.dumps(captures[-1]))",
+            ],
+            check=True,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.strip() == f'["127.0.0.1", {expected_port}, 2]'
 
 
 def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
