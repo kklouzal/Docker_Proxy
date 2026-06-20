@@ -11,6 +11,7 @@ fi
 python3 - <<'PY'
 import os
 import socket
+import sys
 
 
 def _port_from_bind(bind):
@@ -40,6 +41,9 @@ def _health_port():
     return _port_from_bind(os.environ.get("ADMIN_UI_PORT")) or 5000
 
 
-with socket.create_connection(("127.0.0.1", _health_port()), timeout=2):
-    pass
+try:
+    with socket.create_connection(("127.0.0.1", _health_port()), timeout=2):
+        pass
+except OSError:
+    sys.exit(1)
 PY

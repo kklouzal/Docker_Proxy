@@ -245,6 +245,35 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert "saved DB setting is the source of truth" in readme
 
 
+def test_admin_ui_startup_can_import_services_from_tools_launcher_path() -> None:
+    script = """
+import importlib.util
+import pathlib
+import sys
+
+path = pathlib.Path("start_admin_ui.py").resolve()
+spec = importlib.util.spec_from_file_location("start_admin_ui_launcher_test", path)
+assert spec is not None
+assert spec.loader is not None
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+config = module.resolve_admin_ui_https_config({"ADMIN_UI_HTTPS_ENABLED": "0"})
+assert config.source == "env"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT / "web" / "tools",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "No module named 'services'" not in result.stderr
+    assert "failed to prepare Admin UI HTTPS settings loader" not in result.stderr
+
+
 def test_admin_ui_startup_adds_tls_args_only_when_enabled() -> None:
     module = _load_start_admin_ui_module()
 
@@ -384,6 +413,32 @@ def test_admin_healthcheck_resolves_runtime_port_from_launcher_env() -> None:
             text=True,
         )
         assert result.stdout.strip() == f'["127.0.0.1", {expected_port}, 2]'
+
+
+def test_admin_healthcheck_tcp_failure_exits_without_traceback() -> None:
+    healthcheck = _read("docker/healthcheck.admin.sh")
+    script = healthcheck.split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    script = script.replace(
+        "import socket\n",
+        (
+            "import socket\n"
+            "def _raise_connection_error(*_args, **_kwargs):\n"
+            "    raise ConnectionRefusedError('refused')\n"
+            "socket.create_connection = _raise_connection_error\n"
+        ),
+        1,
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
 
 
 def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
