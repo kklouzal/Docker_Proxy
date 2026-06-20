@@ -722,13 +722,29 @@ except Exception:
 _auth_store = get_auth_store()
 
 
+def _configured_app_secret():
+    for name in ("FLASK_SECRET_KEY", "APP_SECRET_KEY", "SECRET_KEY"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+_env_secret = _configured_app_secret()
+
+
 def _auth_secret_key():
     return _auth_store.get_or_create_secret_key()
 
 
-_directory_auth_store = get_directory_auth_store(_auth_secret_key)
+def _directory_secret_key():
+    if _env_secret:
+        return _env_secret
+    return _auth_secret_key()
+
+
+_directory_auth_store = get_directory_auth_store(_directory_secret_key)
 _saml_auth_store = get_saml_auth_store()
-_env_secret = (os.environ.get("FLASK_SECRET_KEY") or "").strip()
 if _env_secret:
     app.secret_key = _env_secret
 else:
@@ -3110,6 +3126,12 @@ def _handle_auth_provider_post():
                 tab=tab,
             )
         if action == "test_auth_provider":
+            payload = request.form.to_dict()
+            payload["enabled"] = "0"
+            ca_upload = request.files.get("ca_bundle_file")
+            if ca_upload is not None and ca_upload.filename:
+                payload["ca_bundle_upload"] = ca_upload.read()
+            _directory_auth_store.save_profile(provider, payload)
             result = _directory_auth_store.test_connection(provider)
             return _redirect_with_message(
                 "administration",

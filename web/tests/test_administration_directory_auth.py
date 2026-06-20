@@ -156,6 +156,16 @@ def test_administration_exposes_directory_tabs(monkeypatch, tmp_path) -> None:
     )
 
 
+def test_directory_secret_provider_prefers_flask_secret_key(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FLASK_SECRET_KEY", "configured-flask-secret")
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    assert loaded.module.app.secret_key == "configured-flask-secret"
+    assert loaded.module._directory_secret_key() == "configured-flask-secret"
+
+
 def test_administration_surfaces_retest_required_after_directory_config_change(
     monkeypatch, tmp_path
 ) -> None:
@@ -288,6 +298,42 @@ def test_auth_provider_certificate_upload_is_passed_to_store(
 
     assert response.status_code in {302, 303}
     assert directory_store.saved[0][1]["ca_bundle_upload"] == b"cert-bytes"
+
+
+def test_auth_provider_test_saves_submitted_bind_password_first(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=active_directory")
+
+    response = client.post(
+        "/administration?tab=active_directory",
+        data={
+            "csrf_token": token,
+            "action": "test_auth_provider",
+            "provider": "active_directory",
+            "enabled": "1",
+            "server_urls": "ldaps://dc.example.local:636",
+            "bind_dn": "svc@example.local",
+            "bind_password": "replacement-secret",
+            "base_dn": "DC=example,DC=local",
+            "user_filter": "(sAMAccountName={username})",
+            "user_attribute": "sAMAccountName",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "CN=Admins,DC=example,DC=local",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.saved[0][0] == "active_directory"
+    assert directory_store.saved[0][1]["bind_password"] == "replacement-secret"
+    assert directory_store.saved[0][1]["enabled"] == "0"
+    assert directory_store.tested == ["active_directory"]
 
 
 def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -> None:

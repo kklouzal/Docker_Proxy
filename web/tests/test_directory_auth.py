@@ -66,6 +66,133 @@ def test_bind_password_encryption_round_trips_without_plaintext() -> None:
     assert store._decrypt(encrypted) == "super-secret"
 
 
+def test_bind_password_uses_configured_secret_across_store_reinitialization(
+    tmp_path,
+) -> None:
+    from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path
+
+    configure_test_mysql_env(tmp_path / "directory-auth-configured-secret-test")
+    ensure_web_import_path()
+    from services.directory_auth import DirectoryAuthStore as RuntimeDirectoryAuthStore
+
+    payload = {
+        "server_urls": "ldaps://dc.example.local:636",
+        "bind_dn": "svc-docker-proxy@example.local",
+        "bind_password": "secret",
+        "base_dn": "DC=example,DC=local",
+        "user_filter": "(sAMAccountName={username})",
+        "user_attribute": "sAMAccountName",
+        "group_filter": "(member={user_dn})",
+        "required_admin_group": "CN=Admins,DC=example,DC=local",
+        "timeout_seconds": "5",
+        "verify_tls": "1",
+    }
+    first = RuntimeDirectoryAuthStore(lambda: "configured-flask-secret")
+    first.save_profile("active_directory", payload)
+
+    second = RuntimeDirectoryAuthStore(lambda: "configured-flask-secret")
+    profile = second.get_profile("active_directory")
+
+    assert profile.bind_password.startswith("enc:v1:")
+    assert second._decrypt(profile.bind_password) == "secret"
+
+
+def test_save_profile_recovers_stale_bind_password_with_new_plaintext(
+    tmp_path,
+) -> None:
+    from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path
+
+    configure_test_mysql_env(tmp_path / "directory-auth-stale-password-recovery-test")
+    ensure_web_import_path()
+    from services.directory_auth import DirectoryAuthStore as RuntimeDirectoryAuthStore
+
+    old_store = RuntimeDirectoryAuthStore(lambda: "old-container-secret")
+    old_profile = old_store.save_profile(
+        "active_directory",
+        {
+            "server_urls": "ldaps://dc.example.local:636",
+            "bind_dn": "svc-docker-proxy@example.local",
+            "bind_password": "old-secret",
+            "base_dn": "DC=example,DC=local",
+            "user_filter": "(sAMAccountName={username})",
+            "user_attribute": "sAMAccountName",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "CN=Admins,DC=example,DC=local",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    new_store = RuntimeDirectoryAuthStore(lambda: "new-container-secret")
+    assert new_store._decrypt(old_profile.bind_password) == ""
+
+    recovered = new_store.save_profile(
+        "active_directory",
+        {
+            "server_urls": old_profile.server_urls,
+            "bind_dn": old_profile.bind_dn,
+            "bind_password": "new-secret",
+            "base_dn": old_profile.base_dn,
+            "user_filter": old_profile.user_filter,
+            "user_attribute": old_profile.user_attribute,
+            "group_filter": old_profile.group_filter,
+            "required_admin_group": old_profile.required_admin_group,
+            "timeout_seconds": str(old_profile.timeout_seconds),
+            "verify_tls": "1",
+        },
+    )
+
+    assert new_store._decrypt(recovered.bind_password) == "new-secret"
+
+
+def test_save_profile_requires_bind_password_when_stale_ciphertext_is_kept(
+    tmp_path,
+) -> None:
+    from .mysql_test_utils import configure_test_mysql_env, ensure_web_import_path
+
+    configure_test_mysql_env(tmp_path / "directory-auth-stale-password-empty-test")
+    ensure_web_import_path()
+    from services.directory_auth import DirectoryAuthStore as RuntimeDirectoryAuthStore
+
+    old_store = RuntimeDirectoryAuthStore(lambda: "old-container-secret")
+    old_profile = old_store.save_profile(
+        "active_directory",
+        {
+            "server_urls": "ldaps://dc.example.local:636",
+            "bind_dn": "svc-docker-proxy@example.local",
+            "bind_password": "old-secret",
+            "base_dn": "DC=example,DC=local",
+            "user_filter": "(sAMAccountName={username})",
+            "user_attribute": "sAMAccountName",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "CN=Admins,DC=example,DC=local",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    new_store = RuntimeDirectoryAuthStore(lambda: "new-container-secret")
+    assert new_store._decrypt(old_profile.bind_password) == ""
+
+    with pytest.raises(ValueError, match="Bind password is required"):
+        new_store.save_profile(
+            "active_directory",
+            {
+                "enabled": "1",
+                "server_urls": old_profile.server_urls,
+                "bind_dn": old_profile.bind_dn,
+                "bind_password": "",
+                "base_dn": old_profile.base_dn,
+                "user_filter": old_profile.user_filter,
+                "user_attribute": old_profile.user_attribute,
+                "group_filter": old_profile.group_filter,
+                "required_admin_group": old_profile.required_admin_group,
+                "timeout_seconds": str(old_profile.timeout_seconds),
+                "verify_tls": "1",
+            },
+        )
+
+
 def test_profile_save_clears_stale_connection_test_status_when_settings_change(
     tmp_path,
 ) -> None:

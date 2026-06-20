@@ -303,16 +303,12 @@ class DirectoryAuthStore:
         current = self.get_profile(provider)
         enabled = self._truthy(payload.get("enabled"))
         bind_password = str(payload.get("bind_password") or "")
-        current_bind_password = self._decrypt(current.bind_password)
-        stored_password = (
-            current.bind_password
-            if bind_password and bind_password == current_bind_password
-            else self._encrypt(bind_password)
-            if bind_password
-            else current.bind_password
-            if current.provider == provider
-            else ""
-        )
+        if bind_password:
+            stored_password = self._encrypt(bind_password)
+        elif current.provider == provider:
+            stored_password = current.bind_password
+        else:
+            stored_password = ""
         timeout_seconds = self._bounded_int(payload.get("timeout_seconds"), 1, 30, 5)
         server_urls = self._normalize_server_urls(payload.get("server_urls"))
         use_starttls = self._truthy(payload.get("use_starttls"))
