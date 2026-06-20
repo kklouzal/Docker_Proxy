@@ -251,6 +251,75 @@ def test_profile_requires_successful_connection_test_before_enable(tmp_path) -> 
     assert active.bind_password == tested.bind_password
 
 
+def test_active_directory_auth_without_bind_password_fails_before_ldap(
+    monkeypatch,
+) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("active_directory"),
+        enabled=True,
+        bind_password="",
+    )
+    monkeypatch.setattr(store, "get_active_profile", lambda: profile)
+    monkeypatch.setattr(
+        store,
+        "_service_connection",
+        lambda _profile: (_ for _ in ()).throw(
+            AssertionError("LDAP connection should not be attempted")
+        ),
+    )
+
+    result = store.authenticate_admin("kklouzal", "secret")
+
+    assert result.ok is False
+    assert result.provider == "active_directory"
+    assert "Bind password is required" in result.detail
+    assert "configuration is incomplete" in result.detail
+
+
+def test_connection_without_decryptable_bind_password_records_clear_failure(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class FakeConnection:
+        def __init__(self, *_args, **_kwargs) -> None:
+            calls.append("connection")
+            msg = "LDAP connection should not be constructed"
+            raise AssertionError(msg)
+
+    fake_ldap3 = SimpleNamespace(
+        NONE=0,
+        Server=lambda *_args, **_kwargs: SimpleNamespace(),
+        Connection=FakeConnection,
+        Tls=lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("ldap"),
+        enabled=True,
+        bind_password="enc:v1:not-decryptable",
+    )
+    recorded = []
+    monkeypatch.setattr(store, "get_profile", lambda _provider: profile)
+    monkeypatch.setattr(
+        store,
+        "record_test",
+        lambda provider, *, ok, detail: recorded.append((provider, ok, detail)),
+    )
+
+    result = store.test_connection("ldap")
+
+    assert result.ok is False
+    assert result.provider == "ldap"
+    assert "Bind password is required" in result.detail
+    assert "configuration is incomplete" in result.detail
+    assert recorded == [("ldap", False, result.detail)]
+    assert calls == []
+
+
 def test_directory_auth_result_keeps_provider_and_groups() -> None:
     result = DirectoryAuthResult(
         True,
@@ -354,6 +423,7 @@ def test_active_directory_auth_uses_normalized_lookup_username(
     profile = replace(
         store.default_profile("active_directory"),
         base_dn="dc=ad,dc=kklouzal,dc=com",
+        bind_password=store._encrypt("bind-secret"),
         user_filter="(|(sAMAccountName={username})(userPrincipalName={username}))",
         group_filter="(memberUid={username})",
         required_admin_group="cn=admins,dc=ad,dc=kklouzal,dc=com",
@@ -410,6 +480,7 @@ def test_ldap_auth_preserves_domain_qualified_username_lookup(monkeypatch) -> No
     store = DirectoryAuthStore(lambda: "stable-secret")
     profile = replace(
         store.default_profile("ldap"),
+        bind_password=store._encrypt("bind-secret"),
         user_filter="(uid={username})",
         group_filter="(memberUid={username})",
         required_admin_group="cn=admins,dc=example,dc=org",
@@ -543,6 +614,7 @@ def test_service_connection_falls_back_to_next_server_url(monkeypatch) -> None:
     profile = replace(
         store.default_profile("ldap"),
         server_urls="ldaps://bad.example.org:636\nldaps://good.example.org:636",
+        bind_password=store._encrypt("bind-secret"),
     )
 
     conn, _ldap3 = store._service_connection(profile)

@@ -3,7 +3,16 @@ ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
-RUN apk add --no-cache python3 py3-pip ca-certificates
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    ca-certificates \
+    gcc \
+    musl-dev \
+    pkgconf \
+    libxml2-dev \
+    libxslt-dev \
+    xmlsec-dev
 
 WORKDIR /tmp/deps
 
@@ -25,7 +34,16 @@ ENV APP_VERSION=${APP_VERSION} \
     BUILD_DATE=${BUILD_DATE} \
     IMAGE_NAME=admin-ui
 
-RUN apk add --no-cache python3 supervisor openssl ca-certificates libatomic file
+RUN apk add --no-cache \
+    python3 \
+    supervisor \
+    openssl \
+    ca-certificates \
+    libatomic \
+    file \
+    libxml2 \
+    libxslt \
+    xmlsec
 
 WORKDIR /app
 
@@ -75,6 +93,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/proxy_sync.py \
 	web/services/public_endpoint.py \
 	web/services/runtime_helpers.py \
+	web/services/saml_auth.py \
     web/services/safe_browsing_v5.py \
 	web/services/sql_identifiers.py \
 	web/services/squid_core.py \

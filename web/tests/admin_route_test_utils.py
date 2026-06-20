@@ -84,6 +84,67 @@ class FakeAuditStore:
         return None
 
 
+class FakeSamlAuthStore:
+    def __init__(self) -> None:
+        add_web_to_path()
+        from services.saml_auth import SamlAuthStore  # type: ignore
+
+        self._base = SamlAuthStore()
+        self.profile = self._base.default_profile()
+
+    def ensure_default_profile(self) -> None:
+        return None
+
+    def default_profile(self):
+        return self._base.default_profile()
+
+    def get_profile(self):
+        return self.profile
+
+    def save_profile(self, payload):
+        current_get_profile = self._base.get_profile
+        current_persist = self._base._persist
+        self._base.get_profile = lambda: self.profile  # type: ignore[method-assign]
+        self._base._persist = self._persist  # type: ignore[method-assign]
+        try:
+            return self._base.save_profile(payload)
+        finally:
+            self._base.get_profile = current_get_profile  # type: ignore[method-assign]
+            self._base._persist = current_persist  # type: ignore[method-assign]
+
+    def _persist(self, profile) -> None:
+        self.profile = profile
+
+    def refresh_metadata(self):
+        return SimpleNamespace(ok=False, provider="saml", detail="No metadata source.")
+
+    def disable_provider(self) -> None:
+        self.profile = self.profile.__class__(
+            provider=self.profile.provider,
+            enabled=False,
+            metadata_url=self.profile.metadata_url,
+            require_https=self.profile.require_https,
+            verify_tls=self.profile.verify_tls,
+            ca_bundle=self.profile.ca_bundle,
+            timeout_seconds=self.profile.timeout_seconds,
+            max_metadata_bytes=self.profile.max_metadata_bytes,
+            raw_metadata_xml=self.profile.raw_metadata_xml,
+            parsed_metadata_json=self.profile.parsed_metadata_json,
+            entity_id=self.profile.entity_id,
+            fetched_ts=self.profile.fetched_ts,
+            cache_expires_ts=self.profile.cache_expires_ts,
+            valid_until_ts=self.profile.valid_until_ts,
+            last_refresh_ok=self.profile.last_refresh_ok,
+            last_refresh_ts=self.profile.last_refresh_ts,
+            last_refresh_detail=self.profile.last_refresh_detail,
+            public_base_url=self.profile.public_base_url,
+            username_attribute=self.profile.username_attribute,
+            groups_attribute=self.profile.groups_attribute,
+            required_group=self.profile.required_group,
+            updated_ts=self.profile.updated_ts,
+        )
+
+
 class FakeRegistry:
     def __init__(
         self,
@@ -1053,6 +1114,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
 
     fake_auth = overrides.get("auth_store") or FakeAuthStore()
     fake_audit = overrides.get("audit_store") or FakeAuditStore()
+    fake_saml_auth = overrides.get("saml_auth_store") or FakeSamlAuthStore()
     fake_registry = overrides.get("registry") or FakeRegistry()
     fake_controller = overrides.get("controller") or FakeController()
     fake_revisions = overrides.get("config_revisions") or FakeConfigRevisions(
@@ -1126,6 +1188,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     )
 
     monkeypatch.setattr(admin_app, "_auth_store", fake_auth)
+    monkeypatch.setattr(admin_app, "_saml_auth_store", fake_saml_auth)
     monkeypatch.setattr(
         admin_app,
         "_directory_auth_store",
@@ -1166,6 +1229,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         module=admin_app,
         auth_store=fake_auth,
         audit_store=fake_audit,
+        saml_auth_store=fake_saml_auth,
         registry=fake_registry,
         controller=fake_controller,
         config_revisions=fake_revisions,

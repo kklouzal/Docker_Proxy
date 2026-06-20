@@ -469,6 +469,9 @@ class DirectoryAuthStore:
 
     def test_connection(self, provider: str) -> DirectoryAuthResult:
         profile = self.get_profile(provider)
+        if detail := self._bind_password_required_detail(profile):
+            self.record_test(provider, ok=False, detail=detail)
+            return DirectoryAuthResult(False, profile.provider, "", detail=detail)
         conn = None
         try:
             conn, _ldap3 = self._service_connection(profile)
@@ -547,6 +550,8 @@ class DirectoryAuthStore:
             return DirectoryAuthResult(
                 False, profile.provider, username, "Username and password are required."
             )
+        if detail := self._bind_password_required_detail(profile):
+            return DirectoryAuthResult(False, profile.provider, username, detail)
         lookup_username = self._lookup_username(profile, username)
         conn = None
         try:
@@ -649,6 +654,8 @@ class DirectoryAuthStore:
         return sorted({item for item in groups if item})
 
     def _service_connection(self, profile: DirectoryProfile) -> tuple[Any, Any]:
+        if detail := self._bind_password_required_detail(profile):
+            raise ValueError(detail)
         try:
             import ldap3
         except Exception as exc:
@@ -793,6 +800,13 @@ class DirectoryAuthStore:
             )
         except InvalidToken:
             return ""
+
+    def _bind_password_required_detail(self, profile: DirectoryProfile) -> str:
+        if self._decrypt(profile.bind_password):
+            return ""
+        return (
+            "Bind password is required; directory provider configuration is incomplete."
+        )
 
     def _connection_settings_changed(
         self, current: DirectoryProfile, **values: Any

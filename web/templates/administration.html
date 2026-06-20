@@ -41,6 +41,7 @@
     <a class="btn {{ 'primary' if current_tab == 'status' else 'ghost' }}" href="{{ url_for('administration', tab='status') }}">Status</a>
     <a class="btn {{ 'primary' if current_tab == 'ldap' else 'ghost' }}" href="{{ url_for('administration', tab='ldap') }}">LDAP</a>
     <a class="btn {{ 'primary' if current_tab == 'active_directory' else 'ghost' }}" href="{{ url_for('administration', tab='active_directory') }}">Active Directory</a>
+    <a class="btn {{ 'primary' if current_tab == 'saml' else 'ghost' }}" href="{{ url_for('administration', tab='saml') }}">SAML</a>
 </div>
 
 <div class="grid sidebar-wide-layout">
@@ -93,6 +94,21 @@
                         <td class="mono">{{ profile.required_admin_group }}</td>
                     </tr>
                     {% endfor %}
+                    {% set saml_profile = saml_status.profile %}
+                    <tr>
+                        <td>SAML</td>
+                        <td><span class="badge {{ 'ok' if saml_status.ready else '' }}">{{ 'Active' if saml_status.ready else 'Disabled' }}</span></td>
+                        <td class="small">
+                            {% if saml_profile.last_refresh_ts %}
+                                {{ 'OK' if saml_profile.last_refresh_ok else 'Failed' }} - {{ saml_profile.last_refresh_detail }}
+                            {% elif saml_profile.last_refresh_detail %}
+                                Refresh required - {{ saml_profile.last_refresh_detail }}
+                            {% else %}
+                                Not refreshed
+                            {% endif %}
+                        </td>
+                        <td class="mono">{{ saml_profile.required_group }}</td>
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -175,6 +191,109 @@
         </form>
     </div>
 </aside>
+{% elif current_tab == 'saml' %}
+{% set profile = saml_status.profile %}
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">SAML provider</h2>
+        <span class="badge {{ 'ok' if saml_status.ready else '' }}">{{ 'Active' if saml_status.ready else 'Disabled' }}</span>
+    </div>
+    <div class="card-body">
+        <form class="form" action="{{ url_for('administration', tab='saml') }}" method="post">
+            {{ csrf_field() }}
+            <input type="hidden" name="action" value="save_saml_provider">
+            <input type="hidden" name="provider" value="saml">
+            <div class="directory-setup-band">
+                <div>
+                    <label for="saml-enabled">Activation</label>
+                    <select id="saml-enabled" name="enabled">
+                        <option value="0" {{ 'selected' if not profile.enabled else '' }}>Disabled</option>
+                        <option value="1" {{ 'selected' if profile.enabled else '' }}>Make SAML active</option>
+                    </select>
+                    <div class="surface-note small">SAML can only be enabled after metadata refresh succeeds and the cache is current.</div>
+                </div>
+                <div>
+                    <label for="saml-timeout">Metadata timeout seconds</label>
+                    <input id="saml-timeout" name="timeout_seconds" type="number" min="1" max="60" value="{{ profile.timeout_seconds }}">
+                </div>
+            </div>
+            <section class="directory-setup-section">
+                <h3 class="page-section-title">IdP metadata</h3>
+                <div>
+                    <label for="saml-metadata-url">Metadata URL</label>
+                    <input id="saml-metadata-url" name="metadata_url" type="url" value="{{ profile.metadata_url }}" required>
+                </div>
+                <div class="summary-grid">
+                    <input type="hidden" name="require_https" value="0">
+                    <label class="checkbox-row"><input type="checkbox" name="require_https" value="1" {{ 'checked' if profile.require_https else '' }}> Require HTTPS metadata URL</label>
+                    <input type="hidden" name="verify_tls" value="0">
+                    <label class="checkbox-row"><input type="checkbox" name="verify_tls" value="1" {{ 'checked' if profile.verify_tls else '' }}> Verify TLS certificate</label>
+                </div>
+                <div>
+                    <label for="saml-ca">Metadata TLS CA bundle PEM</label>
+                    <textarea id="saml-ca" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
+                    <div class="field-note">Leave blank to use system trust. IdP signing certificates are fetched from metadata, not uploaded here.</div>
+                </div>
+            </section>
+            <section class="directory-setup-section">
+                <h3 class="page-section-title">Service provider endpoints</h3>
+                <div>
+                    <label for="saml-public-base-url">Public admin base URL</label>
+                    <input id="saml-public-base-url" name="public_base_url" type="url" value="{{ profile.public_base_url }}" placeholder="{{ request.url_root.rstrip('/') }}">
+                </div>
+                <div class="summary-grid">
+                    <div>
+                        <label>Entity ID</label>
+                        <input type="text" value="{{ saml_status.sp.entity_id }}" readonly>
+                    </div>
+                    <div>
+                        <label>ACS URL</label>
+                        <input type="text" value="{{ saml_status.sp.acs_url }}" readonly>
+                    </div>
+                </div>
+            </section>
+            <section class="directory-setup-section">
+                <h3 class="page-section-title">Claims and authorization</h3>
+                <div class="summary-grid">
+                    <div>
+                        <label for="saml-username-attribute">Username claim</label>
+                        <input id="saml-username-attribute" name="username_attribute" type="text" value="{{ profile.username_attribute }}" required>
+                    </div>
+                    <div>
+                        <label for="saml-groups-attribute">Groups claim</label>
+                        <input id="saml-groups-attribute" name="groups_attribute" type="text" value="{{ profile.groups_attribute }}" required>
+                    </div>
+                    <div>
+                        <label for="saml-required-group">Required group value</label>
+                        <input id="saml-required-group" name="required_group" type="text" value="{{ profile.required_group }}">
+                    </div>
+                </div>
+            </section>
+            <div class="actions">
+                <button class="btn primary" type="submit">Save provider</button>
+            </div>
+        </form>
+        <form action="{{ url_for('administration', tab='saml') }}" method="post" class="inline-form">
+            {{ csrf_field() }}
+            <input type="hidden" name="provider" value="saml">
+            <button class="btn" type="submit" name="action" value="refresh_saml_metadata">Refresh metadata</button>
+            {% if profile.enabled %}
+            <button class="btn" type="submit" name="action" value="disable_saml_provider">Disable provider</button>
+            {% endif %}
+        </form>
+        <div class="surface-note small">
+            Metadata:
+            {% if profile.last_refresh_ts %}
+                {{ 'OK' if profile.last_refresh_ok else 'Failed' }} - {{ profile.last_refresh_detail }}
+            {% elif profile.last_refresh_detail %}
+                Refresh required - {{ profile.last_refresh_detail }}
+            {% else %}
+                Not refreshed
+            {% endif %}
+            {% if saml_status.idp_entity_id %} IdP entity: <span class="mono">{{ saml_status.idp_entity_id }}</span>.{% endif %}
+        </div>
+    </div>
+</section>
 {% else %}
 {% set profile = profiles[current_tab] %}
 <section class="card">

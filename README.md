@@ -106,6 +106,24 @@ Default first-run login:
 
 Change the administrator password after first login. The admin UI stores a persistent session secret in MySQL when available; set `FLASK_SECRET_KEY` explicitly when you want host-managed secret rotation.
 
+### AD FS / SAML admin login
+
+The admin UI can use local users, LDAP/Active Directory, or one metadata-backed SAML provider. Local users remain available as break-glass access even when SAML is active.
+
+Configure SAML from `Administration -> SAML`:
+
+1. Set the IdP metadata URL. For AD FS this is usually `https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml`.
+2. Keep `Require HTTPS metadata URL` and `Verify TLS certificate` enabled for normal deployments. Add a PEM CA bundle only when the AD FS TLS certificate chains to an internal CA that is not in system trust.
+3. Set `Public admin base URL` to the externally visible admin UI origin when the UI is behind a reverse proxy. The generated service-provider metadata is available at `/auth/saml/metadata`, and the assertion consumer service is `/auth/saml/acs`.
+4. Add the SP metadata URL to AD FS as a relying party trust, or enter the SP entity ID and ACS URL shown on the SAML tab.
+5. Map AD FS claims to the configured SAML claim names. The defaults expect username from `NameID` and groups from `groups`; common AD FS alternatives are `email`, `upn`, or a custom group claim.
+6. Set `Required group value` to the exact admin group claim value when SAML logins must be group-restricted. If it is blank, any authenticated SAML user accepted by the IdP can sign in to the admin UI.
+7. Click `Refresh metadata`, then save with SAML enabled after the refresh succeeds.
+
+SAML login is hidden and rejected until the provider is enabled, IdP metadata has refreshed successfully, and the metadata cache is still current. AD FS signing certificates are read from cached IdP metadata; refresh metadata after AD FS certificate rollover, or before rollover if AD FS publishes both current and next signing certificates. The cache expiry follows IdP `validUntil`/`cacheDuration` when present and otherwise defaults to 24 hours.
+
+The implementation requires signed assertions/messages, does not log raw SAML responses in audit records, and only redirects RelayState to local admin UI paths. Live AD FS interoperability still needs validation in the target domain because claim issuance rules, TLS trust, and reverse-proxy public URLs vary by deployment.
+
 ## Deployment options
 
 ### Source build

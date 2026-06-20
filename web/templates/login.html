@@ -46,6 +46,12 @@
                     <button class="btn primary" type="submit">Sign in</button>
                 </div>
             </form>
+            {% if saml_enabled %}
+            <div class="surface-note small">Single sign-on is available for configured administrators.</div>
+            <div class="actions">
+                <a class="btn" href="{{ url_for('auth_saml_login', next=next or '') }}">Sign in with SAML</a>
+            </div>
+            {% endif %}
         </div>
     </section>
 

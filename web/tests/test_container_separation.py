@@ -89,6 +89,7 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
         "web/services/helper_runtime.py",
         "web/services/policy_requests.py",
         "web/services/proxy_client.py",
+        "web/services/saml_auth.py",
         "web/services/squid_core.py",
         "web/services/squidctl.py",
         "web/services/webfilter_core.py",
@@ -101,6 +102,12 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
         assert required in text
 
     assert "COPY web/requirements.txt /app/requirements.txt" not in text
+    assert "libxml2-dev" in text
+    assert "libxslt-dev" in text
+    assert "xmlsec-dev" in text
+    assert "libxml2" in text
+    assert "libxslt" in text
+    assert "xmlsec" in text
 
     for excluded_copy in (
         "web/services/policy_materializer.py",

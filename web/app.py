@@ -125,6 +125,14 @@ from services.proxy_registry import get_proxy_registry as _default_get_proxy_reg
 from services.proxy_sync import request_proxy_reconcile
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.safe_browsing_v5 import SafeBrowsingStore
+from services.saml_auth import (
+    build_saml_auth,
+    build_sp_info,
+    build_sp_metadata,
+    get_saml_auth_store,
+    profile_metadata_ready,
+    resolve_saml_login,
+)
 from services.squid_config_forms import (
     build_template_options,
     build_template_options_from_form,
@@ -718,6 +726,7 @@ def _auth_secret_key():
 
 
 _directory_auth_store = get_directory_auth_store(_auth_secret_key)
+_saml_auth_store = get_saml_auth_store()
 _env_secret = (os.environ.get("FLASK_SECRET_KEY") or "").strip()
 if _env_secret:
     app.secret_key = _env_secret
@@ -756,6 +765,10 @@ try:
     _directory_auth_store.ensure_default_profiles()
 except Exception:
     app.logger.exception("Failed to initialize directory auth provider profiles")
+try:
+    _saml_auth_store.ensure_default_profile()
+except Exception:
+    app.logger.exception("Failed to initialize SAML auth provider profile")
 
 
 def _is_logged_in() -> bool:
@@ -1393,6 +1406,8 @@ def _csrf_guard() -> None:
         return
     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
         return
+    if request.endpoint == "auth_saml_acs":
+        return
 
     sent = (request.headers.get("X-CSRF-Token") or "").strip()
     if not sent:
@@ -1458,7 +1473,13 @@ def _require_login_guard():
         return None
 
     # Allow auth routes.
-    if request.endpoint in {"login", "logout"}:
+    if request.endpoint in {
+        "login",
+        "logout",
+        "auth_saml_metadata",
+        "auth_saml_login",
+        "auth_saml_acs",
+    }:
         return None
 
     if _is_logged_in():
@@ -1576,6 +1597,8 @@ def _inject_proxy_context():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    saml_profile = _saml_auth_store.get_profile()
+    saml_enabled = profile_metadata_ready(saml_profile)
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
@@ -1608,19 +1631,7 @@ def login():
                 if directory_ok
                 else username
             )
-            # Prevent session fixation by clearing any existing session data.
-            prev_csrf = session.get("_csrf_token")
-            session.clear()
-            # Keep a CSRF token available immediately after login so that the
-            # next POST (often triggered by UI actions) can succeed even if the
-            # client does not perform an intermediate template-rendering GET.
-            if prev_csrf and isinstance(prev_csrf, str):
-                session["_csrf_token"] = prev_csrf
-            else:
-                session["_csrf_token"] = secrets.token_urlsafe(32)
-            session["user"] = login_username
-            session["auth_provider"] = login_provider
-            session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
+            _establish_admin_session(login_username, login_provider)
             _record_audit_event(
                 "login_success",
                 ok=True,
@@ -1641,12 +1652,125 @@ def login():
             "login.html",
             error="Invalid username or password.",
             next=next_url,
+            saml_enabled=saml_enabled,
         )
 
     if _is_logged_in():
         return _redirect_to("index")
     next_url = _safe_next_url(request.args.get("next") or "")
-    return render_template("login.html", error=None, next=next_url)
+    return render_template(
+        "login.html",
+        error=None,
+        next=next_url,
+        saml_enabled=saml_enabled,
+    )
+
+
+def _establish_admin_session(username: str, provider: str) -> None:
+    # Prevent session fixation by clearing any existing session data.
+    prev_csrf = session.get("_csrf_token")
+    session.clear()
+    # Keep a CSRF token available immediately after login so that the
+    # next POST (often triggered by UI actions) can succeed even if the
+    # client does not perform an intermediate template-rendering GET.
+    if prev_csrf and isinstance(prev_csrf, str):
+        session["_csrf_token"] = prev_csrf
+    else:
+        session["_csrf_token"] = secrets.token_urlsafe(32)
+    session["user"] = username
+    session["auth_provider"] = provider
+    session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
+
+
+@app.route("/auth/saml/metadata", methods=["GET"])
+def auth_saml_metadata():
+    profile = _saml_auth_store.get_profile()
+    try:
+        metadata = build_sp_metadata(profile, request)
+    except Exception as exc:
+        _record_audit_event(
+            "saml_metadata_failed",
+            ok=False,
+            detail=_audit_safe_detail(public_error_message(exc), limit=1000),
+        )
+        abort(503, description=public_error_message(exc))
+    return Response(metadata, mimetype="application/samlmetadata+xml")
+
+
+@app.route("/auth/saml/login", methods=["GET"])
+def auth_saml_login():
+    profile = _saml_auth_store.get_profile()
+    next_url = _safe_next_url(request.args.get("next") or "")
+    if not profile_metadata_ready(profile):
+        _record_audit_event(
+            "saml_login_failed",
+            ok=False,
+            detail="SAML provider is disabled or metadata cache is stale.",
+        )
+        return _redirect_to(
+            "login",
+            next=next_url,
+            error="saml_unavailable",
+        )
+    try:
+        auth = build_saml_auth(profile, request)
+        redirect_url = auth.login(return_to=next_url or url_for("index"))
+        request_id = getattr(auth, "get_last_request_id", lambda: "")()
+        if request_id:
+            session["saml_request_id"] = str(request_id)
+        return redirect(redirect_url)
+    except Exception as exc:
+        app.logger.exception("SAML login initiation failed")
+        _record_audit_event(
+            "saml_login_failed",
+            ok=False,
+            detail=_audit_safe_detail(public_error_message(exc), limit=1000),
+        )
+        return _redirect_to("login", next=next_url)
+
+
+@app.route("/auth/saml/acs", methods=["POST"])
+def auth_saml_acs():
+    profile = _saml_auth_store.get_profile()
+    next_url = _safe_next_url(request.form.get("RelayState") or "")
+    if not profile_metadata_ready(profile):
+        _record_audit_event(
+            "saml_login_failed",
+            ok=False,
+            detail="SAML ACS rejected because provider is disabled or metadata cache is stale.",
+        )
+        return _redirect_to("login", next=next_url)
+    try:
+        auth = build_saml_auth(profile, request)
+        request_id = session.pop("saml_request_id", None)
+        if request_id:
+            auth.process_response(request_id=str(request_id))
+        else:
+            auth.process_response()
+        result = resolve_saml_login(auth, profile)
+    except Exception as exc:
+        app.logger.exception("SAML ACS processing failed")
+        result = type("_Result", (), {})()
+        result.ok = False
+        result.username = ""
+        result.detail = public_error_message(exc)
+    if not result.ok:
+        _record_audit_event(
+            "saml_login_failed",
+            ok=False,
+            detail=_audit_safe_detail(
+                f"user={getattr(result, 'username', '')} detail={getattr(result, 'detail', '')}",
+                limit=1000,
+            ),
+        )
+        return _redirect_to("login", next=next_url)
+    _establish_admin_session(result.username, "saml")
+    _record_audit_event(
+        "login_success",
+        ok=True,
+        detail=f"user={result.username} provider=saml",
+    )
+    return redirect(next_url or url_for("index"))
 
 
 @app.route("/logout", methods=["POST"])
@@ -2880,6 +3004,9 @@ def _handle_administration_post(store: Any, current_user: str):
         "test_auth_provider",
         "scan_auth_provider",
         "disable_auth_provider",
+        "save_saml_provider",
+        "refresh_saml_metadata",
+        "disable_saml_provider",
     }:
         return _handle_auth_provider_post()
     try:
@@ -2943,8 +3070,32 @@ def _handle_administration_post(store: Any, current_user: str):
 def _handle_auth_provider_post():
     action = _form_action()
     provider = (request.form.get("provider") or "").strip()
-    tab = provider if provider in {"ldap", "active_directory"} else "status"
+    tab = provider if provider in {"ldap", "active_directory", "saml"} else "status"
     try:
+        if action == "save_saml_provider":
+            _saml_auth_store.save_profile(request.form.to_dict())
+            return _redirect_with_message(
+                "administration",
+                ok=True,
+                msg="SAML provider saved.",
+                tab="saml",
+            )
+        if action == "refresh_saml_metadata":
+            result = _saml_auth_store.refresh_metadata()
+            return _redirect_with_message(
+                "administration",
+                ok=result.ok,
+                msg=result.detail,
+                tab="saml",
+            )
+        if action == "disable_saml_provider":
+            _saml_auth_store.disable_provider()
+            return _redirect_with_message(
+                "administration",
+                ok=True,
+                msg="SAML provider disabled.",
+                tab="saml",
+            )
         if action == "save_auth_provider":
             payload = request.form.to_dict()
             ca_upload = request.files.get("ca_bundle_file")
@@ -3008,6 +3159,27 @@ def _handle_auth_provider_post():
         msg="Unknown authentication provider action.",
         tab=tab,
     )
+
+
+def _saml_admin_status() -> dict[str, Any]:
+    profile = _saml_auth_store.get_profile()
+    try:
+        sp_info = build_sp_info(profile, request)
+    except Exception:
+        sp_info = {"entity_id": "", "acs_url": "", "sls_url": ""}
+    ready = profile_metadata_ready(profile)
+    metadata = profile.parsed_metadata
+    return {
+        "profile": profile,
+        "ready": ready,
+        "metadata_ready": profile.has_metadata
+        and profile.last_refresh_ok
+        and (not profile.cache_expires_ts or profile.cache_expires_ts > int(time.time()))
+        and (not profile.valid_until_ts or profile.valid_until_ts > int(time.time())),
+        "sp": sp_info,
+        "idp_entity_id": profile.entity_id,
+        "signing_certs": metadata.get("signing_certs") or [],
+    }
 
 
 @app.route("/")
@@ -6023,8 +6195,31 @@ def administration():
             "providers": (),
             "provider_labels": {},
         }
+    try:
+        saml_status = _saml_admin_status()
+    except Exception:
+        app.logger.exception("Failed to load SAML authentication status")
+        saml_status = {
+            "profile": _saml_auth_store.default_profile(),
+            "ready": False,
+            "metadata_ready": False,
+            "sp": {"entity_id": "", "acs_url": "", "sls_url": ""},
+            "idp_entity_id": "",
+            "signing_certs": [],
+        }
+    if saml_status["ready"]:
+        auth_status = {
+            **auth_status,
+            "active_provider": "saml",
+            "active_label": "SAML",
+        }
     auth_tab = (request.args.get("tab") or "status").strip()
-    if auth_status_degraded or auth_tab not in {"status", "ldap", "active_directory"}:
+    if auth_status_degraded or auth_tab not in {
+        "status",
+        "ldap",
+        "active_directory",
+        "saml",
+    }:
         auth_tab = "status"
     message = request.args.get("msg")
     message_ok = request.args.get("ok") == "1"
@@ -6038,6 +6233,7 @@ def administration():
         users=users,
         current_user=current_user,
         auth_status=auth_status,
+        saml_status=saml_status,
         auth_tab=auth_tab,
         auth_scan=auth_scan or {},
         message=message,
