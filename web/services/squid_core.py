@@ -1154,6 +1154,7 @@ class SquidController:
         pid_error_message: str,
         initial_stale_pid_cleanup: bool = False,
         terminate_listener_orphans: bool = False,
+        retry_supervisor_stop: bool = False,
     ) -> bool:
         if initial_stale_pid_cleanup:
             stale_pid_detail = self._remove_stale_squid_pidfile()
@@ -1185,6 +1186,25 @@ class SquidController:
                 self._terminate_orphaned_http_listener_processes(timeout=6.0),
             )
             listener_absent = self._wait_for_http_listener_absent(timeout=8.0)
+        if retry_supervisor_stop and not listener_absent:
+            try:
+                stop = self._run(
+                    [
+                        "supervisorctl",
+                        "-c",
+                        "/etc/supervisord.conf",
+                        "stop",
+                        "squid",
+                    ],
+                    capture_output=True,
+                    timeout=20,
+                )
+                detail_parts.append(
+                    self._decode_completed(stop) or "supervisorctl stop squid",
+                )
+            except Exception as exc:
+                detail_parts.append(f"supervisor stop retry failed: {exc}")
+            listener_absent = self._wait_for_http_listener_absent(timeout=20.0)
         self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
         stale_pid_detail = self._remove_stale_squid_pidfile()
         if stale_pid_detail:
@@ -1233,6 +1253,7 @@ class SquidController:
             ),
             initial_stale_pid_cleanup=True,
             terminate_listener_orphans=True,
+            retry_supervisor_stop=True,
         )
 
     def clear_disk_cache(self) -> tuple[bool, str]:
