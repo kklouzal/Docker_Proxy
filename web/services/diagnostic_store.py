@@ -207,8 +207,8 @@ def _split_tsv(line: str) -> list[str]:
     s = (line or "").strip("\r\n")
     if not s:
         return []
-    if "\t" in s and "	" not in s:
-        s = s.replace("\t", "	")
+    if "\\t" in s and "\t" not in s:
+        s = s.replace("\\t", "\t")
     if '"' not in s:
         return [item.strip() for item in s.split("	")]
     try:
@@ -344,6 +344,14 @@ def _normalize_request_row(row: Any) -> dict[str, Any]:
         "ssl_exception": _policy_text(row[21]),
         "webfilter_allow": _policy_text(row[22]),
         "cache_bypass": _policy_text(row[23]),
+        "response_content_type": _safe_text(
+            row[24] if len(row) > 24 else "", max_len=255
+        ),
+        "response_server": _safe_text(row[25] if len(row) > 25 else "", max_len=255),
+        "response_cf_mitigated": _safe_text(
+            row[26] if len(row) > 26 else "", max_len=64
+        ),
+        "response_alt_svc": _safe_text(row[27] if len(row) > 27 else "", max_len=512),
     }
     data["target_display"] = _request_target_display(data)
     data["policy_tags"] = _policy_tags(
@@ -1192,7 +1200,8 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass
+                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    response_cf_mitigated, response_alt_svc
                 FROM diagnostic_requests
                 {where_sql}
                 ORDER BY ts DESC, id DESC
@@ -1397,7 +1406,8 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass
+                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    response_cf_mitigated, response_alt_svc
                 FROM diagnostic_requests
                 WHERE proxy_id = %s
                   AND domain = %s
@@ -1479,7 +1489,8 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass
+                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    response_cf_mitigated, response_alt_svc
                 FROM diagnostic_requests
                 {where_sql}
                 ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
@@ -1729,7 +1740,8 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass
+                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    response_cf_mitigated, response_alt_svc
                 FROM diagnostic_requests
                 {where_sql}
                 ORDER BY duration_ms DESC, ts DESC, id DESC

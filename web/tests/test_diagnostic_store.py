@@ -4,6 +4,7 @@ from services.diagnostic_store import (
     DiagnosticStore,
     _normalize_icap_row,
     _normalize_request_row,
+    _split_tsv,
 )
 
 
@@ -131,6 +132,10 @@ def test_log_parsers_share_policy_field_and_raw_line_normalization() -> None:
         assert not row["raw"].endswith(("\r", "\n"))
 
 
+def test_split_tsv_accepts_literal_escaped_tabs() -> None:
+    assert _split_tsv("alpha\\tbeta\\tgam\\tma") == ["alpha", "beta", "gam", "ma"]
+
+
 def test_normalized_stored_rows_do_not_emit_dash_policy_tags() -> None:
     request_row = _normalize_request_row(
         [
@@ -184,6 +189,114 @@ def test_normalized_stored_rows_do_not_emit_dash_policy_tags() -> None:
 
     assert request_row["policy_tags"] == []
     assert icap_row["policy_tags"] == []
+
+
+def test_normalized_request_row_preserves_response_metadata() -> None:
+    row = _normalize_request_row(
+        [
+            1777000000,
+            125,
+            "192.0.2.10",
+            "GET",
+            "http://example.com/",
+            "example.com",
+            "TCP_MISS/403",
+            403,
+            482,
+            "tx123",
+            "HIER_DIRECT",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "example.com",
+            "curl/8.19.0",
+            "-",
+            "",
+            "",
+            "",
+            "",
+            "text/html",
+            "cloudflare",
+            "challenge",
+            'h3=":443"; ma=86400',
+        ]
+    )
+
+    assert row["response_content_type"] == "text/html"
+    assert row["response_server"] == "cloudflare"
+    assert row["response_cf_mitigated"] == "challenge"
+    assert row["response_alt_svc"].startswith("h3=")
+
+
+def test_list_recent_requests_selects_response_metadata(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    request_row = (
+        1777000000,
+        125,
+        "192.0.2.10",
+        "GET",
+        "http://example.com/",
+        "example.com",
+        "TCP_MISS/403",
+        403,
+        482,
+        "tx123",
+        "HIER_DIRECT",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "example.com",
+        "curl/8.19.0",
+        "-",
+        "",
+        "",
+        "",
+        "",
+        "text/html",
+        "cloudflare",
+        "challenge",
+        'h3=":443"; ma=86400',
+    )
+
+    class FakeCursor:
+        def fetchall(self):
+            return [request_row]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params):
+            captured["sql"] = sql
+            captured["params"] = params
+            return FakeCursor()
+
+    def fake_connect():
+        return FakeConnection()
+
+    store = DiagnosticStore()
+    monkeypatch.setattr(store, "_connect", fake_connect)
+
+    rows = store.list_recent_requests(limit=1)
+
+    sql = str(captured["sql"])
+    assert "response_content_type" in sql
+    assert "response_server" in sql
+    assert "response_cf_mitigated" in sql
+    assert "response_alt_svc" in sql
+    assert rows[0]["response_content_type"] == "text/html"
+    assert rows[0]["response_server"] == "cloudflare"
+    assert rows[0]["response_cf_mitigated"] == "challenge"
+    assert rows[0]["response_alt_svc"].startswith("h3=")
 
 
 def test_top_policy_tags_sql_filters_dash_placeholders(monkeypatch) -> None:
