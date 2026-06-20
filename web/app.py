@@ -124,6 +124,7 @@ from services.proxy_health import (
 )
 from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
 from services.proxy_health import test_eicar as _shared_test_eicar
+from services.proxy_logs import proxy_log_status_code
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import request_proxy_reconcile
 from services.runtime_helpers import extract_domain as _extract_domain
@@ -3624,10 +3625,7 @@ def api_logs_status():
     selected_log = (request.args.get("log") or "access").strip() or "access"
     try:
         payload = get_proxy_client().get_logs(proxy_id, log_key=selected_log)
-        status_code = (
-            200 if payload.get("ok") or payload.get("status") == "missing" else 404
-        )
-        return jsonify(payload), status_code
+        return jsonify(payload), proxy_log_status_code(payload)
     except ProxyClientError as exc:
         return jsonify(
             {

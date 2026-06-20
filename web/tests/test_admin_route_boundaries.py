@@ -488,6 +488,39 @@ def test_logs_api_treats_missing_allowlisted_log_as_graceful_empty_payload(
     assert response.get_json()["content"] == ""
 
 
+def test_logs_api_reports_unreadable_allowlisted_log_as_server_error(
+    monkeypatch, tmp_path
+) -> None:
+    class UnavailableLogProxyClient(RecordingProxyClient):
+        def get_logs(
+            self,
+            proxy_id: object,
+            *,
+            log_key: object | None = None,
+            timeout_seconds: float | None = None,
+            **__,
+        ) -> dict[str, object]:
+            self.log_calls.append((str(proxy_id), str(log_key or "access")))
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "detail": "Squid access log could not be read: permission denied",
+                "key": str(log_key or "access"),
+                "content": "",
+                "logs": [],
+            }
+
+    proxy_client = UnavailableLogProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/logs?log=access")
+
+    assert response.status_code == 500
+    assert response.get_json()["status"] == "unavailable"
+
+
 def test_fleet_query_resolves_proxy_alias_for_live_health(
     monkeypatch, tmp_path
 ) -> None:

@@ -21,7 +21,7 @@ from services.pac_http import (
 )
 from services.policy_requests import get_policy_request_store
 from services.proxy_context import get_proxy_id
-from services.proxy_logs import read_proxy_log
+from services.proxy_logs import proxy_log_status_code, read_proxy_log
 from services.version_status import current_component_metadata
 
 from proxy.agent import start_agent
@@ -283,8 +283,7 @@ def manage_clamav_health() -> Any:
 @_require_management_auth
 def manage_logs() -> Any:
     result = read_proxy_log(request.args.get("log"))
-    status_code = 200 if result.get("ok") or result.get("status") == "missing" else 404
-    return jsonify(result), status_code
+    return jsonify(result), proxy_log_status_code(result)
 
 
 @app.route("/api/manage/sync", methods=["POST"])

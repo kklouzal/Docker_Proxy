@@ -134,3 +134,12 @@ def read_proxy_log(
         "max_bytes": cap,
         "logs": list_proxy_logs(),
     }
+
+
+def proxy_log_status_code(payload: dict[str, Any]) -> int:
+    status = str(payload.get("status") or "")
+    if payload.get("ok") or status == "missing":
+        return 200
+    if status == "unavailable":
+        return 500
+    return 404

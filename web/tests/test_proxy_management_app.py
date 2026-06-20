@@ -263,6 +263,36 @@ def test_proxy_management_logs_endpoint_reads_allowlisted_log_tail(
     assert rejected.get_json()["status"] == "not_found"
 
 
+def test_proxy_management_logs_endpoint_reports_unreadable_log_as_server_error(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    proxy_app.runtime = _Runtime()
+    monkeypatch.setattr(
+        proxy_app,
+        "read_proxy_log",
+        lambda _key: {
+            "ok": False,
+            "status": "unavailable",
+            "detail": "Squid access log could not be read: permission denied",
+            "key": "access",
+            "content": "",
+            "logs": [],
+        },
+    )
+    client = proxy_app.app.test_client()
+
+    response = _management_get(
+        client,
+        "/api/manage/logs?log=access",
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json()["status"] == "unavailable"
+
+
 def test_proxy_management_health_degrades_without_leaking_traceback(
     monkeypatch,
 ) -> None:

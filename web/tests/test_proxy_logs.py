@@ -64,3 +64,25 @@ def test_proxy_logs_missing_allowlisted_file_is_graceful(monkeypatch, tmp_path) 
     assert payload["status"] == "missing"
     assert payload["content"] == ""
     assert payload["logs"]
+
+
+def test_proxy_logs_unreadable_allowlisted_file_is_server_error(
+    monkeypatch, tmp_path
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "access.log").write_text("alpha\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+    monkeypatch.setattr(
+        proxy_logs,
+        "_tail_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+
+    payload = proxy_logs.read_proxy_log("access")
+
+    assert payload["ok"] is False
+    assert payload["status"] == "unavailable"
+    assert payload["content"] == ""
+    assert proxy_logs.proxy_log_status_code(payload) == 500
+    assert proxy_logs.proxy_log_status_code({"ok": False, "status": "not_found"}) == 404
