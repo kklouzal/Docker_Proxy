@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
-from services.saml_auth import SamlAuthStore, parse_saml_metadata
+from services.saml_auth import SamlAuthStore, parse_saml_metadata, prepare_flask_request
 
 SIGNING_CERT = "MIICsigningCERTvalue"
 ENCRYPTION_CERT = "MIICencryptionCERTvalue"
@@ -126,6 +127,36 @@ class MemorySamlAuthStore(SamlAuthStore):
             required_group=self.profile.required_group,
             updated_ts=self.profile.updated_ts,
         )
+
+
+def _saml_request(url: str, *, scheme: str = "https", server_port: str = ""):
+    host = url.split("://", 1)[1].split("/", 1)[0]
+    return SimpleNamespace(
+        url=url,
+        scheme=scheme,
+        host=host,
+        path="/auth/saml/login",
+        args={},
+        form={},
+        query_string=b"",
+        environ={"SERVER_PORT": server_port} if server_port else {},
+    )
+
+
+def test_prepare_flask_request_uses_default_https_port_when_url_omits_port() -> None:
+    request_data = prepare_flask_request(
+        _saml_request("https://admin.example.test/auth/saml/login")
+    )
+
+    assert request_data["server_port"] == "443"
+
+
+def test_prepare_flask_request_preserves_explicit_url_port() -> None:
+    request_data = prepare_flask_request(
+        _saml_request("https://admin.example.test:8443/auth/saml/login")
+    )
+
+    assert request_data["server_port"] == "8443"
 
 
 def test_parse_saml_metadata_extracts_adfs_metadata() -> None:

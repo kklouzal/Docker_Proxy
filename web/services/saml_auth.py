@@ -837,11 +837,20 @@ def prepare_flask_request(request: Any) -> dict[str, Any]:
         "https": "on" if request.scheme == "https" else "off",
         "http_host": request.host,
         "script_name": request.path,
-        "server_port": url_data.port,
+        "server_port": _server_port_for_saml_request(request, url_data),
         "get_data": request.args.copy(),
         "post_data": request.form.copy(),
         "query_string": request.query_string.decode("utf-8", errors="replace"),
     }
+
+
+def _server_port_for_saml_request(request: Any, url_data: Any) -> str:
+    if url_data.port is not None:
+        return str(url_data.port)
+    environ_port = str(request.environ.get("SERVER_PORT") or "").strip()
+    if environ_port:
+        return environ_port
+    return "443" if request.scheme == "https" else "80"
 
 
 def build_saml_auth(profile: SamlProviderProfile, request: Any) -> Any:
