@@ -115,6 +115,110 @@ def test_certificate_upload_accepts_pfx_and_p12_extensions_case_insensitively(
     assert len(loaded.certificate_bundles.created) == 4
 
 
+def test_certificates_page_shows_admin_ui_https_status(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ADMIN_UI_HTTPS_ENABLED", "1")
+    monkeypatch.setenv("ADMIN_UI_SSL_CERTFILE", "/certs/ui.crt")
+    monkeypatch.setenv("ADMIN_UI_SSL_KEYFILE", "/certs/ui.key")
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="/etc/squid/ssl/certs/ca.crt",
+        keyfile="/etc/squid/ssl/certs/ca.key",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Admin UI HTTPS" in html
+    assert "HTTPS enabled" in html
+    assert "restart pending" in html
+    assert "/certs/ui.crt" in html
+    assert "ADMIN_UI_HTTPS_ENABLED=1" in html
+
+
+def test_admin_ui_https_preference_uses_active_bundle_paths(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+            "cert_source": "active_bundle",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["1"]
+    assert bundles.admin_ui_https_settings.enabled is True
+    assert bundles.admin_ui_https_settings.certfile == "/etc/squid/ssl/certs/ca.crt"
+    assert bundles.admin_ui_https_settings.keyfile == "/etc/squid/ssl/certs/ca.key"
+    assert bundles.admin_ui_https_settings.updated_by == "admin"
+
+
+def test_admin_ui_https_preference_requires_bundle_for_default_material(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=None)
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+            "cert_source": "active_bundle",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "Generate or upload a CA bundle" in _location_params(response)["msg"][0]
+    assert bundles.admin_ui_https_settings.enabled is False
+
+
+def test_admin_ui_https_custom_paths_require_cert_and_key(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+            "cert_source": "custom",
+            "certfile": "/certs/ui.crt",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "certificate and key paths are required" in _location_params(response)["msg"][0]
+
+
 def test_certificate_publish_restores_previous_bundle_when_no_reconcile_queued(
     monkeypatch, tmp_path
 ) -> None:

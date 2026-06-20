@@ -193,15 +193,106 @@ def test_repo_does_not_ship_stale_squid_mime_override() -> None:
 def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     entrypoint = _read("docker/entrypoint.admin.sh")
     supervisord = _read("docker/supervisord.admin.conf")
+    startup = _read("docker/start-admin-ui.sh")
     env_example = _read("config/app.env.example")
 
-    assert "--threads ${WEB_THREADS:-2}" in supervisord
+    assert "command=/usr/local/bin/start-admin-ui.sh" in supervisord
+    assert "COPY --chmod=755 docker/start-admin-ui.sh" in _read(
+        "docker/Dockerfile.admin"
+    )
+    assert 'threads="${WEB_THREADS:-2}"' in startup
     assert "# WEB_THREADS=2" in env_example
     assert 'web_threads="${WEB_THREADS:-2}"' in entrypoint
     assert "web_workers" not in entrypoint
     assert "derived_pool=$((web_threads + 12))" in entrypoint
     assert 'if [ "$derived_pool" -lt 16 ]; then' in entrypoint
     assert 'if [ "$derived_pool" -gt 32 ]; then' in entrypoint
+
+
+def test_admin_ui_https_packaging_contract() -> None:
+    compose = _read("docker-compose.common.yml")
+    admin_block = compose.split("  proxy:", 1)[0]
+    startup = _read("docker/start-admin-ui.sh")
+    env_example = _read("config/app.env.example")
+    readme = _read("README.md")
+
+    assert "- ./squid/ssl/certs:/etc/squid/ssl/certs:ro" in admin_block
+    assert "ADMIN_UI_HTTPS_ENABLED: ${ADMIN_UI_HTTPS_ENABLED:-0}" in admin_block
+    assert "ADMIN_UI_SSL_CERTFILE: ${ADMIN_UI_SSL_CERTFILE:-}" in admin_block
+    assert "ADMIN_UI_SSL_KEYFILE: ${ADMIN_UI_SSL_KEYFILE:-}" in admin_block
+    assert 'certfile="${certfile:-/etc/squid/ssl/certs/ca.crt}"' in startup
+    assert 'keyfile="${keyfile:-/etc/squid/ssl/certs/ca.key}"' in startup
+    assert '--certfile "$certfile" --keyfile "$keyfile"' in startup
+    assert "# ADMIN_UI_HTTPS_ENABLED=0" in env_example
+    assert "# ADMIN_UI_SSL_CERTFILE=/etc/squid/ssl/certs/ca.crt" in env_example
+    assert "prefer a server certificate whose subject/SAN matches" in readme
+
+
+def test_admin_ui_startup_adds_tls_args_only_when_enabled(tmp_path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    args_file = tmp_path / "args.txt"
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$@" > "$ADMIN_UI_ARGS_FILE"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env.get('PATH', '')}",
+            "ADMIN_UI_ARGS_FILE": str(args_file),
+            "ADMIN_UI_HTTPS_ENABLED": "0",
+        },
+    )
+    for key in (
+        "ADMIN_UI_SSL_CERTFILE",
+        "ADMIN_UI_SSL_KEYFILE",
+        "WEB_WORKERS",
+        "WEB_THREADS",
+        "WEB_TIMEOUT",
+        "WEB_GRACEFUL_TIMEOUT",
+        "WEB_KEEPALIVE",
+    ):
+        env.pop(key, None)
+
+    subprocess.run(
+        [str(REPO_ROOT / "docker" / "start-admin-ui.sh")],
+        cwd=REPO_ROOT / "web",
+        env=env,
+        check=True,
+    )
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert args[:4] == ["-m", "gunicorn", "-b", "0.0.0.0:5000"]
+    assert "--certfile" not in args
+    assert "--keyfile" not in args
+
+    cert = tmp_path / "admin.crt"
+    key = tmp_path / "admin.key"
+    cert.write_text("cert", encoding="utf-8")
+    key.write_text("key", encoding="utf-8")
+    env.update(
+        {
+            "ADMIN_UI_HTTPS_ENABLED": "yes",
+            "ADMIN_UI_SSL_CERTFILE": str(cert),
+            "ADMIN_UI_SSL_KEYFILE": str(key),
+            "WEB_THREADS": "4",
+        },
+    )
+    subprocess.run(
+        [str(REPO_ROOT / "docker" / "start-admin-ui.sh")],
+        cwd=REPO_ROOT / "web",
+        env=env,
+        check=True,
+    )
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert "--threads" in args
+    assert args[args.index("--threads") + 1] == "4"
+    assert args[args.index("--certfile") + 1] == str(cert)
+    assert args[args.index("--keyfile") + 1] == str(key)
 
 
 def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:

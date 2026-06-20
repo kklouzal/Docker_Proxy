@@ -1053,6 +1053,13 @@ class FakeCertificateBundles:
         self.bundle = bundle
         self.created: list[Any] = []
         self.applied: list[dict[str, Any]] = []
+        self.admin_ui_https_settings = SimpleNamespace(
+            enabled=False,
+            certfile="",
+            keyfile="",
+            updated_by="",
+            updated_ts=0,
+        )
         self._revisions: dict[int, Any] = {}
         if bundle is not None and getattr(bundle, "revision_id", None) is not None:
             self._revisions[int(bundle.revision_id)] = bundle
@@ -1100,6 +1107,19 @@ class FakeCertificateBundles:
         return SimpleNamespace(
             ok=bool(row.get("ok")), detail=row.get("detail", ""), applied_ts=1
         )
+
+    def get_admin_ui_https_settings(self) -> Any:
+        return self.admin_ui_https_settings
+
+    def set_admin_ui_https_settings(self, **kwargs: Any) -> Any:
+        self.admin_ui_https_settings = SimpleNamespace(
+            enabled=bool(kwargs.get("enabled")),
+            certfile=str(kwargs.get("certfile") or ""),
+            keyfile=str(kwargs.get("keyfile") or ""),
+            updated_by=str(kwargs.get("updated_by") or ""),
+            updated_ts=1,
+        )
+        return self.admin_ui_https_settings
 
 
 def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:

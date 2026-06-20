@@ -72,6 +72,15 @@ class CertificateBundleMetadata:
     is_active: bool
 
 
+@dataclass(frozen=True)
+class AdminUiHttpsSettings:
+    enabled: bool
+    certfile: str
+    keyfile: str
+    updated_by: str
+    updated_ts: int
+
+
 class CertificateBundleStore:
     def _connect(self):
         return connect()
@@ -114,6 +123,26 @@ class CertificateBundleStore:
                     bundle_sha256 CHAR(64) NOT NULL DEFAULT '',
                     KEY idx_proxy_certificate_applications_proxy_ts (proxy_id, applied_ts)
                 )
+                """,
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admin_ui_https_settings (
+                    id TINYINT PRIMARY KEY,
+                    enabled TINYINT(1) NOT NULL DEFAULT 0,
+                    certfile VARCHAR(1024) NOT NULL DEFAULT '',
+                    keyfile VARCHAR(1024) NOT NULL DEFAULT '',
+                    updated_by VARCHAR(255) NOT NULL DEFAULT '',
+                    updated_ts BIGINT NOT NULL DEFAULT 0
+                )
+                """,
+            )
+            conn.execute(
+                """
+                INSERT IGNORE INTO admin_ui_https_settings(
+                    id, enabled, certfile, keyfile, updated_by, updated_ts
+                )
+                VALUES(1,0,'','','',0)
                 """,
             )
 
@@ -344,6 +373,58 @@ class CertificateBundleStore:
                 (proxy_key,),
             ).fetchone()
         return self._row_to_application(row)
+
+    def get_admin_ui_https_settings(self) -> AdminUiHttpsSettings:
+        self.init_db()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT enabled, certfile, keyfile, updated_by, updated_ts
+                FROM admin_ui_https_settings
+                WHERE id=1
+                LIMIT 1
+                """,
+            ).fetchone()
+        if not row:
+            return AdminUiHttpsSettings(False, "", "", "", 0)
+        return AdminUiHttpsSettings(
+            enabled=bool(int(row["enabled"] or 0)),
+            certfile=str(row["certfile"] or ""),
+            keyfile=str(row["keyfile"] or ""),
+            updated_by=str(row["updated_by"] or ""),
+            updated_ts=int(row["updated_ts"] or 0),
+        )
+
+    def set_admin_ui_https_settings(
+        self,
+        *,
+        enabled: bool,
+        certfile: object | None = None,
+        keyfile: object | None = None,
+        updated_by: object | None = None,
+    ) -> AdminUiHttpsSettings:
+        self.init_db()
+        cert_path = str(certfile or "").strip()[:1024]
+        key_path = str(keyfile or "").strip()[:1024]
+        updater = str(updated_by or "").strip()[:255]
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO admin_ui_https_settings(
+                    id, enabled, certfile, keyfile, updated_by, updated_ts
+                )
+                VALUES(1,%s,%s,%s,%s,%s) AS incoming
+                ON DUPLICATE KEY UPDATE
+                    enabled=incoming.enabled,
+                    certfile=incoming.certfile,
+                    keyfile=incoming.keyfile,
+                    updated_by=incoming.updated_by,
+                    updated_ts=incoming.updated_ts
+                """,
+                (1 if enabled else 0, cert_path, key_path, updater, now),
+            )
+        return self.get_admin_ui_https_settings()
 
 
 _store: CertificateBundleStore | None = None

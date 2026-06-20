@@ -118,6 +118,7 @@ COPY web/tools/adblock_compile.py \
 	/app/tools/
 COPY squid /squid
 COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
+COPY --chmod=755 docker/start-admin-ui.sh /usr/local/bin/start-admin-ui.sh
 COPY --chmod=755 docker/entrypoint.admin.sh /entrypoint.admin.sh
 COPY docker/supervisord.admin.conf /etc/supervisord.conf
 COPY --chmod=755 docker/healthcheck.admin.sh /healthcheck.admin.sh

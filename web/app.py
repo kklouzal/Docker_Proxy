@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import pathlib
 import secrets
 import shutil
 import time
@@ -2579,6 +2580,87 @@ def _webfilter_setting_bool(settings: Any, name: str, default: bool = False) -> 
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _truthy_env(value: object | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
+    clean_path = (path or "").strip()
+    return {
+        "path": clean_path,
+        "configured": bool(clean_path),
+        "readable": bool(
+            clean_path
+            and pathlib.Path(clean_path).is_file()
+            and os.access(clean_path, os.R_OK)
+        ),
+    }
+
+
+def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
+    default_certfile = "/etc/squid/ssl/certs/ca.crt"
+    default_keyfile = "/etc/squid/ssl/certs/ca.key"
+    runtime_enabled = _truthy_env(os.environ.get("ADMIN_UI_HTTPS_ENABLED"))
+    runtime_certfile = os.environ.get("ADMIN_UI_SSL_CERTFILE") or (
+        default_certfile if runtime_enabled else ""
+    )
+    runtime_keyfile = os.environ.get("ADMIN_UI_SSL_KEYFILE") or (
+        default_keyfile if runtime_enabled else ""
+    )
+    try:
+        desired = get_certificate_bundles().get_admin_ui_https_settings()
+        desired_error = ""
+    except Exception as exc:
+        app.logger.exception("Failed to load Admin UI HTTPS settings")
+        desired = None
+        desired_error = public_error_message(
+            exc,
+            default="Failed to load saved Admin UI HTTPS settings.",
+        )
+
+    desired_enabled = bool(getattr(desired, "enabled", False))
+    desired_certfile = getattr(desired, "certfile", "") if desired is not None else ""
+    desired_keyfile = getattr(desired, "keyfile", "") if desired is not None else ""
+    if desired_enabled:
+        desired_certfile = desired_certfile or default_certfile
+        desired_keyfile = desired_keyfile or default_keyfile
+    pending_restart = (
+        desired is not None
+        and (
+            desired_enabled != runtime_enabled
+            or (desired_enabled and desired_certfile != runtime_certfile)
+            or (desired_enabled and desired_keyfile != runtime_keyfile)
+        )
+    )
+    return {
+        "runtime_enabled": runtime_enabled,
+        "runtime_certfile": runtime_certfile,
+        "runtime_keyfile": runtime_keyfile,
+        "runtime_cert_status": _admin_ui_https_path_status(runtime_certfile),
+        "runtime_key_status": _admin_ui_https_path_status(runtime_keyfile),
+        "desired_enabled": desired_enabled,
+        "desired_certfile": desired_certfile,
+        "desired_keyfile": desired_keyfile,
+        "desired_cert_status": _admin_ui_https_path_status(desired_certfile),
+        "desired_key_status": _admin_ui_https_path_status(desired_keyfile),
+        "desired_updated_by": getattr(desired, "updated_by", "") if desired else "",
+        "desired_updated_ts": getattr(desired, "updated_ts", 0) if desired else 0,
+        "desired_error": desired_error,
+        "pending_restart": pending_restart,
+        "active_bundle_available": bundle is not None,
+        "default_certfile": default_certfile,
+        "default_keyfile": default_keyfile,
+    }
+
+
+def _admin_ui_https_env_lines(*, enabled: bool, certfile: str, keyfile: str) -> list[str]:
+    return [
+        f"ADMIN_UI_HTTPS_ENABLED={1 if enabled else 0}",
+        f"ADMIN_UI_SSL_CERTFILE={certfile if enabled else ''}",
+        f"ADMIN_UI_SSL_KEYFILE={keyfile if enabled else ''}",
+    ]
 
 
 def _webfilter_category_refresh_required(
@@ -6062,6 +6144,7 @@ def certs():
     bundle_store = get_certificate_bundles()
     bundle = bundle_store.get_active_bundle()
     certificate = "ca.crt" if bundle is not None else None
+    admin_ui_https = _admin_ui_https_status(bundle)
     proxy_cert_statuses = []
     for proxy in get_proxy_registry().list_proxies():
         latest_apply = bundle_store.latest_apply(proxy.proxy_id)
@@ -6083,6 +6166,12 @@ def certs():
         certificate=certificate,
         bundle=bundle,
         proxy_cert_statuses=proxy_cert_statuses,
+        admin_ui_https=admin_ui_https,
+        admin_ui_https_env_lines=_admin_ui_https_env_lines(
+            enabled=admin_ui_https["desired_enabled"],
+            certfile=admin_ui_https["desired_certfile"],
+            keyfile=admin_ui_https["desired_keyfile"],
+        ),
         message=message,
         message_ok=message_ok,
     )
@@ -6170,6 +6259,59 @@ def upload_certificate_pfx():
     _record_audit_event("ca_upload_pfx", ok=ok, detail=detail)
 
     return _redirect_with_message("certs", ok=ok, msg=detail)
+
+
+@app.route("/certs/admin-ui-https", methods=["POST"])
+def update_admin_ui_https():
+    enabled = request.form.get("enabled") == "1"
+    cert_source = (request.form.get("cert_source") or "active_bundle").strip()
+    if cert_source == "custom":
+        certfile = (request.form.get("certfile") or "").strip()
+        keyfile = (request.form.get("keyfile") or "").strip()
+        if enabled and (not certfile or not keyfile):
+            return _redirect_with_message(
+                "certs",
+                ok=False,
+                msg="Custom Admin UI HTTPS certificate and key paths are required.",
+            )
+    else:
+        certfile = "/etc/squid/ssl/certs/ca.crt" if enabled else ""
+        keyfile = "/etc/squid/ssl/certs/ca.key" if enabled else ""
+
+    bundle = get_certificate_bundles().get_active_bundle()
+    if enabled and cert_source != "custom" and bundle is None:
+        return _redirect_with_message(
+            "certs",
+            ok=False,
+            msg="Generate or upload a CA bundle before selecting the active certificate material.",
+        )
+
+    try:
+        settings = get_certificate_bundles().set_admin_ui_https_settings(
+            enabled=enabled,
+            certfile=certfile,
+            keyfile=keyfile,
+            updated_by=str(session.get("user") or ""),
+        )
+        env_lines = _admin_ui_https_env_lines(
+            enabled=settings.enabled,
+            certfile=settings.certfile or "/etc/squid/ssl/certs/ca.crt",
+            keyfile=settings.keyfile or "/etc/squid/ssl/certs/ca.key",
+        )
+        detail = (
+            "Saved Admin UI HTTPS preference. Update the deployment environment with "
+            f"{'; '.join(env_lines)} and restart the admin-ui container for it to take effect."
+        )
+        _record_audit_event("admin_ui_https_settings_save", ok=True, detail=detail)
+        return _redirect_with_message("certs", ok=True, msg=detail)
+    except Exception as exc:
+        app.logger.exception("Failed to save Admin UI HTTPS settings")
+        detail = public_error_message(
+            exc,
+            default="Failed to save Admin UI HTTPS settings.",
+        )
+        _record_audit_event("admin_ui_https_settings_save", ok=False, detail=detail)
+        return _redirect_with_message("certs", ok=False, msg=detail)
 
 
 @app.route("/certs/download/<path:filename>", methods=["GET"])

@@ -291,9 +291,17 @@ The Compose files expose the common production knobs as environment variables. T
 | Web filtering helpers | `WEBFILTER_HELPERS`, `WEBFILTER_CACHE_ENTRIES`, `WEBFILTER_CACHE_TTL_SECONDS`, `WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS`, `WEBFILTER_SNAPSHOT_REFRESH_SECONDS`, `WEBFILTER_FAIL`, `SAFE_BROWSING_POLL_SECONDS`, `SAFE_BROWSING_HELPER_CACHE_ENTRIES`, `SAFE_BROWSING_HELPER_PREFIX_HIT_TTL_SECONDS`, `SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS`, `SAFE_BROWSING_FAIL` |
 | Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_PENDING_MAX_ROWS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS` |
 | Background and housekeeping | `DISABLE_BACKGROUND`, `BACKGROUND_LOCK_PATH`, `BACKGROUND_FORCE`, `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`, `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` |
-| Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE` |
+| Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE`, `ADMIN_UI_HTTPS_ENABLED`, `ADMIN_UI_SSL_CERTFILE`, `ADMIN_UI_SSL_KEYFILE` |
 
 Both containers also load `/config/app.env` at startup when mounted. Use this for host-managed deployments that prefer a mounted environment file over a root `.env`.
+
+### Admin UI HTTPS
+
+The Admin UI serves plain HTTP on container port 5000 by default. To make the Admin UI speak HTTPS directly, set `ADMIN_UI_HTTPS_ENABLED=1`. When enabled and no explicit paths are provided, gunicorn uses `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`, which are the generated or uploaded Squid SSL-bump CA material mounted into the Admin UI container read-only by the default Compose stack.
+
+For production management-plane TLS, prefer a server certificate whose subject/SAN matches the Admin UI hostname and set `ADMIN_UI_SSL_CERTFILE` plus `ADMIN_UI_SSL_KEYFILE` to that certificate/key pair. Reusing the SSL-bump CA certificate as the web server certificate is supported for local or controlled deployments, but it gives the Admin UI a CA identity rather than a purpose-specific server identity and may not satisfy hostname validation.
+
+The Certificates page includes an Admin UI HTTPS panel that records the desired HTTPS mode and certificate paths next to the active CA bundle status. This is intentionally a deployment control surface: saving the preference does not rewrite Compose files or mutate the running gunicorn process. Apply the displayed `ADMIN_UI_HTTPS_ENABLED`, `ADMIN_UI_SSL_CERTFILE`, and `ADMIN_UI_SSL_KEYFILE` values through your root `.env`, shell environment, or mounted `/config/app.env`, then restart `admin-ui`.
 
 ### Bounded logging and optional bundled MySQL
 

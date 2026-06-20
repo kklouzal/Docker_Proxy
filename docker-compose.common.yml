@@ -41,9 +41,13 @@ services:
       - "0.0.0.0:5000:5000"       # Flask UI
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - ./squid/ssl/certs:/etc/squid/ssl/certs:ro
     environment:
       <<: *shared-app-env
       DISABLE_BACKGROUND: 0
+      ADMIN_UI_HTTPS_ENABLED: ${ADMIN_UI_HTTPS_ENABLED:-0}
+      ADMIN_UI_SSL_CERTFILE: ${ADMIN_UI_SSL_CERTFILE:-}
+      ADMIN_UI_SSL_KEYFILE: ${ADMIN_UI_SSL_KEYFILE:-}
     healthcheck:
       test: ["CMD", "/healthcheck.admin.sh"]
       interval: 15s
