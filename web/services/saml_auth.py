@@ -15,8 +15,14 @@ from xml.sax.saxutils import escape as xml_escape
 
 try:
     from defusedxml import ElementTree
+    from defusedxml.common import DefusedXmlException
+
+    _DEFUSEDXML_AVAILABLE = True
 except ImportError:  # pragma: no cover - production image installs defusedxml.
     from xml.etree import ElementTree  # noqa: ICN001, S405
+
+    DefusedXmlException = ()  # type: ignore[assignment]
+    _DEFUSEDXML_AVAILABLE = False
 
 from services.db import connect
 from services.logutil import log_exception_throttled
@@ -573,7 +579,22 @@ class SamlAuthStore:
 
 
 def parse_saml_metadata(raw_xml: str) -> dict[str, Any]:
-    root = ElementTree.fromstring(raw_xml)  # noqa: S314
+    if re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", raw_xml, flags=re.IGNORECASE):
+        msg = "SAML metadata XML contains disallowed DTD or entity declarations."
+        raise ValueError(msg)
+
+    try:
+        if _DEFUSEDXML_AVAILABLE:
+            root = ElementTree.fromstring(raw_xml, forbid_dtd=True)
+        else:  # pragma: no cover - production image installs defusedxml.
+            root = ElementTree.fromstring(raw_xml)  # noqa: S314
+    except DefusedXmlException as exc:
+        msg = "SAML metadata XML contains disallowed DTD or entity declarations."
+        raise ValueError(msg) from exc
+    except ElementTree.ParseError as exc:
+        msg = "SAML metadata XML could not be parsed."
+        raise ValueError(msg) from exc
+
     entity = _first_entity_descriptor(root)
     entity_id = (entity.attrib.get("entityID") or "").strip()
     if not entity_id:

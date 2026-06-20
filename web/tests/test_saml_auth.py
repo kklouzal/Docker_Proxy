@@ -9,6 +9,14 @@ from services.saml_auth import SamlAuthStore, parse_saml_metadata
 
 SIGNING_CERT = "MIICsigningCERTvalue"
 ENCRYPTION_CERT = "MIICencryptionCERTvalue"
+ENTITY_METADATA = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE EntityDescriptor [
+  <!ENTITY injected "https://evil.example/idp">
+]>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+    entityID="&injected;">
+</EntityDescriptor>
+"""
 
 
 SAMPLE_METADATA = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -147,6 +155,17 @@ def test_parse_saml_metadata_requires_idp_sso_descriptor() -> None:
         parse_saml_metadata(metadata)
 
 
+def test_parse_saml_metadata_rejects_dtd_entities_safely() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        parse_saml_metadata(ENTITY_METADATA)
+
+    message = str(exc_info.value)
+    assert message == "SAML metadata XML contains disallowed DTD or entity declarations."
+    assert "injected" not in message
+    assert "evil.example" not in message
+    assert "EntityDescriptor [" not in message
+
+
 def test_saml_profile_requires_successful_metadata_refresh_before_enable() -> None:
     store = MemorySamlAuthStore()
 
@@ -250,3 +269,22 @@ def test_saml_refresh_fetches_and_caches_static_metadata(monkeypatch) -> None:
         "https://adfs.example.local/adfs/services/trust"
     )
     assert store.profile.cache_expires_ts > store.profile.fetched_ts
+
+
+def test_saml_refresh_records_safe_detail_for_rejected_metadata(monkeypatch) -> None:
+    store = MemorySamlAuthStore()
+    store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        }
+    )
+    monkeypatch.setattr(store, "fetch_metadata", lambda _profile: ENTITY_METADATA)
+
+    result = store.refresh_metadata()
+
+    assert result.ok is False
+    assert result.detail == "SAML metadata XML contains disallowed DTD or entity declarations."
+    assert store.profile.last_refresh_ok is False
+    assert store.profile.last_refresh_detail == result.detail
+    assert "evil.example" not in result.detail
+    assert "EntityDescriptor [" not in result.detail
