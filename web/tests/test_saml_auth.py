@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 
 import pytest
 from services.saml_auth import SamlAuthStore, parse_saml_metadata
@@ -174,6 +175,55 @@ def test_saml_profile_requires_successful_metadata_refresh_before_enable() -> No
     assert enabled.enabled is True
     assert enabled.last_refresh_ok is True
     assert enabled.entity_id == "https://adfs.example.local/adfs/services/trust"
+
+
+def test_saml_profile_requires_current_metadata_cache_before_enable() -> None:
+    store = MemorySamlAuthStore()
+    saved = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        }
+    )
+    parsed = parse_saml_metadata(SAMPLE_METADATA)
+    store.record_metadata_refresh(saved, raw_xml=SAMPLE_METADATA, parsed=parsed)
+    store.profile = replace(store.profile, cache_expires_ts=int(time.time()) - 1)
+
+    with pytest.raises(ValueError, match="Refresh SAML metadata successfully"):
+        store.save_profile(
+            {
+                "enabled": "1",
+                "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            }
+        )
+
+    saved_disabled = store.save_profile(
+        {
+            "enabled": "0",
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        }
+    )
+    assert saved_disabled.enabled is False
+    assert saved_disabled.last_refresh_ok is True
+
+
+def test_saml_profile_requires_unexpired_metadata_valid_until_before_enable() -> None:
+    store = MemorySamlAuthStore()
+    saved = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        }
+    )
+    parsed = parse_saml_metadata(SAMPLE_METADATA)
+    store.record_metadata_refresh(saved, raw_xml=SAMPLE_METADATA, parsed=parsed)
+    store.profile = replace(store.profile, valid_until_ts=int(time.time()) - 1)
+
+    with pytest.raises(ValueError, match="Refresh SAML metadata successfully"):
+        store.save_profile(
+            {
+                "enabled": "1",
+                "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            }
+        )
 
 
 def test_saml_profile_https_is_required_by_default() -> None:

@@ -130,6 +130,7 @@ from services.saml_auth import (
     build_sp_info,
     build_sp_metadata,
     get_saml_auth_store,
+    profile_metadata_cache_ready,
     profile_metadata_ready,
     resolve_saml_login,
 )
@@ -3172,10 +3173,7 @@ def _saml_admin_status() -> dict[str, Any]:
     return {
         "profile": profile,
         "ready": ready,
-        "metadata_ready": profile.has_metadata
-        and profile.last_refresh_ok
-        and (not profile.cache_expires_ts or profile.cache_expires_ts > int(time.time()))
-        and (not profile.valid_until_ts or profile.valid_until_ts > int(time.time())),
+        "metadata_ready": profile_metadata_cache_ready(profile),
         "sp": sp_info,
         "idp_entity_id": profile.entity_id,
         "signing_certs": metadata.get("signing_certs") or [],

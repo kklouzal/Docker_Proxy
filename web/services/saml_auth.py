@@ -292,10 +292,6 @@ class SamlAuthStore:
         cache_expires_ts = current.cache_expires_ts if not connection_changed else 0
         valid_until_ts = current.valid_until_ts if not connection_changed else 0
 
-        if enabled and not last_refresh_ok:
-            msg = "Refresh SAML metadata successfully before enabling the provider."
-            raise ValueError(msg)
-
         profile = SamlProviderProfile(
             provider=PROVIDER_SAML,
             enabled=enabled,
@@ -320,6 +316,9 @@ class SamlAuthStore:
             required_group=required_group,
             updated_ts=int(time.time()),
         )
+        if profile.enabled and not profile_metadata_cache_ready(profile):
+            msg = "Refresh SAML metadata successfully before enabling the provider."
+            raise ValueError(msg)
         self._persist(profile)
         return self.get_profile()
 
@@ -723,15 +722,20 @@ def _cache_expires_ts(parsed: dict[str, Any], now: int) -> int:
     return min(candidates)
 
 
-def profile_metadata_ready(profile: SamlProviderProfile, *, now: int | None = None) -> bool:
+def profile_metadata_cache_ready(
+    profile: SamlProviderProfile, *, now: int | None = None
+) -> bool:
     now = int(time.time()) if now is None else int(now)
     return bool(
-        profile.enabled
-        and profile.has_metadata
+        profile.has_metadata
         and profile.last_refresh_ok
         and (not profile.cache_expires_ts or profile.cache_expires_ts > now)
         and (not profile.valid_until_ts or profile.valid_until_ts > now)
     )
+
+
+def profile_metadata_ready(profile: SamlProviderProfile, *, now: int | None = None) -> bool:
+    return bool(profile.enabled and profile_metadata_cache_ready(profile, now=now))
 
 
 def public_base_url(profile: SamlProviderProfile, request: Any) -> str:
