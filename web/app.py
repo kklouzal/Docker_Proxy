@@ -2750,6 +2750,10 @@ def _admin_ui_https_env_lines(*, enabled: bool, certfile: str, keyfile: str) -> 
     return [f"ADMIN_UI_HTTPS_ENABLED={1 if enabled else 0}"]
 
 
+def _admin_ui_https_next_url() -> str:
+    return f"https://{request.host}{_endpoint_url('certs')}"
+
+
 def _restart_admin_ui_web_process() -> tuple[bool, str]:
     supervisorctl = shutil.which("supervisorctl")
     if not supervisorctl:
@@ -6263,6 +6267,18 @@ def clear_caches():
 
 @app.route("/certs", methods=["GET"])
 def certs():
+    return _render_certs_page(
+        message=request.args.get("msg"),
+        message_ok=request.args.get("ok") == "1",
+    )
+
+
+def _render_certs_page(
+    *,
+    message: str | None = None,
+    message_ok: bool = False,
+    admin_ui_https_next: str | None = None,
+):
     bundle_store = get_certificate_bundles()
     bundle = bundle_store.get_active_bundle()
     certificate = "ca.crt" if bundle is not None else None
@@ -6281,8 +6297,6 @@ def certs():
                 else 0,
             },
         )
-    message = request.args.get("msg")
-    message_ok = request.args.get("ok") == "1"
     return render_template(
         "certs.html",
         certificate=certificate,
@@ -6296,6 +6310,7 @@ def certs():
         ),
         message=message,
         message_ok=message_ok,
+        admin_ui_https_next=admin_ui_https_next,
     )
 
 
@@ -6385,7 +6400,7 @@ def upload_certificate_pfx():
 
 @app.route("/certs/admin-ui-https", methods=["POST"])
 def update_admin_ui_https():
-    enabled = request.form.get("enabled") == "1"
+    enabled = "1" in request.form.getlist("enabled")
     bundle = get_certificate_bundles().get_active_bundle()
     if enabled and bundle is None:
         return _redirect_with_message(
@@ -6431,6 +6446,12 @@ def update_admin_ui_https():
             ok=restart_ok,
             detail=detail,
         )
+        if enabled and restart_ok:
+            return _render_certs_page(
+                message=detail,
+                message_ok=True,
+                admin_ui_https_next=_admin_ui_https_next_url(),
+            )
         return _redirect_with_message("certs", ok=restart_ok, msg=detail)
     except Exception as exc:
         app.logger.exception("Failed to save Admin UI HTTPS settings")

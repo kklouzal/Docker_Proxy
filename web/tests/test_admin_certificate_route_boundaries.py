@@ -251,13 +251,125 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
         follow_redirects=False,
     )
 
-    assert response.status_code in {301, 302, 303}
-    assert _location_params(response)["ok"] == ["1"]
+    html = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Opening the HTTPS Admin UI shortly" in html
+    assert "https://localhost/certs" in html
+    assert "window.location.assign" in html
     assert bundles.admin_ui_https_settings.enabled is True
     assert bundles.admin_ui_https_settings.certfile == certfile
     assert bundles.admin_ui_https_settings.keyfile == keyfile
     assert bundles.admin_ui_https_settings.updated_by == "admin"
     assert restart_calls == [True]
+
+
+def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (restart_calls.append(True) or (True, "restart requested")),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": ["0", "1"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "Opening the HTTPS Admin UI shortly" in response.get_data(as_text=True)
+    assert bundles.admin_ui_https_settings.enabled is True
+    assert bundles.admin_ui_https_settings.certfile == certfile
+    assert bundles.admin_ui_https_settings.keyfile == keyfile
+    assert restart_calls == [True]
+
+
+def test_admin_ui_https_preference_uses_current_host_for_continue_link(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    with loaded.module.app.test_request_context(
+        "/certs",
+        base_url="http://admin.example.test:8443",
+    ):
+        assert (
+            loaded.module._admin_ui_https_next_url()
+            == "https://admin.example.test:8443/certs?proxy_id=default"
+        )
+
+
+def test_admin_ui_https_preference_treats_hidden_fallback_only_as_disabled(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="/etc/squid/ssl/certs/ca.crt",
+        keyfile="/etc/squid/ssl/certs/ca.key",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (restart_calls.append(True) or (True, "restart requested")),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "0",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    params = _location_params(response)
+    assert params["ok"] == ["1"]
+    assert "admin_ui_https_next" not in params
+    assert bundles.admin_ui_https_settings.enabled is False
+    assert bundles.admin_ui_https_settings.certfile == ""
+    assert bundles.admin_ui_https_settings.keyfile == ""
+    assert restart_calls == [True]
+
+
+def test_certificates_page_ignores_https_redirect_query(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=_bundle()),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get(
+        "/certs?ok=1&msg=Saved&admin_ui_https_next=https://evil.example/phish",
+    )
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Opening the HTTPS Admin UI shortly" not in html
 
 
 def test_admin_ui_https_preference_reports_restart_failure(
@@ -285,8 +397,10 @@ def test_admin_ui_https_preference_reports_restart_failure(
     )
 
     assert response.status_code in {301, 302, 303}
-    assert _location_params(response)["ok"] == ["0"]
-    assert "supervisorctl is not available" in _location_params(response)["msg"][0]
+    params = _location_params(response)
+    assert params["ok"] == ["0"]
+    assert "admin_ui_https_next" not in params
+    assert "supervisorctl is not available" in params["msg"][0]
     assert bundles.admin_ui_https_settings.enabled is True
 
 
@@ -456,8 +570,8 @@ def test_admin_ui_https_ignores_posted_custom_paths_for_active_bundle(
         follow_redirects=False,
     )
 
-    assert response.status_code in {301, 302, 303}
-    assert _location_params(response)["ok"] == ["1"]
+    assert response.status_code == 200
+    assert "Opening the HTTPS Admin UI shortly" in response.get_data(as_text=True)
     assert bundles.admin_ui_https_settings.enabled is True
     assert bundles.admin_ui_https_settings.certfile == certfile
     assert bundles.admin_ui_https_settings.keyfile == keyfile
