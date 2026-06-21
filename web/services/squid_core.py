@@ -1034,14 +1034,18 @@ class SquidController:
             start_detail = self._decode_completed(start) or "supervisorctl start squid"
             detail_parts.append(start_detail)
             start_detail_lower = start_detail.lower()
-            if start.returncode != 0 and "already started" not in start_detail_lower:
+            start_reported_already_running = "already running" in start_detail_lower
+            if (
+                start.returncode != 0
+                or start_reported_already_running
+            ) and "already started" not in start_detail_lower:
                 accepted = self._accept_running_squid_restart(
                     detail_parts,
                     timeout=20.0,
                 )
                 if accepted is not None:
                     return accepted
-                if "already running" in start_detail_lower:
+                if start_reported_already_running:
                     if self._wait_for_http_listener(timeout=15.0):
                         detail_parts.append(
                             "Squid was already running and its HTTP listener is responding.",
@@ -1118,7 +1122,25 @@ class SquidController:
                 capture_output=True,
                 timeout=20,
             )
-            detail_parts.append(self._decode_completed(proc) or "squid start requested")
+            direct_start_detail = (
+                self._decode_completed(proc) or "squid start requested"
+            )
+            detail_parts.append(direct_start_detail)
+            direct_start_detail_lower = direct_start_detail.lower()
+            if "already running" in direct_start_detail_lower:
+                if self._wait_for_http_listener(timeout=ready_timeout):
+                    detail_parts.append(
+                        "Squid was already running and its HTTP listener is responding.",
+                    )
+                    return True, "\n".join(
+                        part for part in detail_parts if part
+                    ).strip()
+                return False, "\n".join(
+                    [
+                        *detail_parts,
+                        "Squid reported it was already running, but the HTTP listener is not responding.",
+                    ],
+                ).strip()
             if proc.returncode == 0 and self._wait_for_http_listener(
                 timeout=ready_timeout,
             ):

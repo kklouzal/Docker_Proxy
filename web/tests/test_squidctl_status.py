@@ -1023,6 +1023,169 @@ def test_restart_squid_accepts_supervisor_auto_restart_race(monkeypatch) -> None
     assert "already restarted by supervisor" in detail
 
 
+def test_restart_squid_recovers_when_start_reports_already_running_with_zero_exit(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+    listener_ready = {"ok": False}
+    starts = 0
+
+    def fake_run(args, **_kwargs):
+        nonlocal starts
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[-2:] == ["status", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid STOPPED\n", stderr=b"")
+        if args == ["squid", "-k", "shutdown"]:
+            listener_ready["ok"] = False
+            return SimpleNamespace(
+                returncode=0,
+                stdout=b"squid shutdown requested\n",
+                stderr=b"",
+            )
+        if args[-2:] == ["start", "squid"]:
+            starts += 1
+            if starts == 1:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=b"",
+                    stderr=(
+                        b"FATAL: Squid is already running: Found fresh instance PID "
+                        b"file (/var/run/squid.pid) with PID 1472\n"
+                    ),
+                )
+            listener_ready["ok"] = True
+            return SimpleNamespace(returncode=0, stdout=b"squid: started\n", stderr=b"")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: not listener_ready["ok"],
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener",
+        lambda *, timeout: listener_ready["ok"],
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
+
+    ok, detail = controller.restart_squid()
+
+    assert ok is True
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "squid"],
+        ["squid", "-k", "shutdown"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
+    ]
+    assert "FATAL: Squid is already running" in detail
+    assert "Squid HTTP listener is responding" in detail
+
+
+def test_restart_squid_accepts_direct_start_already_running_when_listener_responds(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[-2:] == ["status", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid STOPPED\n", stderr=b"")
+        if args[-2:] == ["start", "squid"]:
+            raise FileNotFoundError
+        if args == ["squid", "-f", "/etc/squid/squid.conf"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout=(
+                    b"FATAL: Squid is already running: Found fresh instance PID "
+                    b"file (/var/run/squid.pid) with PID 1472\n"
+                ),
+                stderr=b"",
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller, "_wait_for_http_listener_absent", lambda *, timeout: True
+    )
+    monkeypatch.setattr(controller, "_wait_for_http_listener", lambda *, timeout: True)
+    monkeypatch.setattr(
+        controller, "_wait_for_squid_pidfile_stale_or_absent", lambda *, timeout: True
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
+
+    ok, detail = controller.restart_squid()
+
+    assert ok is True
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
+        ["squid", "-f", "/etc/squid/squid.conf"],
+    ]
+    assert "FATAL: Squid is already running" in detail
+    assert "Squid was already running and its HTTP listener is responding" in detail
+
+
+def test_restart_squid_rejects_direct_start_already_running_without_listener(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    def fake_run(args, **_kwargs):
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[-2:] == ["status", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid STOPPED\n", stderr=b"")
+        if args[-2:] == ["start", "squid"]:
+            raise FileNotFoundError
+        if args == ["squid", "-f", "/etc/squid/squid.conf"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout=(
+                    b"FATAL: Squid is already running: Found fresh instance PID "
+                    b"file (/var/run/squid.pid) with PID 1472\n"
+                ),
+                stderr=b"",
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller, "_wait_for_http_listener_absent", lambda *, timeout: True
+    )
+    monkeypatch.setattr(controller, "_wait_for_http_listener", lambda *, timeout: False)
+    monkeypatch.setattr(
+        controller, "_wait_for_squid_pidfile_stale_or_absent", lambda *, timeout: True
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
+
+    ok, detail = controller.restart_squid()
+
+    assert ok is False
+    assert "FATAL: Squid is already running" in detail
+    assert "HTTP listener is not responding" in detail
+
+
 def test_restart_squid_fails_when_listener_never_releases(monkeypatch) -> None:
     from services import squidctl  # type: ignore
 
