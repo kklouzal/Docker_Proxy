@@ -14,6 +14,8 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from services.certificate_core import validate_tls_material_paths
+
 
 DEFAULT_CERTFILE = "/etc/squid/ssl/certs/ca.crt"
 DEFAULT_KEYFILE = "/etc/squid/ssl/certs/ca.key"
@@ -139,12 +141,11 @@ def build_gunicorn_argv(
 def main() -> int:
     config = resolve_admin_ui_https_config(os.environ)
     if config.enabled:
-        cert_readable = Path(config.certfile).is_file() and os.access(config.certfile, os.R_OK)
-        key_readable = Path(config.keyfile).is_file() and os.access(config.keyfile, os.R_OK)
-        if config.source == "db" and not (cert_readable and key_readable):
+        material = validate_tls_material_paths(config.certfile, config.keyfile)
+        if config.source == "db" and not material.ready:
             _log(
                 "WARNING: saved Admin UI HTTPS setting is enabled but the active "
-                "SSL inspection CA material is not readable; starting HTTP so the "
+                "SSL inspection CA material is not valid TLS material; starting HTTP so the "
                 "Certificates page can recover the setting.",
             )
             config = AdminUiHttpsRuntimeConfig(
@@ -153,14 +154,10 @@ def main() -> int:
                 keyfile="",
                 source="db-missing-material",
             )
-        elif not cert_readable:
+        elif not material.ready:
             _log(
-                f"ERROR: Admin UI HTTPS is enabled by {config.source} but cert file is not readable: {config.certfile}",
-            )
-            return 1
-        elif not key_readable:
-            _log(
-                f"ERROR: Admin UI HTTPS is enabled by {config.source} but key file is not readable: {config.keyfile}",
+                "ERROR: Admin UI HTTPS is enabled by "
+                f"{config.source} but TLS material is not valid: {material.detail}",
             )
             return 1
     os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ENABLED"] = "1" if config.enabled else "0"
@@ -170,7 +167,7 @@ def main() -> int:
     if config.source == "db-missing-material":
         os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"] = (
             "Saved Admin UI HTTPS is enabled, but active SSL inspection CA material "
-            "is not readable inside the admin-ui container."
+            "is not valid TLS material inside the admin-ui container."
         )
     else:
         os.environ.pop("ADMIN_UI_EFFECTIVE_HTTPS_ERROR", None)

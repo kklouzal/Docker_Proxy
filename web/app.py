@@ -44,6 +44,7 @@ from services.cert_manager import (
 from services.certificate_bundles import (
     get_certificate_bundles as _default_get_certificate_bundles,
 )
+from services.certificate_core import validate_tls_material_paths
 from services.clamav_config_forms import (
     apply_clamav_options_to_config,
     extract_clamav_options,
@@ -2594,26 +2595,35 @@ def _truthy_env(value: object | None) -> bool:
 
 def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
     clean_path = (path or "").strip()
+    path_obj = pathlib.Path(clean_path)
+    readable = bool(clean_path and path_obj.is_file() and os.access(clean_path, os.R_OK))
+    size = 0
+    non_empty = False
+    if readable:
+        with contextlib.suppress(OSError):
+            size = path_obj.stat().st_size
+            non_empty = size > 0
     return {
         "path": clean_path,
         "configured": bool(clean_path),
-        "readable": bool(
-            clean_path
-            and pathlib.Path(clean_path).is_file()
-            and os.access(clean_path, os.R_OK)
-        ),
+        "readable": readable,
+        "non_empty": non_empty,
+        "valid": bool(readable and non_empty),
+        "size": size,
     }
 
 
 def _admin_ui_https_default_material_status() -> dict[str, Any]:
-    cert_status = _admin_ui_https_path_status(ADMIN_UI_SSL_CERTFILE)
-    key_status = _admin_ui_https_path_status(ADMIN_UI_SSL_KEYFILE)
+    validation = validate_tls_material_paths(ADMIN_UI_SSL_CERTFILE, ADMIN_UI_SSL_KEYFILE)
+    cert_status = validation.cert_status.__dict__
+    key_status = validation.key_status.__dict__
     return {
         "certfile": ADMIN_UI_SSL_CERTFILE,
         "keyfile": ADMIN_UI_SSL_KEYFILE,
         "cert_status": cert_status,
         "key_status": key_status,
-        "ready": bool(cert_status["readable"] and key_status["readable"]),
+        "ready": validation.ready,
+        "detail": validation.detail,
     }
 
 
@@ -2656,25 +2666,57 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
             or (desired_enabled and desired_keyfile != runtime_keyfile)
         )
     )
+    runtime_material = (
+        validate_tls_material_paths(runtime_certfile, runtime_keyfile)
+        if runtime_enabled
+        else None
+    )
+    desired_material = (
+        validate_tls_material_paths(desired_certfile, desired_keyfile)
+        if desired_enabled
+        else None
+    )
+    default_material = _admin_ui_https_default_material_status()
     return {
         "runtime_enabled": runtime_enabled,
         "runtime_source": runtime_source,
         "runtime_certfile": runtime_certfile,
         "runtime_keyfile": runtime_keyfile,
-        "runtime_cert_status": _admin_ui_https_path_status(runtime_certfile),
-        "runtime_key_status": _admin_ui_https_path_status(runtime_keyfile),
+        "runtime_cert_status": (
+            runtime_material.cert_status.__dict__
+            if runtime_material
+            else _admin_ui_https_path_status(runtime_certfile)
+        ),
+        "runtime_key_status": (
+            runtime_material.key_status.__dict__
+            if runtime_material
+            else _admin_ui_https_path_status(runtime_keyfile)
+        ),
+        "runtime_material_ready": runtime_material.ready if runtime_material else False,
+        "runtime_material_detail": runtime_material.detail if runtime_material else "",
         "desired_enabled": desired_enabled,
         "desired_certfile": desired_certfile,
         "desired_keyfile": desired_keyfile,
-        "desired_cert_status": _admin_ui_https_path_status(desired_certfile),
-        "desired_key_status": _admin_ui_https_path_status(desired_keyfile),
+        "desired_cert_status": (
+            desired_material.cert_status.__dict__
+            if desired_material
+            else _admin_ui_https_path_status(desired_certfile)
+        ),
+        "desired_key_status": (
+            desired_material.key_status.__dict__
+            if desired_material
+            else _admin_ui_https_path_status(desired_keyfile)
+        ),
+        "desired_material_ready": desired_material.ready if desired_material else False,
+        "desired_material_detail": desired_material.detail if desired_material else "",
         "desired_updated_by": getattr(desired, "updated_by", "") if desired else "",
         "desired_updated_ts": getattr(desired, "updated_ts", 0) if desired else 0,
         "desired_error": desired_error,
         "pending_restart": pending_restart,
         "runtime_missing_material": bool(runtime_source == "db-missing-material"),
         "active_bundle_available": bundle is not None,
-        "active_material_ready": _admin_ui_https_default_material_status()["ready"],
+        "active_material_ready": default_material["ready"],
+        "active_material_detail": default_material["detail"],
         "default_certfile": default_certfile,
         "default_keyfile": default_keyfile,
     }
@@ -6322,16 +6364,17 @@ def update_admin_ui_https():
     material_status = _admin_ui_https_default_material_status()
     if enabled and not material_status["ready"]:
         missing = []
-        if not material_status["cert_status"]["readable"]:
+        if not material_status["cert_status"]["valid"]:
             missing.append(material_status["certfile"])
-        if not material_status["key_status"]["readable"]:
+        if not material_status["key_status"]["valid"]:
             missing.append(material_status["keyfile"])
         return _redirect_with_message(
             "certs",
             ok=False,
             msg=(
                 "Admin UI HTTPS requires the active SSL inspection CA certificate "
-                f"and key to be mounted in the admin-ui container: {', '.join(missing)}."
+                f"and key to be mounted as valid PEM material in the admin-ui container: "
+                f"{', '.join(missing)}. {material_status['detail']}"
             ),
         )
     certfile = ADMIN_UI_SSL_CERTFILE if enabled else ""

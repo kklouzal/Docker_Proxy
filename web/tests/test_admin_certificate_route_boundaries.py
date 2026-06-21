@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
 from typing import NoReturn
 from urllib.parse import parse_qs, urlsplit
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from .admin_route_test_utils import (
     FakeCertificateBundles,
@@ -26,11 +32,39 @@ def _bundle() -> SimpleNamespace:
     )
 
 
+def _valid_tls_material() -> tuple[str, str]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Admin UI HTTPS Test CA")]
+    )
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return (
+        cert.public_bytes(serialization.Encoding.PEM).decode(),
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+    )
+
+
 def _set_admin_ui_https_material(monkeypatch, loaded, tmp_path) -> tuple[str, str]:
     certfile = tmp_path / "admin-ui-ca.crt"
     keyfile = tmp_path / "admin-ui-ca.key"
-    certfile.write_text("CERT\n", encoding="utf-8")
-    keyfile.write_text("KEY\n", encoding="utf-8")
+    cert_pem, key_pem = _valid_tls_material()
+    certfile.write_text(cert_pem, encoding="utf-8")
+    keyfile.write_text(key_pem, encoding="utf-8")
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_CERTFILE", str(certfile))
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_KEYFILE", str(keyfile))
     return str(certfile), str(keyfile)
@@ -187,7 +221,7 @@ def test_certificates_page_reports_https_fallback_when_material_missing(
     assert "HTTP only" in html
     assert "missing TLS material" in html
     assert "started HTTP" in html
-    assert "not readable in admin-ui" in html
+    assert "not valid in admin-ui" in html
     assert "/etc/squid/ssl/certs/ca.crt" in html
     assert "/etc/squid/ssl/certs/ca.key" in html
 
@@ -321,6 +355,76 @@ def test_admin_ui_https_preference_requires_mounted_active_material(
     assert "requires the active SSL inspection CA certificate and key" in (
         _location_params(response)["msg"][0]
     )
+    assert bundles.admin_ui_https_settings.enabled is False
+    assert restart_calls == []
+
+
+def test_admin_ui_https_preference_rejects_empty_active_material(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile = tmp_path / "empty-ca.crt"
+    keyfile = tmp_path / "empty-ca.key"
+    certfile.write_bytes(b"")
+    keyfile.write_bytes(b"")
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_CERTFILE", str(certfile))
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_KEYFILE", str(keyfile))
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (restart_calls.append(True) or (True, "restart requested")),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={"csrf_token": token, "enabled": "1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "valid PEM material" in _location_params(response)["msg"][0]
+    assert "certificate file is empty" in _location_params(response)["msg"][0]
+    assert bundles.admin_ui_https_settings.enabled is False
+    assert restart_calls == []
+
+
+def test_admin_ui_https_preference_rejects_invalid_active_material(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile = tmp_path / "invalid-ca.crt"
+    keyfile = tmp_path / "invalid-ca.key"
+    certfile.write_text("not a certificate\n", encoding="utf-8")
+    keyfile.write_text("not a private key\n", encoding="utf-8")
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_CERTFILE", str(certfile))
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_KEYFILE", str(keyfile))
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (restart_calls.append(True) or (True, "restart requested")),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={"csrf_token": token, "enabled": "1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "valid PEM material" in _location_params(response)["msg"][0]
+    assert "not valid PEM material" in _location_params(response)["msg"][0]
     assert bundles.admin_ui_https_settings.enabled is False
     assert restart_calls == []
 

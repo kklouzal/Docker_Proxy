@@ -136,7 +136,7 @@
                         <div><strong>Runtime key:</strong> <code class="mono">{{ admin_ui_https.runtime_keyfile }}</code></div>
                     {% endif %}
                     {% if admin_ui_https.runtime_missing_material %}
-                        <div class="text-danger">Saved HTTPS is enabled, but the Admin UI web process started HTTP because <code class="mono">{{ admin_ui_https.default_certfile }}</code> and <code class="mono">{{ admin_ui_https.default_keyfile }}</code> are not readable inside this container.</div>
+                        <div class="text-danger">Saved HTTPS is enabled, but the Admin UI web process started HTTP because <code class="mono">{{ admin_ui_https.default_certfile }}</code> and <code class="mono">{{ admin_ui_https.default_keyfile }}</code> are not valid TLS material inside this container.</div>
                     {% endif %}
                     {% if admin_ui_https.desired_error %}
                         <div class="text-danger">{{ admin_ui_https.desired_error }}</div>
@@ -153,7 +153,7 @@
                         <div>
                             <strong>Certificate material:</strong>
                             <span class="badge {{ 'ok' if admin_ui_https.active_bundle_available else 'warn' }}">{{ 'active SSL inspection CA bundle' if admin_ui_https.active_bundle_available else 'no active SSL inspection CA bundle' }}</span>
-                            <span class="badge {{ 'ok' if admin_ui_https.active_material_ready else 'warn' }}">{{ 'mounted in admin-ui' if admin_ui_https.active_material_ready else 'not readable in admin-ui' }}</span>
+                            <span class="badge {{ 'ok' if admin_ui_https.active_material_ready else 'warn' }}">{{ 'valid in admin-ui' if admin_ui_https.active_material_ready else 'not valid in admin-ui' }}</span>
                         </div>
                         <div>HTTPS uses the currently active generated or uploaded SSL inspection CA certificate and key. Generate or upload a CA bundle before enabling HTTPS.</div>
                     </div>

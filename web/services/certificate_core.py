@@ -8,7 +8,11 @@ import pathlib
 import re
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
 from services.logutil import log_exception_throttled
 
@@ -31,6 +35,25 @@ class CertificateBundle:
     @property
     def fullchain_pem(self) -> str:
         return (self.cert_pem or "") + (self.chain_pem or "")
+
+
+@dataclass(frozen=True)
+class TlsMaterialPathStatus:
+    path: str
+    configured: bool
+    readable: bool
+    non_empty: bool
+    valid: bool
+    detail: str
+    size: int = 0
+
+
+@dataclass(frozen=True)
+class TlsMaterialValidation:
+    cert_status: TlsMaterialPathStatus
+    key_status: TlsMaterialPathStatus
+    ready: bool
+    detail: str
 
 
 class CertManager:
@@ -102,6 +125,168 @@ def _run_checked(args: list[str], *, timeout: int = 30) -> subprocess.CompletedP
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def _path_status(
+    path: str,
+    *,
+    parser: Callable[[bytes], object],
+    material_name: str,
+) -> tuple[TlsMaterialPathStatus, object | None]:
+    clean_path = (path or "").strip()
+    if not clean_path:
+        return (
+            TlsMaterialPathStatus(
+                path="",
+                configured=False,
+                readable=False,
+                non_empty=False,
+                valid=False,
+                detail=f"{material_name} path is not configured.",
+            ),
+            None,
+        )
+    path_obj = pathlib.Path(clean_path)
+    if not path_obj.is_file():
+        return (
+            TlsMaterialPathStatus(
+                path=clean_path,
+                configured=True,
+                readable=False,
+                non_empty=False,
+                valid=False,
+                detail=f"{material_name} file does not exist.",
+            ),
+            None,
+        )
+    if not os.access(clean_path, os.R_OK):
+        return (
+            TlsMaterialPathStatus(
+                path=clean_path,
+                configured=True,
+                readable=False,
+                non_empty=False,
+                valid=False,
+                detail=f"{material_name} file is not readable.",
+            ),
+            None,
+        )
+    try:
+        data = path_obj.read_bytes()
+    except OSError:
+        return (
+            TlsMaterialPathStatus(
+                path=clean_path,
+                configured=True,
+                readable=False,
+                non_empty=False,
+                valid=False,
+                detail=f"{material_name} file is not readable.",
+            ),
+            None,
+        )
+    size = len(data)
+    if size <= 0:
+        return (
+            TlsMaterialPathStatus(
+                path=clean_path,
+                configured=True,
+                readable=True,
+                non_empty=False,
+                valid=False,
+                detail=f"{material_name} file is empty.",
+                size=size,
+            ),
+            None,
+        )
+    try:
+        parsed = parser(data)
+    except Exception:
+        return (
+            TlsMaterialPathStatus(
+                path=clean_path,
+                configured=True,
+                readable=True,
+                non_empty=True,
+                valid=False,
+                detail=f"{material_name} file is not valid PEM material.",
+                size=size,
+            ),
+            None,
+        )
+    return (
+        TlsMaterialPathStatus(
+            path=clean_path,
+            configured=True,
+            readable=True,
+            non_empty=True,
+            valid=True,
+            detail=f"{material_name} file is valid.",
+            size=size,
+        ),
+        parsed,
+    )
+
+
+def _load_pem_certificate(data: bytes) -> x509.Certificate:
+    return x509.load_pem_x509_certificate(data)
+
+
+def _load_pem_private_key(data: bytes) -> object:
+    return serialization.load_pem_private_key(data, password=None)
+
+
+def _public_key_bytes(key: object) -> bytes:
+    return key.public_key().public_bytes(  # type: ignore[attr-defined]
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+
+def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValidation:
+    cert_status, cert = _path_status(
+        certfile,
+        parser=_load_pem_certificate,
+        material_name="certificate",
+    )
+    key_status, key = _path_status(
+        keyfile,
+        parser=_load_pem_private_key,
+        material_name="private key",
+    )
+    if not cert_status.valid or not key_status.valid:
+        detail = "; ".join(
+            status.detail
+            for status in (cert_status, key_status)
+            if not status.valid
+        )
+        return TlsMaterialValidation(
+            cert_status=cert_status,
+            key_status=key_status,
+            ready=False,
+            detail=detail,
+        )
+    try:
+        if _public_key_bytes(cert) != _public_key_bytes(key):
+            return TlsMaterialValidation(
+                cert_status=cert_status,
+                key_status=key_status,
+                ready=False,
+                detail="certificate and private key do not match.",
+            )
+    except Exception:
+        return TlsMaterialValidation(
+            cert_status=cert_status,
+            key_status=key_status,
+            ready=False,
+            detail="certificate and private key could not be compared.",
+        )
+    return TlsMaterialValidation(
+        cert_status=cert_status,
+        key_status=key_status,
+        ready=True,
+        detail="certificate and private key are valid.",
+    )
 
 
 def _bundle_sha256(cert_pem: str, key_pem: str, chain_pem: str) -> str:

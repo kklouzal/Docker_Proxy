@@ -387,7 +387,41 @@ def test_admin_ui_startup_db_https_missing_material_falls_back_to_http(
     assert "--keyfile" not in exec_calls[0][1]
     assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ENABLED"] == "0"
     assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] == "db-missing-material"
-    assert "not readable" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
+    assert "not valid TLS material" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
+
+
+def test_admin_ui_startup_db_https_empty_material_falls_back_to_http(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    module = _load_start_admin_ui_module()
+    certfile = tmp_path / "ca.crt"
+    keyfile = tmp_path / "ca.key"
+    certfile.write_bytes(b"")
+    keyfile.write_bytes(b"")
+    exec_calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr(
+        module,
+        "resolve_admin_ui_https_config",
+        lambda _environ: module.AdminUiHttpsRuntimeConfig(
+            enabled=True,
+            certfile=str(certfile),
+            keyfile=str(keyfile),
+            source="db",
+        ),
+    )
+    monkeypatch.setattr(
+        module.os,
+        "execvp",
+        lambda executable, argv: exec_calls.append((executable, argv)),
+    )
+
+    assert module.main() == 1
+    assert exec_calls
+    assert "--certfile" not in exec_calls[0][1]
+    assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] == "db-missing-material"
+    assert "not valid TLS material" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
 
 
 def test_admin_ui_startup_env_https_missing_material_fails(monkeypatch) -> None:
@@ -401,6 +435,37 @@ def test_admin_ui_startup_env_https_missing_material_fails(monkeypatch) -> None:
             enabled=True,
             certfile="/missing/ca.crt",
             keyfile="/missing/ca.key",
+            source="env",
+        ),
+    )
+    monkeypatch.setattr(
+        module.os,
+        "execvp",
+        lambda executable, argv: exec_calls.append((executable, argv)),
+    )
+
+    assert module.main() == 1
+    assert exec_calls == []
+
+
+def test_admin_ui_startup_env_https_invalid_material_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    module = _load_start_admin_ui_module()
+    certfile = tmp_path / "ca.crt"
+    keyfile = tmp_path / "ca.key"
+    certfile.write_text("not a certificate\n", encoding="utf-8")
+    keyfile.write_text("not a private key\n", encoding="utf-8")
+    exec_calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr(
+        module,
+        "resolve_admin_ui_https_config",
+        lambda _environ: module.AdminUiHttpsRuntimeConfig(
+            enabled=True,
+            certfile=str(certfile),
+            keyfile=str(keyfile),
             source="env",
         ),
     )
