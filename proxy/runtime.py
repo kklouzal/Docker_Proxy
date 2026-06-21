@@ -1326,17 +1326,10 @@ class ProxyRuntime:
                 or "Proxy cache clear failed.",
             )
 
-        ok_restart, restart_detail = self._restart_adblock_service()
-        if str(restart_detail or "").strip():
-            detail_parts.append(str(restart_detail or "").strip())
         return (
-            bool(ok_restart),
+            True,
             "\n".join(part for part in detail_parts if part).strip()
-            or (
-                "Proxy disk cache cleared and adblock runtime refreshed."
-                if ok_restart
-                else "Proxy disk cache cleared but adblock runtime did not refresh."
-            ),
+            or "Proxy disk cache cleared.",
         )
 
     def _find_sslcrtd_binary(self) -> str:
