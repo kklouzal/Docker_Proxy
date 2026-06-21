@@ -367,7 +367,7 @@ def test_admin_ui_startup_materializes_missing_db_leaf_from_active_bundle(
         enabled=True,
         certfile="/etc/squid/ssl/certs/ca.crt",
         keyfile="/etc/squid/ssl/certs/ca.key",
-        san_tokens="proxyadmin.ad.kklouzal.com\n192.168.1.10",
+        san_tokens="proxyadmin.example.com\n192.0.2.10",
         updated_by="admin",
     )
     saved: dict[str, object] = {}
@@ -385,8 +385,8 @@ def test_admin_ui_startup_materializes_missing_db_leaf_from_active_bundle(
     def _materialize(ca_dir, bundle, *, san_tokens):
         assert ca_dir == "/etc/squid/ssl/certs"
         assert bundle.cert_pem == "CERT"
-        assert "proxyadmin.ad.kklouzal.com" in san_tokens
-        assert "192.168.1.10" in san_tokens
+        assert "proxyadmin.example.com" in san_tokens
+        assert "192.0.2.10" in san_tokens
         assert "admin-public.example.test" in san_tokens
         return SimpleNamespace(
             certfile="/etc/squid/ssl/certs/admin-ui.crt",

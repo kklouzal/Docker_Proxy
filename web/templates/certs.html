@@ -170,14 +170,14 @@ window.setTimeout(function () {
                         <div><strong>Leaf cert:</strong> <code class="mono">{{ admin_ui_https.default_certfile }}</code></div>
                         <div><strong>Leaf key:</strong> <code class="mono">{{ admin_ui_https.default_keyfile }}</code></div>
                         <div><strong>Configured SANs:</strong> <code class="mono">{{ admin_ui_https.configured_sans|join(', ') if admin_ui_https.configured_sans else 'none' }}</code></div>
-                        <div><strong>Pending SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
+                        <div><strong>Pending/effective SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
                     </div>
                     <label>
                         Admin UI certificate DNS/IP SANs
-                        <textarea name="san_tokens" rows="3" placeholder="proxyadmin.ad.kklouzal.com&#10;192.168.1.10">{{ admin_ui_https.configured_san_tokens }}</textarea>
+                        <textarea name="san_tokens" rows="3" placeholder="proxyadmin.example.com&#10;192.0.2.10">{{ admin_ui_https.configured_san_tokens }}</textarea>
                     </label>
                     <div class="surface-note small">
-                        Saving stores the preference and restarts the Admin UI web process under supervisor.
+                        Saving stores only the DNS/IP SANs entered above. Computed SANs such as localhost, loopback IPs, the Admin UI container name, request host, and configured public host are added when the certificate is generated.
                         {% if admin_ui_https_env_lines %}
                             <div><code class="mono">{{ admin_ui_https_env_lines|join(' · ') }}</code></div>
                         {% endif %}
