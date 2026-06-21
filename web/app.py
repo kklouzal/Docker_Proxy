@@ -2631,6 +2631,9 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
     runtime_keyfile = os.environ.get("ADMIN_UI_EFFECTIVE_SSL_KEYFILE") or os.environ.get(
         "ADMIN_UI_SSL_KEYFILE",
     ) or (default_keyfile if runtime_enabled else "")
+    runtime_source = os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_SOURCE") or (
+        "env" if os.environ.get("ADMIN_UI_HTTPS_ENABLED") is not None else ""
+    )
     try:
         desired = get_certificate_bundles().get_admin_ui_https_settings()
         desired_error = ""
@@ -2655,6 +2658,7 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
     )
     return {
         "runtime_enabled": runtime_enabled,
+        "runtime_source": runtime_source,
         "runtime_certfile": runtime_certfile,
         "runtime_keyfile": runtime_keyfile,
         "runtime_cert_status": _admin_ui_https_path_status(runtime_certfile),
@@ -2668,6 +2672,7 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         "desired_updated_ts": getattr(desired, "updated_ts", 0) if desired else 0,
         "desired_error": desired_error,
         "pending_restart": pending_restart,
+        "runtime_missing_material": bool(runtime_source == "db-missing-material"),
         "active_bundle_available": bundle is not None,
         "active_material_ready": _admin_ui_https_default_material_status()["ready"],
         "default_certfile": default_certfile,

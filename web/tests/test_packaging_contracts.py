@@ -228,6 +228,8 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
 
 def test_admin_ui_https_packaging_contract() -> None:
     compose = _read("docker-compose.common.yml")
+    ghcr_compose = _read("docker-compose.ghcr.yml")
+    server002_compose = _read("docker-compose.server002.yml")
     admin_block = compose.split("  proxy:", 1)[0]
     startup = _read("docker/start-admin-ui.sh")
     env_example = _read("config/app.env.example")
@@ -238,6 +240,11 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert "ADMIN_UI_HTTPS_ENABLED: ${ADMIN_UI_HTTPS_ENABLED:-0}" in admin_block
     assert "ADMIN_UI_SSL_CERTFILE: ${ADMIN_UI_SSL_CERTFILE:-}" in admin_block
     assert "ADMIN_UI_SSL_KEYFILE: ${ADMIN_UI_SSL_KEYFILE:-}" in admin_block
+    assert "file: docker-compose.common.yml" in ghcr_compose
+    assert "service: admin-ui" in ghcr_compose
+    assert "image: ghcr.io/kklouzal/docker_proxy-admin-ui:main" in ghcr_compose
+    assert "file: docker-compose.common.yml" in server002_compose
+    assert "service: admin-ui" in server002_compose
     assert "exec python3 /app/tools/start_admin_ui.py" in startup
     assert "web/tools/start_admin_ui.py" in _read("docker/Dockerfile.admin")
     launcher = _read("web/tools/start_admin_ui.py")
@@ -251,6 +258,7 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert "Admin UI container read-only" not in readme
     assert "mount is writable" in readme
     assert "saved DB setting is the source of truth" in readme
+    assert "standalone admin-UI deployments must keep that same mount available" in readme
 
 
 def test_admin_ui_startup_can_import_services_from_tools_launcher_path() -> None:
@@ -377,6 +385,9 @@ def test_admin_ui_startup_db_https_missing_material_falls_back_to_http(
     assert exec_calls
     assert "--certfile" not in exec_calls[0][1]
     assert "--keyfile" not in exec_calls[0][1]
+    assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ENABLED"] == "0"
+    assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] == "db-missing-material"
+    assert "not readable" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
 
 
 def test_admin_ui_startup_env_https_missing_material_fails(monkeypatch) -> None:

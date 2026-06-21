@@ -167,6 +167,13 @@ def main() -> int:
     os.environ["ADMIN_UI_EFFECTIVE_SSL_CERTFILE"] = config.certfile
     os.environ["ADMIN_UI_EFFECTIVE_SSL_KEYFILE"] = config.keyfile
     os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] = config.source
+    if config.source == "db-missing-material":
+        os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"] = (
+            "Saved Admin UI HTTPS is enabled, but active SSL inspection CA material "
+            "is not readable inside the admin-ui container."
+        )
+    else:
+        os.environ.pop("ADMIN_UI_EFFECTIVE_HTTPS_ERROR", None)
     os.execvp("python3", build_gunicorn_argv(os.environ, config))  # noqa: S606
     return 1
 

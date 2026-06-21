@@ -162,6 +162,36 @@ def test_certificates_page_shows_admin_ui_https_status(monkeypatch, tmp_path) ->
     assert 'name="keyfile"' not in html
 
 
+def test_certificates_page_reports_https_fallback_when_material_missing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED", "0")
+    monkeypatch.setenv("ADMIN_UI_EFFECTIVE_HTTPS_SOURCE", "db-missing-material")
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="/etc/squid/ssl/certs/ca.crt",
+        keyfile="/etc/squid/ssl/certs/ca.key",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "HTTP only" in html
+    assert "missing TLS material" in html
+    assert "started HTTP" in html
+    assert "not readable in admin-ui" in html
+    assert "/etc/squid/ssl/certs/ca.crt" in html
+    assert "/etc/squid/ssl/certs/ca.key" in html
+
+
 def test_admin_ui_https_preference_uses_active_bundle_paths(
     monkeypatch, tmp_path
 ) -> None:
