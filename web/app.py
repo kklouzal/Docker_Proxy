@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 from flask import (
     Flask,
@@ -1674,9 +1674,7 @@ def login():
         )
         directory_attempted = directory_provider != "local"
         local_ok = (
-            False
-            if directory_ok
-            else _auth_store.verify_user(username, password)
+            False if directory_ok else _auth_store.verify_user(username, password)
         )
         if directory_ok or local_ok:
             login_provider = directory_provider if directory_ok else "local"
@@ -2639,7 +2637,9 @@ def _truthy_env(value: object | None) -> bool:
 def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
     clean_path = (path or "").strip()
     path_obj = pathlib.Path(clean_path)
-    readable = bool(clean_path and path_obj.is_file() and os.access(clean_path, os.R_OK))
+    readable = bool(
+        clean_path and path_obj.is_file() and os.access(clean_path, os.R_OK)
+    )
     size = 0
     non_empty = False
     if readable:
@@ -2657,7 +2657,9 @@ def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
 
 
 def _admin_ui_https_default_material_status() -> dict[str, Any]:
-    validation = validate_tls_material_paths(ADMIN_UI_SSL_CERTFILE, ADMIN_UI_SSL_KEYFILE)
+    validation = validate_tls_material_paths(
+        ADMIN_UI_SSL_CERTFILE, ADMIN_UI_SSL_KEYFILE
+    )
     cert_status = validation.cert_status.__dict__
     key_status = validation.key_status.__dict__
     return {
@@ -2704,12 +2706,20 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         if os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED") is not None
         else os.environ.get("ADMIN_UI_HTTPS_ENABLED"),
     )
-    runtime_certfile = os.environ.get("ADMIN_UI_EFFECTIVE_SSL_CERTFILE") or os.environ.get(
-        "ADMIN_UI_SSL_CERTFILE",
-    ) or (default_certfile if runtime_enabled else "")
-    runtime_keyfile = os.environ.get("ADMIN_UI_EFFECTIVE_SSL_KEYFILE") or os.environ.get(
-        "ADMIN_UI_SSL_KEYFILE",
-    ) or (default_keyfile if runtime_enabled else "")
+    runtime_certfile = (
+        os.environ.get("ADMIN_UI_EFFECTIVE_SSL_CERTFILE")
+        or os.environ.get(
+            "ADMIN_UI_SSL_CERTFILE",
+        )
+        or (default_certfile if runtime_enabled else "")
+    )
+    runtime_keyfile = (
+        os.environ.get("ADMIN_UI_EFFECTIVE_SSL_KEYFILE")
+        or os.environ.get(
+            "ADMIN_UI_SSL_KEYFILE",
+        )
+        or (default_keyfile if runtime_enabled else "")
+    )
     runtime_source = os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_SOURCE") or (
         "env" if os.environ.get("ADMIN_UI_HTTPS_ENABLED") is not None else ""
     )
@@ -2727,13 +2737,10 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
     desired_enabled = bool(getattr(desired, "enabled", False))
     desired_certfile = default_certfile if desired_enabled else ""
     desired_keyfile = default_keyfile if desired_enabled else ""
-    pending_restart = (
-        desired is not None
-        and (
-            desired_enabled != runtime_enabled
-            or (desired_enabled and desired_certfile != runtime_certfile)
-            or (desired_enabled and desired_keyfile != runtime_keyfile)
-        )
+    pending_restart = desired is not None and (
+        desired_enabled != runtime_enabled
+        or (desired_enabled and desired_certfile != runtime_certfile)
+        or (desired_enabled and desired_keyfile != runtime_keyfile)
     )
     runtime_material = (
         validate_tls_material_paths(runtime_certfile, runtime_keyfile)
@@ -2746,7 +2753,9 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         else None
     )
     default_material = _admin_ui_https_default_material_status()
-    admin_ui_sans = normalize_admin_ui_certificate_sans(_admin_ui_https_request_san_tokens())
+    admin_ui_sans = normalize_admin_ui_certificate_sans(
+        _admin_ui_https_request_san_tokens()
+    )
     return {
         "runtime_enabled": runtime_enabled,
         "runtime_source": runtime_source,
@@ -2793,12 +2802,49 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
     }
 
 
-def _admin_ui_https_env_lines(*, enabled: bool, certfile: str, keyfile: str) -> list[str]:
+def _admin_ui_https_env_lines(
+    *, enabled: bool, certfile: str, keyfile: str
+) -> list[str]:
     return [f"ADMIN_UI_HTTPS_ENABLED={1 if enabled else 0}"]
 
 
+def _admin_ui_https_redirect_host() -> str:
+    candidates = [request.host if has_request_context() else ""]
+    public_host = os.environ.get("ADMIN_UI_PUBLIC_HOST") or os.environ.get(
+        "PROXY_PUBLIC_HOST",
+    )
+    if public_host:
+        candidates.append(public_host)
+    candidates.append("localhost")
+    for candidate in candidates:
+        value = str(candidate or "").split(",", 1)[0].strip()
+        if not value or any(char in value for char in ("/", "\\", "@")):
+            continue
+        try:
+            parsed = urlsplit(f"//{value}")
+        except ValueError:
+            continue
+        hostname = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+        if not hostname:
+            continue
+        normalized = normalize_admin_ui_certificate_sans([hostname])
+        hostname_key = hostname.lower()
+        if hostname_key not in normalized:
+            continue
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port is None:
+            return hostname_key
+        if ":" in hostname_key:
+            return f"[{hostname_key}]:{port}"
+        return f"{hostname_key}:{port}"
+    return "localhost"
+
+
 def _admin_ui_https_next_url() -> str:
-    return f"https://{request.host}{_endpoint_url('certs')}"
+    return f"https://{_admin_ui_https_redirect_host()}{_endpoint_url('certs')}"
 
 
 def _restart_admin_ui_web_process() -> tuple[bool, str]:
@@ -3748,8 +3794,14 @@ def _get_selected_log_payload(
             "logs": [],
         }
     logs = payload.get("logs") if isinstance(payload.get("logs"), list) else []
-    if requested_log is None and logs and not any(
-        item.get("key") == payload.get("key") for item in logs if isinstance(item, dict)
+    if (
+        requested_log is None
+        and logs
+        and not any(
+            item.get("key") == payload.get("key")
+            for item in logs
+            if isinstance(item, dict)
+        )
     ):
         first_log = next((item for item in logs if isinstance(item, dict)), None)
         if first_log is not None:

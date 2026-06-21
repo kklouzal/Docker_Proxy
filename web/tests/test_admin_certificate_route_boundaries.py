@@ -238,7 +238,7 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
-        lambda: (restart_calls.append(True) or (True, "restart requested")),
+        lambda: restart_calls.append(True) or (True, "restart requested"),
     )
     client = loaded.module.app.test_client()
     login_client(client)
@@ -263,11 +263,19 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert bundles.admin_ui_https_settings.keyfile == keyfile
     assert bundles.admin_ui_https_settings.updated_by == "admin"
     assert restart_calls == [True]
-    assert Path(certfile).read_text(encoding="utf-8").startswith(
-        "-----BEGIN CERTIFICATE-----",
+    assert (
+        Path(certfile)
+        .read_text(encoding="utf-8")
+        .startswith(
+            "-----BEGIN CERTIFICATE-----",
+        )
     )
-    assert Path(keyfile).read_text(encoding="utf-8").startswith(
-        "-----BEGIN PRIVATE KEY-----",
+    assert (
+        Path(keyfile)
+        .read_text(encoding="utf-8")
+        .startswith(
+            "-----BEGIN PRIVATE KEY-----",
+        )
     )
 
 
@@ -281,7 +289,7 @@ def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
-        lambda: (restart_calls.append(True) or (True, "restart requested")),
+        lambda: restart_calls.append(True) or (True, "restart requested"),
     )
     client = loaded.module.app.test_client()
     login_client(client)
@@ -319,6 +327,33 @@ def test_admin_ui_https_preference_uses_current_host_for_continue_link(
         )
 
 
+def test_admin_ui_https_preference_continue_link_sanitizes_host(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    with loaded.module.app.test_request_context(
+        "/certs",
+        environ_overrides={"HTTP_HOST": "user@example.test:8443"},
+    ):
+        assert loaded.module._admin_ui_https_next_url().startswith("https://localhost/")
+
+
+def test_admin_ui_https_preference_continue_link_keeps_ipv6_port(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    with loaded.module.app.test_request_context(
+        "/certs",
+        base_url="http://[2001:db8::10]:8443",
+    ):
+        assert (
+            loaded.module._admin_ui_https_next_url()
+            == "https://[2001:db8::10]:8443/certs?proxy_id=default"
+        )
+
+
 def test_admin_ui_https_preference_treats_hidden_fallback_only_as_disabled(
     monkeypatch, tmp_path
 ) -> None:
@@ -335,7 +370,7 @@ def test_admin_ui_https_preference_treats_hidden_fallback_only_as_disabled(
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
-        lambda: (restart_calls.append(True) or (True, "restart requested")),
+        lambda: restart_calls.append(True) or (True, "restart requested"),
     )
     client = loaded.module.app.test_client()
     login_client(client)
@@ -360,9 +395,7 @@ def test_admin_ui_https_preference_treats_hidden_fallback_only_as_disabled(
     assert restart_calls == [True]
 
 
-def test_certificates_page_ignores_https_redirect_query(
-    monkeypatch, tmp_path
-) -> None:
+def test_certificates_page_ignores_https_redirect_query(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
@@ -432,9 +465,10 @@ def test_admin_ui_https_preference_requires_bundle_for_default_material(
 
     assert response.status_code in {301, 302, 303}
     assert _location_params(response)["ok"] == ["0"]
-    assert "Generate or upload an SSL inspection CA bundle" in _location_params(response)[
-        "msg"
-    ][0]
+    assert (
+        "Generate or upload an SSL inspection CA bundle"
+        in _location_params(response)["msg"][0]
+    )
     assert bundles.admin_ui_https_settings.enabled is False
 
 
@@ -458,7 +492,7 @@ def test_admin_ui_https_preference_requires_mounted_active_material(
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
-        lambda: (restart_calls.append(True) or (True, "restart requested")),
+        lambda: restart_calls.append(True) or (True, "restart requested"),
     )
     client = loaded.module.app.test_client()
     login_client(client)
@@ -475,8 +509,9 @@ def test_admin_ui_https_preference_requires_mounted_active_material(
 
     assert response.status_code in {301, 302, 303}
     assert _location_params(response)["ok"] == ["0"]
-    assert "requires the generated Admin UI server certificate and key" in (
-        _location_params(response)["msg"][0]
+    assert (
+        "requires the generated Admin UI server certificate and key"
+        in (_location_params(response)["msg"][0])
     )
     assert bundles.admin_ui_https_settings.enabled is False
     assert restart_calls == []
@@ -498,7 +533,7 @@ def test_admin_ui_https_preference_rejects_empty_active_material(
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
-        lambda: (restart_calls.append(True) or (True, "restart requested")),
+        lambda: restart_calls.append(True) or (True, "restart requested"),
     )
     client = loaded.module.app.test_client()
     login_client(client)
@@ -534,7 +569,7 @@ def test_admin_ui_https_preference_rejects_invalid_active_material(
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
-        lambda: (restart_calls.append(True) or (True, "restart requested")),
+        lambda: restart_calls.append(True) or (True, "restart requested"),
     )
     client = loaded.module.app.test_client()
     login_client(client)

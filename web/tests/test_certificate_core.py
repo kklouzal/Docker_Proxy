@@ -169,9 +169,12 @@ def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) 
     assert validation.ready is True
 
     leaf = x509.load_pem_x509_certificate((tmp_path / "admin-ui.crt").read_bytes())
-    assert leaf.extensions.get_extension_for_class(
-        x509.BasicConstraints,
-    ).value.ca is False
+    assert (
+        leaf.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        ).value.ca
+        is False
+    )
     assert (
         ExtendedKeyUsageOID.SERVER_AUTH
         in leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
@@ -183,3 +186,20 @@ def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) 
     assert "admin.example.test" in sans.get_values_for_type(x509.DNSName)
     assert "proxy.example.test" in sans.get_values_for_type(x509.DNSName)
     assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
+
+
+def test_admin_ui_san_normalization_handles_forwarded_hosts_and_ipv6() -> None:
+    sans = certificate_core.normalize_admin_ui_certificate_sans(
+        [
+            "edge.example.test:8443, proxy.example.test",
+            "[2001:db8::10]:5000",
+            "bad/host",
+            "user@example.test",
+        ],
+    )
+
+    assert "edge.example.test" in sans
+    assert "2001:db8::10" in sans
+    assert "proxy.example.test" not in sans
+    assert "bad/host" not in sans
+    assert "example.test" not in sans

@@ -277,9 +277,7 @@ def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValid
     )
     if not cert_status.valid or not key_status.valid:
         detail = "; ".join(
-            status.detail
-            for status in (cert_status, key_status)
-            if not status.valid
+            status.detail for status in (cert_status, key_status) if not status.valid
         )
         return TlsMaterialValidation(
             cert_status=cert_status,
@@ -320,7 +318,7 @@ def _dns_san_valid(hostname: str) -> bool:
 
 
 def _sanitize_san_token(token: object) -> str:
-    value = str(token or "").strip().strip("[]").rstrip(".")
+    value = str(token or "").split(",", 1)[0].strip().rstrip(".")
     if not value:
         return ""
     if "://" in value:
@@ -328,16 +326,28 @@ def _sanitize_san_token(token: object) -> str:
 
         parsed = urlsplit(value)
         value = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+    elif value.startswith("["):
+        from urllib.parse import urlsplit
+
+        try:
+            parsed = urlsplit(f"//{value}")
+            value = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+        except ValueError:
+            return ""
     elif "/" in value or "@" in value or "\\" in value:
         return ""
     elif value.count(":") == 1 and not value.startswith("["):
         host, port = value.rsplit(":", 1)
         if port.isdigit():
             value = host.strip().strip("[]").rstrip(".")
+    else:
+        value = value.strip().strip("[]").rstrip(".")
     return value
 
 
-def normalize_admin_ui_certificate_sans(tokens: Iterable[object] = ()) -> tuple[str, ...]:
+def normalize_admin_ui_certificate_sans(
+    tokens: Iterable[object] = (),
+) -> tuple[str, ...]:
     sans: list[str] = []
     seen: set[str] = set()
 
@@ -381,7 +391,9 @@ def _general_names_for_sans(sans: Iterable[str]) -> list[x509.GeneralName]:
     return names
 
 
-def _load_bundle_ca_material(bundle: CertificateBundle | object) -> tuple[x509.Certificate, object]:
+def _load_bundle_ca_material(
+    bundle: CertificateBundle | object,
+) -> tuple[x509.Certificate, object]:
     cert_pem = str(getattr(bundle, "cert_pem", "") or "")
     key_pem = str(getattr(bundle, "key_pem", "") or "")
     fullchain_pem = str(getattr(bundle, "fullchain_pem", "") or "")
@@ -417,7 +429,9 @@ def materialize_admin_ui_server_certificate(
     cert = (
         x509.CertificateBuilder()
         .subject_name(
-            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Docker Proxy Admin UI")]),
+            x509.Name(
+                [x509.NameAttribute(NameOID.COMMON_NAME, "Docker Proxy Admin UI")]
+            ),
         )
         .issuer_name(ca_cert.subject)
         .public_key(leaf_key.public_key())

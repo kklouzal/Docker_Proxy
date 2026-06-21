@@ -168,6 +168,7 @@ window.setTimeout(function () {
                         </div>
                         <div>HTTPS uses a dedicated Admin UI server certificate signed by the active SSL inspection CA. Generate or upload a CA bundle before enabling HTTPS.</div>
                         <div><strong>Leaf cert:</strong> <code class="mono">{{ admin_ui_https.default_certfile }}</code></div>
+                        <div><strong>Leaf key:</strong> <code class="mono">{{ admin_ui_https.default_keyfile }}</code></div>
                         <div><strong>SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
                     </div>
                     <div class="surface-note small">
