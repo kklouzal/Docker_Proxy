@@ -209,6 +209,10 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     env_example = _read("config/app.env.example")
 
     assert "command=/usr/local/bin/start-admin-ui.sh" in supervisord
+    assert "[unix_http_server]" in supervisord
+    assert "[rpcinterface:supervisor]" in supervisord
+    assert "[supervisorctl]" in supervisord
+    assert "serverurl=unix:///tmp/supervisor.sock" in supervisord
     assert "COPY --chmod=755 docker/start-admin-ui.sh" in _read(
         "docker/Dockerfile.admin"
     )
@@ -229,7 +233,8 @@ def test_admin_ui_https_packaging_contract() -> None:
     env_example = _read("config/app.env.example")
     readme = _read("README.md")
 
-    assert "- ./squid/ssl/certs:/etc/squid/ssl/certs:ro" in admin_block
+    assert "- ./squid/ssl/certs:/etc/squid/ssl/certs" in admin_block
+    assert "- ./squid/ssl/certs:/etc/squid/ssl/certs:ro" not in admin_block
     assert "ADMIN_UI_HTTPS_ENABLED: ${ADMIN_UI_HTTPS_ENABLED:-0}" in admin_block
     assert "ADMIN_UI_SSL_CERTFILE: ${ADMIN_UI_SSL_CERTFILE:-}" in admin_block
     assert "ADMIN_UI_SSL_KEYFILE: ${ADMIN_UI_SSL_KEYFILE:-}" in admin_block
@@ -243,6 +248,8 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert "ADMIN_UI_SSL_CERTFILE and ADMIN_UI_SSL_KEYFILE are internal bootstrap" in env_example
     assert "prefer a server certificate whose subject/SAN matches" not in readme
     assert "active generated or uploaded SSL inspection CA bundle" in readme
+    assert "Admin UI container read-only" not in readme
+    assert "mount is writable" in readme
     assert "saved DB setting is the source of truth" in readme
 
 
@@ -342,6 +349,58 @@ def test_admin_ui_startup_uses_saved_https_settings_after_first_save() -> None:
     assert enabled.enabled is True
     assert enabled.certfile == "/etc/squid/ssl/certs/ca.crt"
     assert enabled.keyfile == "/etc/squid/ssl/certs/ca.key"
+
+
+def test_admin_ui_startup_db_https_missing_material_falls_back_to_http(
+    monkeypatch,
+) -> None:
+    module = _load_start_admin_ui_module()
+    exec_calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr(
+        module,
+        "resolve_admin_ui_https_config",
+        lambda _environ: module.AdminUiHttpsRuntimeConfig(
+            enabled=True,
+            certfile="/missing/ca.crt",
+            keyfile="/missing/ca.key",
+            source="db",
+        ),
+    )
+    monkeypatch.setattr(
+        module.os,
+        "execvp",
+        lambda executable, argv: exec_calls.append((executable, argv)),
+    )
+
+    assert module.main() == 1
+    assert exec_calls
+    assert "--certfile" not in exec_calls[0][1]
+    assert "--keyfile" not in exec_calls[0][1]
+
+
+def test_admin_ui_startup_env_https_missing_material_fails(monkeypatch) -> None:
+    module = _load_start_admin_ui_module()
+    exec_calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr(
+        module,
+        "resolve_admin_ui_https_config",
+        lambda _environ: module.AdminUiHttpsRuntimeConfig(
+            enabled=True,
+            certfile="/missing/ca.crt",
+            keyfile="/missing/ca.key",
+            source="env",
+        ),
+    )
+    monkeypatch.setattr(
+        module.os,
+        "execvp",
+        lambda executable, argv: exec_calls.append((executable, argv)),
+    )
+
+    assert module.main() == 1
+    assert exec_calls == []
 
 
 def test_admin_ui_startup_falls_back_to_env_before_saved_setting_or_db_failure() -> None:

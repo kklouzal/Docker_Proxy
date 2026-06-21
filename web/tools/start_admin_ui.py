@@ -139,12 +139,26 @@ def build_gunicorn_argv(
 def main() -> int:
     config = resolve_admin_ui_https_config(os.environ)
     if config.enabled:
-        if not os.access(config.certfile, os.R_OK):
+        cert_readable = Path(config.certfile).is_file() and os.access(config.certfile, os.R_OK)
+        key_readable = Path(config.keyfile).is_file() and os.access(config.keyfile, os.R_OK)
+        if config.source == "db" and not (cert_readable and key_readable):
+            _log(
+                "WARNING: saved Admin UI HTTPS setting is enabled but the active "
+                "SSL inspection CA material is not readable; starting HTTP so the "
+                "Certificates page can recover the setting.",
+            )
+            config = AdminUiHttpsRuntimeConfig(
+                enabled=False,
+                certfile="",
+                keyfile="",
+                source="db-missing-material",
+            )
+        elif not cert_readable:
             _log(
                 f"ERROR: Admin UI HTTPS is enabled by {config.source} but cert file is not readable: {config.certfile}",
             )
             return 1
-        if not os.access(config.keyfile, os.R_OK):
+        elif not key_readable:
             _log(
                 f"ERROR: Admin UI HTTPS is enabled by {config.source} but key file is not readable: {config.keyfile}",
             )

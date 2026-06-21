@@ -26,6 +26,16 @@ def _bundle() -> SimpleNamespace:
     )
 
 
+def _set_admin_ui_https_material(monkeypatch, loaded, tmp_path) -> tuple[str, str]:
+    certfile = tmp_path / "admin-ui-ca.crt"
+    keyfile = tmp_path / "admin-ui-ca.key"
+    certfile.write_text("CERT\n", encoding="utf-8")
+    keyfile.write_text("KEY\n", encoding="utf-8")
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_CERTFILE", str(certfile))
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_KEYFILE", str(keyfile))
+    return str(certfile), str(keyfile)
+
+
 def test_certificate_download_allows_only_active_ca_crt(monkeypatch, tmp_path) -> None:
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
@@ -116,9 +126,16 @@ def test_certificate_upload_accepts_pfx_and_p12_extensions_case_insensitively(
 
 
 def test_certificates_page_shows_admin_ui_https_status(monkeypatch, tmp_path) -> None:
+    runtime_certfile = tmp_path / "runtime-ui.crt"
+    runtime_keyfile = tmp_path / "runtime-ui.key"
+    runtime_certfile.write_text("CERT\n", encoding="utf-8")
+    runtime_keyfile.write_text("KEY\n", encoding="utf-8")
     monkeypatch.setenv("ADMIN_UI_HTTPS_ENABLED", "1")
-    monkeypatch.setenv("ADMIN_UI_SSL_CERTFILE", "/certs/ui.crt")
-    monkeypatch.setenv("ADMIN_UI_SSL_KEYFILE", "/certs/ui.key")
+    monkeypatch.setenv("ADMIN_UI_SSL_CERTFILE", str(runtime_certfile))
+    monkeypatch.setenv("ADMIN_UI_SSL_KEYFILE", str(runtime_keyfile))
+    monkeypatch.setenv("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED", "1")
+    monkeypatch.setenv("ADMIN_UI_EFFECTIVE_SSL_CERTFILE", str(runtime_certfile))
+    monkeypatch.setenv("ADMIN_UI_EFFECTIVE_SSL_KEYFILE", str(runtime_keyfile))
     bundles = FakeCertificateBundles(bundle=_bundle())
     bundles.admin_ui_https_settings = SimpleNamespace(
         enabled=True,
@@ -138,7 +155,7 @@ def test_certificates_page_shows_admin_ui_https_status(monkeypatch, tmp_path) ->
     assert "Admin UI HTTPS" in html
     assert "HTTPS enabled" in html
     assert "restart pending" in html
-    assert "/certs/ui.crt" in html
+    assert str(runtime_certfile) in html
     assert "ADMIN_UI_HTTPS_ENABLED=1" in html
     assert "Use custom container paths" not in html
     assert 'name="certfile"' not in html
@@ -150,6 +167,7 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
 ) -> None:
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
     restart_calls = []
     monkeypatch.setattr(
         loaded.module,
@@ -172,8 +190,8 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert response.status_code in {301, 302, 303}
     assert _location_params(response)["ok"] == ["1"]
     assert bundles.admin_ui_https_settings.enabled is True
-    assert bundles.admin_ui_https_settings.certfile == "/etc/squid/ssl/certs/ca.crt"
-    assert bundles.admin_ui_https_settings.keyfile == "/etc/squid/ssl/certs/ca.key"
+    assert bundles.admin_ui_https_settings.certfile == certfile
+    assert bundles.admin_ui_https_settings.keyfile == keyfile
     assert bundles.admin_ui_https_settings.updated_by == "admin"
     assert restart_calls == [True]
 
@@ -183,6 +201,7 @@ def test_admin_ui_https_preference_reports_restart_failure(
 ) -> None:
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
@@ -233,11 +252,55 @@ def test_admin_ui_https_preference_requires_bundle_for_default_material(
     assert bundles.admin_ui_https_settings.enabled is False
 
 
+def test_admin_ui_https_preference_requires_mounted_active_material(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    monkeypatch.setattr(
+        loaded.module,
+        "ADMIN_UI_SSL_CERTFILE",
+        str(tmp_path / "missing-ca.crt"),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "ADMIN_UI_SSL_KEYFILE",
+        str(tmp_path / "missing-ca.key"),
+    )
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (restart_calls.append(True) or (True, "restart requested")),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "requires the active SSL inspection CA certificate and key" in (
+        _location_params(response)["msg"][0]
+    )
+    assert bundles.admin_ui_https_settings.enabled is False
+    assert restart_calls == []
+
+
 def test_admin_ui_https_ignores_posted_custom_paths_for_active_bundle(
     monkeypatch, tmp_path
 ) -> None:
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
@@ -262,8 +325,8 @@ def test_admin_ui_https_ignores_posted_custom_paths_for_active_bundle(
     assert response.status_code in {301, 302, 303}
     assert _location_params(response)["ok"] == ["1"]
     assert bundles.admin_ui_https_settings.enabled is True
-    assert bundles.admin_ui_https_settings.certfile == "/etc/squid/ssl/certs/ca.crt"
-    assert bundles.admin_ui_https_settings.keyfile == "/etc/squid/ssl/certs/ca.key"
+    assert bundles.admin_ui_https_settings.certfile == certfile
+    assert bundles.admin_ui_https_settings.keyfile == keyfile
 
 
 def test_certificate_publish_restores_previous_bundle_when_no_reconcile_queued(

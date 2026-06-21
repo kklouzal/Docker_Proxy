@@ -189,6 +189,9 @@ from services.winhttp_registry_builder import (
 )
 from werkzeug.exceptions import HTTPException
 
+ADMIN_UI_SSL_CERTFILE = "/etc/squid/ssl/certs/ca.crt"
+ADMIN_UI_SSL_KEYFILE = "/etc/squid/ssl/certs/ca.key"
+
 app = Flask(__name__)
 install_http_optimizations(app)
 _asset_version = str(int(time.time()))
@@ -2602,9 +2605,21 @@ def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
     }
 
 
+def _admin_ui_https_default_material_status() -> dict[str, Any]:
+    cert_status = _admin_ui_https_path_status(ADMIN_UI_SSL_CERTFILE)
+    key_status = _admin_ui_https_path_status(ADMIN_UI_SSL_KEYFILE)
+    return {
+        "certfile": ADMIN_UI_SSL_CERTFILE,
+        "keyfile": ADMIN_UI_SSL_KEYFILE,
+        "cert_status": cert_status,
+        "key_status": key_status,
+        "ready": bool(cert_status["readable"] and key_status["readable"]),
+    }
+
+
 def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
-    default_certfile = "/etc/squid/ssl/certs/ca.crt"
-    default_keyfile = "/etc/squid/ssl/certs/ca.key"
+    default_certfile = ADMIN_UI_SSL_CERTFILE
+    default_keyfile = ADMIN_UI_SSL_KEYFILE
     runtime_enabled = _truthy_env(
         os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED")
         if os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED") is not None
@@ -2654,6 +2669,7 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         "desired_error": desired_error,
         "pending_restart": pending_restart,
         "active_bundle_available": bundle is not None,
+        "active_material_ready": _admin_ui_https_default_material_status()["ready"],
         "default_certfile": default_certfile,
         "default_keyfile": default_keyfile,
     }
@@ -3582,7 +3598,8 @@ def operations_status():
 @app.route("/logs", methods=["GET"])
 def logs_status():
     proxy_id = get_proxy_id()
-    selected_log = (request.args.get("log") or "access").strip() or "access"
+    requested_log = request.args.get("log")
+    selected_log = (requested_log or "access").strip() or "access"
     try:
         payload = get_proxy_client().get_logs(proxy_id, log_key=selected_log)
     except ProxyClientError as exc:
@@ -3599,7 +3616,7 @@ def logs_status():
             "logs": [],
         }
     logs = payload.get("logs") if isinstance(payload.get("logs"), list) else []
-    if logs and not any(
+    if requested_log is None and logs and not any(
         item.get("key") == payload.get("key") for item in logs if isinstance(item, dict)
     ):
         first_log = next((item for item in logs if isinstance(item, dict)), None)
@@ -6297,8 +6314,23 @@ def update_admin_ui_https():
             ok=False,
             msg="Generate or upload an SSL inspection CA bundle before enabling Admin UI HTTPS.",
         )
-    certfile = "/etc/squid/ssl/certs/ca.crt" if enabled else ""
-    keyfile = "/etc/squid/ssl/certs/ca.key" if enabled else ""
+    material_status = _admin_ui_https_default_material_status()
+    if enabled and not material_status["ready"]:
+        missing = []
+        if not material_status["cert_status"]["readable"]:
+            missing.append(material_status["certfile"])
+        if not material_status["key_status"]["readable"]:
+            missing.append(material_status["keyfile"])
+        return _redirect_with_message(
+            "certs",
+            ok=False,
+            msg=(
+                "Admin UI HTTPS requires the active SSL inspection CA certificate "
+                f"and key to be mounted in the admin-ui container: {', '.join(missing)}."
+            ),
+        )
+    certfile = ADMIN_UI_SSL_CERTFILE if enabled else ""
+    keyfile = ADMIN_UI_SSL_KEYFILE if enabled else ""
 
     try:
         get_certificate_bundles().set_admin_ui_https_settings(

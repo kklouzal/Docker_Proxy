@@ -299,7 +299,7 @@ Both containers also load `/config/app.env` at startup when mounted. Use this fo
 
 ### Admin UI HTTPS
 
-The Admin UI serves plain HTTP on container port 5000 by default. The Certificates page includes an Admin UI HTTPS toggle that uses the active generated or uploaded SSL inspection CA bundle. When enabled, gunicorn reads `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`, which are mounted into the Admin UI container read-only by the default Compose stack and shared with the proxy container.
+The Admin UI serves plain HTTP on container port 5000 by default. The Certificates page includes an Admin UI HTTPS toggle that uses the active generated or uploaded SSL inspection CA bundle. When enabled, gunicorn reads `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key`, which are mounted into the Admin UI container by the default Compose stack and shared with the proxy container. The mount is writable so the Certificates page can materialize generated or uploaded active CA files before restarting the Admin UI web process.
 
 Saving the preference does not rewrite Compose files or mutate `.env`; it stores the setting in the control-plane DB and asks supervisor to restart only the Admin UI web process so gunicorn re-execs with HTTP or HTTPS. Enabling is rejected until a generated or uploaded SSL inspection CA bundle is active. On startup, the saved DB setting is the source of truth after the first UI save. `ADMIN_UI_HTTPS_ENABLED` remains a bootstrap fallback when the DB is unavailable or no UI preference has been saved yet; `ADMIN_UI_SSL_CERTFILE` and `ADMIN_UI_SSL_KEYFILE` are internal fallback knobs for custom launchers, not part of the packaged UI workflow.
 

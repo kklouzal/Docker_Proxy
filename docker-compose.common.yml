@@ -41,7 +41,7 @@ services:
       - "0.0.0.0:5000:5000"       # Flask UI
     volumes:
       - ./squid/squid.conf.template:/etc/squid/squid.conf.template:ro
-      - ./squid/ssl/certs:/etc/squid/ssl/certs:ro
+      - ./squid/ssl/certs:/etc/squid/ssl/certs
     environment:
       <<: *shared-app-env
       DISABLE_BACKGROUND: 0
