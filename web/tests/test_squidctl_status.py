@@ -102,6 +102,82 @@ def test_restart_squid_requires_http_listener_response(monkeypatch) -> None:
     assert "Squid process started but the HTTP listener is not responding" in detail
 
 
+def test_restart_squid_requires_response_only_from_direct_http_listeners(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[-2:] == ["status", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid STOPPED\n", stderr=b"")
+        if args[-2:] == ["start", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: started\n", stderr=b"")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_http_listener_details",
+        lambda config_text=None: (
+            {"port": 3128, "mode": "explicit"},
+            {"port": 3129, "mode": "intercept"},
+        ),
+    )
+    monkeypatch.setattr(controller, "_tcp_listener_accepts", lambda port: True)
+    response_probes: list[int] = []
+
+    def http_responds(port: int) -> bool:
+        response_probes.append(port)
+        return port == 3128
+
+    monkeypatch.setattr(controller, "_http_listener_responds", http_responds)
+
+    ok, detail = controller.restart_squid(ready_timeout=1.0)
+
+    assert ok is True
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
+    ]
+    assert response_probes == [3128]
+    assert "Squid HTTP listener is responding" in detail
+
+
+def test_wait_for_http_listener_accepts_transparent_listener_without_http_probe(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    controller = squidctl.SquidController(cmd_run=lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        controller,
+        "_http_listener_details",
+        lambda config_text=None: ({"port": 3129, "mode": "intercept"},),
+    )
+    monkeypatch.setattr(controller, "_tcp_listener_accepts", lambda port: True)
+    response_probes: list[int] = []
+    monkeypatch.setattr(
+        controller,
+        "_http_listener_responds",
+        lambda port: response_probes.append(port) or False,
+    )
+
+    assert controller._wait_for_http_listener(timeout=1.0) is True
+    assert response_probes == []
+
+
 def test_clear_disk_cache_uses_bounded_restart_wait(
     monkeypatch,
     tmp_path,

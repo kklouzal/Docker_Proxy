@@ -642,6 +642,18 @@ class SquidController:
             for item in self._http_listener_details(config_text)
         )
 
+    def _http_listener_response_ports(
+        self,
+        config_text: str | None = None,
+    ) -> tuple[int, ...]:
+        ports: list[int] = []
+        for item in self._http_listener_details(config_text):
+            mode = str(item.get("mode") or "explicit").lower()
+            if "intercept" in mode or "tproxy" in mode:
+                continue
+            ports.append(int(item.get("port") or 3128))
+        return tuple(ports)
+
     def _http_listener_port(self, config_text: str | None = None) -> int:
         return self._http_listener_ports(config_text)[0]
 
@@ -670,17 +682,21 @@ class SquidController:
             return False
 
     def _wait_for_http_listener(self, *, timeout: float = 20.0) -> bool:
-        pending = set(self._http_listener_ports())
+        response_pending = set(self._http_listener_response_ports())
+        accept_pending = set(self._http_listener_ports()) - response_pending
         deadline = time.time() + max(0.5, timeout)
-        while pending and time.time() < deadline:
-            for port in tuple(pending):
+        while (response_pending or accept_pending) and time.time() < deadline:
+            for port in tuple(response_pending):
                 if self._tcp_listener_accepts(port) and self._http_listener_responds(
                     port,
                 ):
-                    pending.discard(port)
-            if pending:
+                    response_pending.discard(port)
+            for port in tuple(accept_pending):
+                if self._tcp_listener_accepts(port):
+                    accept_pending.discard(port)
+            if response_pending or accept_pending:
                 time.sleep(0.5)
-        return not pending
+        return not response_pending and not accept_pending
 
     def _wait_for_http_listener_absent(self, *, timeout: float = 20.0) -> bool:
         ports = self._http_listener_ports()
