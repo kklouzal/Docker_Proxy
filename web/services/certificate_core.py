@@ -8,13 +8,16 @@ import pathlib
 import re
 import subprocess
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from services.logutil import log_exception_throttled
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

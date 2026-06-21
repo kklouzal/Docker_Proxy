@@ -14,9 +14,6 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from services.certificate_core import validate_tls_material_paths
-
-
 DEFAULT_CERTFILE = "/etc/squid/ssl/certs/ca.crt"
 DEFAULT_KEYFILE = "/etc/squid/ssl/certs/ca.key"
 
@@ -139,6 +136,8 @@ def build_gunicorn_argv(
 
 
 def main() -> int:
+    from services.certificate_core import validate_tls_material_paths
+
     config = resolve_admin_ui_https_config(os.environ)
     if config.enabled:
         material = validate_tls_material_paths(config.certfile, config.keyfile)
