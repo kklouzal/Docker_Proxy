@@ -450,6 +450,29 @@ def test_logs_page_renders_status_nav_and_selected_proxy_log(
     assert 'href="/logs?proxy_id=edge-2"' in body
 
 
+def test_logs_page_preserves_explicit_rejected_log_selection(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = RecordingProxyClient()
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=proxy_client,
+        registry=registry,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/logs?proxy_id=edge-2&log=../../etc/passwd")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert proxy_client.log_calls == [("edge-2", "../../etc/passwd")]
+    assert "Log file is not allowlisted." in body
+    assert "edge-2:access:line" not in body
+
+
 def test_logs_api_uses_active_proxy_and_rejects_non_allowlisted_log(
     monkeypatch, tmp_path
 ) -> None:
