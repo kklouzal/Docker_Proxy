@@ -1151,6 +1151,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         overrides.get("adblock_artifacts") or FakeAdblockArtifacts()
     )
     fake_operation_ledger = overrides.get("operation_ledger") or FakeOperationLedger()
+    fake_sslfilter_store = overrides.get("sslfilter_store") or FakeSslfilterStore()
 
     services = admin_app.AppRuntimeServices(
         controller=fake_controller,
@@ -1171,9 +1172,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
             overrides.get("webfilter_store") or FakeWebfilterStore()
         ),
         get_policy_request_store=lambda: overrides.get("policy_request_store") or None,
-        get_sslfilter_store=lambda: (
-            overrides.get("sslfilter_store") or FakeSslfilterStore()
-        ),
+        get_sslfilter_store=lambda: fake_sslfilter_store,
         get_pac_profiles_store=lambda: (
             overrides.get("pac_profiles_store") or FakePacProfilesStore()
         ),
@@ -1262,6 +1261,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
         certificate_bundles=fake_certificates,
         adblock_artifacts=fake_adblock_artifacts,
         operation_ledger=fake_operation_ledger,
+        sslfilter_store=fake_sslfilter_store,
     )
 
 

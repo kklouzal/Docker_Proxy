@@ -646,6 +646,11 @@
 </section>
 
 {% elif pane == 'remediation' %}
+{% if request.args.get('remediation_ok') == '1' %}
+<div class="surface-note small">{{ request.args.get('remediation_msg', 'Remediation action completed.') }}</div>
+{% elif request.args.get('remediation_error') == '1' %}
+<div class="surface-note small">Remediation action failed. {{ request.args.get('remediation_msg', 'No policy change was saved.') }}</div>
+{% endif %}
 <section class="card">
   <div class="card-header"><h2 class="card-title">Remediation suggestions</h2><span class="badge">{{ payload.summary.suggestions }} active</span></div>
   <div class="card-body">
@@ -685,7 +690,7 @@
         <td>{{ row.confidence }}</td>
         <td class="small text-break">{{ row.evidence }}</td>
         <td class="small text-break">{{ row.recommended_action }}</td>
-        <td class="num"><div class="table-action-stack">{% if row.subject and (row.subject_type or 'domain') == 'domain' %}<a class="btn" href="{{ url_for('observability', pane='destinations', q=row.subject, window=window) }}">Destination</a><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.subject, window=window) }}">SSL</a><a class="btn" href="{{ url_for('sslfilter', domain=row.subject) }}">SSL Filtering</a>{% else %}<a class="btn" href="{{ url_for('observability', pane='overview', window=window) }}">Overview</a>{% endif %}</div></td>
+        <td class="num"><div class="table-action-stack">{% if row.subject and (row.subject_type or 'domain') == 'domain' %}<form method="post" action="{{ url_for('observability_remediation_no_bump_domain') }}">{{ csrf_field() }}<input type="hidden" name="domain" value="{{ row.subject }}" /><input type="hidden" name="window" value="{{ window }}" /><input type="hidden" name="limit" value="{{ limit }}" /><input type="hidden" name="sort" value="{{ sort }}" /><input type="hidden" name="q" value="{{ search }}" /><button class="btn primary" type="submit">No-bump domain</button></form><a class="btn ghost" href="{{ url_for('observability', pane='destinations', q=row.subject, window=window, limit=limit) }}">Inspect destination</a><a class="btn ghost" href="{{ url_for('observability', pane='ssl', q=row.subject, window=window, limit=limit) }}">Inspect SSL</a><a class="btn ghost" href="{{ url_for('sslfilter', domain=row.subject) }}">Inspect SSL Filtering</a>{% else %}<a class="btn ghost" href="{{ url_for('observability', pane='overview', window=window) }}">Inspect overview</a>{% endif %}</div></td>
       </tr>
       {% endfor %}
       </tbody>

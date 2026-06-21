@@ -4,6 +4,7 @@ import pytest
 
 from .admin_route_test_utils import (
     FakeRegistry,
+    FakeSslfilterStore,
     FakeWebfilterStore,
     csrf_token,
     load_admin_app,
@@ -2090,10 +2091,103 @@ def test_observability_remediation_hides_domain_actions_for_proxy_subjects(
     assert response.status_code == 200
     assert "Domain subjects" in text
     assert "Runtime subjects" in text
-    assert "/sslfilter?domain=video.example" in text
+    assert 'action="/observability/remediation/no-bump-domain' in text
+    assert 'name="domain" value="video.example"' in text
+    assert ">No-bump domain<" in text
+    assert ">Inspect destination<" in text
+    assert ">Inspect SSL<" in text
+    assert ">Inspect SSL Filtering<" in text
     assert "/observability?pane=destinations&amp;q=video.example" in text
+    assert "/observability?pane=ssl&amp;q=video.example" in text
+    assert ">Destination</a>" not in text
+    assert 'class="btn" href="/sslfilter?domain=video.example' not in text
     assert "/sslfilter?domain=livingroom" not in text
     assert "/observability?pane=destinations&amp;q=livingroom" not in text
+
+
+def test_observability_remediation_no_bump_domain_adds_sslfilter_rule(
+    monkeypatch, tmp_path
+) -> None:
+    sslfilter_store = FakeSslfilterStore()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=sslfilter_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/observability?pane=remediation")
+
+    response = client.post(
+        "/observability/remediation/no-bump-domain",
+        data={
+            "csrf_token": token,
+            "domain": "https://Video.Example/path",
+            "window": "900",
+            "limit": "20",
+            "sort": "count",
+            "q": "ssl",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "video.example" in sslfilter_store.no_bump_domains
+    location = response.headers["Location"]
+    assert "pane=remediation" in location
+    assert "window=900" in location
+    assert "limit=20" in location
+    assert "sort=count" in location
+    assert "q=ssl" in location
+    assert "remediation_ok=1" in location
+    assert any(
+        record["kind"] == "observability_remediation_no_bump_domain" and record["ok"]
+        for record in loaded.audit_store.records
+    )
+
+
+def test_observability_remediation_no_bump_domain_rejects_invalid_subject(
+    monkeypatch, tmp_path
+) -> None:
+    sslfilter_store = FakeSslfilterStore()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=sslfilter_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/observability?pane=remediation")
+
+    response = client.post(
+        "/observability/remediation/no-bump-domain",
+        data={
+            "csrf_token": token,
+            "domain": "bad domain",
+            "window": "900",
+            "limit": "20",
+            "sort": "recent",
+            "q": "video",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert sslfilter_store.no_bump_domains == []
+    location = response.headers["Location"]
+    assert "pane=remediation" in location
+    assert "window=900" in location
+    assert "limit=20" in location
+    assert "sort=recent" in location
+    assert "q=video" in location
+    assert "remediation_error=1" in location
+    assert any(
+        record["kind"] == "observability_remediation_no_bump_domain"
+        and not record["ok"]
+        for record in loaded.audit_store.records
+    )
 
 
 def test_observability_remediation_tolerates_bad_runtime_health_timestamp(

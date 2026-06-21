@@ -19,6 +19,8 @@ class FakeDirectoryAuthStore:
         self.login_ok = False
         self.login_provider = "local"
         self.login_detail = "No active directory provider."
+        self.profile_enabled = {"ldap": False, "active_directory": False}
+        self.profile_last_test_ok = {"ldap": False, "active_directory": False}
 
     def ensure_default_profiles(self) -> None:
         return None
@@ -40,10 +42,11 @@ class FakeDirectoryAuthStore:
         )
 
     def get_status(self):
+        ldap_enabled = self.profile_enabled["ldap"] or self.login_ok
         ldap = SimpleNamespace(
             provider="ldap",
             label="LDAP",
-            enabled=self.login_ok,
+            enabled=ldap_enabled,
             server_urls="ldaps://ldap.example.org:636",
             use_starttls=False,
             verify_tls=True,
@@ -58,7 +61,7 @@ class FakeDirectoryAuthStore:
             group_filter="(member={user_dn})",
             required_admin_group="cn=admins,dc=example,dc=org",
             timeout_seconds=5,
-            last_test_ok=False,
+            last_test_ok=self.profile_last_test_ok["ldap"],
             last_test_ts=0,
             last_test_detail=(
                 "Configuration changed since the last successful test."
@@ -69,7 +72,7 @@ class FakeDirectoryAuthStore:
         ad = SimpleNamespace(
             provider="active_directory",
             label="Active Directory",
-            enabled=False,
+            enabled=self.profile_enabled["active_directory"],
             server_urls="ldaps://dc.example.local:636",
             use_starttls=False,
             verify_tls=True,
@@ -84,13 +87,13 @@ class FakeDirectoryAuthStore:
             group_filter="(member={user_dn})",
             required_admin_group="CN=Admins,DC=example,DC=local",
             timeout_seconds=5,
-            last_test_ok=False,
+            last_test_ok=self.profile_last_test_ok["active_directory"],
             last_test_ts=0,
             last_test_detail="",
         )
         return {
-            "active_provider": "ldap" if self.login_ok else "local",
-            "active_label": "LDAP" if self.login_ok else "Local accounts",
+            "active_provider": "ldap" if ldap_enabled else "local",
+            "active_label": "LDAP" if ldap_enabled else "Local accounts",
             "profiles": {"ldap": ldap, "active_directory": ad},
             "providers": ("ldap", "active_directory"),
             "provider_labels": {"ldap": "LDAP", "active_directory": "Active Directory"},
@@ -110,12 +113,22 @@ class FakeDirectoryAuthStore:
             },
         }
 
+    def get_profile(self, provider):
+        return self.get_status()["profiles"][provider]
+
     def save_profile(self, provider, payload):
         self.saved.append((provider, dict(payload)))
+        self.profile_enabled[provider] = str(payload.get("enabled") or "") in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         return self.get_status()["profiles"][provider]
 
     def test_connection(self, provider):
         self.tested.append(provider)
+        self.profile_last_test_ok[provider] = True
         return SimpleNamespace(
             ok=True,
             provider=provider,
@@ -430,6 +443,43 @@ def test_ldap_auth_provider_test_passes_server_url_to_store(
     assert directory_store.tested == ["ldap"]
 
 
+def test_active_auth_provider_test_restores_enabled_state_after_success(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    directory_store.profile_enabled["ldap"] = True
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "test_auth_provider",
+            "provider": "ldap",
+            "enabled": "1",
+            "server_urls": "ldaps://ldap.example.org:636",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "replacement-secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_search_base": "ou=groups",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert [saved[1]["enabled"] for saved in directory_store.saved] == ["0", "1"]
+    assert directory_store.saved[-1][1]["bind_password"] == ""
+    assert directory_store.profile_enabled["ldap"] is True
+
+
 def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -> None:
     directory_store = FakeDirectoryAuthStore()
     loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
@@ -468,6 +518,44 @@ def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -
     body = client.get("/administration?tab=ldap").get_data(as_text=True)
     assert "ou=people" in body
     assert "cn=admins,ou=groups,dc=example,dc=org" in body
+
+
+def test_active_auth_provider_scan_restores_enabled_state_for_tested_config(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    directory_store.profile_enabled["ldap"] = True
+    directory_store.profile_last_test_ok["ldap"] = True
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "scan_auth_provider",
+            "provider": "ldap",
+            "enabled": "1",
+            "server_urls": "ldaps://scan-ldap.example.org:636",
+            "bind_dn": "cn=scan,dc=example,dc=org",
+            "bind_password": "scan-secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_search_base": "ou=groups",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert [saved[1]["enabled"] for saved in directory_store.saved] == ["0", "1"]
+    assert directory_store.saved[-1][1]["bind_password"] == ""
+    assert directory_store.profile_enabled["ldap"] is True
 
 
 def test_active_directory_provider_scan_saves_submitted_form_first(

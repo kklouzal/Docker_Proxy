@@ -3506,9 +3506,15 @@ def _handle_auth_provider_post():
             )
         if action == "test_auth_provider":
             payload = _submitted_directory_payload()
+            was_enabled = _directory_auth_store.get_profile(provider).enabled
             payload["enabled"] = "0"
             _directory_auth_store.save_profile(provider, payload)
             result = _directory_auth_store.test_connection(provider)
+            if was_enabled and result.ok:
+                reenable_payload = dict(payload)
+                reenable_payload["enabled"] = "1"
+                reenable_payload["bind_password"] = ""
+                _directory_auth_store.save_profile(provider, reenable_payload)
             return _redirect_with_message(
                 "administration",
                 ok=result.ok,
@@ -3517,9 +3523,15 @@ def _handle_auth_provider_post():
             )
         if action == "scan_auth_provider":
             payload = _submitted_directory_payload()
+            was_enabled = _directory_auth_store.get_profile(provider).enabled
             payload["enabled"] = "0"
-            _directory_auth_store.save_profile(provider, payload)
+            saved_profile = _directory_auth_store.save_profile(provider, payload)
             result = _directory_auth_store.scan_directory(provider)
+            if was_enabled and saved_profile.last_test_ok:
+                reenable_payload = dict(payload)
+                reenable_payload["enabled"] = "1"
+                reenable_payload["bind_password"] = ""
+                _directory_auth_store.save_profile(provider, reenable_payload)
             session[f"directory_scan_{provider}"] = {
                 "base_dns": list(result.base_dns),
                 "user_search_bases": list(result.user_search_bases),
@@ -5540,6 +5552,92 @@ def ssl_errors_exclude():
         q=domain,
         error="1",
         msg=detail or "SSL exclusion was not saved.",
+    )
+
+
+@app.route("/observability/remediation/no-bump-domain", methods=["POST"])
+def observability_remediation_no_bump_domain():
+    domain = _extract_domain(request.form.get("domain"))
+    redirect_params = {
+        "pane": "remediation",
+        "window": _bounded_int(
+            request.form.get("window"),
+            default=OBSERVABILITY_DEFAULT_WINDOW,
+            minimum=300,
+            maximum=7 * 24 * 3600,
+        ),
+        "limit": _bounded_int(
+            request.form.get("limit"),
+            default=50,
+            minimum=10,
+            maximum=200,
+        ),
+        "sort": _normalize_choice(
+            request.form.get("sort"),
+            _OBSERVABILITY_SORT_OPTIONS["remediation"],
+            _OBSERVABILITY_SORT_DEFAULTS["remediation"],
+        ),
+        "q": ((request.form.get("q") or "").strip() or None),
+    }
+    if not domain:
+        _record_audit_event(
+            "observability_remediation_no_bump_domain",
+            ok=False,
+            detail="domain=",
+        )
+        return _redirect_to(
+            "observability",
+            **redirect_params,
+            remediation_error="1",
+            remediation_msg="A valid domain is required for no-bump remediation.",
+        )
+
+    store = get_sslfilter_store()
+    try:
+        ok, detail, canonical = store.add_domain("nobump", domain)
+    except Exception as exc:
+        detail = public_error_message(exc, default="No-bump domain was not saved.")
+        _record_audit_event(
+            "observability_remediation_no_bump_domain",
+            ok=False,
+            detail=_audit_safe_detail(f"domain={domain} detail={detail}"),
+        )
+        log_exception_throttled(
+            app.logger,
+            "web.app.observability_remediation_no_bump_domain",
+            interval_seconds=30.0,
+            message="Failed to add remediation no-bump domain",
+        )
+        return _redirect_to(
+            "observability",
+            **redirect_params,
+            remediation_error="1",
+            remediation_msg=detail,
+        )
+
+    saved_domain = canonical or domain
+    _record_audit_event(
+        "observability_remediation_no_bump_domain",
+        ok=ok,
+        detail=_audit_safe_detail(
+            f"domain={saved_domain} detail={detail or 'saved'}",
+        ),
+    )
+    if ok:
+        return _redirect_after_policy_refresh(
+            "observability",
+            store,
+            force=True,
+            **redirect_params,
+            remediation_ok="1",
+            remediation_domain=saved_domain,
+            remediation_msg=f"No-bump SSL exclusion saved for {saved_domain}.",
+        )
+    return _redirect_to(
+        "observability",
+        **redirect_params,
+        remediation_error="1",
+        remediation_msg=detail or "No-bump domain was not saved.",
     )
 
 
