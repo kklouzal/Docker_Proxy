@@ -265,6 +265,63 @@ def test_auth_provider_save_is_scoped_to_one_provider(monkeypatch, tmp_path) -> 
     assert directory_store.saved[0][1]["enabled"] == "1"
 
 
+def test_auth_provider_actions_submit_directory_form_payload(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    ldap_body = client.get("/administration?tab=ldap").get_data(as_text=True)
+    ad_body = client.get("/administration?tab=active_directory").get_data(as_text=True)
+
+    assert 'id="ldap-auth-provider-form"' in ldap_body
+    assert 'form="ldap-auth-provider-form" name="action" value="test_auth_provider"' in ldap_body
+    assert 'form="ldap-auth-provider-form" name="action" value="scan_auth_provider"' in ldap_body
+    assert 'id="active_directory-auth-provider-form"' in ad_body
+    assert (
+        'form="active_directory-auth-provider-form" name="action" '
+        'value="test_auth_provider"'
+    ) in ad_body
+    assert 'type="hidden" name="action" value="save_auth_provider"' not in ldap_body
+    assert 'type="hidden" name="action" value="save_auth_provider"' not in ad_body
+
+
+def test_active_directory_provider_save_passes_server_url_to_store(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=active_directory")
+
+    response = client.post(
+        "/administration?tab=active_directory",
+        data={
+            "csrf_token": token,
+            "action": "save_auth_provider",
+            "provider": "active_directory",
+            "enabled": "0",
+            "server_urls": "ldaps://dc.example.local:636",
+            "bind_dn": "svc@example.local",
+            "bind_password": "secret",
+            "base_dn": "DC=example,DC=local",
+            "user_filter": "(sAMAccountName={username})",
+            "user_attribute": "sAMAccountName",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "CN=Admins,DC=example,DC=local",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.saved[0][0] == "active_directory"
+    assert directory_store.saved[0][1]["server_urls"] == "ldaps://dc.example.local:636"
+
+
 def test_auth_provider_certificate_upload_is_passed_to_store(
     monkeypatch, tmp_path
 ) -> None:
@@ -334,6 +391,43 @@ def test_auth_provider_test_saves_submitted_bind_password_first(
     assert directory_store.saved[0][1]["bind_password"] == "replacement-secret"
     assert directory_store.saved[0][1]["enabled"] == "0"
     assert directory_store.tested == ["active_directory"]
+
+
+def test_ldap_auth_provider_test_passes_server_url_to_store(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "test_auth_provider",
+            "provider": "ldap",
+            "enabled": "1",
+            "server_urls": "ldaps://ldap.example.org:636",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "replacement-secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_search_base": "ou=groups",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.saved[0][0] == "ldap"
+    assert directory_store.saved[0][1]["server_urls"] == "ldaps://ldap.example.org:636"
+    assert directory_store.saved[0][1]["enabled"] == "0"
+    assert directory_store.tested == ["ldap"]
 
 
 def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -> None:

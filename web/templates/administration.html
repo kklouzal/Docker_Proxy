@@ -303,9 +303,8 @@
     </div>
     <div class="card-body">
         {% set presets = auth_status.presets[current_tab] if auth_status.presets is defined and current_tab in auth_status.presets else {} %}
-        <form class="form" action="{{ url_for('administration', tab=current_tab) }}" method="post" enctype="multipart/form-data">
+        <form id="{{ current_tab }}-auth-provider-form" class="form" action="{{ url_for('administration', tab=current_tab) }}" method="post" enctype="multipart/form-data">
             {{ csrf_field() }}
-            <input type="hidden" name="action" value="save_auth_provider">
             <input type="hidden" name="provider" value="{{ current_tab }}">
             <div class="directory-setup-band">
                 <div>
@@ -455,14 +454,14 @@
                 </div>
             </details>
             <div class="actions">
-                <button class="btn primary" type="submit">Save provider</button>
+                <button class="btn primary" type="submit" name="action" value="save_auth_provider">Save provider</button>
             </div>
         </form>
         <form action="{{ url_for('administration', tab=current_tab) }}" method="post" class="inline-form">
             {{ csrf_field() }}
             <input type="hidden" name="provider" value="{{ current_tab }}">
-            <button class="btn" type="submit" name="action" value="scan_auth_provider">Scan directory</button>
-            <button class="btn" type="submit" name="action" value="test_auth_provider">Test connection</button>
+            <button class="btn" type="submit" form="{{ current_tab }}-auth-provider-form" name="action" value="scan_auth_provider">Scan directory</button>
+            <button class="btn" type="submit" form="{{ current_tab }}-auth-provider-form" name="action" value="test_auth_provider">Test connection</button>
             {% if profile.enabled %}
             <button class="btn" type="submit" name="action" value="disable_auth_provider">Disable provider</button>
             {% endif %}
