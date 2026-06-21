@@ -1323,6 +1323,40 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
     assert "icap not ready" in detail
 
 
+def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+
+    class Controller:
+        def reconfigure_squid(self, *, timeout, listener_timeout):
+            assert timeout == pytest.approx(15.0)
+            assert listener_timeout == pytest.approx(10.0)
+            return (
+                True,
+                (
+                    "FATAL: failed to open /var/run/squid.pid: (2) No such file or directory\n"
+                    "Squid reconfigure could not signal a PID file, but the HTTP listener is responding."
+                ),
+            )
+
+    def fail_icap(**_kwargs) -> NoReturn:
+        msg = "policy-only reload should not probe adblock ICAP"
+        raise AssertionError(msg)
+
+    runtime.controller = Controller()
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", fail_icap)
+
+    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=False)
+
+    assert ok is True
+    assert "failed to open /var/run/squid.pid" in detail
+    assert "Squid reconfigured for policy update." in detail
+
+
 def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(
     tmp_path, monkeypatch
 ) -> None:
@@ -1365,6 +1399,63 @@ def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeo
     restored = squid_conf.read_text(encoding="utf-8")
     assert "# good" in restored
     assert "bad-but-parseable" not in restored
+
+
+def test_squid_controller_apply_accepts_missing_pid_when_listener_is_healthy(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    squid_conf.write_text("workers 1\n# old\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[:3] == ["squid", "-k", "parse"]:
+            return SimpleNamespace(returncode=0, stdout="parse ok", stderr="")
+        if args[:3] == ["squid", "-k", "reconfigure"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "FATAL: failed to open /var/run/squid.pid: "
+                    "(2) No such file or directory"
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(tmp_path / "20-icap.conf"))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(tmp_path / "virus_scan.conf"))
+    from services.squid_core import (
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+    controller = SquidController(str(squid_conf), cmd_run=fake_run)
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    monkeypatch.setattr(controller, "_wait_for_http_listener", lambda *, timeout: True)
+    monkeypatch.setattr(
+        controller,
+        "restore_last_known_good_config",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("healthy listener should not trigger rollback"),
+        ),
+    )
+
+    ok, detail = controller.apply_config_text("workers 1\n# new\n")
+
+    assert ok is True
+    assert "failed to open /var/run/squid.pid" in detail
+    assert "HTTP listener is responding" in detail
+    assert "# new" in squid_conf.read_text(encoding="utf-8")
+    assert "# new" in persisted_conf.read_text(encoding="utf-8")
+    assert ["squid", "-k", "reconfigure"] in calls
 
 
 def test_squid_controller_apply_stages_config_with_atomic_writes(

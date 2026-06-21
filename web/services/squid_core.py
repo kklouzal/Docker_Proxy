@@ -942,6 +942,47 @@ class SquidController:
             return True, "\n".join(part for part in detail_parts if part).strip()
         return None
 
+    def _reconfigure_failed_only_for_missing_pid(self, detail: str) -> bool:
+        normalized = str(detail or "").lower()
+        return (
+            "/var/run/squid.pid" in normalized
+            and "failed to open" in normalized
+            and "no such file" in normalized
+        )
+
+    def reconfigure_squid(
+        self,
+        *,
+        timeout: float = 15.0,
+        listener_timeout: float = 20.0,
+    ) -> tuple[bool, str]:
+        proc = self._run(
+            ["squid", "-k", "reconfigure"],
+            capture_output=True,
+            timeout=timeout,
+        )
+        detail = self._decode_completed(proc)
+        if proc.returncode != 0:
+            if self._reconfigure_failed_only_for_missing_pid(
+                detail,
+            ) and self._wait_for_http_listener(timeout=listener_timeout):
+                return True, (
+                    detail
+                    + "\nSquid reconfigure could not signal a PID file, but the HTTP listener is responding."
+                ).strip()
+            return False, detail or "Squid reconfigure failed."
+        if not self._wait_for_http_listener(timeout=listener_timeout):
+            ok_restart, restart_details = self.restart_squid()
+            recovery = (
+                "Squid HTTP listener was unavailable after reconfigure; "
+                + (restart_details or "Squid restart failed.")
+            ).strip()
+            if ok_restart:
+                detail = (detail + "\n" + recovery).strip()
+            else:
+                return False, (detail + "\n" + recovery).strip()
+        return True, detail or "Squid reconfigured."
+
     def restart_squid(self, *, ready_timeout: float = 45.0) -> tuple[bool, str]:
         ready_timeout = max(1.0, float(ready_timeout or 45.0))
         detail_parts: list[str] = []
@@ -1644,12 +1685,11 @@ class SquidController:
                     or "Squid restarted after cache store reinitialization."
                 ).strip()
 
-            reconfigure = self._run(
-                ["squid", "-k", "reconfigure"],
-                capture_output=True,
+            reconfigure_ok, reconfigure_detail = self.reconfigure_squid(
                 timeout=15,
+                listener_timeout=20.0,
             )
-            if reconfigure.returncode != 0:
+            if not reconfigure_ok:
                 if Path(backup_path).exists():
                     Path(backup_path).replace(self.squid_conf_path)
                 self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
@@ -1657,43 +1697,11 @@ class SquidController:
                     virus_scan_config_path,
                     old_virus_scan_config,
                 )
-                failure_detail = (
-                    self._decode_completed(reconfigure) or "Squid reconfigure failed."
-                )
                 _rollback_ok, rollback_detail = self.restore_last_known_good_config(
-                    reason=failure_detail,
+                    reason=reconfigure_detail,
                     fallback_config=current,
                 )
-                return False, rollback_detail or failure_detail
-
-            reconfigure_detail = (
-                self._decode_completed(reconfigure) or "Squid reconfigured."
-            )
-            if not self._wait_for_http_listener(timeout=20.0):
-                ok_restart, restart_details = self.restart_squid()
-                if not ok_restart:
-                    if Path(backup_path).exists():
-                        Path(backup_path).replace(self.squid_conf_path)
-                    self._restore_runtime_file_snapshot(
-                        icap_include_path,
-                        old_icap_include,
-                    )
-                    self._restore_runtime_file_snapshot(
-                        virus_scan_config_path,
-                        old_virus_scan_config,
-                    )
-                    _rollback_ok, rollback_detail = self.restore_last_known_good_config(
-                        reason=restart_details
-                        or "Squid HTTP listener did not recover after reconfigure.",
-                        fallback_config=current,
-                    )
-                    return False, rollback_detail or (
-                        restart_details
-                        or "Squid HTTP listener did not recover after reconfigure."
-                    )
-                reconfigure_detail = (
-                    reconfigure_detail + "\n" + restart_details
-                ).strip()
+                return False, rollback_detail or reconfigure_detail
 
             try:
                 self._persist_good_config(normalized_config)
@@ -1728,38 +1736,9 @@ class SquidController:
 
     def reload_squid(self):
         try:
-            proc = self._run(
-                ["squid", "-k", "reconfigure"],
-                capture_output=True,
-                timeout=15,
-            )
-            stdout = proc.stdout or b""
-            stderr = proc.stderr or b""
-            if proc.returncode != 0:
-                return (
-                    stdout,
-                    stderr
-                    or f"Squid reconfigure exited with status {proc.returncode}.".encode(
-                        "utf-8",
-                        errors="replace",
-                    ),
-                )
-            if stderr:
-                # Squid emits benign parser/runtime warnings on stderr even when
-                # reconfigure succeeds. Preserve those warnings in the detail, but
-                # do not report a failed sync unless the command or listener failed.
-                stdout = (stdout + b"\n" + stderr).strip()
-                stderr = b""
-            if not self._wait_for_http_listener(timeout=20.0):
-                ok_restart, detail = self.restart_squid()
-                recovery = (
-                    "Squid HTTP listener was unavailable after reconfigure; " + detail
-                ).encode("utf-8", errors="replace")
-                if ok_restart:
-                    stdout = (stdout + b"\n" + recovery).strip()
-                else:
-                    stderr = (stderr + b"\n" + recovery).strip()
-            return stdout, stderr
+            ok, detail = self.reconfigure_squid(timeout=15, listener_timeout=20.0)
+            encoded = str(detail or "").encode("utf-8", errors="replace")
+            return (encoded, b"") if ok else (b"", encoded)
         except FileNotFoundError:
             return b"", b"squid binary not found"
         except Exception as exc:

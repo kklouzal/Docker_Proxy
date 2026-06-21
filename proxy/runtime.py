@@ -1138,19 +1138,24 @@ class ProxyRuntime:
         # the correct first-line operation for include/ACL changes because it reloads
         # the active config while keeping the listener stable.
         try:
-            proc = self.controller._run(
-                ["squid", "-k", "reconfigure"],
-                capture_output=True,
-                timeout=15,
-            )
+            reconfigure_squid = getattr(self.controller, "reconfigure_squid", None)
+            if callable(reconfigure_squid):
+                ok, detail = reconfigure_squid(timeout=15, listener_timeout=10.0)
+            else:
+                proc = self.controller._run(
+                    ["squid", "-k", "reconfigure"],
+                    capture_output=True,
+                    timeout=15,
+                )
+                detail = _decode_completed(proc).strip()
+                ok = int(getattr(proc, "returncode", 1) or 0) == 0
         except Exception as exc:
             return False, public_error_message(
                 exc,
                 default="Squid reconfigure failed for policy update.",
             )
-        detail = _decode_completed(proc).strip()
-        ok = int(getattr(proc, "returncode", 1) or 0) == 0
-        if ok:
+        detail = str(detail or "").strip()
+        if ok and not callable(getattr(self.controller, "reconfigure_squid", None)):
             try:
                 ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
             except Exception:
