@@ -3599,10 +3599,20 @@ def operations_status():
 def logs_status():
     proxy_id = get_proxy_id()
     requested_log = request.args.get("log")
+    payload, logs, _proxy_error = _get_selected_log_payload(proxy_id, requested_log)
+    return render_template("logs.html", log_payload=payload, logs=logs)
+
+
+def _get_selected_log_payload(
+    proxy_id: str,
+    requested_log: str | None,
+) -> tuple[dict[str, Any], list[Any], bool]:
     selected_log = (requested_log or "access").strip() or "access"
+    proxy_error = False
     try:
         payload = get_proxy_client().get_logs(proxy_id, log_key=selected_log)
     except ProxyClientError as exc:
+        proxy_error = True
         payload = {
             "ok": False,
             "status": "unavailable",
@@ -3633,27 +3643,17 @@ def logs_status():
                 )
             except ProxyClientError:
                 pass
-    return render_template("logs.html", log_payload=payload, logs=logs)
+    return payload, logs, proxy_error
 
 
 @app.route("/api/logs", methods=["GET"])
 def api_logs_status():
     proxy_id = get_proxy_id()
-    selected_log = (request.args.get("log") or "access").strip() or "access"
-    try:
-        payload = get_proxy_client().get_logs(proxy_id, log_key=selected_log)
-        return jsonify(payload), proxy_log_status_code(payload)
-    except ProxyClientError as exc:
-        return jsonify(
-            {
-                "ok": False,
-                "status": "unavailable",
-                "detail": str(exc),
-                "key": selected_log,
-                "content": "",
-                "logs": [],
-            },
-        ), 503
+    requested_log = request.args.get("log")
+    payload, _logs, proxy_error = _get_selected_log_payload(proxy_id, requested_log)
+    if proxy_error:
+        return jsonify(payload), 503
+    return jsonify(payload), proxy_log_status_code(payload)
 
 
 @app.route("/api/operations", methods=["GET"])

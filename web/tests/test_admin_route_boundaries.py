@@ -126,6 +126,54 @@ class BadTimestampProxyClient(RecordingProxyClient):
         return payload
 
 
+class RuntimeLogInventoryProxyClient(RecordingProxyClient):
+    def get_logs(
+        self,
+        proxy_id: object,
+        *,
+        log_key: object | None = None,
+        timeout_seconds: float | None = None,
+        **__,
+    ) -> dict[str, object]:
+        key = str(log_key or "access")
+        self.log_calls.append((str(proxy_id), key))
+        logs = [
+            {
+                "key": "runtime",
+                "label": "Runtime log",
+                "available": True,
+                "path": "/var/log/proxy/runtime.log",
+            },
+            {
+                "key": "events",
+                "label": "Event log",
+                "available": True,
+                "path": "/var/log/proxy/events.log",
+            },
+        ]
+        if key not in {"runtime", "events"}:
+            return {
+                "ok": False,
+                "status": "not_found",
+                "detail": "Log file is not allowlisted.",
+                "key": key,
+                "content": "",
+                "logs": logs,
+            }
+        return {
+            "ok": True,
+            "status": "ok",
+            "detail": "Loaded current log file tail.",
+            "key": key,
+            "label": "Runtime log" if key == "runtime" else "Event log",
+            "content": f"{proxy_id}:{key}:line\n",
+            "size_bytes": 21,
+            "truncated": False,
+            "max_bytes": 256 * 1024,
+            "logs": logs,
+        }
+
+
 class RuntimeDriftSequenceProxyClient(RecordingProxyClient):
     def __init__(self, state_errors: list[str]) -> None:
         super().__init__()
@@ -494,6 +542,39 @@ def test_logs_api_uses_active_proxy_and_rejects_non_allowlisted_log(
     assert response.status_code == 404
     assert response.get_json()["status"] == "not_found"
     assert proxy_client.log_calls[-1] == ("edge-2", "../../etc/passwd")
+
+
+def test_logs_api_without_explicit_log_falls_back_to_first_advertised_runtime_log(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = RuntimeLogInventoryProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/logs")
+
+    assert response.status_code == 200
+    assert response.get_json()["key"] == "runtime"
+    assert response.get_json()["content"] == "default:runtime:line\n"
+    assert proxy_client.log_calls == [("default", "access"), ("default", "runtime")]
+
+
+def test_logs_api_preserves_explicit_rejected_log_when_default_missing_from_inventory(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = RuntimeLogInventoryProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/logs?log=../../etc/passwd")
+
+    assert response.status_code == 404
+    assert response.get_json()["status"] == "not_found"
+    assert response.get_json()["key"] == "../../etc/passwd"
+    assert response.get_json()["content"] == ""
+    assert proxy_client.log_calls == [("default", "../../etc/passwd")]
 
 
 def test_logs_api_treats_missing_allowlisted_log_as_graceful_empty_payload(
