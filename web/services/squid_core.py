@@ -652,12 +652,31 @@ class SquidController:
         except OSError:
             return False
 
+    def _http_listener_responds(self, port: int) -> bool:
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", int(port)),
+                timeout=0.5,
+            ) as sock:
+                sock.settimeout(1.0)
+                sock.sendall(
+                    b"GET / HTTP/1.0\r\n"
+                    b"Host: 127.0.0.1\r\n"
+                    b"User-Agent: squid-flask-proxy-health\r\n"
+                    b"Connection: close\r\n\r\n",
+                )
+                return bool(sock.recv(1))
+        except OSError:
+            return False
+
     def _wait_for_http_listener(self, *, timeout: float = 20.0) -> bool:
         pending = set(self._http_listener_ports())
         deadline = time.time() + max(0.5, timeout)
         while pending and time.time() < deadline:
             for port in tuple(pending):
-                if self._tcp_listener_accepts(port):
+                if self._tcp_listener_accepts(port) and self._http_listener_responds(
+                    port,
+                ):
                     pending.discard(port)
             if pending:
                 time.sleep(0.5)
@@ -902,7 +921,7 @@ class SquidController:
             timeout=timeout,
         ):
             detail_parts.append(
-                "Squid was already restarted by supervisor and its HTTP listener is accepting connections.",
+                "Squid was already restarted by supervisor and its HTTP listener is responding.",
             )
             return True, "\n".join(part for part in detail_parts if part).strip()
         return None
@@ -1009,7 +1028,7 @@ class SquidController:
                 if "already running" in start_detail_lower:
                     if self._wait_for_http_listener(timeout=15.0):
                         detail_parts.append(
-                            "Squid was already running and its HTTP listener is accepting connections.",
+                            "Squid was already running and its HTTP listener is responding.",
                         )
                         return True, "\n".join(
                             part for part in detail_parts if part
@@ -1051,7 +1070,7 @@ class SquidController:
                             timeout=ready_timeout,
                         ):
                             detail_parts.append(
-                                "Squid HTTP listener is accepting connections.",
+                                "Squid HTTP listener is responding.",
                             )
                             return True, "\n".join(
                                 part for part in detail_parts if part
@@ -1062,13 +1081,13 @@ class SquidController:
                         )
                 return False, "\n".join(detail_parts).strip()
             if self._wait_for_http_listener(timeout=ready_timeout):
-                detail_parts.append("Squid HTTP listener is accepting connections.")
+                detail_parts.append("Squid HTTP listener is responding.")
                 return True, "\n".join(part for part in detail_parts if part).strip()
             return False, "\n".join(
                 part
                 for part in [
                     *detail_parts,
-                    "Squid process started but the HTTP listener is not accepting connections.",
+                    "Squid process started but the HTTP listener is not responding.",
                 ]
                 if part
             ).strip()
