@@ -105,7 +105,7 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
         "_wait_for_squid_pidfile_stale_or_absent",
         lambda *, timeout: True,
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
         "restart_squid",
@@ -170,7 +170,7 @@ def test_clear_disk_cache_clears_all_configured_cache_dirs(
         "_wait_for_squid_pidfile_stale_or_absent",
         lambda *, timeout: True,
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
         "restart_squid",
@@ -244,7 +244,8 @@ def test_clear_disk_cache_cleans_live_pid_before_prepare(
     monkeypatch.setattr(
         controller,
         "_remove_stale_squid_pidfile",
-        lambda: removed.append("pidfile") or "Removed stale Squid PID file /var/run/squid.pid.",
+        lambda **_kwargs: removed.append("pidfile")
+        or "Removed stale Squid PID file /var/run/squid.pid.",
     )
     monkeypatch.setattr(
         controller,
@@ -312,7 +313,7 @@ def test_clear_disk_cache_fails_before_prepare_when_live_pid_persists(
         "_wait_for_squid_pidfile_stale_or_absent",
         lambda *, timeout: stale_checks.append(float(timeout)) or False,
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
         "restart_squid",
@@ -384,7 +385,7 @@ def test_clear_disk_cache_fails_when_prepare_listener_stays_bound(
         "_wait_for_squid_pidfile_stale_or_absent",
         lambda *, timeout: True,
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
         "restart_squid",
@@ -456,7 +457,7 @@ def test_clear_disk_cache_retries_supervisor_stop_before_prepare(
         "_wait_for_squid_pidfile_stale_or_absent",
         lambda *, timeout: True,
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
         "_terminate_orphaned_http_listener_processes",
@@ -564,7 +565,7 @@ def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(
         "_wait_for_squid_pidfile_stale_or_absent",
         lambda *, timeout: True,
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
         "restart_squid",
@@ -618,7 +619,7 @@ def test_clear_disk_cache_fails_when_squid_z_raises(
         "_wait_for_squid_pidfile_stale_or_absent",
         lambda *, timeout: True,
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
         "restart_squid",
@@ -688,6 +689,111 @@ def test_clear_disk_cache_fails_fast_when_listener_never_releases(
     assert "did not release before cache clear" in detail
 
 
+def test_cleanup_after_cache_prepare_removes_live_pid_without_listener(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+    stale_checks: list[float] = []
+    remove_kwargs: list[dict[str, bool]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args == ["squid", "-k", "shutdown"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=b"squid shutdown requested\n",
+                stderr=b"",
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    def wait_for_stale(*, timeout):
+        stale_checks.append(float(timeout))
+        return len(stale_checks) > 2
+
+    def remove_stale(**kwargs):
+        remove_kwargs.append(dict(kwargs))
+        return "Removed stale Squid PID file /var/run/squid.pid."
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        wait_for_stale,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", remove_stale)
+
+    details: list[str] = []
+    ok = controller._cleanup_after_cache_prepare(details)
+
+    assert ok is True
+    assert calls == [["squid", "-k", "shutdown"]]
+    assert stale_checks == [10.0, 10.0, 1.0]
+    assert remove_kwargs == [{"allow_live_without_listener": True}]
+    assert any("Removed stale Squid PID file" in detail for detail in details)
+
+
+def test_restart_squid_removes_live_pidfile_when_listener_is_absent(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+    remove_kwargs: list[dict[str, bool]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[-2:] == ["status", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid STOPPED\n", stderr=b"")
+        if args[-2:] == ["start", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: started\n", stderr=b"")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    def remove_stale(**kwargs):
+        remove_kwargs.append(dict(kwargs))
+        return "Removed stale Squid PID file /var/run/squid.pid."
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", remove_stale)
+
+    ok, detail = controller.restart_squid()
+
+    assert ok is True
+    assert remove_kwargs == [{"allow_live_without_listener": True}]
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "squid"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
+    ]
+    assert "Removed stale Squid PID file" in detail
+    assert "Squid HTTP listener is accepting connections" in detail
+
+
 def test_restart_squid_accepts_supervisor_auto_restart_race(monkeypatch) -> None:
     from services import squidctl  # type: ignore
 
@@ -712,7 +818,7 @@ def test_restart_squid_accepts_supervisor_auto_restart_race(monkeypatch) -> None
     monkeypatch.setattr(
         controller, "_wait_for_squid_pidfile_stale_or_absent", lambda *, timeout: False
     )
-    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda: "")
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
 
     ok, detail = controller.restart_squid()
 

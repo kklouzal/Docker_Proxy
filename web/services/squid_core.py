@@ -804,7 +804,20 @@ class SquidController:
                 time.sleep(0.2)
         return "\n".join(part for part in detail_parts if part)
 
-    def _remove_stale_squid_pidfile(self) -> str:
+    def _squid_pid_has_http_listener(self, pid: int) -> bool:
+        try:
+            inodes = self._listening_socket_inodes_for_ports(
+                self._http_listener_ports(),
+            )
+            return pid in self._pids_with_socket_inodes(inodes)
+        except Exception:
+            return False
+
+    def _remove_stale_squid_pidfile(
+        self,
+        *,
+        allow_live_without_listener: bool = False,
+    ) -> str:
         pid_path = "/var/run/squid.pid"
         try:
             if not os.path.exists(pid_path):  # noqa: PTH110
@@ -819,7 +832,10 @@ class SquidController:
                         .strip()
                         .lower()
                     )
-                    if "squid" in comm:
+                    if "squid" in comm and (
+                        not allow_live_without_listener
+                        or self._squid_pid_has_http_listener(pid)
+                    ):
                         return ""
                 except Exception:
                     return ""
@@ -935,7 +951,9 @@ class SquidController:
                     if part
                 ).strip()
 
-        stale_pid_detail = self._remove_stale_squid_pidfile()
+        stale_pid_detail = self._remove_stale_squid_pidfile(
+            allow_live_without_listener=True,
+        )
         if stale_pid_detail:
             detail_parts.append(stale_pid_detail)
 
@@ -966,7 +984,9 @@ class SquidController:
                 )
             self._wait_for_http_listener_absent(timeout=20.0)
             self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
-            retry_stale = self._remove_stale_squid_pidfile()
+            retry_stale = self._remove_stale_squid_pidfile(
+                allow_live_without_listener=True,
+            )
             if retry_stale:
                 detail_parts.append(retry_stale)
 
@@ -1006,7 +1026,9 @@ class SquidController:
                         )
                         self._wait_for_http_listener_absent(timeout=20.0)
                         self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
-                        retry_stale = self._remove_stale_squid_pidfile()
+                        retry_stale = self._remove_stale_squid_pidfile(
+                            allow_live_without_listener=True,
+                        )
                         if retry_stale:
                             detail_parts.append(retry_stale)
                         retry = self._run(
@@ -1164,7 +1186,9 @@ class SquidController:
         pidfile_stale = self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
         listener_absent = self._wait_for_http_listener_absent(timeout=1.0)
         if pidfile_stale and listener_absent:
-            stale_pid_detail = self._remove_stale_squid_pidfile()
+            stale_pid_detail = self._remove_stale_squid_pidfile(
+                allow_live_without_listener=True,
+            )
             if stale_pid_detail:
                 detail_parts.append(stale_pid_detail)
             return True
@@ -1206,7 +1230,9 @@ class SquidController:
                 detail_parts.append(f"supervisor stop retry failed: {exc}")
             listener_absent = self._wait_for_http_listener_absent(timeout=20.0)
         self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0)
-        stale_pid_detail = self._remove_stale_squid_pidfile()
+        stale_pid_detail = self._remove_stale_squid_pidfile(
+            allow_live_without_listener=listener_absent,
+        )
         if stale_pid_detail:
             detail_parts.append(stale_pid_detail)
         if not listener_absent:
