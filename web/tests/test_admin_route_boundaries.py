@@ -398,30 +398,67 @@ def test_index_reuses_short_lived_proxy_health_cache(monkeypatch, tmp_path) -> N
     assert proxy_client.health_calls == [("default", 1.5)]
 
 
-def test_cached_proxy_health_preserves_refresh_failure_detail(
+def test_cached_proxy_health_returns_fresh_cache_before_refresh(
     monkeypatch, tmp_path
 ) -> None:
     proxy_client = FailAfterCachedHealthProxyClient()
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
     proxy_client.admin_app = loaded.module
+    current_time = 100.0
+    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
 
     fresh = loaded.module._cached_proxy_health(
         "default",
         timeout_seconds=1.5,
-        ttl_seconds=0,
+        ttl_seconds=10.0,
     )
     assert fresh["detail"] == "cached full-health detail"
 
     proxy_client.fail_health = True
-    stale = loaded.module._cached_proxy_health(
+    current_time = 105.0
+    cached = loaded.module._cached_proxy_health(
         "default",
         timeout_seconds=1.5,
-        ttl_seconds=0,
+        ttl_seconds=10.0,
     )
 
-    assert stale["_stale"] is True
-    assert stale["detail"] == "cached full-health detail"
-    assert stale["health_cache_detail"] == "management request timed out"
+    assert cached["detail"] == "cached full-health detail"
+    assert cached.get("_stale") is None
+    assert "health_cache_detail" not in cached
+    assert proxy_client.health_calls == [("default", 1.5)]
+
+
+def test_cached_proxy_health_does_not_reuse_expired_refresh_failure(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = FailAfterCachedHealthProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    proxy_client.admin_app = loaded.module
+    current_time = 100.0
+    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
+
+    fresh = loaded.module._cached_proxy_health(
+        "default",
+        timeout_seconds=1.5,
+        ttl_seconds=10.0,
+    )
+    assert fresh["detail"] == "cached full-health detail"
+
+    proxy_client.fail_health = True
+    current_time = 111.0
+    unavailable = loaded.module._cached_proxy_health(
+        "default",
+        timeout_seconds=1.5,
+        ttl_seconds=10.0,
+    )
+
+    assert unavailable["_unavailable_cached"] is True
+    assert unavailable.get("_stale") is None
+    assert unavailable["ok"] is False
+    assert unavailable["proxy_status"] == "management request timed out"
+    cache_key = ("default", 1.5, False)
+    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][0] == pytest.approx(111.0)
+    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][1]["_unavailable_cached"] is True
 
 
 def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> None:
@@ -1371,29 +1408,52 @@ def test_clamav_page_uses_dedicated_clamav_health_endpoint(
     assert proxy_client.health_calls == [("clamav:default", 5.0)]
 
 
-def test_clamav_remote_health_preserves_refresh_failure_detail(
+def test_clamav_remote_health_returns_fresh_cache_before_refresh(
     monkeypatch, tmp_path
 ) -> None:
     proxy_client = FailAfterCachedHealthProxyClient()
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
     proxy_client.admin_app = loaded.module
+    current_time = 100.0
+    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
 
     fresh = loaded.module._clamav_remote_health("default")
     assert fresh["detail"] == "cached clamav detail"
 
-    cache_key = ("default", "clamav", 5.0)
-    cached_at, payload = loaded.module._PROXY_HEALTH_CACHE[cache_key]
-    loaded.module._PROXY_HEALTH_CACHE[cache_key] = (cached_at - 60.0, payload)
     proxy_client.fail_clamav = True
+    current_time = 105.0
 
-    stale = loaded.module._clamav_remote_health("default")
+    cached = loaded.module._clamav_remote_health("default")
 
-    assert stale["_stale"] is True
-    assert stale["detail"] == "cached clamav detail"
-    assert stale["health_cache_detail"] == "ClamAV endpoint timed out"
-    assert loaded.module.build_remote_clamav_view(stale)["health_source"] == (
-        "ClamAV lightweight ok. (ClamAV endpoint timed out)"
-    )
+    assert cached["detail"] == "cached clamav detail"
+    assert cached.get("_stale") is None
+    assert "health_cache_detail" not in cached
+    assert proxy_client.health_calls == [("clamav:default", 5.0)]
+
+
+def test_clamav_remote_health_does_not_reuse_expired_refresh_failure(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = FailAfterCachedHealthProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    proxy_client.admin_app = loaded.module
+    current_time = 100.0
+    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
+
+    fresh = loaded.module._clamav_remote_health("default")
+    assert fresh["detail"] == "cached clamav detail"
+
+    proxy_client.fail_clamav = True
+    current_time = 111.0
+    unavailable = loaded.module._clamav_remote_health("default")
+
+    assert unavailable["_unavailable_cached"] is True
+    assert unavailable.get("_stale") is None
+    assert unavailable["ok"] is False
+    assert unavailable["proxy_status"] == "ClamAV endpoint timed out"
+    cache_key = ("default", "clamav", 5.0)
+    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][0] == pytest.approx(111.0)
+    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][1]["_unavailable_cached"] is True
 
 
 def test_fleet_observability_summary_is_not_repeated_per_proxy(

@@ -221,6 +221,22 @@ _PROXY_OBSERVABILITY_TTL_SECONDS = _env_float(
     minimum=0.0,
     maximum=300.0,
 )
+
+
+def _fresh_cached_health_payload(
+    cached: tuple[float, dict[str, Any]] | None,
+    *,
+    now: float,
+    ttl_seconds: float,
+) -> dict[str, Any] | None:
+    if cached is None:
+        return None
+    cached_at, payload = cached
+    if now - cached_at <= max(0.0, float(ttl_seconds)):
+        return dict(payload)
+    return None
+
+
 _OBSERVABILITY_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, int]]] = {}
 _OBSERVABILITY_RESULT_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 _OBSERVABILITY_RESULT_CACHE_LIMIT = 24
@@ -552,10 +568,13 @@ def _cached_proxy_health(
     key = (str(proxy_id or ""), float(timeout_seconds), bool(full))
     now = time.monotonic()
     cached = _PROXY_HEALTH_CACHE.get(key)
-    if cached is not None:
-        cached_at, payload = cached
-        if now - cached_at <= max(0.0, float(ttl_seconds)):
-            return dict(payload)
+    cached_payload = _fresh_cached_health_payload(
+        cached,
+        now=now,
+        ttl_seconds=ttl_seconds,
+    )
+    if cached_payload is not None:
+        return cached_payload
     try:
         payload = get_proxy_client().get_health(
             proxy_id,
@@ -563,8 +582,13 @@ def _cached_proxy_health(
             full=full,
         )
     except ProxyClientError as exc:
-        if cached is not None:
-            stale_payload = dict(cached[1])
+        cached_payload = _fresh_cached_health_payload(
+            cached,
+            now=time.monotonic(),
+            ttl_seconds=ttl_seconds,
+        )
+        if cached_payload is not None:
+            stale_payload = dict(cached_payload)
             stale_payload["health_cache_detail"] = str(
                 exc or "using recent cached health after refresh failure",
             )
@@ -5611,10 +5635,13 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
     key = (str(proxy_id or ""), "clamav", float(timeout_seconds))
     now = time.monotonic()
     cached = _PROXY_HEALTH_CACHE.get(key)
-    if cached is not None:
-        cached_at, payload = cached
-        if now - cached_at <= max(0.0, float(_PROXY_HEALTH_TTL_SECONDS)):
-            return dict(payload)
+    cached_payload = _fresh_cached_health_payload(
+        cached,
+        now=now,
+        ttl_seconds=_PROXY_HEALTH_TTL_SECONDS,
+    )
+    if cached_payload is not None:
+        return cached_payload
     try:
         payload = get_proxy_client().get_clamav_health(
             proxy_id,
@@ -5623,8 +5650,13 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
     except AttributeError:
         return _cached_proxy_health(proxy_id, timeout_seconds=timeout_seconds)
     except ProxyClientError as exc:
-        if cached is not None:
-            stale_payload = dict(cached[1])
+        cached_payload = _fresh_cached_health_payload(
+            cached,
+            now=time.monotonic(),
+            ttl_seconds=_PROXY_HEALTH_TTL_SECONDS,
+        )
+        if cached_payload is not None:
+            stale_payload = dict(cached_payload)
             stale_payload["health_cache_detail"] = str(
                 exc or "using recent cached ClamAV health after refresh failure",
             )
