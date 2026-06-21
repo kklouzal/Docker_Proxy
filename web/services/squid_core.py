@@ -1259,6 +1259,8 @@ class SquidController:
                 "Squid PID file still points to a live process after cache "
                 "preparation cleanup."
             ),
+            terminate_listener_orphans=True,
+            retry_supervisor_stop=True,
         )
 
     def _cleanup_before_cache_prepare(self, detail_parts: list[str]) -> bool:
