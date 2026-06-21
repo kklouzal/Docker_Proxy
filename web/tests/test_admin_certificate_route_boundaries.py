@@ -177,6 +177,7 @@ def test_certificates_page_shows_admin_ui_https_status(monkeypatch, tmp_path) ->
         enabled=True,
         certfile="/etc/squid/ssl/certs/ca.crt",
         keyfile="/etc/squid/ssl/certs/ca.key",
+        san_tokens="proxyadmin.ad.kklouzal.com\n192.168.1.10",
         updated_by="admin",
         updated_ts=1,
     )
@@ -193,6 +194,8 @@ def test_certificates_page_shows_admin_ui_https_status(monkeypatch, tmp_path) ->
     assert "restart pending" in html
     assert str(runtime_certfile) in html
     assert "ADMIN_UI_HTTPS_ENABLED=1" in html
+    assert "proxyadmin.ad.kklouzal.com" in html
+    assert "192.168.1.10" in html
     assert "Use custom container paths" not in html
     assert 'name="certfile"' not in html
     assert 'name="keyfile"' not in html
@@ -209,6 +212,7 @@ def test_certificates_page_reports_https_fallback_when_material_missing(
         enabled=True,
         certfile="/etc/squid/ssl/certs/ca.crt",
         keyfile="/etc/squid/ssl/certs/ca.key",
+        san_tokens="",
         updated_by="admin",
         updated_ts=1,
     )
@@ -226,6 +230,32 @@ def test_certificates_page_reports_https_fallback_when_material_missing(
     assert "leaf missing" in html
     assert "/etc/squid/ssl/certs/admin-ui.crt" in html
     assert "/etc/squid/ssl/certs/admin-ui.key" in html
+
+
+def test_certificates_page_converges_stale_ca_paths_to_leaf_paths(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="/etc/squid/ssl/certs/ca.crt",
+        keyfile="/etc/squid/ssl/certs/ca.key",
+        san_tokens="proxyadmin.ad.kklouzal.com",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    assert bundles.admin_ui_https_settings.certfile == certfile
+    assert bundles.admin_ui_https_settings.keyfile == keyfile
+    assert bundles.admin_ui_https_settings.san_tokens == "proxyadmin.ad.kklouzal.com"
 
 
 def test_admin_ui_https_preference_uses_active_bundle_paths(
@@ -277,6 +307,118 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
             "-----BEGIN PRIVATE KEY-----",
         )
     )
+    leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
+    sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "localhost" in sans.get_values_for_type(x509.DNSName)
+
+
+def test_admin_ui_https_preference_persists_configured_sans_in_leaf(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, _keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (True, "restart requested"),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+            "san_tokens": "proxyadmin.ad.kklouzal.com, 192.168.1.10",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert bundles.admin_ui_https_settings.san_tokens == (
+        "proxyadmin.ad.kklouzal.com\n192.168.1.10"
+    )
+    leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
+    sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "proxyadmin.ad.kklouzal.com" in sans.get_values_for_type(x509.DNSName)
+    assert "192.168.1.10" in [
+        str(ip) for ip in sans.get_values_for_type(x509.IPAddress)
+    ]
+
+
+def test_admin_ui_https_preference_rejects_invalid_configured_san(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+            "san_tokens": "https://proxyadmin.ad.kklouzal.com/certs",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "DNS names or IP addresses" in _location_params(response)["msg"][0]
+    assert bundles.admin_ui_https_settings.enabled is False
+
+
+def test_regenerate_admin_ui_https_certificate_preserves_ca_and_uses_saved_sans(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="",
+        keyfile="",
+        san_tokens="proxyadmin.ad.kklouzal.com\n192.168.1.10",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    ca_cert = tmp_path / "ca.crt"
+    ca_key = tmp_path / "ca.key"
+    ca_cert.write_text(bundles.bundle.cert_pem, encoding="utf-8")
+    ca_key.write_text(bundles.bundle.key_pem, encoding="utf-8")
+    ca_cert_before = ca_cert.read_text(encoding="utf-8")
+    ca_key_before = ca_key.read_text(encoding="utf-8")
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https/regenerate",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["1"]
+    assert Path(certfile).is_file()
+    assert Path(keyfile).is_file()
+    assert ca_cert.read_text(encoding="utf-8") == ca_cert_before
+    assert ca_key.read_text(encoding="utf-8") == ca_key_before
+    assert bundles.admin_ui_https_settings.certfile == certfile
+    assert bundles.admin_ui_https_settings.keyfile == keyfile
+    leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
+    sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "proxyadmin.ad.kklouzal.com" in sans.get_values_for_type(x509.DNSName)
+    assert "192.168.1.10" in [
+        str(ip) for ip in sans.get_values_for_type(x509.IPAddress)
+    ]
 
 
 def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(
@@ -362,6 +504,7 @@ def test_admin_ui_https_preference_treats_hidden_fallback_only_as_disabled(
         enabled=True,
         certfile="/etc/squid/ssl/certs/ca.crt",
         keyfile="/etc/squid/ssl/certs/ca.key",
+        san_tokens="",
         updated_by="admin",
         updated_ts=1,
     )

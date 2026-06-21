@@ -7,6 +7,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import secrets
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import unquote, urlparse, urlsplit
 
@@ -47,6 +49,7 @@ from services.certificate_bundles import (
 from services.certificate_core import (
     materialize_admin_ui_server_certificate,
     normalize_admin_ui_certificate_sans,
+    sanitize_admin_ui_certificate_san_token,
     validate_tls_material_paths,
 )
 from services.clamav_config_forms import (
@@ -2690,11 +2693,83 @@ def _admin_ui_https_request_san_tokens() -> tuple[str, ...]:
     return tuple(tokens)
 
 
-def _materialize_admin_ui_https_leaf(bundle: Any):
+def _admin_ui_https_configured_san_tokens(value: object) -> tuple[str, ...]:
+    raw_tokens = [
+        token.strip()
+        for token in re.split(r"[\n,]+", str(value or ""))
+        if token.strip()
+    ]
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in raw_tokens:
+        clean = sanitize_admin_ui_certificate_san_token(token)
+        if not clean:
+            msg = (
+                "Admin UI HTTPS SAN entries must be DNS names or IP addresses "
+                "without paths, credentials, or wildcards."
+            )
+            raise ValueError(msg)
+        normalized = normalize_admin_ui_certificate_sans([clean])
+        key = clean.lower()
+        if key not in normalized:
+            msg = (
+                "Admin UI HTTPS SAN entries must be DNS names or IP addresses "
+                "without paths, credentials, or wildcards."
+            )
+            raise ValueError(msg)
+        if key not in seen:
+            seen.add(key)
+            tokens.append(clean)
+    return tuple(tokens)
+
+
+def _admin_ui_https_format_san_tokens(tokens: Iterable[object]) -> str:
+    return "\n".join(str(token).strip() for token in tokens if str(token).strip())
+
+
+def _admin_ui_https_saved_san_tokens(settings: Any | None) -> tuple[str, ...]:
+    return _admin_ui_https_configured_san_tokens(getattr(settings, "san_tokens", ""))
+
+
+def _admin_ui_https_leaf_san_tokens(settings: Any | None = None) -> tuple[str, ...]:
+    saved_tokens = _admin_ui_https_saved_san_tokens(settings)
+    return (*saved_tokens, *_admin_ui_https_request_san_tokens())
+
+
+def _admin_ui_https_setting_uses_default_leaf(settings: Any | None) -> bool:
+    if settings is None or not bool(getattr(settings, "enabled", False)):
+        return True
+    certfile = str(getattr(settings, "certfile", "") or "").strip()
+    keyfile = str(getattr(settings, "keyfile", "") or "").strip()
+    return certfile == ADMIN_UI_SSL_CERTFILE and keyfile == ADMIN_UI_SSL_KEYFILE
+
+
+def _admin_ui_https_converge_leaf_settings(settings: Any | None) -> Any | None:
+    if settings is None or _admin_ui_https_setting_uses_default_leaf(settings):
+        return settings
+    try:
+        return get_certificate_bundles().set_admin_ui_https_settings(
+            enabled=bool(getattr(settings, "enabled", False)),
+            certfile=ADMIN_UI_SSL_CERTFILE if getattr(settings, "enabled", False) else "",
+            keyfile=ADMIN_UI_SSL_KEYFILE if getattr(settings, "enabled", False) else "",
+            san_tokens=getattr(settings, "san_tokens", ""),
+            updated_by=getattr(settings, "updated_by", ""),
+        )
+    except Exception:
+        app.logger.exception("Failed to converge Admin UI HTTPS leaf paths")
+        return settings
+
+
+def _materialize_admin_ui_https_leaf(bundle: Any, settings: Any | None = None):
+    if settings is None:
+        try:
+            settings = get_certificate_bundles().get_admin_ui_https_settings()
+        except Exception:
+            settings = None
     return materialize_admin_ui_server_certificate(
         ADMIN_UI_CA_DIR,
         bundle,
-        san_tokens=_admin_ui_https_request_san_tokens(),
+        san_tokens=_admin_ui_https_leaf_san_tokens(settings),
     )
 
 
@@ -2724,7 +2799,9 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         "env" if os.environ.get("ADMIN_UI_HTTPS_ENABLED") is not None else ""
     )
     try:
-        desired = get_certificate_bundles().get_admin_ui_https_settings()
+        desired = _admin_ui_https_converge_leaf_settings(
+            get_certificate_bundles().get_admin_ui_https_settings()
+        )
         desired_error = ""
     except Exception as exc:
         app.logger.exception("Failed to load Admin UI HTTPS settings")
@@ -2753,8 +2830,9 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         else None
     )
     default_material = _admin_ui_https_default_material_status()
+    saved_san_tokens = _admin_ui_https_saved_san_tokens(desired)
     admin_ui_sans = normalize_admin_ui_certificate_sans(
-        _admin_ui_https_request_san_tokens()
+        _admin_ui_https_leaf_san_tokens(desired)
     )
     return {
         "runtime_enabled": runtime_enabled,
@@ -2790,6 +2868,8 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         "desired_material_detail": desired_material.detail if desired_material else "",
         "desired_updated_by": getattr(desired, "updated_by", "") if desired else "",
         "desired_updated_ts": getattr(desired, "updated_ts", 0) if desired else 0,
+        "configured_san_tokens": _admin_ui_https_format_san_tokens(saved_san_tokens),
+        "configured_sans": saved_san_tokens,
         "desired_error": desired_error,
         "pending_restart": pending_restart,
         "runtime_missing_material": bool(runtime_source == "db-missing-material"),
@@ -6500,6 +6580,12 @@ def upload_certificate_pfx():
 @app.route("/certs/admin-ui-https", methods=["POST"])
 def update_admin_ui_https():
     enabled = "1" in request.form.getlist("enabled")
+    try:
+        configured_san_tokens = _admin_ui_https_configured_san_tokens(
+            request.form.get("san_tokens", ""),
+        )
+    except ValueError as exc:
+        return _redirect_with_message("certs", ok=False, msg=str(exc))
     bundle = get_certificate_bundles().get_active_bundle()
     if enabled and bundle is None:
         return _redirect_with_message(
@@ -6510,7 +6596,10 @@ def update_admin_ui_https():
     material = None
     if enabled:
         try:
-            material = _materialize_admin_ui_https_leaf(bundle)
+            material = _materialize_admin_ui_https_leaf(
+                bundle,
+                SimpleNamespace(san_tokens=_admin_ui_https_format_san_tokens(configured_san_tokens)),
+            )
         except Exception as exc:
             return _redirect_with_message(
                 "certs",
@@ -6545,6 +6634,7 @@ def update_admin_ui_https():
             enabled=enabled,
             certfile=certfile,
             keyfile=keyfile,
+            san_tokens=_admin_ui_https_format_san_tokens(configured_san_tokens),
             updated_by=str(session.get("user") or ""),
         )
         restart_ok, restart_detail = _restart_admin_ui_web_process()
@@ -6573,6 +6663,47 @@ def update_admin_ui_https():
             default="Failed to save Admin UI HTTPS settings.",
         )
         _record_audit_event("admin_ui_https_settings_save", ok=False, detail=detail)
+        return _redirect_with_message("certs", ok=False, msg=detail)
+
+
+@app.route("/certs/admin-ui-https/regenerate", methods=["POST"])
+def regenerate_admin_ui_https_certificate():
+    try:
+        settings = _admin_ui_https_converge_leaf_settings(
+            get_certificate_bundles().get_admin_ui_https_settings()
+        )
+        bundle = get_certificate_bundles().get_active_bundle()
+        if bundle is None:
+            return _redirect_with_message(
+                "certs",
+                ok=False,
+                msg="Generate or upload an SSL inspection CA bundle before regenerating the Admin UI HTTPS certificate.",
+            )
+        material = _materialize_admin_ui_https_leaf(bundle, settings)
+        get_certificate_bundles().set_admin_ui_https_settings(
+            enabled=bool(getattr(settings, "enabled", False)),
+            certfile=material.certfile,
+            keyfile=material.keyfile,
+            san_tokens=getattr(settings, "san_tokens", ""),
+            updated_by=str(session.get("user") or ""),
+        )
+        detail = (
+            "Regenerated Admin UI HTTPS certificate without changing the active CA. "
+            f"SANs: {', '.join(material.sans)}"
+        )
+        _record_audit_event("admin_ui_https_certificate_regenerate", ok=True, detail=detail)
+        return _redirect_with_message("certs", ok=True, msg=detail)
+    except Exception as exc:
+        app.logger.exception("Failed to regenerate Admin UI HTTPS certificate")
+        detail = public_error_message(
+            exc,
+            default="Failed to regenerate Admin UI HTTPS certificate.",
+        )
+        _record_audit_event(
+            "admin_ui_https_certificate_regenerate",
+            ok=False,
+            detail=detail,
+        )
         return _redirect_with_message("certs", ok=False, msg=detail)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,6 +104,58 @@ def resolve_admin_ui_https_config(
     )
 
 
+def _env_san_tokens(environ: Mapping[str, str]) -> tuple[str, ...]:
+    tokens = []
+    for name in ("ADMIN_UI_PUBLIC_HOST", "PROXY_PUBLIC_HOST"):
+        value = (environ.get(name) or "").strip()
+        if value:
+            tokens.append(value)
+    return tuple(tokens)
+
+
+def _settings_san_tokens(settings: object | None) -> tuple[str, ...]:
+    raw = str(getattr(settings, "san_tokens", "") or "")
+    return tuple(token.strip() for token in re.split(r"[\n,]+", raw) if token.strip())
+
+
+def _try_materialize_saved_admin_ui_leaf(
+    environ: Mapping[str, str],
+) -> AdminUiHttpsRuntimeConfig | None:
+    try:
+        from services.certificate_bundles import get_certificate_bundles
+        from services.certificate_core import materialize_admin_ui_server_certificate
+
+        store = get_certificate_bundles()
+        settings = store.get_admin_ui_https_settings()
+        bundle = store.get_active_bundle()
+        if bundle is None:
+            return None
+        material = materialize_admin_ui_server_certificate(
+            str(Path(DEFAULT_CERTFILE).parent),
+            bundle,
+            san_tokens=(*_settings_san_tokens(settings), *_env_san_tokens(environ)),
+        )
+        store.set_admin_ui_https_settings(
+            enabled=True,
+            certfile=material.certfile,
+            keyfile=material.keyfile,
+            san_tokens=getattr(settings, "san_tokens", ""),
+            updated_by=getattr(settings, "updated_by", ""),
+        )
+        return AdminUiHttpsRuntimeConfig(
+            enabled=True,
+            certfile=material.certfile,
+            keyfile=material.keyfile,
+            source="db",
+        )
+    except Exception as exc:
+        _log(
+            "WARNING: failed to materialize saved Admin UI HTTPS leaf certificate; "
+            f"starting HTTP so the Certificates page can recover the setting: {exc}",
+        )
+        return None
+
+
 def build_gunicorn_argv(
     environ: Mapping[str, str],
     config: AdminUiHttpsRuntimeConfig,
@@ -142,17 +195,26 @@ def main() -> int:
     if config.enabled:
         material = validate_tls_material_paths(config.certfile, config.keyfile)
         if config.source == "db" and not material.ready:
-            _log(
-                "WARNING: saved Admin UI HTTPS setting is enabled but the active "
-                "Admin UI leaf certificate is not valid TLS material; starting HTTP so the "
-                "Certificates page can recover the setting.",
-            )
-            config = AdminUiHttpsRuntimeConfig(
-                enabled=False,
-                certfile="",
-                keyfile="",
-                source="db-missing-material",
-            )
+            recovered = _try_materialize_saved_admin_ui_leaf(os.environ)
+            if recovered is not None:
+                material = validate_tls_material_paths(
+                    recovered.certfile,
+                    recovered.keyfile,
+                )
+            if recovered is not None and material.ready:
+                config = recovered
+            else:
+                _log(
+                    "WARNING: saved Admin UI HTTPS setting is enabled but the active "
+                    "Admin UI leaf certificate is not valid TLS material; starting HTTP so the "
+                    "Certificates page can recover the setting.",
+                )
+                config = AdminUiHttpsRuntimeConfig(
+                    enabled=False,
+                    certfile="",
+                    keyfile="",
+                    source="db-missing-material",
+                )
         elif not material.ready:
             _log(
                 "ERROR: Admin UI HTTPS is enabled by "

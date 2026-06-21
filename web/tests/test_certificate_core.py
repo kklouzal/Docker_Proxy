@@ -147,7 +147,7 @@ def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) 
         bundle,
         san_tokens=[
             "admin.example.test:8443",
-            "https://proxy.example.test/certs",
+            "https://proxy.example.test",
             "192.0.2.10",
             "../bad",
         ],
@@ -195,6 +195,8 @@ def test_admin_ui_san_normalization_handles_forwarded_hosts_and_ipv6() -> None:
             "[2001:db8::10]:5000",
             "bad/host",
             "user@example.test",
+            "https://proxy.example.test/certs",
+            "*.example.test",
         ],
     )
 
@@ -203,3 +205,4 @@ def test_admin_ui_san_normalization_handles_forwarded_hosts_and_ipv6() -> None:
     assert "proxy.example.test" not in sans
     assert "bad/host" not in sans
     assert "example.test" not in sans
+    assert "*.example.test" not in sans

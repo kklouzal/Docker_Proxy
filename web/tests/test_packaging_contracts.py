@@ -359,6 +359,67 @@ def test_admin_ui_startup_uses_saved_https_settings_after_first_save() -> None:
     assert enabled.keyfile == "/etc/squid/ssl/certs/admin-ui.key"
 
 
+def test_admin_ui_startup_materializes_missing_db_leaf_from_active_bundle(
+    monkeypatch,
+) -> None:
+    module = _load_start_admin_ui_module()
+    settings = SimpleNamespace(
+        enabled=True,
+        certfile="/etc/squid/ssl/certs/ca.crt",
+        keyfile="/etc/squid/ssl/certs/ca.key",
+        san_tokens="proxyadmin.ad.kklouzal.com\n192.168.1.10",
+        updated_by="admin",
+    )
+    saved: dict[str, object] = {}
+
+    class _Store:
+        def get_admin_ui_https_settings(self):
+            return settings
+
+        def get_active_bundle(self):
+            return SimpleNamespace(cert_pem="CERT", key_pem="KEY")
+
+        def set_admin_ui_https_settings(self, **kwargs):
+            saved.update(kwargs)
+
+    def _materialize(ca_dir, bundle, *, san_tokens):
+        assert ca_dir == "/etc/squid/ssl/certs"
+        assert bundle.cert_pem == "CERT"
+        assert "proxyadmin.ad.kklouzal.com" in san_tokens
+        assert "192.168.1.10" in san_tokens
+        assert "admin-public.example.test" in san_tokens
+        return SimpleNamespace(
+            certfile="/etc/squid/ssl/certs/admin-ui.crt",
+            keyfile="/etc/squid/ssl/certs/admin-ui.key",
+        )
+
+    from services import certificate_bundles, certificate_core
+
+    store = _Store()
+
+    def _get_store():
+        return store
+
+    monkeypatch.setattr(certificate_bundles, "get_certificate_bundles", _get_store)
+    monkeypatch.setattr(
+        certificate_core,
+        "materialize_admin_ui_server_certificate",
+        _materialize,
+    )
+
+    recovered = module._try_materialize_saved_admin_ui_leaf(
+        {"ADMIN_UI_PUBLIC_HOST": "admin-public.example.test"},
+    )
+
+    assert recovered is not None
+    assert recovered.enabled is True
+    assert recovered.certfile == "/etc/squid/ssl/certs/admin-ui.crt"
+    assert recovered.keyfile == "/etc/squid/ssl/certs/admin-ui.key"
+    assert saved["certfile"] == "/etc/squid/ssl/certs/admin-ui.crt"
+    assert saved["keyfile"] == "/etc/squid/ssl/certs/admin-ui.key"
+    assert saved["san_tokens"] == settings.san_tokens
+
+
 def test_admin_ui_startup_db_https_missing_material_falls_back_to_http(
     monkeypatch,
 ) -> None:

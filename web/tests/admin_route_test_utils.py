@@ -1057,6 +1057,7 @@ class FakeCertificateBundles:
             enabled=False,
             certfile="",
             keyfile="",
+            san_tokens="",
             updated_by="",
             updated_ts=0,
         )
@@ -1119,6 +1120,7 @@ class FakeCertificateBundles:
             enabled=bool(kwargs.get("enabled")),
             certfile=str(kwargs.get("certfile") or ""),
             keyfile=str(kwargs.get("keyfile") or ""),
+            san_tokens=str(kwargs.get("san_tokens") or ""),
             updated_by=str(kwargs.get("updated_by") or ""),
             updated_ts=1,
         )

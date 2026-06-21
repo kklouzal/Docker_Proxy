@@ -317,7 +317,7 @@ def _dns_san_valid(hostname: str) -> bool:
     return all(label_re.fullmatch(label or "") for label in labels)
 
 
-def _sanitize_san_token(token: object) -> str:
+def sanitize_admin_ui_certificate_san_token(token: object) -> str:
     value = str(token or "").split(",", 1)[0].strip().rstrip(".")
     if not value:
         return ""
@@ -325,6 +325,8 @@ def _sanitize_san_token(token: object) -> str:
         from urllib.parse import urlsplit
 
         parsed = urlsplit(value)
+        if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            return ""
         value = (parsed.hostname or "").strip().strip("[]").rstrip(".")
     elif value.startswith("["):
         from urllib.parse import urlsplit
@@ -334,7 +336,7 @@ def _sanitize_san_token(token: object) -> str:
             value = (parsed.hostname or "").strip().strip("[]").rstrip(".")
         except ValueError:
             return ""
-    elif "/" in value or "@" in value or "\\" in value:
+    elif "/" in value or "@" in value or "\\" in value or "*" in value:
         return ""
     elif value.count(":") == 1 and not value.startswith("["):
         host, port = value.rsplit(":", 1)
@@ -352,7 +354,7 @@ def normalize_admin_ui_certificate_sans(
     seen: set[str] = set()
 
     def add(value: object) -> None:
-        clean = _sanitize_san_token(value)
+        clean = sanitize_admin_ui_certificate_san_token(value)
         if not clean:
             return
         try:

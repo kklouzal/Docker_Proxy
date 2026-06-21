@@ -77,6 +77,7 @@ class AdminUiHttpsSettings:
     enabled: bool
     certfile: str
     keyfile: str
+    san_tokens: str
     updated_by: str
     updated_ts: int
 
@@ -132,17 +133,24 @@ class CertificateBundleStore:
                     enabled TINYINT(1) NOT NULL DEFAULT 0,
                     certfile VARCHAR(1024) NOT NULL DEFAULT '',
                     keyfile VARCHAR(1024) NOT NULL DEFAULT '',
+                    san_tokens TEXT,
                     updated_by VARCHAR(255) NOT NULL DEFAULT '',
                     updated_ts BIGINT NOT NULL DEFAULT 0
                 )
                 """,
             )
+            try:
+                conn.execute(
+                    "ALTER TABLE admin_ui_https_settings ADD COLUMN san_tokens TEXT",
+                )
+            except Exception:
+                pass
             conn.execute(
                 """
                 INSERT IGNORE INTO admin_ui_https_settings(
-                    id, enabled, certfile, keyfile, updated_by, updated_ts
+                    id, enabled, certfile, keyfile, san_tokens, updated_by, updated_ts
                 )
-                VALUES(1,0,'','','',0)
+                VALUES(1,0,'','','','',0)
                 """,
             )
 
@@ -379,18 +387,19 @@ class CertificateBundleStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT enabled, certfile, keyfile, updated_by, updated_ts
+                SELECT enabled, certfile, keyfile, san_tokens, updated_by, updated_ts
                 FROM admin_ui_https_settings
                 WHERE id=1
                 LIMIT 1
                 """,
             ).fetchone()
         if not row:
-            return AdminUiHttpsSettings(False, "", "", "", 0)
+            return AdminUiHttpsSettings(False, "", "", "", "", 0)
         return AdminUiHttpsSettings(
             enabled=bool(int(row["enabled"] or 0)),
             certfile=str(row["certfile"] or ""),
             keyfile=str(row["keyfile"] or ""),
+            san_tokens=str(row["san_tokens"] or ""),
             updated_by=str(row["updated_by"] or ""),
             updated_ts=int(row["updated_ts"] or 0),
         )
@@ -401,28 +410,31 @@ class CertificateBundleStore:
         enabled: bool,
         certfile: object | None = None,
         keyfile: object | None = None,
+        san_tokens: object | None = None,
         updated_by: object | None = None,
     ) -> AdminUiHttpsSettings:
         self.init_db()
         cert_path = str(certfile or "").strip()[:1024]
         key_path = str(keyfile or "").strip()[:1024]
+        san_text = str(san_tokens or "").strip()[:4000]
         updater = str(updated_by or "").strip()[:255]
         now = int(time.time())
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO admin_ui_https_settings(
-                    id, enabled, certfile, keyfile, updated_by, updated_ts
+                    id, enabled, certfile, keyfile, san_tokens, updated_by, updated_ts
                 )
-                VALUES(1,%s,%s,%s,%s,%s) AS incoming
+                VALUES(1,%s,%s,%s,%s,%s,%s) AS incoming
                 ON DUPLICATE KEY UPDATE
                     enabled=incoming.enabled,
                     certfile=incoming.certfile,
                     keyfile=incoming.keyfile,
+                    san_tokens=incoming.san_tokens,
                     updated_by=incoming.updated_by,
                     updated_ts=incoming.updated_ts
                 """,
-                (1 if enabled else 0, cert_path, key_path, updater, now),
+                (1 if enabled else 0, cert_path, key_path, san_text, updater, now),
             )
         return self.get_admin_ui_https_settings()
 

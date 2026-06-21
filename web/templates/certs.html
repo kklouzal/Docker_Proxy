@@ -169,8 +169,13 @@ window.setTimeout(function () {
                         <div>HTTPS uses a dedicated Admin UI server certificate signed by the active SSL inspection CA. Generate or upload a CA bundle before enabling HTTPS.</div>
                         <div><strong>Leaf cert:</strong> <code class="mono">{{ admin_ui_https.default_certfile }}</code></div>
                         <div><strong>Leaf key:</strong> <code class="mono">{{ admin_ui_https.default_keyfile }}</code></div>
-                        <div><strong>SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
+                        <div><strong>Configured SANs:</strong> <code class="mono">{{ admin_ui_https.configured_sans|join(', ') if admin_ui_https.configured_sans else 'none' }}</code></div>
+                        <div><strong>Pending SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
                     </div>
+                    <label>
+                        Admin UI certificate DNS/IP SANs
+                        <textarea name="san_tokens" rows="3" placeholder="proxyadmin.ad.kklouzal.com&#10;192.168.1.10">{{ admin_ui_https.configured_san_tokens }}</textarea>
+                    </label>
                     <div class="surface-note small">
                         Saving stores the preference and restarts the Admin UI web process under supervisor.
                         {% if admin_ui_https_env_lines %}
@@ -179,6 +184,12 @@ window.setTimeout(function () {
                     </div>
                     <div class="actions">
                         <button class="btn primary" type="submit">Save Admin UI HTTPS Preference</button>
+                    </div>
+                </form>
+                <form class="form" action="{{ url_for('regenerate_admin_ui_https_certificate') }}" method="post">
+                    {{ csrf_field() }}
+                    <div class="actions">
+                        <button class="btn" type="submit">Regenerate Admin UI HTTPS Certificate</button>
                     </div>
                 </form>
             </div>
