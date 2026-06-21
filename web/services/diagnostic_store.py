@@ -117,24 +117,14 @@ def _read_local_link_networks() -> tuple[Any, ...]:
         return tuple(networks)
     candidate = ""
     for line in lines:
-        match = re.search(r"\+--\s+([0-9.]+/\d+)\b", line)
+        match = re.search(r"[+|]--\s+([0-9.]+)\b", line)
         if match:
             candidate = match.group(1)
-            try:
-                network = ipaddress.ip_network(candidate, strict=False)
-                if (
-                    network.prefixlen > 0
-                    and network.is_private
-                    and network not in networks
-                ):
-                    networks.append(network)
-            except Exception:
-                pass
             continue
-        if candidate and " link " in line and "UNICAST" in line:
+        if candidate and " host " in line and "LOCAL" in line:
             try:
-                network = ipaddress.ip_network(candidate, strict=False)
-                if network.prefixlen > 0 and network not in networks:
+                network = ipaddress.ip_network(f"{candidate}/32", strict=False)
+                if network not in networks:
                     networks.append(network)
             except Exception:
                 pass

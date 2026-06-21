@@ -434,14 +434,14 @@ def _diagnostic_request_line(
     )
 
 
-def test_build_request_insert_params_filters_self_and_container_networks(
+def test_build_request_insert_params_filters_loopback_and_exact_self_addresses(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("ENABLE_TEST_MODE", raising=False)
     monkeypatch.setenv("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC", "1")
     monkeypatch.setattr(
         "services.diagnostic_store._local_link_networks",
-        lambda: (ipaddress.ip_network("172.19.0.0/16"),),
+        lambda: (ipaddress.ip_network("172.19.0.1/32"),),
     )
     store = DiagnosticStore()
     self_probe = (
@@ -452,6 +452,10 @@ def test_build_request_insert_params_filters_self_and_container_networks(
     assert (
         store._build_request_insert_params(_diagnostic_request_line("172.19.0.1"))
         is None
+    )
+    assert (
+        store._build_request_insert_params(_diagnostic_request_line("172.19.0.3"))
+        is not None
     )
     assert (
         store._build_request_insert_params(_diagnostic_request_line("192.0.2.10"))
@@ -466,7 +470,7 @@ def test_build_request_insert_params_keeps_live_test_container_traffic_by_defaul
     monkeypatch.delenv("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC", raising=False)
     monkeypatch.setattr(
         "services.diagnostic_store._local_link_networks",
-        lambda: (ipaddress.ip_network("172.19.0.0/16"),),
+        lambda: (ipaddress.ip_network("172.19.0.1/32"),),
     )
     store = DiagnosticStore()
     assert (
@@ -478,6 +482,10 @@ def test_build_request_insert_params_keeps_live_test_container_traffic_by_defaul
         store._build_request_insert_params(_diagnostic_request_line("172.19.0.1"))
         is None
     )
+    assert (
+        store._build_request_insert_params(_diagnostic_request_line("172.19.0.3"))
+        is not None
+    )
 
 
 def test_build_icap_insert_params_filters_internal_sources(monkeypatch) -> None:
@@ -485,15 +493,21 @@ def test_build_icap_insert_params_filters_internal_sources(monkeypatch) -> None:
     monkeypatch.setenv("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC", "1")
     monkeypatch.setattr(
         "services.diagnostic_store._local_link_networks",
-        lambda: (ipaddress.ip_network("172.19.0.0/16"),),
+        lambda: (ipaddress.ip_network("172.19.0.1/32"),),
     )
     store = DiagnosticStore()
-    line = (
+    self_line = (
+        "1777000001\ttx123\t172.19.0.1\tGET\thttps://example.com/file.exe\t87"
+        "\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0\texample.com"
+        "\t\tsslfilter_nobump\t\t"
+    )
+    same_subnet_client_line = (
         "1777000001\ttx123\t172.19.0.3\tGET\thttps://example.com/file.exe\t87"
         "\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0\texample.com"
         "\t\tsslfilter_nobump\t\t"
     )
-    assert store._build_icap_insert_params(line) is None
+    assert store._build_icap_insert_params(self_line) is None
+    assert store._build_icap_insert_params(same_subnet_client_line) is not None
 
 
 def test_append_bounded_pending_row_drops_oldest_rows(monkeypatch) -> None:
