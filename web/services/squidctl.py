@@ -1318,10 +1318,11 @@ class SquidController(_CoreSquidController):
                 continue
             unmanaged_listener_ports.add(port)
 
-        if intercept_port == explicit_port:
-            intercept_port = self._default_intercept_port(explicit_port)
-            if intercept_port == explicit_port:
-                intercept_port = 3129 if explicit_port != 3129 else 3130
+        if intercept_enabled:
+            intercept_port = self._first_available_port(
+                intercept_port,
+                {explicit_port, *unmanaged_listener_ports},
+            )
         used_ports = {
             explicit_port,
             intercept_port if intercept_enabled else None,

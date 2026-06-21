@@ -297,6 +297,36 @@ def test_build_template_options_from_form_resolves_three_way_listener_port_colli
     assert options["https_intercept_port"] == 3132
 
 
+def test_renderer_avoids_intercept_collision_with_unmanaged_listener() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    config = (
+        "http_port 0.0.0.0:3128 ssl-bump \\\n"
+        "\tcert=/etc/squid/ssl/certs/ca.crt \\\n"
+        "\tkey=/etc/squid/ssl/certs/ca.key \\\n"
+        "\tgenerate-host-certificates=on\n"
+        "http_port 0.0.0.0:3129 tproxy\n"
+    )
+
+    rendered = controller._render_http_port_listeners(
+        config,
+        {
+            "explicit_proxy_port": 3128,
+            "intercept_enabled_on": True,
+            "intercept_port": 3129,
+            "https_intercept_enabled_on": True,
+            "https_intercept_port": 3129,
+        },
+        128,
+    )
+
+    assert "http_port 0.0.0.0:3129 tproxy" in rendered
+    assert "http_port 0.0.0.0:3130 intercept" in rendered
+    assert "https_port 0.0.0.0:3131 intercept ssl-bump" in rendered
+    assert rendered.count("0.0.0.0:3129") == 1
+
+
 def test_build_template_options_from_form_blank_optional_values_do_not_override() -> (
     None
 ):
