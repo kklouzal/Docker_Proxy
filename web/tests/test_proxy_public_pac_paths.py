@@ -16,17 +16,24 @@ def _add_repo_paths() -> None:
             sys.path.insert(0, path_str)
 
 
-def _write_pac_artifacts(pac_dir: Path, *, public_pac_path: str) -> None:
+def _write_pac_artifacts(
+    pac_dir: Path,
+    *,
+    public_pac_path: str | None = None,
+    public_pac_url: str | None = None,
+) -> None:
     pac_dir.mkdir()
+    manifest = {
+        "fallback_file": "fallback.pac",
+        "state_sha256": "state-one",
+    }
+    if public_pac_path is not None:
+        manifest["public_pac_path"] = public_pac_path
+    if public_pac_url is not None:
+        manifest["public_pac_url"] = public_pac_url
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
     (pac_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "fallback_file": "fallback.pac",
-                "public_pac_path": public_pac_path,
-                "state_sha256": "state-one",
-            },
-        ),
+        json.dumps(manifest),
         encoding="utf-8",
     )
     (pac_dir / "fallback.pac").write_text("PAC __PAC_PROXY_HOST__", encoding="utf-8")
@@ -52,6 +59,26 @@ def public_pac_client(monkeypatch):
 def test_public_listener_serves_configured_pac_path(tmp_path, public_pac_client) -> None:
     pac_dir = tmp_path / "pac"
     _write_pac_artifacts(pac_dir, public_pac_path="/download/wpad.dat?site=lab")
+    client = public_pac_client(pac_dir)
+    response = client.get(
+        "/download/wpad.dat?site=lab",
+        base_url="http://public-proxy.example",
+    )
+
+    assert response.status_code == 200
+    assert response.data == b"PAC public-proxy.example"
+    assert response.headers["Content-Disposition"] == 'inline; filename="wpad.dat"'
+
+
+def test_public_listener_serves_configured_pac_url_path(
+    tmp_path,
+    public_pac_client,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    _write_pac_artifacts(
+        pac_dir,
+        public_pac_url="https://pac.example/download/wpad.dat?site=lab",
+    )
     client = public_pac_client(pac_dir)
     response = client.get(
         "/download/wpad.dat?site=lab",
