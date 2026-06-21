@@ -1071,6 +1071,9 @@ class FakeCertificateBundles:
         revision = SimpleNamespace(
             revision_id=len(self.created) + 1,
             bundle_sha256=getattr(bundle, "bundle_sha256", "bundle-sha"),
+            cert_pem=getattr(bundle, "cert_pem", ""),
+            key_pem=getattr(bundle, "key_pem", ""),
+            chain_pem=getattr(bundle, "chain_pem", ""),
             fullchain_pem=getattr(bundle, "fullchain_pem", ""),
             original_pfx_bytes=getattr(bundle, "original_pfx_bytes", None),
         )

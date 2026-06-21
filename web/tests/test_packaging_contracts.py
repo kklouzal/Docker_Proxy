@@ -248,13 +248,13 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert "exec python3 /app/tools/start_admin_ui.py" in startup
     assert "web/tools/start_admin_ui.py" in _read("docker/Dockerfile.admin")
     launcher = _read("web/tools/start_admin_ui.py")
-    assert 'DEFAULT_CERTFILE = "/etc/squid/ssl/certs/ca.crt"' in launcher
-    assert 'DEFAULT_KEYFILE = "/etc/squid/ssl/certs/ca.key"' in launcher
+    assert 'DEFAULT_CERTFILE = "/etc/squid/ssl/certs/admin-ui.crt"' in launcher
+    assert 'DEFAULT_KEYFILE = "/etc/squid/ssl/certs/admin-ui.key"' in launcher
     assert '"--certfile", config.certfile, "--keyfile", config.keyfile' in launcher
     assert "# ADMIN_UI_HTTPS_ENABLED=0" in env_example
     assert "ADMIN_UI_SSL_CERTFILE and ADMIN_UI_SSL_KEYFILE are internal bootstrap" in env_example
     assert "prefer a server certificate whose subject/SAN matches" not in readme
-    assert "active generated or uploaded SSL inspection CA bundle" in readme
+    assert "dedicated Admin UI server leaf certificate" in readme
     assert "Admin UI container read-only" not in readme
     assert "mount is writable" in readme
     assert "saved DB setting is the source of truth" in readme
@@ -355,8 +355,8 @@ def test_admin_ui_startup_uses_saved_https_settings_after_first_save() -> None:
 
     assert enabled.source == "db"
     assert enabled.enabled is True
-    assert enabled.certfile == "/etc/squid/ssl/certs/ca.crt"
-    assert enabled.keyfile == "/etc/squid/ssl/certs/ca.key"
+    assert enabled.certfile == "/etc/squid/ssl/certs/admin-ui.crt"
+    assert enabled.keyfile == "/etc/squid/ssl/certs/admin-ui.key"
 
 
 def test_admin_ui_startup_db_https_missing_material_falls_back_to_http(
@@ -498,8 +498,8 @@ def test_admin_ui_startup_falls_back_to_env_before_saved_setting_or_db_failure()
 
     assert seeded.source == "env"
     assert seeded.enabled is True
-    assert seeded.certfile == "/etc/squid/ssl/certs/ca.crt"
-    assert seeded.keyfile == "/etc/squid/ssl/certs/ca.key"
+    assert seeded.certfile == "/etc/squid/ssl/certs/admin-ui.crt"
+    assert seeded.keyfile == "/etc/squid/ssl/certs/admin-ui.key"
     assert failed.source == "env"
     assert failed.enabled is True
 

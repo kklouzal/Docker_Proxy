@@ -2,22 +2,27 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import ipaddress
 import logging
 import os
 import pathlib
 import re
+import socket
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from services.logutil import log_exception_throttled
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,19 @@ class TlsMaterialValidation:
     key_status: TlsMaterialPathStatus
     ready: bool
     detail: str
+
+
+@dataclass(frozen=True)
+class AdminUiCertificateMaterial:
+    certfile: str
+    keyfile: str
+    sans: tuple[str, ...]
+
+
+ADMIN_UI_CERT_FILENAME = "admin-ui.crt"
+ADMIN_UI_KEY_FILENAME = "admin-ui.key"
+_DEFAULT_ADMIN_UI_DNS_SANS = ("localhost", "admin-ui", "docker-proxy-admin-ui")
+_DEFAULT_ADMIN_UI_IP_SANS = ("127.0.0.1", "::1")
 
 
 class CertManager:
@@ -290,6 +308,181 @@ def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValid
         ready=True,
         detail="certificate and private key are valid.",
     )
+
+
+def _dns_san_valid(hostname: str) -> bool:
+    if not hostname or len(hostname) > 253:
+        return False
+    hostname = hostname.removesuffix(".")
+    labels = hostname.split(".")
+    label_re = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+    return all(label_re.fullmatch(label or "") for label in labels)
+
+
+def _sanitize_san_token(token: object) -> str:
+    value = str(token or "").strip().strip("[]").rstrip(".")
+    if not value:
+        return ""
+    if "://" in value:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(value)
+        value = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+    elif "/" in value or "@" in value or "\\" in value:
+        return ""
+    elif value.count(":") == 1 and not value.startswith("["):
+        host, port = value.rsplit(":", 1)
+        if port.isdigit():
+            value = host.strip().strip("[]").rstrip(".")
+    return value
+
+
+def normalize_admin_ui_certificate_sans(tokens: Iterable[object] = ()) -> tuple[str, ...]:
+    sans: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        clean = _sanitize_san_token(value)
+        if not clean:
+            return
+        try:
+            ip = ipaddress.ip_address(clean)
+        except ValueError:
+            dns = clean.lower()
+            if not _dns_san_valid(dns):
+                return
+            key = f"dns:{dns}"
+            display = dns
+        else:
+            key = f"ip:{ip.compressed}"
+            display = ip.compressed
+        if key not in seen:
+            seen.add(key)
+            sans.append(display)
+
+    for token in tokens:
+        add(token)
+    for token in _DEFAULT_ADMIN_UI_DNS_SANS:
+        add(token)
+    for token in _DEFAULT_ADMIN_UI_IP_SANS:
+        add(token)
+    for token in (socket.gethostname(), socket.getfqdn()):
+        add(token)
+    return tuple(sans)
+
+
+def _general_names_for_sans(sans: Iterable[str]) -> list[x509.GeneralName]:
+    names: list[x509.GeneralName] = []
+    for san in sans:
+        try:
+            names.append(x509.IPAddress(ipaddress.ip_address(san)))
+        except ValueError:
+            names.append(x509.DNSName(san))
+    return names
+
+
+def _load_bundle_ca_material(bundle: CertificateBundle | object) -> tuple[x509.Certificate, object]:
+    cert_pem = str(getattr(bundle, "cert_pem", "") or "")
+    key_pem = str(getattr(bundle, "key_pem", "") or "")
+    fullchain_pem = str(getattr(bundle, "fullchain_pem", "") or "")
+    if not cert_pem and fullchain_pem:
+        cert_pem, _chain = _split_cert_chain(fullchain_pem)
+    if not cert_pem or not key_pem:
+        msg = "Admin UI HTTPS leaf generation requires active CA certificate and private key material."
+        raise ValueError(msg)
+    ca_cert = _load_pem_certificate(cert_pem.encode("utf-8"))
+    ca_key = _load_pem_private_key(key_pem.encode("utf-8"))
+    return ca_cert, ca_key
+
+
+def materialize_admin_ui_server_certificate(
+    ca_dir: str,
+    bundle: CertificateBundle | object,
+    *,
+    san_tokens: Iterable[object] = (),
+) -> AdminUiCertificateMaterial:
+    pathlib.Path(ca_dir).mkdir(exist_ok=True, parents=True)
+    ca_cert, ca_key = _load_bundle_ca_material(bundle)
+    sans = normalize_admin_ui_certificate_sans(san_tokens)
+    general_names = _general_names_for_sans(sans)
+    if not general_names:
+        msg = "Admin UI HTTPS leaf generation requires at least one valid SAN."
+        raise ValueError(msg)
+
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(UTC)
+    not_after = min(ca_cert.not_valid_after_utc, now + timedelta(days=825))
+    if not_after <= now + timedelta(days=1):
+        not_after = ca_cert.not_valid_after_utc
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(
+            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Docker Proxy Admin UI")]),
+        )
+        .issuer_name(ca_cert.subject)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(not_after)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(x509.SubjectAlternativeName(general_names), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    certfile = os.path.join(ca_dir, ADMIN_UI_CERT_FILENAME)
+    keyfile = os.path.join(ca_dir, ADMIN_UI_KEY_FILENAME)
+    tmp_cert_path = ""
+    tmp_key_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            delete=False,
+            dir=ca_dir,
+        ) as cert_tmp:
+            cert_tmp.write(cert.public_bytes(serialization.Encoding.PEM))
+            tmp_cert_path = cert_tmp.name
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            delete=False,
+            dir=ca_dir,
+        ) as key_tmp:
+            key_tmp.write(
+                leaf_key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                ),
+            )
+            tmp_key_path = key_tmp.name
+        pathlib.Path(tmp_cert_path).replace(certfile)
+        tmp_cert_path = ""
+        pathlib.Path(tmp_key_path).replace(keyfile)
+        tmp_key_path = ""
+        _set_best_effort_permissions(certfile, keyfile)
+    finally:
+        for path in (tmp_cert_path, tmp_key_path):
+            if path:
+                with contextlib.suppress(OSError):
+                    pathlib.Path(path).unlink()
+    return AdminUiCertificateMaterial(certfile=certfile, keyfile=keyfile, sans=sans)
 
 
 def _bundle_sha256(cert_pem: str, key_pem: str, chain_pem: str) -> str:

@@ -44,7 +44,11 @@ from services.cert_manager import (
 from services.certificate_bundles import (
     get_certificate_bundles as _default_get_certificate_bundles,
 )
-from services.certificate_core import validate_tls_material_paths
+from services.certificate_core import (
+    materialize_admin_ui_server_certificate,
+    normalize_admin_ui_certificate_sans,
+    validate_tls_material_paths,
+)
 from services.clamav_config_forms import (
     apply_clamav_options_to_config,
     extract_clamav_options,
@@ -190,8 +194,9 @@ from services.winhttp_registry_builder import (
 )
 from werkzeug.exceptions import HTTPException
 
-ADMIN_UI_SSL_CERTFILE = "/etc/squid/ssl/certs/ca.crt"
-ADMIN_UI_SSL_KEYFILE = "/etc/squid/ssl/certs/ca.key"
+ADMIN_UI_SSL_CERTFILE = "/etc/squid/ssl/certs/admin-ui.crt"
+ADMIN_UI_SSL_KEYFILE = "/etc/squid/ssl/certs/admin-ui.key"
+ADMIN_UI_CA_DIR = "/etc/squid/ssl/certs"
 
 app = Flask(__name__)
 install_http_optimizations(app)
@@ -2321,6 +2326,20 @@ def _publish_certificate_bundle_remote(
         original_filename=(original_filename or "")[:255],
         activate=True,
     )
+    leaf_detail = ""
+    try:
+        admin_https = bundle_store.get_admin_ui_https_settings()
+        if bool(getattr(admin_https, "enabled", False)):
+            material = _materialize_admin_ui_https_leaf(revision)
+            leaf_detail = (
+                " Admin UI HTTPS leaf certificate was regenerated "
+                f"for {', '.join(material.sans)}."
+            )
+    except Exception as exc:
+        leaf_detail = (
+            " Admin UI HTTPS leaf certificate regeneration failed: "
+            f"{public_error_message(exc)}"
+        )
 
     restore_detail = ""
 
@@ -2404,7 +2423,7 @@ def _publish_certificate_bundle_remote(
             detail = f"{detail}\n{failure_details[0]}"
         if restore_detail:
             detail = f"{detail}\n{restore_detail}"
-        return False, detail
+        return False, detail + leaf_detail
     else:
         detail = (
             f"Certificate revision {revision.revision_id} saved. "
@@ -2412,7 +2431,7 @@ def _publish_certificate_bundle_remote(
         )
         if failure_details:
             detail = f"{detail} First queue failure: {failure_details[0]}"
-    return True, detail
+    return True, detail + leaf_detail
 
 
 def _best_effort_init_store(store: Any, *, key: str, description: str) -> None:
@@ -2651,6 +2670,32 @@ def _admin_ui_https_default_material_status() -> dict[str, Any]:
     }
 
 
+def _admin_ui_https_request_san_tokens() -> tuple[str, ...]:
+    tokens: list[str] = []
+    if has_request_context():
+        tokens.extend(
+            [
+                request.host,
+                request.host.split(":", 1)[0],
+                request.headers.get("X-Forwarded-Host", ""),
+            ],
+        )
+    public_host = os.environ.get("ADMIN_UI_PUBLIC_HOST") or os.environ.get(
+        "PROXY_PUBLIC_HOST",
+    )
+    if public_host:
+        tokens.append(public_host)
+    return tuple(tokens)
+
+
+def _materialize_admin_ui_https_leaf(bundle: Any):
+    return materialize_admin_ui_server_certificate(
+        ADMIN_UI_CA_DIR,
+        bundle,
+        san_tokens=_admin_ui_https_request_san_tokens(),
+    )
+
+
 def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
     default_certfile = ADMIN_UI_SSL_CERTFILE
     default_keyfile = ADMIN_UI_SSL_KEYFILE
@@ -2701,6 +2746,7 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         else None
     )
     default_material = _admin_ui_https_default_material_status()
+    admin_ui_sans = normalize_admin_ui_certificate_sans(_admin_ui_https_request_san_tokens())
     return {
         "runtime_enabled": runtime_enabled,
         "runtime_source": runtime_source,
@@ -2743,6 +2789,7 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         "active_material_detail": default_material["detail"],
         "default_certfile": default_certfile,
         "default_keyfile": default_keyfile,
+        "admin_ui_sans": admin_ui_sans,
     }
 
 
@@ -6408,6 +6455,20 @@ def update_admin_ui_https():
             ok=False,
             msg="Generate or upload an SSL inspection CA bundle before enabling Admin UI HTTPS.",
         )
+    material = None
+    if enabled:
+        try:
+            material = _materialize_admin_ui_https_leaf(bundle)
+        except Exception as exc:
+            return _redirect_with_message(
+                "certs",
+                ok=False,
+                msg=(
+                    "Admin UI HTTPS requires the active SSL inspection CA certificate "
+                    "and key to generate a dedicated server certificate. "
+                    f"{public_error_message(exc)}"
+                ),
+            )
     material_status = _admin_ui_https_default_material_status()
     if enabled and not material_status["ready"]:
         missing = []
@@ -6419,13 +6480,13 @@ def update_admin_ui_https():
             "certs",
             ok=False,
             msg=(
-                "Admin UI HTTPS requires the active SSL inspection CA certificate "
+                "Admin UI HTTPS requires the generated Admin UI server certificate "
                 f"and key to be mounted as valid PEM material in the admin-ui container: "
                 f"{', '.join(missing)}. {material_status['detail']}"
             ),
         )
-    certfile = ADMIN_UI_SSL_CERTFILE if enabled else ""
-    keyfile = ADMIN_UI_SSL_KEYFILE if enabled else ""
+    certfile = material.certfile if enabled and material is not None else ""
+    keyfile = material.keyfile if enabled and material is not None else ""
 
     try:
         get_certificate_bundles().set_admin_ui_https_settings(

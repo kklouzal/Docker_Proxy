@@ -164,9 +164,11 @@ window.setTimeout(function () {
                         <div>
                             <strong>Certificate material:</strong>
                             <span class="badge {{ 'ok' if admin_ui_https.active_bundle_available else 'warn' }}">{{ 'active SSL inspection CA bundle' if admin_ui_https.active_bundle_available else 'no active SSL inspection CA bundle' }}</span>
-                            <span class="badge {{ 'ok' if admin_ui_https.active_material_ready else 'warn' }}">{{ 'valid in admin-ui' if admin_ui_https.active_material_ready else 'not valid in admin-ui' }}</span>
+                            <span class="badge {{ 'ok' if admin_ui_https.active_material_ready else 'warn' }}">{{ 'leaf ready' if admin_ui_https.active_material_ready else 'leaf missing' }}</span>
                         </div>
-                        <div>HTTPS uses the currently active generated or uploaded SSL inspection CA certificate and key. Generate or upload a CA bundle before enabling HTTPS.</div>
+                        <div>HTTPS uses a dedicated Admin UI server certificate signed by the active SSL inspection CA. Generate or upload a CA bundle before enabling HTTPS.</div>
+                        <div><strong>Leaf cert:</strong> <code class="mono">{{ admin_ui_https.default_certfile }}</code></div>
+                        <div><strong>SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
                     </div>
                     <div class="surface-note small">
                         Saving stores the preference and restarts the Admin UI web process under supervisor.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 from urllib.parse import parse_qs, urlsplit
@@ -25,8 +26,11 @@ def _location_params(response) -> dict[str, list[str]]:
 
 
 def _bundle() -> SimpleNamespace:
+    cert_pem, key_pem = _valid_tls_material()
     return SimpleNamespace(
-        fullchain_pem="-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        fullchain_pem=cert_pem,
         bundle_sha256="bundle-sha",
         original_pfx_bytes=b"pfx",
     )
@@ -60,13 +64,11 @@ def _valid_tls_material() -> tuple[str, str]:
 
 
 def _set_admin_ui_https_material(monkeypatch, loaded, tmp_path) -> tuple[str, str]:
-    certfile = tmp_path / "admin-ui-ca.crt"
-    keyfile = tmp_path / "admin-ui-ca.key"
-    cert_pem, key_pem = _valid_tls_material()
-    certfile.write_text(cert_pem, encoding="utf-8")
-    keyfile.write_text(key_pem, encoding="utf-8")
+    certfile = tmp_path / "admin-ui.crt"
+    keyfile = tmp_path / "admin-ui.key"
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_CERTFILE", str(certfile))
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_KEYFILE", str(keyfile))
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_CA_DIR", str(tmp_path))
     return str(certfile), str(keyfile)
 
 
@@ -221,9 +223,9 @@ def test_certificates_page_reports_https_fallback_when_material_missing(
     assert "HTTP only" in html
     assert "missing TLS material" in html
     assert "started HTTP" in html
-    assert "not valid in admin-ui" in html
-    assert "/etc/squid/ssl/certs/ca.crt" in html
-    assert "/etc/squid/ssl/certs/ca.key" in html
+    assert "leaf missing" in html
+    assert "/etc/squid/ssl/certs/admin-ui.crt" in html
+    assert "/etc/squid/ssl/certs/admin-ui.key" in html
 
 
 def test_admin_ui_https_preference_uses_active_bundle_paths(
@@ -261,6 +263,12 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert bundles.admin_ui_https_settings.keyfile == keyfile
     assert bundles.admin_ui_https_settings.updated_by == "admin"
     assert restart_calls == [True]
+    assert Path(certfile).read_text(encoding="utf-8").startswith(
+        "-----BEGIN CERTIFICATE-----",
+    )
+    assert Path(keyfile).read_text(encoding="utf-8").startswith(
+        "-----BEGIN PRIVATE KEY-----",
+    )
 
 
 def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(
@@ -445,6 +453,7 @@ def test_admin_ui_https_preference_requires_mounted_active_material(
         "ADMIN_UI_SSL_KEYFILE",
         str(tmp_path / "missing-ca.key"),
     )
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_CA_DIR", str(tmp_path))
     restart_calls = []
     monkeypatch.setattr(
         loaded.module,
@@ -466,7 +475,7 @@ def test_admin_ui_https_preference_requires_mounted_active_material(
 
     assert response.status_code in {301, 302, 303}
     assert _location_params(response)["ok"] == ["0"]
-    assert "requires the active SSL inspection CA certificate and key" in (
+    assert "requires the generated Admin UI server certificate and key" in (
         _location_params(response)["msg"][0]
     )
     assert bundles.admin_ui_https_settings.enabled is False
@@ -484,6 +493,7 @@ def test_admin_ui_https_preference_rejects_empty_active_material(
     keyfile.write_bytes(b"")
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_CERTFILE", str(certfile))
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_KEYFILE", str(keyfile))
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_CA_DIR", str(tmp_path))
     restart_calls = []
     monkeypatch.setattr(
         loaded.module,
@@ -519,6 +529,7 @@ def test_admin_ui_https_preference_rejects_invalid_active_material(
     keyfile.write_text("not a private key\n", encoding="utf-8")
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_CERTFILE", str(certfile))
     monkeypatch.setattr(loaded.module, "ADMIN_UI_SSL_KEYFILE", str(keyfile))
+    monkeypatch.setattr(loaded.module, "ADMIN_UI_CA_DIR", str(tmp_path))
     restart_calls = []
     monkeypatch.setattr(
         loaded.module,

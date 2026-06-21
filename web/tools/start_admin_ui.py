@@ -14,8 +14,8 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-DEFAULT_CERTFILE = "/etc/squid/ssl/certs/ca.crt"
-DEFAULT_KEYFILE = "/etc/squid/ssl/certs/ca.key"
+DEFAULT_CERTFILE = "/etc/squid/ssl/certs/admin-ui.crt"
+DEFAULT_KEYFILE = "/etc/squid/ssl/certs/admin-ui.key"
 
 
 @dataclass(frozen=True)
@@ -144,7 +144,7 @@ def main() -> int:
         if config.source == "db" and not material.ready:
             _log(
                 "WARNING: saved Admin UI HTTPS setting is enabled but the active "
-                "SSL inspection CA material is not valid TLS material; starting HTTP so the "
+                "Admin UI leaf certificate is not valid TLS material; starting HTTP so the "
                 "Certificates page can recover the setting.",
             )
             config = AdminUiHttpsRuntimeConfig(
@@ -165,7 +165,7 @@ def main() -> int:
     os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] = config.source
     if config.source == "db-missing-material":
         os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"] = (
-            "Saved Admin UI HTTPS is enabled, but active SSL inspection CA material "
+            "Saved Admin UI HTTPS is enabled, but the Admin UI leaf certificate "
             "is not valid TLS material inside the admin-ui container."
         )
     else:

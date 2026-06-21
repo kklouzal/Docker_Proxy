@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 
 def _add_web_to_path() -> None:
@@ -18,6 +23,33 @@ from services import certificate_core  # type: ignore  # noqa: E402
 CERT_A = "-----BEGIN CERTIFICATE-----\nCERTA\n-----END CERTIFICATE-----\n"
 CERT_B = "-----BEGIN CERTIFICATE-----\nCERTB\n-----END CERTIFICATE-----\n"
 KEY_A = "-----BEGIN PRIVATE KEY-----\nKEYA\n-----END PRIVATE KEY-----\n"
+
+
+def _valid_ca_bundle() -> certificate_core.CertificateBundle:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Docker Proxy Test CA")]
+    )
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return certificate_core.build_certificate_bundle(
+        cert.public_bytes(serialization.Encoding.PEM).decode(),
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+    )
 
 
 def test_pem_helpers_normalize_extract_and_split_certificate_chains() -> None:
@@ -102,3 +134,52 @@ def test_load_local_certificate_bundle_returns_none_for_missing_or_incomplete_ma
     (tmp_path / "ca.crt").write_text(CERT_A, encoding="utf-8")
     (tmp_path / "ca.key").write_text("not a private key", encoding="utf-8")
     assert certificate_core.load_local_certificate_bundle(tmp_path) is None
+
+
+def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) -> None:
+    bundle = _valid_ca_bundle()
+    certificate_core.materialize_certificate_bundle(tmp_path, bundle)
+    ca_cert_before = (tmp_path / "ca.crt").read_text(encoding="utf-8")
+    ca_key_before = (tmp_path / "ca.key").read_text(encoding="utf-8")
+
+    material = certificate_core.materialize_admin_ui_server_certificate(
+        tmp_path,
+        bundle,
+        san_tokens=[
+            "admin.example.test:8443",
+            "https://proxy.example.test/certs",
+            "192.0.2.10",
+            "../bad",
+        ],
+    )
+
+    assert material.certfile == str(tmp_path / "admin-ui.crt")
+    assert material.keyfile == str(tmp_path / "admin-ui.key")
+    assert "admin.example.test" in material.sans
+    assert "proxy.example.test" in material.sans
+    assert "192.0.2.10" in material.sans
+    assert "../bad" not in material.sans
+    assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == ca_cert_before
+    assert (tmp_path / "ca.key").read_text(encoding="utf-8") == ca_key_before
+
+    validation = certificate_core.validate_tls_material_paths(
+        material.certfile,
+        material.keyfile,
+    )
+    assert validation.ready is True
+
+    leaf = x509.load_pem_x509_certificate((tmp_path / "admin-ui.crt").read_bytes())
+    assert leaf.extensions.get_extension_for_class(
+        x509.BasicConstraints,
+    ).value.ca is False
+    assert (
+        ExtendedKeyUsageOID.SERVER_AUTH
+        in leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    )
+    key_usage = leaf.extensions.get_extension_for_class(x509.KeyUsage).value
+    assert key_usage.digital_signature is True
+    assert key_usage.key_encipherment is True
+    sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "admin.example.test" in sans.get_values_for_type(x509.DNSName)
+    assert "proxy.example.test" in sans.get_values_for_type(x509.DNSName)
+    assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
