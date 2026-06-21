@@ -89,6 +89,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/proxy_client.py \
 	web/services/proxy_context.py \
 	web/services/proxy_health.py \
+	web/services/proxy_logs.py \
 	web/services/proxy_registry.py \
 	web/services/proxy_sync.py \
 	web/services/public_endpoint.py \
