@@ -3463,6 +3463,14 @@ def _handle_auth_provider_post():
     action = _form_action()
     provider = (request.form.get("provider") or "").strip()
     tab = provider if provider in {"ldap", "active_directory", "saml"} else "status"
+
+    def _submitted_directory_payload() -> dict[str, Any]:
+        payload = request.form.to_dict()
+        ca_upload = request.files.get("ca_bundle_file")
+        if ca_upload is not None and ca_upload.filename:
+            payload["ca_bundle_upload"] = ca_upload.read()
+        return payload
+
     try:
         if action == "save_saml_provider":
             _saml_auth_store.save_profile(request.form.to_dict())
@@ -3489,11 +3497,7 @@ def _handle_auth_provider_post():
                 tab="saml",
             )
         if action == "save_auth_provider":
-            payload = request.form.to_dict()
-            ca_upload = request.files.get("ca_bundle_file")
-            if ca_upload is not None and ca_upload.filename:
-                payload["ca_bundle_upload"] = ca_upload.read()
-            _directory_auth_store.save_profile(provider, payload)
+            _directory_auth_store.save_profile(provider, _submitted_directory_payload())
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -3501,11 +3505,8 @@ def _handle_auth_provider_post():
                 tab=tab,
             )
         if action == "test_auth_provider":
-            payload = request.form.to_dict()
+            payload = _submitted_directory_payload()
             payload["enabled"] = "0"
-            ca_upload = request.files.get("ca_bundle_file")
-            if ca_upload is not None and ca_upload.filename:
-                payload["ca_bundle_upload"] = ca_upload.read()
             _directory_auth_store.save_profile(provider, payload)
             result = _directory_auth_store.test_connection(provider)
             return _redirect_with_message(
@@ -3515,6 +3516,9 @@ def _handle_auth_provider_post():
                 tab=tab,
             )
         if action == "scan_auth_provider":
+            payload = _submitted_directory_payload()
+            payload["enabled"] = "0"
+            _directory_auth_store.save_profile(provider, payload)
             result = _directory_auth_store.scan_directory(provider)
             session[f"directory_scan_{provider}"] = {
                 "base_dns": list(result.base_dns),

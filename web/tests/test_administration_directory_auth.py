@@ -443,13 +443,70 @@ def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -
             "csrf_token": token,
             "action": "scan_auth_provider",
             "provider": "ldap",
+            "enabled": "1",
+            "server_urls": "ldaps://scan-ldap.example.org:636",
+            "bind_dn": "cn=scan,dc=example,dc=org",
+            "bind_password": "scan-secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_search_base": "ou=groups",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
         },
     )
 
     assert response.status_code in {302, 303}
+    assert directory_store.saved[0][0] == "ldap"
+    assert directory_store.saved[0][1]["server_urls"] == (
+        "ldaps://scan-ldap.example.org:636"
+    )
+    assert directory_store.saved[0][1]["bind_password"] == "scan-secret"
+    assert directory_store.saved[0][1]["enabled"] == "0"
     body = client.get("/administration?tab=ldap").get_data(as_text=True)
     assert "ou=people" in body
     assert "cn=admins,ou=groups,dc=example,dc=org" in body
+
+
+def test_active_directory_provider_scan_saves_submitted_form_first(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=active_directory")
+
+    response = client.post(
+        "/administration?tab=active_directory",
+        data={
+            "csrf_token": token,
+            "action": "scan_auth_provider",
+            "provider": "active_directory",
+            "enabled": "1",
+            "server_urls": "ldaps://scan-dc.example.local:636",
+            "bind_dn": "scan-svc@example.local",
+            "bind_password": "scan-ad-secret",
+            "base_dn": "DC=example,DC=local",
+            "user_filter": "(sAMAccountName={username})",
+            "user_attribute": "sAMAccountName",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "CN=Admins,DC=example,DC=local",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.saved[0][0] == "active_directory"
+    assert directory_store.saved[0][1]["server_urls"] == (
+        "ldaps://scan-dc.example.local:636"
+    )
+    assert directory_store.saved[0][1]["bind_dn"] == "scan-svc@example.local"
+    assert directory_store.saved[0][1]["bind_password"] == "scan-ad-secret"
+    assert directory_store.saved[0][1]["enabled"] == "0"
 
 
 class RaisingDirectoryAuthStore(FakeDirectoryAuthStore):
