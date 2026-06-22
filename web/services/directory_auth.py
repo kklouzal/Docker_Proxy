@@ -964,7 +964,9 @@ class DirectoryAuthStore:
         base = (base or "").strip().strip(",")
         if not child:
             return base
-        if child.lower().endswith(base.lower()):
+        child_folded = child.casefold()
+        base_folded = base.casefold()
+        if child_folded == base_folded or child_folded.endswith(f",{base_folded}"):
             return child
         return f"{child},{base}" if base else child
 

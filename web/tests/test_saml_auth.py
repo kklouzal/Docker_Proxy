@@ -178,6 +178,43 @@ def test_parse_saml_metadata_extracts_adfs_metadata() -> None:
     }
 
 
+def test_parse_saml_metadata_finds_nested_idp_entity_descriptor() -> None:
+    nested_metadata = f"""<?xml version="1.0" encoding="UTF-8"?>
+<EntitiesDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+    xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <EntitiesDescriptor Name="federation">
+    <EntityDescriptor entityID="https://sp.example.test/metadata">
+      <SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"/>
+    </EntityDescriptor>
+    <EntityDescriptor entityID="https://idp.example.test/metadata">
+      <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+        <KeyDescriptor use="signing">
+          <ds:KeyInfo>
+            <ds:X509Data>
+              <ds:X509Certificate>{SIGNING_CERT}</ds:X509Certificate>
+            </ds:X509Data>
+          </ds:KeyInfo>
+        </KeyDescriptor>
+        <SingleSignOnService
+            Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+            Location="https://idp.example.test/sso" />
+      </IDPSSODescriptor>
+    </EntityDescriptor>
+  </EntitiesDescriptor>
+</EntitiesDescriptor>
+"""
+
+    parsed = parse_saml_metadata(nested_metadata)
+
+    assert parsed["entity_id"] == "https://idp.example.test/metadata"
+    assert parsed["sso_services"] == [
+        {
+            "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            "location": "https://idp.example.test/sso",
+        }
+    ]
+
+
 def test_parse_saml_metadata_requires_idp_sso_descriptor() -> None:
     metadata = """<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
         entityID="https://idp.example"></EntityDescriptor>"""

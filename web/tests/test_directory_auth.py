@@ -297,6 +297,21 @@ def test_profile_save_preserves_bracketed_ipv6_server_urls(tmp_path) -> None:
     assert profile.server_urls == "ldap://[2001:db8::1]:389\nldaps://[2001:db8::2]"
 
 
+def test_join_dn_requires_base_dn_boundary() -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+
+    assert (
+        store._join_dn("ou=people,dc=example,dc=org", "dc=example,dc=org")
+        == "ou=people,dc=example,dc=org"
+    )
+    assert store._join_dn("dc=example,dc=org", "dc=example,dc=org") == (
+        "dc=example,dc=org"
+    )
+    assert store._join_dn("notdc=example,dc=org", "dc=example,dc=org") == (
+        "notdc=example,dc=org,dc=example,dc=org"
+    )
+
+
 @pytest.mark.parametrize(
     ("server_urls", "message"),
     [

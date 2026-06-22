@@ -652,11 +652,15 @@ def parse_saml_metadata(raw_xml: str) -> dict[str, Any]:
 
 
 def _first_entity_descriptor(root: ElementTree.Element) -> ElementTree.Element:
-    if root.tag in {f"{{{_MD_NS}}}EntityDescriptor", "EntityDescriptor"}:
+    entity_tags = {f"{{{_MD_NS}}}EntityDescriptor", "EntityDescriptor"}
+    if root.tag in entity_tags:
         return root
-    entity = root.find("md:EntityDescriptor", _NS)
-    if entity is not None:
-        return entity
+    for entity in root.findall(".//md:EntityDescriptor", _NS):
+        if entity.find("md:IDPSSODescriptor", _NS) is not None:
+            return entity
+    for entity in root.iter():
+        if entity.tag in entity_tags:
+            return entity
     msg = "SAML metadata does not include an EntityDescriptor."
     raise ValueError(msg)
 
