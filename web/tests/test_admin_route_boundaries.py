@@ -1970,6 +1970,20 @@ class RemediationRowsObservability:
                     "evidence": 'Alt-Svc advertises h3; sample=h3=":443"',
                     "recommended_action": "Block or steer UDP/443.",
                 },
+                {
+                    "kind": "cloudflare_challenge",
+                    "component": "SSL inspection / upstream bot mitigation",
+                    "severity": "high",
+                    "title": "Cloudflare challenge observed through proxy",
+                    "subject": "challenge.example",
+                    "subject_type": "domain",
+                    "count": 1,
+                    "clients": 1,
+                    "last_seen": 1,
+                    "confidence": "high",
+                    "evidence": "HTTP 403 with Cloudflare mitigation metadata",
+                    "recommended_action": "Add a no-bump/splice rule for the domain.",
+                },
             ],
             "top_components": [],
             "top_kinds": [],
@@ -2073,7 +2087,7 @@ def test_observability_ssl_pane_links_to_sslfilter_without_template_error(
     assert "/sslfilter?domain=broken.example" in text
 
 
-def test_observability_remediation_hides_domain_actions_for_proxy_subjects(
+def test_observability_remediation_scopes_row_actions_by_subject_and_kind(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(
@@ -2091,14 +2105,15 @@ def test_observability_remediation_hides_domain_actions_for_proxy_subjects(
     assert response.status_code == 200
     assert "Domain subjects" in text
     assert "Runtime subjects" in text
-    assert 'action="/observability/remediation/no-bump-domain' in text
-    assert 'name="domain" value="video.example"' in text
-    assert ">No-bump domain<" in text
     assert ">Inspect destination<" in text
     assert ">Inspect SSL<" in text
     assert ">Inspect SSL Filtering<" in text
     assert "/observability?pane=destinations&amp;q=video.example" in text
     assert "/observability?pane=ssl&amp;q=video.example" in text
+    assert 'action="/observability/remediation/no-bump-domain' in text
+    assert 'name="domain" value="challenge.example"' in text
+    assert ">No-bump domain<" in text
+    assert 'name="domain" value="video.example"' not in text
     assert ">Destination</a>" not in text
     assert 'class="btn" href="/sslfilter?domain=video.example' not in text
     assert "/sslfilter?domain=livingroom" not in text
