@@ -99,6 +99,10 @@ class SquidController(_CoreSquidController):
         if not clean.startswith("."):
             msg = f"{field_name} must begin with a dot"
             raise ValueError(msg)
+        domain = clean[1:]
+        if not domain or not self._HOSTNAME_RE.match(domain):
+            msg = f"{field_name} contains invalid domain"
+            raise ValueError(msg)
         return clean
 
     def _validate_dns_nameservers(

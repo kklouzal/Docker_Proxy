@@ -728,3 +728,27 @@ def test_generated_config_renders_and_parses_cache_mgr_contact_email() -> None:
     assert "cache_mgr helpdesk@example.invalid" in controller.get_http_lines(
         custom_config
     )
+
+
+def test_generated_config_rejects_invalid_append_domain_tokens() -> None:
+    import pytest
+
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    config = controller.generate_config_from_template(
+        build_template_options({"append_domain": ".corp.example"}, max_workers=4),
+    )
+
+    assert "append_domain .corp.example" in config
+    assert controller.get_tunable_options(config)["append_domain"] == ".corp.example"
+
+    for value in (".corp.example extra", ".", ".bad_domain.example"):
+        with pytest.raises(ValueError, match="append_domain"):
+            controller.generate_config_from_template(
+                build_template_options({"append_domain": value}, max_workers=4),
+            )
