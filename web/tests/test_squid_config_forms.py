@@ -171,13 +171,13 @@ def test_generated_config_preserves_valid_icap_username_header_token() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    (
+    [
         "",
         "X Auth User",
         "X-Auth-User:",
         "X/Auth/User",
         "X-Auth-User\ncache_mgr attacker@example.invalid",
-    ),
+    ],
 )
 def test_generated_config_falls_back_for_invalid_icap_username_header_tokens(
     value: str,
