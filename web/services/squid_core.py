@@ -930,15 +930,25 @@ class SquidController:
         self,
         detail_parts: list[str],
         *,
+        accept_live_pid: bool = False,
         timeout: float = 20.0,
     ) -> tuple[bool, str] | None:
         """Accept supervisor auto-restart races only after Squid is serving again."""
-        if self._supervisor_program_running("squid") and self._wait_for_http_listener(
+        supervisor_running = self._supervisor_program_running("squid")
+        live_pid_running = accept_live_pid and not (
+            self._wait_for_squid_pidfile_stale_or_absent(timeout=0.5)
+        )
+        if (supervisor_running or live_pid_running) and self._wait_for_http_listener(
             timeout=timeout,
         ):
-            detail_parts.append(
-                "Squid was already restarted by supervisor and its HTTP listener is responding.",
-            )
+            if live_pid_running and not supervisor_running:
+                detail_parts.append(
+                    "Squid already has a fresh PID file and its HTTP listener is responding.",
+                )
+            else:
+                detail_parts.append(
+                    "Squid was already restarted by supervisor and its HTTP listener is responding.",
+                )
             return True, "\n".join(part for part in detail_parts if part).strip()
         return None
 
@@ -983,7 +993,12 @@ class SquidController:
                 return False, (detail + "\n" + recovery).strip()
         return True, detail or "Squid reconfigured."
 
-    def restart_squid(self, *, ready_timeout: float = 45.0) -> tuple[bool, str]:
+    def restart_squid(
+        self,
+        *,
+        ready_timeout: float = 45.0,
+        accept_live_pid_restart: bool = False,
+    ) -> tuple[bool, str]:
         ready_timeout = max(1.0, float(ready_timeout or 45.0))
         detail_parts: list[str] = []
         try:
@@ -1033,12 +1048,20 @@ class SquidController:
         if stale_pid_detail:
             detail_parts.append(stale_pid_detail)
 
-        accepted = self._accept_running_squid_restart(detail_parts, timeout=10.0)
+        accepted = self._accept_running_squid_restart(
+            detail_parts,
+            accept_live_pid=accept_live_pid_restart,
+            timeout=10.0,
+        )
         if accepted is not None:
             return accepted
 
         if not self._wait_for_squid_pidfile_stale_or_absent(timeout=10.0):
-            accepted = self._accept_running_squid_restart(detail_parts, timeout=10.0)
+            accepted = self._accept_running_squid_restart(
+                detail_parts,
+                accept_live_pid=accept_live_pid_restart,
+                timeout=10.0,
+            )
             if accepted is not None:
                 return accepted
             detail_parts.append(
@@ -1082,6 +1105,7 @@ class SquidController:
             ) and "already started" not in start_detail_lower:
                 accepted = self._accept_running_squid_restart(
                     detail_parts,
+                    accept_live_pid=accept_live_pid_restart,
                     timeout=20.0,
                 )
                 if accepted is not None:
@@ -1478,7 +1502,10 @@ class SquidController:
             detail_parts.append(f"squid -z error: {exc}")
             return False, "\n".join(part for part in detail_parts if part).strip()
 
-        ok_restart, restart_detail = self.restart_squid(ready_timeout=20.0)
+        ok_restart, restart_detail = self.restart_squid(
+            ready_timeout=20.0,
+            accept_live_pid_restart=True,
+        )
         detail_parts.append(
             restart_detail
             or ("Squid restarted." if ok_restart else "Squid restart failed."),
