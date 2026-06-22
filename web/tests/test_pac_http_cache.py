@@ -102,6 +102,28 @@ def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(tmp_path, pac_ht
     assert b"SECRET" not in (data or b"")
 
 
+def test_local_pac_cache_ignores_manifest_symlink_outside_pac_dir(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (tmp_path / "secret.pac").write_text("SECRET", encoding="utf-8")
+    (pac_dir / "linked.pac").symlink_to(tmp_path / "secret.pac")
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"linked.pac","state_sha256":"state-one"}""",
+        encoding="utf-8",
+    )
+
+    data = pac_http.LocalPacCache(str(pac_dir)).resolve(
+        client_ip="10.1.2.3",
+        request_host="proxy.example:3128",
+    )
+
+    assert data is None
+
+
 def test_request_host_ignores_untrusted_forwarded_host(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
 

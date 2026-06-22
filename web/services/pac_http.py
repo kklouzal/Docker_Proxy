@@ -228,6 +228,22 @@ def _safe_manifest_file_path(value: object) -> str:
     return rel_path
 
 
+def _safe_manifest_file(
+    root: Path,
+    rel_path: object,
+) -> tuple[str, Path] | tuple[str, None]:
+    safe_path = _safe_manifest_file_path(rel_path)
+    if not safe_path:
+        return "", None
+    try:
+        root_path = root.resolve(strict=False)
+        file_path = (root / safe_path).resolve(strict=False)
+        file_path.relative_to(root_path)
+    except Exception:
+        return "", None
+    return safe_path, file_path
+
+
 def default_pac_bytes(request_host: str) -> bytes:
     content = build_emergency_pac()
     return substitute_request_host(content, request_host).encode("utf-8")
@@ -281,10 +297,9 @@ class LocalPacCache:
         if not isinstance(rel_paths, (list, set, tuple, frozenset)):
             return ()
         for rel_path in sorted(str(item) for item in rel_paths):
-            safe_path = _safe_manifest_file_path(rel_path)
-            if not safe_path:
+            safe_path, path = _safe_manifest_file(self.pac_dir, rel_path)
+            if not safe_path or path is None:
                 continue
-            path = self.pac_dir / safe_path
             try:
                 stat = path.stat()
             except OSError:
@@ -365,11 +380,13 @@ class LocalPacCache:
                 if path:
                     candidates.add(path)
         for rel_path in sorted(candidates):
-            file_path = self.pac_dir / rel_path
+            safe_path, file_path = _safe_manifest_file(self.pac_dir, rel_path)
+            if not safe_path or file_path is None:
+                continue
             if not file_path.exists() or not file_path.is_file():
                 continue
             try:
-                files[rel_path] = file_path.read_text(
+                files[safe_path] = file_path.read_text(
                     encoding="utf-8",
                     errors="replace",
                 )
