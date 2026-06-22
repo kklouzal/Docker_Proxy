@@ -106,9 +106,19 @@ Default first-run login:
 
 Change the administrator password after first login. The admin UI stores a persistent session secret in MySQL when available; set `FLASK_SECRET_KEY` explicitly when you want host-managed secret rotation.
 
-### AD FS / SAML admin login
+### Admin authentication
 
-The admin UI can use local users, LDAP/Active Directory, or one metadata-backed SAML provider. Local users remain available as break-glass access even when SAML is active.
+The admin UI can use local users, one LDAP or Active Directory provider, or one metadata-backed SAML provider. Local users remain available as break-glass access even when external authentication is active.
+
+Only one external provider is enabled at a time. LDAP, Active Directory, and SAML authorization currently govern admin UI login only; they do not by themselves enable transparent proxy identity, captive-portal identity, policy-user attribution, or block-page bypass.
+
+Configure LDAP or Active Directory from `Administration -> LDAP` or `Administration -> Active Directory`:
+
+1. Enter one or more `ldap://` or `ldaps://` server URLs and the bind DN / service account. Use LDAPS or StartTLS for normal deployments so bind and user credentials are not sent in clear text.
+2. Upload or paste a PEM CA bundle when directory TLS chains to an internal CA that is not in system trust.
+3. Save and test the provider. A provider cannot be enabled until its current connection settings have passed a test.
+4. Use `Scan directory` to populate Base DN, search-base, and group choices from the submitted connection details, then select the required admin group.
+5. Enable the provider after the test succeeds. If directory login fails or rejects a user, local admin accounts remain available for break-glass access.
 
 Configure SAML from `Administration -> SAML`:
 
@@ -122,7 +132,7 @@ Configure SAML from `Administration -> SAML`:
 
 SAML login is hidden and rejected until the provider is enabled, IdP metadata has refreshed successfully, and the metadata cache is still current. AD FS signing certificates are read from cached IdP metadata; refresh metadata after AD FS certificate rollover, or before rollover if AD FS publishes both current and next signing certificates. The cache expiry follows IdP `validUntil`/`cacheDuration` when present and otherwise defaults to 24 hours.
 
-The implementation requires signed assertions/messages, does not log raw SAML responses in audit records, and only redirects RelayState to local admin UI paths. Live AD FS interoperability still needs validation in the target domain because claim issuance rules, TLS trust, and reverse-proxy public URLs vary by deployment.
+The implementation requires signed assertions/messages, does not log raw SAML responses in audit records, and only redirects RelayState to local admin UI paths. Live LDAP, Active Directory, and AD FS interoperability still needs validation in the target domain because bind policy, directory schemas, group membership rules, claim issuance rules, TLS trust, and reverse-proxy public URLs vary by deployment.
 
 ## Deployment options
 
@@ -389,7 +399,7 @@ Teardown:
 docker compose -f docker-compose.yml -f docker-compose.live-tests.yml down -v
 ```
 
-Deterministic tests cover stores, route boundaries, Squid/config rendering, certificate handling, PAC rendering, web-filter and Safe Browsing helpers, adblock parsing/lookups/materialization, ICAP request behavior, runtime rollback/self-heal paths, packaging contracts, and operational data parsing without needing the live Compose stack.
+Deterministic tests cover stores, route boundaries, Squid/config rendering, certificate handling, LDAP/Active Directory and SAML admin-auth flows, PAC rendering, web-filter and Safe Browsing helpers, adblock parsing/lookups/materialization, ICAP request behavior, runtime rollback/self-heal paths, packaging contracts, and operational data parsing without needing the live Compose stack.
 
 The live harness starts MySQL, the admin UI, two proxy runtimes, a traffic fixture, and a dedicated pytest runner. It verifies real login, public/admin health separation, PAC/WPAD serving, authenticated proxy management APIs, sync and config validation/apply paths, multi-proxy selection and scoping, certificate and policy workflows, adblock/web-filter enforcement, selected-proxy ClamAV reporting, cache clear, runtime disruption behavior, security headers/session/CSRF contracts, observability pages, exports, and proxied request telemetry paths.
 
