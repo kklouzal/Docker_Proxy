@@ -246,11 +246,15 @@ def _policy_text(value: object) -> str:
 
 
 def _policy_fields_from_row(row: list[str], start_index: int) -> dict[str, str]:
+    def policy_at(offset: int) -> str:
+        index = start_index + offset
+        return _policy_text(row[index] if len(row) > index else "")
+
     return {
-        "exclusion_rule": _policy_text(row[start_index]),
-        "ssl_exception": _policy_text(row[start_index + 1]),
-        "webfilter_allow": _policy_text(row[start_index + 2]),
-        "cache_bypass": _policy_text(row[start_index + 3]),
+        "exclusion_rule": policy_at(0),
+        "ssl_exception": policy_at(1),
+        "webfilter_allow": policy_at(2),
+        "cache_bypass": policy_at(3),
     }
 
 
@@ -918,7 +922,7 @@ class DiagnosticStore:
 
     def _parse_request_log_line(self, line: str) -> dict[str, Any] | None:
         row = _split_tsv(line)
-        if len(row) < 22:
+        if len(row) < 18:
             return None
 
         ts = _safe_int(row[0], _now())
@@ -1030,7 +1034,7 @@ class DiagnosticStore:
 
     def _parse_icap_log_line(self, line: str) -> dict[str, Any] | None:
         row = _split_tsv(line)
-        if len(row) < 15:
+        if len(row) < 11:
             return None
 
         ts = _safe_int(row[0], _now())

@@ -58,6 +58,37 @@ def test_parse_request_log_line_normalizes_dash_policy_placeholders() -> None:
     assert row["cache_bypass"] == ""
 
 
+def test_parse_request_log_line_accepts_legacy_base_columns() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777357408\t79\t192.0.2.10\tGET\thttp://example.com/\tTCP_MISS/200\t482"
+        "\t54\tHIER_DIRECT\t-\t-\t-\t-\t-\t-\texample.com\tcurl/8.19.0\t-"
+    )
+
+    row = store._parse_request_log_line(line)
+
+    assert row is not None
+    assert row["domain"] == "example.com"
+    assert row["exclusion_rule"] == ""
+    assert row["ssl_exception"] == ""
+    assert row["webfilter_allow"] == ""
+    assert row["cache_bypass"] == ""
+    assert row["response_content_type"] == ""
+    assert row["response_server"] == ""
+    assert row["response_cf_mitigated"] == ""
+    assert row["response_alt_svc"] == ""
+
+
+def test_parse_request_log_line_ignores_rows_shorter_than_legacy_base() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777357408\t79\t192.0.2.10\tGET\thttp://example.com/\tTCP_MISS/200\t482"
+        "\t54\tHIER_DIRECT\t-\t-\t-\t-\t-\t-\texample.com\tcurl/8.19.0"
+    )
+
+    assert store._parse_request_log_line(line) is None
+
+
 def test_parse_icap_log_line_classifies_av_service_family() -> None:
     store = DiagnosticStore()
     line = (
@@ -103,6 +134,34 @@ def test_parse_icap_log_line_normalizes_dash_policy_placeholders() -> None:
     assert row["ssl_exception"] == ""
     assert row["webfilter_allow"] == ""
     assert row["cache_bypass"] == ""
+
+
+def test_parse_icap_log_line_accepts_legacy_base_columns() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777000001\ttx123\t192.0.2.10\tGET\thttps://example.com/file.exe\t87"
+        "\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0\texample.com"
+    )
+
+    row = store._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["domain"] == "example.com"
+    assert row["service_family"] == "av"
+    assert row["exclusion_rule"] == ""
+    assert row["ssl_exception"] == ""
+    assert row["webfilter_allow"] == ""
+    assert row["cache_bypass"] == ""
+
+
+def test_parse_icap_log_line_ignores_rows_shorter_than_legacy_base() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777000001\ttx123\t192.0.2.10\tGET\thttps://example.com/file.exe\t87"
+        "\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0"
+    )
+
+    assert store._parse_icap_log_line(line) is None
 
 
 def test_log_parsers_share_policy_field_and_raw_line_normalization() -> None:
