@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _ensure_web_import_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
@@ -730,9 +732,27 @@ def test_generated_config_renders_and_parses_cache_mgr_contact_email() -> None:
     )
 
 
-def test_generated_config_rejects_invalid_append_domain_tokens() -> None:
-    import pytest
+def test_generated_config_rejects_invalid_cache_mgr_contact_email() -> None:
+    from services.squidctl import SquidController  # type: ignore
 
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    for value in (
+        "helpdesk@example.invalid cache_effective_user nobody",
+        "Admin <helpdesk@example.invalid>",
+        "helpdesk",
+        "helpdesk@bad_domain.example",
+    ):
+        with pytest.raises(ValueError, match="cache_mgr"):
+            controller.generate_config_from_template(
+                build_template_options({"cache_mgr_email": value}, max_workers=4),
+            )
+
+
+def test_generated_config_rejects_invalid_append_domain_tokens() -> None:
     from services.squidctl import SquidController  # type: ignore
 
     controller = SquidController()

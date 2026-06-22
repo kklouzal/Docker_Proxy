@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import email.utils
 import logging
 import os
 import pathlib
@@ -31,6 +32,7 @@ class SquidController(_CoreSquidController):
     _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
     _IPV6_SIMPLE_RE = re.compile(r"^[a-fA-F0-9:]+$")
     _CPU_AFFINITY_RE = re.compile(r"^[A-Za-z0-9_,= ]+$")
+    _EMAIL_LOCAL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
 
     def __init__(
         self,
@@ -102,6 +104,33 @@ class SquidController(_CoreSquidController):
         domain = clean[1:]
         if not domain or not self._HOSTNAME_RE.match(domain):
             msg = f"{field_name} contains invalid domain"
+            raise ValueError(msg)
+        return clean
+
+    def _validate_email_address(
+        self,
+        value: str,
+        field_name: str = "email",
+    ) -> str:
+        clean = self._sanitize_single_line(value, field_name)
+        if not clean:
+            return ""
+        if len(clean) > 254 or any(char.isspace() for char in clean):
+            msg = f"{field_name} contains invalid email address"
+            raise ValueError(msg)
+        _display_name, parsed = email.utils.parseaddr(clean)
+        if parsed != clean:
+            msg = f"{field_name} contains invalid email address"
+            raise ValueError(msg)
+        local, separator, domain = clean.rpartition("@")
+        if (
+            not separator
+            or not local
+            or not domain
+            or not self._EMAIL_LOCAL_RE.match(local)
+            or not self._HOSTNAME_RE.match(domain)
+        ):
+            msg = f"{field_name} contains invalid email address"
             raise ValueError(msg)
         return clean
 
@@ -703,7 +732,7 @@ class SquidController(_CoreSquidController):
             "visible_hostname",
         )
         cache_mgr_email = (
-            self._validate_single_line_value(
+            self._validate_email_address(
                 str(options.get("cache_mgr_email") or "proxy-admin@example.invalid"),
                 "cache_mgr",
             )
