@@ -1481,6 +1481,21 @@ class SquidController:
             return False, prefix + f"cache delete failed: {exc}"
 
         try:
+            stop = self._run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+                capture_output=True,
+                timeout=20,
+            )
+            detail_parts.append(
+                self._decode_completed(stop) or "supervisorctl stop squid",
+            )
+        except Exception as exc:
+            detail_parts.append(f"stop before cache preparation failed: {exc}")
+
+        if not self._cleanup_before_cache_prepare(detail_parts):
+            return False, "\n".join(part for part in detail_parts if part).strip()
+
+        try:
             prepare = self._run(
                 ["squid", "-N", "-z", "-f", self.squid_conf_path],
                 capture_output=True,
