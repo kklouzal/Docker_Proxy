@@ -147,6 +147,66 @@ def test_generated_template_defaults_to_rock_cache_store() -> None:
     assert "http_upgrade_request_protocols OTHER deny all" in config
 
 
+def test_generated_config_preserves_valid_icap_username_header_token() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    config = controller.generate_config_from_template(
+        build_template_options(
+            {"icap_client_username_header": "X_Auth.User"},
+            max_workers=4,
+        ),
+    )
+
+    assert "icap_client_username_header X_Auth.User" in config
+    assert (
+        controller.get_tunable_options(config)["icap_client_username_header"]
+        == "X_Auth.User"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "",
+        "X Auth User",
+        "X-Auth-User:",
+        "X/Auth/User",
+        "X-Auth-User\ncache_mgr attacker@example.invalid",
+    ),
+)
+def test_generated_config_falls_back_for_invalid_icap_username_header_tokens(
+    value: str,
+) -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    config = controller.generate_config_from_template(
+        build_template_options(
+            {"icap_client_username_header": value},
+            max_workers=4,
+        ),
+    )
+
+    assert "icap_client_username_header X-Client-Username" in config
+    assert "icap_client_username_header X Auth User" not in config
+    assert "icap_client_username_header X-Auth-User:" not in config
+    assert "icap_client_username_header X/Auth/User" not in config
+    assert "cache_mgr attacker@example.invalid" not in config
+    assert (
+        controller.get_tunable_options(config)["icap_client_username_header"]
+        == "X-Client-Username"
+    )
+
+
 def test_default_refresh_patterns_are_standards_safe_and_modern_static_first() -> None:
     lines = [
         line

@@ -33,6 +33,7 @@ class SquidController(_CoreSquidController):
     _IPV6_SIMPLE_RE = re.compile(r"^[a-fA-F0-9:]+$")
     _CPU_AFFINITY_RE = re.compile(r"^[A-Za-z0-9_,= ]+$")
     _EMAIL_LOCAL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
+    _HTTP_FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
     def __init__(
         self,
@@ -182,6 +183,18 @@ class SquidController(_CoreSquidController):
 
     def _validate_single_line_value(self, value: str, field_name: str) -> str:
         return self._sanitize_single_line(value, field_name)
+
+    def _validate_http_field_name(self, value: str, field_name: str) -> str:
+        if not value:
+            return ""
+        clean = value.strip()
+        if not clean:
+            return ""
+        if "\n" in clean or "\r" in clean:
+            return ""
+        if not self._HTTP_FIELD_NAME_RE.match(clean):
+            return ""
+        return clean
 
     def _extract_managed_subblock(self, text: str, block_name: str) -> str | None:
         pattern = re.compile(
@@ -628,7 +641,7 @@ class SquidController(_CoreSquidController):
         icap_send_client_ip_on = bool_value("icap_send_client_ip_on", True)
         icap_send_client_username_on = bool_value("icap_send_client_username_on", False)
         icap_client_username_header = (
-            self._validate_single_line_value(
+            self._validate_http_field_name(
                 str(options.get("icap_client_username_header") or "X-Client-Username"),
                 "icap_client_username_header",
             )
