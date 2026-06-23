@@ -209,6 +209,46 @@ def test_restart_squid_accepts_live_pid_restore_for_cache_clear(
     assert "fresh PID file" in detail
 
 
+def test_stale_pid_cleanup_preserves_live_squid_pid_without_listener(
+    monkeypatch,
+) -> None:
+    from services import squid_core, squidctl  # type: ignore
+
+    controller = squidctl.SquidController(cmd_run=lambda *args, **kwargs: None)
+    unlinked: list[str] = []
+
+    real_path = squid_core.Path
+
+    class FakePath:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def exists(self) -> bool:
+            return self.value in {"/var/run/squid.pid", "/proc/1460"}
+
+        def read_text(self, **_kwargs) -> str:
+            if self.value == "/var/run/squid.pid":
+                return "1460\n"
+            return real_path(self.value).read_text(**_kwargs)
+
+    monkeypatch.setattr(squid_core.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(squid_core, "Path", FakePath)
+    monkeypatch.setattr(controller, "_pid_looks_like_squid", lambda pid: pid == 1460)
+    monkeypatch.setattr(
+        controller,
+        "_squid_pid_has_http_listener",
+        lambda pid: False,
+    )
+    monkeypatch.setattr(squid_core.os, "unlink", unlinked.append)
+
+    detail = controller._remove_stale_squid_pidfile(
+        allow_live_without_listener=True,
+    )
+
+    assert detail == ""
+    assert unlinked == []
+
+
 def test_wait_for_http_listener_accepts_transparent_listener_without_http_probe(
     monkeypatch,
 ) -> None:

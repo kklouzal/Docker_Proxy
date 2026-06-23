@@ -861,16 +861,7 @@ class SquidController:
             pid = int(raw or "0")
             if pid > 0 and Path(f"/proc/{pid}").exists():
                 try:
-                    comm = (
-                        Path(f"/proc/{pid}/comm")
-                        .read_text(encoding="utf-8", errors="replace")
-                        .strip()
-                        .lower()
-                    )
-                    if "squid" in comm and (
-                        not allow_live_without_listener
-                        or self._squid_pid_has_http_listener(pid)
-                    ):
+                    if self._pid_looks_like_squid(pid):
                         return ""
                 except Exception:
                     return ""
