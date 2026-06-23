@@ -5436,10 +5436,12 @@ def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None
     for row in rows:
         if not isinstance(row, dict):
             continue
+        ok, _detail, _canonical = validate_domain_rule(str(row.get("subject") or ""))
         row["no_bump_domain_action"] = (
             bool(row.get("subject"))
             and (row.get("subject_type") or "domain") == "domain"
             and row.get("kind") in _OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS
+            and ok
         )
 
 

@@ -2001,6 +2001,20 @@ class RemediationRowsObservability:
                     "evidence": "HTTP 403 with Cloudflare mitigation metadata",
                     "recommended_action": "Add a no-bump/splice rule for the domain.",
                 },
+                {
+                    "kind": "cloudflare_challenge",
+                    "component": "SSL inspection / upstream bot mitigation",
+                    "severity": "high",
+                    "title": "Cloudflare challenge observed through proxy",
+                    "subject": "bad domain",
+                    "subject_type": "domain",
+                    "count": 1,
+                    "clients": 1,
+                    "last_seen": 1,
+                    "confidence": "high",
+                    "evidence": "HTTP 403 with Cloudflare mitigation metadata",
+                    "recommended_action": "Add a no-bump/splice rule for the domain.",
+                },
             ],
             "top_components": [],
             "top_kinds": [],
@@ -2133,6 +2147,7 @@ def test_observability_remediation_scopes_row_actions_by_subject_and_kind(
     assert text.count('action="/observability/remediation/no-bump-domain') == 1
     assert 'name="domain" value="challenge.example"' in text
     assert ">No-bump domain<" in text
+    assert 'name="domain" value="bad domain"' not in text
     assert 'name="domain" value="video.example"' not in text
     assert 'name="domain" value="scan.example"' not in text
     assert ">Destination</a>" not in text
