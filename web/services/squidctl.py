@@ -154,6 +154,21 @@ class SquidController(_CoreSquidController):
                 raise ValueError(msg) from exc
         return clean
 
+    def _validate_dns_packet_max(
+        self,
+        value: str,
+        field_name: str = "dns_packet_max",
+    ) -> str:
+        clean = self._sanitize_single_line(value, field_name)
+        if not clean:
+            return ""
+        if clean.lower() == "none":
+            return "none"
+        if clean.isdigit():
+            return str(int(clean))
+        msg = f"{field_name} must be a byte count or 'none'"
+        raise ValueError(msg)
+
     def _validate_choice(
         self,
         value: str,
@@ -537,9 +552,8 @@ class SquidController(_CoreSquidController):
             5,
             minimum=0,
         )
-        dns_packet_max_raw = self._validate_single_line_value(
+        dns_packet_max_raw = self._validate_dns_packet_max(
             str(options.get("dns_packet_max") or ""),
-            "dns_packet_max",
         )
         dns_nameservers = self._validate_dns_nameservers(
             str(options.get("dns_nameservers") or ""),
@@ -948,7 +962,7 @@ class SquidController(_CoreSquidController):
         if dns_packet_max_raw:
             if dns_packet_max_raw.lower() == "none":
                 lines.append("dns_packet_max none")
-            elif dns_packet_max_raw.isdigit():
+            else:
                 lines.append(f"dns_packet_max {int(dns_packet_max_raw)} bytes")
         if dns_nameservers:
             lines.append(f"dns_nameservers {dns_nameservers}")

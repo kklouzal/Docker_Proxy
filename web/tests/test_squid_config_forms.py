@@ -492,6 +492,41 @@ def test_build_template_options_from_form_accepts_dns_packet_none() -> None:
     assert options["dns_packet_max"] == "none"
 
 
+def test_generated_config_renders_numeric_dns_packet_max_from_direct_options() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    config = controller.generate_config_from_template(
+        build_template_options({"dns_packet_max": "1400"}, max_workers=4),
+    )
+
+    assert "dns_packet_max 1400 bytes" in config
+
+
+@pytest.mark.parametrize("value", ["1232 bytes", "4kb", "auto", "12\ncache deny all"])
+def test_generated_config_rejects_invalid_dns_packet_max_values(value: str) -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    with pytest.raises(ValueError, match="dns_packet_max"):
+        controller.generate_config_from_template(
+            build_template_options_from_form(
+                {},
+                {"dns_packet_max": value},
+                form_kind="dns",
+                max_workers=4,
+            ),
+        )
+
+
 def test_generated_config_renders_and_parses_dns_nameservers() -> None:
     from services.squidctl import SquidController  # type: ignore
 
