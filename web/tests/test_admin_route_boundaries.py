@@ -1933,10 +1933,10 @@ class RemediationRowsObservability:
     def remediation_overview(self, **_kwargs):
         return {
             "summary": {
-                "suggestions": 2,
+                "suggestions": 4,
                 "high_confidence": 1,
-                "observations": 2,
-                "domains": 1,
+                "observations": 4,
+                "domains": 3,
                 "runtime_subjects": 1,
                 "latest": 1,
                 "http3_candidates": 1,
@@ -1969,6 +1969,20 @@ class RemediationRowsObservability:
                     "confidence": "medium",
                     "evidence": 'Alt-Svc advertises h3; sample=h3=":443"',
                     "recommended_action": "Block or steer UDP/443.",
+                },
+                {
+                    "kind": "slow_icap",
+                    "component": "ICAP av",
+                    "severity": "medium",
+                    "title": "Slow ICAP adaptation observed",
+                    "subject": "scan.example",
+                    "subject_type": "domain",
+                    "count": 1,
+                    "clients": 1,
+                    "last_seen": 1,
+                    "confidence": "medium",
+                    "evidence": "Max ICAP latency 2400 ms",
+                    "recommended_action": "Check c-icap/clamd latency or tune scan policy.",
                 },
                 {
                     "kind": "cloudflare_challenge",
@@ -2110,10 +2124,14 @@ def test_observability_remediation_scopes_row_actions_by_subject_and_kind(
     assert ">Inspect SSL Filtering<" in text
     assert "/observability?pane=destinations&amp;q=video.example" in text
     assert "/observability?pane=ssl&amp;q=video.example" in text
+    assert "/observability?pane=destinations&amp;q=scan.example" in text
+    assert "/observability?pane=ssl&amp;q=scan.example" in text
     assert 'action="/observability/remediation/no-bump-domain' in text
+    assert text.count('action="/observability/remediation/no-bump-domain') == 1
     assert 'name="domain" value="challenge.example"' in text
     assert ">No-bump domain<" in text
     assert 'name="domain" value="video.example"' not in text
+    assert 'name="domain" value="scan.example"' not in text
     assert ">Destination</a>" not in text
     assert 'class="btn" href="/sslfilter?domain=video.example' not in text
     assert "/sslfilter?domain=livingroom" not in text

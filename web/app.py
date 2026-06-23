@@ -4394,6 +4394,8 @@ def observability():
         pane_payload,
         summary=summary,
     )
+    if pane == "remediation":
+        _annotate_observability_remediation_actions(pane_payload)
 
     return render_template(
         "observability.html",
@@ -5418,6 +5420,27 @@ def _ratio_from_percent(value: object) -> float:
     if number > 1:
         return min(number / 100.0, 1.0)
     return number
+
+
+_OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS = {
+    "aborted_media_segments",
+    "cloudflare_challenge",
+    "ssl_exclusion_candidate",
+}
+
+
+def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None:
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row["no_bump_domain_action"] = (
+            bool(row.get("subject"))
+            and (row.get("subject_type") or "domain") == "domain"
+            and row.get("kind") in _OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS
+        )
 
 
 @app.route("/requests", methods=["GET", "POST"])
