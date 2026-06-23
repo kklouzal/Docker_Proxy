@@ -717,17 +717,15 @@ def test_build_template_options_from_form_supports_multiline_advanced_rules() ->
 def test_section_line_extraction_ignores_directive_prefix_lookalikes() -> None:
     from services.squidctl import SquidController  # type: ignore
 
-    config = "\n".join(
-        (
-            "http_portal deny all",
-            "http_port 0.0.0.0:3128 ssl-bump",
-            "cache_dir_extra rock /tmp/cache 100",
-            "cache_dir rock /var/spool/squid 100 slot-size=32768",
-            "store_miss_extra allow all",
-            "store_miss deny all",
-            "sslproxy_cert_error_policy allow all",
-            "sslproxy_cert_error allow all",
-        ),
+    config = (
+        "http_portal deny all\n"
+        "http_port 0.0.0.0:3128 ssl-bump\n"
+        "cache_dir_extra rock /tmp/cache 100\n"
+        "cache_dir rock /var/spool/squid 100 slot-size=32768\n"
+        "store_miss_extra allow all\n"
+        "store_miss deny all\n"
+        "sslproxy_cert_error_policy allow all\n"
+        "sslproxy_cert_error allow all"
     )
     controller = SquidController()
 
@@ -746,13 +744,11 @@ def test_section_line_extraction_ignores_directive_prefix_lookalikes() -> None:
 def test_tunable_rule_fallback_ignores_directive_prefix_lookalikes() -> None:
     from services.squidctl import SquidController  # type: ignore
 
-    config = "\n".join(
-        (
-            "sslproxy_cert_error_policy allow all",
-            "sslproxy_cert_error allow all",
-            "refresh_pattern_extra example.invalid 60 80% 1440",
-            "refresh_pattern example.invalid 60 80% 1440",
-        ),
+    config = (
+        "sslproxy_cert_error_policy allow all\n"
+        "sslproxy_cert_error allow all\n"
+        "refresh_pattern_extra example.invalid 60 80% 1440\n"
+        "refresh_pattern example.invalid 60 80% 1440"
     )
 
     options = SquidController().get_tunable_options(config)
@@ -767,16 +763,14 @@ def test_tunable_rule_fallback_ignores_directive_prefix_lookalikes() -> None:
 def test_dynamic_cert_cache_size_ignores_comments_and_non_listener_lines() -> None:
     from services.squidctl import SquidController  # type: ignore
 
-    config = "\n".join(
-        (
-            "# dynamic_cert_mem_cache_size=512MB",
-            "note dynamic_cert_mem_cache_size=384MB all",
-            "http_port 0.0.0.0:3128 ssl-bump \\",
-            "\tcert=/etc/squid/ssl/certs/ca.crt \\",
-            "\tkey=/etc/squid/ssl/certs/ca.key \\",
-            "\tgenerate-host-certificates=on \\",
-            "\tdynamic_cert_mem_cache_size=256MB",
-        ),
+    config = (
+        "# dynamic_cert_mem_cache_size=512MB\n"
+        "note dynamic_cert_mem_cache_size=384MB all\n"
+        "http_port 0.0.0.0:3128 ssl-bump \\\n"
+        "\tcert=/etc/squid/ssl/certs/ca.crt \\\n"
+        "\tkey=/etc/squid/ssl/certs/ca.key \\\n"
+        "\tgenerate-host-certificates=on \\\n"
+        "\tdynamic_cert_mem_cache_size=256MB"
     )
 
     options = SquidController().get_tunable_options(config)
