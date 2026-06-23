@@ -714,6 +714,56 @@ def test_build_template_options_from_form_supports_multiline_advanced_rules() ->
     )
 
 
+def test_section_line_extraction_ignores_directive_prefix_lookalikes() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    config = "\n".join(
+        (
+            "http_portal deny all",
+            "http_port 0.0.0.0:3128 ssl-bump",
+            "cache_dir_extra rock /tmp/cache 100",
+            "cache_dir rock /var/spool/squid 100 slot-size=32768",
+            "store_miss_extra allow all",
+            "store_miss deny all",
+            "sslproxy_cert_error_policy allow all",
+            "sslproxy_cert_error allow all",
+        ),
+    )
+    controller = SquidController()
+
+    assert controller.get_network_lines(config) == [
+        "http_port 0.0.0.0:3128 ssl-bump",
+    ]
+    assert controller.get_caching_lines(config) == [
+        "cache_dir rock /var/spool/squid 100 slot-size=32768",
+        "store_miss deny all",
+    ]
+    assert controller.get_ssl_lines(config) == [
+        "sslproxy_cert_error allow all",
+    ]
+
+
+def test_tunable_rule_fallback_ignores_directive_prefix_lookalikes() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    config = "\n".join(
+        (
+            "sslproxy_cert_error_policy allow all",
+            "sslproxy_cert_error allow all",
+            "refresh_pattern_extra example.invalid 60 80% 1440",
+            "refresh_pattern example.invalid 60 80% 1440",
+        ),
+    )
+
+    options = SquidController().get_tunable_options(config)
+
+    assert options["sslproxy_cert_error_rules_text"] == "sslproxy_cert_error allow all"
+    assert (
+        options["refresh_patterns_text"]
+        == "refresh_pattern example.invalid 60 80% 1440"
+    )
+
+
 def test_parse_cache_override_form_defaults_unchecked_to_false() -> None:
     overrides = parse_cache_override_form(
         {

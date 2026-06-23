@@ -240,6 +240,18 @@ class SquidController(_CoreSquidController):
             return text.replace(marker, rendered + "\n" + marker, 1)
         return text.rstrip() + "\n\n" + rendered
 
+    @staticmethod
+    def _line_starts_with_directive(line: str, directive: str) -> bool:
+        lower = line.lstrip().lower()
+        key = directive.lower()
+        if not key:
+            return False
+        if key[-1].isspace():
+            return lower.startswith(key)
+        if not lower.startswith(key):
+            return False
+        return len(lower) == len(key) or lower[len(key)].isspace()
+
     def _normalize_multiline_text(self, value: Any) -> str:
         return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
 
@@ -1850,7 +1862,10 @@ class SquidController(_CoreSquidController):
                 if not stripped or stripped.startswith("#"):
                     continue
                 lower = stripped.lower()
-                if any(lower.startswith(prefix) for prefix in prefixes):
+                if any(
+                    self._line_starts_with_directive(lower, prefix)
+                    for prefix in prefixes
+                ):
                     lines.append(stripped)
             if not lines:
                 return None
@@ -2186,12 +2201,12 @@ class SquidController(_CoreSquidController):
             lower = stripped.lower()
             if (
                 include_icap_include
-                and lower.startswith("include")
+                and self._line_starts_with_directive(lower, "include")
                 and "/etc/squid/conf.d/20-icap.conf" in lower
             ):
                 out.append(line)
                 continue
-            if any(lower.startswith(key) for key in keys):
+            if any(self._line_starts_with_directive(lower, key) for key in keys):
                 out.append(line)
         return out
 
@@ -2278,7 +2293,32 @@ class SquidController(_CoreSquidController):
     def get_icap_lines(self, config_text: str | None = None) -> list[str]:
         return self._get_lines(
             config_text,
-            ("icap_", "adaptation_", "force_request_body_continuation"),
+            (
+                "icap_enable",
+                "icap_206_enable",
+                "icap_send_client_ip",
+                "icap_send_client_username",
+                "icap_client_username_header",
+                "icap_client_username_encode",
+                "icap_persistent_connections",
+                "icap_preview_enable",
+                "icap_preview_size",
+                "icap_default_options_ttl",
+                "icap_connect_timeout",
+                "icap_io_timeout",
+                "icap_service_failure_limit",
+                "icap_service_revival_delay",
+                "icap_retry",
+                "icap_retry_limit",
+                "adaptation_send_client_ip",
+                "adaptation_send_username",
+                "adaptation_service_iteration_limit",
+                "adaptation_access",
+                "adaptation_service_set",
+                "adaptation_service_chain",
+                "adaptation_masterx_shared_names",
+                "force_request_body_continuation",
+            ),
             include_icap_include=True,
         )
 
