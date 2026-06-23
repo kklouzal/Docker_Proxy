@@ -499,7 +499,7 @@ def test_generated_config_renders_and_parses_dns_nameservers() -> None:
     controller.squid_conf_template_path = str(
         Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
     )
-    nameservers = "192.0.2.53 2001:db8::53 resolver.example.invalid"
+    nameservers = "192.0.2.53 2001:db8::53"
 
     config = controller.generate_config_from_template(
         build_template_options({"dns_nameservers": nameservers}, max_workers=4),
@@ -516,6 +516,7 @@ def test_generated_config_renders_and_parses_dns_nameservers() -> None:
         "abc:::",
         "2001:db8::zz",
         "999.0.2.53",
+        "resolver.example.invalid",
         "resolver.example.invalid\ncache_mgr attacker@example.invalid",
         "bad_name.example",
     ],

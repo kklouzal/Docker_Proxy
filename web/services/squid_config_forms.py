@@ -1704,7 +1704,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "text",
         _tunable_or_default_if_none("dns_nameservers", ""),
         _posted_text_reader("dns_nameservers"),
-        help_text="Space-separated IPs or hostnames. Leave blank to use the operating system configuration.",
+        help_text="Space-separated IPv4 or IPv6 addresses. Leave blank to use the operating system configuration.",
     ),
     _field(
         "hosts_file",

@@ -30,7 +30,6 @@ class SquidController(_CoreSquidController):
     _HOSTNAME_RE = re.compile(
         r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$",
     )
-    _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
     _IP_LITERAL_CHARS_RE = re.compile(r"^[a-fA-F0-9:.]+$")
     _CPU_AFFINITY_RE = re.compile(r"^[A-Za-z0-9_,= ]+$")
     _EMAIL_LOCAL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
@@ -145,20 +144,14 @@ class SquidController(_CoreSquidController):
         if not clean:
             return ""
         for part in clean.split():
-            if ":" in part or self._IP_RE.match(part):
-                if not self._IP_LITERAL_CHARS_RE.match(part):
-                    msg = f"{field_name} contains invalid entry: {part}"
-                    raise ValueError(msg)
-                try:
-                    ipaddress.ip_address(part)
-                except ValueError as exc:
-                    msg = f"{field_name} contains invalid IP address: {part}"
-                    raise ValueError(msg) from exc
-            elif self._HOSTNAME_RE.match(part):
-                pass
-            else:
+            if not self._IP_LITERAL_CHARS_RE.match(part):
                 msg = f"{field_name} contains invalid entry: {part}"
                 raise ValueError(msg)
+            try:
+                ipaddress.ip_address(part)
+            except ValueError as exc:
+                msg = f"{field_name} contains invalid IP address: {part}"
+                raise ValueError(msg) from exc
         return clean
 
     def _validate_choice(
