@@ -5639,23 +5639,49 @@ def observability_remediation_no_bump_domain():
         )
 
     saved_domain = canonical or domain
-    _record_audit_event(
-        "observability_remediation_no_bump_domain",
-        ok=ok,
-        detail=_audit_safe_detail(
-            f"domain={saved_domain} detail={detail or 'saved'}",
-        ),
-    )
     if ok:
-        return _redirect_after_policy_refresh(
+        refresh_ok, refresh_detail = _trigger_proxy_sync(force=True)
+        if not refresh_ok:
+            partial_detail = (
+                "No-bump domain was saved, but proxy reconciliation was not queued."
+            )
+            if refresh_detail:
+                partial_detail = f"{partial_detail} {refresh_detail}"
+            _record_audit_event(
+                "observability_remediation_no_bump_domain",
+                ok=False,
+                detail=_audit_safe_detail(
+                    f"domain={saved_domain} detail={partial_detail}",
+                ),
+            )
+            return _redirect_to(
+                "observability",
+                **redirect_params,
+                remediation_error="1",
+                remediation_domain=saved_domain,
+                remediation_msg=partial_detail,
+            )
+        _record_audit_event(
+            "observability_remediation_no_bump_domain",
+            ok=True,
+            detail=_audit_safe_detail(
+                f"domain={saved_domain} detail={detail or 'saved'}",
+            ),
+        )
+        return _redirect_to(
             "observability",
-            store,
-            force=True,
             **redirect_params,
             remediation_ok="1",
             remediation_domain=saved_domain,
             remediation_msg=f"No-bump SSL exclusion saved for {saved_domain}.",
         )
+    _record_audit_event(
+        "observability_remediation_no_bump_domain",
+        ok=False,
+        detail=_audit_safe_detail(
+            f"domain={saved_domain} detail={detail or 'not saved'}",
+        ),
+    )
     return _redirect_to(
         "observability",
         **redirect_params,
