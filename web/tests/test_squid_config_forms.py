@@ -492,6 +492,48 @@ def test_build_template_options_from_form_accepts_dns_packet_none() -> None:
     assert options["dns_packet_max"] == "none"
 
 
+def test_generated_config_renders_and_parses_dns_nameservers() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+    nameservers = "192.0.2.53 2001:db8::53 resolver.example.invalid"
+
+    config = controller.generate_config_from_template(
+        build_template_options({"dns_nameservers": nameservers}, max_workers=4),
+    )
+
+    assert f"dns_nameservers {nameservers}" in config
+    assert controller.get_tunable_options(config)["dns_nameservers"] == nameservers
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "::::",
+        "abc:::",
+        "2001:db8::zz",
+        "999.0.2.53",
+        "resolver.example.invalid\ncache_mgr attacker@example.invalid",
+        "bad_name.example",
+    ],
+)
+def test_generated_config_rejects_invalid_dns_nameserver_tokens(value: str) -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    with pytest.raises(ValueError, match="dns_nameservers"):
+        controller.generate_config_from_template(
+            build_template_options({"dns_nameservers": value}, max_workers=4),
+        )
+
+
 def test_build_template_options_from_form_updates_tls_and_disk_fd_tuning_fields() -> (
     None
 ):
