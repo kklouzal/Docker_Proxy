@@ -764,6 +764,26 @@ def test_tunable_rule_fallback_ignores_directive_prefix_lookalikes() -> None:
     )
 
 
+def test_dynamic_cert_cache_size_ignores_comments_and_non_listener_lines() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    config = "\n".join(
+        (
+            "# dynamic_cert_mem_cache_size=512MB",
+            "note dynamic_cert_mem_cache_size=384MB all",
+            "http_port 0.0.0.0:3128 ssl-bump \\",
+            "\tcert=/etc/squid/ssl/certs/ca.crt \\",
+            "\tkey=/etc/squid/ssl/certs/ca.key \\",
+            "\tgenerate-host-certificates=on \\",
+            "\tdynamic_cert_mem_cache_size=256MB",
+        ),
+    )
+
+    options = SquidController().get_tunable_options(config)
+
+    assert options["dynamic_cert_mem_cache_size_mb"] == 256
+
+
 def test_parse_cache_override_form_defaults_unchecked_to_false() -> None:
     overrides = parse_cache_override_form(
         {

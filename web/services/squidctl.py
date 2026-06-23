@@ -1805,17 +1805,25 @@ class SquidController(_CoreSquidController):
             return result
 
         def find_dynamic_cert_mem_cache_size_mb() -> int | None:
-            match = re.search(
-                r"dynamic_cert_mem_cache_size\s*=\s*(\d+)\s*([A-Za-z]+)?",
-                text,
-                re.IGNORECASE,
-            )
-            if not match:
-                return None
-            size_bytes = _size_to_bytes(match.group(1), match.group(2) or "")
-            if size_bytes is None:
-                return None
-            return int(size_bytes // (1024 * 1024))
+            for _physical_lines, logical in self._logical_config_lines(text):
+                stripped = logical.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                lower = stripped.lower()
+                if not lower.startswith(("http_port ", "https_port ")):
+                    continue
+                match = re.search(
+                    r"\bdynamic_cert_mem_cache_size\s*=\s*(\d+)\s*([A-Za-z]+)?\b",
+                    stripped,
+                    re.IGNORECASE,
+                )
+                if not match:
+                    continue
+                size_bytes = _size_to_bytes(match.group(1), match.group(2) or "")
+                if size_bytes is None:
+                    continue
+                return int(size_bytes // (1024 * 1024))
+            return None
 
         def find_icap_service_failure_limit() -> dict[str, Any]:
             match = re.search(
