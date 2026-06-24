@@ -507,6 +507,33 @@ def test_generated_config_renders_numeric_dns_packet_max_from_direct_options() -
     assert "dns_packet_max 1400 bytes" in config
 
 
+def test_tunable_parser_accepts_dns_packet_max_comments_and_rejects_extra_tokens() -> (
+    None
+):
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+
+    assert (
+        controller.get_tunable_options("dns_packet_max 1400 bytes # UDP payload cap")[
+            "dns_packet_max"
+        ]
+        == 1400
+    )
+    assert (
+        controller.get_tunable_options("dns_packet_max none # disabled")[
+            "dns_packet_max"
+        ]
+        == "none"
+    )
+    assert (
+        controller.get_tunable_options("dns_packet_max 1400 kilobytes")[
+            "dns_packet_max"
+        ]
+        is None
+    )
+
+
 @pytest.mark.parametrize("value", ["1232 bytes", "4kb", "auto", "12\ncache deny all"])
 def test_generated_config_rejects_invalid_dns_packet_max_values(value: str) -> None:
     from services.squidctl import SquidController  # type: ignore

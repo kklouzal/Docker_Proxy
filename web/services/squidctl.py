@@ -1490,7 +1490,7 @@ class SquidController(_CoreSquidController):
 
         def find_int_or_none(key: str) -> Any | None:
             match = re.search(
-                rf"^\s*{re.escape(key)}\s+(\S+)(?:\s+\S+)?\s*$",
+                rf"^\s*{re.escape(key)}\s+(\S+)(?:\s+(bytes))?(?:\s+#.*)?$",
                 text,
                 re.MULTILINE | re.IGNORECASE,
             )
