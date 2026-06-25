@@ -1486,26 +1486,39 @@ class SquidController:
         if not self._cleanup_before_cache_prepare(detail_parts):
             return False, "\n".join(part for part in detail_parts if part).strip()
 
-        try:
-            prepare = self._run(
-                ["squid", "-N", "-z", "-f", self.squid_conf_path],
-                capture_output=True,
-                timeout=90,
-            )
-            if prepare.returncode != 0:
+        prepare_succeeded = False
+        for prepare_attempt in range(2):
+            try:
+                prepare = self._run(
+                    ["squid", "-N", "-z", "-f", self.squid_conf_path],
+                    capture_output=True,
+                    timeout=90,
+                )
+                if prepare.returncode == 0:
+                    detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
+                    prepare_succeeded = True
+                    break
+
                 detail_parts.append(
                     self._decode_completed(prepare) or "squid -z failed",
                 )
+                if prepare_attempt == 0:
+                    detail_parts.append(
+                        "squid -z failed once after cache clear; cleaning up and retrying.",
+                    )
+                    if not self._cleanup_after_cache_prepare(detail_parts):
+                        return False, "\n".join(
+                            part for part in detail_parts if part
+                        ).strip()
+                    continue
                 return False, "\n".join(
                     part for part in detail_parts if part
                 ).strip()
-            detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
-            if not self._cleanup_after_cache_prepare(detail_parts):
-                return False, "\n".join(
-                    part for part in detail_parts if part
-                ).strip()
-        except Exception as exc:
-            detail_parts.append(f"squid -z error: {exc}")
+            except Exception as exc:
+                detail_parts.append(f"squid -z error: {exc}")
+                return False, "\n".join(part for part in detail_parts if part).strip()
+
+        if prepare_succeeded and not self._cleanup_after_cache_prepare(detail_parts):
             return False, "\n".join(part for part in detail_parts if part).strip()
 
         ok_restart, restart_detail = self.restart_squid(

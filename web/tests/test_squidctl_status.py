@@ -943,6 +943,76 @@ def test_clear_disk_cache_refuses_broad_or_relative_cache_dirs(
     assert f"Refusing to clear cache_dir at unsafe path: {cache_path}" == detail
 
 
+def test_clear_disk_cache_retries_transient_squid_z_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "swap.state").write_text("cached\n", encoding="utf-8")
+    prepare_calls = 0
+    cleanup_calls = 0
+
+    def fake_run(args, **_kwargs):
+        nonlocal prepare_calls
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[:3] == ["squid", "-N", "-z"]:
+            prepare_calls += 1
+            if prepare_calls == 1:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout=b"Creating missing swap directories\nRemoving PID file\n",
+                    stderr=b"squid: ERROR (abnormal termination)\n",
+                )
+            return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir aufs {cache_dir} 100 16 256\n",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
+
+    original_cleanup_after = controller._cleanup_after_cache_prepare
+
+    def wrapped_cleanup_after(detail_parts):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return original_cleanup_after(detail_parts)
+
+    monkeypatch.setattr(controller, "_cleanup_after_cache_prepare", wrapped_cleanup_after)
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0, **_kwargs: (True, "restart ok"),
+    )
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is True
+    assert prepare_calls == 2
+    assert cleanup_calls == 2
+    assert not (cache_dir / "swap.state").exists()
+    assert "squid -z failed once after cache clear; cleaning up and retrying." in detail
+    assert "restart ok" in detail
+
+
 def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(
     monkeypatch,
     tmp_path,
