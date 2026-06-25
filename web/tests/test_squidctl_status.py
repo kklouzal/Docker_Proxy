@@ -8,16 +8,73 @@ import pytest
 def test_get_status_ignores_stderr_when_squid_check_succeeds() -> None:
     from services import squidctl  # type: ignore
 
-    controller = squidctl.SquidController(
-        cmd_run=lambda *args, **kwargs: SimpleNamespace(
+    def fake_run(args, **_kwargs):
+        if args[:3] == ["supervisorctl", "-c", "/etc/supervisord.conf"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=b"squid RUNNING pid 42\n",
+                stderr=b"",
+            )
+        return SimpleNamespace(
             returncode=0, stdout=b"", stderr=b"WARNING: harmless\n"
-        ),
-    )
+        )
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
 
     stdout, stderr = controller.get_status()
 
     assert stdout == b"Squid check ok."
     assert stderr == b""
+
+
+@pytest.mark.parametrize(
+    ("returncode", "supervisor_stdout", "supervisor_stderr", "expected_stderr"),
+    [
+        (0, b"squid STOPPED Jun 24\n", b"", b"squid STOPPED Jun 24\n"),
+        (0, b"squid NOT RUNNING\n", b"", b"squid NOT RUNNING\n"),
+        (0, b"", b"squid STOPPED Jun 24\n", b"squid STOPPED Jun 24\n"),
+        (
+            3,
+            b"",
+            b"unix:///run/supervisor.sock no such file\n",
+            b"unix:///run/supervisor.sock no such file\n",
+        ),
+        (7, b"", b"", b"supervisor squid status failed rc=7"),
+    ],
+)
+def test_get_status_reports_supervisor_non_running_or_failure_even_when_squid_check_succeeds(
+    returncode: int,
+    supervisor_stdout: bytes,
+    supervisor_stderr: bytes,
+    expected_stderr: bytes,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args == ["squid", "-k", "check"]:
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        if args[:3] == ["supervisorctl", "-c", "/etc/supervisord.conf"]:
+            return SimpleNamespace(
+                returncode=returncode,
+                stdout=supervisor_stdout,
+                stderr=supervisor_stderr,
+            )
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+
+    stdout, stderr = controller.get_status()
+
+    assert calls == [
+        ["squid", "-k", "check"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "status", "squid"],
+    ]
+    assert stdout == b""
+    assert stderr == expected_stderr
 
 
 def test_restart_squid_stops_waits_for_listener_release_then_starts(

@@ -1783,9 +1783,41 @@ class SquidController:
             stdout = proc.stdout or b""
             stderr = proc.stderr or b""
             if proc.returncode == 0:
+                check_output = stdout or b"Squid check ok."
+                try:
+                    supervisor = self._run(
+                        [
+                            "supervisorctl",
+                            "-c",
+                            "/etc/supervisord.conf",
+                            "status",
+                            "squid",
+                        ],
+                        capture_output=True,
+                        timeout=15,
+                    )
+                    supervisor_output = (supervisor.stdout or b"") + (
+                        supervisor.stderr or b""
+                    )
+                    supervisor_fields = supervisor_output.split()
+                    supervisor_state = (
+                        supervisor_fields[1] if len(supervisor_fields) >= 2 else b""
+                    )
+                    if supervisor.returncode != 0:
+                        return (
+                            b"",
+                            supervisor_output
+                            or (
+                                f"supervisor squid status failed rc={supervisor.returncode}"
+                            ).encode(),
+                        )
+                    if supervisor_output and supervisor_state != b"RUNNING":
+                        return b"", supervisor_output
+                except FileNotFoundError:
+                    pass
                 if stdout:
                     return stdout, b""
-                return b"Squid check ok.", b""
+                return check_output, b""
             if proc.returncode != 0 and not stderr:
                 stderr = stdout or f"squid check failed rc={proc.returncode}".encode()
             return stdout, stderr
