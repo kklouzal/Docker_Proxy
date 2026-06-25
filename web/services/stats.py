@@ -272,9 +272,20 @@ def parse_access_log_hit_rate(
             size = f.tell()
             # Structured diagnostic lines are longer than the old lean access log.
             read_size = min(size, max_lines * 512)
-            f.seek(-read_size, os.SEEK_END)
+            read_start = size - read_size
+            starts_on_line_boundary = read_start == 0
+            if read_start > 0:
+                f.seek(read_start - 1, os.SEEK_SET)
+                starts_on_line_boundary = f.read(1) == b"\n"
+            f.seek(read_start, os.SEEK_SET)
             chunk = f.read().decode("utf-8", errors="replace")
-        lines = chunk.splitlines()[-max_lines:]
+        lines = chunk.splitlines()
+        if not starts_on_line_boundary and lines:
+            # The byte tail can begin in the middle of a structured row; do not
+            # count that partial leading line as a real access-log event. Keep
+            # it when the tail starts at byte 0 or exactly after a newline.
+            lines = lines[1:]
+        lines = lines[-max_lines:]
 
         for line in lines:
             s = (line or "").strip("\r\n")
