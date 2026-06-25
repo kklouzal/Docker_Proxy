@@ -30,9 +30,20 @@ def test_parse_access_log_hit_rate_fast_path_accepts_tab_separated_rows(
 def test_parse_access_log_hit_rate_fast_path_accepts_escaped_tab_rows(tmp_path) -> None:
     log = _write_log(
         tmp_path,
-        "1710000001\t0.0\t10.0.0.6\tPOST\thttp://example.org/login\tTCP_MISS/200\t20",
+        r"1710000001\t0.0\t10.0.0.6\tPOST\thttp://example.org/login\tTCP_MISS/200\t20",
     )
 
     result = parse_access_log_hit_rate(log, max_lines=10)
 
     assert result == {"request_hit_ratio": 0.0, "byte_hit_ratio": 0.0}
+
+
+def test_parse_access_log_hit_rate_escaped_tabs_preserve_quoted_fields(tmp_path) -> None:
+    log = _write_log(
+        tmp_path,
+        r'1710000002\t0.0\t10.0.0.7\tGET\t"http://example.net/a\tliteral"\tTCP_HIT/200\t40',
+    )
+
+    result = parse_access_log_hit_rate(log, max_lines=10)
+
+    assert result == {"request_hit_ratio": 100.0, "byte_hit_ratio": 100.0}
