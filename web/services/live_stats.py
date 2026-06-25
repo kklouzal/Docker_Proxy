@@ -71,27 +71,55 @@ def _is_hit(result_code: str) -> bool:
     return "HIT" in result_code
 
 
+def _split_access_log_tsv(line: str) -> list[str]:
+    # In Squid logformat, "\t" may be emitted literally, so support both actual
+    # tabs and the two-character sequence "\\t". Only escaped tabs outside CSV
+    # quotes are delimiters; quoted escaped tabs are literal field content.
+    s = (line or "").strip("\r\n")
+    if not s or ("\t" not in s and "\\t" not in s):
+        return []
+    if "\\t" in s:
+        normalized = []
+        in_quotes = False
+        i = 0
+        while i < len(s):
+            ch = s[i]
+            if ch == '"':
+                normalized.append(ch)
+                if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
+                    normalized.append(s[i + 1])
+                    i += 2
+                    continue
+                in_quotes = not in_quotes
+                i += 1
+                continue
+            if (
+                not in_quotes
+                and ch == "\\"
+                and i + 1 < len(s)
+                and s[i + 1] == "t"
+            ):
+                normalized.append("\t")
+                i += 2
+                continue
+            normalized.append(ch)
+            i += 1
+        s = "".join(normalized)
+    if '"' not in s:
+        return s.split("\t")
+    try:
+        return next(csv.reader(io.StringIO(s), delimiter="\t", quotechar='"'))
+    except Exception:
+        return []
+
+
 def _parse_access_log_line(
     line: str,
 ) -> tuple[int, str, str, int, str | None, str] | None:
     # Supported input is the current structured TSV logformat emitted by
     # squid.conf.template.
-    s = (line or "").strip("\r\n")
-    if not s:
-        return None
-
-    # Structured TSV format. In Squid logformat, "\t" is emitted literally, so we
-    # support both actual tabs and the two-character sequence "\\t".
-    if "\t" in s or "\\t" in s:
-        if "\\t" in s and "\t" not in s:
-            s = s.replace("\\t", "\t")
-        if '"' not in s:
-            row = s.split("\t")
-        else:
-            try:
-                row = next(csv.reader(io.StringIO(s), delimiter="\t", quotechar='"'))
-            except Exception:
-                row = []
+    row = _split_access_log_tsv(line)
+    if row:
         if len(row) < 7:
             return None
 

@@ -32,3 +32,18 @@ def test_parse_access_log_line_fast_path_accepts_escaped_tab_rows() -> None:
     )
 
     assert row == (1710000001, "10.0.0.6", "TCP_MISS/200", 42, "example.org", "POST")
+
+
+def test_parse_access_log_line_escaped_tabs_preserve_quoted_url_field() -> None:
+    row = _parse_access_log_line(
+        r'1710000002\t0.0\t10.0.0.7\tGET\t"http://example.net/a\tliteral"\tTCP_HIT/200\t84'
+    )
+
+    assert row == (
+        1710000002,
+        "10.0.0.7",
+        "TCP_HIT/200",
+        84,
+        "example.net",
+        "GET",
+    )
