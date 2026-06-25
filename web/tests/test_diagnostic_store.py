@@ -629,3 +629,19 @@ def test_request_parser_captures_remediation_response_metadata() -> None:
     assert parsed["response_server"] == "cloudflare"
     assert parsed["response_cf_mitigated"] == "challenge"
     assert parsed["response_alt_svc"].startswith("h3=")
+
+
+def test_split_tsv_normalizes_escaped_delimiters_when_quoted_field_contains_real_tab():
+    from services.diagnostic_store import _split_tsv
+
+    line = '1710000000\\t10\\t192.0.2.10\\tGET\\thttp://example.test/\\t"agent\twith real tab"\\tTCP_MISS/200'
+
+    assert _split_tsv(line) == [
+        '1710000000',
+        '10',
+        '192.0.2.10',
+        'GET',
+        'http://example.test/',
+        'agent\twith real tab',
+        'TCP_MISS/200',
+    ]

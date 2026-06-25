@@ -197,7 +197,7 @@ def _split_tsv(line: str) -> list[str]:
     s = (line or "").strip("\r\n")
     if not s:
         return []
-    if "\\t" in s and "\t" not in s:
+    if "\\t" in s:
         normalized = []
         in_quotes = False
         i = 0
