@@ -198,7 +198,32 @@ def _split_tsv(line: str) -> list[str]:
     if not s:
         return []
     if "\\t" in s and "\t" not in s:
-        s = s.replace("\\t", "\t")
+        normalized = []
+        in_quotes = False
+        i = 0
+        while i < len(s):
+            ch = s[i]
+            if ch == '"':
+                normalized.append(ch)
+                if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
+                    normalized.append(s[i + 1])
+                    i += 2
+                    continue
+                in_quotes = not in_quotes
+                i += 1
+                continue
+            if (
+                not in_quotes
+                and ch == "\\"
+                and i + 1 < len(s)
+                and s[i + 1] == "t"
+            ):
+                normalized.append("\t")
+                i += 2
+                continue
+            normalized.append(ch)
+            i += 1
+        s = "".join(normalized)
     if '"' not in s:
         return [item.strip() for item in s.split("	")]
     try:
