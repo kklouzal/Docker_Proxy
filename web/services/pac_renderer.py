@@ -202,8 +202,33 @@ def _request_host_only(raw_host: str) -> str:
     return candidate
 
 
+def _valid_proxy_dns_host(value: str) -> bool:
+    candidate = value.rstrip(".").lower()
+    if not candidate or len(candidate) > 253:
+        return False
+    labels = candidate.split(".")
+    return not any(
+        not label
+        or len(label) > 63
+        or not ("a" <= label[0] <= "z" or "0" <= label[0] <= "9")
+        or not ("a" <= label[-1] <= "z" or "0" <= label[-1] <= "9")
+        or any(not ("a" <= ch <= "z" or "0" <= ch <= "9" or ch == "-") for ch in label)
+        for label in labels
+    )
+
+
+def _normalize_proxy_host_only(host: str) -> str:
+    candidate = str(host or "").strip()
+    if not candidate:
+        return "127.0.0.1"
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return candidate if _valid_proxy_dns_host(candidate) else "127.0.0.1"
+
+
 def format_proxy_host(raw_host: str) -> str:
-    host = _request_host_only(raw_host)
+    host = _normalize_proxy_host_only(_request_host_only(raw_host))
     return _format_host_only_for_pac(host)
 
 

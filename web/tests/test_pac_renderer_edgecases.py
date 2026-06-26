@@ -51,6 +51,7 @@ def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() 
     assert pac_renderer.format_proxy_host("proxy.example:3128") == "proxy.example"
     assert pac_renderer.format_proxy_host("2001:db8::10") == "[2001:db8::10]"
     assert pac_renderer.format_proxy_host("[2001:db8::10]:3128") == "[2001:db8::10]"
+    assert pac_renderer.format_proxy_host('bad"; alert(1); //') == "127.0.0.1"
 
     assert (
         pac_renderer._build_pac_url(scheme="http", host="proxy.example", port=80)
@@ -635,7 +636,7 @@ def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> 
     )
 
 
-def test_substitute_request_host_escapes_javascript_string_content() -> None:
+def test_substitute_request_host_replaces_invalid_host_with_loopback() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
@@ -646,13 +647,13 @@ def test_substitute_request_host_escapes_javascript_string_content() -> None:
 
     rendered = pac_renderer.substitute_request_host(content, 'bad"; alert(1); //')
 
-    assert 'bad\\"; alert(1);' in rendered
+    assert 'bad\\"; alert(1);' not in rendered
     assert 'bad"; alert(1);' not in rendered
-    assert 'var proxyHost = "bad\\"; alert(1); ";' in rendered
-    assert 'return "PROXY bad\\"; alert(1); :3128; DIRECT";' in rendered
+    assert 'var proxyHost = "127.0.0.1";' in rendered
+    assert 'return "PROXY 127.0.0.1:3128; DIRECT";' in rendered
 
 
-def test_render_proxy_pac_for_request_escapes_request_host_in_generated_pac() -> None:
+def test_render_proxy_pac_for_request_replaces_invalid_request_host() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
@@ -661,8 +662,8 @@ def test_render_proxy_pac_for_request_escapes_request_host_in_generated_pac() ->
         'bad"; alert(1); //',
     )
 
-    assert 'var proxyHost = "bad\\"; alert(1); ";' in rendered
-    assert 'return "PROXY bad\\"; alert(1); :3128; DIRECT";' in rendered
+    assert 'var proxyHost = "127.0.0.1";' in rendered
+    assert 'return "PROXY 127.0.0.1:3128; DIRECT";' in rendered
 
 
 class _FakeSslfilterStore:
@@ -840,7 +841,7 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
     assert manifest["public_pac_path"] == "/proxy.pac"
 
 
-def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
+def test_rendered_pac_replaces_invalid_proxy_chain_host() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
@@ -857,10 +858,10 @@ def test_rendered_pac_quotes_proxy_chain_as_javascript_literal() -> None:
     )
 
     assert (
-        'return "PROXY proxy\'host.example:3128; PROXY backup.example:8080; DIRECT";'
+        'return "PROXY 127.0.0.1:3128; PROXY backup.example:8080; DIRECT";'
         in rendered
     )
-    assert "return 'PROXY" not in rendered
+    assert "proxy'host.example" not in rendered
 
 
 def test_pac_profile_match_uses_manifest_specificity_without_database() -> None:
