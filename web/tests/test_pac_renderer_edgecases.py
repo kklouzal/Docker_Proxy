@@ -154,6 +154,39 @@ def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
 
 
 @pytest.mark.parametrize(
+    ("public_pac_url", "expected_url"),
+    [
+        (
+            "2001:db8::10/custom/proxy.pac?site=lab",
+            "http://[2001:db8::10]/custom/proxy.pac?site=lab",
+        ),
+        (
+            "https://2001:db8::10/custom/proxy.pac",
+            "https://[2001:db8::10]/custom/proxy.pac",
+        ),
+    ],
+)
+def test_resolve_proxy_pac_target_preserves_unbracketed_ipv6_public_pac_url(
+    monkeypatch,
+    public_pac_url: str,
+    expected_url: str,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", public_pac_url)
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == "2001:db8::10"
+    assert target.pac_path.startswith("/custom/proxy.pac")
+    assert target.pac_url == expected_url
+    assert target.proxy_chain == "PROXY [2001:db8::10]:3128; DIRECT"
+
+
+@pytest.mark.parametrize(
     "public_pac_url",
     [
         "ftp://proxy.example:9000/proxy.pac",

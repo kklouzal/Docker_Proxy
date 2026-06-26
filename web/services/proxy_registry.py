@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
+from ipaddress import IPv6Address, ip_address
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from services.db import (
@@ -135,11 +136,37 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
         return "", "http", 80, "/proxy.pac"
     has_absolute_scheme = "://" in candidate
     if "://" not in candidate:
+        match = re.match(r"([^/?#]+)(.*)", candidate)
+        authority = match.group(1) if match else candidate
+        suffix = match.group(2) if match else ""
+        if not authority.startswith("[") and authority.count(":") > 1:
+            try:
+                parsed_ip = ip_address(authority)
+            except ValueError:
+                parsed_ip = None
+            if isinstance(parsed_ip, IPv6Address):
+                candidate = f"[{authority}]{suffix}"
         candidate = f"http://{candidate}"
     try:
         parsed = urlsplit(candidate)
     except Exception:
         return "", "http", 80, "/proxy.pac"
+    if (
+        parsed.netloc
+        and not parsed.netloc.startswith("[")
+        and "@" not in parsed.netloc
+        and parsed.netloc.count(":") > 1
+    ):
+        try:
+            parsed_ip = ip_address(parsed.netloc)
+        except ValueError:
+            parsed_ip = None
+        if isinstance(parsed_ip, IPv6Address):
+            parsed = urlsplit(
+                urlunsplit(
+                    (parsed.scheme, f"[{parsed.netloc}]", parsed.path, parsed.query, ""),
+                ),
+            )
     raw_scheme = str(parsed.scheme or "").lower()
     if has_absolute_scheme and raw_scheme not in {"http", "https"}:
         return "", "http", 80, "/proxy.pac"
