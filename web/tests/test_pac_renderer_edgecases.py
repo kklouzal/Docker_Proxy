@@ -191,6 +191,7 @@ def test_resolve_proxy_pac_target_preserves_unbracketed_ipv6_public_pac_url(
     [
         "ftp://proxy.example:9000/proxy.pac",
         "https:///proxy.pac",
+        "https://user:secret@proxy.example/proxy.pac",
     ],
 )
 def test_resolve_proxy_pac_target_ignores_invalid_absolute_public_pac_url(

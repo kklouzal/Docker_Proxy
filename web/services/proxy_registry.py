@@ -170,6 +170,8 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     raw_scheme = str(parsed.scheme or "").lower()
     if has_absolute_scheme and raw_scheme not in {"http", "https"}:
         return "", "http", 80, "/proxy.pac"
+    if parsed.username is not None or parsed.password is not None:
+        return "", "http", 80, "/proxy.pac"
     host = str(parsed.hostname or "").strip()
     if has_absolute_scheme and not host:
         return "", "http", 80, "/proxy.pac"

@@ -145,6 +145,26 @@ def test_resolve_local_proxy_public_fields_falls_back_to_public_pac_url_and_port
     }
 
 
+def test_resolve_local_proxy_public_fields_rejects_userinfo_public_pac_url(
+    monkeypatch,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    monkeypatch.setenv(
+        "PROXY_PUBLIC_PAC_URL", "https://user:secret@pac.example/wpad.dat?site=lab"
+    )
+    monkeypatch.delenv("PROXY_PUBLIC_HOST", raising=False)
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_SCHEME", raising=False)
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_PORT", raising=False)
+
+    assert proxy_registry.resolve_local_proxy_public_fields() == {
+        "public_host": "",
+        "public_pac_scheme": "http",
+        "public_pac_port": 80,
+        "public_pac_path": "/proxy.pac",
+        "public_http_proxy_port": 3128,
+    }
+
 def test_resolve_local_proxy_management_url_prefers_explicit_url(monkeypatch) -> None:
     proxy_registry = _proxy_registry()
 
