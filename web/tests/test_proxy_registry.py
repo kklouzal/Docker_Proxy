@@ -165,6 +165,7 @@ def test_resolve_local_proxy_public_fields_rejects_userinfo_public_pac_url(
         "public_http_proxy_port": 3128,
     }
 
+
 def test_resolve_local_proxy_management_url_prefers_explicit_url(monkeypatch) -> None:
     proxy_registry = _proxy_registry()
 
