@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import csv
-import io
 import hashlib
+import io
 import json
 import logging
 import os

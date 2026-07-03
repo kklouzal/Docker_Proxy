@@ -244,7 +244,10 @@ def test_generate_icap_include_uses_supplied_workers_over_environment(
 ) -> None:
     _add_web_to_path()
 
-    from services.squid_core import SquidController, _cached_icap_include_path  # type: ignore
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        _cached_icap_include_path,
+    )
 
     include_path = tmp_path / "20-icap.conf"
     monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
