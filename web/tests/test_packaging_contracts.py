@@ -178,7 +178,8 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         "--db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite"
         in entrypoint
     )
-    assert "rm -f /var/run/c-icap/c-icap-av.pid; HOST=" in entrypoint
+    assert 'av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"' in entrypoint
+    assert 'rm -f "${av_pid}"; HOST=' in entrypoint
 
     env_example = _read("config/app.env.example")
     assert "# ADBLOCK_CACHE_TTL=3600" in env_example
