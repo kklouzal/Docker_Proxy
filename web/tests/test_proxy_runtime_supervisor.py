@@ -285,6 +285,73 @@ def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_ret
     assert "RUNNING" in detail
 
 
+def test_supervisor_program_status_accepts_scaled_icap_helpers(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setattr(
+        runtime_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _cp(
+            0,
+            stdout=(
+                "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
+                "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
+                "cicap_av_1 RUNNING pid 12, uptime 0:00:09\n"
+                "proxy_api RUNNING pid 13, uptime 0:00:08\n"
+            ),
+        ),
+    )
+
+    ok, detail = _runtime_shell()._supervisor_program_status("cicap_adblock")
+
+    assert ok is True
+    assert "cicap_adblock_1 RUNNING" in detail
+    assert "cicap_adblock_2 RUNNING" in detail
+    assert "no such process" not in detail
+
+
+def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    calls: list[tuple[str, str | None]] = []
+    started: set[str] = set()
+
+    def fake_run(args, **_kwargs):
+        action = args[3]
+        program = args[4] if len(args) > 4 else None
+        calls.append((action, program))
+        if program == "cicap_adblock":
+            return _cp(2, stdout="cicap_adblock: ERROR (no such process)\n")
+        if action == "status" and program is None:
+            return _cp(
+                0,
+                stdout=(
+                    "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
+                    "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
+                ),
+            )
+        if action == "status":
+            state = "RUNNING pid 42, uptime 0:00:01" if program in started else "STOPPED Jul 03 09:42 PM"
+            return _cp(0, stdout=f"{program} {state}\n")
+        if action == "start" and program:
+            started.add(program)
+        return _cp(0, stdout=f"{program}: {action}ped\n")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    ok, detail = _runtime_shell()._restart_supervisor_program("cicap_adblock")
+
+    assert ok is True
+    assert ("stop", "cicap_adblock_1") in calls
+    assert ("start", "cicap_adblock_1") in calls
+    assert ("stop", "cicap_adblock_2") in calls
+    assert ("start", "cicap_adblock_2") in calls
+    assert "cicap_adblock_1" in detail
+    assert "cicap_adblock_2" in detail
+
+
 def test_test_control_supervisor_program_uses_squid_controller_restart() -> None:
     runtime = _runtime_shell()
     runtime.controller = SimpleNamespace(

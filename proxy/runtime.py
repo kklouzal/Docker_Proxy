@@ -71,6 +71,25 @@ _SUPERVISOR_CONTROL_LOCK = threading.RLock()
 _SYNC_CONTROL_LOCK = threading.RLock()
 
 
+def _clamp_icap_workers(value: object) -> int:
+    try:
+        workers = int(str(value).strip())
+    except Exception:
+        workers = 1
+    return max(1, min(workers, 4))
+
+
+def _icap_supervisor_programs(base_name: str) -> tuple[str, ...]:
+    name = str(base_name or "").strip()
+    if name in {"cicap_adblock", "cicap_av"}:
+        raw_workers = os.environ.get("SQUID_WORKERS") or os.environ.get("WORKERS")
+        if raw_workers is None:
+            return (name,)
+        workers = _clamp_icap_workers(raw_workers)
+        return tuple(f"{name}_{index}" for index in range(1, workers + 1))
+    return (name,) if name else ()
+
+
 def _int_or_none(value: object) -> int | None:
     try:
         parsed = int(value or 0)
@@ -647,6 +666,78 @@ class ProxyRuntime:
                 return False, f"PAC materialized file is stale: {rel}"
         return True, ""
 
+    @staticmethod
+    def _logical_supervisor_program_prefix(program_name: str) -> str:
+        if program_name == "cicap_adblock" or program_name.startswith("cicap_adblock_"):
+            return "cicap_adblock_"
+        if program_name == "cicap_av" or program_name.startswith("cicap_av_"):
+            return "cicap_av_"
+        return ""
+
+    def _supervisor_status_lines(
+        self,
+        *,
+        timeout_seconds: int = 10,
+        programs: tuple[str, ...] = (),
+    ) -> tuple[bool, str, dict[str, str]]:
+        args = ["supervisorctl", "-c", "/etc/supervisord.conf", "status", *programs]
+        try:
+            status = subprocess.run(
+                args,
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            detail = public_error_message(
+                exc, default="Failed to inspect supervisor status."
+            )
+            return False, detail, {}
+        detail = _decode_completed(status).strip()
+        lines: dict[str, str] = {}
+        for line in detail.splitlines():
+            parts = line.split(None, 2)
+            if parts:
+                lines[parts[0]] = line.strip()
+        return status.returncode == 0, detail, lines
+
+    def _resolve_supervisor_program_names(
+        self,
+        program_name: str,
+        *,
+        timeout_seconds: int = 10,
+    ) -> tuple[list[str], str]:
+        prefix = self._logical_supervisor_program_prefix(program_name)
+        if not prefix:
+            return [program_name], ""
+        configured = list(_icap_supervisor_programs(program_name))
+        if configured != [program_name]:
+            return configured, ""
+        _ok, detail, lines = self._supervisor_status_lines(
+            timeout_seconds=timeout_seconds
+        )
+        matches = sorted(
+            name for name in lines if name == program_name or name.startswith(prefix)
+        )
+        return (matches or [program_name]), detail
+
+    def _supervisor_program_status_exact(
+        self,
+        program_name: str,
+        *,
+        timeout_seconds: int = 10,
+        accepted_states: tuple[str, ...] = ("RUNNING",),
+    ) -> tuple[bool, str]:
+        _ok, detail, lines = self._supervisor_status_lines(
+            timeout_seconds=timeout_seconds,
+            programs=(program_name,),
+        )
+        detail = detail or f"{program_name} status unavailable."
+        for line in lines.values():
+            parts = line.split(None, 2)
+            if parts and parts[0] == program_name:
+                return len(parts) > 1 and parts[1] in accepted_states, detail
+        return False, detail
+
     def _supervisor_program_status(
         self,
         program_name: str,
@@ -654,31 +745,32 @@ class ProxyRuntime:
         timeout_seconds: int = 10,
         accepted_states: tuple[str, ...] = ("RUNNING",),
     ) -> tuple[bool, str]:
-        try:
-            status = subprocess.run(
-                [
-                    "supervisorctl",
-                    "-c",
-                    "/etc/supervisord.conf",
-                    "status",
-                    program_name,
-                ],
-                capture_output=True,
-                timeout=timeout_seconds,
+        prefix = self._logical_supervisor_program_prefix(program_name)
+        configured = list(_icap_supervisor_programs(program_name))
+        if prefix:
+            _ok, detail, lines = self._supervisor_status_lines(
+                timeout_seconds=timeout_seconds
             )
-        except Exception as exc:
-            return False, public_error_message(
-                exc,
-                default=f"Failed to inspect {program_name} supervisor status.",
-            )
-        detail = (
-            _decode_completed(status).strip() or f"{program_name} status unavailable."
+            matching = [
+                line
+                for name, line in sorted(lines.items())
+                if name in configured or name == program_name or name.startswith(prefix)
+            ]
+            if matching:
+                ok = all(
+                    len(parts := line.split(None, 2)) > 1
+                    and parts[1] in accepted_states
+                    for line in matching
+                )
+                return ok, "\n".join(matching)
+            if configured != [program_name] and detail:
+                return False, detail
+
+        return self._supervisor_program_status_exact(
+            program_name,
+            timeout_seconds=timeout_seconds,
+            accepted_states=accepted_states,
         )
-        for line in detail.splitlines():
-            parts = line.split(None, 2)
-            if parts and parts[0] == program_name:
-                return len(parts) > 1 and parts[1] in accepted_states, detail
-        return False, detail
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
         programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
@@ -686,18 +778,9 @@ class ProxyRuntime:
             program: {"ok": False, "detail": f"{program} status unavailable."}
             for program in programs
         }
-        try:
-            status = subprocess.run(
-                ["supervisorctl", "-c", "/etc/supervisord.conf", "status", *programs],
-                capture_output=True,
-                timeout=2,
-            )
-            output = _decode_completed(status).strip()
-        except Exception as exc:
-            detail = public_error_message(
-                exc,
-                default="Failed to inspect supervisor status.",
-            )
+        ok_status, output, lines = self._supervisor_status_lines(timeout_seconds=2)
+        if not ok_status and not lines:
+            detail = output or "Failed to inspect supervisor status."
             return {
                 "ok": False,
                 "detail": detail,
@@ -706,16 +789,21 @@ class ProxyRuntime:
                 },
             }
 
-        for line in output.splitlines():
-            parts = line.split(None, 2)
-            if not parts:
-                continue
-            program = parts[0]
-            if program not in statuses:
+        for program in programs:
+            prefix = self._logical_supervisor_program_prefix(program)
+            matched = [
+                line
+                for name, line in sorted(lines.items())
+                if name == program or (prefix and name.startswith(prefix))
+            ]
+            if not matched:
                 continue
             statuses[program] = {
-                "ok": len(parts) > 1 and parts[1] == "RUNNING",
-                "detail": line.strip(),
+                "ok": all(
+                    len(parts := line.split(None, 2)) > 1 and parts[1] == "RUNNING"
+                    for line in matched
+                ),
+                "detail": "\n".join(matched),
             }
 
         detail_parts = [
@@ -822,34 +910,43 @@ class ProxyRuntime:
                 "action": requested_action,
                 "detail": "Unsupported test supervisor action.",
             }
-        try:
-            proc = subprocess.run(
-                [
-                    "supervisorctl",
-                    "-c",
-                    "/etc/supervisord.conf",
-                    requested_action,
-                    program,
-                ],
-                capture_output=True,
-                timeout=timeout_seconds,
+        programs, resolve_detail = self._resolve_supervisor_program_names(
+            program,
+            timeout_seconds=timeout_seconds,
+        )
+        details = [str(resolve_detail or "").strip()] if len(programs) > 1 else []
+        ok = True
+        for supervisor_program in programs:
+            try:
+                proc = subprocess.run(
+                    [
+                        "supervisorctl",
+                        "-c",
+                        "/etc/supervisord.conf",
+                        requested_action,
+                        supervisor_program,
+                    ],
+                    capture_output=True,
+                    timeout=timeout_seconds,
+                )
+            except Exception as exc:
+                ok = False
+                details.append(
+                    public_error_message(
+                        exc,
+                        default=f"Failed to {requested_action} {supervisor_program}.",
+                    )
+                )
+                continue
+            details.append(
+                _decode_completed(proc).strip()
+                or f"{supervisor_program} {requested_action} requested."
             )
-        except Exception as exc:
-            return {
-                "ok": False,
-                "proxy_id": self.proxy_id,
-                "program": program,
-                "action": requested_action,
-                "detail": public_error_message(
-                    exc,
-                    default=f"Failed to {requested_action} {program}.",
-                ),
-            }
+            ok = ok and proc.returncode == 0
         detail = (
-            _decode_completed(proc).strip()
+            "\n".join(part for part in details if part)
             or f"{program} {requested_action} requested."
         )
-        ok = proc.returncode == 0
         if requested_action == "start" and ok:
             status_ok, status_detail = self._supervisor_program_status(
                 program,
@@ -874,10 +971,41 @@ class ProxyRuntime:
         stop_on_failure: bool = False,
     ) -> tuple[bool, str]:
         with _exclusive_runtime_lock("supervisor", _SUPERVISOR_CONTROL_LOCK):
-            return self._restart_supervisor_program_unlocked(
+            ok, detail = self._restart_supervisor_program_unlocked(
                 program_name,
                 timeout_seconds=timeout_seconds,
                 stop_on_failure=stop_on_failure,
+            )
+            if ok or self._logical_supervisor_program_prefix(program_name) == "":
+                return ok, detail
+            if "no such process" not in str(detail or "").lower():
+                return ok, detail
+
+            programs, resolve_detail = self._resolve_supervisor_program_names(
+                program_name,
+                timeout_seconds=timeout_seconds,
+            )
+            scaled_programs = [
+                program for program in programs if program != program_name
+            ]
+            if not scaled_programs:
+                return ok, detail
+            results = [
+                self._restart_supervisor_program_unlocked(
+                    program,
+                    timeout_seconds=timeout_seconds,
+                    stop_on_failure=stop_on_failure,
+                )
+                for program in scaled_programs
+            ]
+            detail_parts = [
+                str(part or "").strip() for part in (detail, resolve_detail)
+            ]
+            detail_parts.extend(
+                str(result_detail or "").strip() for _ok, result_detail in results
+            )
+            return all(result_ok for result_ok, _detail in results), "\n".join(
+                part for part in detail_parts if part
             )
 
     def _wait_for_supervisor_program_stopped(
@@ -954,7 +1082,12 @@ class ProxyRuntime:
         if stopped_detail and stopped_detail not in details:
             details.append(stopped_detail)
         if not stopped_ok:
-            status_ok, status_detail = self._supervisor_program_status(
+            status_checker = (
+                self._supervisor_program_status_exact
+                if self._logical_supervisor_program_prefix(program_name)
+                else self._supervisor_program_status
+            )
+            status_ok, status_detail = status_checker(
                 program_name,
                 timeout_seconds=timeout_seconds,
             )
@@ -1001,7 +1134,7 @@ class ProxyRuntime:
             # A quick start can still crash immediately afterward. Require a
             # post-start supervisor status check to avoid accepting restart loops.
             time.sleep(1.0)
-            status_ok, status_detail = self._supervisor_program_status(
+            status_ok, status_detail = self._supervisor_program_status_exact(
                 program_name,
                 timeout_seconds=timeout_seconds,
                 accepted_states=("RUNNING", "STARTING"),
@@ -1281,7 +1414,7 @@ class ProxyRuntime:
         )
         status_starting = any(
             len(parts := line.split(None, 2)) > 1
-            and parts[0] == "cicap_adblock"
+            and (parts[0] == "cicap_adblock" or parts[0].startswith("cicap_adblock_"))
             and parts[1] == "STARTING"
             for line in str(status_detail or "").splitlines()
         )
