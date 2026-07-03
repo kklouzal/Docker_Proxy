@@ -1062,18 +1062,37 @@ class DiagnosticStore:
         if len(row) < 11:
             return None
 
+        # Squid/c-icap builds can drift by inserting an ICAP status or service
+        # token around the timing fields.  Keep the canonical icapobserve layout
+        # first, but tolerate one inserted column before or after icap::tt so
+        # diagnostic observability does not silently misclassify the row.
+        def _looks_int(value: str) -> bool:
+            try:
+                int(str(value).strip())
+                return True
+            except Exception:
+                return False
+
+        time_index = 5
+        fields_offset = 0
+        if len(row) >= 12 and not _looks_int(row[5]) and _looks_int(row[6]):
+            time_index = 6
+            fields_offset = 1
+        elif len(row) >= 12 and _looks_int(row[5]) and re.fullmatch(r"[1-5][0-9]{2}", row[6].strip()):
+            fields_offset = 1
+
         ts = _safe_int(row[0], _now())
         master_xaction = _safe_text(row[1], max_len=128)
         client_ip = _safe_text(row[2], max_len=64)
         method = _safe_text(row[3], max_len=16)
         url = _safe_text(row[4])
-        icap_time_ms = _safe_int(row[5], 0)
-        adapt_summary = _safe_text(row[6], max_len=1024)
-        adapt_details = _safe_text(row[7])
-        host = _safe_text(row[8], max_len=255)
-        user_agent = _safe_text(row[9], max_len=512)
-        sni = _safe_text(row[10], max_len=255)
-        policy_fields = _policy_fields_from_row(row, 11)
+        icap_time_ms = _safe_int(row[time_index], 0)
+        adapt_summary = _safe_text(row[6 + fields_offset], max_len=1024)
+        adapt_details = _safe_text(row[7 + fields_offset])
+        host = _safe_text(row[8 + fields_offset], max_len=255)
+        user_agent = _safe_text(row[9 + fields_offset], max_len=512)
+        sni = _safe_text(row[10 + fields_offset], max_len=255)
+        policy_fields = _policy_fields_from_row(row, 11 + fields_offset)
         domain = _extract_domain(url, host=host, sni=sni)
         family = _service_family(adapt_summary, adapt_details)
 

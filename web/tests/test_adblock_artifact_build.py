@@ -1141,3 +1141,28 @@ def test_adblock_cicap_access_parser_requires_http_403_status(tmp_path) -> None:
             )
             is None
         )
+
+
+def test_adblock_cicap_access_parser_accepts_quoted_tabs_and_scaled_service_path(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import services.adblock_store as store_module  # type: ignore
+
+    importlib.reload(store_module)
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    line = (
+        '1700000000\t192.0.2.10\t198.51.100.20\tREQMOD\t/adblockreq\t200\t'
+        '"GET http://ads.example/path?note=a\tb HTTP/1.1"\thttp://ads.example/\t'
+        'HTTP/1.1 403 Forbidden\t-'
+    )
+
+    blocked = store._parse_cicap_access_line(line)
+
+    assert blocked is not None
+    assert blocked["method"] == "GET"
+    assert blocked["url"] == "http://ads.example/"
+    assert blocked["icap_status"] == 200

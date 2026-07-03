@@ -190,7 +190,7 @@ def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(
     assert top[0]["domain"] == "tls.example"
 
 
-def test_render_icap_include_uses_single_endpoint_services_without_identity_rewrite(
+def test_render_icap_include_scales_services_by_squid_workers_without_duplicate_uris(
     monkeypatch,
 ) -> None:
     _add_web_to_path()
@@ -199,24 +199,86 @@ def test_render_icap_include_uses_single_endpoint_services_without_identity_rewr
 
     monkeypatch.setenv("CICAP_PORT", "24000")
     monkeypatch.setenv("CICAP_AV_PORT", "24001")
+    monkeypatch.setenv("SQUID_WORKERS", "3")
 
     ctl = SquidController()
     out = ctl._render_icap_include()
 
     assert out.count("icap_service adblock_req ") == 1
-    assert out.count("icap_service av_resp ") == 1
-    assert "icap_service adblock_req_0" not in out
-    assert "icap_service av_resp_0" not in out
-    assert "icap://127.0.0.1:24000/adblockreq" in out
-    assert "icap://127.0.0.1:24001/avrespmod" in out
+    assert out.count("icap_service adblock_req_2 ") == 1
+    assert out.count("icap_service adblock_req_3 ") == 1
+    assert out.count("icap://127.0.0.1:24000/adblockreq") == 1
+    assert out.count("icap://127.0.0.1:24001/adblockreq") == 1
+    assert out.count("icap://127.0.0.1:24002/adblockreq") == 1
+    assert "icap://127.0.0.1:24003/avrespmod" in out
+    assert "icap://127.0.0.1:24004/avrespmod" in out
+    assert "icap://127.0.0.1:24005/avrespmod" in out
+    assert "adaptation_service_set adblock_req_set adblock_req adblock_req_2 adblock_req_3" in out
+    assert "adaptation_service_set av_resp_set av_resp av_resp_2 av_resp_3" in out
     assert (
         "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
         in out
     )
+
+
+def test_render_icap_include_preserves_non_overlapping_explicit_av_base(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import SquidController  # type: ignore
+
+    monkeypatch.setenv("CICAP_PORT", "24000")
+    monkeypatch.setenv("CICAP_AV_PORT", "25000")
+    monkeypatch.setenv("SQUID_WORKERS", "3")
+
+    out = SquidController()._render_icap_include()
+
+    assert "icap://127.0.0.1:24002/adblockreq" in out
+    assert "icap://127.0.0.1:25000/avrespmod" in out
+    assert "icap://127.0.0.1:25002/avrespmod" in out
+
+
+def test_generate_icap_include_uses_supplied_workers_over_environment(
+    monkeypatch, tmp_path
+) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import SquidController, _cached_icap_include_path  # type: ignore
+
+    include_path = tmp_path / "20-icap.conf"
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
+    monkeypatch.setenv("CICAP_PORT", "26000")
+    monkeypatch.setenv("CICAP_AV_PORT", "26001")
+    monkeypatch.setenv("SQUID_WORKERS", "1")
+    _cached_icap_include_path.cache_clear()
+
+    ok, message = SquidController().apply_icap_scaling(3, "")
+
+    assert ok, message
+    out = include_path.read_text(encoding="utf-8")
+    assert "icap_service adblock_req_3 " in out
+    assert "icap://127.0.0.1:26002/adblockreq" in out
+    assert "icap://127.0.0.1:26003/avrespmod" in out
     assert "adaptation_access adblock_req_set allow icap_adblockable" in out
     assert "adaptation_access adblock_req_set deny all" in out
     assert "adaptation_access adblock_req_set allow all" not in out
     assert "Accept-Encoding identity" not in out
+
+
+def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> None:
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "2")
+    ctl = SquidController()
+    out = ctl._render_icap_include("# BEGIN SQUID-UI CLAMAV SETTINGS\n# clamav_fail_mode: closed\n# END SQUID-UI CLAMAV SETTINGS\n")
+
+    assert "icap_service av_req reqmod_precache icap://127.0.0.1:14002/avrespmod bypass=off" in out
+    assert "icap_service av_req_2 reqmod_precache icap://127.0.0.1:14003/avrespmod bypass=off" in out
+    assert "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod bypass=off" in out
+    assert "adaptation_service_set av_req_set av_req av_req_2" in out
 
 
 def test_render_icap_include_keeps_body_methods_when_preview_is_disabled() -> None:

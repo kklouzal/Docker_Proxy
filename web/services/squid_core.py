@@ -30,6 +30,39 @@ logger = logging.getLogger(__name__)
 _ADBLOCK_ICAP_METHODS = "GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
 
 
+def _clamp_icap_workers(value: object) -> int:
+    try:
+        workers = int(str(value).strip())
+    except Exception:
+        workers = 1
+    return max(1, min(workers, 4))
+
+
+def _icap_port_bases(workers: int, *, adblock_port: object = None, av_port: object = None) -> tuple[int, int]:
+    def parse_port(value: object, default: int) -> int:
+        try:
+            port = int(str(value).strip())
+        except Exception:
+            return default
+        return port if 1 <= port <= 65535 else default
+
+    count = _clamp_icap_workers(workers)
+    adblock_base = parse_port(
+        os.environ.get("CICAP_PORT") if adblock_port is None else adblock_port,
+        14000,
+    )
+    av_base = parse_port(
+        os.environ.get("CICAP_AV_PORT") if av_port is None else av_port,
+        14001,
+    )
+    # Keep the adblock and AV listener ranges disjoint.  Defaults (14000/14001)
+    # collide as soon as workers > 1, so align AV to the first safe port after
+    # the adblock range while preserving already-safe explicit layouts.
+    if av_base < adblock_base + count and adblock_base < av_base + count:
+        av_base = adblock_base + count
+    return adblock_base, av_base
+
+
 def _file_has_non_comment_lines(path: str) -> bool:
     try:
         with Path(path).open(encoding="utf-8", errors="replace") as handle:
@@ -383,15 +416,15 @@ class SquidController:
         raw = re.sub(r"[^A-Za-z0-9_.-]", "", str(token or ""))[:32]
         self._adblock_icap_revision_token = raw
 
-    def _render_icap_include(self, config_text: str | None = None) -> str:
-        try:
-            adblock_icap_port = int((os.environ.get("CICAP_PORT") or "14000").strip())
-        except Exception:
-            adblock_icap_port = 14000
-        try:
-            cicap_av_port = int((os.environ.get("CICAP_AV_PORT") or "14001").strip())
-        except Exception:
-            cicap_av_port = 14001
+    def _render_icap_include(
+        self,
+        config_text: str | None = None,
+        workers: int | None = None,
+    ) -> str:
+        if workers is None:
+            workers = os.environ.get("SQUID_WORKERS") or "1"
+        icap_instances = _clamp_icap_workers(workers)
+        adblock_icap_port, cicap_av_port = _icap_port_bases(icap_instances)
 
         clamav_options = extract_clamav_options(config_text or "")
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
@@ -407,17 +440,31 @@ class SquidController:
         adblock_token = (self._adblock_icap_revision_token or "").strip()
         if adblock_token:
             adblock_service_name = f"adblock_req_{adblock_token}"
-        lines = [
-            f"icap_service {adblock_service_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port}/adblockreq bypass=on",
-            f"icap_service av_req reqmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
-            f"icap_service av_resp respmod_precache icap://127.0.0.1:{cicap_av_port}/avrespmod bypass={av_bypass}",
-            f"adaptation_service_set adblock_req_set {adblock_service_name}",
-            "adaptation_service_set av_req_set av_req",
-            "adaptation_service_set av_resp_set av_resp",
+        adblock_services = []
+        av_req_services = []
+        av_resp_services = []
+        lines = []
+        for index in range(icap_instances):
+            suffix = "" if index == 0 else f"_{index + 1}"
+            adblock_name = f"{adblock_service_name}{suffix}"
+            av_req_name = f"av_req{suffix}"
+            av_resp_name = f"av_resp{suffix}"
+            adblock_services.append(adblock_name)
+            av_req_services.append(av_req_name)
+            av_resp_services.append(av_resp_name)
+            lines.extend([
+                f"icap_service {adblock_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port + index}/adblockreq bypass=on",
+                f"icap_service {av_req_name} reqmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
+                f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
+            ])
+        lines.extend([
+            f"adaptation_service_set adblock_req_set {' '.join(adblock_services)}",
+            f"adaptation_service_set av_req_set {' '.join(av_req_services)}",
+            f"adaptation_service_set av_resp_set {' '.join(av_resp_services)}",
             f"acl icap_adblockable method {_ADBLOCK_ICAP_METHODS}",
             "adaptation_access adblock_req_set allow icap_adblockable",
             "adaptation_access adblock_req_set deny all",
-        ]
+        ])
         if file_security_policy:
             lines.extend(["", file_security_policy])
         return "\n".join(lines) + "\n"
@@ -429,7 +476,10 @@ class SquidController:
     ) -> None:
         out_path = self._icap_include_path()
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_if_changed(out_path, self._render_icap_include(config_text))
+        self._write_if_changed(
+            out_path,
+            self._render_icap_include(config_text, workers=workers),
+        )
 
     def materialize_clamav_runtime_files(self, config_text: str) -> tuple[bool, str]:
         try:

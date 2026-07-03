@@ -936,6 +936,13 @@ case "$CICAP_AV_PORT_RAW" in
     *) CICAP_AV_PORT="$CICAP_AV_PORT_RAW" ;;
 esac
 
+# Keep adblock and AV ICAP listener ranges non-overlapping.  The historical
+# defaults (14000/14001) collide when WORKERS > 1, so align AV to the first safe
+# port after the adblock range while preserving already-safe explicit layouts.
+if [ "$CICAP_AV_PORT" -lt $((CICAP_PORT + WORKERS)) ] && [ "$CICAP_PORT" -lt $((CICAP_AV_PORT + WORKERS)) ]; then
+    CICAP_AV_PORT=$((CICAP_PORT + WORKERS))
+fi
+
 CLAMD_HOST="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr -d '\r')"
 if [ -z "$CLAMD_HOST" ]; then
     CLAMD_HOST="127.0.0.1"
@@ -949,11 +956,13 @@ esac
 
 CLAMAV_REQUIRED_RAW="${CLAMAV_REQUIRED:-}"
 CLAMAV_REQUIRED=0
+AV_BYPASS=on
 if env_enabled "$CLAMAV_REQUIRED_RAW" || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}"; then
     CLAMAV_REQUIRED=1
+    AV_BYPASS=off
 fi
 
-export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED
+export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED AV_BYPASS CICAP_PORT CICAP_AV_PORT
 
 cat > /etc/clamd_mod.conf <<EOF
 # c-icap clamd_mod configuration for squid-flask-proxy
@@ -968,29 +977,39 @@ mkdir -p /var/run/c-icap
 # Generate the AV c-icap config from the base image config. Adblock uses the
 # Python ICAP helper below and does not consume a c-icap service config.
 if [ -f /etc/c-icap/c-icap.conf ]; then
-    cp /etc/c-icap/c-icap.conf /etc/c-icap/c-icap-av.conf
+    i=0
+    while [ "$i" -lt "$WORKERS" ]; do
+        instance=$((i + 1))
+        av_port=$((CICAP_AV_PORT + i))
+        av_conf="/etc/c-icap/c-icap-av-${instance}.conf"
+        cp /etc/c-icap/c-icap.conf "$av_conf"
 
-    # Ensure AV uses its own pidfile.
-    if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
-        sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile /var/run/c-icap/c-icap-av.pid#I" /etc/c-icap/c-icap-av.conf
-    else
-        echo "PidFile /var/run/c-icap/c-icap-av.pid" >> /etc/c-icap/c-icap-av.conf
-    fi
+        if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" "$av_conf" 2>/dev/null; then
+            sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile /var/run/c-icap/c-icap-av-${instance}.pid#I" "$av_conf"
+        else
+            echo "PidFile /var/run/c-icap/c-icap-av-${instance}.pid" >> "$av_conf"
+        fi
 
-    # Disable AV per-transaction logging because nothing in-product reads it.
-    sed -i -E '/^[[:space:]]*AccessLog[[:space:]]+/d' /etc/c-icap/c-icap-av.conf || true
+        sed -i -E '/^[[:space:]]*AccessLog[[:space:]]+/d' "$av_conf" || true
 
-    # Set the AV c-icap port.
-    if grep -qiE "^[[:space:]]*Port[[:space:]]+" /etc/c-icap/c-icap-av.conf 2>/dev/null; then
-        sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${CICAP_AV_PORT}#I" /etc/c-icap/c-icap-av.conf
-    else
-        echo "Port 127.0.0.1:${CICAP_AV_PORT}" >> /etc/c-icap/c-icap-av.conf
-    fi
+        if grep -qiE "^[[:space:]]*Port[[:space:]]+" "$av_conf" 2>/dev/null; then
+            sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${av_port}#I" "$av_conf"
+        else
+            echo "Port 127.0.0.1:${av_port}" >> "$av_conf"
+        fi
+        i=$((i + 1))
+    done
 fi
 
-cat > /etc/supervisor.d/cicap_adblock.conf <<'EOF'
-[program:cicap_adblock]
-command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "${CICAP_PORT:-14000}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
+i=0
+while [ "$i" -lt "$WORKERS" ]; do
+    instance=$((i + 1))
+    adblock_port=$((CICAP_PORT + i))
+    av_conf="/etc/c-icap/c-icap-av-${instance}.conf"
+    av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"
+    cat > "/etc/supervisor.d/cicap_adblock_${instance}.conf" <<EOF
+[program:cicap_adblock_${instance}]
+command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "${adblock_port}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
 autostart=true
 autorestart=unexpected
 exitcodes=0
@@ -1002,11 +1021,10 @@ stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
-
-cat > /etc/supervisor.d/cicap_av.conf <<'EOF'
-[program:cicap_av]
+    cat > "/etc/supervisor.d/cicap_av_${instance}.conf" <<EOF
+[program:cicap_av_${instance}]
 # Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
-command=/bin/sh -c 'rm -f /var/run/c-icap/c-icap-av.pid; HOST="${CLAMD_HOST:-127.0.0.1}"; PORT="${CLAMD_PORT:-3310}"; REQUIRED="${CLAMAV_REQUIRED:-0}"; ping_clamd() { python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "$HOST" "$PORT" >/dev/null 2>&1; }; if [ "$REQUIRED" = "1" ]; then i=0; while [ $i -lt 120 ]; do ping_clamd && exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf; i=$((i+1)); sleep 1; done; echo "required ClamAV backend ${HOST}:${PORT} is not responding" >&2; exit 1; fi; if ping_clamd; then exec /usr/bin/c-icap -N -f /etc/c-icap/c-icap-av.conf; fi; echo "optional ClamAV backend ${HOST}:${PORT} is unavailable; AV ICAP service remains disabled while Squid bypasses AV adaptation" >&2; exec sleep infinity'
+command=/bin/sh -c 'rm -f "${av_pid}"; HOST="\${CLAMD_HOST:-127.0.0.1}"; PORT="\${CLAMD_PORT:-3310}"; REQUIRED="\${CLAMAV_REQUIRED:-0}"; ping_clamd() { python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "\$HOST" "\$PORT" >/dev/null 2>&1; }; if [ "\$REQUIRED" = "1" ]; then n=0; while [ \$n -lt 120 ]; do ping_clamd && exec /usr/bin/c-icap -N -f "${av_conf}"; n=\$((n+1)); sleep 1; done; echo "required ClamAV backend \${HOST}:\${PORT} is not responding" >&2; exit 1; fi; if ping_clamd; then exec /usr/bin/c-icap -N -f "${av_conf}"; fi; echo "optional ClamAV backend \${HOST}:\${PORT} is unavailable; AV ICAP service remains disabled while Squid bypasses AV adaptation" >&2; exec sleep infinity'
 autostart=true
 autorestart=true
 priority=11
@@ -1015,17 +1033,32 @@ stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
+    i=$((i + 1))
+done
 
 {
-    # One ICAP service per function.
-    # Duplicating multiple `icap_service` entries pointing at the same URI
-    # triggers Squid warnings about duplicate URIs and provides no scaling benefit.
-    echo "icap_service adblock_req reqmod_precache icap://127.0.0.1:${CICAP_PORT}/adblockreq bypass=on"
-    echo "icap_service av_req reqmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
-    echo "icap_service av_resp respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=on"
-    echo "adaptation_service_set adblock_req_set adblock_req"
-    echo "adaptation_service_set av_req_set av_req"
-    echo "adaptation_service_set av_resp_set av_resp"
+    adblock_services=""
+    av_req_services=""
+    av_resp_services=""
+    i=0
+    while [ "$i" -lt "$WORKERS" ]; do
+        instance=$((i + 1))
+        suffix=""
+        if [ "$instance" -gt 1 ]; then suffix="_${instance}"; fi
+        adblock_name="adblock_req${suffix}"
+        av_req_name="av_req${suffix}"
+        av_resp_name="av_resp${suffix}"
+        adblock_services="${adblock_services}${adblock_services:+ }${adblock_name}"
+        av_req_services="${av_req_services}${av_req_services:+ }${av_req_name}"
+        av_resp_services="${av_resp_services}${av_resp_services:+ }${av_resp_name}"
+        echo "icap_service ${adblock_name} reqmod_precache icap://127.0.0.1:$((CICAP_PORT + i))/adblockreq bypass=on"
+        echo "icap_service ${av_req_name} reqmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
+        echo "icap_service ${av_resp_name} respmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
+        i=$((i + 1))
+    done
+    echo "adaptation_service_set adblock_req_set ${adblock_services}"
+    echo "adaptation_service_set av_req_set ${av_req_services}"
+    echo "adaptation_service_set av_resp_set ${av_resp_services}"
     echo "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
     echo "adaptation_access adblock_req_set allow icap_adblockable"
     echo "adaptation_access adblock_req_set deny all"

@@ -154,6 +154,37 @@ def test_parse_icap_log_line_accepts_legacy_base_columns() -> None:
     assert row["cache_bypass"] == ""
 
 
+def test_parse_icap_log_line_accepts_extra_status_after_timing() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777000001\ttx123\t192.0.2.10\tGET\thttps://example.com/file.exe\t87"
+        "\t200\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0\texample.com"
+        "\t-\tsslfilter_nobump\t-\t-"
+    )
+
+    row = store._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["icap_time_ms"] == 87
+    assert row["service_family"] == "av"
+    assert row["domain"] == "example.com"
+    assert row["ssl_exception"] == "sslfilter_nobump"
+
+
+def test_parse_icap_log_line_accepts_extra_token_before_timing() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777000001\ttx123\t192.0.2.10\tGET\thttps://example.com/file.exe"
+        "\tavscan\t87\tavrespmod / virus_scan allow\tclamd clean\texample.com\tMozilla/5.0\texample.com"
+    )
+
+    row = store._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["icap_time_ms"] == 87
+    assert row["service_family"] == "av"
+
+
 def test_parse_icap_log_line_ignores_rows_shorter_than_legacy_base() -> None:
     store = DiagnosticStore()
     line = (

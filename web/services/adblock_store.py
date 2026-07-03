@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import csv
+import io
 import hashlib
 import json
 import logging
@@ -508,11 +510,15 @@ class AdblockStore:
         if not raw:
             return None
 
-        # Support both real tabs and literal "\\t" sequences.
-        if "\t" in raw:
-            parts = raw.split("\t")
-        elif "\\t" in raw:
-            parts = raw.split("\\t")
+        # Support real tabs, literal "\\t" sequences, and quoted fields containing tabs.
+        if "\t" in raw or "\\t" in raw:
+            text = raw
+            if "\t" not in text and "\\t" in text:
+                text = text.replace("\\t", "\t")
+            try:
+                parts = next(csv.reader(io.StringIO(text), delimiter="\t", quotechar='"'))
+            except Exception:
+                return None
         else:
             return None
 
