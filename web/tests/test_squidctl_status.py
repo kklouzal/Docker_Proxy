@@ -266,7 +266,7 @@ def test_restart_squid_accepts_live_pid_restore_for_cache_clear(
     assert "fresh PID file" in detail
 
 
-def test_stale_pid_cleanup_preserves_live_squid_pid_without_listener(
+def test_stale_pid_cleanup_removes_live_squid_pid_without_listener_when_allowed(
     monkeypatch,
 ) -> None:
     from services import squid_core, squidctl  # type: ignore
@@ -302,8 +302,8 @@ def test_stale_pid_cleanup_preserves_live_squid_pid_without_listener(
         allow_live_without_listener=True,
     )
 
-    assert detail == ""
-    assert unlinked == []
+    assert detail == "Removed stale Squid PID file /var/run/squid.pid."
+    assert unlinked == ["/var/run/squid.pid"]
 
 
 def test_wait_for_http_listener_accepts_transparent_listener_without_http_probe(
@@ -1502,3 +1502,77 @@ def test_restart_squid_fails_when_listener_never_releases(monkeypatch) -> None:
         ["squid", "-k", "shutdown"],
     ]
     assert "did not release" in detail
+
+
+def test_remove_stale_squid_pidfile_allows_live_squid_without_listener(monkeypatch) -> None:
+    from services import squid_core, squidctl  # type: ignore
+
+    class FakePath:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def exists(self) -> bool:
+            return self.path in {"/var/run/squid.pid", "/proc/1561"}
+
+        def read_text(self, **_kwargs) -> str:
+            if self.path == "/var/run/squid.pid":
+                return "1561\n"
+            msg = f"unexpected read: {self.path!r}"
+            raise AssertionError(msg)
+
+    unlinked: list[str] = []
+
+    def record_unlink(path: str) -> None:
+        unlinked.append(path)
+
+    controller = squidctl.SquidController(cmd_run=lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        squid_core.os.path,
+        "exists",
+        lambda path: path == "/var/run/squid.pid",
+    )
+    monkeypatch.setattr(squid_core, "Path", FakePath)
+    monkeypatch.setattr(squid_core.os, "unlink", record_unlink)
+    monkeypatch.setattr(controller, "_pid_looks_like_squid", lambda pid: pid == 1561)
+    monkeypatch.setattr(controller, "_squid_pid_has_http_listener", lambda pid: False)
+
+    detail = controller._remove_stale_squid_pidfile(allow_live_without_listener=True)
+
+    assert detail == "Removed stale Squid PID file /var/run/squid.pid."
+    assert unlinked == ["/var/run/squid.pid"]
+
+
+def test_remove_stale_squid_pidfile_keeps_live_squid_with_listener(monkeypatch) -> None:
+    from services import squid_core, squidctl  # type: ignore
+
+    class FakePath:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def exists(self) -> bool:
+            return self.path in {"/var/run/squid.pid", "/proc/1561"}
+
+        def read_text(self, **_kwargs) -> str:
+            if self.path == "/var/run/squid.pid":
+                return "1561\n"
+            msg = f"unexpected read: {self.path!r}"
+            raise AssertionError(msg)
+
+    def fail_unlink(path: str) -> None:
+        msg = f"unexpected unlink: {path}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        squid_core.os.path,
+        "exists",
+        lambda path: path == "/var/run/squid.pid",
+    )
+    monkeypatch.setattr(squid_core, "Path", FakePath)
+    monkeypatch.setattr(squid_core.os, "unlink", fail_unlink)
+    monkeypatch.setattr(controller, "_pid_looks_like_squid", lambda pid: pid == 1561)
+    monkeypatch.setattr(controller, "_squid_pid_has_http_listener", lambda pid: True)
+
+    detail = controller._remove_stale_squid_pidfile(allow_live_without_listener=True)
+
+    assert detail == ""

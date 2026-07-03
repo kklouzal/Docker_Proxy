@@ -912,7 +912,11 @@ class SquidController:
             if pid > 0 and Path(f"/proc/{pid}").exists():
                 try:
                     if self._pid_looks_like_squid(pid):
-                        return ""
+                        if (
+                            not allow_live_without_listener
+                            or self._squid_pid_has_http_listener(pid)
+                        ):
+                            return ""
                 except Exception:
                     return ""
             os.unlink(pid_path)  # noqa: PTH108
