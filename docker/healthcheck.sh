@@ -151,6 +151,43 @@ adblock_icap_required() {
     env_enabled "${ADBLOCK_ICAP_REQUIRED:-}"
 }
 
+clamp_workers() {
+    raw="${1:-1}"
+    case "$raw" in
+        ''|*[!0-9]*) raw=1 ;;
+    esac
+    if [ "$raw" -lt 1 ]; then
+        raw=1
+    elif [ "$raw" -gt 4 ]; then
+        raw=4
+    fi
+    printf '%s' "$raw"
+}
+
+icap_base_port() {
+    raw="${1:-}"
+    default="${2:-}"
+    case "$raw" in
+        ''|*[!0-9]*) raw="$default" ;;
+    esac
+    if [ "$raw" -lt 1 ]; then
+        raw="$default"
+    elif [ "$raw" -gt 65535 ]; then
+        raw="$default"
+    fi
+    printf '%s' "$raw"
+}
+
+icap_av_base_port() {
+    adblock_base="$1"
+    av_base="$2"
+    workers="$3"
+    if [ "$av_base" -lt $((adblock_base + workers)) ] && [ "$adblock_base" -lt $((av_base + workers)) ]; then
+        av_base=$((adblock_base + workers))
+    fi
+    printf '%s' "$av_base"
+}
+
 # Check Squid liveness (internal check)
 if ! supervisor_program_running squid; then
     echo "supervisor reports squid is not RUNNING"
@@ -191,30 +228,48 @@ fi
 # Check ICAP liveness without generating synthetic OPTIONS traffic. Squid renders
 # adblock ICAP with bypass=on, so the container healthcheck must not turn an
 # adblock helper outage into data-plane downtime unless explicitly required.
-if ! supervisor_program_running cicap_adblock; then
-    if adblock_icap_required; then
-        echo "ADBLOCK_ICAP_REQUIRED is set but supervisor reports cicap_adblock is not RUNNING"
-        exit 1
+ICAP_WORKERS="$(clamp_workers "${SQUID_WORKERS:-${WORKERS:-1}}")"
+ICAP_ADBLOCK_BASE="$(icap_base_port "${CICAP_PORT:-}" 14000)"
+ICAP_AV_BASE="$(icap_av_base_port "$ICAP_ADBLOCK_BASE" "$(icap_base_port "${CICAP_AV_PORT:-}" 14001)" "$ICAP_WORKERS")"
+
+i=0
+while [ "$i" -lt "$ICAP_WORKERS" ]; do
+    instance=$((i + 1))
+    adblock_program="cicap_adblock_${instance}"
+    adblock_port=$((ICAP_ADBLOCK_BASE + i))
+    if ! supervisor_program_running "$adblock_program"; then
+        if adblock_icap_required; then
+            echo "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING"
+            exit 1
+        fi
+        echo "supervisor reports ${adblock_program} is not RUNNING; Squid adblock ICAP is fail-open"
+    elif ! has_listen_socket "$adblock_port" >/dev/null 2>&1; then
+        if adblock_icap_required; then
+            echo "ADBLOCK_ICAP_REQUIRED is set but ${adblock_program} is not listening on port ${adblock_port}"
+            exit 1
+        fi
+        echo "${adblock_program} is not listening on port ${adblock_port}; Squid adblock ICAP is fail-open"
     fi
-    echo "supervisor reports cicap_adblock is not RUNNING; Squid adblock ICAP is fail-open"
-elif ! has_listen_socket "${CICAP_PORT:-14000}" >/dev/null 2>&1; then
-    if adblock_icap_required; then
-        echo "ADBLOCK_ICAP_REQUIRED is set but cicap_adblock is not listening on its configured port"
-        exit 1
-    fi
-    echo "cicap_adblock is not listening on its configured port; Squid adblock ICAP is fail-open"
-fi
+    i=$((i + 1))
+done
 
 if clamav_required; then
-    if ! supervisor_program_running cicap_av; then
-        echo "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING"
-        exit 1
-    fi
+    i=0
+    while [ "$i" -lt "$ICAP_WORKERS" ]; do
+        instance=$((i + 1))
+        av_program="cicap_av_${instance}"
+        av_port=$((ICAP_AV_BASE + i))
+        if ! supervisor_program_running "$av_program"; then
+            echo "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING"
+            exit 1
+        fi
 
-    if ! has_listen_socket "${CICAP_AV_PORT:-14001}" >/dev/null 2>&1; then
-        echo "CLAMAV_REQUIRED is set but cicap_av is not listening on its configured port"
-        exit 1
-    fi
+        if ! has_listen_socket "$av_port" >/dev/null 2>&1; then
+            echo "CLAMAV_REQUIRED is set but ${av_program} is not listening on port ${av_port}"
+            exit 1
+        fi
+        i=$((i + 1))
+    done
 
     # Check the remote clamd backend used by the local AV c-icap service.
     if ! python3 -c "import os,socket; host=(os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'; port=int((os.environ.get('CLAMD_PORT') or '3310').strip()); s=socket.create_connection((host, port), 1.5); s.settimeout(1.5); s.sendall(b'PING\n'); d=s.recv(64); s.close(); assert d.startswith(b'PONG')" >/dev/null 2>&1; then

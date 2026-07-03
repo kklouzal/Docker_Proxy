@@ -2883,19 +2883,13 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
 
     assert "clamav_required()" in healthcheck
     assert "adblock_icap_required()" in healthcheck
-    assert (
-        "ADBLOCK_ICAP_REQUIRED is set but supervisor reports cicap_adblock is not RUNNING"
-        in healthcheck
-    )
+    assert 'ICAP_WORKERS="$(clamp_workers "${SQUID_WORKERS:-${WORKERS:-1}}")"' in healthcheck
+    assert "cicap_adblock_${instance}" in healthcheck
+    assert "cicap_av_${instance}" in healthcheck
+    assert "icap_av_base_port" in healthcheck
     assert "Squid adblock ICAP is fail-open" in healthcheck
-    assert (
-        "cicap_adblock is not listening on its configured port; Squid adblock ICAP is fail-open"
-        in healthcheck
-    )
-    assert (
-        "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING"
-        in healthcheck
-    )
+    assert "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING" in healthcheck
+    assert "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING" in healthcheck
     assert "CLAMAV_REQUIRED is set but remote clamd is not responding" in healthcheck
     assert (
         "supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av"
@@ -2922,7 +2916,7 @@ def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
     assert "CLAMAV_REQUIRED=0" in entrypoint
     assert "optional ClamAV backend" in entrypoint
     assert "exec sleep infinity" in entrypoint
-    assert "i=0; while [ $i -lt 120 ]; do ping_clamd" in entrypoint
+    assert r"n=0; while [ \$n -lt 120 ]; do ping_clamd" in entrypoint
 
 
 def test_packaged_proxy_entrypoint_bounds_adblock_supervisor_restart_loop() -> None:
@@ -2930,8 +2924,8 @@ def test_packaged_proxy_entrypoint_bounds_adblock_supervisor_restart_loop() -> N
     entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(
         encoding="utf-8",
     )
-    section = entrypoint.split("[program:cicap_adblock]", 1)[1].split(
-        "[program:cicap_av]",
+    section = entrypoint.split("[program:cicap_adblock_${instance}]", 1)[1].split(
+        "[program:cicap_av_${instance}]",
         1,
     )[0]
 
