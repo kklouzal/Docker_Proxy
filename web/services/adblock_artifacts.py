@@ -1028,6 +1028,7 @@ def _write_empty_request_lookup_db(path: Path) -> None:
             CREATE INDEX idx_generic_kind_key ON generic_index(pattern_kind, literal_key);
             CREATE INDEX idx_option_key ON option_index(option_key, option_value);
             CREATE INDEX idx_resource_type ON resource_type_index(resource_type, negated);
+            CREATE INDEX idx_resource_type_rule ON resource_type_index(rule_id);
             CREATE INDEX idx_domain_scope ON domain_scope_index(domain, excluded, pattern);
             """
         )

@@ -348,6 +348,12 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
                 lookup_strategy = lookup_conn.execute(
                     "SELECT value FROM metadata WHERE key='lookup_strategy'"
                 ).fetchone()[0]
+                idx_resource_type_rule_present = lookup_conn.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type='index' AND name='idx_resource_type_rule'
+                    """
+                ).fetchone()
             finally:
                 lookup_conn.close()
 
@@ -370,6 +376,7 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
         assert report["breakdowns"]["lookup_index_counts"]["rules"] == 0
         assert empty_rule_count == 0
         assert schema_version == "4"
+        assert idx_resource_type_rule_present == (1,)
         assert "host-pattern/regex token prefilters" in lookup_strategy
         assert "generic literal-key prefilter" in lookup_strategy
     finally:
