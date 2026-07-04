@@ -138,5 +138,5 @@ def test_proxy_entrypoint_removes_stale_cicap_pidfiles_before_start() -> None:
     assert "python3 /app/tools/adblock_icap_server.py" in text
     assert "/var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite" in text
     assert 'av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"' in text
-    assert 'rm -f "${av_pid}"; HOST=' in text
-    assert 'exec /usr/bin/c-icap -N -f "${av_conf}"' in text
+    assert 'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"' in text
+    assert 'exec /usr/bin/c-icap -N -f "${av_conf}"' not in text
