@@ -1024,7 +1024,10 @@ EOF
     cat > "/etc/supervisor.d/cicap_av_${instance}.conf" <<EOF
 [program:cicap_av_${instance}]
 # Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
-command=/bin/sh -c 'rm -f "${av_pid}"; HOST="\${CLAMD_HOST:-127.0.0.1}"; PORT="\${CLAMD_PORT:-3310}"; REQUIRED="\${CLAMAV_REQUIRED:-0}"; ping_clamd() { python3 -c "import socket,sys; host=sys.argv[1]; port=int(sys.argv[2]); s=socket.create_connection((host, port), 1.0); s.settimeout(1.0); s.sendall(b\"PING\\n\"); data=s.recv(16); s.close(); raise SystemExit(0 if data.startswith(b\"PONG\") else 1)" "\$HOST" "\$PORT" >/dev/null 2>&1; }; if [ "\$REQUIRED" = "1" ]; then n=0; while [ \$n -lt 120 ]; do ping_clamd && exec /usr/bin/c-icap -N -f "${av_conf}"; n=\$((n+1)); sleep 1; done; echo "required ClamAV backend \${HOST}:\${PORT} is not responding" >&2; exit 1; fi; if ping_clamd; then exec /usr/bin/c-icap -N -f "${av_conf}"; fi; echo "optional ClamAV backend \${HOST}:\${PORT} is unavailable; AV ICAP service remains disabled while Squid bypasses AV adaptation" >&2; exec sleep infinity'
+# Keep the backend probe inside the supervisor child process. RouterOS/supervisord
+# otherwise logs the short-lived probe helper as an unknown reaped pid whenever
+# clamd is unavailable.
+command=/bin/sh -c 'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"'
 autostart=true
 autorestart=true
 priority=11
@@ -1125,9 +1128,18 @@ if getent passwd squid >/dev/null 2>&1; then
 fi
 # Build cache dirs using the real SMP-aware startup path.
 # Do not use -N here: it turns the master into a single worker and bypasses SMP kids.
-squid -z -f /etc/squid/squid.conf || true
+printf '[proxy-entrypoint] preparing squid cache dirs workers=%s existing_pidfile=%s squid_pids=%s\n' \
+    "$WORKERS" \
+    "$(cat /var/run/squid.pid 2>/dev/null || true)" \
+    "$(pgrep -x squid 2>/dev/null | paste -sd, - || true)"
+squid -z -f /etc/squid/squid.conf || \
+    printf '[proxy-entrypoint] squid cache-dir prepare exited nonzero; continuing to supervisord\n'
+printf '[proxy-entrypoint] squid cache-dir prepare complete pidfile=%s squid_pids=%s\n' \
+    "$(cat /var/run/squid.pid 2>/dev/null || true)" \
+    "$(pgrep -x squid 2>/dev/null | paste -sd, - || true)"
 rm -f /var/run/squid.pid || true
 printf '%s\n' "$WORKERS" > "$WORKERS_MARKER_PATH" 2>/dev/null || true
 
 # Start Supervisor to manage Squid and Flask
+printf '[proxy-entrypoint] starting supervisord workers=%s\n' "$WORKERS"
 exec /usr/bin/supervisord -c /etc/supervisord.conf

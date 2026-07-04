@@ -109,6 +109,23 @@ def _operations_request_force(operations: list[Any] | None) -> bool:
     return any(_operation_requests_force(operation) for operation in operations or [])
 
 
+def _operation_requests_config_force(operation: Any) -> bool:
+    if not _operation_requests_force(operation):
+        return False
+    operation_type = str(getattr(operation, "operation_type", "") or "")
+    target_kind = str(getattr(operation, "target_kind", "") or "")
+    return (
+        operation_type in {"manual_sync", "config_sync", "config_apply"}
+        or target_kind == "config_revision"
+    )
+
+
+def _operations_request_config_force(operations: list[Any] | None) -> bool:
+    return any(
+        _operation_requests_config_force(operation) for operation in operations or []
+    )
+
+
 def _operation_completion_status(
     operation: Any,
     *,
@@ -464,6 +481,9 @@ class ProxyRuntime:
         current = self.controller.get_current_config() or ""
         if not current:
             return ""
+        normalizer = getattr(self.controller, "normalize_config_text", None)
+        if callable(normalizer):
+            current = normalizer(current)
         return hashlib.sha256(current.encode("utf-8", errors="replace")).hexdigest()
 
     def _current_certificate_bundle_sha(self) -> str:
@@ -2706,7 +2726,12 @@ class ProxyRuntime:
                 ledger = None
             try:
                 result = self._sync_from_db_unlocked(
-                    force=bool(force or _operations_request_force(claimed_operations)),
+                    force=bool(
+                        force or _operations_request_config_force(claimed_operations),
+                    ),
+                    artifact_force=bool(
+                        force or _operations_request_force(claimed_operations),
+                    ),
                     operations=claimed_operations,
                 )
             except Exception as exc:
@@ -2748,12 +2773,16 @@ class ProxyRuntime:
         self,
         *,
         force: bool = False,
+        artifact_force: bool | None = None,
         operations: list[Any] | None = None,
     ) -> dict[str, Any]:
         self._invalidate_health_cache()
         self.ensure_registered()
         self.bootstrap_revision_if_missing()
-        cert_result = self.sync_certificate_bundle(force=force)
+        artifact_force_value = force if artifact_force is None else bool(
+            artifact_force,
+        )
+        cert_result = self.sync_certificate_bundle(force=artifact_force_value)
         cert_ok = bool(cert_result.get("ok", True))
         cert_changed = bool(cert_result.get("changed", False))
         detail_parts = (
@@ -2774,7 +2803,7 @@ class ProxyRuntime:
             cert_result["detail"] = detail
             return cert_result
 
-        policy_result = self.sync_policy_state(force=force)
+        policy_result = self.sync_policy_state(force=artifact_force_value)
         policy_ok = bool(policy_result.get("ok", True))
         policy_changed = bool(policy_result.get("changed", False))
         policy_reload_required = bool(policy_result.get("reload_required", False))
@@ -2791,7 +2820,7 @@ class ProxyRuntime:
             policy_result["detail"] = detail
             return policy_result
 
-        adblock_result = self.sync_adblock_state(force=force)
+        adblock_result = self.sync_adblock_state(force=artifact_force_value)
         adblock_ok = bool(adblock_result.get("ok", True))
         adblock_changed = bool(adblock_result.get("changed", False))
         if str(adblock_result.get("detail") or "").strip():
@@ -2810,7 +2839,7 @@ class ProxyRuntime:
             adblock_result["detail"] = detail
             return adblock_result
 
-        pac_result = self.sync_pac_state(force=force)
+        pac_result = self.sync_pac_state(force=artifact_force_value)
         pac_ok = bool(pac_result.get("ok", True))
         pac_changed = bool(pac_result.get("changed", False))
         if str(pac_result.get("detail") or "").strip():

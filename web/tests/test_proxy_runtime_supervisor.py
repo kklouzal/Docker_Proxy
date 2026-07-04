@@ -2981,9 +2981,13 @@ def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
     )
 
     assert "CLAMAV_REQUIRED=0" in entrypoint
-    assert "optional ClamAV backend" in entrypoint
-    assert "exec sleep infinity" in entrypoint
-    assert r"n=0; while [ \$n -lt 120 ]; do ping_clamd" in entrypoint
+    assert "/usr/local/bin/cicap_av_runner.py" in entrypoint
+    av_section = entrypoint.split("[program:cicap_av_${instance}]", 1)[1].split(
+        "autostart=true",
+        1,
+    )[0]
+    assert "python3 -c" not in av_section
+    assert "ping_clamd" not in av_section
 
 
 def test_packaged_proxy_entrypoint_bounds_adblock_supervisor_restart_loop() -> None:
@@ -3239,7 +3243,7 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
             calls.append(("mark", (operation_id, status, detail)))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, operations=None: {
+    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
         "ok": True,
         "detail": "runtime reconciled",
         "claimed_operation_ids": [op.operation_id for op in (operations or [])],
@@ -3255,14 +3259,14 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
     ]
 
 
-def test_sync_from_db_honors_force_flag_from_claimed_operations(monkeypatch) -> None:
+def test_sync_from_db_routes_claimed_operation_force_to_artifact_sync(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
     monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
     op = SimpleNamespace(operation_id=5, target_kind="", target_ref="", force=True)
-    observed: list[bool] = []
+    observed: list[tuple[bool, bool]] = []
 
     class Ledger:
         def requeue_stale_applying(self, _proxy_id) -> None:
@@ -3278,8 +3282,8 @@ def test_sync_from_db_honors_force_flag_from_claimed_operations(monkeypatch) -> 
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
 
-    def sync_unlocked(*, force=False, operations=None):
-        observed.append(bool(force))
+    def sync_unlocked(*, force=False, artifact_force=None, operations=None):
+        observed.append((bool(force), bool(artifact_force)))
         assert operations == [op]
         return {"ok": True, "detail": "runtime reconciled"}
 
@@ -3288,7 +3292,7 @@ def test_sync_from_db_honors_force_flag_from_claimed_operations(monkeypatch) -> 
     result = runtime.sync_from_db(force=False)
 
     assert result["ok"] is True
-    assert observed == [True]
+    assert observed == [(False, True)]
 
 
 def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
@@ -3324,7 +3328,7 @@ def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
         capture_log,
     )
 
-    def sync_unlocked(*, force=False, operations=None):
+    def sync_unlocked(*, force=False, artifact_force=None, operations=None):
         observed.append((bool(force), list(operations or [])))
         return {"ok": True, "detail": "runtime reconciled"}
 
@@ -3372,7 +3376,7 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
             calls.append((operation_id, status, detail))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, operations=None: {
+    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
         "ok": True,
         "revision_id": 9,
         "detail": "runtime reconciled",
@@ -3440,3 +3444,155 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
     assert cleared == [True]
     assert "Proxy disk cache cleared." in result["detail"]
     assert "cicap_adblock" not in result["detail"]
+
+
+def test_current_config_sha_uses_normalized_config_text() -> None:
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_config_sha_reader=None)
+    runtime.controller = SimpleNamespace(
+        get_current_config=lambda: "http_port 3128\r\n\r\n",
+        normalize_config_text=lambda text: (
+            (text or "").strip().replace("\r\n", "\n") + "\n"
+        ),
+    )
+
+    expected = hashlib.sha256(b"http_port 3128\n").hexdigest()
+
+    assert runtime._current_config_sha() == expected
+
+
+def test_sync_from_db_skips_apply_when_config_only_differs_by_normalization() -> None:
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_config_sha_reader=None)
+    applied: list[object] = []
+
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime._invalidate_health_cache = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime.controller = SimpleNamespace(
+        get_current_config=lambda: "http_port 3128\r\n\r\n",
+        normalize_config_text=lambda text: (
+            (text or "").strip().replace("\r\n", "\n") + "\n"
+        ),
+        apply_config_text=lambda *args, **kwargs: applied.append((args, kwargs)),
+    )
+    revision = SimpleNamespace(
+        revision_id=9,
+        config_text="http_port 3128\r\n\r\n",
+        config_sha256="raw-db-sha",
+        created_by="admin",
+        created_ts=123,
+    )
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=9,
+            config_sha256="raw-db-sha",
+        ),
+        get_active_revision=lambda _proxy_id: revision,
+        latest_apply=lambda _proxy_id: revision,
+    )
+
+    result = runtime._sync_from_db_unlocked(force=False)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["revision_id"] == 9
+    assert applied == []
+    assert result["detail"] == "Proxy is already using the active config revision."
+
+
+def test_forced_non_config_operation_refreshes_artifacts_only() -> None:
+    runtime = _runtime_shell()
+    revision_text = "http_port 3128\n"
+    revision_sha = hashlib.sha256(revision_text.encode("utf-8")).hexdigest()
+    applied: list[object] = []
+    force_calls: list[tuple[str, bool]] = []
+
+    def _artifact_result(name: str):
+        def _sync(*, force: bool = False):
+            force_calls.append((name, bool(force)))
+            return {"ok": True, "changed": False}
+
+        return _sync
+
+    runtime.services = SimpleNamespace(current_config_sha_reader=None)
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime._invalidate_health_cache = lambda: None
+    runtime.sync_certificate_bundle = _artifact_result("cert")
+    runtime.sync_policy_state = lambda *, force=False: (
+        force_calls.append(("policy", bool(force)))
+        or {"ok": True, "changed": False, "reload_required": False}
+    )
+    runtime.sync_adblock_state = _artifact_result("adblock")
+    runtime.sync_pac_state = _artifact_result("pac")
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._current_adblock_artifact_sha = lambda: ""
+    runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
+    runtime.controller = SimpleNamespace(
+        get_current_config=lambda: revision_text,
+        normalize_config_text=lambda text: (text or "").strip() + "\n",
+        set_adblock_icap_revision_token=lambda _token: None,
+        materialize_clamav_runtime_files=lambda _text: (True, "unchanged"),
+        apply_config_text=lambda *args, **kwargs: applied.append((args, kwargs)),
+    )
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=10,
+            config_sha256=revision_sha,
+        ),
+        get_active_revision=lambda _proxy_id: SimpleNamespace(
+            revision_id=10,
+            config_text=revision_text,
+            config_sha256=revision_sha,
+        ),
+        latest_apply=lambda _proxy_id: None,
+    )
+    operation = SimpleNamespace(
+        force=True,
+        operation_type="pac_refresh",
+        target_kind="pac_profile",
+    )
+
+    result = runtime._sync_from_db_unlocked(
+        force=False,
+        artifact_force=True,
+        operations=[operation],
+    )
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert applied == []
+    assert force_calls == [
+        ("cert", True),
+        ("policy", True),
+        ("adblock", True),
+        ("pac", True),
+    ]
+
+
+def test_operation_config_force_is_limited_to_config_affecting_requests() -> None:
+    from proxy import runtime as runtime_module
+
+    assert runtime_module._operations_request_config_force(
+        [SimpleNamespace(force=True, operation_type="manual_sync", target_kind="")]
+    )
+    assert runtime_module._operations_request_config_force(
+        [SimpleNamespace(force=True, operation_type="config_apply", target_kind="")]
+    )
+    pac_operation = SimpleNamespace(
+        force=True,
+        operation_type="pac_refresh",
+        target_kind="pac_profile",
+    )
+    assert not runtime_module._operations_request_config_force([pac_operation])
+    assert runtime_module._operations_request_force([pac_operation])

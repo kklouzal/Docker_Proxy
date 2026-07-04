@@ -1251,6 +1251,11 @@ select{
   outline: none;
 }
 
+select option{
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
 textarea{
   min-height: 360px;
   resize: vertical;

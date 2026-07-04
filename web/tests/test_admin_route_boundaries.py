@@ -90,6 +90,18 @@ class RecordingProxyClient:
                 "available": False,
                 "path": "/var/log/squid/cache.log",
             },
+            {
+                "key": "access_observe",
+                "label": "Observability access log",
+                "available": False,
+                "path": "/var/log/squid/access-observe.log",
+            },
+            {
+                "key": "icap",
+                "label": "ICAP log",
+                "available": False,
+                "path": "/var/log/squid/icap.log",
+            },
         ]
         if key not in {"access", "cache"}:
             return {
@@ -536,6 +548,10 @@ def test_logs_page_renders_status_nav_and_selected_proxy_log(
     assert proxy_client.log_calls == [("edge-2", "access")]
     assert "Logs" in body
     assert "edge-2:access:line" in body
+    assert "Squid access log" in body
+    assert "Squid cache log" in body
+    assert "Observability access log" in body
+    assert "ICAP log" in body
     assert 'href="/logs?proxy_id=edge-2"' in body
 
 

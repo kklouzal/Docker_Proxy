@@ -79,7 +79,10 @@ def test_get_status_reports_supervisor_non_running_or_failure_even_when_squid_ch
 
 def test_restart_squid_stops_waits_for_listener_release_then_starts(
     monkeypatch,
+    caplog,
 ) -> None:
+    import logging
+
     from services import squidctl  # type: ignore
 
     calls: list[list[str]] = []
@@ -109,7 +112,8 @@ def test_restart_squid_stops_waits_for_listener_release_then_starts(
         lambda *, timeout: ready_checks.append(timeout) or True,
     )
 
-    ok, detail = controller.restart_squid()
+    with caplog.at_level(logging.INFO, logger="services.squid_core"):
+        ok, detail = controller.restart_squid()
 
     assert ok is True
     assert calls == [
@@ -120,6 +124,9 @@ def test_restart_squid_stops_waits_for_listener_release_then_starts(
     assert absent_checks == [30.0]
     assert ready_checks == [45.0]
     assert "Squid HTTP listener is responding" in detail
+    assert "Restarting Squid via supervisor" in caplog.text
+    assert "Supervisor stop squid returned rc=0" in caplog.text
+    assert "Supervisor start squid returned rc=0" in caplog.text
 
 
 def test_restart_squid_requires_http_listener_response(monkeypatch) -> None:

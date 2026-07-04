@@ -1046,15 +1046,24 @@ class SquidController:
     ) -> tuple[bool, str]:
         ready_timeout = max(1.0, float(ready_timeout or 45.0))
         detail_parts: list[str] = []
+        logger.info(
+            "Restarting Squid via supervisor; ready_timeout=%s accept_live_pid=%s",
+            ready_timeout,
+            accept_live_pid_restart,
+        )
         try:
             stop = self._run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
                 capture_output=True,
                 timeout=25,
             )
-            detail_parts.append(
-                self._decode_completed(stop) or "supervisorctl stop squid",
+            stop_detail = self._decode_completed(stop) or "supervisorctl stop squid"
+            logger.info(
+                "Supervisor stop squid returned rc=%s detail=%s",
+                getattr(stop, "returncode", "unknown"),
+                stop_detail,
             )
+            detail_parts.append(stop_detail)
         except Exception as exc:
             detail_parts.append(f"supervisorctl stop squid failed: {exc}")
 
@@ -1141,6 +1150,11 @@ class SquidController:
                 timeout=25,
             )
             start_detail = self._decode_completed(start) or "supervisorctl start squid"
+            logger.info(
+                "Supervisor start squid returned rc=%s detail=%s",
+                getattr(start, "returncode", "unknown"),
+                start_detail,
+            )
             detail_parts.append(start_detail)
             start_detail_lower = start_detail.lower()
             start_reported_already_running = "already running" in start_detail_lower
