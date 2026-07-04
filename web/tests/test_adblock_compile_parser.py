@@ -371,6 +371,12 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
             "SELECT COUNT(*) FROM resource_type_index WHERE resource_type='websocket'"
         ).fetchone() == (1,)
         assert conn.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type='index' AND name='idx_resource_type_rule'
+            """
+        ).fetchone() == (1,)
+        assert conn.execute(
             "SELECT COUNT(*) FROM domain_scope_index WHERE domain='example.com'"
         ).fetchone() == (1,)
         lookup_strategy = conn.execute(
