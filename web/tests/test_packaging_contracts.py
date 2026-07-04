@@ -34,6 +34,50 @@ def _entrypoint_listener_normalizer_script() -> str:
     return text[start:end]
 
 
+def _entrypoint_shell_block(start_marker: str, end_marker: str) -> str:
+    text = _read("docker/entrypoint.sh")
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    return text[start:end]
+
+
+def _entrypoint_perf_tuning_script() -> str:
+    return "\n".join(
+        [
+            _entrypoint_shell_block(
+                "config_has_directive() {",
+                "\nif [ -z \"${DB_POOL_MAX_IDLE_SECONDS:-}\" ]; then",
+            ),
+            _entrypoint_shell_block(
+                "replace_or_append_config_line() {",
+                "\nnormalize_http_port_listeners() {",
+            ),
+            _entrypoint_shell_block(
+                "apply_squid_perf_tuning() {",
+                "\npython3 /app/tools/adblock_compile.py",
+            ),
+        ],
+    )
+
+
+def _run_entrypoint_perf_tuning(config_path, *, children: int) -> None:
+    script = (
+        "set -eu\n"
+        f"{_entrypoint_perf_tuning_script()}\n"
+        "SQUID_WORKERS=4\n"
+        "SQUID_CACHE_MEM_MB=256\n"
+        f"SQUID_SSLCRTD_CHILDREN={children}\n"
+        f"EXPLICIT_SQUID_SSLCRTD_CHILDREN={children}\n"
+        "SQUID_MAX_FILEDESCRIPTORS=65536\n"
+        "SQUID_DYNAMIC_CERT_MEM_CACHE_MB=256\n"
+        "apply_squid_perf_tuning \"$1\"\n"
+    )
+    subprocess.run(
+        ["/bin/sh", "-c", script, "entrypoint-perf-tuning-test", str(config_path)],
+        check=True,
+    )
+
+
 def _python_module_imports_services(path: str) -> set[str]:
     tree = ast.parse(_read(path), filename=path)
     imports: set[str] = set()
@@ -733,6 +777,33 @@ def test_compose_exposes_https_intercept_listener_knobs() -> None:
     assert "# SQUID_HTTPS_INTERCEPT_ENABLED=0" in env_example
     assert "# PROXY_PUBLIC_HTTPS_INTERCEPT_PORT=3130" in env_example
     assert "SQUID_HTTPS_INTERCEPT_ENABLED" in readme
+
+
+def test_proxy_entrypoint_perf_tuning_preserves_sslcrtd_child_options(tmp_path) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text(
+        "workers 4\n"
+        "cache_mem 256 MB\n"
+        "sslcrtd_children 4 startup=3 idle=2 queue-size=96\n"
+        "max_filedescriptors 65536\n",
+        encoding="utf-8",
+    )
+
+    _run_entrypoint_perf_tuning(config, children=2)
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "sslcrtd_children 2 startup=3 idle=2 queue-size=96" in rendered
+    assert "sslcrtd_children 2\n" not in rendered
+
+
+def test_proxy_entrypoint_perf_tuning_synthesizes_sslcrtd_child_options(tmp_path) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text("workers 4\ncache_mem 256 MB\n", encoding="utf-8")
+
+    _run_entrypoint_perf_tuning(config, children=2)
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "sslcrtd_children 2 startup=2 idle=1 queue-size=32" in rendered
 
 
 def test_proxy_entrypoint_env_can_materialize_https_intercept_listener(

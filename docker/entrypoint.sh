@@ -166,6 +166,51 @@ replace_or_append_config_line() {
     fi
 }
 
+extract_sslcrtd_child_option() {
+    file_path="$1"
+    option_name="$2"
+    if [ ! -f "$file_path" ]; then
+        printf ''
+        return 0
+    fi
+    awk -v opt="$option_name" '
+        /^[[:space:]]*#/ { next }
+        tolower($1)=="sslcrtd_children" {
+            for (i = 3; i <= NF; i++) {
+                if (index($i, "=") == 0) {
+                    continue
+                }
+                split($i, parts, "=")
+                if (tolower(parts[1]) == opt && parts[2] ~ /^[0-9]+$/) {
+                    print parts[2]
+                    exit
+                }
+            }
+            exit
+        }
+    ' "$file_path" 2>/dev/null || true
+}
+
+build_sslcrtd_children_value() {
+    file_path="$1"
+    children="$2"
+    startup="$(extract_sslcrtd_child_option "$file_path" "startup")"
+    idle="$(extract_sslcrtd_child_option "$file_path" "idle")"
+    queue_size="$(extract_sslcrtd_child_option "$file_path" "queue-size")"
+
+    if [ -z "$startup" ]; then
+        startup=2
+    fi
+    if [ -z "$idle" ]; then
+        idle=1
+    fi
+    if [ -z "$queue_size" ]; then
+        queue_size=32
+    fi
+
+    printf '%s startup=%s idle=%s queue-size=%s\n' "$children" "$startup" "$idle" "$queue_size"
+}
+
 normalize_http_port_listeners() {
     file_path="$1"
     if [ ! -f "$file_path" ]; then
@@ -457,7 +502,7 @@ apply_squid_perf_tuning() {
     fi
 
     if [ -n "${EXPLICIT_SQUID_SSLCRTD_CHILDREN:-}" ] || ! config_has_directive "$file_path" "sslcrtd_children"; then
-        replace_or_append_config_line "$file_path" "sslcrtd_children" "$SQUID_SSLCRTD_CHILDREN"
+        replace_or_append_config_line "$file_path" "sslcrtd_children" "$(build_sslcrtd_children_value "$file_path" "$SQUID_SSLCRTD_CHILDREN")"
     fi
 
     if [ -n "${EXPLICIT_SQUID_MAX_FILEDESCRIPTORS:-}" ] || ! config_has_directive "$file_path" "max_filedescriptors"; then
