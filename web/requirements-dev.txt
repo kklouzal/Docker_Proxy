@@ -1,4 +1,4 @@
 -r requirements.txt
 pytest
 pytest-timeout
-ruff==0.15.13
+ruff==0.15.20

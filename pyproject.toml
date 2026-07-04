@@ -51,6 +51,7 @@ ignore = [
     "PLR0916",
     "PLR0917",
     "PLR1702",
+    "PLW0717",
 
     # This proxy intentionally degrades around many external systems. Keep rules
     # for exception chaining and bad raise structure enabled.
