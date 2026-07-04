@@ -1194,7 +1194,11 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
         "reload_required": True,
         "detail": "Updated policy files.",
     }
-    runtime.sync_adblock_state = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
     runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
@@ -1287,6 +1291,95 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
         "Proxy is already using the active config revision.",
     )
     assert runtime.controller.token == "adblock-sha"
+
+
+def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() -> None:
+    active_config = "http_port 3128\r\n\r\n"
+    normalized_config = "http_port 3128\n"
+    active_sha = hashlib.sha256(active_config.encode("utf-8")).hexdigest()
+    normalized_sha = hashlib.sha256(normalized_config.encode("utf-8")).hexdigest()
+
+    runtime = _runtime_shell()
+    applies: list[str] = []
+    reloads: list[bool] = []
+    marked: list[tuple[bool, str, str]] = []
+
+    class Controller:
+        def get_current_config(self):
+            return normalized_config
+
+        def normalize_config_text(self, text):
+            return (text or "").replace("\r\n", "\n").rstrip() + "\n"
+
+        def apply_config_text(self, text):
+            applies.append(text)
+            return True, "Squid reconfigured."
+
+        def set_adblock_icap_revision_token(self, _token) -> None:
+            return None
+
+        def materialize_clamav_runtime_files(self, _config_text):
+            return True, "ClamAV runtime files already current."
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256=active_sha)
+
+        def latest_apply(self, _proxy_id) -> None:
+            return None
+
+        def get_active_revision(self, _proxy_id):
+            return SimpleNamespace(
+                revision_id=9,
+                config_text=active_config,
+                config_sha256=active_sha,
+            )
+
+        def record_apply_result(self, *_args, **_kwargs):
+            msg = "forced normalized no-op should not record apply"
+            raise AssertionError(msg)
+
+    class Registry:
+        def mark_apply_result(self, _proxy_id, *, ok, detail, current_config_sha):
+            marked.append((ok, detail, current_config_sha))
+            return SimpleNamespace()
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": True,
+        "reload_required": True,
+        "detail": "Updated policy files.",
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: normalized_sha
+    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
+        reloads.append(wait_for_adblock_icap)
+        or (True, "Squid reconfigured for policy update.")
+    )
+
+    result = runtime.sync_from_db(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["config_changed"] is False
+    assert result["policy_changed"] is True
+    assert result["revision_id"] == 9
+    assert applies == []
+    assert reloads == [False]
+    assert marked == []
+    assert "Proxy is already using the active config revision." in result["detail"]
 
 
 def test_reload_for_policy_update_can_skip_adblock_icap_health(monkeypatch) -> None:

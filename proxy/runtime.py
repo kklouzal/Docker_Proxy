@@ -3038,8 +3038,7 @@ class ProxyRuntime:
         normalized_revision_sha = ""
         normalized_config_current = False
         if (
-            not force
-            and current_sha
+            current_sha
             and revision_meta.config_sha256
             and revision_meta.config_sha256 != current_sha
         ):
