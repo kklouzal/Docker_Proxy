@@ -1025,13 +1025,21 @@ class SquidController:
         )
         detail = self._decode_completed(proc)
         if proc.returncode != 0:
-            if self._reconfigure_failed_only_for_missing_pid(
-                detail,
-            ) and self._wait_for_http_listener(timeout=listener_timeout):
-                return True, (
-                    detail
-                    + "\nSquid reconfigure could not signal a PID file, but the HTTP listener is responding."
+            if self._reconfigure_failed_only_for_missing_pid(detail):
+                if self._wait_for_http_listener(timeout=listener_timeout):
+                    return True, (
+                        detail
+                        + "\nSquid reconfigure could not signal a PID file, but the HTTP listener is responding."
+                    ).strip()
+                ok_restart, restart_details = self.restart_squid()
+                recovery = (
+                    "Squid reconfigure could not signal a PID file and the HTTP "
+                    "listener was unavailable; "
+                    + (restart_details or "Squid restart failed.")
                 ).strip()
+                if ok_restart:
+                    return True, (detail + "\n" + recovery).strip()
+                return False, (detail + "\n" + recovery).strip()
             return False, detail or "Squid reconfigure failed."
         if not self._wait_for_http_listener(timeout=listener_timeout):
             ok_restart, restart_details = self.restart_squid()
