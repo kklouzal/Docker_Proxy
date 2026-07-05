@@ -66,6 +66,32 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     assert "?:" not in policy
 
 
+def test_remote_clamd_blocks_download_respmod_policy_but_keeps_uploads() -> None:
+    _add_web_path()
+    from services.clamav_config_forms import (
+        clamd_host_is_remote,
+        remote_clamd_download_block_reason,
+        render_file_security_policy_config,
+    )
+
+    assert clamd_host_is_remote("127.0.0.1") is False
+    assert clamd_host_is_remote("localhost") is False
+    assert clamd_host_is_remote("192.168.1.10") is True
+
+    reason = remote_clamd_download_block_reason("192.168.1.10")
+    assert reason is not None
+    policy = render_file_security_policy_config(
+        download_scan_blocked_reason=reason,
+    )
+
+    assert "adaptation_access av_req_set allow file_security_upload_methods" in policy
+    assert "adaptation_access av_resp_set allow file_security_download_methods" not in policy
+    assert "adaptation_access av_resp_set deny file_security_range_request" not in policy
+    assert "adaptation_access av_resp_set deny all" in policy
+    assert "download/RESPMOD AV scanning disabled" in policy
+    assert "192.168.1.10" in policy
+
+
 def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
     _add_web_path()
     from services.clamav_config_forms import normalize_clamav_options
@@ -294,3 +320,48 @@ def test_squid_controller_materializes_clamav_runtime_files(
     assert "virus_scan.SendPercentData 5" in virus_conf
     assert "virus_scan.StartSendPercentDataAfter 2M" in virus_conf
     assert "virus_scan.MaxObjectSize 64M" in virus_conf
+
+
+def test_squid_controller_suppresses_remote_clamd_download_scan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_path()
+    from services.clamav_config_forms import apply_clamav_options_to_config
+    from services.squid_core import SquidController
+
+    icap_path = tmp_path / "20-icap.conf"
+    virus_path = tmp_path / "virus_scan.conf"
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(icap_path))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(virus_path))
+    monkeypatch.setenv("CLAMD_HOST", "192.168.1.10")
+    from services.squid_core import (
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+
+    config = apply_clamav_options_to_config(
+        "workers 1\n",
+        {
+            "file_security_scan_downloads": True,
+            "file_security_scan_uploads": True,
+        },
+    )
+    controller = SquidController(squid_conf_path=str(tmp_path / "squid.conf"))
+
+    ok, detail = controller.materialize_clamav_runtime_files(config)
+
+    assert ok is True
+    assert "updated" in detail
+    include_text = icap_path.read_text(encoding="utf-8")
+    assert "icap_service av_resp respmod_precache" in include_text
+    assert "adaptation_service_set av_resp_set av_resp" in include_text
+    assert "adaptation_access av_req_set allow file_security_upload_methods" in include_text
+    assert "adaptation_access av_resp_set allow file_security_download_methods" not in include_text
+    assert "adaptation_access av_resp_set deny file_security_range_request" not in include_text
+    assert "adaptation_access av_resp_set deny all" in include_text
+    assert "download/RESPMOD AV scanning disabled" in include_text
+    assert "192.168.1.10" in include_text

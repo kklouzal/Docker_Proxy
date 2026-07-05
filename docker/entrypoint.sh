@@ -992,6 +992,14 @@ CLAMD_HOST="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr -d '\r')"
 if [ -z "$CLAMD_HOST" ]; then
     CLAMD_HOST="127.0.0.1"
 fi
+CLAMD_HOST_IS_REMOTE=1
+case "$CLAMD_HOST" in
+    localhost|127.*|::1|\[::1\]) CLAMD_HOST_IS_REMOTE=0 ;;
+esac
+REMOTE_CLAMD_DOWNLOAD_WARNING="download/RESPMOD AV scanning disabled: c-icap virus_scan passes local temporary file paths to clamd, which is unsafe for non-local CLAMD_HOST (${CLAMD_HOST})"
+if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
+    printf '[proxy-entrypoint] WARNING: %s\n' "$REMOTE_CLAMD_DOWNLOAD_WARNING"
+fi
 
 CLAMD_PORT_RAW="${CLAMD_PORT:-3310}"
 case "$CLAMD_PORT_RAW" in
@@ -1119,10 +1127,15 @@ done
     echo "acl file_security_executable_mime req_header Content-Type -i (application/x-msdownload|application/x-msdos-program|application/x-ms-installer)"
     echo "adaptation_access av_req_set allow file_security_upload_methods"
     echo "adaptation_access av_req_set deny all"
-    echo "adaptation_access av_resp_set deny file_security_range_request"
-    echo "adaptation_access av_resp_set deny file_security_partial_response"
-    echo "adaptation_access av_resp_set allow file_security_download_methods"
-    echo "adaptation_access av_resp_set deny all"
+    if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
+        echo "# ${REMOTE_CLAMD_DOWNLOAD_WARNING}"
+        echo "adaptation_access av_resp_set deny all"
+    else
+        echo "adaptation_access av_resp_set deny file_security_range_request"
+        echo "adaptation_access av_resp_set deny file_security_partial_response"
+        echo "adaptation_access av_resp_set allow file_security_download_methods"
+        echo "adaptation_access av_resp_set deny all"
+    fi
     echo "http_access deny file_security_risky_path"
     echo "http_access deny file_security_executable_path"
     echo "http_access deny file_security_executable_mime file_security_upload_methods"

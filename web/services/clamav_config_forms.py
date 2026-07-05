@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -10,6 +11,11 @@ CLAMAV_SETTINGS_START = "# BEGIN SQUID-UI CLAMAV SETTINGS"
 CLAMAV_SETTINGS_END = "# END SQUID-UI CLAMAV SETTINGS"
 LEGACY_RISKY_EXTENSIONS_WITH_WEB_ASSETS = (
     "exe dll msi bat cmd com scr ps1 vbs js jar apk"
+)
+LOCAL_CLAMD_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+REMOTE_CLAMD_DOWNLOAD_WARNING = (
+    "download/RESPMOD AV scanning disabled: c-icap virus_scan passes local "
+    "temporary file paths to clamd, which is unsafe for non-local CLAMD_HOST"
 )
 
 DEFAULTS: dict[str, Any] = {
@@ -542,7 +548,29 @@ def _preset_defaults(preset: Any) -> dict[str, Any]:
     return defaults
 
 
-def render_file_security_policy_config(options: Mapping[str, Any] | None = None) -> str:
+def clamd_host_is_remote(host: object) -> bool:
+    value = str(host or "").strip().lower()
+    if not value:
+        return False
+    if value in LOCAL_CLAMD_HOSTS:
+        return False
+    try:
+        return not ipaddress.ip_address(value.strip("[]")).is_loopback
+    except ValueError:
+        return True
+
+
+def remote_clamd_download_block_reason(host: object) -> str | None:
+    if not clamd_host_is_remote(host):
+        return None
+    return f"{REMOTE_CLAMD_DOWNLOAD_WARNING} ({host})"
+
+
+def render_file_security_policy_config(
+    options: Mapping[str, Any] | None = None,
+    *,
+    download_scan_blocked_reason: str | None = None,
+) -> str:
     opts = normalize_clamav_options(options)
     risky_exts = _split_policy_tokens(opts["file_security_risky_extensions"])
     archive_exts = _split_policy_tokens(opts["file_security_archive_extensions"])
@@ -597,7 +625,14 @@ def render_file_security_policy_config(options: Mapping[str, Any] | None = None)
                 "adaptation_access av_req_set deny all",
             ],
         )
-    if opts["file_security_scan_downloads"]:
+    if opts["file_security_scan_downloads"] and download_scan_blocked_reason:
+        lines.extend(
+            [
+                f"# {download_scan_blocked_reason}",
+                "adaptation_access av_resp_set deny all",
+            ],
+        )
+    elif opts["file_security_scan_downloads"]:
         lines.extend(
             [
                 "adaptation_access av_resp_set deny file_security_range_request",

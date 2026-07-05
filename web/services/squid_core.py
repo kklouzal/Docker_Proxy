@@ -18,6 +18,7 @@ from typing import Any
 from services.clamav_config_forms import (
     clamav_fail_open,
     extract_clamav_options,
+    remote_clamd_download_block_reason,
     render_file_security_policy_config,
     render_virus_scan_config,
 )
@@ -428,8 +429,14 @@ class SquidController:
 
         clamav_options = extract_clamav_options(config_text or "")
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
+        remote_clamd_download_block = remote_clamd_download_block_reason(
+            os.environ.get("CLAMD_HOST", "127.0.0.1"),
+        )
+        if remote_clamd_download_block:
+            logger.warning(remote_clamd_download_block)
         file_security_policy = render_file_security_policy_config(
             clamav_options,
+            download_scan_blocked_reason=remote_clamd_download_block,
         ).strip()
         # Version the Squid ICAP service name with the active artifact while
         # keeping the adblock ICAP helper URI stable. Squid tracks ICAP service health
