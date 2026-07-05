@@ -3605,6 +3605,7 @@ def index():
         health = _cached_proxy_health(
             proxy_id,
             timeout_seconds=_proxy_health_timeout_seconds(),
+            full=True,
         )
     except ProxyClientError as exc:
         proxy = get_proxy_registry().get_proxy(proxy_id)

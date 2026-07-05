@@ -18,12 +18,14 @@ from .admin_route_test_utils import (
 class RecordingProxyClient:
     def __init__(self) -> None:
         self.health_calls: list[tuple[str, float | None]] = []
+        self.health_full_flags: list[bool] = []
         self.log_calls: list[tuple[str, str]] = []
 
     def get_health(
-        self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
+        self, proxy_id: object, *_, timeout_seconds: float | None = None, **kwargs
     ) -> dict[str, object]:
         self.health_calls.append((str(proxy_id), timeout_seconds))
+        self.health_full_flags.append(bool(kwargs.get("full")))
         return {
             "ok": True,
             "status": "healthy",
@@ -125,6 +127,54 @@ class RecordingProxyClient:
             "truncated": False,
             "max_bytes": 256 * 1024,
             "logs": logs,
+        }
+
+
+class FullHealthOnlyDashboardProxyClient(RecordingProxyClient):
+    def get_health(
+        self, proxy_id: object, *_, timeout_seconds: float | None = None, **kwargs
+    ) -> dict[str, object]:
+        self.health_calls.append((str(proxy_id), timeout_seconds))
+        full = bool(kwargs.get("full"))
+        self.health_full_flags.append(full)
+        if not full:
+            return {
+                "ok": True,
+                "status": "healthy",
+                "proxy_id": str(proxy_id),
+                "proxy_status": "basic navigation health",
+                "stats": {},
+                "services": {},
+            }
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": str(proxy_id),
+            "proxy_status": "full dashboard health",
+            "stats": {
+                "cpu": {"util_percent": 12.3, "loadavg": {"1m": 1, "5m": 2, "15m": 3}},
+                "memory": {
+                    "used_bytes": 512 * 1024 * 1024,
+                    "total_bytes": 1024 * 1024 * 1024,
+                    "used_percent": 50.0,
+                },
+                "storage": {
+                    "cache_path": "/var/spool/squid",
+                    "cache_dir_size_human": "17 MiB",
+                    "cache_fs_used_human": "4 GiB",
+                    "cache_fs_total_human": "8 GiB",
+                    "cache_fs_free_human": "4 GiB",
+                },
+                "squid": {
+                    "mgr_available": True,
+                    "hit_rate": {"request_hit_ratio": 42.5, "byte_hit_ratio": 21.0},
+                    "hit_rate_source": "cachemgr",
+                },
+            },
+            "services": {
+                "icap": {"ok": True, "detail": "icap full detail"},
+                "clamav": {"ok": True, "detail": "clamav full detail"},
+            },
         }
 
 
@@ -400,6 +450,29 @@ def test_index_uses_cold_cache_safe_proxy_health_timeout(monkeypatch, tmp_path) 
 
     assert response.status_code == 200
     assert proxy_client.health_calls[-1] == ("default", 1.5)
+    assert proxy_client.health_full_flags[-1] is True
+
+
+def test_index_renders_full_proxy_health_stats(monkeypatch, tmp_path) -> None:
+    proxy_client = FullHealthOnlyDashboardProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert proxy_client.health_calls == [("default", 1.5)]
+    assert proxy_client.health_full_flags == [True]
+    assert "12.3%" in body
+    assert "512 MiB / 1024 MiB" in body
+    assert "/var/spool/squid" in body
+    assert "4 GiB used / 8 GiB total" in body
+    assert "Req 42.5%" in body
+    assert "Bytes 21.0%" in body
+    assert "icap full detail" in body
+    assert "clamav full detail" in body
 
 
 def test_index_reuses_short_lived_proxy_health_cache(monkeypatch, tmp_path) -> None:
@@ -412,6 +485,7 @@ def test_index_reuses_short_lived_proxy_health_cache(monkeypatch, tmp_path) -> N
     assert client.get("/").status_code == 200
 
     assert proxy_client.health_calls == [("default", 1.5)]
+    assert proxy_client.health_full_flags == [True]
 
 
 def test_cached_proxy_health_returns_fresh_cache_before_refresh(
@@ -490,6 +564,7 @@ def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> No
 
     assert response.status_code == 200
     assert proxy_client.health_calls == [("default", 1.5)]
+    assert proxy_client.health_full_flags == [False]
 
 
 def test_fleet_query_selects_proxy_for_live_health(monkeypatch, tmp_path) -> None:
@@ -505,6 +580,7 @@ def test_fleet_query_selects_proxy_for_live_health(monkeypatch, tmp_path) -> Non
 
     assert response.status_code == 200
     assert proxy_client.health_calls == [("edge-2", 1.5)]
+    assert proxy_client.health_full_flags == [False]
     with client.session_transaction() as sess:
         assert sess["active_proxy_id"] == "edge-2"
 
