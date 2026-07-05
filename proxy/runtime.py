@@ -69,6 +69,30 @@ logger = logging.getLogger(__name__)
 
 _SUPERVISOR_CONTROL_LOCK = threading.RLock()
 _SYNC_CONTROL_LOCK = threading.RLock()
+_ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD = 3
+_ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS = 600.0
+
+
+def _adblock_icap_self_heal_failure_threshold() -> int:
+    try:
+        value = int(
+            (os.environ.get("ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD") or "").strip()
+            or _ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD
+        )
+    except Exception:
+        value = _ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD
+    return max(1, min(value, 10))
+
+
+def _adblock_icap_self_heal_restart_cooldown_seconds() -> float:
+    try:
+        value = float(
+            (os.environ.get("ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS") or "").strip()
+            or _ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS
+        )
+    except Exception:
+        value = _ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS
+    return max(0.0, min(value, 3600.0))
 
 
 def _clamp_icap_workers(value: object) -> int:
@@ -460,6 +484,8 @@ class ProxyRuntime:
         self._health_cache_value: dict[str, Any] | None = None
         self._navigation_health_cache_ts = 0.0
         self._navigation_health_cache_value: dict[str, Any] | None = None
+        self._adblock_icap_health_failures = 0
+        self._adblock_icap_last_restart_ts = 0.0
 
     @property
     def proxy_id(self) -> str:
@@ -1449,6 +1475,7 @@ class ProxyRuntime:
 
         icap_health = _check_icap_adblock(timeout=0.8, error_formatter=str)
         if status_ok and bool(icap_health.get("ok")):
+            self._adblock_icap_health_failures = 0
             return {
                 "ok": True,
                 "proxy_id": self.proxy_id,
@@ -1456,7 +1483,53 @@ class ProxyRuntime:
                 "detail": status_detail or "adblock ICAP helper is healthy.",
             }
 
+        if status_ok:
+            failures = int(getattr(self, "_adblock_icap_health_failures", 0) or 0) + 1
+            self._adblock_icap_health_failures = failures
+            threshold = _adblock_icap_self_heal_failure_threshold()
+            now = time.monotonic()
+            last_restart_ts = float(
+                getattr(self, "_adblock_icap_last_restart_ts", 0.0) or 0.0
+            )
+            cooldown_seconds = _adblock_icap_self_heal_restart_cooldown_seconds()
+            cooldown_remaining = max(
+                0.0,
+                cooldown_seconds - (now - last_restart_ts),
+            )
+            if failures < threshold or cooldown_remaining > 0:
+                return {
+                    "ok": True,
+                    "proxy_id": self.proxy_id,
+                    "changed": False,
+                    "detail": "\n".join(
+                        part
+                        for part in (
+                            (
+                                f"Self-heal observed adblock ICAP probe failure "
+                                f"{failures}/{threshold} triggered by {reason}; "
+                                "supervisor still reports the helper running, so "
+                                "restart is deferred to avoid churn."
+                            ),
+                            (
+                                f"Restart cooldown active for "
+                                f"{cooldown_remaining:.0f}s."
+                                if cooldown_remaining > 0
+                                else ""
+                            ),
+                            status_detail,
+                            str(icap_health.get("detail") or ""),
+                        )
+                        if str(part or "").strip()
+                    ),
+                }
+
+        else:
+            self._adblock_icap_health_failures = 0
+
         ok_restart, restart_detail = self._restart_adblock_service()
+        if status_ok:
+            self._adblock_icap_last_restart_ts = time.monotonic()
+            self._adblock_icap_health_failures = 0
         return {
             "ok": bool(ok_restart),
             "proxy_id": self.proxy_id,

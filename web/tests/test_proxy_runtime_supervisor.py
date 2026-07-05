@@ -865,6 +865,44 @@ def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> No
     assert "not listening" in result["detail"]
 
 
+def test_runtime_service_self_heal_defers_transient_adblock_icap_failures(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    restarts: list[bool] = []
+    runtime._supervisor_program_status = lambda program, **_kwargs: (
+        True,
+        "cicap_adblock RUNNING pid 123, uptime 0:10:00",
+    )
+    runtime._restart_adblock_service = lambda: (
+        restarts.append(True) or (True, "cicap_adblock restarted")
+    )
+    monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD", "3")
+    monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS", "0")
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_icap_adblock",
+        lambda **_kwargs: {"ok": False, "detail": "temporary timeout"},
+    )
+
+    first = runtime.self_heal_runtime_services_if_needed(reason="heartbeat")
+    second = runtime.self_heal_runtime_services_if_needed(reason="heartbeat")
+    third = runtime.self_heal_runtime_services_if_needed(reason="heartbeat")
+
+    assert first["ok"] is True
+    assert first["changed"] is False
+    assert "1/3" in first["detail"]
+    assert second["ok"] is True
+    assert second["changed"] is False
+    assert "2/3" in second["detail"]
+    assert third["ok"] is True
+    assert third["changed"] is True
+    assert restarts == [True]
+
+
 def test_runtime_service_self_heal_waits_for_starting_adblock(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
