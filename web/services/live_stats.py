@@ -13,6 +13,7 @@ from typing import Any
 
 from services.db import DATABASE_ERRORS, connect
 from services.logutil import log_database_unavailable, log_exception_throttled
+from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import env_float as _env_float
@@ -628,6 +629,7 @@ class LiveStatsStore:
                 pending += 1
         if not pending:
             return
+        self.init_db()
         with self._connect() as conn:
             self._flush_batch_with_conn(conn, batch)
 
@@ -635,7 +637,22 @@ class LiveStatsStore:
         with self._start_lock:
             if self._started:
                 return
-            self.init_db()
+            try:
+                self.init_db()
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    "live_stats.startup.db",
+                    "Live stats tailer startup DB initialization deferred while MySQL is unavailable",
+                    exc,
+                )
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "live_stats.startup",
+                    interval_seconds=300.0,
+                    message="Live stats tailer startup DB initialization failed",
+                )
 
             t = threading.Thread(
                 target=self._tail_loop,
@@ -647,7 +664,29 @@ class LiveStatsStore:
 
     def _tail_loop(self) -> None:
         # Seed so the page is useful immediately.
-        self.seed_from_recent_log()
+        flush_backoff = DatabaseWriteBackoff.from_env(
+            "LIVE_STATS_DB_WRITE",
+            default_base=5.0,
+            default_max=120.0,
+        )
+        try:
+            self.seed_from_recent_log()
+            flush_backoff.record_success()
+        except DATABASE_ERRORS as exc:
+            delay = flush_backoff.record_failure(time.monotonic())
+            log_database_unavailable(
+                logger,
+                "live_stats.seed.db",
+                f"Live stats tailer deferred seed flush while MySQL is unavailable; retrying in about {delay:.1f}s",
+                exc,
+            )
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "live_stats.seed",
+                interval_seconds=300.0,
+                message="Live stats tailer seed failed",
+            )
 
         commit_batch = _env_int(
             "LIVE_STATS_COMMIT_BATCH",
@@ -667,10 +706,20 @@ class LiveStatsStore:
             minimum=0.1,
             maximum=5.0,
         )
+        max_pending_rows = _env_int(
+            "LIVE_STATS_MAX_PENDING_ROWS",
+            5000,
+            minimum=commit_batch,
+            maximum=100000,
+        )
 
         # Tail new lines.
         path = self.access_log_path
         last_inode: int | None = None
+        drop_state: dict[str, float] = {"last_log_ts": -60.0}
+        batch = self._new_batch()
+        pending = 0
+        last_commit = time.monotonic()
 
         while True:
             try:
@@ -683,20 +732,25 @@ class LiveStatsStore:
                 if last_inode is None:
                     last_inode = inode
 
-                pending = 0
-                batch = self._new_batch()
-                last_commit = time.time()
-
                 def flush_pending() -> None:
                     nonlocal pending, last_commit
                     if not pending:
-                        last_commit = time.time()
+                        last_commit = time.monotonic()
                         return
+                    self.init_db()
                     with self._connect() as conn:
                         self._flush_batch_with_conn(conn, batch)
+                    flush_backoff.record_success()
                     self._clear_batch(batch)
                     pending = 0
-                    last_commit = time.time()
+                    last_commit = time.monotonic()
+
+                def record_deferred_flush(now_mono: float | None = None) -> float:
+                    nonlocal last_commit
+                    now_mono = time.monotonic() if now_mono is None else now_mono
+                    delay = flush_backoff.record_failure(now_mono)
+                    last_commit = now_mono
+                    return delay
 
                 with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
                     # Start at end so we don't reprocess the whole file.
@@ -707,6 +761,19 @@ class LiveStatsStore:
                             try:
                                 if self._accumulate_line(batch, line):
                                     pending += 1
+                                    if pending > max_pending_rows:
+                                        dropped = pending
+                                        self._clear_batch(batch)
+                                        pending = 0
+                                        last_commit = time.monotonic()
+                                        now_log = time.monotonic()
+                                        if now_log - drop_state["last_log_ts"] >= 60.0:
+                                            drop_state["last_log_ts"] = now_log
+                                            logger.warning(
+                                                "Live stats tailer pending rows exceeded %s; dropped %s aggregated rows while database flush is unavailable",
+                                                max_pending_rows,
+                                                dropped,
+                                            )
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -714,21 +781,25 @@ class LiveStatsStore:
                                     interval_seconds=300.0,
                                     message="Live stats tailer failed to parse a log line",
                                 )
-                            now = time.time()
+                            now = time.monotonic()
                             if (
-                                pending >= commit_batch
-                                or (now - last_commit) >= commit_interval
+                                pending
+                                and flush_backoff.can_attempt(now)
+                                and (
+                                    pending >= commit_batch
+                                    or (now - last_commit) >= commit_interval
+                                )
                             ):
                                 try:
                                     flush_pending()
                                 except DATABASE_ERRORS as exc:
+                                    delay = record_deferred_flush(now)
                                     log_database_unavailable(
                                         logger,
                                         "live_stats.commit.db",
-                                        "Live stats tailer deferred batch flush while MySQL is unavailable",
+                                        f"Live stats tailer deferred batch flush while MySQL is unavailable; retrying in about {delay:.1f}s",
                                         exc,
                                     )
-                                    last_commit = now
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
@@ -742,18 +813,22 @@ class LiveStatsStore:
                         # EOF/idle: commit any pending rows so UI reflects the latest
                         # data even if the log is quiet.  Do not keep a DB transaction
                         # open while sleeping for more log data.
-                        now = time.time()
-                        if pending and (now - last_commit) >= commit_interval:
+                        now = time.monotonic()
+                        if (
+                            pending
+                            and flush_backoff.can_attempt(now)
+                            and (now - last_commit) >= commit_interval
+                        ):
                             try:
                                 flush_pending()
                             except DATABASE_ERRORS as exc:
+                                delay = record_deferred_flush(now)
                                 log_database_unavailable(
                                     logger,
                                     "live_stats.idle_commit.db",
-                                    "Live stats tailer deferred idle flush while MySQL is unavailable",
+                                    f"Live stats tailer deferred idle flush while MySQL is unavailable; retrying in about {delay:.1f}s",
                                     exc,
                                 )
-                                last_commit = now
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -789,22 +864,24 @@ class LiveStatsStore:
                             and inode2 != last_inode
                         ):
                             last_inode = inode2
-                            try:
-                                flush_pending()
-                            except DATABASE_ERRORS as exc:
-                                log_database_unavailable(
-                                    logger,
-                                    "live_stats.commit.rotate.db",
-                                    "Live stats tailer deferred rotation flush while MySQL is unavailable",
-                                    exc,
-                                )
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    "live_stats.commit.rotate",
-                                    interval_seconds=300.0,
-                                    message="Live stats tailer final commit failed during rotation",
-                                )
+                            if flush_backoff.can_attempt():
+                                try:
+                                    flush_pending()
+                                except DATABASE_ERRORS as exc:
+                                    delay = record_deferred_flush()
+                                    log_database_unavailable(
+                                        logger,
+                                        "live_stats.commit.rotate.db",
+                                        f"Live stats tailer deferred rotation flush while MySQL is unavailable; retrying in about {delay:.1f}s",
+                                        exc,
+                                    )
+                                except Exception:
+                                    log_exception_throttled(
+                                        logger,
+                                        "live_stats.commit.rotate",
+                                        interval_seconds=300.0,
+                                        message="Live stats tailer final commit failed during rotation",
+                                    )
                             break
 
                         time.sleep(poll_interval)

@@ -22,6 +22,7 @@ from services.db import (
     run_mysql_operation_with_retry,
 )
 from services.logutil import log_database_unavailable, log_exception_throttled
+from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
@@ -640,8 +641,23 @@ class DiagnosticStore:
         with self._start_lock:
             if self._started:
                 return
-            self.init_db()
-            self.seed_from_recent_logs()
+            try:
+                self.init_db()
+                self.seed_from_recent_logs()
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    "diagnostic_store.startup.db",
+                    "Diagnostic tailer startup DB initialization/seed deferred while MySQL is unavailable",
+                    exc,
+                )
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "diagnostic_store.startup",
+                    interval_seconds=300.0,
+                    message="Diagnostic tailer startup seed failed",
+                )
 
             request_thread = threading.Thread(
                 target=self._tail_file_loop,
@@ -708,6 +724,7 @@ class DiagnosticStore:
         ]
         if not request_rows and not icap_rows:
             return
+        self.init_db()
         with self._connect() as conn:
             if request_rows:
                 self._flush_request_rows(conn, request_rows)
@@ -749,7 +766,12 @@ class DiagnosticStore:
         pending = 0
         pending_rows: list[tuple[Any, ...]] = []
         drop_state: dict[str, Any] = {"dropped": 0, "last_log_ts": 0.0}
-        last_commit = time.time()
+        flush_backoff = DatabaseWriteBackoff.from_env(
+            "DIAGNOSTIC_DB_WRITE",
+            default_base=5.0,
+            default_max=120.0,
+        )
+        last_commit = time.monotonic()
         reopen_from_start = False
 
         while True:
@@ -767,13 +789,22 @@ class DiagnosticStore:
                     nonlocal pending, last_commit
                     if not pending_rows:
                         pending = 0
-                        last_commit = time.time()
+                        last_commit = time.monotonic()
                         return
+                    self.init_db()
                     with self._connect() as conn:
                         flush_rows_fn(conn, pending_rows)
+                    flush_backoff.record_success()
                     pending_rows.clear()
                     pending = 0
-                    last_commit = time.time()
+                    last_commit = time.monotonic()
+
+                def record_deferred_flush(now_mono: float | None = None) -> float:
+                    nonlocal last_commit
+                    now_mono = time.monotonic() if now_mono is None else now_mono
+                    delay = flush_backoff.record_failure(now_mono)
+                    last_commit = now_mono
+                    return delay
 
                 with pathlib.Path(path).open(
                     encoding="utf-8",
@@ -800,23 +831,24 @@ class DiagnosticStore:
                                     and inode_now != last_inode
                                 ):
                                     last_inode = inode_now
-                                    try:
-                                        flush_pending()
-                                    except DATABASE_ERRORS as exc:
-                                        log_database_unavailable(
-                                            logger,
-                                            f"diagnostic_store.rotate.{loop_name}.db",
-                                            f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable",
-                                            exc,
-                                        )
-                                        last_commit = 0.0
-                                    except Exception:
-                                        log_exception_throttled(
-                                            logger,
-                                            f"diagnostic_store.rotate.{loop_name}",
-                                            interval_seconds=300.0,
-                                            message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
-                                        )
+                                    if flush_backoff.can_attempt():
+                                        try:
+                                            flush_pending()
+                                        except DATABASE_ERRORS as exc:
+                                            delay = record_deferred_flush()
+                                            log_database_unavailable(
+                                                logger,
+                                                f"diagnostic_store.rotate.{loop_name}.db",
+                                                f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
+                                                exc,
+                                            )
+                                        except Exception:
+                                            log_exception_throttled(
+                                                logger,
+                                                f"diagnostic_store.rotate.{loop_name}",
+                                                interval_seconds=300.0,
+                                                message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
+                                            )
                                     reopen_from_start = True
                                     break
                                 time.sleep(poll_interval)
@@ -839,21 +871,25 @@ class DiagnosticStore:
                                     interval_seconds=300.0,
                                     message=f"Diagnostic tailer failed to parse a log line in {loop_name}",
                                 )
-                            now = time.time()
+                            now = time.monotonic()
                             if (
-                                pending >= commit_batch
-                                or (now - last_commit) >= commit_interval
+                                pending
+                                and flush_backoff.can_attempt(now)
+                                and (
+                                    pending >= commit_batch
+                                    or (now - last_commit) >= commit_interval
+                                )
                             ):
                                 try:
                                     flush_pending()
                                 except DATABASE_ERRORS as exc:
+                                    delay = record_deferred_flush(now)
                                     log_database_unavailable(
                                         logger,
                                         f"diagnostic_store.commit.{loop_name}.db",
-                                        f"Diagnostic tailer deferred batch flush in {loop_name} while MySQL is unavailable",
+                                        f"Diagnostic tailer deferred batch flush in {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
                                         exc,
                                     )
-                                    last_commit = 0.0
                                 except Exception:
                                     log_exception_throttled(
                                         logger,
@@ -864,18 +900,22 @@ class DiagnosticStore:
                                     last_commit = now
                             continue
 
-                        now = time.time()
-                        if pending and (now - last_commit) >= commit_interval:
+                        now = time.monotonic()
+                        if (
+                            pending
+                            and flush_backoff.can_attempt(now)
+                            and (now - last_commit) >= commit_interval
+                        ):
                             try:
                                 flush_pending()
                             except DATABASE_ERRORS as exc:
+                                delay = record_deferred_flush(now)
                                 log_database_unavailable(
                                     logger,
                                     f"diagnostic_store.idle_commit.{loop_name}.db",
-                                    f"Diagnostic tailer deferred idle flush in {loop_name} while MySQL is unavailable",
+                                    f"Diagnostic tailer deferred idle flush in {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
                                     exc,
                                 )
-                                last_commit = 0.0
                             except Exception:
                                 log_exception_throttled(
                                     logger,
@@ -907,23 +947,24 @@ class DiagnosticStore:
                             and inode_now != last_inode
                         ):
                             last_inode = inode_now
-                            try:
-                                flush_pending()
-                            except DATABASE_ERRORS as exc:
-                                log_database_unavailable(
-                                    logger,
-                                    f"diagnostic_store.rotate.{loop_name}.db",
-                                    f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable",
-                                    exc,
-                                )
-                                last_commit = 0.0
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    f"diagnostic_store.rotate.{loop_name}",
-                                    interval_seconds=300.0,
-                                    message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
-                                )
+                            if flush_backoff.can_attempt(now):
+                                try:
+                                    flush_pending()
+                                except DATABASE_ERRORS as exc:
+                                    delay = record_deferred_flush(now)
+                                    log_database_unavailable(
+                                        logger,
+                                        f"diagnostic_store.rotate.{loop_name}.db",
+                                        f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
+                                        exc,
+                                    )
+                                except Exception:
+                                    log_exception_throttled(
+                                        logger,
+                                        f"diagnostic_store.rotate.{loop_name}",
+                                        interval_seconds=300.0,
+                                        message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
+                                    )
                             reopen_from_start = True
                             break
 

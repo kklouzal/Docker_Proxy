@@ -76,6 +76,204 @@ def test_live_stats_tailer_does_not_open_db_connection_while_idle(
         store._tail_loop()
 
 
+def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
+    monkeypatch, tmp_path, live_stats
+) -> None:
+    import pymysql  # type: ignore
+
+    log_path = tmp_path / "access.log"
+    log_path.write_text("", encoding="utf-8")
+    store = live_stats.LiveStatsStore(access_log_path=str(log_path))
+    store._db_initialized = True
+    flush_attempts = 0
+    flushed_batches: list[dict[str, dict[str, int]]] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def connect():
+        nonlocal flush_attempts
+        flush_attempts += 1
+        if flush_attempts == 1:
+            raise pymysql.err.OperationalError(2003, "connect timed out")
+        return Conn()
+
+    class Handle:
+        def __init__(self, lines: list[str]) -> None:
+            self.lines = lines
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def seek(self, *_args):
+            return 0
+
+        def tell(self) -> int:
+            return 0
+
+        def readline(self) -> str:
+            return self.lines.pop(0) if self.lines else ""
+
+    handles = iter([Handle(["line one\n"]), Handle(["line two\n"])])
+
+    def next_handle() -> Handle:
+        return next(handles, Handle([]))
+    log_path_stats = iter([1, 2, 2])
+    times = iter([100.0, 100.1, 100.2, 101.5, 101.6, 102.8])
+
+    def fake_stat(path):
+        if str(path) == str(log_path):
+            return SimpleNamespace(st_ino=next(log_path_stats, 2), st_size=0)
+        return SimpleNamespace(st_ino=2, st_size=0)
+
+    def accumulate(batch, _line: str) -> bool:
+        batch["domains"]["example.test"] = batch["domains"].get("example.test", 0) + 1
+        return True
+
+    def flush_batch(_conn, batch) -> None:
+        flushed_batches.append({bucket: dict(values) for bucket, values in batch.items()})
+
+    outage_logs: list[tuple[str, str]] = []
+    sleeps = 0
+
+    def stop_after_retry(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if flush_attempts >= 2 or sleeps >= 3:
+            raise StopLoop
+    monkeypatch.setenv("LIVE_STATS_COMMIT_BATCH", "2")
+    monkeypatch.setenv("LIVE_STATS_COMMIT_INTERVAL_SECONDS", "1")
+    monkeypatch.setenv("LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS", "0.25")
+    monkeypatch.setenv("LIVE_STATS_DB_WRITE_BACKOFF_MAX_SECONDS", "0.25")
+    monkeypatch.setenv("LIVE_STATS_DB_WRITE_BACKOFF_JITTER_RATIO", "0")
+    monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
+    monkeypatch.setattr(store, "_connect", connect)
+    monkeypatch.setattr(store, "_accumulate_line", accumulate)
+    monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
+    monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times, 999.0))
+    monkeypatch.setattr(live_stats.time, "sleep", stop_after_retry)
+    monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
+    monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: next_handle())
+    monkeypatch.setattr(live_stats.os, "stat", fake_stat)
+    monkeypatch.setattr(
+        live_stats,
+        "log_database_unavailable",
+        lambda _logger, key, message, _exc: outage_logs.append((key, message)),
+    )
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert flush_attempts == 2
+    assert flushed_batches == [
+        {
+            "domains": {"example.test": 2},
+            "clients": {},
+            "client_domains": {},
+            "client_domain_nocache": {},
+        }
+    ]
+    assert outage_logs[0][0] == "live_stats.commit.rotate.db"
+
+
+def test_live_stats_max_pending_rows_is_at_least_commit_batch(
+    monkeypatch, tmp_path, live_stats
+) -> None:
+    log_path = tmp_path / "access.log"
+    store = live_stats.LiveStatsStore(access_log_path=str(log_path))
+    env_int_calls: list[tuple[str, int | None]] = []
+    original_env_int = live_stats._env_int
+
+    def recording_env_int(name, default, *, minimum=None, maximum=None):
+        env_int_calls.append((name, minimum))
+        return original_env_int(name, default, minimum=minimum, maximum=maximum)
+
+    monkeypatch.setenv("LIVE_STATS_COMMIT_BATCH", "50")
+    monkeypatch.setenv("LIVE_STATS_MAX_PENDING_ROWS", "1")
+    monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
+    monkeypatch.setattr(live_stats, "_env_int", recording_env_int)
+    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: False)
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert ("LIVE_STATS_MAX_PENDING_ROWS", 50) in env_int_calls
+
+
+def test_live_stats_commit_cadence_uses_monotonic_time(
+    monkeypatch, tmp_path, live_stats
+) -> None:
+    log_path = tmp_path / "access.log"
+    log_path.write_text("", encoding="utf-8")
+    store = live_stats.LiveStatsStore(access_log_path=str(log_path))
+    store._db_initialized = True
+    flush_sizes: list[int] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class Handle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def seek(self, *_args):
+            return 0
+
+        def tell(self) -> int:
+            return 0
+
+        def readline(self) -> str:
+            self.calls += 1
+            return "line\n" if self.calls == 1 else ""
+
+    def accumulate(batch, _line: str) -> bool:
+        batch["domains"]["example.test"] = 1
+        return True
+
+    def flush_batch(_conn, batch) -> None:
+        flush_sizes.append(len(batch["domains"]))
+
+    monotonic_times = iter([100.0, 100.1, 101.2])
+    monkeypatch.setenv("LIVE_STATS_COMMIT_BATCH", "10")
+    monkeypatch.setenv("LIVE_STATS_COMMIT_INTERVAL_SECONDS", "1")
+    monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: Conn())
+    monkeypatch.setattr(store, "_accumulate_line", accumulate)
+    monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
+    monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(monotonic_times, 101.2))
+    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(
+        live_stats.time,
+        "time",
+        lambda: (_ for _ in ()).throw(AssertionError("cadence used wall time")),
+    )
+    monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
+    monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: Handle())
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert flush_sizes == [1]
+
+
 def test_diagnostic_tailer_does_not_open_db_connection_while_idle(
     monkeypatch, tmp_path, diagnostic_store
 ) -> None:
@@ -84,6 +282,7 @@ def test_diagnostic_tailer_does_not_open_db_connection_while_idle(
     store = diagnostic_store.DiagnosticStore(
         access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
     )
+    store._db_initialized = True
     monkeypatch.setattr(
         store,
         "_connect",
@@ -110,6 +309,7 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
     store = diagnostic_store.DiagnosticStore(
         access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
     )
+    store._db_initialized = True
     partial = "diagnostic line"
     suffix = "\n"
     sleep_calls = 0
@@ -146,7 +346,7 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
     times = iter([100.0, 101.0, 101.1, 102.1, 102.2])
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
     monkeypatch.setattr(store, "_connect", Conn)
-    monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times, 101.0))
+    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 101.0))
     monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
 
     with pytest.raises(StopLoop):
@@ -170,6 +370,7 @@ def test_diagnostic_tailer_recovers_when_partial_line_rotates(
     store = diagnostic_store.DiagnosticStore(
         access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
     )
+    store._db_initialized = True
     sleep_calls = 0
     build_calls: list[str] = []
     flushes: list[list[tuple[str, str]]] = []
@@ -203,7 +404,7 @@ def test_diagnostic_tailer_recovers_when_partial_line_rotates(
     times = iter([100.0, 100.1, 100.2, 100.3, 101.6, 101.7])
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "0.25")
     monkeypatch.setattr(store, "_connect", Conn)
-    monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times, 101.1))
+    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 102.0))
     monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
 
     with pytest.raises(StopLoop):
@@ -554,7 +755,7 @@ def test_live_stats_tailer_logs_database_outage_without_traceback(
         ),
     )
     times = iter([100.0, 101.0, 102.0])
-    monkeypatch.setattr(live_stats.time, "time", lambda: next(times))
+    monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times))
     monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
 
     class Handle:
@@ -584,12 +785,10 @@ def test_live_stats_tailer_logs_database_outage_without_traceback(
     with pytest.raises(StopLoop):
         store._tail_loop()
 
-    assert calls == [
-        (
-            "live_stats.idle_commit.db",
-            "Live stats tailer deferred idle flush while MySQL is unavailable",
-        )
-    ]
+    assert calls[0][0] == "live_stats.idle_commit.db"
+    assert calls[0][1].startswith(
+        "Live stats tailer deferred idle flush while MySQL is unavailable; retrying in about "
+    )
 
 
 def test_diagnostic_tailer_logs_database_outage_without_traceback(
@@ -602,6 +801,7 @@ def test_diagnostic_tailer_logs_database_outage_without_traceback(
     store = diagnostic_store.DiagnosticStore(
         access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
     )
+    store._db_initialized = True
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
         store,
@@ -622,8 +822,8 @@ def test_diagnostic_tailer_logs_database_outage_without_traceback(
             AssertionError("database outage used traceback logging")
         ),
     )
-    times = iter([100.0, 101.0, 102.0])
-    monkeypatch.setattr(diagnostic_store.time, "time", lambda: next(times))
+    times = iter([100.0, 100.1, 102.0])
+    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 102.0))
     monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
 
     class Handle:
@@ -658,15 +858,13 @@ def test_diagnostic_tailer_logs_database_outage_without_traceback(
             "test-diagnostic",
         )
 
-    assert calls == [
-        (
-            "diagnostic_store.idle_commit.test-diagnostic.db",
-            "Diagnostic tailer deferred idle flush in test-diagnostic while MySQL is unavailable",
-        )
-    ]
+    assert calls[0][0] == "diagnostic_store.idle_commit.test-diagnostic.db"
+    assert calls[0][1].startswith(
+        "Diagnostic tailer deferred idle flush in test-diagnostic while MySQL is unavailable; retrying in about "
+    )
 
 
-def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
+def test_diagnostic_tailer_retains_rotation_rows_until_retry_succeeds(
     monkeypatch, tmp_path, diagnostic_store
 ) -> None:
     import pymysql  # type: ignore
@@ -676,6 +874,7 @@ def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
     store = diagnostic_store.DiagnosticStore(
         access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
     )
+    store._db_initialized = True
     rows_flushed: list[tuple[object, ...]] = []
     flush_attempts = 0
 
@@ -716,11 +915,15 @@ def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
             return self.lines.pop(0) if self.lines else ""
 
     handles = iter([Handle(["diagnostic line\n"]), Handle([])])
+
+    def next_handle() -> Handle:
+        return next(handles, Handle([]))
+
     log_path_stats = iter([1, 2, 2])
     times = iter([100.0, 100.1, 100.2, 101.5, 101.6])
 
-    def fake_time() -> float:
-        return next(times, 101.6)
+    def fake_monotonic() -> float:
+        return next(times, 999.0)
 
     def fake_stat(path):
         if str(path) == str(log_path):
@@ -728,15 +931,26 @@ def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
         return SimpleNamespace(st_ino=2, st_size=0)
 
     outage_logs: list[tuple[str, str]] = []
+    sleeps = 0
+
+    def stop_after_retry(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if flush_attempts >= 2 or sleeps >= 3:
+            raise StopLoop
+
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
+    monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_INITIAL_SECONDS", "0.25")
+    monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS", "0.25")
+    monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO", "0")
     monkeypatch.setattr(store, "_connect", connect)
-    monkeypatch.setattr(diagnostic_store.time, "time", fake_time)
-    monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(diagnostic_store.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(diagnostic_store.time, "sleep", stop_after_retry)
     monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
         diagnostic_store.pathlib.Path,
         "open",
-        lambda *_args, **_kwargs: next(handles),
+        lambda *_args, **_kwargs: next_handle(),
     )
     monkeypatch.setattr(diagnostic_store.os, "stat", fake_stat)
     monkeypatch.setattr(
@@ -755,9 +969,89 @@ def test_diagnostic_tailer_retains_pending_rows_after_rotation_flush_outage(
 
     assert rows_flushed == [("retained-row",)]
     assert flush_attempts == 2
-    assert outage_logs == [
-        (
-            "diagnostic_store.rotate.test-diagnostic.db",
-            "Diagnostic tailer deferred rotation flush for test-diagnostic while MySQL is unavailable",
+    assert outage_logs[0][0] == "diagnostic_store.rotate.test-diagnostic.db"
+    assert outage_logs[0][1].startswith(
+        "Diagnostic tailer deferred rotation flush for test-diagnostic while MySQL is unavailable; retrying in about "
+    )
+
+
+def test_diagnostic_tailer_skips_rotation_flush_while_backoff_active(
+    monkeypatch, tmp_path, diagnostic_store
+) -> None:
+    import pymysql  # type: ignore
+
+    log_path = tmp_path / "diagnostic.log"
+    log_path.write_text("", encoding="utf-8")
+    store = diagnostic_store.DiagnosticStore(
+        access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
+    )
+    store._db_initialized = True
+    flush_attempts = 0
+
+    def connect():
+        nonlocal flush_attempts
+        flush_attempts += 1
+        raise pymysql.err.OperationalError(2003, "connect timed out")
+
+    class Handle:
+        def __init__(self, lines: list[str]) -> None:
+            self.lines = lines
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def seek(self, *_args):
+            return 0
+
+        def tell(self) -> int:
+            return 0
+
+        def readline(self) -> str:
+            return self.lines.pop(0) if self.lines else ""
+
+    handles = iter([Handle(["diagnostic line\n"]), Handle([])])
+    log_path_stats = iter([1, 2, 2])
+    times = iter([100.0, 101.2, 101.3, 101.4])
+
+    def fake_stat(path):
+        if str(path) == str(log_path):
+            return SimpleNamespace(st_ino=next(log_path_stats, 2), st_size=0)
+        return SimpleNamespace(st_ino=2, st_size=0)
+
+    outage_logs: list[tuple[str, str]] = []
+    monkeypatch.setenv("DIAGNOSTIC_COMMIT_BATCH", "1")
+    monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
+    monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_INITIAL_SECONDS", "10")
+    monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS", "10")
+    monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO", "0")
+    monkeypatch.setattr(store, "_connect", connect)
+    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 100.3))
+    monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
+    monkeypatch.setattr(
+        diagnostic_store.pathlib.Path,
+        "open",
+        lambda *_args, **_kwargs: next(handles),
+    )
+    monkeypatch.setattr(diagnostic_store.os, "stat", fake_stat)
+    monkeypatch.setattr(
+        diagnostic_store,
+        "log_database_unavailable",
+        lambda _logger, key, message, _exc: outage_logs.append((key, message)),
+    )
+
+    with pytest.raises(StopLoop):
+        store._tail_file_loop(
+            str(log_path),
+            lambda _line: ("retained-row",),
+            lambda _conn, _rows: None,
+            "test-diagnostic",
         )
+
+    assert flush_attempts == 1
+    assert [key for key, _message in outage_logs] == [
+        "diagnostic_store.commit.test-diagnostic.db"
     ]

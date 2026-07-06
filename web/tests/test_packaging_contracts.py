@@ -252,6 +252,10 @@ def test_repo_does_not_ship_stale_squid_mime_override() -> None:
     assert not (REPO_ROOT / "squid" / "mime.conf").exists()
 
 
+def test_repo_does_not_ship_stale_generated_clamd_mod_conf() -> None:
+    assert not (REPO_ROOT / "docker" / "clamd_mod.conf").exists()
+
+
 def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     entrypoint = _read("docker/entrypoint.admin.sh")
     supervisord = _read("docker/supervisord.admin.conf")
@@ -273,6 +277,73 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     assert "derived_pool=$((web_threads + 12))" in entrypoint
     assert 'if [ "$derived_pool" -lt 16 ]; then' in entrypoint
     assert 'if [ "$derived_pool" -gt 32 ]; then' in entrypoint
+
+
+def test_observability_runtime_env_knobs_are_documented_and_composed() -> None:
+    env_names = {
+        "DB_POOL_MAX_IDLE_SECONDS",
+        "LIVE_STATS_COMMIT_BATCH",
+        "LIVE_STATS_COMMIT_INTERVAL_SECONDS",
+        "LIVE_STATS_POLL_INTERVAL_SECONDS",
+        "LIVE_STATS_MAX_PENDING_ROWS",
+        "LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS",
+        "LIVE_STATS_DB_WRITE_BACKOFF_MAX_SECONDS",
+        "LIVE_STATS_DB_WRITE_BACKOFF_JITTER_RATIO",
+        "DIAGNOSTIC_COMMIT_BATCH",
+        "DIAGNOSTIC_COMMIT_INTERVAL_SECONDS",
+        "DIAGNOSTIC_POLL_INTERVAL_SECONDS",
+        "DIAGNOSTIC_PENDING_MAX_ROWS",
+        "DIAGNOSTIC_DB_WRITE_BACKOFF_INITIAL_SECONDS",
+        "DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS",
+        "DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO",
+        "TIMESERIES_ROLLUP_INTERVAL_SECONDS",
+        "TIMESERIES_STARTUP_JITTER_SECONDS",
+        "TIMESERIES_SAMPLE_DB_BACKOFF_INITIAL_SECONDS",
+        "TIMESERIES_SAMPLE_DB_BACKOFF_MAX_SECONDS",
+        "TIMESERIES_SAMPLE_DB_BACKOFF_JITTER_RATIO",
+        "TIMESERIES_ROLLUP_DB_BACKOFF_INITIAL_SECONDS",
+        "TIMESERIES_ROLLUP_DB_BACKOFF_MAX_SECONDS",
+        "TIMESERIES_ROLLUP_DB_BACKOFF_JITTER_RATIO",
+        "SSL_ERRORS_COMMIT_BATCH",
+        "SSL_ERRORS_COMMIT_INTERVAL_SECONDS",
+        "SSL_ERRORS_POLL_INTERVAL_SECONDS",
+        "STATS_CACHE_DIR_SIZE_TTL_SECONDS",
+    }
+    env_example = _read("config/app.env.example")
+    readme = _read("README.md")
+    compose = _read("docker-compose.common.yml")
+    entrypoint = _read("docker/entrypoint.sh")
+
+    for name in sorted(env_names):
+        assert name in env_example
+        assert name in readme
+        assert name in compose
+        assert name in entrypoint
+
+
+def test_proxy_launcher_env_knobs_are_sanitized_and_documented() -> None:
+    env_names = {
+        "PAC_HTTP_HOST",
+        "PAC_HTTP_PORT",
+        "WEB_WORKERS",
+        "WEB_THREADS",
+        "WEB_TIMEOUT",
+        "WEB_GRACEFUL_TIMEOUT",
+        "WEB_KEEPALIVE",
+    }
+    env_example = _read("config/app.env.example")
+    readme = _read("README.md")
+    compose = _read("docker-compose.common.yml")
+    entrypoint = _read("docker/entrypoint.sh")
+    supervisord = _read("docker/supervisord.proxy.conf")
+
+    for name in sorted(env_names):
+        assert name in env_example
+        assert name in readme
+        assert name in compose
+        assert name in entrypoint
+    assert '"${PAC_HTTP_HOST:-0.0.0.0}:${PAC_HTTP_PORT:-80}"' in supervisord
+    assert '"${WEB_TIMEOUT:-120}"' in supervisord
 
 
 def test_admin_ui_https_packaging_contract() -> None:
@@ -755,7 +826,6 @@ def test_linux_container_payloads_are_lf_only() -> None:
         "docker/supervisord.admin.conf",
         "docker/c-icap.conf",
         "docker/virus_scan.conf",
-        "docker/clamd_mod.conf",
     ]
 
     offenders = [path for path in paths if b"\r\n" in (REPO_ROOT / path).read_bytes()]

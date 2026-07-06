@@ -106,6 +106,14 @@ sanitize_nonnegative_int() {
     esac
 }
 
+sanitize_bind_host() {
+    raw="$1"
+    case "$raw" in
+        ''|*[!A-Za-z0-9_.:-]*) printf '' ;;
+        *) printf '%s' "$raw" ;;
+    esac
+}
+
 config_has_directive() {
     file_path="$1"
     key="$2"
@@ -124,6 +132,18 @@ fi
 if [ -z "${LIVE_STATS_POLL_INTERVAL_SECONDS:-}" ]; then
     export LIVE_STATS_POLL_INTERVAL_SECONDS=2.0
 fi
+if [ -z "${LIVE_STATS_MAX_PENDING_ROWS:-}" ]; then
+    export LIVE_STATS_MAX_PENDING_ROWS=5000
+fi
+if [ -z "${LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS:-}" ]; then
+    export LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS=5.0
+fi
+if [ -z "${LIVE_STATS_DB_WRITE_BACKOFF_MAX_SECONDS:-}" ]; then
+    export LIVE_STATS_DB_WRITE_BACKOFF_MAX_SECONDS=120.0
+fi
+if [ -z "${LIVE_STATS_DB_WRITE_BACKOFF_JITTER_RATIO:-}" ]; then
+    export LIVE_STATS_DB_WRITE_BACKOFF_JITTER_RATIO=0.2
+fi
 if [ -z "${DIAGNOSTIC_COMMIT_BATCH:-}" ]; then
     export DIAGNOSTIC_COMMIT_BATCH=400
 fi
@@ -132,6 +152,18 @@ if [ -z "${DIAGNOSTIC_COMMIT_INTERVAL_SECONDS:-}" ]; then
 fi
 if [ -z "${DIAGNOSTIC_POLL_INTERVAL_SECONDS:-}" ]; then
     export DIAGNOSTIC_POLL_INTERVAL_SECONDS=2.0
+fi
+if [ -z "${DIAGNOSTIC_PENDING_MAX_ROWS:-}" ]; then
+    export DIAGNOSTIC_PENDING_MAX_ROWS=5000
+fi
+if [ -z "${DIAGNOSTIC_DB_WRITE_BACKOFF_INITIAL_SECONDS:-}" ]; then
+    export DIAGNOSTIC_DB_WRITE_BACKOFF_INITIAL_SECONDS=5.0
+fi
+if [ -z "${DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS:-}" ]; then
+    export DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS=120.0
+fi
+if [ -z "${DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO:-}" ]; then
+    export DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO=0.2
 fi
 if [ -z "${SSL_ERRORS_COMMIT_BATCH:-}" ]; then
     export SSL_ERRORS_COMMIT_BATCH=300
@@ -145,6 +177,44 @@ fi
 if [ -z "${STATS_CACHE_DIR_SIZE_TTL_SECONDS:-}" ]; then
     export STATS_CACHE_DIR_SIZE_TTL_SECONDS=300
 fi
+if [ -z "${TIMESERIES_ROLLUP_INTERVAL_SECONDS:-}" ]; then
+    export TIMESERIES_ROLLUP_INTERVAL_SECONDS=300.0
+fi
+if [ -z "${TIMESERIES_STARTUP_JITTER_SECONDS:-}" ]; then
+    export TIMESERIES_STARTUP_JITTER_SECONDS=15.0
+fi
+if [ -z "${TIMESERIES_SAMPLE_DB_BACKOFF_INITIAL_SECONDS:-}" ]; then
+    export TIMESERIES_SAMPLE_DB_BACKOFF_INITIAL_SECONDS=5.0
+fi
+if [ -z "${TIMESERIES_SAMPLE_DB_BACKOFF_MAX_SECONDS:-}" ]; then
+    export TIMESERIES_SAMPLE_DB_BACKOFF_MAX_SECONDS=120.0
+fi
+if [ -z "${TIMESERIES_SAMPLE_DB_BACKOFF_JITTER_RATIO:-}" ]; then
+    export TIMESERIES_SAMPLE_DB_BACKOFF_JITTER_RATIO=0.2
+fi
+if [ -z "${TIMESERIES_ROLLUP_DB_BACKOFF_INITIAL_SECONDS:-}" ]; then
+    export TIMESERIES_ROLLUP_DB_BACKOFF_INITIAL_SECONDS=30.0
+fi
+if [ -z "${TIMESERIES_ROLLUP_DB_BACKOFF_MAX_SECONDS:-}" ]; then
+    export TIMESERIES_ROLLUP_DB_BACKOFF_MAX_SECONDS=300.0
+fi
+if [ -z "${TIMESERIES_ROLLUP_DB_BACKOFF_JITTER_RATIO:-}" ]; then
+    export TIMESERIES_ROLLUP_DB_BACKOFF_JITTER_RATIO=0.2
+fi
+PAC_HTTP_PORT="$(sanitize_positive_int "${PAC_HTTP_PORT:-80}")"
+export PAC_HTTP_PORT="${PAC_HTTP_PORT:-80}"
+PAC_HTTP_HOST="$(sanitize_bind_host "${PAC_HTTP_HOST:-0.0.0.0}")"
+export PAC_HTTP_HOST="${PAC_HTTP_HOST:-0.0.0.0}"
+WEB_WORKERS="$(sanitize_positive_int "${WEB_WORKERS:-1}")"
+export WEB_WORKERS="${WEB_WORKERS:-1}"
+WEB_THREADS="$(sanitize_positive_int "${WEB_THREADS:-2}")"
+export WEB_THREADS="${WEB_THREADS:-2}"
+WEB_TIMEOUT="$(sanitize_positive_int "${WEB_TIMEOUT:-120}")"
+export WEB_TIMEOUT="${WEB_TIMEOUT:-120}"
+WEB_GRACEFUL_TIMEOUT="$(sanitize_positive_int "${WEB_GRACEFUL_TIMEOUT:-30}")"
+export WEB_GRACEFUL_TIMEOUT="${WEB_GRACEFUL_TIMEOUT:-30}"
+WEB_KEEPALIVE="$(sanitize_nonnegative_int "${WEB_KEEPALIVE:-5}")"
+export WEB_KEEPALIVE="${WEB_KEEPALIVE:-5}"
 if [ "$TEST_MODE_ENABLED" = "1" ]; then
     if [ -z "${PROXY_HEARTBEAT_INTERVAL_SECONDS:-}" ]; then
         export PROXY_HEARTBEAT_INTERVAL_SECONDS=5

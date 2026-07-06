@@ -220,7 +220,7 @@ if ! has_listen_socket "${PAC_HTTP_PORT:-80}" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! python3 -c "import os, urllib.request; port=(os.environ.get('PAC_HTTP_PORT') or '80').strip() or '80'; urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=2).read()" >/dev/null 2>&1; then
+if ! python3 -c "import os, urllib.request; host=(os.environ.get('PAC_HTTP_HOST') or '127.0.0.1').strip() or '127.0.0.1'; host='127.0.0.1' if host in {'0.0.0.0','::','[::]'} else host; host=f'[{host}]' if ':' in host and not host.startswith('[') else host; port=(os.environ.get('PAC_HTTP_PORT') or '80').strip() or '80'; urllib.request.urlopen(f'http://{host}:{port}/health', timeout=2).read()" >/dev/null 2>&1; then
     echo "Flask public proxy health endpoint failed"
     exit 1
 fi

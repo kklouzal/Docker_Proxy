@@ -6,9 +6,11 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import connect
-from services.logutil import log_exception_throttled
+from services.db import DATABASE_ERRORS, connect
+from services.logutil import log_database_unavailable, log_exception_throttled
+from services.observability_backoff import DatabaseWriteBackoff, stagger_delay_from_env
 from services.proxy_context import get_proxy_id
+from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
@@ -302,17 +304,49 @@ class TimeSeriesStore:
         with self._start_lock:
             if self._started:
                 return
-            self.init_db()
+
+            sample_backoff = DatabaseWriteBackoff.from_env(
+                "TIMESERIES_SAMPLE_DB",
+                default_base=5.0,
+                default_max=120.0,
+            )
+            rollup_backoff = DatabaseWriteBackoff.from_env(
+                "TIMESERIES_ROLLUP_DB",
+                default_base=30.0,
+                default_max=300.0,
+            )
+            rollup_interval = _env_float(
+                "TIMESERIES_ROLLUP_INTERVAL_SECONDS",
+                300.0,
+                minimum=30.0,
+                maximum=86400.0,
+            )
+            initial_jitter = stagger_delay_from_env(
+                "TIMESERIES_STARTUP_JITTER_SECONDS",
+                15.0,
+                maximum=300.0,
+            )
 
             def loop() -> None:
-                tick = 0
+                next_rollup_at = time.monotonic() + initial_jitter + rollup_interval
                 while True:
+                    now_monotonic = time.monotonic()
                     try:
-                        stats = get_stats_func()
-                        self.insert_snapshot(stats)
-                        tick += 1
-                        if tick % 30 == 0:
-                            self.rollup_and_prune()
+                        if sample_backoff.can_attempt(now_monotonic):
+                            stats = get_stats_func()
+                            self.insert_snapshot(stats)
+                            sample_backoff.record_success()
+                    except DATABASE_ERRORS as exc:
+                        delay = sample_backoff.record_failure(now_monotonic)
+                        log_database_unavailable(
+                            logger,
+                            "timeseries_store.sampler.db",
+                            (
+                                "timeseries sampler deferred snapshot write while MySQL "
+                                f"is unavailable; retrying in about {delay:.1f}s"
+                            ),
+                            exc,
+                        )
                     except Exception:
                         log_exception_throttled(
                             logger,
@@ -320,6 +354,41 @@ class TimeSeriesStore:
                             interval_seconds=30,
                             message="timeseries sampler iteration failed",
                         )
+
+                    now_monotonic = time.monotonic()
+                    if now_monotonic >= next_rollup_at and rollup_backoff.can_attempt(
+                        now_monotonic
+                    ):
+                        try:
+                            self.rollup_and_prune()
+                            rollup_backoff.record_success()
+                            next_rollup_at = now_monotonic + rollup_interval
+                        except DATABASE_ERRORS as exc:
+                            delay = rollup_backoff.record_failure(now_monotonic)
+                            next_rollup_at = now_monotonic + delay
+                            log_database_unavailable(
+                                logger,
+                                "timeseries_store.rollup.db",
+                                (
+                                    "timeseries rollup/prune deferred while MySQL is "
+                                    f"unavailable; retrying in about {delay:.1f}s"
+                                ),
+                                exc,
+                            )
+                        except Exception:
+                            next_rollup_at = now_monotonic + rollup_interval
+                            log_exception_throttled(
+                                logger,
+                                "timeseries_store.rollup",
+                                interval_seconds=60,
+                                message="timeseries rollup/prune iteration failed",
+                            )
+                    elif now_monotonic >= next_rollup_at:
+                        next_rollup_at = max(
+                            next_rollup_at + 1.0,
+                            rollup_backoff.next_attempt_at,
+                        )
+
                     time.sleep(1.0)
 
             t = threading.Thread(target=loop, name="timeseries-sampler", daemon=True)
