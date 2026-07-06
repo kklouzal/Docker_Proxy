@@ -16,7 +16,7 @@ class DatabaseWriteBackoff:
     jitter_ratio: float = 0.2
     _failures: int = 0
     _next_attempt_at: float = 0.0
-    _rand: object = field(default=random.random, repr=False)
+    _rand: object = field(default=random.random, repr=False)  # noqa: S311
 
     @classmethod
     def from_env(
@@ -26,7 +26,7 @@ class DatabaseWriteBackoff:
         default_base: float = 5.0,
         default_max: float = 60.0,
         default_jitter: float = 0.2,
-    ) -> "DatabaseWriteBackoff":
+    ) -> DatabaseWriteBackoff:
         base = env_float(
             f"{prefix}_BACKOFF_INITIAL_SECONDS",
             default_base,
@@ -81,11 +81,10 @@ class DatabaseWriteBackoff:
 
 def stagger_delay_from_env(env_name: str, default_seconds: float, *, maximum: float) -> float:
     """Return a random startup/cadence stagger delay bounded by an env knob."""
-
     span = env_float(env_name, default_seconds, minimum=0.0, maximum=maximum)
     if span <= 0.0:
         return 0.0
     try:
-        return random.uniform(0.0, span)
+        return random.uniform(0.0, span)  # noqa: S311
     except Exception:
         return 0.0

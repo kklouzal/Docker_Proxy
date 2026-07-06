@@ -255,7 +255,7 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
     monkeypatch.setenv("LIVE_STATS_COMMIT_BATCH", "10")
     monkeypatch.setenv("LIVE_STATS_COMMIT_INTERVAL_SECONDS", "1")
     monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
-    monkeypatch.setattr(store, "_connect", lambda: Conn())
+    monkeypatch.setattr(store, "_connect", Conn)
     monkeypatch.setattr(store, "_accumulate_line", accumulate)
     monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
     monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(monotonic_times, 101.2))

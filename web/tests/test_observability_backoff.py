@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import threading
+from typing import ClassVar
 
 import pymysql
-
-from services.observability_backoff import DatabaseWriteBackoff, stagger_delay_from_env
+import pytest
 from services import diagnostic_store, live_stats, timeseries_store
+from services.observability_backoff import DatabaseWriteBackoff, stagger_delay_from_env
 
 
 class _FakeThread:
-    created: list["_FakeThread"] = []
+    created: ClassVar[list[_FakeThread]] = []
 
     def __init__(self, *, target, name=None, args=(), daemon=None):
         self.target = target
@@ -31,11 +31,11 @@ def test_database_write_backoff_defers_immediate_retries() -> None:
     )
 
     assert backoff.can_attempt(10.0)
-    assert backoff.record_failure(10.0) == 5.0
+    assert backoff.record_failure(10.0) == pytest.approx(5.0)
     assert not backoff.can_attempt(14.9)
     assert backoff.can_attempt(15.0)
-    assert backoff.record_failure(15.0) == 10.0
-    assert backoff.next_attempt_at == 25.0
+    assert backoff.record_failure(15.0) == pytest.approx(10.0)
+    assert backoff.next_attempt_at == pytest.approx(25.0)
 
     backoff.record_success()
     assert backoff.can_attempt(16.0)
@@ -46,7 +46,9 @@ def test_stagger_delay_uses_env_span_and_random(monkeypatch) -> None:
     monkeypatch.setenv("TIMESERIES_STARTUP_JITTER_SECONDS", "12")
     monkeypatch.setattr("services.observability_backoff.random.uniform", lambda a, b: (a, b, 7.0)[2])
 
-    assert stagger_delay_from_env("TIMESERIES_STARTUP_JITTER_SECONDS", 15.0, maximum=300.0) == 7.0
+    assert stagger_delay_from_env(
+        "TIMESERIES_STARTUP_JITTER_SECONDS", 15.0, maximum=300.0
+    ) == pytest.approx(7.0)
 
 
 def test_live_stats_background_starts_even_when_initial_db_is_down(monkeypatch, tmp_path) -> None:
@@ -96,7 +98,7 @@ def test_diagnostic_background_starts_even_when_initial_db_is_down(monkeypatch, 
 
 
 def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(monkeypatch) -> None:
-    class StopLoop(Exception):
+    class StopLoopError(Exception):
         pass
 
     class RunningThread(_FakeThread):
@@ -104,7 +106,7 @@ def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(monkey
             self.started = True
             try:
                 self.target(*self.args)
-            except StopLoop:
+            except StopLoopError:
                 pass
 
     _FakeThread.created.clear()
@@ -121,7 +123,7 @@ def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(monkey
         current["sleeps"] += 1
         current["value"] += 10.0
         if current["sleeps"] >= 4:
-            raise StopLoop()
+            raise StopLoopError
 
     monkeypatch.setattr(timeseries_store.time, "sleep", fake_sleep)
     monkeypatch.setattr(store, "insert_snapshot", lambda _stats: calls.append("snapshot"))
