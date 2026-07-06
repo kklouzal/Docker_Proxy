@@ -26,13 +26,14 @@ def test_proxy_entrypoint_emits_squid_cache_prepare_context() -> None:
     assert "[proxy-entrypoint] starting supervisord" in text
 
 
-def test_proxy_entrypoint_suppresses_remote_clamd_download_respmod() -> None:
+def test_proxy_entrypoint_uses_stream_respmod_for_remote_clamd_downloads() -> None:
     text = _read("docker/entrypoint.sh")
 
     assert "CLAMD_HOST_IS_REMOTE=1" in text
     assert "localhost|127.*|::1|\\[::1\\]) CLAMD_HOST_IS_REMOTE=0" in text
-    assert "[proxy-entrypoint] WARNING:" in text
-    assert "c-icap virus_scan passes local temporary file paths to clamd" in text
-    assert "if [ \"$CLAMD_HOST_IS_REMOTE\" = \"1\" ]; then" in text
-    assert "# ${REMOTE_CLAMD_DOWNLOAD_WARNING}" in text
+    assert "remote CLAMD_HOST detected; using INSTREAM RESPMOD helper" in text
+    assert "clamav_respmod_icap_server.py" in text
+    assert "--clamd-host \"${CLAMD_HOST}\" --clamd-port \"${CLAMD_PORT}\"" in text
+    assert "CICAP_AV_RESP_PORT" in text
+    assert "c-icap virus_scan passes local temporary file paths to clamd" not in text
     assert "adaptation_access av_resp_set allow file_security_download_methods" in text

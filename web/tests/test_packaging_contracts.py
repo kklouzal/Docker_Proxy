@@ -222,9 +222,11 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         "--db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite"
         in entrypoint
     )
+    assert "python3 /app/tools/clamav_respmod_icap_server.py" in entrypoint
     assert 'av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"' in entrypoint
     assert 'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"' in entrypoint
     dockerfile = _read("docker/Dockerfile.proxy")
+    assert "web/tools/clamav_respmod_icap_server.py" in dockerfile
     assert "COPY --chmod=755 docker/cicap_av_runner.py /usr/local/bin/cicap_av_runner.py" in dockerfile
 
     env_example = _read("config/app.env.example")
@@ -743,6 +745,7 @@ def test_linux_container_payloads_are_lf_only() -> None:
         "docker/entrypoint.admin.sh",
         "docker/healthcheck.sh",
         "docker/cicap_av_runner.py",
+        "web/tools/clamav_respmod_icap_server.py",
         "docker/healthcheck.admin.sh",
         "docker/load-env.sh",
         "docker/squid_logrotate.sh",

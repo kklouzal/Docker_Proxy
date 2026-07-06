@@ -18,7 +18,6 @@ from typing import Any
 from services.clamav_config_forms import (
     clamav_fail_open,
     extract_clamav_options,
-    remote_clamd_download_block_reason,
     render_file_security_policy_config,
     render_virus_scan_config,
 )
@@ -39,20 +38,21 @@ def _clamp_icap_workers(value: object) -> int:
     return max(1, min(workers, 4))
 
 
-def _icap_port_bases(workers: int, *, adblock_port: object = None, av_port: object = None) -> tuple[int, int]:
-    def parse_port(value: object, default: int) -> int:
-        try:
-            port = int(str(value).strip())
-        except Exception:
-            return default
-        return port if 1 <= port <= 65535 else default
+def _parse_port(value: object, default: int) -> int:
+    try:
+        port = int(str(value).strip())
+    except Exception:
+        return default
+    return port if 1 <= port <= 65535 else default
 
+
+def _icap_port_bases(workers: int, *, adblock_port: object = None, av_port: object = None) -> tuple[int, int]:
     count = _clamp_icap_workers(workers)
-    adblock_base = parse_port(
+    adblock_base = _parse_port(
         os.environ.get("CICAP_PORT") if adblock_port is None else adblock_port,
         14000,
     )
-    av_base = parse_port(
+    av_base = _parse_port(
         os.environ.get("CICAP_AV_PORT") if av_port is None else av_port,
         14001,
     )
@@ -62,6 +62,37 @@ def _icap_port_bases(workers: int, *, adblock_port: object = None, av_port: obje
     if av_base < adblock_base + count and adblock_base < av_base + count:
         av_base = adblock_base + count
     return adblock_base, av_base
+
+
+def _clamav_respmod_stream_port_base(
+    workers: int,
+    *,
+    adblock_port: object = None,
+    av_port: object = None,
+    respmod_port: object = None,
+) -> int:
+    count = _clamp_icap_workers(workers)
+    adblock_base, av_base = _icap_port_bases(
+        count,
+        adblock_port=adblock_port,
+        av_port=av_port,
+    )
+    stream_base = _parse_port(
+        os.environ.get("CICAP_AV_RESP_PORT") if respmod_port is None else respmod_port,
+        av_base + count,
+    )
+    if stream_base < adblock_base + count and adblock_base < stream_base + count:
+        stream_base = max(adblock_base + count, av_base + count)
+    if stream_base < av_base + count and av_base < stream_base + count:
+        stream_base = max(adblock_base + count, av_base + count)
+    return stream_base
+
+
+def _clamd_host_is_remote(host: object) -> bool:
+    value = str(host or "").strip().lower()
+    if not value:
+        return False
+    return value not in {"localhost", "127.0.0.1", "::1", "[::1]"} and not value.startswith("127.")
 
 
 def _file_has_non_comment_lines(path: str) -> bool:
@@ -426,18 +457,14 @@ class SquidController:
             workers = os.environ.get("SQUID_WORKERS") or "1"
         icap_instances = _clamp_icap_workers(workers)
         adblock_icap_port, cicap_av_port = _icap_port_bases(icap_instances)
+        clamav_respmod_port = _clamav_respmod_stream_port_base(icap_instances)
+        use_stream_respmod = _clamd_host_is_remote(
+            os.environ.get("CLAMD_HOST", "127.0.0.1"),
+        )
 
         clamav_options = extract_clamav_options(config_text or "")
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
-        remote_clamd_download_block = remote_clamd_download_block_reason(
-            os.environ.get("CLAMD_HOST", "127.0.0.1"),
-        )
-        if remote_clamd_download_block:
-            logger.warning(remote_clamd_download_block)
-        file_security_policy = render_file_security_policy_config(
-            clamav_options,
-            download_scan_blocked_reason=remote_clamd_download_block,
-        ).strip()
+        file_security_policy = render_file_security_policy_config(clamav_options).strip()
         # Version the Squid ICAP service name with the active artifact while
         # keeping the adblock ICAP helper URI stable. Squid tracks ICAP service health
         # and persistent connections by service object; changing the local service
@@ -459,10 +486,13 @@ class SquidController:
             adblock_services.append(adblock_name)
             av_req_services.append(av_req_name)
             av_resp_services.append(av_resp_name)
+            av_resp_port = (
+                clamav_respmod_port if use_stream_respmod else cicap_av_port
+            ) + index
             lines.extend([
                 f"icap_service {adblock_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port + index}/adblockreq bypass=on",
                 f"icap_service {av_req_name} reqmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
-                f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
+                f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{av_resp_port}/avrespmod bypass={av_bypass}",
             ])
         lines.extend([
             f"adaptation_service_set adblock_req_set {' '.join(adblock_services)}",

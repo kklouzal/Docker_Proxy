@@ -66,30 +66,18 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     assert "?:" not in policy
 
 
-def test_remote_clamd_blocks_download_respmod_policy_but_keeps_uploads() -> None:
+def test_download_respmod_policy_remains_enabled_for_stream_safe_remote_clamd() -> None:
     _add_web_path()
-    from services.clamav_config_forms import (
-        clamd_host_is_remote,
-        remote_clamd_download_block_reason,
-        render_file_security_policy_config,
-    )
+    from services.clamav_config_forms import render_file_security_policy_config
 
-    assert clamd_host_is_remote("127.0.0.1") is False
-    assert clamd_host_is_remote("localhost") is False
-    assert clamd_host_is_remote("192.168.1.10") is True
-
-    reason = remote_clamd_download_block_reason("192.168.1.10")
-    assert reason is not None
-    policy = render_file_security_policy_config(
-        download_scan_blocked_reason=reason,
-    )
+    policy = render_file_security_policy_config()
 
     assert "adaptation_access av_req_set allow file_security_upload_methods" in policy
-    assert "adaptation_access av_resp_set allow file_security_download_methods" not in policy
-    assert "adaptation_access av_resp_set deny file_security_range_request" not in policy
+    assert "adaptation_access av_resp_set deny file_security_range_request" in policy
+    assert "adaptation_access av_resp_set deny file_security_partial_response" in policy
+    assert "adaptation_access av_resp_set allow file_security_download_methods" in policy
     assert "adaptation_access av_resp_set deny all" in policy
-    assert "download/RESPMOD AV scanning disabled" in policy
-    assert "192.168.1.10" in policy
+    assert "download/RESPMOD AV scanning disabled" not in policy
 
 
 def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
@@ -322,7 +310,7 @@ def test_squid_controller_materializes_clamav_runtime_files(
     assert "virus_scan.MaxObjectSize 64M" in virus_conf
 
 
-def test_squid_controller_suppresses_remote_clamd_download_scan(
+def test_squid_controller_routes_remote_clamd_download_scan_to_stream_helper(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -357,11 +345,13 @@ def test_squid_controller_suppresses_remote_clamd_download_scan(
     assert ok is True
     assert "updated" in detail
     include_text = icap_path.read_text(encoding="utf-8")
-    assert "icap_service av_resp respmod_precache" in include_text
+    assert "icap_service av_req reqmod_precache icap://127.0.0.1:14001/avrespmod" in include_text
+    assert "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod" in include_text
     assert "adaptation_service_set av_resp_set av_resp" in include_text
     assert "adaptation_access av_req_set allow file_security_upload_methods" in include_text
-    assert "adaptation_access av_resp_set allow file_security_download_methods" not in include_text
-    assert "adaptation_access av_resp_set deny file_security_range_request" not in include_text
+    assert "adaptation_access av_resp_set deny file_security_range_request" in include_text
+    assert "adaptation_access av_resp_set deny file_security_partial_response" in include_text
+    assert "adaptation_access av_resp_set allow file_security_download_methods" in include_text
     assert "adaptation_access av_resp_set deny all" in include_text
-    assert "download/RESPMOD AV scanning disabled" in include_text
-    assert "192.168.1.10" in include_text
+    assert "download/RESPMOD AV scanning disabled" not in include_text
+    assert "c-icap virus_scan passes local temporary file paths" not in include_text

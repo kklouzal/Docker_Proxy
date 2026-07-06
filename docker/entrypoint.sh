@@ -981,11 +981,23 @@ case "$CICAP_AV_PORT_RAW" in
     *) CICAP_AV_PORT="$CICAP_AV_PORT_RAW" ;;
 esac
 
-# Keep adblock and AV ICAP listener ranges non-overlapping.  The historical
-# defaults (14000/14001) collide when WORKERS > 1, so align AV to the first safe
-# port after the adblock range while preserving already-safe explicit layouts.
+# Keep ICAP listener ranges non-overlapping.  The historical adblock/AV defaults
+# (14000/14001) collide when WORKERS > 1, so align AV to the first safe port
+# after the adblock range while preserving already-safe explicit layouts.
 if [ "$CICAP_AV_PORT" -lt $((CICAP_PORT + WORKERS)) ] && [ "$CICAP_PORT" -lt $((CICAP_AV_PORT + WORKERS)) ]; then
     CICAP_AV_PORT=$((CICAP_PORT + WORKERS))
+fi
+
+CICAP_AV_RESP_PORT_RAW="${CICAP_AV_RESP_PORT:-$((CICAP_AV_PORT + WORKERS))}"
+case "$CICAP_AV_RESP_PORT_RAW" in
+    ''|*[!0-9]*) CICAP_AV_RESP_PORT=$((CICAP_AV_PORT + WORKERS)) ;;
+    *) CICAP_AV_RESP_PORT="$CICAP_AV_RESP_PORT_RAW" ;;
+esac
+if [ "$CICAP_AV_RESP_PORT" -lt $((CICAP_PORT + WORKERS)) ] && [ "$CICAP_PORT" -lt $((CICAP_AV_RESP_PORT + WORKERS)) ]; then
+    CICAP_AV_RESP_PORT=$((CICAP_AV_PORT + WORKERS))
+fi
+if [ "$CICAP_AV_RESP_PORT" -lt $((CICAP_AV_PORT + WORKERS)) ] && [ "$CICAP_AV_PORT" -lt $((CICAP_AV_RESP_PORT + WORKERS)) ]; then
+    CICAP_AV_RESP_PORT=$((CICAP_AV_PORT + WORKERS))
 fi
 
 CLAMD_HOST="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr -d '\r')"
@@ -996,9 +1008,8 @@ CLAMD_HOST_IS_REMOTE=1
 case "$CLAMD_HOST" in
     localhost|127.*|::1|\[::1\]) CLAMD_HOST_IS_REMOTE=0 ;;
 esac
-REMOTE_CLAMD_DOWNLOAD_WARNING="download/RESPMOD AV scanning disabled: c-icap virus_scan passes local temporary file paths to clamd, which is unsafe for non-local CLAMD_HOST (${CLAMD_HOST})"
 if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
-    printf '[proxy-entrypoint] WARNING: %s\n' "$REMOTE_CLAMD_DOWNLOAD_WARNING"
+    printf '[proxy-entrypoint] remote CLAMD_HOST detected; using INSTREAM RESPMOD helper for download AV scanning\n'
 fi
 
 CLAMD_PORT_RAW="${CLAMD_PORT:-3310}"
@@ -1015,7 +1026,7 @@ if env_enabled "$CLAMAV_REQUIRED_RAW" || env_enabled "${FILE_SECURITY_AV_REQUIRE
     AV_BYPASS=off
 fi
 
-export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED AV_BYPASS CICAP_PORT CICAP_AV_PORT
+export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED AV_BYPASS CICAP_PORT CICAP_AV_PORT CICAP_AV_RESP_PORT
 
 cat > /etc/clamd_mod.conf <<EOF
 # c-icap clamd_mod configuration for squid-flask-proxy
@@ -1058,6 +1069,7 @@ i=0
 while [ "$i" -lt "$WORKERS" ]; do
     instance=$((i + 1))
     adblock_port=$((CICAP_PORT + i))
+    av_resp_port=$((CICAP_AV_RESP_PORT + i))
     av_conf="/etc/c-icap/c-icap-av-${instance}.conf"
     av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"
     cat > "/etc/supervisor.d/cicap_adblock_${instance}.conf" <<EOF
@@ -1089,6 +1101,21 @@ stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
+    if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
+        fail_mode_arg="--fail-open"
+        if [ "$CLAMAV_REQUIRED" = "1" ]; then fail_mode_arg="--fail-closed"; fi
+        cat > "/etc/supervisor.d/clamav_respmod_${instance}.conf" <<EOF
+[program:clamav_respmod_${instance}]
+command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "${av_resp_port}" --clamd-host "${CLAMD_HOST}" --clamd-port "${CLAMD_PORT}" ${fail_mode_arg}'
+autostart=true
+autorestart=true
+priority=12
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+EOF
+    fi
     i=$((i + 1))
 done
 
@@ -1109,7 +1136,11 @@ done
         av_resp_services="${av_resp_services}${av_resp_services:+ }${av_resp_name}"
         echo "icap_service ${adblock_name} reqmod_precache icap://127.0.0.1:$((CICAP_PORT + i))/adblockreq bypass=on"
         echo "icap_service ${av_req_name} reqmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
-        echo "icap_service ${av_resp_name} respmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
+        if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
+            echo "icap_service ${av_resp_name} respmod_precache icap://127.0.0.1:$((CICAP_AV_RESP_PORT + i))/avrespmod bypass=${AV_BYPASS}"
+        else
+            echo "icap_service ${av_resp_name} respmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
+        fi
         i=$((i + 1))
     done
     echo "adaptation_service_set adblock_req_set ${adblock_services}"
@@ -1127,15 +1158,10 @@ done
     echo "acl file_security_executable_mime req_header Content-Type -i (application/x-msdownload|application/x-msdos-program|application/x-ms-installer)"
     echo "adaptation_access av_req_set allow file_security_upload_methods"
     echo "adaptation_access av_req_set deny all"
-    if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
-        echo "# ${REMOTE_CLAMD_DOWNLOAD_WARNING}"
-        echo "adaptation_access av_resp_set deny all"
-    else
-        echo "adaptation_access av_resp_set deny file_security_range_request"
-        echo "adaptation_access av_resp_set deny file_security_partial_response"
-        echo "adaptation_access av_resp_set allow file_security_download_methods"
-        echo "adaptation_access av_resp_set deny all"
-    fi
+    echo "adaptation_access av_resp_set deny file_security_range_request"
+    echo "adaptation_access av_resp_set deny file_security_partial_response"
+    echo "adaptation_access av_resp_set allow file_security_download_methods"
+    echo "adaptation_access av_resp_set deny all"
     echo "http_access deny file_security_risky_path"
     echo "http_access deny file_security_executable_path"
     echo "http_access deny file_security_executable_mime file_security_upload_methods"

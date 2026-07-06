@@ -268,12 +268,13 @@ audit depth or tighter storage bounds.
 
 ### ClamAV scanning
 
-- c-icap RESPMOD antivirus service at `icap://127.0.0.1:${CICAP_AV_PORT:-14001}/avrespmod`.
+- c-icap request/upload antivirus service at `icap://127.0.0.1:${CICAP_AV_PORT:-14001}/avrespmod`.
 - Remote `clamd` backend configured with `CLAMD_HOST` and `CLAMD_PORT`.
-- Download/RESPMOD AV scanning is intentionally suppressed when `CLAMD_HOST` is
-  non-local because c-icap `virus_scan` passes proxy-local temp-file paths to
-  `clamd`; upload/request scanning and AV health checks remain available.
-- Fail-open/fail-closed policy controls and c-icap `virus_scan` tuning.
+- Download/RESPMOD AV scanning uses a local ICAP helper that streams response
+  bytes to remote `clamd` with the TCP INSTREAM protocol when `CLAMD_HOST` is
+  non-local, avoiding proxy-local temp-file path handoff.
+- Fail-open/fail-closed policy controls, c-icap `virus_scan` tuning for uploads,
+  and stream-based RESPMOD scanning for downloads.
 - Per-proxy health view that separates Squid policy, AV c-icap listener health, and remote `clamd` reachability.
 - EICAR and sample ICAP verification actions executed through the selected proxy runtime.
 
