@@ -8,12 +8,12 @@ WEB_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from services.adblock_store import AdblockStore
-from services.diagnostic_store import DiagnosticStore
-from services.live_stats import LiveStatsStore
-from services.safe_browsing_v5 import SafeBrowsingStore
-from services.webfilter_store import WebFilterStore
-from tools.webcat_acl import _BlockedLogDb
+from services.adblock_store import AdblockStore  # noqa: E402
+from services.diagnostic_store import DiagnosticStore  # noqa: E402
+from services.live_stats import LiveStatsStore  # noqa: E402
+from services.safe_browsing_v5 import SafeBrowsingStore  # noqa: E402
+from services.webfilter_store import WebFilterStore  # noqa: E402
+from tools.webcat_acl import _BlockedLogDb  # noqa: E402
 
 
 class _Result:

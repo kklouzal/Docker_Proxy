@@ -7,8 +7,8 @@ WEB_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from services.ssl_errors_store import SslErrorsStore
-from services.db import CompatRow
+from services.db import CompatRow  # noqa: E402
+from services.ssl_errors_store import SslErrorsStore  # noqa: E402
 
 
 class _Result:
