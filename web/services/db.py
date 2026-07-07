@@ -97,7 +97,14 @@ class CompatConnection:
         if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
         cur = self.native.cursor()
-        cur.execute(sql, tuple(params or ()))
+        try:
+            cur.execute(sql, tuple(params or ()))
+        except Exception as exc:
+            if _should_discard_native_connection(exc):
+                self._discard_on_close = True
+            with contextlib.suppress(Exception):
+                cur.close()
+            raise
         return CompatResult(cur)
 
     def executemany(
@@ -108,7 +115,14 @@ class CompatConnection:
         if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
         cur = self.native.cursor()
-        cur.executemany(sql, [tuple(p) for p in seq_of_params])
+        try:
+            cur.executemany(sql, [tuple(p) for p in seq_of_params])
+        except Exception as exc:
+            if _should_discard_native_connection(exc):
+                self._discard_on_close = True
+            with contextlib.suppress(Exception):
+                cur.close()
+            raise
         return CompatResult(cur)
 
     def commit(self) -> None:
@@ -186,7 +200,17 @@ _pooled_connections: dict[
 def _is_retryable_mysql_error(exc: BaseException) -> bool:
     if not isinstance(exc, pymysql.MySQLError):
         return False
+    if isinstance(exc, pymysql.InterfaceError) and mysql_error_code(exc) in {None, 0}:
+        return True
     return mysql_error_code(exc) in {1040, 2002, 2003, 2006, 2013, 1205, 1213}
+
+
+def _should_discard_native_connection(exc: BaseException) -> bool:
+    if isinstance(exc, pymysql.InterfaceError):
+        return True
+    if isinstance(exc, pymysql.OperationalError):
+        return mysql_error_code(exc) in {2002, 2003, 2006, 2013}
+    return False
 
 
 def mysql_error_code(exc: BaseException) -> int | None:

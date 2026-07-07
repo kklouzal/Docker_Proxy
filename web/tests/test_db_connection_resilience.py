@@ -96,6 +96,67 @@ def test_context_manager_preserves_original_error_when_rollback_connection_is_lo
     assert closed == [True]
 
 
+@pytest.mark.parametrize("method_name", ["execute", "executemany"])
+def test_failed_cursor_connection_error_discards_pooled_connection(
+    monkeypatch,
+    method_name: str,
+) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class Cursor:
+        def execute(self, *_args, **_kwargs) -> NoReturn:
+            calls.append("execute")
+            raise pymysql.err.InterfaceError(0, "")
+
+        def executemany(self, *_args, **_kwargs) -> NoReturn:
+            calls.append("executemany")
+            raise pymysql.err.InterfaceError(0, "")
+
+        def close(self) -> None:
+            calls.append("cursor.close")
+
+    class NativeConnection:
+        def cursor(self):
+            return Cursor()
+
+        def rollback(self) -> None:
+            calls.append("rollback")
+
+        def close(self) -> None:
+            calls.append("native.close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+    key = db._pool_key(cfg)
+    with db._pool_condition:
+        db._pooled_connections[key] = db._PoolState(idle=[], active=1)
+
+    conn = db.CompatConnection(NativeConnection(), cfg=cfg)
+    with pytest.raises(pymysql.err.InterfaceError):
+        if method_name == "execute":
+            conn.execute("SELECT 1")
+        else:
+            conn.executemany("INSERT INTO t VALUES (%s)", [(1,)])
+    conn.close()
+
+    assert calls == [method_name, "cursor.close", "native.close"]
+    assert key not in db._pooled_connections
+    db.reset_mysql_ready_for_tests()
+
+
+def test_interface_error_zero_is_retryable_mysql_error() -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    assert db._is_retryable_mysql_error(pymysql.err.InterfaceError(0, "")) is True
+
+
 def test_returning_connection_to_pool_rolls_back_any_open_transaction(
     monkeypatch,
 ) -> None:
