@@ -15,7 +15,13 @@ import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from services.db import DATABASE_ERRORS, connect
+from services.db import (
+    DATABASE_ERRORS,
+    connect,
+    mysql_advisory_lock,
+    mysql_error_code,
+    mysql_schema_lock_timeout_seconds,
+)
 from services.domain_normalization import normalize_domain as _norm_domain
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable
@@ -452,7 +458,12 @@ class SafeBrowsingStore:
 
     def init_db(self) -> None:
         with self._connect() as conn:
-            self.init_schema(conn)
+            with mysql_advisory_lock(
+                conn,
+                "safe_browsing_v5:schema",
+                mysql_schema_lock_timeout_seconds(),
+            ):
+                self.init_schema(conn)
 
     @staticmethod
     def init_schema(conn) -> None:
@@ -475,8 +486,36 @@ class SafeBrowsingStore:
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS safe_browsing_negative_cache("
-            "prefix VARBINARY(4) PRIMARY KEY, expires_ts BIGINT NOT NULL)",
+            "prefix VARBINARY(4) PRIMARY KEY, expires_ts BIGINT NOT NULL, "
+            "KEY idx_safe_browsing_negative_expiry(expires_ts))",
         )
+        SafeBrowsingStore._ensure_index(
+            conn,
+            "safe_browsing_negative_cache",
+            "idx_safe_browsing_negative_expiry",
+            "ALTER TABLE safe_browsing_negative_cache ADD INDEX idx_safe_browsing_negative_expiry (expires_ts)",
+        )
+
+    @staticmethod
+    def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND index_name = %s
+            LIMIT 1
+            """,
+            (table_name, index_name),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1061:
+                raise
 
     @staticmethod
     def selected_lists(values: Sequence[str] | str | None) -> tuple[str, ...]:

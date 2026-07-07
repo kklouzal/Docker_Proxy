@@ -18,7 +18,7 @@ if APP_ROOT not in sys.path:
 
 import contextlib  # noqa: E402
 
-from services.db import connect  # noqa: E402
+from services.db import DATABASE_ERRORS, connect, mysql_error_code  # noqa: E402
 from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
 from services.helper_runtime import (  # noqa: E402
     HelperStats,
@@ -558,8 +558,15 @@ class _BlockedLogDb:
                 "src_ip VARCHAR(64) NOT NULL, "
                 "url TEXT NOT NULL, "
                 "category VARCHAR(128) NOT NULL, "
+                f"KEY idx_{blocked_log_table}_ts_id (ts, id), "
                 f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
                 ")",
+            )
+            self._ensure_index(
+                conn,
+                blocked_log_table,
+                f"idx_{blocked_log_table}_ts_id",
+                f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_ts_id (ts, id)",
             )
             self._conn = conn
             return conn
@@ -568,6 +575,27 @@ class _BlockedLogDb:
                 with contextlib.suppress(Exception):
                     conn.close()
             return None
+
+    @staticmethod
+    def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND index_name = %s
+            LIMIT 1
+            """,
+            (table_name, index_name),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1061:
+                raise
 
     def start(self) -> None:
         if self.max_rows <= 0:

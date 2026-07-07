@@ -493,6 +493,7 @@ class DiagnosticStore:
                                 raw TEXT NOT NULL,
                                 created_ts BIGINT NOT NULL,
                                 UNIQUE KEY idx_diagnostic_requests_proxy_event (proxy_id, event_key),
+                                KEY idx_diagnostic_requests_ts_id (ts, id),
                                 KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
                                 KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
                                 KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
@@ -529,6 +530,7 @@ class DiagnosticStore:
                                 raw TEXT NOT NULL,
                                 created_ts BIGINT NOT NULL,
                                 UNIQUE KEY idx_diagnostic_icap_proxy_event (proxy_id, event_key),
+                                KEY idx_diagnostic_icap_ts_id (ts, id),
                                 KEY idx_diagnostic_icap_proxy_ts (proxy_id, ts, id),
                                 KEY idx_diagnostic_icap_proxy_tx (proxy_id, master_xaction, ts),
                                 KEY idx_diagnostic_icap_proxy_domain (proxy_id, domain, ts),
@@ -573,6 +575,16 @@ class DiagnosticStore:
                                     if mysql_error_code(exc) != 1060:
                                         raise
                         for table, index_name, ddl in (
+                            (
+                                "diagnostic_requests",
+                                "idx_diagnostic_requests_ts_id",
+                                "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_ts_id (ts, id)",
+                            ),
+                            (
+                                "diagnostic_icap_events",
+                                "idx_diagnostic_icap_ts_id",
+                                "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_ts_id (ts, id)",
+                            ),
                             (
                                 "diagnostic_requests",
                                 "idx_diagnostic_requests_proxy_client_bytes",

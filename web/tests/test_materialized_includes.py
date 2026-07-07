@@ -315,6 +315,10 @@ def test_webfilter_defaults_do_not_preselect_block_categories(
             self.settings: dict[tuple[str, str], str] = {}
 
         def execute(self, sql: str, params=()):
+            if "GET_LOCK" in sql:
+                return _Result({"acquired": 1})
+            if "RELEASE_LOCK" in sql:
+                return _Result({"released": 1})
             if "INSERT IGNORE INTO webfilter_settings" in sql and len(params) == 3:
                 proxy_id, key, value = params
                 self.settings.setdefault((str(proxy_id), str(key)), str(value))
@@ -375,6 +379,10 @@ def test_webfilter_init_clears_disabled_legacy_default_block_categories(
             }
 
         def execute(self, sql: str, params=()):
+            if "GET_LOCK" in sql:
+                return _Result({"acquired": 1})
+            if "RELEASE_LOCK" in sql:
+                return _Result({"released": 1})
             if "INSERT IGNORE INTO webfilter_settings" in sql and len(params) == 3:
                 proxy_id, key, value = params
                 self.settings.setdefault((str(proxy_id), str(key)), str(value))

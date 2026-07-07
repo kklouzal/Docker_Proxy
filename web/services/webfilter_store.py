@@ -6,7 +6,7 @@ import time
 from subprocess import run
 from typing import ClassVar
 
-from services.db import DATABASE_ERRORS
+from services.db import DATABASE_ERRORS, mysql_error_code
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
@@ -63,9 +63,37 @@ class WebFilterStore(WebFilterStoreBase):
             "src_ip VARCHAR(64) NOT NULL, "
             "url TEXT NOT NULL, "
             "category VARCHAR(128) NOT NULL, "
+            f"KEY idx_{blocked_log_table}_ts_id (ts, id), "
             f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
             ")",
         )
+        self._ensure_index(
+            conn,
+            blocked_log_table,
+            f"idx_{blocked_log_table}_ts_id",
+            f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_ts_id (ts, id)",
+        )
+
+    @staticmethod
+    def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND index_name = %s
+            LIMIT 1
+            """,
+            (table_name, index_name),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1061:
+                raise
 
     def list_blocked_log(self, limit: int = 200) -> list[dict[str, object]]:
         try:

@@ -10,7 +10,12 @@ from typing import ClassVar
 from urllib.parse import urlparse
 
 from services import download_safety
-from services.db import connect, table_exists
+from services.db import (
+    connect,
+    mysql_advisory_lock,
+    mysql_schema_lock_timeout_seconds,
+    table_exists,
+)
 from services.domain_normalization import (
     looks_like_domain as _looks_like_host,
 )
@@ -278,31 +283,36 @@ class WebFilterStoreBase:
             if self._schema_ready:
                 return
             with self._connect() as conn:
-                settings_table = self._table("settings")
-                meta_table = self._table("meta")
-                whitelist_table = self._table("whitelist")
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', k VARCHAR(64) NOT NULL, v LONGTEXT NOT NULL, PRIMARY KEY(proxy_id, k))",
-                )
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)",
-                )
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern), KEY idx_{whitelist_table}_proxy_ts (proxy_id, added_ts))",
-                )
-                SafeBrowsingStore.init_schema(conn)
-                for key, value in _DEFAULTS.items():
-                    conn.execute(
-                        f"INSERT IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(%s,%s,%s)",
-                        (self._settings_scope_for_key(key), key, value),
-                    )
-                self._init_extra_schema(conn)
-                if (
-                    self._get(conn, "enabled", "0") != "1"
-                    and self._get(conn, "blocked_categories", "")
-                    == _LEGACY_DEFAULT_BLOCKED_CATEGORIES_CSV
+                with mysql_advisory_lock(
+                    conn,
+                    "webfilter:schema",
+                    mysql_schema_lock_timeout_seconds(),
                 ):
-                    self._set(conn, "blocked_categories", "")
+                    settings_table = self._table("settings")
+                    meta_table = self._table("meta")
+                    whitelist_table = self._table("whitelist")
+                    conn.execute(
+                        f"CREATE TABLE IF NOT EXISTS {settings_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', k VARCHAR(64) NOT NULL, v LONGTEXT NOT NULL, PRIMARY KEY(proxy_id, k))",
+                    )
+                    conn.execute(
+                        f"CREATE TABLE IF NOT EXISTS {meta_table}(k VARCHAR(64) PRIMARY KEY, v LONGTEXT NOT NULL)",
+                    )
+                    conn.execute(
+                        f"CREATE TABLE IF NOT EXISTS {whitelist_table}(proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', pattern VARCHAR(255) NOT NULL, added_ts BIGINT NOT NULL, PRIMARY KEY(proxy_id, pattern), KEY idx_{whitelist_table}_proxy_ts (proxy_id, added_ts))",
+                    )
+                    SafeBrowsingStore.init_schema(conn)
+                    for key, value in _DEFAULTS.items():
+                        conn.execute(
+                            f"INSERT IGNORE INTO {settings_table}(proxy_id, k, v) VALUES(%s,%s,%s)",
+                            (self._settings_scope_for_key(key), key, value),
+                        )
+                    self._init_extra_schema(conn)
+                    if (
+                        self._get(conn, "enabled", "0") != "1"
+                        and self._get(conn, "blocked_categories", "")
+                        == _LEGACY_DEFAULT_BLOCKED_CATEGORIES_CSV
+                    ):
+                        self._set(conn, "blocked_categories", "")
             self._schema_ready = True
 
     def _init_extra_schema(self, conn) -> None:

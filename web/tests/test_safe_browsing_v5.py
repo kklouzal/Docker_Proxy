@@ -230,6 +230,9 @@ def test_safe_browsing_prefix_miss_cache_uses_short_ttl(monkeypatch) -> None:
         def fetchall(self):
             return self.rows
 
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
     class FakeConn:
         def __enter__(self):
             return self
@@ -740,6 +743,8 @@ def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch) -> None:
             self.value = value
 
         def fetchone(self):
+            if isinstance(self.value, dict):
+                return self.value
             return (self.value,)
 
     class FakeConn:
@@ -750,8 +755,14 @@ def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch) -> None:
             return False
 
         def execute(self, sql, params=None):
+            if "GET_LOCK" in sql:
+                return Result({"acquired": 1})
+            if "RELEASE_LOCK" in sql:
+                return Result({"released": 1})
             if sql.startswith("CREATE TABLE"):
                 return Result(0)
+            if "information_schema.statistics" in sql:
+                return Result(1)
             if "safe_browsing_hash_lists" in sql:
                 assert params == ("mw-4b", "se-4b")
                 return Result(2)
@@ -794,6 +805,9 @@ def test_safe_browsing_apply_hash_list_rejects_checksum_mismatch() -> None:
 
         def fetchall(self):
             return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
 
     class FakeConn:
         def __init__(self) -> None:
@@ -840,6 +854,9 @@ def test_safe_browsing_apply_hash_list_accepts_matching_checksum() -> None:
 
         def fetchall(self):
             return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
 
     class FakeConn:
         def __init__(self) -> None:

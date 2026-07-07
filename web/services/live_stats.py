@@ -11,7 +11,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import DATABASE_ERRORS, connect
+from services.db import (
+    DATABASE_ERRORS,
+    connect,
+    mysql_advisory_lock,
+    mysql_error_code,
+    mysql_schema_lock_timeout_seconds,
+)
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
@@ -413,76 +419,129 @@ class LiveStatsStore:
             if self._db_initialized:
                 return
             with self._connect() as conn:
-                domains_table = self._table(conn, "domains")
-                clients_table = self._table(conn, "clients")
-                client_domains_table = self._table(conn, "client_domains")
-                nocache_table = self._table(conn, "client_domain_nocache")
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {domains_table} (
-                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                        domain VARCHAR(255) NOT NULL,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        hit_requests BIGINT NOT NULL DEFAULT 0,
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        hit_bytes BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL,
-                        PRIMARY KEY (proxy_id, domain),
-                        KEY idx_{domains_table}_proxy_last_seen (proxy_id, last_seen)
+                with mysql_advisory_lock(
+                    conn,
+                    "live_stats:schema",
+                    mysql_schema_lock_timeout_seconds(),
+                ):
+                    domains_table = self._table(conn, "domains")
+                    clients_table = self._table(conn, "clients")
+                    client_domains_table = self._table(conn, "client_domains")
+                    nocache_table = self._table(conn, "client_domain_nocache")
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {domains_table} (
+                            proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                            domain VARCHAR(255) NOT NULL,
+                            requests BIGINT NOT NULL DEFAULT 0,
+                            hit_requests BIGINT NOT NULL DEFAULT 0,
+                            bytes BIGINT NOT NULL DEFAULT 0,
+                            hit_bytes BIGINT NOT NULL DEFAULT 0,
+                            first_seen BIGINT NOT NULL,
+                            last_seen BIGINT NOT NULL,
+                            PRIMARY KEY (proxy_id, domain),
+                            KEY idx_{domains_table}_last_seen (last_seen, domain),
+                            KEY idx_{domains_table}_proxy_last_seen (proxy_id, last_seen)
+                        )
+                        """,
                     )
-                    """,
-                )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {clients_table} (
-                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                        ip VARCHAR(64) NOT NULL,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        hit_requests BIGINT NOT NULL DEFAULT 0,
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        hit_bytes BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL,
-                        PRIMARY KEY (proxy_id, ip),
-                        KEY idx_{clients_table}_proxy_last_seen (proxy_id, last_seen)
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {clients_table} (
+                            proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                            ip VARCHAR(64) NOT NULL,
+                            requests BIGINT NOT NULL DEFAULT 0,
+                            hit_requests BIGINT NOT NULL DEFAULT 0,
+                            bytes BIGINT NOT NULL DEFAULT 0,
+                            hit_bytes BIGINT NOT NULL DEFAULT 0,
+                            first_seen BIGINT NOT NULL,
+                            last_seen BIGINT NOT NULL,
+                            PRIMARY KEY (proxy_id, ip),
+                            KEY idx_{clients_table}_last_seen (last_seen, ip),
+                            KEY idx_{clients_table}_proxy_last_seen (proxy_id, last_seen)
+                        )
+                        """,
                     )
-                    """,
-                )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {client_domains_table} (
-                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                        ip VARCHAR(64) NOT NULL,
-                        domain VARCHAR(255) NOT NULL,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        hit_requests BIGINT NOT NULL DEFAULT 0,
-                        bytes BIGINT NOT NULL DEFAULT 0,
-                        hit_bytes BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL,
-                        PRIMARY KEY (proxy_id, ip, domain),
-                        KEY idx_{client_domains_table}_proxy_ip (proxy_id, ip)
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {client_domains_table} (
+                            proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                            ip VARCHAR(64) NOT NULL,
+                            domain VARCHAR(255) NOT NULL,
+                            requests BIGINT NOT NULL DEFAULT 0,
+                            hit_requests BIGINT NOT NULL DEFAULT 0,
+                            bytes BIGINT NOT NULL DEFAULT 0,
+                            hit_bytes BIGINT NOT NULL DEFAULT 0,
+                            first_seen BIGINT NOT NULL,
+                            last_seen BIGINT NOT NULL,
+                            PRIMARY KEY (proxy_id, ip, domain),
+                            KEY idx_{client_domains_table}_last_seen (last_seen, ip, domain),
+                            KEY idx_{client_domains_table}_proxy_ip (proxy_id, ip)
+                        )
+                        """,
                     )
-                    """,
-                )
-                conn.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {nocache_table} (
-                        row_key CHAR(40) PRIMARY KEY,
-                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                        ip VARCHAR(64) NOT NULL,
-                        domain VARCHAR(255) NOT NULL,
-                        reason VARCHAR(300) NOT NULL,
-                        requests BIGINT NOT NULL DEFAULT 0,
-                        first_seen BIGINT NOT NULL,
-                        last_seen BIGINT NOT NULL,
-                        KEY idx_{nocache_table}_proxy_ip (proxy_id, ip, last_seen),
-                        KEY idx_{nocache_table}_proxy_domain (proxy_id, domain, last_seen)
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {nocache_table} (
+                            row_key CHAR(40) PRIMARY KEY,
+                            proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                            ip VARCHAR(64) NOT NULL,
+                            domain VARCHAR(255) NOT NULL,
+                            reason VARCHAR(300) NOT NULL,
+                            requests BIGINT NOT NULL DEFAULT 0,
+                            first_seen BIGINT NOT NULL,
+                            last_seen BIGINT NOT NULL,
+                            KEY idx_{nocache_table}_last_seen (last_seen, row_key),
+                            KEY idx_{nocache_table}_proxy_ip (proxy_id, ip, last_seen),
+                            KEY idx_{nocache_table}_proxy_domain (proxy_id, domain, last_seen)
+                        )
+                        """,
                     )
-                    """,
-                )
+                    for table, index_name, ddl in (
+                        (
+                            domains_table,
+                            f"idx_{domains_table}_last_seen",
+                            f"ALTER TABLE {domains_table} ADD INDEX idx_{domains_table}_last_seen (last_seen, domain)",
+                        ),
+                        (
+                            clients_table,
+                            f"idx_{clients_table}_last_seen",
+                            f"ALTER TABLE {clients_table} ADD INDEX idx_{clients_table}_last_seen (last_seen, ip)",
+                        ),
+                        (
+                            client_domains_table,
+                            f"idx_{client_domains_table}_last_seen",
+                            f"ALTER TABLE {client_domains_table} ADD INDEX idx_{client_domains_table}_last_seen (last_seen, ip, domain)",
+                        ),
+                        (
+                            nocache_table,
+                            f"idx_{nocache_table}_last_seen",
+                            f"ALTER TABLE {nocache_table} ADD INDEX idx_{nocache_table}_last_seen (last_seen, row_key)",
+                        ),
+                    ):
+                        self._ensure_index(conn, table, index_name, ddl)
             self._db_initialized = True
+
+    @staticmethod
+    def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND index_name = %s
+            LIMIT 1
+            """,
+            (table_name, index_name),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1061:
+                raise
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune stale aggregate rows.

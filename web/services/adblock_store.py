@@ -19,7 +19,9 @@ from services.db import (
     DATABASE_ERRORS,
     INTEGRITY_ERRORS,
     connect,
+    mysql_advisory_lock,
     mysql_error_code,
+    mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
 from services.errors import public_error_message
@@ -118,127 +120,173 @@ class AdblockStore:
     def init_db(self) -> None:
         pathlib.Path(self.lists_dir).mkdir(exist_ok=True, parents=True)
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_lists (
-                    `key` VARCHAR(64) PRIMARY KEY,
-                    url TEXT NOT NULL,
-                    enabled TINYINT(1) NOT NULL DEFAULT 0,
-                    last_success BIGINT NOT NULL DEFAULT 0,
-                    last_attempt BIGINT NOT NULL DEFAULT 0,
-                    last_error VARCHAR(500) NOT NULL DEFAULT '',
-                    bytes BIGINT NOT NULL DEFAULT 0,
-                    rules BIGINT NOT NULL DEFAULT 0
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_meta (
-                    k VARCHAR(64) PRIMARY KEY,
-                    v TEXT NOT NULL
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_cache_stats (
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    k VARCHAR(64) NOT NULL,
-                    v BIGINT NOT NULL
-                    , PRIMARY KEY(proxy_id, k)
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_settings (
-                    k VARCHAR(64) PRIMARY KEY,
-                    v TEXT NOT NULL
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_counts (
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    day BIGINT NOT NULL,
-                    list_key VARCHAR(64) NOT NULL,
-                    blocked BIGINT NOT NULL,
-                    PRIMARY KEY(proxy_id, day, list_key)
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_events (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    event_key CHAR(40) NOT NULL,
-                    ts BIGINT NOT NULL,
-                    src_ip VARCHAR(64) NOT NULL,
-                    method VARCHAR(16) NOT NULL,
-                    url TEXT NOT NULL,
-                    http_status INT NOT NULL,
-                    http_resp_line VARCHAR(255) NOT NULL,
-                    icap_status INT NOT NULL,
-                    raw TEXT NOT NULL,
-                    created_ts BIGINT NOT NULL,
-                    KEY idx_adblock_events_proxy_ts (proxy_id, ts, id),
-                    UNIQUE KEY idx_adblock_events_proxy_uniq (proxy_id, event_key)
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_proxy_meta (
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    k VARCHAR(64) NOT NULL,
-                    v TEXT NOT NULL,
-                    PRIMARY KEY(proxy_id, k)
-                )
-                """,
-            )
-
-            for key, url in _DEFAULT_LISTS.items():
-                conn.execute(
-                    """
-                    INSERT INTO adblock_lists(`key`, url, enabled)
-                    VALUES(%s,%s,0) AS incoming
-                    ON DUPLICATE KEY UPDATE url=incoming.url;
-                    """,
-                    (key, url),
-                )
-
-            for k, v in _DEFAULT_SETTINGS.items():
-                conn.execute(
-                    "INSERT IGNORE INTO adblock_settings(k, v) VALUES(%s,%s)",
-                    (k, v),
-                )
-
-            conn.execute(
-                "INSERT IGNORE INTO adblock_meta(k, v) VALUES('settings_version','1')",
-            )
-            conn.execute(
-                "INSERT IGNORE INTO adblock_meta(k, v) VALUES('refresh_requested','0')",
-            )
-            proxy_id = get_proxy_id()
-            for k in ("hits", "misses", "evictions"):
-                conn.execute(
-                    "INSERT IGNORE INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s,%s,0)",
-                    (proxy_id, k),
-                )
-            for key in (
-                "cache_flush_requested",
-                "cache_last_flush",
-                "cache_current_size",
-                "cicap_access_pos",
-                "cicap_access_inode",
+            with mysql_advisory_lock(
+                conn,
+                "adblock:schema",
+                mysql_schema_lock_timeout_seconds(),
             ):
-                conn.execute(
-                    "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,'0')",
-                    (proxy_id, key),
-                )
+                self._init_schema(conn)
+
+    def _init_schema(self, conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adblock_lists (
+                `key` VARCHAR(64) PRIMARY KEY,
+                url TEXT NOT NULL,
+                enabled TINYINT(1) NOT NULL DEFAULT 0,
+                last_success BIGINT NOT NULL DEFAULT 0,
+                last_attempt BIGINT NOT NULL DEFAULT 0,
+                last_error VARCHAR(500) NOT NULL DEFAULT '',
+                bytes BIGINT NOT NULL DEFAULT 0,
+                rules BIGINT NOT NULL DEFAULT 0
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adblock_meta (
+                k VARCHAR(64) PRIMARY KEY,
+                v TEXT NOT NULL
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adblock_cache_stats (
+                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                k VARCHAR(64) NOT NULL,
+                v BIGINT NOT NULL
+                , PRIMARY KEY(proxy_id, k)
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adblock_settings (
+                k VARCHAR(64) PRIMARY KEY,
+                v TEXT NOT NULL
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adblock_counts (
+                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                day BIGINT NOT NULL,
+                list_key VARCHAR(64) NOT NULL,
+                blocked BIGINT NOT NULL,
+                PRIMARY KEY(proxy_id, day, list_key),
+                KEY idx_adblock_counts_day (day)
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adblock_events (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                event_key CHAR(40) NOT NULL,
+                ts BIGINT NOT NULL,
+                src_ip VARCHAR(64) NOT NULL,
+                method VARCHAR(16) NOT NULL,
+                url TEXT NOT NULL,
+                http_status INT NOT NULL,
+                http_resp_line VARCHAR(255) NOT NULL,
+                icap_status INT NOT NULL,
+                raw TEXT NOT NULL,
+                created_ts BIGINT NOT NULL,
+                KEY idx_adblock_events_ts_id (ts, id),
+                KEY idx_adblock_events_proxy_ts (proxy_id, ts, id),
+                UNIQUE KEY idx_adblock_events_proxy_uniq (proxy_id, event_key)
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adblock_proxy_meta (
+                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                k VARCHAR(64) NOT NULL,
+                v TEXT NOT NULL,
+                PRIMARY KEY(proxy_id, k)
+            )
+            """,
+        )
+
+        for key, url in _DEFAULT_LISTS.items():
+            conn.execute(
+                """
+                INSERT INTO adblock_lists(`key`, url, enabled)
+                VALUES(%s,%s,0) AS incoming
+                ON DUPLICATE KEY UPDATE url=incoming.url;
+                """,
+                (key, url),
+            )
+
+        for k, v in _DEFAULT_SETTINGS.items():
+            conn.execute(
+                "INSERT IGNORE INTO adblock_settings(k, v) VALUES(%s,%s)",
+                (k, v),
+            )
+
+        conn.execute(
+            "INSERT IGNORE INTO adblock_meta(k, v) VALUES('settings_version','1')",
+        )
+        conn.execute(
+            "INSERT IGNORE INTO adblock_meta(k, v) VALUES('refresh_requested','0')",
+        )
+        for table, index_name, ddl in (
+            (
+                "adblock_counts",
+                "idx_adblock_counts_day",
+                "ALTER TABLE adblock_counts ADD INDEX idx_adblock_counts_day (day)",
+            ),
+            (
+                "adblock_events",
+                "idx_adblock_events_ts_id",
+                "ALTER TABLE adblock_events ADD INDEX idx_adblock_events_ts_id (ts, id)",
+            ),
+        ):
+            self._ensure_index(conn, table, index_name, ddl)
+        proxy_id = get_proxy_id()
+        for k in ("hits", "misses", "evictions"):
+            conn.execute(
+                "INSERT IGNORE INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s,%s,0)",
+                (proxy_id, k),
+            )
+
+        for key in (
+            "cache_flush_requested",
+            "cache_last_flush",
+            "cache_current_size",
+            "cicap_access_pos",
+            "cicap_access_inode",
+        ):
+            conn.execute(
+                "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,'0')",
+                (proxy_id, key),
+            )
+
+    @staticmethod
+    def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND index_name = %s
+            LIMIT 1
+            """,
+            (table_name, index_name),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1061:
+                raise
+            return
 
     def _get_meta(self, conn, key: str, default: str = "") -> str:
         row = conn.execute("SELECT v FROM adblock_meta WHERE k=%s", (key,)).fetchone()

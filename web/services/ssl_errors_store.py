@@ -265,6 +265,15 @@ class SslErrorsStore:
         except Exception:
             return 20
 
+    def _context_lookup_windows_seconds(self) -> list[int]:
+        max_window = self._context_lookup_window_seconds()
+        windows: list[int] = []
+        for candidate in (5, 20, max_window):
+            bounded = min(max_window, max(1, int(candidate)))
+            if bounded not in windows:
+                windows.append(bounded)
+        return windows
+
     def _lookup_domain_for_master_xaction(
         self,
         conn,
@@ -274,22 +283,28 @@ class SslErrorsStore:
         tx = (master_xaction or "").strip()
         if not tx:
             return ""
-        window = self._context_lookup_window_seconds()
         proxy_id = get_proxy_id()
         try:
-            row = conn.execute(
-                """
-                SELECT domain, sni, host, url
-                FROM diagnostic_requests
-                WHERE proxy_id = %s
-                  AND master_xaction = %s
-                  AND ts BETWEEN %s AND %s
-                  AND COALESCE(NULLIF(TRIM(domain), ''), NULLIF(TRIM(sni), ''), NULLIF(TRIM(host), ''), NULLIF(TRIM(url), '')) IS NOT NULL
-                ORDER BY ABS(ts - %s) ASC, id DESC
-                LIMIT 1
-                """,
-                (proxy_id, tx, int(ts) - window, int(ts) + window, int(ts)),
-            ).fetchone()
+            row = None
+            for window in self._context_lookup_windows_seconds():
+                row = conn.execute(
+                    """
+                    SELECT domain, sni, host, url
+                    FROM (
+                        SELECT id, ts, domain, sni, host, url
+                        FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx)
+                        WHERE proxy_id = %s
+                          AND master_xaction = %s
+                          AND ts BETWEEN %s AND %s
+                          AND COALESCE(NULLIF(TRIM(domain), ''), NULLIF(TRIM(sni), ''), NULLIF(TRIM(host), ''), NULLIF(TRIM(url), '')) IS NOT NULL
+                    ) AS candidates
+                    ORDER BY ABS(candidates.ts - %s) ASC, candidates.id DESC
+                    LIMIT 1
+                    """,
+                    (proxy_id, tx, int(ts) - window, int(ts) + window, int(ts)),
+                ).fetchone()
+                if row:
+                    break
         except DATABASE_ERRORS:
             return ""
         except Exception:
@@ -300,7 +315,8 @@ class SslErrorsStore:
             return ""
         if not row:
             return ""
-        for value in row:
+        values = row.values() if hasattr(row, "values") else row
+        for value in values:
             normalized = _normalize_hostish(str(value or ""))
             if normalized and normalized != "-":
                 return normalized
