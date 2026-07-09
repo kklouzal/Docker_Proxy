@@ -3673,6 +3673,99 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
     assert calls[1] == (6, "applied", "runtime reconciled")
 
 
+def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="rebuild_container",
+        target_kind="",
+        target_ref="",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime._current_config_sha = lambda: "current-sha"
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is False
+    assert result["executed_operation_types"] == []
+    assert result["unsupported_operation_types"] == ["rebuild_container"]
+    assert calls == [
+        (
+            5,
+            "failed",
+            (
+                "Unsupported proxy operation type 'rebuild_container' was not executed.\n"
+                "Unsupported proxy operation type(s) were not executed: rebuild_container"
+            ),
+        )
+    ]
+
+
+def test_sync_from_db_requires_operation_execution_evidence(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(operation_id=5, operation_type="cache_clear")
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
+        "ok": True,
+        "detail": "runtime reconciled",
+        "executed_operation_types": [],
+        "cache_cleared": False,
+    }
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls == [
+        (
+            5,
+            "failed",
+            (
+                "Proxy operation 'cache_clear' completed reconciliation but did not report "
+                "execution evidence for the requested operation.\nruntime reconciled"
+            ),
+        )
+    ]
+
+
 def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

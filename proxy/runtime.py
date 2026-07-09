@@ -146,10 +146,49 @@ def _operations_request_force(operations: list[Any] | None) -> bool:
     return any(_operation_requests_force(operation) for operation in operations or [])
 
 
+_SUPPORTED_RUNTIME_OPERATION_TYPES = {
+    "sync",
+    "manual_sync",
+    "runtime_nudge",
+    "config_sync",
+    "config_apply",
+    "revert",
+    "certificate_apply",
+    "certificate_revert",
+    "pac_refresh",
+    "adblock_refresh",
+    "cache_clear",
+}
+
+
+def _operation_type(operation: Any) -> str:
+    return str(getattr(operation, "operation_type", "") or "sync")
+
+
+def _unsupported_operation_types(operations: list[Any] | None) -> list[str]:
+    return sorted(
+        {
+            operation_type
+            for operation_type in (_operation_type(operation) for operation in operations or [])
+            if operation_type not in _SUPPORTED_RUNTIME_OPERATION_TYPES
+        },
+    )
+
+
+def _supported_operation_types(operations: list[Any] | None) -> list[str]:
+    return sorted(
+        {
+            operation_type
+            for operation_type in (_operation_type(operation) for operation in operations or [])
+            if operation_type in _SUPPORTED_RUNTIME_OPERATION_TYPES
+        },
+    )
+
+
 def _operation_requests_config_force(operation: Any) -> bool:
     if not _operation_requests_force(operation):
         return False
-    operation_type = str(getattr(operation, "operation_type", "") or "")
+    operation_type = _operation_type(operation)
     target_kind = str(getattr(operation, "target_kind", "") or "")
     return (
         operation_type in {"manual_sync", "config_sync", "config_apply"}
@@ -170,8 +209,33 @@ def _operation_completion_status(
     detail: str,
     result: dict[str, Any],
 ) -> tuple[str, str]:
+    operation_type = _operation_type(operation)
+    if operation_type not in _SUPPORTED_RUNTIME_OPERATION_TYPES:
+        op_detail = f"Unsupported proxy operation type '{operation_type}' was not executed."
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+
     if default_status != "applied":
         return default_status, detail
+
+    executed_operation_types = result.get("executed_operation_types")
+    if executed_operation_types is not None:
+        executed = {str(value) for value in executed_operation_types or []}
+        if operation_type not in executed:
+            op_detail = (
+                f"Proxy operation '{operation_type}' completed reconciliation but did not "
+                "report execution evidence for the requested operation."
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "failed", op_detail[:4000]
+
+    if operation_type == "cache_clear" and not bool(result.get("cache_cleared")):
+        op_detail = "Proxy cache clear did not report a completed cache clear side effect."
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
 
     target_kind = str(getattr(operation, "target_kind", "") or "")
     if target_kind != "config_revision":
@@ -2883,6 +2947,32 @@ class ProxyRuntime:
         artifact_force_value = force if artifact_force is None else bool(
             artifact_force,
         )
+        operation_types = set(_supported_operation_types(operations))
+        unsupported_operation_types = _unsupported_operation_types(operations)
+        operation_evidence = {
+            "executed_operation_types": sorted(operation_types),
+            "unsupported_operation_types": unsupported_operation_types,
+        }
+        unsupported_detail = ""
+        if unsupported_operation_types:
+            unsupported_detail = (
+                "Unsupported proxy operation type(s) were not executed: "
+                + ", ".join(unsupported_operation_types)
+            )
+        if unsupported_operation_types and not operation_types:
+            return {
+                "ok": False,
+                "detail": unsupported_detail,
+                "changed": False,
+                "cache_cleared": False,
+                "certificate_changed": False,
+                "policy_changed": False,
+                "adblock_changed": False,
+                "pac_changed": False,
+                "config_changed": False,
+                "current_config_sha": self._current_config_sha(),
+                **operation_evidence,
+            }
         cert_result = self.sync_certificate_bundle(force=artifact_force_value)
         cert_ok = bool(cert_result.get("ok", True))
         cert_changed = bool(cert_result.get("changed", False))
@@ -2891,6 +2981,8 @@ class ProxyRuntime:
             if str(cert_result.get("detail") or "").strip()
             else []
         )
+        if unsupported_detail:
+            detail_parts.append(unsupported_detail)
         if not cert_ok:
             detail = (
                 "\n".join(detail_parts).strip() or "Certificate bundle sync failed."
@@ -2956,10 +3048,6 @@ class ProxyRuntime:
             pac_result["detail"] = detail
             return pac_result
 
-        operation_types = {
-            str(getattr(operation, "operation_type", "") or "")
-            for operation in (operations or [])
-        }
         cache_cleared = False
         if "cache_clear" in operation_types:
             cache_ok, cache_detail = self._clear_disk_cache_and_refresh_runtime()
@@ -2987,6 +3075,7 @@ class ProxyRuntime:
                     "pac_changed": pac_changed,
                     "config_changed": False,
                     "current_config_sha": self._current_config_sha(),
+                    **operation_evidence,
                 }
 
         current_sha = self._current_config_sha()
@@ -3068,6 +3157,7 @@ class ProxyRuntime:
                     "cache_cleared": cache_cleared,
                     "config_changed": False,
                     "detail": detail,
+                    **operation_evidence,
                 }
         policy_config_ok, policy_config_detail, policy_config_changed = (
             self._ensure_policy_runtime_config()
@@ -3098,6 +3188,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **operation_evidence,
             }
         if policy_config_changed:
             current_sha = self._current_config_sha()
@@ -3127,6 +3218,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **operation_evidence,
             }
             if (
                 policy_reload_required or adblock_changed or clamav_runtime_changed
@@ -3201,6 +3293,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **operation_evidence,
             }
 
         latest_apply = None
@@ -3240,6 +3333,7 @@ class ProxyRuntime:
                 "config_changed": bool(policy_config_changed),
                 "rollback_active": True,
                 "detail": detail,
+                **operation_evidence,
             }
 
         sync_changed = changed_since_sync_start(
@@ -3280,6 +3374,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **operation_evidence,
             }
 
         if revision is None:
@@ -3305,6 +3400,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **operation_evidence,
             }
 
         if not normalized_revision_text:
@@ -3356,6 +3452,7 @@ class ProxyRuntime:
             "cache_cleared": cache_cleared,
             "config_changed": True,
             "detail": detail,
+            **operation_evidence,
         }
 
     def clear_cache(self) -> dict[str, Any]:
