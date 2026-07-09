@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 _ADBLOCK_ICAP_METHODS = "GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = (os.environ.get(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on", "enabled"}
+
+
 def _clamp_icap_workers(value: object) -> int:
     try:
         workers = int(str(value).strip())
@@ -147,6 +154,10 @@ class SquidController:
         )
         self._run = cmd_run
         self._adblock_icap_revision_token = ""
+        # Startup has no reliable access to the UI database.  Default routing is
+        # enabled for first boot/backwards compatibility; runtime reconciliation
+        # and UI apply paths overwrite this from persisted adblock_settings.
+        self._adblock_routing_enabled = _env_flag("ADBLOCK_ENABLED", True)
 
     def _atomic_write_file(self, path: str, content: str) -> None:
         target = Path(path)
@@ -448,10 +459,15 @@ class SquidController:
         raw = re.sub(r"[^A-Za-z0-9_.-]", "", str(token or ""))[:32]
         self._adblock_icap_revision_token = raw
 
+    def set_adblock_enabled(self, enabled: object) -> None:
+        self._adblock_routing_enabled = bool(enabled)
+
     def _render_icap_include(
         self,
         config_text: str | None = None,
         workers: int | None = None,
+        *,
+        adblock_enabled: bool | None = None,
     ) -> str:
         if workers is None:
             workers = os.environ.get("SQUID_WORKERS") or "1"
@@ -494,14 +510,31 @@ class SquidController:
                 f"icap_service {av_req_name} reqmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
                 f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{av_resp_port}/avrespmod bypass={av_bypass}",
             ])
-        lines.extend([
-            f"adaptation_service_set adblock_req_set {' '.join(adblock_services)}",
-            f"adaptation_service_set av_req_set {' '.join(av_req_services)}",
-            f"adaptation_service_set av_resp_set {' '.join(av_resp_services)}",
-            f"acl icap_adblockable method {_ADBLOCK_ICAP_METHODS}",
-            "adaptation_access adblock_req_set allow icap_adblockable",
-            "adaptation_access adblock_req_set deny all",
-        ])
+        routing_enabled = (
+            getattr(self, "_adblock_routing_enabled", True)
+            if adblock_enabled is None
+            else bool(adblock_enabled)
+        )
+        adblock_access_lines = []
+        if routing_enabled:
+            adblock_access_lines.append(
+                "adaptation_access adblock_req_set allow icap_adblockable"
+            )
+        else:
+            adblock_access_lines.append(
+                "# Adblock request routing disabled by persisted UI setting."
+            )
+        adblock_access_lines.append("adaptation_access adblock_req_set deny all")
+
+        lines.extend(
+            [
+                f"adaptation_service_set adblock_req_set {' '.join(adblock_services)}",
+                f"adaptation_service_set av_req_set {' '.join(av_req_services)}",
+                f"adaptation_service_set av_resp_set {' '.join(av_resp_services)}",
+                f"acl icap_adblockable method {_ADBLOCK_ICAP_METHODS}",
+                *adblock_access_lines,
+            ]
+        )
         if file_security_policy:
             lines.extend(["", file_security_policy])
         return "\n".join(lines) + "\n"
@@ -518,7 +551,12 @@ class SquidController:
             self._render_icap_include(config_text, workers=workers),
         )
 
-    def materialize_clamav_runtime_files(self, config_text: str) -> tuple[bool, str]:
+    def materialize_clamav_runtime_files(
+        self,
+        config_text: str,
+        *,
+        adblock_enabled: bool | None = None,
+    ) -> tuple[bool, str]:
         try:
             normalized = self.normalize_config_text(config_text or "")
             options = extract_clamav_options(normalized)
@@ -542,7 +580,13 @@ class SquidController:
             changed = []
             if self._write_if_changed(virus_path, render_virus_scan_config(options)):
                 changed.append(str(virus_path))
-            if self._write_if_changed(icap_path, self._render_icap_include(normalized)):
+            if self._write_if_changed(
+                icap_path,
+                self._render_icap_include(
+                    normalized,
+                    adblock_enabled=adblock_enabled,
+                ),
+            ):
                 changed.append(str(icap_path))
             if changed:
                 return True, "ClamAV runtime files updated: " + ", ".join(changed)

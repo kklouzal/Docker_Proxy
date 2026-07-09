@@ -1096,7 +1096,17 @@ if env_enabled "$CLAMAV_REQUIRED_RAW" || env_enabled "${FILE_SECURITY_AV_REQUIRE
     AV_BYPASS=off
 fi
 
-export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED AV_BYPASS CICAP_PORT CICAP_AV_PORT CICAP_AV_RESP_PORT
+# Startup cannot reliably read persisted UI settings. Keep first-boot/backwards
+# compatibility by routing adblock ICAP by default, allow operators to override
+# with ADBLOCK_ENABLED=0, and let proxy runtime reconciliation overwrite this
+# include from adblock_settings.enabled after the database is reachable.
+ADBLOCK_ENABLED_RAW="${ADBLOCK_ENABLED:-1}"
+ADBLOCK_ROUTING_ENABLED=0
+if env_enabled "$ADBLOCK_ENABLED_RAW"; then
+    ADBLOCK_ROUTING_ENABLED=1
+fi
+
+export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED AV_BYPASS CICAP_PORT CICAP_AV_PORT CICAP_AV_RESP_PORT ADBLOCK_ROUTING_ENABLED
 
 cat > /etc/clamd_mod.conf <<EOF
 # c-icap clamd_mod configuration for squid-flask-proxy
@@ -1217,7 +1227,11 @@ done
     echo "adaptation_service_set av_req_set ${av_req_services}"
     echo "adaptation_service_set av_resp_set ${av_resp_services}"
     echo "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
-    echo "adaptation_access adblock_req_set allow icap_adblockable"
+    if [ "$ADBLOCK_ROUTING_ENABLED" = "1" ]; then
+        echo "adaptation_access adblock_req_set allow icap_adblockable"
+    else
+        echo "# Adblock request routing disabled by ADBLOCK_ENABLED=0 startup setting."
+    fi
     echo "adaptation_access adblock_req_set deny all"
     echo "acl file_security_upload_methods method POST PUT PATCH"
     echo "acl file_security_download_methods method GET HEAD"

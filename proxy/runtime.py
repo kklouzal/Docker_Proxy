@@ -103,6 +103,19 @@ def _clamp_icap_workers(value: object) -> int:
     return max(1, min(workers, 4))
 
 
+def _bool_setting(value: object, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "on", "enabled"}
+
+
 def _icap_supervisor_programs(base_name: str) -> tuple[str, ...]:
     name = str(base_name or "").strip()
     if name in {"cicap_adblock", "cicap_av"}:
@@ -511,6 +524,21 @@ class ProxyRuntime:
         if callable(normalizer):
             current = normalizer(current)
         return hashlib.sha256(current.encode("utf-8", errors="replace")).hexdigest()
+
+    def _current_adblock_enabled(self) -> bool:
+        """Read persisted UI adblock routing state for generated Squid includes."""
+        try:
+            settings = self.adblock_store.get_settings()
+        except Exception:
+            logger.exception(
+                "Failed to read adblock settings; defaulting Squid routing enabled"
+            )
+            return True
+        if isinstance(settings, dict):
+            value = settings.get("enabled", True)
+        else:
+            value = getattr(settings, "enabled", True)
+        return _bool_setting(value, default=True)
 
     def _current_certificate_bundle_sha(self) -> str:
         if self.services.current_certificate_sha_reader is not None:
@@ -2989,6 +3017,10 @@ class ProxyRuntime:
                     or "",
                 )[:16],
             )
+        adblock_enabled = self._current_adblock_enabled()
+        set_adblock_enabled = getattr(controller, "set_adblock_enabled", None)
+        if callable(set_adblock_enabled):
+            set_adblock_enabled(adblock_enabled)
         materialize_clamav_runtime_files = getattr(
             controller,
             "materialize_clamav_runtime_files",
@@ -3001,6 +3033,7 @@ class ProxyRuntime:
             )
             ok_clamav_runtime, clamav_runtime_detail = materialize_clamav_runtime_files(
                 current_config_text or "",
+                adblock_enabled=adblock_enabled,
             )
             clamav_runtime_changed = bool(
                 ok_clamav_runtime

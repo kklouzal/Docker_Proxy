@@ -1273,7 +1273,7 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
         def set_adblock_icap_revision_token(self, token) -> None:
             self.token = token
 
-        def materialize_clamav_runtime_files(self, _config_text):
+        def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, "ClamAV runtime files already current."
 
         def get_current_config(self):
@@ -1331,6 +1331,83 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
     assert runtime.controller.token == "adblock-sha"
 
 
+def test_sync_from_db_noop_materializes_adblock_setting_state() -> None:
+    runtime = _runtime_shell()
+    materialized_enabled = []
+
+    class Controller:
+        def normalize_config_text(self, text):
+            return text
+
+        def apply_config_text(self, _text):
+            msg = "forced no-op should not reapply active config"
+            raise AssertionError(msg)
+
+        def set_adblock_icap_revision_token(self, token) -> None:
+            self.token = token
+
+        def set_adblock_enabled(self, enabled) -> None:
+            self.enabled = enabled
+
+        def materialize_clamav_runtime_files(self, _config_text, **kwargs):
+            materialized_enabled.append(kwargs.get("adblock_enabled"))
+            return True, "Updated ICAP include."
+
+        def get_current_config(self):
+            return "http_port 3128\n"
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id) -> None:
+            return None
+
+        def get_active_revision(self, _proxy_id):
+            msg = "forced no-op should not load active config"
+            raise AssertionError(msg)
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs):
+            msg = "forced no-op should not mark config apply result"
+            raise AssertionError(msg)
+
+    class AdblockStore:
+        def get_settings(self):
+            return SimpleNamespace(enabled=False)
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime.adblock_store = AdblockStore()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._reload_for_policy_update = lambda **_kwargs: (True, "reloaded")
+
+    result = runtime.sync_from_db()
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["config_changed"] is False
+    assert materialized_enabled == [False]
+    assert runtime.controller.enabled is False
+    assert runtime.controller.token == "adblock-sha"
+
+
 def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() -> None:
     active_config = "http_port 3128\r\n\r\n"
     normalized_config = "http_port 3128\n"
@@ -1356,7 +1433,7 @@ def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() ->
         def set_adblock_icap_revision_token(self, _token) -> None:
             return None
 
-        def materialize_clamav_runtime_files(self, _config_text):
+        def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, "ClamAV runtime files already current."
 
     class Revisions:
@@ -3280,7 +3357,7 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
         def set_adblock_icap_revision_token(self, token) -> None:
             self.token = token
 
-        def materialize_clamav_runtime_files(self, config_text):
+        def materialize_clamav_runtime_files(self, config_text, **_kwargs):
             assert config_text == "http_port 3128\n"
             return True, "ClamAV runtime files updated: /etc/squid/conf.d/20-icap.conf"
 
@@ -3356,7 +3433,7 @@ def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() ->
         def set_adblock_icap_revision_token(self, token) -> None:
             self.token = token
 
-        def materialize_clamav_runtime_files(self, _config_text):
+        def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, ""
 
         def get_current_config(self):
@@ -3748,7 +3825,7 @@ def test_forced_non_config_operation_refreshes_artifacts_only() -> None:
         get_current_config=lambda: revision_text,
         normalize_config_text=lambda text: (text or "").strip() + "\n",
         set_adblock_icap_revision_token=lambda _token: None,
-        materialize_clamav_runtime_files=lambda _text: (True, "unchanged"),
+        materialize_clamav_runtime_files=lambda _text, **_kwargs: (True, "unchanged"),
         apply_config_text=lambda *args, **kwargs: applied.append((args, kwargs)),
     )
     runtime.revisions = SimpleNamespace(

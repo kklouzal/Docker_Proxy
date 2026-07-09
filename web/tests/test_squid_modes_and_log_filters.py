@@ -269,6 +269,76 @@ def test_generate_icap_include_uses_supplied_workers_over_environment(
     assert "Accept-Encoding identity" not in out
 
 
+def test_render_icap_include_omits_adblock_routing_when_disabled(monkeypatch) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import SquidController  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "1")
+
+    out = SquidController()._render_icap_include("", adblock_enabled=False)
+
+    assert "adaptation_service_set adblock_req_set adblock_req" in out
+    assert "adaptation_access adblock_req_set allow icap_adblockable" not in out
+    assert "adaptation_access adblock_req_set deny all" in out
+    assert "Adblock request routing disabled" in out
+
+
+def test_render_icap_include_restores_adblock_routing_when_enabled(monkeypatch) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import SquidController  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "1")
+
+    out = SquidController()._render_icap_include("", adblock_enabled=True)
+
+    assert "adaptation_access adblock_req_set allow icap_adblockable" in out
+    assert "adaptation_access adblock_req_set deny all" in out
+    assert "Adblock request routing disabled" not in out
+
+
+def test_materialize_clamav_runtime_files_uses_adblock_setting(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    include_path = tmp_path / "20-icap.conf"
+    virus_path = tmp_path / "virus_scan.conf"
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(virus_path))
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+    controller = SquidController()
+
+    changed, message = controller.materialize_clamav_runtime_files(
+        "http_port 3128\nhttp_access allow all\n",
+        adblock_enabled=False,
+    )
+
+    assert changed, message
+    out = include_path.read_text(encoding="utf-8")
+    assert "adaptation_access adblock_req_set allow icap_adblockable" not in out
+    assert "adaptation_access adblock_req_set deny all" in out
+
+    changed_again, message_again = controller.materialize_clamav_runtime_files(
+        "http_port 3128\nhttp_access allow all\n",
+        adblock_enabled=True,
+    )
+
+    assert changed_again, message_again
+    out = include_path.read_text(encoding="utf-8")
+    assert "adaptation_access adblock_req_set allow icap_adblockable" in out
+    assert "adaptation_access adblock_req_set deny all" in out
+
+
 def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> None:
     _add_web_to_path()
 

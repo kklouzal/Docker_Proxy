@@ -422,6 +422,29 @@ def test_adblock_list_save_queues_runtime_refresh(monkeypatch, tmp_path) -> None
     assert loaded.operation_ledger.operations[-1].subject == "Adblock runtime refresh"
 
 
+def test_adblock_settings_save_queues_forced_runtime_refresh(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = FakeAdblockStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/adblock",
+        method="POST",
+        data={"action": "save_settings", "cache_ttl": "900", "cache_max": "100"},
+    ):
+        response = loaded.module._handle_adblock_post(store)
+
+    assert response.status_code in {301, 302, 303}
+    assert store.settings["enabled"] is False
+    assert store.refresh_requested == 1
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.operation_type == "adblock_refresh"
+    assert operation.subject == "Adblock runtime refresh"
+    assert operation.force is True
+
+
 @pytest.mark.parametrize(
     ("form_data", "assert_mutation"),
     [
