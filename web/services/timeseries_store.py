@@ -140,45 +140,59 @@ class TimeSeriesStore:
         dst_seconds: int,
         cutoff_end_ts: int,
         proxy_id: str,
+        *,
+        max_dst_buckets: int = 4,
     ) -> None:
         # Roll complete destination buckets with bucket_start < aligned_end.
         aligned_end = (cutoff_end_ts // dst_seconds) * dst_seconds
         if aligned_end <= 0:
             return
+        bucket_limit = max(1, int(max_dst_buckets))
 
         def rollup_bucket() -> None:
             with self._connect() as conn:
+                first_row = conn.execute(
+                    f"SELECT MIN(ts) FROM {src_table} WHERE proxy_id = %s AND ts < %s",
+                    (proxy_id, aligned_end),
+                ).fetchone()
+                first_ts = int(first_row[0]) if first_row and first_row[0] is not None else None
+                if first_ts is None:
+                    return
+                range_start = (first_ts // dst_seconds) * dst_seconds
+                range_end = min(aligned_end, range_start + (dst_seconds * bucket_limit))
+                if range_end <= range_start:
+                    return
                 conn.execute(
                     f"""
                     INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
                     SELECT * FROM (
                         SELECT
                             proxy_id,
-                            (ts / %s) * %s AS bucket_start,
+                            FLOOR(ts / %s) * %s AS bucket_start,
                             SUM(count) AS count,
                             CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END AS cpu,
                             CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END AS mem,
                             CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END AS disk_used,
-                            CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END AS cache_dir_size,
-                            CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END AS hit_rate
+                             CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END AS cache_dir_size,
+                             CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END AS hit_rate
                         FROM {src_table}
-                        WHERE proxy_id = %s AND ts < %s
+                        WHERE proxy_id = %s AND ts >= %s AND ts < %s
                         GROUP BY proxy_id, bucket_start
                     ) AS incoming
                     ON DUPLICATE KEY UPDATE
-                        count = incoming.count,
-                        cpu = incoming.cpu,
-                        mem = incoming.mem,
-                        disk_used = incoming.disk_used,
-                        cache_dir_size = incoming.cache_dir_size,
-                        hit_rate = incoming.hit_rate
+                        cpu = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cpu IS NULL AND incoming.cpu IS NULL) THEN (COALESCE({dst_table}.cpu, 0) * {dst_table}.count + COALESCE(incoming.cpu, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                        mem = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.mem IS NULL AND incoming.mem IS NULL) THEN (COALESCE({dst_table}.mem, 0) * {dst_table}.count + COALESCE(incoming.mem, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                        disk_used = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.disk_used IS NULL AND incoming.disk_used IS NULL) THEN (COALESCE({dst_table}.disk_used, 0) * {dst_table}.count + COALESCE(incoming.disk_used, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                        cache_dir_size = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cache_dir_size IS NULL AND incoming.cache_dir_size IS NULL) THEN (COALESCE({dst_table}.cache_dir_size, 0) * {dst_table}.count + COALESCE(incoming.cache_dir_size, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                        hit_rate = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.hit_rate IS NULL AND incoming.hit_rate IS NULL) THEN (COALESCE({dst_table}.hit_rate, 0) * {dst_table}.count + COALESCE(incoming.hit_rate, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                        count = {dst_table}.count + incoming.count
                     """,
-                    (dst_seconds, dst_seconds, proxy_id, aligned_end),
+                    (dst_seconds, dst_seconds, proxy_id, range_start, range_end),
                 )
 
                 conn.execute(
-                    f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts < %s",
-                    (proxy_id, aligned_end),
+                    f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts >= %s AND ts < %s",
+                    (proxy_id, range_start, range_end),
                 )
 
         self._with_missing_table_retry(rollup_bucket)
@@ -198,17 +212,17 @@ class TimeSeriesStore:
         keep_1y = 60 * 60 * 24 * 365 * 10
 
         # 1s -> 1m
-        self._rollup("ts_1s", "ts_1m", 60, now - keep_1s, proxy_id)
+        self._rollup("ts_1s", "ts_1m", 60, now - keep_1s, proxy_id, max_dst_buckets=120)
         # 1m -> 1h
-        self._rollup("ts_1m", "ts_1h", 60 * 60, now - keep_1m, proxy_id)
+        self._rollup("ts_1m", "ts_1h", 60 * 60, now - keep_1m, proxy_id, max_dst_buckets=48)
         # 1h -> 1d
-        self._rollup("ts_1h", "ts_1d", 60 * 60 * 24, now - keep_1h, proxy_id)
+        self._rollup("ts_1h", "ts_1d", 60 * 60 * 24, now - keep_1h, proxy_id, max_dst_buckets=3)
         # 1d -> 1w
-        self._rollup("ts_1d", "ts_1w", 60 * 60 * 24 * 7, now - keep_1d, proxy_id)
+        self._rollup("ts_1d", "ts_1w", 60 * 60 * 24 * 7, now - keep_1d, proxy_id, max_dst_buckets=2)
         # 1w -> 1mo
-        self._rollup("ts_1w", "ts_1mo", 60 * 60 * 24 * 30, now - keep_1w, proxy_id)
+        self._rollup("ts_1w", "ts_1mo", 60 * 60 * 24 * 30, now - keep_1w, proxy_id, max_dst_buckets=2)
         # 1mo -> 1y
-        self._rollup("ts_1mo", "ts_1y", 60 * 60 * 24 * 365, now - keep_1mo, proxy_id)
+        self._rollup("ts_1mo", "ts_1y", 60 * 60 * 24 * 365, now - keep_1mo, proxy_id, max_dst_buckets=1)
 
         # Prune oldest year-level data beyond keep_1y.
         cutoff_y = now - keep_1y

@@ -506,6 +506,21 @@ class DiagnosticStore:
                         )
                         conn.execute(
                             """
+                            CREATE TABLE IF NOT EXISTS diagnostic_policy_tags (
+                                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                                request_id BIGINT NOT NULL,
+                                tag VARCHAR(512) NOT NULL,
+                                ts BIGINT NOT NULL,
+                                PRIMARY KEY(proxy_id, request_id, tag),
+                                KEY idx_diagnostic_policy_tags_lookup(proxy_id, tag, ts),
+                                KEY idx_diagnostic_policy_tags_request(proxy_id, request_id),
+                                KEY idx_diagnostic_policy_tags_ts(proxy_id, ts),
+                                KEY idx_diagnostic_policy_tags_since(proxy_id, ts, tag)
+                            )
+                            """,
+                        )
+                        conn.execute(
+                            """
                             CREATE TABLE IF NOT EXISTS diagnostic_icap_events (
                                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                                 proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
@@ -610,6 +625,21 @@ class DiagnosticStore:
                                 "idx_diagnostic_icap_proxy_client_service",
                                 "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)",
                             ),
+                            (
+                                "diagnostic_policy_tags",
+                                "idx_diagnostic_policy_tags_lookup",
+                                "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_lookup (proxy_id, tag, ts)",
+                            ),
+                            (
+                                "diagnostic_policy_tags",
+                                "idx_diagnostic_policy_tags_request",
+                                "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_request (proxy_id, request_id)",
+                            ),
+                            (
+                                "diagnostic_policy_tags",
+                                "idx_diagnostic_policy_tags_since",
+                                "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_since (proxy_id, ts, tag)",
+                            ),
                         ):
                             try:
                                 exists = conn.execute(
@@ -642,6 +672,10 @@ class DiagnosticStore:
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM diagnostic_icap_events WHERE ts < %s",
+                (int(cutoff),),
+            )
+            conn.execute(
+                "DELETE FROM diagnostic_policy_tags WHERE ts < %s",
                 (int(cutoff),),
             )
             conn.execute(
@@ -1220,6 +1254,30 @@ class DiagnosticStore:
             """,
             rows,
         )
+        self._materialize_request_policy_tags(conn, rows)
+
+    def _materialize_request_policy_tags(self, conn, rows: list[tuple[Any, ...]]) -> None:
+        tag_rows: list[tuple[Any, ...]] = []
+        for row in rows:
+            tags = _policy_tags(
+                exclusion_rule=_policy_text(row[22]),
+                ssl_exception=_policy_text(row[23]),
+                webfilter_allow=_policy_text(row[24]),
+                cache_bypass=_policy_text(row[25]),
+            )
+            tag_rows.extend((tag, row[0], row[1]) for tag in tags)
+        if not tag_rows:
+            return
+        conn.executemany(
+            """
+            INSERT IGNORE INTO diagnostic_policy_tags (proxy_id, request_id, tag, ts)
+            SELECT proxy_id, id, %s, ts
+            FROM diagnostic_requests
+            WHERE proxy_id = %s AND event_key = %s
+            LIMIT 1
+            """,
+            tag_rows,
+        )
 
     def _flush_icap_rows(self, conn, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
@@ -1757,6 +1815,7 @@ class DiagnosticStore:
         since: int | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
+        self.init_db()
         lim = max(1, min(50, int(limit)))
         params: list[Any] = [get_proxy_id()]
         since_sql = ""
@@ -1766,35 +1825,24 @@ class DiagnosticStore:
 
         sql = f"""
         SELECT tag, COUNT(*) AS total, MAX(ts) AS last_seen
-        FROM (
-            SELECT CONCAT('exclude:', exclusion_rule) AS tag, ts
-            FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(exclusion_rule), ''), '-'), '') <> ''{since_sql}
-            UNION ALL
-            SELECT CONCAT('ssl:', ssl_exception) AS tag, ts
-            FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(ssl_exception), ''), '-'), '') <> ''{since_sql}
-            UNION ALL
-            SELECT CONCAT('webfilter:', webfilter_allow) AS tag, ts
-            FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(webfilter_allow), ''), '-'), '') <> ''{since_sql}
-            UNION ALL
-            SELECT CONCAT('cache:', cache_bypass) AS tag, ts
-            FROM diagnostic_requests
-            WHERE proxy_id = %s AND COALESCE(NULLIF(NULLIF(TRIM(cache_bypass), ''), '-'), '') <> ''{since_sql}
-        ) tags
+        FROM diagnostic_policy_tags
+        WHERE proxy_id = %s{since_sql}
         GROUP BY tag
         ORDER BY total DESC, last_seen DESC
         LIMIT %s
         """
-
-        query_params: list[Any] = []
-        for _ in range(4):
-            query_params.extend(params)
-        query_params.append(lim)
+        query_params = [*params, lim]
 
         with self._connect() as conn:
             rows = conn.execute(sql, tuple(query_params)).fetchall()
+            if not rows:
+                has_materialized_tags = conn.execute(
+                    "SELECT 1 FROM diagnostic_policy_tags WHERE proxy_id = %s LIMIT 1",
+                    (params[0],),
+                ).fetchone()
+                if not has_materialized_tags:
+                    self._backfill_policy_tags(conn, proxy_id=params[0], since=None)
+                    rows = conn.execute(sql, tuple(query_params)).fetchall()
 
         return [
             {
@@ -1804,6 +1852,44 @@ class DiagnosticStore:
             }
             for row in rows
         ]
+
+    def _backfill_policy_tags(
+        self,
+        conn,
+        *,
+        proxy_id: str,
+        since: int | None,
+    ) -> None:
+        where = ["r.proxy_id = %s"]
+        params: list[Any] = [proxy_id]
+        if since is not None:
+            where.append("r.ts >= %s")
+            params.append(int(since))
+        where_sql = " AND ".join(where)
+        tag_expr = """
+        CASE p.kind
+            WHEN 'exclude' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.exclusion_rule), ''), '-'), '') <> '' THEN CONCAT('exclude:', TRIM(r.exclusion_rule)) ELSE '' END
+            WHEN 'ssl' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.ssl_exception), ''), '-'), '') <> '' THEN CONCAT('ssl:', TRIM(r.ssl_exception)) ELSE '' END
+            WHEN 'webfilter' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.webfilter_allow), ''), '-'), '') <> '' THEN CONCAT('webfilter:', TRIM(r.webfilter_allow)) ELSE '' END
+            WHEN 'cache' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.cache_bypass), ''), '-'), '') <> '' THEN CONCAT('cache:', TRIM(r.cache_bypass)) ELSE '' END
+            ELSE ''
+        END
+        """
+        conn.execute(
+            f"""
+            INSERT IGNORE INTO diagnostic_policy_tags (proxy_id, request_id, tag, ts)
+            SELECT r.proxy_id, r.id, {tag_expr} AS tag, r.ts
+            FROM diagnostic_requests r
+            CROSS JOIN (
+                SELECT 'exclude' AS kind
+                UNION ALL SELECT 'ssl'
+                UNION ALL SELECT 'webfilter'
+                UNION ALL SELECT 'cache'
+            ) p
+            WHERE {where_sql} AND {tag_expr} <> ''
+            """,
+            tuple(params),
+        )
 
     def slowest_requests(
         self,

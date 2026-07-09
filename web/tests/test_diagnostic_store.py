@@ -7,6 +7,8 @@ from services.diagnostic_store import (
     _split_tsv,
 )
 
+from .mysql_test_utils import configure_test_mysql_env
+
 
 def test_parse_request_log_line_extracts_tls_and_policy_fields() -> None:
     store = DiagnosticStore()
@@ -389,12 +391,12 @@ def test_list_recent_requests_selects_response_metadata(monkeypatch) -> None:
     assert rows[0]["response_alt_svc"].startswith("h3=")
 
 
-def test_top_policy_tags_sql_filters_dash_placeholders(monkeypatch) -> None:
+def test_top_policy_tags_queries_materialized_policy_tag_table(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeCursor:
         def fetchall(self):
-            return []
+            return [("ssl:rule", 2, 1777000001)]
 
     class FakeConnection:
         def __enter__(self):
@@ -413,15 +415,48 @@ def test_top_policy_tags_sql_filters_dash_placeholders(monkeypatch) -> None:
 
     store = DiagnosticStore()
     monkeypatch.setattr(store, "_connect", fake_connect)
+    monkeypatch.setattr(store, "init_db", lambda: None)
 
-    assert store.top_policy_tags(limit=3) == []
+    assert store.top_policy_tags(limit=3) == [
+        {"tag": "ssl:rule", "count": 2, "last_seen": 1777000001}
+    ]
 
     sql = str(captured["sql"])
-    assert "NULLIF(NULLIF(TRIM(exclusion_rule), ''), '-')" in sql
-    assert "NULLIF(NULLIF(TRIM(ssl_exception), ''), '-')" in sql
-    assert "NULLIF(NULLIF(TRIM(webfilter_allow), ''), '-')" in sql
-    assert "NULLIF(NULLIF(TRIM(cache_bypass), ''), '-')" in sql
+    assert "FROM diagnostic_policy_tags" in sql
+    assert "UNION ALL" not in sql
+    assert "diagnostic_requests" not in sql
     assert captured["params"][-1] == 3
+
+
+def test_request_flush_materializes_policy_tags_for_top_query(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path)
+    store = DiagnosticStore()
+    store.init_db()
+    line = (
+        "1777000000	125	192.0.2.10	CONNECT	example.com:443	TCP_TUNNEL/200	1234"
+        "	tx-policy	DIRECT	bump	example.com	TLSv1.3	TLS_AES_256_GCM_SHA384"
+        "	TLSv1.3	TLS_AES_128_GCM_SHA256	example.com	Mozilla/5.0	-"
+        "	exclude-rule	ssl-rule	-	cache-rule"
+    )
+    row = store._build_request_insert_params(line)
+    assert row is not None
+
+    with store._connect() as conn:
+        store._flush_request_rows(conn, [row])
+        stored_tags = [
+            str(item[0])
+            for item in conn.execute(
+                "SELECT tag FROM diagnostic_policy_tags ORDER BY tag"
+            ).fetchall()
+        ]
+
+    assert stored_tags == ["cache:cache-rule", "exclude:exclude-rule", "ssl:ssl-rule"]
+    top = store.top_policy_tags(limit=5)
+    assert {item["tag"]: item["count"] for item in top} == {
+        "cache:cache-rule": 1,
+        "exclude:exclude-rule": 1,
+        "ssl:ssl-rule": 1,
+    }
 
 
 def test_list_recent_transactions_attaches_related_icap_and_filters_service() -> None:

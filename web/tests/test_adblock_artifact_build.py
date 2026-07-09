@@ -1173,3 +1173,69 @@ def test_adblock_cicap_access_parser_accepts_quoted_tabs_and_scaled_service_path
     assert blocked["method"] == "GET"
     assert blocked["url"] == "http://ads.example/"
     assert blocked["icap_status"] == 200
+
+
+def test_create_revision_reuses_unchanged_active_artifact_without_new_blob(
+    tmp_path: Path,
+) -> None:
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+    revision_store = artifacts_module.AdblockArtifactStore()
+    revision_store.init_db()
+
+    first = revision_store.create_revision(
+        artifact_sha256="1" * 64,
+        archive_blob=b"large-archive-v1",
+        report_json="{}",
+        settings_version=1,
+        source_kind="compile",
+        enabled_lists=["easylist"],
+        created_by="pytest",
+    )
+    duplicate = revision_store.create_revision(
+        artifact_sha256="1" * 64,
+        archive_blob=b"large-archive-v1-should-not-be-written",
+        report_json="{}",
+        settings_version=1,
+        source_kind="compile",
+        enabled_lists=["easylist"],
+        created_by="pytest",
+    )
+
+    assert duplicate.revision_id == first.revision_id
+    with revision_store._connect() as conn:
+        count, blob = conn.execute(
+            "SELECT COUNT(*), MAX(archive_blob) FROM adblock_artifact_revisions"
+        ).fetchone()
+    assert int(count) == 1
+    assert bytes(blob) == b"large-archive-v1"
+
+
+def test_create_revision_prunes_to_current_and_previous_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+    revision_store = artifacts_module.AdblockArtifactStore()
+    revision_store.init_db()
+
+    for index, digest in enumerate(("1" * 64, "2" * 64, "3" * 64), start=1):
+        monkeypatch.setattr(artifacts_module, "_now", lambda index=index: 1000 + index)
+        revision_store.create_revision(
+            artifact_sha256=digest,
+            archive_blob=f"archive-{index}".encode(),
+            report_json="{}",
+            settings_version=index,
+            source_kind="compile",
+            enabled_lists=["easylist"],
+            created_by="pytest",
+        )
+
+    with revision_store._connect() as conn:
+        rows = conn.execute(
+            "SELECT artifact_sha256, is_active, archive_blob FROM adblock_artifact_revisions ORDER BY created_ts, id"
+        ).fetchall()
+
+    assert [(str(row[0]), int(row[1]), bytes(row[2])) for row in rows] == [
+        ("2" * 64, 0, b"archive-2"),
+        ("3" * 64, 1, b"archive-3"),
+    ]

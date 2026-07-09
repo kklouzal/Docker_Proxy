@@ -198,6 +198,40 @@ class AdblockArtifactStore:
                 except DATABASE_ERRORS as exc:
                     if mysql_error_code(exc) != 1060:
                         raise
+            for table, index_name, ddl in (
+                (
+                    "adblock_artifact_revisions",
+                    "idx_adblock_artifact_revisions_active",
+                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_active (is_active, created_ts)",
+                ),
+                (
+                    "adblock_artifact_revisions",
+                    "idx_adblock_artifact_revisions_sha",
+                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts)",
+                ),
+                (
+                    "proxy_adblock_artifact_applications",
+                    "idx_proxy_adblock_artifact_apply_proxy_ts",
+                    "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts)",
+                ),
+            ):
+                exists = conn.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.statistics
+                    WHERE table_schema = DATABASE()
+                      AND table_name = %s
+                      AND index_name = %s
+                    LIMIT 1
+                    """,
+                    (table, index_name),
+                ).fetchone()
+                if not exists:
+                    try:
+                        conn.execute(ddl)
+                    except DATABASE_ERRORS as exc:
+                        if mysql_error_code(exc) != 1061:
+                            raise
 
     def _row_to_revision(self, row: object | None) -> AdblockArtifactRevision | None:
         if not row:
@@ -324,8 +358,10 @@ class AdblockArtifactStore:
             and current is not None
             and current.artifact_sha256 == artifact_sha256
             and current.settings_version == int(settings_version)
+            and current.source_kind == (source_kind or "compile")[:64]
             and current.enabled_lists_json == enabled_lists_json
         ):
+            self.prune_revisions()
             return current
 
         now = _now()
@@ -358,9 +394,45 @@ class AdblockArtifactStore:
                 "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
                 (int(cur.lastrowid or 0),),
             ).fetchone()
+            self._prune_revisions_with_conn(conn)
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
+
+    def prune_revisions(self) -> None:
+        self.init_db()
+        with self._connect() as conn:
+            self._prune_revisions_with_conn(conn)
+
+    def _prune_revisions_with_conn(self, conn) -> None:
+        active_rows = conn.execute(
+            "SELECT id FROM adblock_artifact_revisions WHERE is_active=1 ORDER BY created_ts DESC, id DESC"
+        ).fetchall()
+        keep_ids = {int(active_rows[0][0])} if active_rows else set()
+        if keep_ids:
+            previous = conn.execute(
+                "SELECT id FROM adblock_artifact_revisions WHERE is_active=0 ORDER BY created_ts DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if previous:
+                keep_ids.add(int(previous[0]))
+        else:
+            newest_rows = conn.execute(
+                "SELECT id FROM adblock_artifact_revisions ORDER BY created_ts DESC, id DESC LIMIT 2"
+            ).fetchall()
+            keep_ids.update(int(row[0]) for row in newest_rows)
+        if not keep_ids:
+            return
+        ordered_keep_ids = tuple(sorted(keep_ids))
+        if len(ordered_keep_ids) == 1:
+            conn.execute(
+                "DELETE FROM adblock_artifact_revisions WHERE id <> %s",
+                ordered_keep_ids,
+            )
+        elif len(ordered_keep_ids) == 2:
+            conn.execute(
+                "DELETE FROM adblock_artifact_revisions WHERE id NOT IN (%s, %s)",
+                ordered_keep_ids,
+            )
 
     def create_revision_from_directory(
         self,
@@ -719,7 +791,7 @@ class AdblockArtifactStore:
                     else:
                         with contextlib.suppress(Exception):
                             store.clear_refresh_requested()
-                        sleep_seconds = 5.0
+                        sleep_seconds = poll_seconds
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,
