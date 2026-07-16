@@ -107,6 +107,75 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
+def test_sslfilter_mutation_reports_reconcile_queue_failure_without_success(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    response = _post(
+        client,
+        "/sslfilter",
+        {"action": "add_domain", "policy": "nobump", "domain": "queued.example"},
+    )
+
+    assert response.status_code in {302, 303}
+    location = response.headers.get("Location", "")
+    assert "policy_error=1" in location
+    assert "ok=1" not in location
+    assert "policy_queue=1" not in location
+    assert loaded.sslfilter_store.no_bump_domains == ["queued.example"]
+    assert loaded.operation_ledger.operations == []
+
+    page = client.get(location)
+    text = page.get_data(as_text=True)
+    assert "Sync not queued" in text
+    assert "Policy changes were saved, but proxy reconciliation was not queued." in text
+    assert "SSL filtering policy updated and queued" not in text
+
+
+def test_webfilter_whitelist_reports_reconcile_queue_failure_without_success(
+    monkeypatch, tmp_path
+) -> None:
+    webfilter_store = FakeWebfilterStore()
+    loaded, client = _loaded(monkeypatch, tmp_path, webfilter_store=webfilter_store)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+
+    response = _post(
+        client,
+        "/webfilter?tab=whitelist",
+        {
+            "tab": "whitelist",
+            "action": "whitelist_add",
+            "whitelist_domain": "Allow.Example",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    location = response.headers.get("Location", "")
+    assert "policy_error=1" in location
+    assert "wl_ok=1" not in location
+    assert "policy_queue=1" not in location
+    assert webfilter_store.whitelist == [("allow.example", 1)]
+    assert loaded.operation_ledger.operations == []
+
+    page = client.get(location)
+    text = page.get_data(as_text=True)
+    assert "Sync not queued" in text
+    assert "Policy changes were saved, but proxy reconciliation was not queued." in text
+    assert "Whitelist entry saved and queued" not in text
+
+
 def test_sslfilter_forms_preserve_selected_proxy_context(monkeypatch, tmp_path) -> None:
     loaded, client = _loaded(
         monkeypatch,

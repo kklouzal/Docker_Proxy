@@ -1438,6 +1438,27 @@ def _empty_observability_export_response(pane: str, export_format: str = "csv"):
     return _observability_export_response(headers, [], export_format)
 
 
+_POLICY_REFRESH_SUCCESS_PARAMS = {
+    "ok",
+    "wl_ok",
+    "safe_browsing_saved",
+    "inspection_saved",
+    "private_saved",
+    "compatibility_attempted",
+    "compatibility_added",
+}
+
+
+def _policy_refresh_failure_detail(detail: str) -> str:
+    prefix = "Policy changes were saved, but proxy reconciliation was not queued."
+    clean_detail = (detail or "").strip()
+    if not clean_detail:
+        return prefix
+    if clean_detail.startswith(prefix):
+        return clean_detail
+    return f"{prefix} {clean_detail}"
+
+
 def _redirect_after_policy_refresh(
     endpoint: str,
     store: Any,
@@ -1445,7 +1466,17 @@ def _redirect_after_policy_refresh(
     force: bool = True,
     **params,
 ):
-    _best_effort_refresh_managed_policy(store, force=force)
+    ok, detail = _best_effort_refresh_managed_policy(store, force=force)
+    if ok:
+        params.setdefault("policy_queue", "1")
+        if detail:
+            params.setdefault("policy_msg", detail[:1000])
+        return _redirect_to(endpoint, **params)
+
+    for key in _POLICY_REFRESH_SUCCESS_PARAMS:
+        params.pop(key, None)
+    params["policy_error"] = "1"
+    params["policy_msg"] = _policy_refresh_failure_detail(detail)[:1000]
     return _redirect_to(endpoint, **params)
 
 
@@ -2615,15 +2646,23 @@ def _best_effort_init_store(store: Any, *, key: str, description: str) -> None:
         )
 
 
-def _best_effort_refresh_managed_policy(store: Any, *, force: bool = True) -> None:
+def _best_effort_refresh_managed_policy(
+    store: Any,
+    *,
+    force: bool = True,
+) -> tuple[bool, str]:
     try:
-        _trigger_proxy_sync(force=force)
-    except Exception:
+        return _trigger_proxy_sync(force=force)
+    except Exception as exc:
         log_exception_throttled(
             app.logger,
             "web.app.refresh_managed_policy",
             interval_seconds=30.0,
             message="Failed to refresh managed policy state",
+        )
+        return False, public_error_message(
+            exc,
+            default="Policy changes were saved, but proxy reconciliation was not queued.",
         )
 
 
@@ -5657,8 +5696,21 @@ def policy_requests():
                     indefinite=indefinite,
                     proxy_id=proxy_id,
                 )
-                _best_effort_refresh_managed_policy(store, force=True)
-                return _redirect_to("policy_requests", ok="approved")
+                refresh_ok, refresh_detail = _best_effort_refresh_managed_policy(
+                    store,
+                    force=True,
+                )
+                if not refresh_ok:
+                    return _redirect_to(
+                        "policy_requests",
+                        error=_policy_refresh_failure_detail(refresh_detail),
+                    )
+                return _redirect_to(
+                    "policy_requests",
+                    ok=(
+                        f"approved; {refresh_detail}" if refresh_detail else "approved"
+                    ),
+                )
             if action in {"reject", "close"}:
                 store.close_request(
                     int(request.form.get("request_id") or "0"),
@@ -5675,8 +5727,19 @@ def policy_requests():
                     admin_note=request.form.get("admin_note") or "",
                     proxy_id=proxy_id,
                 )
-                _best_effort_refresh_managed_policy(store, force=True)
-                return _redirect_to("policy_requests", ok="revoked")
+                refresh_ok, refresh_detail = _best_effort_refresh_managed_policy(
+                    store,
+                    force=True,
+                )
+                if not refresh_ok:
+                    return _redirect_to(
+                        "policy_requests",
+                        error=_policy_refresh_failure_detail(refresh_detail),
+                    )
+                return _redirect_to(
+                    "policy_requests",
+                    ok=(f"revoked; {refresh_detail}" if refresh_detail else "revoked"),
+                )
         except Exception as exc:
             return _redirect_to("policy_requests", error=public_error_message(exc))
         return _redirect_to("policy_requests")

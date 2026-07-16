@@ -142,24 +142,29 @@
 </section>
 
 {% if request.args.get('apply_ok') == '1' %}
-  <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">SSL filtering policy applied and verified for {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
+  <div class="banner success"><span class="badge ok">Queued</span><div class="banner-copy"><span class="small">SSL filtering policy reconciliation queued for {{ active_proxy.display_name }}; runtime apply is still asynchronous.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('apply_ok') == '0' %}
-  <div class="banner error"><span class="badge danger">Apply failed</span><div class="banner-copy"><span class="small">SSL filtering policy could not be applied to {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
+  <div class="banner error"><span class="badge danger">Queue failed</span><div class="banner-copy"><span class="small">SSL filtering policy reconciliation could not be queued for {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
+{% endif %}
+{% if request.args.get('policy_error') %}
+  <div class="banner error"><span class="badge danger">Sync not queued</span><div class="banner-copy"><span class="small">{{ request.args.get('policy_msg') or 'Policy changes were saved, but proxy reconciliation was not queued.' }}</span></div></div>
+{% elif request.args.get('policy_queue') %}
+  <div class="banner success"><span class="badge ok">Queued</span><div class="banner-copy"><span class="small">Policy change saved; proxy reconciliation is queued, not yet proven applied.</span>{% if request.args.get('policy_msg') %}<pre class="small pre-wrap">{{ request.args.get('policy_msg') }}</pre>{% endif %}</div></div>
 {% endif %}
 {% if ok %}
-  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL filtering policy updated and sync requested.</span></div></div>
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL filtering policy updated and queued for proxy reconciliation.</span></div></div>
 {% endif %}
 {% if err %}
   <div class="banner error"><span class="badge danger">Needs attention</span><div class="banner-copy"><span class="small">{{ err }}</span></div></div>
 {% endif %}
 {% if request.args.get('private_saved') %}
-  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private/local PAC bypass preference updated.</span></div></div>
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private/local PAC bypass preference updated and queued for proxy reconciliation.</span></div></div>
 {% endif %}
 {% if request.args.get('inspection_saved') %}
-  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL inspection preference updated and sync requested.</span></div></div>
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL inspection preference updated and queued for proxy reconciliation.</span></div></div>
 {% endif %}
 {% if request.args.get('compatibility_attempted') %}
-  <div class="banner success"><span class="badge ok">Compatibility set installed</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} new shipped no-bump domains.</span></div></div>
+  <div class="banner success"><span class="badge ok">Compatibility set saved</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} new shipped no-bump domains and queued proxy reconciliation.</span></div></div>
 {% endif %}
 
 <section class="card">
