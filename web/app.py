@@ -2192,7 +2192,11 @@ def _publish_config_for_current_mode(
             request_hash=getattr(revision, "config_sha256", ""),
             detail=f"Revision {revision.revision_id} saved by admin-ui; waiting for proxy reconciliation.",
             created_by=created_by,
-            force=False,
+            # A user-initiated config apply is an explicit retry request for this
+            # revision. If the active revision previously failed on the proxy,
+            # the runtime quarantine guard should not turn the newly queued
+            # operation into another no-op failure.
+            force=True,
         )
     except Exception as exc:
         log_exception_throttled(
