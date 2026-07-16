@@ -59,6 +59,7 @@ from services.clamav_config_forms import (
     get_clamav_ui_sections,
     read_clamav_options_from_form,
 )
+from services.config_revisions import ConfigApplication, ConfigRevisionMetadata
 from services.config_revisions import (
     get_config_revisions as _default_get_config_revisions,
 )
@@ -616,6 +617,169 @@ def _cached_proxy_health(
         return payload
     _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
     return payload
+
+
+def _short_sha(value: object, *, length: int = 12) -> str:
+    return str(value or "").strip()[: max(1, int(length))]
+
+
+def _safe_revision_id(value: object) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _latest_config_revision_operation(proxy_id: str, revision_id: int):
+    if revision_id <= 0:
+        return None
+    try:
+        operations = get_operation_ledger().list_operations(proxy_id, limit=100)
+    except Exception:
+        return None
+    matching = [
+        op
+        for op in operations
+        if str(getattr(op, "target_kind", "") or "") == "config_revision"
+        and _safe_revision_id(getattr(op, "target_ref", 0)) == revision_id
+    ]
+    if not matching:
+        return None
+    return max(
+        matching,
+        key=lambda op: (
+            int(getattr(op, "updated_ts", 0) or 0),
+            int(getattr(op, "operation_id", 0) or 0),
+        ),
+    )
+
+
+def _config_runtime_state(
+    proxy_id: str,
+    *,
+    active_revision: ConfigRevisionMetadata | None = None,
+    runtime_health: dict[str, Any] | None = None,
+    latest_apply: ConfigApplication | None = None,
+) -> dict[str, Any]:
+    revisions = get_config_revisions()
+    if active_revision is None:
+        try:
+            active_revision = revisions.get_active_revision_metadata(proxy_id)
+        except Exception:
+            active_revision = None
+    if runtime_health is None:
+        try:
+            runtime_health = _cached_proxy_health(
+                proxy_id,
+                timeout_seconds=_proxy_health_timeout_seconds(),
+                full=True,
+            )
+        except Exception:
+            runtime_health = {}
+    if latest_apply is None:
+        try:
+            latest_apply = revisions.latest_apply(proxy_id)
+        except Exception:
+            latest_apply = None
+
+    revision_id = _safe_revision_id(getattr(active_revision, "revision_id", 0))
+    revision_sha = str(getattr(active_revision, "config_sha256", "") or "")
+    running_revision_id = _safe_revision_id(
+        (runtime_health or {}).get("active_revision_id"),
+    )
+    runtime_active_sha = str((runtime_health or {}).get("active_revision_sha") or "")
+    running_sha = str((runtime_health or {}).get("current_config_sha") or "")
+    latest_apply_revision_id = _safe_revision_id(
+        getattr(latest_apply, "revision_id", 0),
+    )
+    latest_operation = _latest_config_revision_operation(proxy_id, revision_id)
+    operation_status = str(getattr(latest_operation, "status", "") or "")
+    operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
+
+    comparison_sha = runtime_active_sha or revision_sha
+    running_matches = bool(
+        revision_id
+        and comparison_sha
+        and running_sha
+        and comparison_sha == running_sha
+        and (not running_revision_id or running_revision_id == revision_id)
+    )
+    apply_matches = bool(
+        revision_id
+        and latest_apply is not None
+        and latest_apply_revision_id == revision_id
+        and bool(getattr(latest_apply, "ok", False))
+    )
+    pending_statuses = {"pending", "applying"}
+    failed_statuses = {"failed", "superseded"}
+
+    if not revision_id:
+        state = "untracked"
+        label = "No saved revision"
+        detail = "No active config revision is saved for this proxy yet."
+    elif operation_status in pending_statuses:
+        state = operation_status
+        label = "Apply pending" if operation_status == "pending" else "Apply running"
+        detail = (
+            f"Saved revision {revision_id} is {operation_status} as operation #{operation_id}; "
+            "the running proxy config may still be the previous revision."
+        )
+    elif operation_status in failed_statuses:
+        state = operation_status
+        label = "Apply failed" if operation_status == "failed" else "Apply superseded"
+        detail = (
+            f"Saved revision {revision_id} ended {operation_status} in operation #{operation_id}; "
+            "do not treat it as running until a later apply succeeds."
+        )
+    elif running_matches:
+        state = "reconciled"
+        label = "Saved revision running"
+        detail = f"Saved revision {revision_id} matches the selected proxy runtime."
+    elif apply_matches:
+        state = "applied_unverified"
+        label = "Apply recorded"
+        detail = (
+            f"The proxy recorded a successful apply for saved revision {revision_id}, "
+            "but current runtime SHA evidence is unavailable."
+        )
+    elif running_sha:
+        state = "drift"
+        label = "Saved/running mismatch"
+        detail = (
+            f"Saved revision {revision_id} ({_short_sha(revision_sha) or 'unknown sha'}) "
+            f"does not match running config {_short_sha(running_sha) or 'unknown sha'}."
+        )
+    else:
+        state = "unknown"
+        label = "Runtime unknown"
+        detail = "The selected proxy runtime did not report a running config SHA."
+
+    return {
+        "state": state,
+        "label": label,
+        "detail": detail,
+        "proxy_id": proxy_id,
+        "active_revision_id": revision_id,
+        "active_revision_sha": revision_sha,
+        "active_revision_short_sha": _short_sha(revision_sha),
+        "running_revision_id": running_revision_id,
+        "runtime_active_revision_sha": runtime_active_sha,
+        "runtime_active_revision_short_sha": _short_sha(runtime_active_sha),
+        "running_config_sha": running_sha,
+        "running_config_short_sha": _short_sha(running_sha),
+        "latest_apply_revision_id": latest_apply_revision_id,
+        "latest_apply_ok": bool(getattr(latest_apply, "ok", False))
+        if latest_apply is not None
+        else None,
+        "latest_apply_ts": _safe_revision_id(getattr(latest_apply, "applied_ts", 0)),
+        "latest_apply_detail": str(getattr(latest_apply, "detail", "") or ""),
+        "operation_id": operation_id,
+        "operation_status": operation_status,
+        "operation_updated_ts": _safe_revision_id(
+            getattr(latest_operation, "updated_ts", 0),
+        ),
+        "operation_detail": str(getattr(latest_operation, "detail", "") or ""),
+    }
 
 
 def _cached_admin_version_status() -> dict[str, Any]:
@@ -3637,7 +3801,8 @@ def index():
     clamav_health = services.get("clamav") or {"ok": False, "detail": "n/a"}
 
     last_config = None
-    latest_apply = get_config_revisions().latest_apply(proxy_id)
+    revisions = get_config_revisions()
+    latest_apply = revisions.latest_apply(proxy_id)
     if latest_apply is not None:
         last_config = {
             "ts": latest_apply.applied_ts,
@@ -3661,6 +3826,16 @@ def index():
                 }
         except Exception:
             pass
+    try:
+        active_revision = revisions.get_active_revision_metadata(proxy_id)
+    except Exception:
+        active_revision = None
+    config_runtime_state = _config_runtime_state(
+        proxy_id,
+        active_revision=active_revision,
+        runtime_health=health,
+        latest_apply=latest_apply,
+    )
 
     return render_template(
         "index.html",
@@ -3672,6 +3847,7 @@ def index():
         icap_health=icap_health,
         clamav_health=clamav_health,
         last_config=last_config,
+        config_runtime_state=config_runtime_state,
         observability=observability,
         observability_window_label=observability_window_label,
     )
@@ -3711,6 +3887,12 @@ def api_version_status():
 def api_squid_config():
     cfg = _current_managed_config()
     return app.response_class(cfg, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/api/squid-config/state", methods=["GET"])
+def api_squid_config_state():
+    proxy_id = get_proxy_id()
+    return jsonify({"ok": True, **_config_runtime_state(proxy_id)}), 200
 
 
 @app.route("/proxies/reconcile", methods=["POST"])
@@ -6333,6 +6515,7 @@ def squid_config():
         "overrides_on": any(overrides.values()) if overrides else False,
         "sslfilter_count": sslfilter_count,
     }
+    config_runtime_state = _config_runtime_state(get_proxy_id())
     config_text = posted_config if posted_config is not None else current_config
     subtab = _normalize_choice(
         request.args.get("subtab") or "safe",
@@ -6348,6 +6531,7 @@ def squid_config():
         overrides=overrides,
         subtab=subtab,
         summary=summary,
+        config_runtime_state=config_runtime_state,
         validation=validation,
         sslfilter_rules=sslfilter_rules,
         config_sections=config_sections,

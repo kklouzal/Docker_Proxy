@@ -794,6 +794,72 @@ def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
     assert "Content-Security-Policy" not in response.headers
 
 
+def test_api_squid_config_state_reports_pending_desired_revision(
+    monkeypatch, tmp_path
+) -> None:
+    class Revisions:
+        def get_active_config_text(self, _proxy_id):
+            return "http_port 3128\n"
+
+        def get_active_revision_metadata(self, proxy_id):
+            assert proxy_id == "default"
+            return SimpleNamespace(
+                revision_id=5,
+                proxy_id="default",
+                config_sha256="desired-sha",
+                source_kind="manual",
+                created_by="operator",
+                created_ts=10,
+                is_active=True,
+            )
+
+        def latest_apply(self, _proxy_id):
+            return None
+
+    class CurrentShaProxyClient(RecordingProxyClient):
+        def get_health(self, proxy_id, *_, timeout_seconds=None, **kwargs):
+            payload = super().get_health(
+                proxy_id, timeout_seconds=timeout_seconds, **kwargs
+            )
+            payload.update(
+                {
+                    "active_revision_id": 4,
+                    "active_revision_sha": "previous-sha",
+                    "current_config_sha": "running-sha",
+                }
+            )
+            return payload
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        config_revisions=Revisions(),
+        proxy_client=CurrentShaProxyClient(),
+    )
+    loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Revision 5 saved; applying asynchronously.",
+        target_kind="config_revision",
+        target_ref=5,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config/state?proxy_id=default")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["proxy_id"] == "default"
+    assert data["state"] == "pending"
+    assert data["label"] == "Apply pending"
+    assert data["active_revision_id"] == 5
+    assert data["active_revision_sha"] == "desired-sha"
+    assert data["running_config_sha"] == "running-sha"
+    assert data["operation_status"] == "pending"
+
+
 def test_network_config_apply_can_publish_intercept_listener(
     monkeypatch, tmp_path
 ) -> None:
@@ -1293,7 +1359,7 @@ def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert loaded.config_revisions.created[-1]["proxy_id"] == "default"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
-    assert "Saved settings were rebuilt, verified, and applied" in text
+    assert "Saved settings were rebuilt, verified, saved as desired state, and queued" in text
     assert any(
         record["kind"] == "config_apply_all_saved" and record["ok"]
         for record in loaded.audit_store.records

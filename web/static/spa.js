@@ -336,9 +336,15 @@
     return `#${operation.operation_id} ${subject}: ${operation.status}`;
   };
 
+  const operationScopeKey = (operation) => {
+    const proxyId = operation && operation.proxy_id ? String(operation.proxy_id) : (document.body.dataset.activeProxyId || '');
+    const operationId = operation && operation.operation_id ? String(operation.operation_id) : '';
+    return `${proxyId}:${operationId}`;
+  };
+
   const noteOperationStatus = (operation, { notifyInitial = false } = {}) => {
     if (!operation || !operation.operation_id) return;
-    const key = String(operation.operation_id);
+    const key = operationScopeKey(operation);
     const status = normalizeOperationStatus(operation.status);
     const previous = seenOperationStatuses.get(key);
     if (previous !== status) {
@@ -399,7 +405,10 @@
     if (operation.can_revert && status === 'failed' && operation.operation_id) {
       const form = document.createElement('form');
       form.method = 'post';
-      form.action = `/operations/${encodeURIComponent(String(operation.operation_id))}/revert`;
+      const proxyId = operation.proxy_id || document.body.dataset.activeProxyId || '';
+      const scopedAction = new URL(`/operations/${encodeURIComponent(String(operation.operation_id))}/revert`, window.location.origin);
+      if (proxyId) scopedAction.searchParams.set('proxy_id', String(proxyId));
+      form.action = scopedAction.pathname + scopedAction.search;
       const csrf = getCsrfToken();
       if (csrf) {
         const csrfInput = document.createElement('input');
@@ -407,6 +416,13 @@
         csrfInput.name = 'csrf_token';
         csrfInput.value = csrf;
         form.appendChild(csrfInput);
+      }
+      if (proxyId) {
+        const proxyInput = document.createElement('input');
+        proxyInput.type = 'hidden';
+        proxyInput.name = 'proxy_id';
+        proxyInput.value = String(proxyId);
+        form.appendChild(proxyInput);
       }
       const button = document.createElement('button');
       button.className = 'btn danger';
@@ -430,9 +446,13 @@
     const activeProxyId = document.body.dataset.activeProxyId || '';
     if (!activeProxyId) return;
     try {
-      const response = await fetch('/api/operations', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'spa' } });
+      const url = new URL('/api/operations', window.location.origin);
+      url.searchParams.set('proxy_id', activeProxyId);
+      const response = await fetch(url.pathname + url.search, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'spa' } });
       if (!response.ok) return;
       const data = await response.json();
+      if (String(data.proxy_id || '') !== String(activeProxyId)) return;
+      if (String(document.body.dataset.activeProxyId || '') !== String(activeProxyId)) return;
       (data.operations || []).forEach((operation) => noteOperationStatus(operation, { notifyInitial }));
       OPERATION_STATUSES.forEach((status) => {
         document.querySelectorAll(`[data-operation-count="${status}"]`).forEach((node) => { node.textContent = String((data.counts || {})[status] || 0); });
@@ -947,7 +967,7 @@
     bindCopyTargets(container);
     enhanceConfigPage(container);
 
-    // Squid Config: "Reload from running config" button.
+    // Squid Config: "Reload saved config" button.
     // This used to live as an inline <script> in the template, which won't execute after SPA swaps.
     const reloadBtn = container.querySelector('#reload-running-config');
     const configTextarea = container.querySelector('#config_text');

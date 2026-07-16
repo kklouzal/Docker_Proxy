@@ -212,6 +212,14 @@
             {% else %}
                 <div class="surface-note small">No config apply events recorded yet.</div>
             {% endif %}
+            {% if config_runtime_state %}
+                <div class="surface-note small">
+                    Config state: <strong>{{ config_runtime_state.label }}</strong>
+                    {% if config_runtime_state.active_revision_id %} · saved revision #{{ config_runtime_state.active_revision_id }}{% endif %}
+                    {% if config_runtime_state.running_config_short_sha %} · running SHA <code class="mono">{{ config_runtime_state.running_config_short_sha }}</code>{% endif %}
+                    {% if config_runtime_state.operation_status %} · operation #{{ config_runtime_state.operation_id }} {{ config_runtime_state.operation_status }}{% endif %}
+                </div>
+            {% endif %}
         </div>
     </section>
 

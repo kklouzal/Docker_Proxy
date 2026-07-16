@@ -8,7 +8,7 @@
         <div class="page-hero-copy">
             <span class="page-eyebrow">Proxy tuning</span>
             <h1 class="page-title">Squid Configuration</h1>
-            <p class="page-subtitle">Manage the live <span class="mono">squid.conf</span> revision and schema-backed Squid 7.x tuning for {{ active_proxy.display_name }}.</p>
+            <p class="page-subtitle">Manage the saved desired <span class="mono">squid.conf</span> revision, runtime apply state, and schema-backed Squid 7.x tuning for {{ active_proxy.display_name }}.</p>
             <div class="hero-badges">
                 {% if summary.workers %}<span class="badge">{{ summary.workers }} worker{{ '' if summary.workers == 1 else 's' }}</span>{% endif %}
                 {% if summary.explicit_proxy_port %}<span class="badge ok">Explicit {{ summary.explicit_proxy_port }}</span>{% endif %}
@@ -16,10 +16,13 @@
                 {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
                 <span class="badge {{ 'warn' if summary.overrides_on else 'ok' }}">Overrides {{ 'on' if summary.overrides_on else 'off' }}</span>
                 <span class="badge">{{ summary.sslfilter_count }} SSL filtering</span>
+                {% if config_runtime_state %}
+                    <span class="badge {{ 'ok' if config_runtime_state.state == 'reconciled' else 'warn' }}">{{ config_runtime_state.label }}</span>
+                {% endif %}
             </div>
         </div>
         <div class="page-actions">
-            <a class="btn ghost" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download config</a>
+            <a class="btn ghost" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download saved config</a>
             <a class="btn ghost" href="{{ url_for('observability') }}">Open observability</a>
             <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
         </div>
@@ -29,9 +32,45 @@
 <div>Navigation and form submissions here are pinned to this proxy, so a different tab switching proxies will not accidentally retarget these changes.</div>
 {% endcall %}
 
+{% if config_runtime_state %}
 <section class="card">
     <div class="card-header">
-        <h2 class="card-title">Configuration snapshot</h2>
+        <div>
+            <h2 class="card-title">Desired vs running state</h2>
+            <div class="small">Saved config revisions are desired state; the selected proxy runtime must reconcile before they are truly running.</div>
+        </div>
+        <span class="badge {{ 'ok' if config_runtime_state.state == 'reconciled' else 'warn' }}">{{ config_runtime_state.label }}</span>
+    </div>
+    <div class="card-body">
+        <div class="summary-grid">
+            <div class="stat compact-stat">
+                <div class="stat-k">Saved revision</div>
+                <div class="stat-v">{% if config_runtime_state.active_revision_id %}#{{ config_runtime_state.active_revision_id }}{% else %}n/a{% endif %}</div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Saved SHA</div>
+                <div class="stat-v"><code class="mono">{{ config_runtime_state.active_revision_short_sha or 'n/a' }}</code></div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Running SHA</div>
+                <div class="stat-v"><code class="mono">{{ config_runtime_state.running_config_short_sha or 'n/a' }}</code></div>
+            </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Latest operation</div>
+                <div class="stat-v">{% if config_runtime_state.operation_id %}#{{ config_runtime_state.operation_id }} {{ config_runtime_state.operation_status }}{% else %}n/a{% endif %}</div>
+            </div>
+        </div>
+        <div class="surface-note small">{{ config_runtime_state.detail }}</div>
+        {% if config_runtime_state.latest_apply_ts %}
+            <div class="surface-note small">Last proxy apply record: revision #{{ config_runtime_state.latest_apply_revision_id or 'n/a' }} · {{ 'ok' if config_runtime_state.latest_apply_ok else 'failed' }} · {{ fmt_ts(config_runtime_state.latest_apply_ts) }}</div>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
+
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">Saved configuration snapshot</h2>
         <span class="badge">selected tab {{ 'Config' if tab == 'config' else (active_section.label if active_section else tab|title) }}</span>
     </div>
     <div class="card-body">
@@ -73,11 +112,11 @@
 </div>
 
 {% if request.args.get('apply_all_ok') == '1' %}
-    <div class="banner success"><span class="badge ok">Rebuilt</span><div class="banner-copy"><span class="small">Saved settings were rebuilt, verified, and applied to {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_all_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_all_msg') }}</pre>{% endif %}</div></div>
+    <div class="banner success"><span class="badge ok">Apply queued</span><div class="banner-copy"><span class="small">Saved settings were rebuilt, verified, saved as desired state, and queued for {{ active_proxy.display_name }} to apply.</span>{% if request.args.get('apply_all_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_all_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('apply_all_ok') == '0' %}
     <div class="banner error"><span class="badge danger">Rebuild failed</span><div class="banner-copy"><span class="small">Saved settings could not be rebuilt and applied to {{ active_proxy.display_name }}; previous config kept.</span>{% if request.args.get('apply_all_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_all_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('ok') %}
-    <div class="banner success"><span class="badge ok">Applied</span><div class="banner-copy"><span class="small">Config validated and apply requested for {{ active_proxy.display_name }}.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
+    <div class="banner success"><span class="badge ok">Apply queued</span><div class="banner-copy"><span class="small">Config validated, saved as desired state, and queued for {{ active_proxy.display_name }} to apply.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('error') %}
     <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Config validation/apply failed; previous config kept.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
 {% endif %}
@@ -119,14 +158,14 @@
                         <button class="btn primary" type="submit" name="action" value="apply" data-confirm-message="Apply the raw squid.conf editor contents to {{ active_proxy.display_name }}? Validation failure keeps the previous config." data-pending-label="Applying...">Save &amp; Apply</button>
                         <button class="btn danger" type="submit" form="apply-all-config-form" data-confirm-message="Rebuild from saved UI settings for {{ active_proxy.display_name }} and apply it now? Unsaved raw-editor changes are ignored." data-pending-label="Rebuilding...">Rebuild, Verify &amp; Apply Saved Settings</button>
                         <button class="btn ghost" type="submit" name="action" value="validate">Validate only</button>
-                        <button class="btn ghost" type="button" id="reload-running-config" data-url="{{ url_for('api_squid_config') }}">Reload from running config</button>
+                        <button class="btn ghost" type="button" id="reload-running-config" data-url="{{ url_for('api_squid_config') }}">Reload saved config</button>
                         <button class="btn ghost" type="button" data-copy-target="#config_text">Copy editor contents</button>
                         <button class="btn ghost" type="button" data-config-reset-for="raw-config-form">Reset unsaved changes</button>
                     </div>
                     <div class="banner warning compact-banner">
-                        <span class="badge warn">Live proxy</span>
+                        <span class="badge warn">Desired state</span>
                         <div class="banner-copy">
-                            <span class="small">Save &amp; Apply changes the selected proxy after validation. Rebuild, Verify &amp; Apply Saved Settings regenerates from saved UI settings and ignores unsaved editor text.</span>
+                            <span class="small">Save &amp; Apply validates and saves desired state, then queues proxy reconciliation. Rebuild, Verify &amp; Apply Saved Settings regenerates from saved UI settings and ignores unsaved editor text.</span>
                         </div>
                     </div>
                 </form>
@@ -144,7 +183,7 @@
             <div class="card-header">
                 <div>
                     <h2 class="card-title">{{ active_section.label }} snapshot</h2>
-                    <div class="small config-note">Relevant {{ active_section.label|lower }} directives detected in the current running <span class="mono">squid.conf</span>.</div>
+                    <div class="small config-note">Relevant {{ active_section.label|lower }} directives detected in the saved desired <span class="mono">squid.conf</span>.</div>
                 </div>
                 <div class="config-toolbar">
                     <span class="badge">{{ running_line_count }} directive{{ '' if running_line_count == 1 else 's' }}</span>

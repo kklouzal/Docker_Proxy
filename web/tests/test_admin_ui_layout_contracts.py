@@ -205,6 +205,15 @@ def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -
     assert "buildSubmitFormData(form, event.submitter)" in js
 
 
+def test_spa_operation_polling_preserves_rendered_proxy_scope() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "url.searchParams.set('proxy_id', activeProxyId)" in js
+    assert "String(data.proxy_id || '') !== String(activeProxyId)" in js
+    assert "operationScopeKey(operation)" in js
+    assert "proxyInput.name = 'proxy_id'" in js
+
+
 def test_webfilter_domain_test_surfaces_allowed_reason() -> None:
     js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
 
