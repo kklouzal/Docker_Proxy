@@ -161,6 +161,10 @@
           <span class="stat-label">AV c-icap service</span>
           <strong class="stat-value">{{ 'Running' if av_icap_health and av_icap_health.ok else 'Not responding' }}</strong>
           <span class="small mono">{{ av_icap_health.target if av_icap_health else 'unavailable' }}</span>
+          {% if av_icap_health and av_icap_health.components %}
+            <span class="small mono">Upload {{ av_icap_health.components.upload_av_icap.target if av_icap_health.components.upload_av_icap else 'unavailable' }}</span>
+            <span class="small mono">Download {{ av_icap_health.components.download_av_icap.target if av_icap_health.components.download_av_icap else 'unavailable' }}</span>
+          {% endif %}
         </article>
         <article class="stat-card">
           <span class="stat-label">Clamd backend</span>
@@ -198,12 +202,28 @@
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td>AV c-icap service</td>
-              <td><span class="badge {{ 'ok' if av_icap_health and av_icap_health.ok else 'danger' }}">{{ 'Running' if av_icap_health and av_icap_health.ok else 'Not responding' }}</span></td>
-              <td class="mono">{{ av_icap_health.target if av_icap_health else 'unavailable' }}</td>
-              <td class="small">{{ av_icap_health.detail if av_icap_health else 'unavailable' }}</td>
-            </tr>
+            {% if av_icap_health and av_icap_health.components %}
+              {% for label, component in (
+                ('AV c-icap upload service', av_icap_health.components.upload_av_icap),
+                ('AV c-icap download service', av_icap_health.components.download_av_icap),
+              ) %}
+                {% if component %}
+                  <tr>
+                    <td>{{ label }}</td>
+                    <td><span class="badge {{ 'ok' if component.ok else 'danger' }}">{{ 'Running' if component.ok else 'Not responding' }}</span></td>
+                    <td class="mono">{{ component.target }}</td>
+                    <td class="small">{{ component.detail }}</td>
+                  </tr>
+                {% endif %}
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td>AV c-icap service</td>
+                <td><span class="badge {{ 'ok' if av_icap_health and av_icap_health.ok else 'danger' }}">{{ 'Running' if av_icap_health and av_icap_health.ok else 'Not responding' }}</span></td>
+                <td class="mono">{{ av_icap_health.target if av_icap_health else 'unavailable' }}</td>
+                <td class="small">{{ av_icap_health.detail if av_icap_health else 'unavailable' }}</td>
+              </tr>
+            {% endif %}
             <tr>
               <td>Clamd backend</td>
               <td><span class="badge {{ 'ok' if clamd_health and clamd_health.ok else 'danger' }}">{{ 'Reachable' if clamd_health and clamd_health.ok else 'Not reachable' }}</span></td>
@@ -239,10 +259,7 @@
         Upload and download scanning are independently configurable inside this policy. The top-level enable button is a convenience control that flips both scan directions together without changing the rest of the file-blocking policy.
       </div>
       <div class="surface-note small">
-        AV scanning behavior is controlled by the local c-icap service inside the container (for example <span class="mono">/etc/virus_scan.conf</span>), which forwards scan requests to the configured remote ClamAV daemon at <span class="mono">CLAMD_HOST:CLAMD_PORT</span>.
-      </div>
-      <div class="surface-note small">
-        Download/RESPMOD scanning is automatically suppressed when <span class="mono">CLAMD_HOST</span> is non-local because c-icap <span class="mono">virus_scan</span> sends proxy-local temp-file paths to <span class="mono">clamd</span>. Upload scanning and AV health checks are left enabled.
+        AV scanning behavior is controlled by proxy-local ICAP services inside the selected proxy container. The upload service uses c-icap <span class="mono">virus_scan</span>; the download/RESPMOD service uses a local INSTREAM helper when <span class="mono">CLAMD_HOST</span> is non-local. Both forward scan bytes to the configured ClamAV daemon at <span class="mono">CLAMD_HOST:CLAMD_PORT</span>.
       </div>
     </div>
   </section>

@@ -405,6 +405,20 @@ def build_local_clamav_view(
     }
 
 
+def _normalize_av_icap_health(result: Any) -> dict[str, Any]:
+    normalized = normalize_service_health(result, service="/avrespmod")
+    components = result.get("components") if isinstance(result, dict) else None
+    if isinstance(components, dict):
+        normalized_components = {
+            key: normalize_service_health(value, service="/avrespmod")
+            for key, value in components.items()
+            if isinstance(value, dict)
+        }
+        if normalized_components:
+            normalized["components"] = normalized_components
+    return normalized
+
+
 def build_remote_clamav_view(health_payload: dict[str, Any]) -> dict[str, Any]:
     services = health_payload.get("services") or {}
     aggregate = (
@@ -416,10 +430,9 @@ def build_remote_clamav_view(health_payload: dict[str, Any]) -> dict[str, Any]:
         or (components.get("clamd") if isinstance(components, dict) else None)
         or aggregate,
     )
-    av_icap_health = normalize_service_health(
+    av_icap_health = _normalize_av_icap_health(
         services.get("av_icap")
         or (components.get("av_icap") if isinstance(components, dict) else None),
-        service="/avrespmod",
     )
     health = dict(aggregate) if isinstance(aggregate, dict) else {}
     if not health:

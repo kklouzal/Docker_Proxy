@@ -277,6 +277,61 @@ def test_remote_clamav_view_surfaces_unavailable_cached_health_source() -> None:
     assert view["health_source"] == "offline (Proxy management request timed out)"
 
 
+def test_remote_clamav_view_preserves_split_av_icap_components() -> None:
+    proxy_health = _proxy_health_module()
+
+    view = proxy_health.build_remote_clamav_view(
+        {
+            "ok": False,
+            "proxy_status": "ClamAV health checked via lightweight management endpoint.",
+            "services": {
+                "clamav": {"ok": False, "detail": "upload=ok | download=down"},
+                "av_icap": {
+                    "ok": False,
+                    "detail": "upload=ok | download=down",
+                    "host": "127.0.0.1",
+                    "port": 24002,
+                    "target": "127.0.0.1:24002",
+                    "service": "/avrespmod",
+                    "components": {
+                        "upload_av_icap": {
+                            "ok": True,
+                            "detail": "ICAP/1.0 200 OK",
+                            "host": "127.0.0.1",
+                            "port": 24001,
+                            "target": "127.0.0.1:24001",
+                            "service": "/avrespmod",
+                        },
+                        "download_av_icap": {
+                            "ok": False,
+                            "detail": "connection refused",
+                            "host": "127.0.0.1",
+                            "port": 24002,
+                            "target": "127.0.0.1:24002",
+                            "service": "/avrespmod",
+                        },
+                    },
+                },
+                "clamd": {
+                    "ok": False,
+                    "detail": "Name does not resolve",
+                    "host": "clamav.edge-2.internal",
+                    "port": 3311,
+                    "target": "clamav.edge-2.internal:3311",
+                },
+            },
+        }
+    )
+
+    av_icap = view["av_icap_health"]
+    assert av_icap["target"] == "127.0.0.1:24002"
+    assert av_icap["components"]["upload_av_icap"]["target"] == "127.0.0.1:24001"
+    assert av_icap["components"]["download_av_icap"]["target"] == "127.0.0.1:24002"
+    assert view["health"]["components"]["av_icap"]["components"] == av_icap[
+        "components"
+    ]
+
+
 def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
     proxy_health = _proxy_health_module()
 
