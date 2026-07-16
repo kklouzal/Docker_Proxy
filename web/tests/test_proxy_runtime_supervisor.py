@@ -3236,10 +3236,14 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert 'ICAP_WORKERS="$(clamp_workers "${SQUID_WORKERS:-${WORKERS:-1}}")"' in healthcheck
     assert "cicap_adblock_${instance}" in healthcheck
     assert "cicap_av_${instance}" in healthcheck
+    assert "clamav_respmod_${instance}" in healthcheck
     assert "icap_av_base_port" in healthcheck
+    assert "icap_av_resp_base_port" in healthcheck
+    assert "clamd_host_is_remote" in healthcheck
     assert "Squid adblock ICAP is fail-open" in healthcheck
     assert "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING" in healthcheck
     assert "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING" in healthcheck
+    assert "CLAMAV_REQUIRED is set but supervisor reports ${resp_program} is not RUNNING" in healthcheck
     assert "CLAMAV_REQUIRED is set but remote clamd is not responding" in healthcheck
     assert (
         "supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av"

@@ -13,6 +13,12 @@ from services.health_checks import (
     send_sample_respmod_to,
     test_clamd_eicar,
 )
+from services.squid_core import (
+    _clamav_respmod_stream_port_base,
+    _clamd_host_is_remote,
+    _clamp_icap_workers,
+    _icap_port_bases,
+)
 
 
 def _resolve_host_port_override(
@@ -229,6 +235,29 @@ def check_adblock_icap_health(
     )
 
 
+def _check_av_icap_endpoint(
+    *,
+    host: str,
+    port: int,
+    timeout: float,
+    error_formatter: ErrorFormatter | None,
+) -> dict[str, Any]:
+    result = check_icap_service(
+        host=host,
+        port=port,
+        service="/avrespmod",
+        timeout=timeout,
+        user_agent="squid-flask-proxy-ui",
+        error_formatter=error_formatter,
+    )
+    return annotate_service_target(
+        result,
+        host=host,
+        port=port,
+        service="/avrespmod",
+    )
+
+
 def check_av_icap_health(
     *,
     host: str | None = None,
@@ -236,15 +265,51 @@ def check_av_icap_health(
     timeout: float = 0.8,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    return _check_resolved_icap_target(
-        "/avrespmod",
-        host=host,
-        port=port,
-        port_env="CICAP_AV_PORT",
-        default_port=14001,
+    if port is not None or not _clamd_host_is_remote(os.environ.get("CLAMD_HOST")):
+        resolved_host, resolved_port = _resolve_host_port_override(
+            host=host,
+            port=port,
+            host_env="CICAP_HOST",
+            port_env="CICAP_AV_PORT",
+            default_port=14001,
+        )
+        return _check_av_icap_endpoint(
+            host=resolved_host,
+            port=resolved_port,
+            timeout=timeout,
+            error_formatter=error_formatter,
+        )
+
+    resolved_host = (
+        host or os.environ.get("CICAP_HOST") or "127.0.0.1"
+    ).strip() or "127.0.0.1"
+    workers = _clamp_icap_workers(
+        os.environ.get("SQUID_WORKERS") or os.environ.get("WORKERS") or "1"
+    )
+    _adblock_base, upload_port = _icap_port_bases(workers)
+    download_port = _clamav_respmod_stream_port_base(workers)
+    upload = _check_av_icap_endpoint(
+        host=resolved_host,
+        port=upload_port,
         timeout=timeout,
         error_formatter=error_formatter,
     )
+    download = _check_av_icap_endpoint(
+        host=resolved_host,
+        port=download_port,
+        timeout=timeout,
+        error_formatter=error_formatter,
+    )
+    status = dict(download)
+    status["ok"] = bool(upload.get("ok")) and bool(download.get("ok"))
+    status["detail"] = (
+        f"upload={upload.get('detail')} | download={download.get('detail')}"
+    )
+    status["components"] = {
+        "upload_av_icap": upload,
+        "download_av_icap": download,
+    }
+    return status
 
 
 def check_clamd_health(
@@ -271,13 +336,22 @@ def send_sample_av_icap(
     timeout: float = 1.2,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    resolved_host, resolved_port = _resolve_host_port_override(
-        host=host,
-        port=port,
-        host_env="CICAP_HOST",
-        port_env="CICAP_AV_PORT",
-        default_port=14001,
-    )
+    if port is not None or not _clamd_host_is_remote(os.environ.get("CLAMD_HOST")):
+        resolved_host, resolved_port = _resolve_host_port_override(
+            host=host,
+            port=port,
+            host_env="CICAP_HOST",
+            port_env="CICAP_AV_PORT",
+            default_port=14001,
+        )
+    else:
+        resolved_host = (
+            host or os.environ.get("CICAP_HOST") or "127.0.0.1"
+        ).strip() or "127.0.0.1"
+        workers = _clamp_icap_workers(
+            os.environ.get("SQUID_WORKERS") or os.environ.get("WORKERS") or "1"
+        )
+        resolved_port = _clamav_respmod_stream_port_base(workers)
     result = send_sample_respmod_to(
         host=resolved_host,
         port=resolved_port,

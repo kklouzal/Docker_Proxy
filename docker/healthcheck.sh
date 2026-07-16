@@ -151,6 +151,14 @@ adblock_icap_required() {
     env_enabled "${ADBLOCK_ICAP_REQUIRED:-}"
 }
 
+clamd_host_is_remote() {
+    normalized="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr '[:upper:]' '[:lower:]')"
+    case "$normalized" in
+        ''|localhost|127.*|::1|\[::1\]) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 clamp_workers() {
     raw="${1:-1}"
     case "$raw" in
@@ -186,6 +194,20 @@ icap_av_base_port() {
         av_base=$((adblock_base + workers))
     fi
     printf '%s' "$av_base"
+}
+
+icap_av_resp_base_port() {
+    adblock_base="$1"
+    av_base="$2"
+    resp_base="$3"
+    workers="$4"
+    if [ "$resp_base" -lt $((adblock_base + workers)) ] && [ "$adblock_base" -lt $((resp_base + workers)) ]; then
+        resp_base=$((av_base + workers))
+    fi
+    if [ "$resp_base" -lt $((av_base + workers)) ] && [ "$av_base" -lt $((resp_base + workers)) ]; then
+        resp_base=$((av_base + workers))
+    fi
+    printf '%s' "$resp_base"
 }
 
 # Check Squid liveness (internal check)
@@ -231,6 +253,7 @@ fi
 ICAP_WORKERS="$(clamp_workers "${SQUID_WORKERS:-${WORKERS:-1}}")"
 ICAP_ADBLOCK_BASE="$(icap_base_port "${CICAP_PORT:-}" 14000)"
 ICAP_AV_BASE="$(icap_av_base_port "$ICAP_ADBLOCK_BASE" "$(icap_base_port "${CICAP_AV_PORT:-}" 14001)" "$ICAP_WORKERS")"
+ICAP_AV_RESP_BASE="$(icap_av_resp_base_port "$ICAP_ADBLOCK_BASE" "$ICAP_AV_BASE" "$(icap_base_port "${CICAP_AV_RESP_PORT:-}" $((ICAP_AV_BASE + ICAP_WORKERS)))" "$ICAP_WORKERS")"
 
 i=0
 while [ "$i" -lt "$ICAP_WORKERS" ]; do
@@ -268,10 +291,23 @@ if clamav_required; then
             echo "CLAMAV_REQUIRED is set but ${av_program} is not listening on port ${av_port}"
             exit 1
         fi
+
+        if clamd_host_is_remote; then
+            resp_program="clamav_respmod_${instance}"
+            resp_port=$((ICAP_AV_RESP_BASE + i))
+            if ! supervisor_program_running "$resp_program"; then
+                echo "CLAMAV_REQUIRED is set but supervisor reports ${resp_program} is not RUNNING"
+                exit 1
+            fi
+            if ! has_listen_socket "$resp_port" >/dev/null 2>&1; then
+                echo "CLAMAV_REQUIRED is set but ${resp_program} is not listening on port ${resp_port}"
+                exit 1
+            fi
+        fi
         i=$((i + 1))
     done
 
-    # Check the remote clamd backend used by the local AV c-icap service.
+    # Check the remote clamd backend used by the local AV ICAP services.
     if ! python3 -c "import os,socket; host=(os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'; port=int((os.environ.get('CLAMD_PORT') or '3310').strip()); s=socket.create_connection((host, port), 1.5); s.settimeout(1.5); s.sendall(b'PING\n'); d=s.recv(64); s.close(); assert d.startswith(b'PONG')" >/dev/null 2>&1; then
         echo "CLAMAV_REQUIRED is set but remote clamd is not responding"
         exit 1

@@ -313,7 +313,7 @@ def test_clamav_diagnostic_actions_include_resolved_targets(monkeypatch) -> None
 
     monkeypatch.setenv("CICAP_HOST", "av-proxy")
     monkeypatch.setenv("CICAP_AV_PORT", "15001")
-    monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
+    monkeypatch.setenv("CLAMD_HOST", "127.0.0.1")
     monkeypatch.setenv("CLAMD_PORT", "13310")
 
     def fake_sample(**kwargs):
@@ -323,7 +323,7 @@ def test_clamav_diagnostic_actions_include_resolved_targets(monkeypatch) -> None
         return {"ok": True, "detail": "ICAP/1.0 204 No Content"}
 
     def fake_eicar(**kwargs):
-        assert kwargs["host"] == "clamd-proxy"
+        assert kwargs["host"] == "127.0.0.1"
         assert kwargs["port"] == 13310
         return {"ok": True, "detail": "stream: Eicar-Test-Signature FOUND"}
 
@@ -341,7 +341,83 @@ def test_clamav_diagnostic_actions_include_resolved_targets(monkeypatch) -> None
     assert proxy_health.test_eicar() == {
         "ok": True,
         "detail": "stream: Eicar-Test-Signature FOUND",
-        "host": "clamd-proxy",
+        "host": "127.0.0.1",
         "port": 13310,
-        "target": "clamd-proxy:13310",
+        "target": "127.0.0.1:13310",
     }
+
+
+def test_remote_clamd_av_health_checks_upload_and_download_icap_ports(
+    monkeypatch,
+) -> None:
+    proxy_health = _proxy_health_module()
+    calls: list[tuple[str, int, str]] = []
+
+    monkeypatch.setenv("CICAP_HOST", "av-proxy")
+    monkeypatch.setenv("CICAP_PORT", "24000")
+    monkeypatch.setenv("CICAP_AV_PORT", "24001")
+    monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
+    monkeypatch.setenv("SQUID_WORKERS", "3")
+
+    def fake_check(**kwargs):
+        calls.append((kwargs["host"], kwargs["port"], kwargs["service"]))
+        return {"ok": True, "detail": f"ICAP {kwargs['port']} OK"}
+
+    monkeypatch.setattr(proxy_health, "check_icap_service", fake_check)
+
+    result = proxy_health.check_av_icap_health(timeout=0.4)
+
+    assert calls == [
+        ("av-proxy", 24003, "/avrespmod"),
+        ("av-proxy", 24006, "/avrespmod"),
+    ]
+    assert result["ok"] is True
+    assert result["host"] == "av-proxy"
+    assert result["port"] == 24006
+    assert result["components"]["upload_av_icap"]["port"] == 24003
+    assert result["components"]["download_av_icap"]["port"] == 24006
+
+
+def test_remote_clamd_av_health_fails_when_download_respmod_is_down(
+    monkeypatch,
+) -> None:
+    proxy_health = _proxy_health_module()
+
+    monkeypatch.setenv("CICAP_AV_PORT", "15001")
+    monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
+    monkeypatch.setenv("SQUID_WORKERS", "1")
+
+    def fake_check(**kwargs):
+        if kwargs["port"] == 15002:
+            return {"ok": False, "detail": "connection refused"}
+        return {"ok": True, "detail": "ICAP/1.0 200 OK"}
+
+    monkeypatch.setattr(proxy_health, "check_icap_service", fake_check)
+
+    result = proxy_health.check_av_icap_health(timeout=0.4)
+
+    assert result["ok"] is False
+    assert result["components"]["upload_av_icap"]["ok"] is True
+    assert result["components"]["download_av_icap"]["ok"] is False
+    assert "download=connection refused" in result["detail"]
+
+
+def test_remote_clamd_sample_av_icap_targets_download_respmod_port(monkeypatch) -> None:
+    proxy_health = _proxy_health_module()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("CICAP_AV_PORT", "15001")
+    monkeypatch.setenv("CICAP_AV_RESP_PORT", "16000")
+    monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
+
+    def fake_sample(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "detail": "ICAP/1.0 204 No Content"}
+
+    monkeypatch.setattr(proxy_health, "send_sample_respmod_to", fake_sample)
+
+    result = proxy_health.send_sample_av_icap()
+
+    assert captured["port"] == 16000
+    assert result["port"] == 16000
+    assert result["target"] == "127.0.0.1:16000"

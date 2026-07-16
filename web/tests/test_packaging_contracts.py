@@ -198,6 +198,7 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "squid_logs:" in _read("docker-compose.yml")
     assert "squid_logs:" in _read("docker-compose.ghcr.yml")
     assert "ADBLOCK_CACHE_TTL: ${ADBLOCK_CACHE_TTL:-}" in proxy_block
+    assert "CICAP_AV_RESP_PORT: ${CICAP_AV_RESP_PORT:-}" in proxy_block
     assert (
         "ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES: ${ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES:-}"
     ) in proxy_block
@@ -230,6 +231,7 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "COPY --chmod=755 docker/cicap_av_runner.py /usr/local/bin/cicap_av_runner.py" in dockerfile
 
     env_example = _read("config/app.env.example")
+    assert "# CICAP_AV_RESP_PORT=" in env_example
     assert "# ADBLOCK_CACHE_TTL=3600" in env_example
     assert "# ADBLOCK_RULE_CACHE_MAX=50000" in env_example
     assert "# ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES=8388608" in env_example
