@@ -848,15 +848,17 @@ class ProxyRuntime:
         if not prefix:
             return [program_name], ""
         configured = list(_icap_supervisor_programs(program_name))
-        if configured != [program_name]:
-            return configured, ""
         _ok, detail, lines = self._supervisor_status_lines(
             timeout_seconds=timeout_seconds
         )
         matches = sorted(
             name for name in lines if name == program_name or name.startswith(prefix)
         )
-        return (matches or [program_name]), detail
+        if matches:
+            return matches, detail
+        if configured != [program_name]:
+            return configured, detail
+        return [program_name], detail
 
     def _supervisor_program_status_exact(
         self,
