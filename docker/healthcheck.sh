@@ -172,6 +172,14 @@ clamp_workers() {
     printf '%s' "$raw"
 }
 
+extract_squid_workers_from_file() {
+    file_path="${1:-}"
+    if [ ! -f "$file_path" ]; then
+        return 0
+    fi
+    awk 'tolower($1)=="workers" && $2 ~ /^[0-9]+$/ {print $2; exit}' "$file_path" 2>/dev/null || true
+}
+
 icap_base_port() {
     raw="${1:-}"
     default="${2:-}"
@@ -250,7 +258,8 @@ fi
 # Check ICAP liveness without generating synthetic OPTIONS traffic. Squid renders
 # adblock ICAP with bypass=on, so the container healthcheck must not turn an
 # adblock helper outage into data-plane downtime unless explicitly required.
-ICAP_WORKERS="$(clamp_workers "${SQUID_WORKERS:-${WORKERS:-1}}")"
+ICAP_WORKERS_RAW="$(extract_squid_workers_from_file /etc/squid/squid.conf)"
+ICAP_WORKERS="$(clamp_workers "${ICAP_WORKERS_RAW:-${SQUID_WORKERS:-${WORKERS:-1}}}")"
 ICAP_ADBLOCK_BASE="$(icap_base_port "${CICAP_PORT:-}" 14000)"
 ICAP_AV_BASE="$(icap_av_base_port "$ICAP_ADBLOCK_BASE" "$(icap_base_port "${CICAP_AV_PORT:-}" 14001)" "$ICAP_WORKERS")"
 ICAP_AV_RESP_BASE="$(icap_av_resp_base_port "$ICAP_ADBLOCK_BASE" "$ICAP_AV_BASE" "$(icap_base_port "${CICAP_AV_RESP_PORT:-}" $((ICAP_AV_BASE + ICAP_WORKERS)))" "$ICAP_WORKERS")"

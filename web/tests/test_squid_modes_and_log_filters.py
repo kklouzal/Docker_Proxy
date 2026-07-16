@@ -339,6 +339,136 @@ def test_materialize_clamav_runtime_files_uses_adblock_setting(
     assert "adaptation_access adblock_req_set deny all" in out
 
 
+def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    include_path = tmp_path / "20-icap.conf"
+    virus_path = tmp_path / "virus_scan.conf"
+    supervisor_dir = tmp_path / "supervisor.d"
+    cicap_dir = tmp_path / "c-icap"
+    supervisor_dir.mkdir()
+    cicap_dir.mkdir()
+    (cicap_dir / "c-icap.conf").write_text(
+        "PidFile /old.pid\n"
+        "Port 127.0.0.1:14001\n"
+        "AccessLog /var/log/c-icap/access.log\n"
+        "Service echo srv_echo.so\n",
+        encoding="utf-8",
+    )
+    (supervisor_dir / "cicap_adblock_4.conf").write_text("stale\n", encoding="utf-8")
+    (supervisor_dir / "cicap_av_4.conf").write_text("stale\n", encoding="utf-8")
+    (supervisor_dir / "clamav_respmod_4.conf").write_text("stale\n", encoding="utf-8")
+    (cicap_dir / "c-icap-av-4.conf").write_text("stale\n", encoding="utf-8")
+
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(virus_path))
+    monkeypatch.setenv("SQUID_SUPERVISOR_INCLUDE_DIR", str(supervisor_dir))
+    monkeypatch.setenv("CICAP_CONFIG_DIR", str(cicap_dir))
+    monkeypatch.setenv("CICAP_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("CICAP_PORT", "24000")
+    monkeypatch.setenv("CICAP_AV_PORT", "24001")
+    monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+    commands: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        commands.append(list(args))
+        return type("Proc", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    controller = SquidController(cmd_run=fake_run)
+
+    ok, detail = controller.materialize_clamav_runtime_files(
+        "workers 3\n# BEGIN SQUID-UI CLAMAV SETTINGS\n# clamav_fail_mode: closed\n# END SQUID-UI CLAMAV SETTINGS\n",
+    )
+
+    assert ok, detail
+    assert not (supervisor_dir / "cicap_adblock_4.conf").exists()
+    assert not (supervisor_dir / "cicap_av_4.conf").exists()
+    assert not (supervisor_dir / "clamav_respmod_4.conf").exists()
+    assert not (cicap_dir / "c-icap-av-4.conf").exists()
+    assert (supervisor_dir / "cicap_adblock_3.conf").exists()
+    assert (supervisor_dir / "cicap_av_3.conf").exists()
+    assert (supervisor_dir / "clamav_respmod_3.conf").exists()
+    av_conf = (cicap_dir / "c-icap-av-3.conf").read_text(encoding="utf-8")
+    assert "Port 127.0.0.1:24005" in av_conf
+    assert "AccessLog" not in av_conf
+    assert (
+        "command=/bin/sh -c 'export CLAMD_HOST=clamd-proxy CLAMD_PORT=3310 CLAMAV_REQUIRED=1;"
+        in (supervisor_dir / "cicap_av_1.conf").read_text(encoding="utf-8")
+    )
+    assert "--port 24008" in (supervisor_dir / "clamav_respmod_3.conf").read_text(
+        encoding="utf-8"
+    )
+    assert "--fail-closed" in (supervisor_dir / "clamav_respmod_1.conf").read_text(
+        encoding="utf-8"
+    )
+    assert ["supervisorctl", "-c", "/etc/supervisord.conf", "reread"] in commands
+    assert ["supervisorctl", "-c", "/etc/supervisord.conf", "update"] in commands
+    include_text = include_path.read_text(encoding="utf-8")
+    assert "icap://127.0.0.1:24002/adblockreq" in include_text
+    assert "icap://127.0.0.1:24005/avrespmod" in include_text
+    assert "icap://127.0.0.1:24008/avrespmod" in include_text
+
+
+def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    supervisor_dir = tmp_path / "supervisor.d"
+    cicap_dir = tmp_path / "c-icap"
+    supervisor_dir.mkdir()
+    cicap_dir.mkdir()
+    (cicap_dir / "c-icap.conf").write_text(
+        "Service echo srv_echo.so\n", encoding="utf-8"
+    )
+    (supervisor_dir / "clamav_respmod_1.conf").write_text(
+        "stale remote helper\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(tmp_path / "20-icap.conf"))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(tmp_path / "virus_scan.conf"))
+    monkeypatch.setenv("SQUID_SUPERVISOR_INCLUDE_DIR", str(supervisor_dir))
+    monkeypatch.setenv("CICAP_CONFIG_DIR", str(cicap_dir))
+    monkeypatch.setenv("CLAMD_HOST", "127.0.0.1")
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+
+    def fake_run(_args, **_kwargs):
+        return type("Proc", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    ok, detail = SquidController(cmd_run=fake_run).materialize_clamav_runtime_files(
+        "workers 1\n",
+    )
+
+    assert ok, detail
+    assert not (supervisor_dir / "clamav_respmod_1.conf").exists()
+    assert (supervisor_dir / "cicap_av_1.conf").exists()
+    include_text = (tmp_path / "20-icap.conf").read_text(encoding="utf-8")
+    assert (
+        "icap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod"
+        in include_text
+    )
+    assert "icap://127.0.0.1:14002/avrespmod" not in include_text
+
+
 def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> None:
     _add_web_to_path()
 

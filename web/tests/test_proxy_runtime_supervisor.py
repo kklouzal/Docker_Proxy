@@ -3233,7 +3233,9 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
 
     assert "clamav_required()" in healthcheck
     assert "adblock_icap_required()" in healthcheck
-    assert 'ICAP_WORKERS="$(clamp_workers "${SQUID_WORKERS:-${WORKERS:-1}}")"' in healthcheck
+    assert "extract_squid_workers_from_file()" in healthcheck
+    assert 'ICAP_WORKERS_RAW="$(extract_squid_workers_from_file /etc/squid/squid.conf)"' in healthcheck
+    assert 'ICAP_WORKERS="$(clamp_workers "${ICAP_WORKERS_RAW:-${SQUID_WORKERS:-${WORKERS:-1}}}")"' in healthcheck
     assert "cicap_adblock_${instance}" in healthcheck
     assert "cicap_av_${instance}" in healthcheck
     assert "clamav_respmod_${instance}" in healthcheck
@@ -3362,7 +3364,7 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
             self.token = token
 
         def materialize_clamav_runtime_files(self, config_text, **_kwargs):
-            assert config_text == "http_port 3128\n"
+            self.config_text = config_text
             return True, "ClamAV runtime files updated: /etc/squid/conf.d/20-icap.conf"
 
     class Revisions:
@@ -3402,7 +3404,7 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime.controller.get_current_config = lambda: "http_port 3128\n"
+    runtime.controller.get_current_config = lambda: "workers 2\nhttp_port 3128\n"
     runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
         reloads.append(wait_for_adblock_icap)
         or (
@@ -3417,6 +3419,7 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     assert result["changed"] is True
     assert reloads == [False]
     assert runtime.controller.token == "adblock-sha"
+    assert runtime.controller.config_text == "workers 2\nhttp_port 3128\n"
     assert "ClamAV runtime files updated" in result["detail"]
     assert "Squid reconfigured for policy update." in result["detail"]
 

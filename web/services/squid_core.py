@@ -4,6 +4,7 @@ import contextlib
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -423,6 +424,35 @@ class SquidController:
     def _virus_scan_config_path(self) -> Path:
         return _cached_virus_scan_config_path()
 
+    def _supervisor_include_dir(self) -> Path:
+        return Path(
+            (
+                os.environ.get("SQUID_SUPERVISOR_INCLUDE_DIR") or "/etc/supervisor.d"
+            ).strip()
+            or "/etc/supervisor.d",
+        )
+
+    def _cicap_config_dir(self) -> Path:
+        return Path(
+            (os.environ.get("CICAP_CONFIG_DIR") or "/etc/c-icap").strip()
+            or "/etc/c-icap",
+        )
+
+    def _cicap_base_config_path(self) -> Path:
+        return Path(
+            (
+                os.environ.get("CICAP_BASE_CONFIG_PATH")
+                or str(self._cicap_config_dir() / "c-icap.conf")
+            ).strip()
+            or str(self._cicap_config_dir() / "c-icap.conf"),
+        )
+
+    def _cicap_run_dir(self) -> Path:
+        return Path(
+            (os.environ.get("CICAP_RUN_DIR") or "/var/run/c-icap").strip()
+            or "/var/run/c-icap",
+        )
+
     def _snapshot_runtime_file(self, path: Path) -> str | None:
         try:
             return path.read_text(encoding="utf-8")
@@ -454,6 +484,184 @@ class SquidController:
             pass
         self._atomic_write_file(str(path), content)
         return True
+
+    def _runtime_icap_workers(self, config_text: str | None = None) -> int:
+        parsed = self._extract_workers(config_text or "")
+        if parsed is not None:
+            return _clamp_icap_workers(parsed)
+        return _clamp_icap_workers(os.environ.get("SQUID_WORKERS") or "1")
+
+    def _managed_icap_runtime_paths(self) -> set[Path]:
+        paths: set[Path] = set()
+        supervisor_dir = self._supervisor_include_dir()
+        if supervisor_dir.exists():
+            paths.add(supervisor_dir / "icap.conf")
+            for pattern in (
+                "cicap_adblock_*.conf",
+                "cicap_av_*.conf",
+                "clamav_respmod_*.conf",
+            ):
+                paths.update(supervisor_dir.glob(pattern))
+        cicap_dir = self._cicap_config_dir()
+        if cicap_dir.exists():
+            paths.update(cicap_dir.glob("c-icap-av-*.conf"))
+        return paths
+
+    def _snapshot_managed_icap_runtime_files(self) -> dict[Path, str | None]:
+        snapshot: dict[Path, str | None] = {}
+        for path in self._managed_icap_runtime_paths():
+            try:
+                snapshot[path] = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                snapshot[path] = None
+            except Exception:
+                snapshot[path] = None
+        return snapshot
+
+    def _restore_managed_icap_runtime_files(
+        self,
+        snapshot: dict[Path, str | None],
+    ) -> None:
+        current_paths = self._managed_icap_runtime_paths()
+        for path in sorted(current_paths - set(snapshot)):
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+        for path, content in snapshot.items():
+            self._restore_runtime_file_snapshot(path, content)
+
+    def _render_cicap_av_config(self, instance: int, port: int) -> str | None:
+        base_path = self._cicap_base_config_path()
+        try:
+            text = base_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        run_dir = self._cicap_run_dir()
+        pid_line = f"PidFile {run_dir}/c-icap-av-{instance}.pid"
+        port_line = f"Port 127.0.0.1:{port}"
+        lines: list[str] = []
+        saw_pid = False
+        saw_port = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            lower = stripped.lower()
+            if lower.startswith("accesslog "):
+                continue
+            if lower.startswith("pidfile "):
+                if not saw_pid:
+                    lines.append(pid_line)
+                    saw_pid = True
+                continue
+            if lower.startswith("port "):
+                if not saw_port:
+                    lines.append(port_line)
+                    saw_port = True
+                continue
+            lines.append(line)
+        if not saw_pid:
+            lines.append(pid_line)
+        if not saw_port:
+            lines.append(port_line)
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _render_icap_supervisor_files(
+        self,
+        *,
+        workers: int,
+        config_text: str | None = None,
+    ) -> dict[Path, str]:
+        count = _clamp_icap_workers(workers)
+        options = extract_clamav_options(config_text or "")
+        supervisor_dir = self._supervisor_include_dir()
+        cicap_dir = self._cicap_config_dir()
+        run_dir = self._cicap_run_dir()
+        adblock_base, av_base = _icap_port_bases(count)
+        resp_base = _clamav_respmod_stream_port_base(count)
+        clamd_host = (
+            os.environ.get("CLAMD_HOST") or "127.0.0.1"
+        ).strip() or "127.0.0.1"
+        clamd_port = _parse_port(os.environ.get("CLAMD_PORT"), 3310)
+        remote_clamd = _clamd_host_is_remote(clamd_host)
+        fail_open = clamav_fail_open(options)
+        clamav_required = "0" if fail_open else "1"
+        fail_mode_arg = "--fail-open" if fail_open else "--fail-closed"
+        rendered: dict[Path, str] = {}
+
+        for index in range(count):
+            instance = index + 1
+            adblock_port = adblock_base + index
+            av_port = av_base + index
+            resp_port = resp_base + index
+            av_conf = cicap_dir / f"c-icap-av-{instance}.conf"
+            av_pid = run_dir / f"c-icap-av-{instance}.pid"
+            rendered[
+                supervisor_dir / f"cicap_adblock_{instance}.conf"
+            ] = f"""[program:cicap_adblock_{instance}]
+command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port {adblock_port} --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
+autostart=true
+autorestart=unexpected
+exitcodes=0
+startsecs=45
+startretries=2
+priority=10
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+"""
+            rendered[
+                supervisor_dir / f"cicap_av_{instance}.conf"
+            ] = f"""[program:cicap_av_{instance}]
+command=/bin/sh -c 'export CLAMD_HOST={shlex.quote(clamd_host)} CLAMD_PORT={clamd_port} CLAMAV_REQUIRED={clamav_required}; rm -f {shlex.quote(str(av_pid))}; exec /usr/local/bin/cicap_av_runner.py {shlex.quote(str(av_conf))}'
+autostart=true
+autorestart=true
+priority=11
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+"""
+            av_config = self._render_cicap_av_config(instance, av_port)
+            if av_config is not None:
+                rendered[av_conf] = av_config
+            if remote_clamd:
+                rendered[
+                    supervisor_dir / f"clamav_respmod_{instance}.conf"
+                ] = f"""[program:clamav_respmod_{instance}]
+command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port {resp_port} --clamd-host {shlex.quote(clamd_host)} --clamd-port {clamd_port} {fail_mode_arg}'
+autostart=true
+autorestart=true
+priority=12
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+"""
+        return rendered
+
+    def _sync_icap_supervisor_runtime_files(
+        self,
+        *,
+        workers: int,
+        config_text: str | None = None,
+    ) -> tuple[bool, list[str]]:
+        supervisor_dir = self._supervisor_include_dir()
+        if not supervisor_dir.exists():
+            return False, []
+        rendered = self._render_icap_supervisor_files(
+            workers=workers,
+            config_text=config_text,
+        )
+        desired_paths = set(rendered)
+        stale_paths = self._managed_icap_runtime_paths() - desired_paths
+        changed: list[str] = []
+        for path in sorted(stale_paths):
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+                changed.append(str(path))
+        for path, content in rendered.items():
+            if self._write_if_changed(path, content):
+                changed.append(str(path))
+        return bool(changed), changed
 
     def set_adblock_icap_revision_token(self, token: object) -> None:
         raw = re.sub(r"[^A-Za-z0-9_.-]", "", str(token or ""))[:32]
@@ -559,6 +767,8 @@ class SquidController:
     ) -> tuple[bool, str]:
         try:
             normalized = self.normalize_config_text(config_text or "")
+            workers = self._runtime_icap_workers(normalized)
+            os.environ["SQUID_WORKERS"] = str(workers)
             options = extract_clamav_options(normalized)
             policy_mode = "bypassed" if clamav_fail_open(options) else "blocked"
             logger.info(
@@ -577,6 +787,9 @@ class SquidController:
             logger.info("AV unavailable, %s due to policy", policy_mode)
             virus_path = self._virus_scan_config_path()
             icap_path = self._icap_include_path()
+            old_virus_scan_config = self._snapshot_runtime_file(virus_path)
+            old_icap_include = self._snapshot_runtime_file(icap_path)
+            old_icap_runtime_files = self._snapshot_managed_icap_runtime_files()
             changed = []
             if self._write_if_changed(virus_path, render_virus_scan_config(options)):
                 changed.append(str(virus_path))
@@ -584,14 +797,51 @@ class SquidController:
                 icap_path,
                 self._render_icap_include(
                     normalized,
+                    workers=workers,
                     adblock_enabled=adblock_enabled,
                 ),
             ):
                 changed.append(str(icap_path))
+            supervisor_changed, supervisor_paths = (
+                self._sync_icap_supervisor_runtime_files(
+                    workers=workers,
+                    config_text=normalized,
+                )
+            )
+            if supervisor_changed:
+                ok_supervisor, supervisor_detail = self._supervisor_reread_update()
+                if not ok_supervisor:
+                    self._restore_runtime_file_snapshot(
+                        virus_path,
+                        old_virus_scan_config,
+                    )
+                    self._restore_runtime_file_snapshot(icap_path, old_icap_include)
+                    self._restore_managed_icap_runtime_files(old_icap_runtime_files)
+                    self._supervisor_reread_update()
+                    return (
+                        False,
+                        supervisor_detail
+                        or "Failed to reload ICAP supervisor runtime files.",
+                    )
+                changed.extend(supervisor_paths)
             if changed:
                 return True, "ClamAV runtime files updated: " + ", ".join(changed)
             return True, "ClamAV runtime files already current."
         except Exception as exc:
+            with contextlib.suppress(Exception):
+                if "virus_path" in locals():
+                    self._restore_runtime_file_snapshot(
+                        virus_path,
+                        locals().get("old_virus_scan_config"),
+                    )
+                if "icap_path" in locals():
+                    self._restore_runtime_file_snapshot(
+                        icap_path,
+                        locals().get("old_icap_include"),
+                    )
+                if "old_icap_runtime_files" in locals():
+                    self._restore_managed_icap_runtime_files(old_icap_runtime_files)
+                    self._supervisor_reread_update()
             logger.exception("ClamAV runtime file materialization failed")
             return False, public_error_message(exc)
 
@@ -1248,8 +1498,7 @@ class SquidController:
             start_detail_lower = start_detail.lower()
             start_reported_already_running = "already running" in start_detail_lower
             if (
-                start.returncode != 0
-                or start_reported_already_running
+                start.returncode != 0 or start_reported_already_running
             ) and "already started" not in start_detail_lower:
                 accepted = self._accept_running_squid_restart(
                     detail_parts,
@@ -1668,9 +1917,7 @@ class SquidController:
                             part for part in detail_parts if part
                         ).strip()
                     continue
-                return False, "\n".join(
-                    part for part in detail_parts if part
-                ).strip()
+                return False, "\n".join(part for part in detail_parts if part).strip()
             except Exception as exc:
                 detail_parts.append(f"squid -z error: {exc}")
                 return False, "\n".join(part for part in detail_parts if part).strip()
@@ -1709,14 +1956,7 @@ class SquidController:
             virus_scan_config_path = self._virus_scan_config_path()
             old_icap_include = self._snapshot_runtime_file(icap_include_path)
             old_virus_scan_config = self._snapshot_runtime_file(virus_scan_config_path)
-            old_icap_supervisor = None
-            if workers_changed and new_workers is not None:
-                try:
-                    old_icap_supervisor = Path("/etc/supervisor.d/icap.conf").read_text(
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    old_icap_supervisor = None
+            old_icap_runtime_files = self._snapshot_managed_icap_runtime_files()
 
             self._atomic_write_file(new_path, normalized_config)
             if current:
@@ -1734,6 +1974,8 @@ class SquidController:
                     virus_scan_config_path,
                     old_virus_scan_config,
                 )
+                self._restore_managed_icap_runtime_files(old_icap_runtime_files)
+                self._supervisor_reread_update()
                 _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                     reason=runtime_details
                     or "Failed to materialize ClamAV runtime files.",
@@ -1760,25 +2002,13 @@ class SquidController:
                             virus_scan_config_path,
                             old_virus_scan_config,
                         )
+                        self._restore_managed_icap_runtime_files(old_icap_runtime_files)
                     except Exception:
                         log_exception_throttled(
                             logger,
-                            "squid_core.revert_icap_include",
+                            "squid_core.revert_icap_runtime",
                             interval_seconds=300.0,
-                            message="Failed to revert /etc/squid/conf.d/20-icap.conf",
-                        )
-                    try:
-                        if old_icap_supervisor is not None:
-                            self._atomic_write_file(
-                                "/etc/supervisor.d/icap.conf",
-                                old_icap_supervisor,
-                            )
-                    except Exception:
-                        log_exception_throttled(
-                            logger,
-                            "squid_core.revert_icap_supervisor",
-                            interval_seconds=300.0,
-                            message="Failed to revert /etc/supervisor.d/icap.conf",
+                            message="Failed to revert generated ICAP runtime files",
                         )
                     self._supervisor_reread_update()
                     _rollback_ok, rollback_detail = self.restore_last_known_good_config(
@@ -1802,25 +2032,15 @@ class SquidController:
                                 virus_scan_config_path,
                                 old_virus_scan_config,
                             )
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                "squid_core.revert_icap_include.restart",
-                                interval_seconds=300.0,
-                                message="Failed to revert /etc/squid/conf.d/20-icap.conf after restart failure",
+                            self._restore_managed_icap_runtime_files(
+                                old_icap_runtime_files
                             )
-                        try:
-                            if old_icap_supervisor is not None:
-                                self._atomic_write_file(
-                                    "/etc/supervisor.d/icap.conf",
-                                    old_icap_supervisor,
-                                )
                         except Exception:
                             log_exception_throttled(
                                 logger,
-                                "squid_core.revert_icap_supervisor.restart",
+                                "squid_core.revert_icap_runtime.restart",
                                 interval_seconds=300.0,
-                                message="Failed to revert /etc/supervisor.d/icap.conf after restart failure",
+                                message="Failed to revert generated ICAP runtime files after restart failure",
                             )
                         self._supervisor_reread_update()
                         _rollback_ok, rollback_detail = (
@@ -1863,6 +2083,8 @@ class SquidController:
                         virus_scan_config_path,
                         old_virus_scan_config,
                     )
+                    self._restore_managed_icap_runtime_files(old_icap_runtime_files)
+                    self._supervisor_reread_update()
                     _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                         reason=restart_details
                         or "Squid restart failed after cache reinitialization.",
@@ -1900,6 +2122,8 @@ class SquidController:
                     virus_scan_config_path,
                     old_virus_scan_config,
                 )
+                self._restore_managed_icap_runtime_files(old_icap_runtime_files)
+                self._supervisor_reread_update()
                 _rollback_ok, rollback_detail = self.restore_last_known_good_config(
                     reason=reconfigure_detail,
                     fallback_config=current,
