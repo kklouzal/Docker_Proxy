@@ -1883,6 +1883,128 @@ def test_squid_controller_atomic_write_uses_readable_mode_for_new_files(
     assert target.stat().st_mode & 0o777 == 0o644
 
 
+def test_runtime_icap_materialization_matches_startup_parity_contract(
+    tmp_path,
+    monkeypatch,
+    request,
+) -> None:
+    _add_repo_paths()
+    from services.clamav_config_forms import (  # type: ignore
+        render_clamav_settings_block,
+    )
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        _cached_icap_include_path,
+        _cached_virus_scan_config_path,
+    )
+
+    supervisor_dir = tmp_path / "supervisor.d"
+    cicap_dir = tmp_path / "c-icap"
+    run_dir = tmp_path / "run" / "c-icap"
+    include_path = tmp_path / "conf.d" / "20-icap.conf"
+    virus_path = tmp_path / "virus_scan.conf"
+    supervisor_dir.mkdir()
+    cicap_dir.mkdir()
+    run_dir.mkdir(parents=True)
+    (cicap_dir / "c-icap.conf").write_text(
+        "PidFile /var/run/c-icap/c-icap.pid\n"
+        "Port 127.0.0.1:14001\n"
+        "AccessLog /var/log/cicap-access.log\n"
+        "Include /etc/virus_scan.conf\n",
+        encoding="utf-8",
+    )
+    (supervisor_dir / "cicap_adblock_3.conf").write_text("stale\n", encoding="utf-8")
+    (supervisor_dir / "cicap_av_3.conf").write_text("stale\n", encoding="utf-8")
+    (supervisor_dir / "clamav_respmod_3.conf").write_text("stale\n", encoding="utf-8")
+    (cicap_dir / "c-icap-av-3.conf").write_text("stale\n", encoding="utf-8")
+
+    monkeypatch.setenv("SQUID_SUPERVISOR_INCLUDE_DIR", str(supervisor_dir))
+    monkeypatch.setenv("CICAP_CONFIG_DIR", str(cicap_dir))
+    monkeypatch.setenv("CICAP_BASE_CONFIG_PATH", str(cicap_dir / "c-icap.conf"))
+    monkeypatch.setenv("CICAP_RUN_DIR", str(run_dir))
+    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
+    monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(virus_path))
+    monkeypatch.setenv("CICAP_PORT", "15000")
+    monkeypatch.setenv("CICAP_AV_PORT", "15001")
+    monkeypatch.setenv("CICAP_AV_RESP_PORT", "15002")
+    monkeypatch.setenv("CLAMD_HOST", "clamd.example.internal")
+    monkeypatch.setenv("CLAMD_PORT", "3311")
+    monkeypatch.setenv("CLAMAV_REQUIRED", "1")
+    monkeypatch.setenv("ADBLOCK_ENABLED", "0")
+    _cached_icap_include_path.cache_clear()
+    _cached_virus_scan_config_path.cache_clear()
+    request.addfinalizer(_cached_icap_include_path.cache_clear)
+    request.addfinalizer(_cached_virus_scan_config_path.cache_clear)
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return _cp(0, stdout="ok")
+
+    controller = SquidController(str(tmp_path / "squid.conf"), cmd_run=fake_run)
+    config_text = "workers 2\n" + render_clamav_settings_block(
+        {"clamav_fail_mode": "open"},
+    )
+
+    ok, detail = controller.materialize_clamav_runtime_files(
+        config_text,
+        adblock_enabled=False,
+    )
+
+    assert ok is True
+    assert "ClamAV runtime files updated" in detail
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "reread"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "update"],
+    ]
+    assert not (supervisor_dir / "cicap_adblock_3.conf").exists()
+    assert not (supervisor_dir / "cicap_av_3.conf").exists()
+    assert not (supervisor_dir / "clamav_respmod_3.conf").exists()
+    assert not (cicap_dir / "c-icap-av-3.conf").exists()
+
+    include = include_path.read_text(encoding="utf-8")
+    assert "icap://127.0.0.1:15000/adblockreq bypass=on" in include
+    assert "icap://127.0.0.1:15002/avrespmod bypass=off" in include
+    assert "icap://127.0.0.1:15003/avrespmod bypass=off" in include
+    assert "icap://127.0.0.1:15004/avrespmod bypass=off" in include
+    assert "icap://127.0.0.1:15005/avrespmod bypass=off" in include
+    assert "# Adblock request routing disabled by persisted UI setting." in include
+    assert "adaptation_access adblock_req_set allow icap_adblockable" not in include
+
+    assert "virus_scan.PassOnError off" in virus_path.read_text(encoding="utf-8")
+    assert "Port 127.0.0.1:15002" in (cicap_dir / "c-icap-av-1.conf").read_text(
+        encoding="utf-8",
+    )
+    assert f"PidFile {run_dir}/c-icap-av-2.pid" in (
+        cicap_dir / "c-icap-av-2.conf"
+    ).read_text(encoding="utf-8")
+
+    adblock_supervisor = (supervisor_dir / "cicap_adblock_1.conf").read_text(
+        encoding="utf-8",
+    )
+    assert "autorestart=unexpected" in adblock_supervisor
+    assert "exitcodes=0" in adblock_supervisor
+    assert "startsecs=45" in adblock_supervisor
+    assert "startretries=2" in adblock_supervisor
+
+    av_supervisor = (supervisor_dir / "cicap_av_1.conf").read_text(encoding="utf-8")
+    assert "CLAMD_HOST=clamd.example.internal" in av_supervisor
+    assert "CLAMD_PORT=3311" in av_supervisor
+    assert "CLAMAV_REQUIRED=1" in av_supervisor
+    assert "rm -f" in av_supervisor
+    assert "cicap_av_runner.py" in av_supervisor
+
+    respmod_supervisor = (supervisor_dir / "clamav_respmod_1.conf").read_text(
+        encoding="utf-8",
+    )
+    assert "--port 15004" in respmod_supervisor
+    assert "--clamd-host clamd.example.internal" in respmod_supervisor
+    assert "--clamd-port 3311" in respmod_supervisor
+    assert "--fail-closed" in respmod_supervisor
+    assert "--fail-open" not in respmod_supervisor
+
+
 def test_squid_controller_validation_timeout_returns_actionable_detail(
     tmp_path,
 ) -> None:
@@ -3294,6 +3416,17 @@ def test_packaged_proxy_entrypoint_bounds_adblock_supervisor_restart_loop() -> N
     assert "startsecs=45" in section
     assert "startretries=2" in section
     assert "bypass=on" in entrypoint
+
+
+def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    supervisord = (repo_root / "docker" / "supervisord.proxy.conf").read_text(
+        encoding="utf-8",
+    )
+    section = supervisord.split("[program:squid]", 1)[1].split("[program:", 1)[0]
+
+    assert "stopasgroup=true" in section
+    assert "killasgroup=true" in section
 
 
 def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:

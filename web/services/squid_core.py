@@ -35,7 +35,22 @@ def _env_flag(name: str, default: bool) -> bool:
     value = (os.environ.get(name) or "").strip().lower()
     if not value:
         return default
-    return value in {"1", "true", "yes", "on", "enabled"}
+    return value in {"1", "true", "yes", "on", "enabled", "required", "strict"}
+
+
+def _clamav_required_from_env() -> bool:
+    return _env_flag("CLAMAV_REQUIRED", False) or _env_flag(
+        "FILE_SECURITY_AV_REQUIRED",
+        False,
+    )
+
+
+def _effective_clamav_options(options: dict[str, Any]) -> dict[str, Any]:
+    if not _clamav_required_from_env():
+        return options
+    effective = dict(options)
+    effective["clamav_fail_mode"] = "closed"
+    return effective
 
 
 def _clamp_icap_workers(value: object) -> int:
@@ -570,7 +585,7 @@ class SquidController:
         config_text: str | None = None,
     ) -> dict[Path, str]:
         count = _clamp_icap_workers(workers)
-        options = extract_clamav_options(config_text or "")
+        options = _effective_clamav_options(extract_clamav_options(config_text or ""))
         supervisor_dir = self._supervisor_include_dir()
         cicap_dir = self._cicap_config_dir()
         run_dir = self._cicap_run_dir()
@@ -686,7 +701,9 @@ stdout_logfile_maxbytes=0
             os.environ.get("CLAMD_HOST", "127.0.0.1"),
         )
 
-        clamav_options = extract_clamav_options(config_text or "")
+        clamav_options = _effective_clamav_options(
+            extract_clamav_options(config_text or ""),
+        )
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
         file_security_policy = render_file_security_policy_config(clamav_options).strip()
         # Version the Squid ICAP service name with the active artifact while
@@ -769,7 +786,7 @@ stdout_logfile_maxbytes=0
             normalized = self.normalize_config_text(config_text or "")
             workers = self._runtime_icap_workers(normalized)
             os.environ["SQUID_WORKERS"] = str(workers)
-            options = extract_clamav_options(normalized)
+            options = _effective_clamav_options(extract_clamav_options(normalized))
             policy_mode = "bypassed" if clamav_fail_open(options) else "blocked"
             logger.info(
                 "ClamAV file policy applied: preset=%s fail-%s scan_downloads=%s scan_uploads=%s risky_extensions=%s archive_block=%s nested_archives=%s quarantine_metadata=%s size_caps=%s/%s",
