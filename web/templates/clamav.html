@@ -56,9 +56,9 @@
 
 
 {% if settings_ok == '1' %}
-  <div class="banner success"><span class="badge ok">Settings saved</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings were validated and applied for {{ active_proxy.display_name }}.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
+  <div class="banner success"><span class="badge warn">Apply queued</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings were validated and saved for {{ active_proxy.display_name }}; runtime application is queued asynchronously and is not proven yet. Watch the queued operation detail below for apply status.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
 {% elif settings_ok == '0' %}
-  <div class="banner error"><span class="badge danger">Settings failed</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings could not be applied; previous config kept.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
+  <div class="banner error"><span class="badge danger">Settings failed</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings were not queued for runtime application; the active config revision was kept or restored.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
 {% endif %}
 
 <section class="card config-editor-card">
