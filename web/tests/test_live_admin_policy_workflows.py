@@ -392,8 +392,15 @@ def test_live_sslfilter_granular_policy_stays_proxy_side_only(
         csrf_path="/sslfilter",
     )
     assert toggle_private_response.status == 200
+    toggle_private_params = query_params(toggle_private_response.url)
+    assert toggle_private_params.get("private_saved") == ["1"]
+    assert toggle_private_params.get("policy_queue") == ["1"]
     assert (
-        "Private/local PAC bypass preference updated." in toggle_private_response.text
+        "Private/local PAC bypass preference updated and queued for proxy reconciliation."
+        in toggle_private_response.text
+    )
+    assert "Policy change saved; proxy reconciliation is queued" in (
+        toggle_private_response.text
     )
 
     sslfilter_page = admin_client.admin_request("/sslfilter")

@@ -101,10 +101,22 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
     )
 
     _assert_redirect_success(response)
+    location = response.headers.get("Location", "")
+    assert "proxy_id=edge-2" in location
+    assert "private_saved=1" in location
+    assert "policy_queue=1" in location
     assert loaded.sslfilter_store.exclude_private_nets is True
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
     assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
+
+    page = client.get(location)
+    text = page.get_data(as_text=True)
+    assert (
+        "Private/local PAC bypass preference updated and queued for proxy reconciliation."
+        in text
+    )
+    assert "Policy change saved; proxy reconciliation is queued" in text
 
 
 def test_sslfilter_mutation_reports_reconcile_queue_failure_without_success(
