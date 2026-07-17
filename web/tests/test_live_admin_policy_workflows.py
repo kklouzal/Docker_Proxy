@@ -547,7 +547,18 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
         csrf_path="/webfilter?tab=whitelist",
     )
     assert add_whitelist_response.status == 200
-    assert "Whitelist entry added." in add_whitelist_response.text
+    add_whitelist_params = query_params(add_whitelist_response.url)
+    assert add_whitelist_params.get("wl_ok") == ["1"]
+    assert add_whitelist_params.get("policy_queue") == ["1"]
+    assert (
+        "Policy change saved; proxy reconciliation is queued"
+        in add_whitelist_response.text
+    )
+    assert (
+        "Whitelist entry saved and queued for proxy reconciliation."
+        in add_whitelist_response.text
+    )
+    assert "Whitelist entry added." not in add_whitelist_response.text
     assert whitelist_domain in add_whitelist_response.text
 
     remove_whitelist_response = admin_client.admin_post_form(
@@ -560,6 +571,12 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
         csrf_path="/webfilter?tab=whitelist",
     )
     assert remove_whitelist_response.status == 200
+    remove_whitelist_params = query_params(remove_whitelist_response.url)
+    assert remove_whitelist_params.get("policy_queue") == ["1"]
+    assert (
+        "Policy change saved; proxy reconciliation is queued"
+        in remove_whitelist_response.text
+    )
     assert (
         whitelist_domain
         not in admin_client.admin_request("/webfilter?tab=whitelist").text

@@ -151,6 +151,49 @@ def test_sslfilter_mutation_reports_reconcile_queue_failure_without_success(
     assert "SSL filtering policy updated and queued" not in text
 
 
+def test_webfilter_whitelist_success_discloses_queued_selected_proxy_scope(
+    monkeypatch, tmp_path
+) -> None:
+    webfilter_store = FakeWebfilterStore()
+    loaded, client = _loaded(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["default", "edge-2"]),
+        webfilter_store=webfilter_store,
+    )
+
+    response = _post(
+        client,
+        "/webfilter?tab=whitelist&proxy_id=edge-2",
+        {
+            "tab": "whitelist",
+            "action": "whitelist_add",
+            "whitelist_domain": "Allow.Example",
+        },
+    )
+
+    _assert_redirect_success(response)
+    location = response.headers.get("Location", "")
+    assert "proxy_id=edge-2" in location
+    assert "tab=whitelist" in location
+    assert "wl_ok=1" in location
+    assert "policy_queue=1" in location
+    assert webfilter_store.whitelist == [("allow.example", 1)]
+    assert loaded.proxy_client.synced == []
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+
+    page = client.get(location)
+    text = page.get_data(as_text=True)
+    assert "Selected proxy only" in text
+    assert "Whitelist entries on this page apply only to Edge-2." in text
+    assert "Policy change saved; proxy reconciliation is queued" in text
+    assert "not yet proven applied" in text
+    assert "Whitelist entry saved and queued for proxy reconciliation." in text
+    assert "Whitelist entry added." not in text
+
+
 def test_webfilter_whitelist_reports_reconcile_queue_failure_without_success(
     monkeypatch, tmp_path
 ) -> None:
