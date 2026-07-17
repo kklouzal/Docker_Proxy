@@ -3032,6 +3032,10 @@ class ProxyRuntime:
         policy_ok = bool(policy_result.get("ok", True))
         policy_changed = bool(policy_result.get("changed", False))
         policy_reload_required = bool(policy_result.get("reload_required", False))
+        policy_evidence = {
+            "policy_sha256": str(policy_result.get("policy_sha256") or ""),
+            "current_policy_sha": str(policy_result.get("current_policy_sha") or ""),
+        }
         if str(policy_result.get("detail") or "").strip():
             detail_parts.append(str(policy_result.get("detail") or "").strip())
         if not policy_ok:
@@ -3061,6 +3065,7 @@ class ProxyRuntime:
                 detail=detail,
                 current_config_sha=self._current_config_sha(),
             )
+            adblock_result.update(policy_evidence)
             adblock_result["detail"] = detail
             return adblock_result
 
@@ -3077,6 +3082,7 @@ class ProxyRuntime:
                 detail=detail,
                 current_config_sha=self._current_config_sha(),
             )
+            pac_result.update(policy_evidence)
             pac_result["detail"] = detail
             return pac_result
 
@@ -3107,6 +3113,7 @@ class ProxyRuntime:
                     "pac_changed": pac_changed,
                     "config_changed": False,
                     "current_config_sha": self._current_config_sha(),
+                    **policy_evidence,
                     **operation_evidence,
                 }
 
@@ -3189,6 +3196,7 @@ class ProxyRuntime:
                     "cache_cleared": cache_cleared,
                     "config_changed": False,
                     "detail": detail,
+                    **policy_evidence,
                     **operation_evidence,
                 }
         policy_config_ok, policy_config_detail, policy_config_changed = (
@@ -3220,6 +3228,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **policy_evidence,
                 **operation_evidence,
             }
         if policy_config_changed:
@@ -3250,6 +3259,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **policy_evidence,
                 **operation_evidence,
             }
             if (
@@ -3325,6 +3335,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **policy_evidence,
                 **operation_evidence,
             }
 
@@ -3365,6 +3376,7 @@ class ProxyRuntime:
                 "config_changed": bool(policy_config_changed),
                 "rollback_active": True,
                 "detail": detail,
+                **policy_evidence,
                 **operation_evidence,
             }
 
@@ -3406,6 +3418,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **policy_evidence,
                 **operation_evidence,
             }
 
@@ -3432,6 +3445,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **policy_evidence,
                 **operation_evidence,
             }
 
@@ -3484,6 +3498,7 @@ class ProxyRuntime:
             "cache_cleared": cache_cleared,
             "config_changed": True,
             "detail": detail,
+            **policy_evidence,
             **operation_evidence,
         }
 
