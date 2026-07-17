@@ -261,6 +261,39 @@ def _operation_completion_status(
             return "failed", op_detail[:4000]
         return default_status, detail
 
+    if target_kind == "certificate_revision":
+        target_ref = _int_or_none(getattr(operation, "target_ref", None))
+        applied_ref = _int_or_none(result.get("certificate_revision_id"))
+        applied_hash = str(result.get("certificate_bundle_sha256") or "").strip()
+        if target_ref is None:
+            op_detail = (
+                "Certificate operation completed reconciliation but did not include "
+                "a valid queued certificate revision target."
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "failed", op_detail[:4000]
+        if applied_ref is None:
+            op_detail = (
+                "Certificate operation completed reconciliation but did not report "
+                "the active certificate revision evidence required to verify the queued target."
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "failed", op_detail[:4000]
+        if target_ref == applied_ref:
+            return default_status, detail
+
+        hash_detail = f" ({applied_hash[:12]})" if applied_hash else ""
+        op_detail = (
+            f"Superseded by active certificate revision {applied_ref}{hash_detail}; "
+            f"queued certificate revision {target_ref} was not applied because a newer "
+            "desired certificate bundle was reconciled."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "superseded", op_detail[:4000]
+
     if target_kind != "config_revision":
         return default_status, detail
 
@@ -276,6 +309,17 @@ def _operation_completion_status(
     if detail:
         op_detail = f"{op_detail}\n{detail}"
     return "superseded", op_detail[:4000]
+
+
+def _certificate_result_evidence(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "certificate_revision_id": _int_or_none(
+            result.get("certificate_revision_id"),
+        ),
+        "certificate_bundle_sha256": str(
+            result.get("certificate_bundle_sha256") or result.get("bundle_sha256") or "",
+        ).strip(),
+    }
 
 
 @contextmanager
@@ -2327,7 +2371,8 @@ class ProxyRuntime:
                 "proxy_id": self.proxy_id,
                 "changed": False,
                 "detail": "",
-                "revision_id": None,
+                "certificate_revision_id": None,
+                "certificate_bundle_sha256": "",
             }
 
         current_sha = self._current_certificate_bundle_sha()
@@ -2354,10 +2399,10 @@ class ProxyRuntime:
             result = {
                 "ok": True,
                 "proxy_id": self.proxy_id,
-                "revision_id": revision_meta.revision_id,
+                "certificate_revision_id": revision_meta.revision_id,
                 "changed": False,
                 "detail": "Proxy is already using the active certificate bundle.",
-                "bundle_sha256": revision_meta.bundle_sha256,
+                "certificate_bundle_sha256": revision_meta.bundle_sha256,
             }
             if applied is not None:
                 result["application_id"] = applied.application_id
@@ -2368,10 +2413,10 @@ class ProxyRuntime:
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "revision_id": None,
+                "certificate_revision_id": None,
                 "changed": False,
                 "detail": "Active certificate metadata was present, but the full bundle could not be loaded.",
-                "bundle_sha256": "",
+                "certificate_bundle_sha256": "",
             }
 
         try:
@@ -2396,11 +2441,11 @@ class ProxyRuntime:
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "revision_id": revision.revision_id,
+                "certificate_revision_id": revision.revision_id,
                 "application_id": applied.application_id,
                 "changed": False,
                 "detail": detail,
-                "bundle_sha256": revision.bundle_sha256,
+                "certificate_bundle_sha256": revision.bundle_sha256,
             }
 
         ok_restart, restart_detail = self._reinitialize_ssl_db_and_restart()
@@ -2416,11 +2461,11 @@ class ProxyRuntime:
         return {
             "ok": ok_restart,
             "proxy_id": self.proxy_id,
-            "revision_id": revision.revision_id,
+            "certificate_revision_id": revision.revision_id,
             "application_id": applied.application_id,
             "changed": ok_restart,
             "detail": detail,
-            "bundle_sha256": revision.bundle_sha256,
+            "certificate_bundle_sha256": revision.bundle_sha256,
         }
 
     def start_background_tasks(self) -> None:
@@ -3006,6 +3051,7 @@ class ProxyRuntime:
                 **operation_evidence,
             }
         cert_result = self.sync_certificate_bundle(force=artifact_force_value)
+        cert_evidence = _certificate_result_evidence(cert_result)
         cert_ok = bool(cert_result.get("ok", True))
         cert_changed = bool(cert_result.get("changed", False))
         detail_parts = (
@@ -3026,6 +3072,8 @@ class ProxyRuntime:
                 current_config_sha=self._current_config_sha(),
             )
             cert_result["detail"] = detail
+            cert_result.update(cert_evidence)
+            cert_result.update(operation_evidence)
             return cert_result
 
         policy_result = self.sync_policy_state(force=artifact_force_value)
@@ -3046,6 +3094,9 @@ class ProxyRuntime:
                 detail=detail,
                 current_config_sha=self._current_config_sha(),
             )
+            policy_result.update(cert_evidence)
+            policy_result.update(policy_evidence)
+            policy_result.update(operation_evidence)
             policy_result["detail"] = detail
             return policy_result
 
@@ -3065,7 +3116,9 @@ class ProxyRuntime:
                 detail=detail,
                 current_config_sha=self._current_config_sha(),
             )
+            adblock_result.update(cert_evidence)
             adblock_result.update(policy_evidence)
+            adblock_result.update(operation_evidence)
             adblock_result["detail"] = detail
             return adblock_result
 
@@ -3082,7 +3135,9 @@ class ProxyRuntime:
                 detail=detail,
                 current_config_sha=self._current_config_sha(),
             )
+            pac_result.update(cert_evidence)
             pac_result.update(policy_evidence)
+            pac_result.update(operation_evidence)
             pac_result["detail"] = detail
             return pac_result
 
@@ -3113,6 +3168,7 @@ class ProxyRuntime:
                     "pac_changed": pac_changed,
                     "config_changed": False,
                     "current_config_sha": self._current_config_sha(),
+                    **cert_evidence,
                     **policy_evidence,
                     **operation_evidence,
                 }
@@ -3196,6 +3252,7 @@ class ProxyRuntime:
                     "cache_cleared": cache_cleared,
                     "config_changed": False,
                     "detail": detail,
+                    **cert_evidence,
                     **policy_evidence,
                     **operation_evidence,
                 }
@@ -3228,6 +3285,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **cert_evidence,
                 **policy_evidence,
                 **operation_evidence,
             }
@@ -3259,6 +3317,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **cert_evidence,
                 **policy_evidence,
                 **operation_evidence,
             }
@@ -3335,6 +3394,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **cert_evidence,
                 **policy_evidence,
                 **operation_evidence,
             }
@@ -3376,6 +3436,7 @@ class ProxyRuntime:
                 "config_changed": bool(policy_config_changed),
                 "rollback_active": True,
                 "detail": detail,
+                **cert_evidence,
                 **policy_evidence,
                 **operation_evidence,
             }
@@ -3418,6 +3479,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **cert_evidence,
                 **policy_evidence,
                 **operation_evidence,
             }
@@ -3445,6 +3507,7 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                **cert_evidence,
                 **policy_evidence,
                 **operation_evidence,
             }
@@ -3498,6 +3561,7 @@ class ProxyRuntime:
             "cache_cleared": cache_cleared,
             "config_changed": True,
             "detail": detail,
+            **cert_evidence,
             **policy_evidence,
             **operation_evidence,
         }

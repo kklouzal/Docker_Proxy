@@ -746,7 +746,8 @@ def test_sync_certificate_bundle_skips_current_bundle_even_when_forced() -> None
 
     assert result["ok"] is True
     assert result["changed"] is False
-    assert result["revision_id"] == 7
+    assert result["certificate_revision_id"] == 7
+    assert result["certificate_bundle_sha256"] == "same-sha"
     assert result["detail"] == "Proxy is already using the active certificate bundle."
 
 
@@ -784,6 +785,8 @@ def test_sync_certificate_bundle_records_noop_apply_for_current_bundle_without_a
 
     assert result["ok"] is True
     assert result["changed"] is False
+    assert result["certificate_revision_id"] == 8
+    assert result["certificate_bundle_sha256"] == "same-sha"
     assert result["application_id"] == 123
     assert recorded == [("default", 8, True, "same-sha")]
 
@@ -3813,6 +3816,236 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
     assert calls[0][0:2] == (5, "superseded")
     assert "queued target revision 7 was not applied" in calls[0][2]
     assert calls[1] == (6, "applied", "runtime reconciled")
+
+
+def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref="12",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id) -> None:
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "certificate_revision_id": 12,
+        "certificate_bundle_sha256": "cert-sha-12",
+        "detail": "Proxy is already using the active certificate bundle.",
+    }
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "artifact-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._current_config_sha = lambda: "current-config-sha"
+    runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
+    runtime._current_adblock_enabled = lambda: True
+    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: None,
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert result["certificate_revision_id"] == 12
+    assert result["certificate_bundle_sha256"] == "cert-sha-12"
+    assert calls == [
+        (
+            5,
+            "applied",
+            "Proxy is already using the active certificate bundle.",
+        )
+    ]
+
+
+def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    stale = SimpleNamespace(
+        operation_id=5,
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref="11",
+    )
+    current = SimpleNamespace(
+        operation_id=6,
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref="12",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id) -> None:
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id is None
+            return [stale, current]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "certificate_revision_id": 12,
+        "certificate_bundle_sha256": "cert-sha-12",
+        "detail": "Proxy is already using the active certificate bundle.",
+    }
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "artifact-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._current_config_sha = lambda: "config-sha-11"
+    runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
+    runtime._current_adblock_enabled = lambda: True
+    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=11,
+            config_sha256="config-sha-11",
+        ),
+        latest_apply=lambda _proxy_id: None,
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert result["revision_id"] == 11
+    assert result["certificate_revision_id"] == 12
+    assert calls[0][0:2] == (5, "superseded")
+    assert "active certificate revision 12" in calls[0][2]
+    assert "queued certificate revision 11 was not applied" in calls[0][2]
+    assert calls[1] == (
+        6,
+        "applied",
+        (
+            "Proxy is already using the active certificate bundle.\n"
+            "Proxy is already using the active config revision."
+        ),
+    )
+
+
+def test_sync_from_db_fails_certificate_operation_without_revision_evidence(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref="12",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id) -> None:
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "certificate_bundle_sha256": "cert-sha-12",
+        "detail": "Proxy certificate state reconciled without revision evidence.",
+    }
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "artifact-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._current_config_sha = lambda: "config-sha-12"
+    runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
+    runtime._current_adblock_enabled = lambda: True
+    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=12,
+            config_sha256="config-sha-12",
+        ),
+        latest_apply=lambda _proxy_id: None,
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert result["revision_id"] == 12
+    assert result["certificate_revision_id"] is None
+    assert calls[0][0:2] == (5, "failed")
+    assert "did not report the active certificate revision evidence" in calls[0][2]
 
 
 def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergence(
