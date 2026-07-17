@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import re
+import urllib.parse
 from pathlib import Path
 
 from .mysql_test_utils import (
@@ -301,6 +303,169 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
     assert res.status_code in {302, 303}
     assert store.approved
     assert store.approved[0][0] == 1
+
+
+def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services.policy_requests import PolicyException
+
+    from .admin_route_test_utils import FakeRegistry, load_admin_app, login_client
+
+    class Store:
+        def __init__(self) -> None:
+            self.approved: list[tuple[int, dict[str, object]]] = []
+            self.revoked: list[tuple[int, dict[str, object]]] = []
+
+        def init_db(self) -> None:
+            pass
+
+        def approve_request(self, request_id, **kwargs):
+            self.approved.append((request_id, kwargs))
+            return PolicyException(
+                2,
+                "edge-2",
+                "active",
+                "webfilter",
+                "192.168.1.55",
+                "ok.example",
+                "adult",
+                1,
+                1,
+                "admin",
+                "approved",
+                0,
+                0,
+                "",
+                request_id,
+            )
+
+        def revoke_exception(self, exception_id, **kwargs) -> None:
+            self.revoked.append((exception_id, kwargs))
+
+    store = Store()
+    monkeypatch.setenv("DISABLE_CSRF", "1")
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["default", "edge-2"]),
+        policy_request_store=store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    approve_response = client.post(
+        "/requests?proxy_id=edge-2",
+        data={
+            "action": "approve",
+            "request_id": "7",
+            "duration_seconds": "3600",
+        },
+        follow_redirects=False,
+    )
+
+    assert approve_response.status_code in {302, 303}
+    approve_location = approve_response.headers.get("Location", "")
+    approve_params = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(approve_location).query,
+    )
+    assert len(approve_params.get("ok", [])) == 1
+    assert re.fullmatch(
+        r"approved; Proxy reconciliation queued operation #\d+\.",
+        approve_params["ok"][0],
+    )
+    assert len(store.approved) == 1
+    assert store.approved[0][0] == 7
+    assert store.approved[0][1]["proxy_id"] == "edge-2"
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+
+    approve_page = client.get(approve_location)
+    approve_text = approve_page.get_data(as_text=True)
+    assert (
+        "Action completed: approved; Proxy reconciliation queued operation #1."
+        in approve_text
+    )
+
+    revoke_response = client.post(
+        "/requests?proxy_id=edge-2",
+        data={
+            "action": "revoke",
+            "exception_id": "2",
+            "admin_note": "cleanup",
+        },
+        follow_redirects=False,
+    )
+
+    assert revoke_response.status_code in {302, 303}
+    revoke_location = revoke_response.headers.get("Location", "")
+    revoke_params = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(revoke_location).query,
+    )
+    assert len(revoke_params.get("ok", [])) == 1
+    assert re.fullmatch(
+        r"revoked; Proxy reconciliation queued operation #\d+\.",
+        revoke_params["ok"][0],
+    )
+    assert len(store.revoked) == 1
+    assert store.revoked[0][0] == 2
+    assert store.revoked[0][1]["proxy_id"] == "edge-2"
+    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
+    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+
+
+def test_admin_policy_requests_queue_failure_reports_error_without_success(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from .admin_route_test_utils import load_admin_app, login_client
+
+    class Store:
+        def __init__(self) -> None:
+            self.approved: list[tuple[int, dict[str, object]]] = []
+
+        def init_db(self) -> None:
+            pass
+
+        def approve_request(self, request_id, **kwargs):
+            self.approved.append((request_id, kwargs))
+
+    store = Store()
+    monkeypatch.setenv("DISABLE_CSRF", "1")
+    loaded = load_admin_app(monkeypatch, tmp_path, policy_request_store=store)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/requests",
+        data={
+            "action": "approve",
+            "request_id": "7",
+            "duration_seconds": "3600",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    location = response.headers.get("Location", "")
+    assert "error=" in location
+    assert "ok=" not in location
+    assert store.approved
+    assert loaded.operation_ledger.operations == []
+
+    page = client.get(location)
+    text = page.get_data(as_text=True)
+    assert "Policy changes were saved, but proxy reconciliation was not queued." in text
+    assert "Action completed" not in text
 
 
 def test_admin_policy_requests_approval_duration_is_bounded(

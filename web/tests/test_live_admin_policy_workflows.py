@@ -34,6 +34,20 @@ def _find_pac_profile_id(html: str, profile_name: str) -> int:
     raise AssertionError(msg)
 
 
+def _assert_policy_request_reconcile_message(
+    url: str,
+    *,
+    action: str,
+) -> None:
+    values = query_params(url).get("ok")
+    assert values is not None
+    assert len(values) == 1
+    assert re.fullmatch(
+        rf"{re.escape(action)}; Proxy reconciliation queued operation #\d+\.",
+        values[0],
+    )
+
+
 def _adblock_store():
     from services.adblock_store import get_adblock_store  # type: ignore
 
@@ -827,7 +841,7 @@ def test_live_policy_exception_request_public_submission_and_admin_lifecycle(
         timeout_seconds=90.0,
     )
     assert approve_response.status == 200
-    assert query_params(approve_response.url).get("ok") == ["approved"]
+    _assert_policy_request_reconcile_message(approve_response.url, action="approved")
     active = [
         e
         for e in store.active_webfilter_exceptions(
@@ -849,7 +863,7 @@ def test_live_policy_exception_request_public_submission_and_admin_lifecycle(
         timeout_seconds=90.0,
     )
     assert revoke_response.status == 200
-    assert query_params(revoke_response.url).get("ok") == ["revoked"]
+    _assert_policy_request_reconcile_message(revoke_response.url, action="revoked")
     assert all(
         e.id != active[0].id
         for e in store.active_webfilter_exceptions(
