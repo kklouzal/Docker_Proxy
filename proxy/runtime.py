@@ -150,6 +150,7 @@ _SUPPORTED_RUNTIME_OPERATION_TYPES = {
     "sync",
     "manual_sync",
     "runtime_nudge",
+    "policy_sync",
     "config_sync",
     "config_apply",
     "revert",

@@ -109,9 +109,9 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
     assert "libxml2" in text
     assert "libxslt" in text
     assert "xmlsec" in text
+    assert "web/services/policy_materializer.py" in text
 
     for excluded_copy in (
-        "web/services/policy_materializer.py",
         "web/services/pac_http.py",
         "web/tools/pac_http_server.py",
         "web/tools/webfilter_apply.py",

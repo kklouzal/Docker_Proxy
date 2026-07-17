@@ -44,35 +44,37 @@ def calculate_policy_sha(
     return digest.hexdigest()
 
 
-def build_proxy_policy_state(proxy_id: object | None = None) -> ProxyPolicyState:
+def build_proxy_policy_state_from_stores(
+    proxy_id: object | None = None,
+    *,
+    sslfilter_store: object,
+    webfilter_store: object,
+) -> ProxyPolicyState:
     normalized_proxy_id = normalize_proxy_id(proxy_id)
     token = set_proxy_id(normalized_proxy_id)
     try:
-        webfilter_store = get_proxy_webfilter_store()
         webfilter_state = webfilter_store.render_materialized_state()
-        sslfilter_store = get_sslfilter_store()
         sslfilter_state = sslfilter_store.render_materialized_state()
-
         files = (
             MaterializedPolicyFile(
-                path=sslfilter_store.squid_include_path,
-                content=sslfilter_state.include_text,
+                path=str(sslfilter_store.squid_include_path),
+                content=str(sslfilter_state.include_text or ""),
             ),
             MaterializedPolicyFile(
-                path=sslfilter_store.nobump_list_path,
-                content=sslfilter_state.nobump_src_list_text,
+                path=str(sslfilter_store.nobump_list_path),
+                content=str(sslfilter_state.nobump_src_list_text or ""),
             ),
             MaterializedPolicyFile(
-                path=sslfilter_store.nocache_src_list_path,
-                content=sslfilter_state.nocache_src_list_text,
+                path=str(sslfilter_store.nocache_src_list_path),
+                content=str(sslfilter_state.nocache_src_list_text or ""),
             ),
             MaterializedPolicyFile(
-                path=webfilter_store.squid_include_path,
-                content=webfilter_state.include_text,
+                path=str(webfilter_store.squid_include_path),
+                content=str(webfilter_state.include_text or ""),
             ),
             MaterializedPolicyFile(
-                path=webfilter_store.whitelist_path,
-                content=webfilter_state.whitelist_text,
+                path=str(webfilter_store.whitelist_path),
+                content=str(webfilter_state.whitelist_text or ""),
             ),
         )
         return ProxyPolicyState(
@@ -82,3 +84,11 @@ def build_proxy_policy_state(proxy_id: object | None = None) -> ProxyPolicyState
         )
     finally:
         reset_proxy_id(token)
+
+
+def build_proxy_policy_state(proxy_id: object | None = None) -> ProxyPolicyState:
+    return build_proxy_policy_state_from_stores(
+        proxy_id,
+        sslfilter_store=get_sslfilter_store(),
+        webfilter_store=get_proxy_webfilter_store(),
+    )

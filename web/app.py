@@ -106,6 +106,10 @@ from services.pac_profiles_store import (
     get_pac_profiles_store as _default_get_pac_profiles_store,
 )
 from services.pac_renderer import resolve_proxy_pac_target
+from services.policy_materializer import (
+    ProxyPolicyState,
+    build_proxy_policy_state_from_stores,
+)
 from services.policy_requests import (
     POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS,
     POLICY_EXCEPTION_MAX_DURATION_SECONDS,
@@ -630,19 +634,28 @@ def _safe_revision_id(value: object) -> int:
         return 0
 
 
-def _latest_config_revision_operation(proxy_id: str, revision_id: int):
-    if revision_id <= 0:
-        return None
+def _latest_operation(
+    proxy_id: str,
+    *,
+    target_kind: str = "",
+    target_ref: object | None = None,
+    operation_types: set[str] | None = None,
+):
     try:
         operations = get_operation_ledger().list_operations(proxy_id, limit=100)
     except Exception:
         return None
-    matching = [
-        op
-        for op in operations
-        if str(getattr(op, "target_kind", "") or "") == "config_revision"
-        and _safe_revision_id(getattr(op, "target_ref", 0)) == revision_id
-    ]
+
+    target_ref_text = str(target_ref or "")
+    matching = []
+    for op in operations:
+        if target_kind and str(getattr(op, "target_kind", "") or "") != target_kind:
+            continue
+        if target_ref_text and str(getattr(op, "target_ref", "") or "") != target_ref_text:
+            continue
+        if operation_types and str(getattr(op, "operation_type", "") or "") not in operation_types:
+            continue
+        matching.append(op)
     if not matching:
         return None
     return max(
@@ -651,6 +664,48 @@ def _latest_config_revision_operation(proxy_id: str, revision_id: int):
             int(getattr(op, "updated_ts", 0) or 0),
             int(getattr(op, "operation_id", 0) or 0),
         ),
+    )
+
+
+def _operation_view(operation: Any | None) -> dict[str, Any]:
+    if operation is None:
+        return {
+            "operation_id": 0,
+            "operation_status": "",
+            "operation_type": "",
+            "operation_subject": "",
+            "operation_summary": "",
+            "operation_updated_ts": 0,
+            "operation_detail": "",
+        }
+    return {
+        "operation_id": _safe_revision_id(getattr(operation, "operation_id", 0)),
+        "operation_status": str(getattr(operation, "status", "") or ""),
+        "operation_type": str(getattr(operation, "operation_type", "") or ""),
+        "operation_subject": str(getattr(operation, "subject", "") or ""),
+        "operation_summary": str(getattr(operation, "summary", "") or ""),
+        "operation_updated_ts": _safe_revision_id(getattr(operation, "updated_ts", 0)),
+        "operation_detail": str(getattr(operation, "detail", "") or ""),
+    }
+
+
+def _state_badge_class(state: str) -> str:
+    if state == "reconciled":
+        return "ok"
+    if state in {"failed", "superseded", "drift"}:
+        return "danger"
+    if state in {"unknown", "untracked"}:
+        return ""
+    return "warn"
+
+
+def _latest_config_revision_operation(proxy_id: str, revision_id: int):
+    if revision_id <= 0:
+        return None
+    return _latest_operation(
+        proxy_id,
+        target_kind="config_revision",
+        target_ref=revision_id,
     )
 
 
@@ -779,6 +834,163 @@ def _config_runtime_state(
             getattr(latest_operation, "updated_ts", 0),
         ),
         "operation_detail": str(getattr(latest_operation, "detail", "") or ""),
+    }
+
+
+def _selected_proxy_policy_state(proxy_id: str) -> ProxyPolicyState:
+    return build_proxy_policy_state_from_stores(
+        proxy_id,
+        sslfilter_store=get_sslfilter_store(),
+        webfilter_store=get_webfilter_store(),
+    )
+
+
+def _desired_policy_sha_for_proxy(proxy_id: str) -> tuple[str, str]:
+    try:
+        state = _selected_proxy_policy_state(proxy_id)
+    except Exception as exc:
+        return "", public_error_message(
+            exc,
+            default="Desired policy SHA could not be calculated.",
+        )
+    return str(state.policy_sha256 or ""), ""
+
+
+def _latest_policy_operation(proxy_id: str, desired_policy_sha: str = ""):
+    exact = None
+    if desired_policy_sha:
+        exact = _latest_operation(
+            proxy_id,
+            target_kind="policy_state",
+            target_ref=desired_policy_sha,
+            operation_types={"policy_sync"},
+        )
+    if exact is not None:
+        return exact
+    return _latest_operation(
+        proxy_id,
+        target_kind="policy_state",
+        operation_types={"policy_sync"},
+    )
+
+
+def _operation_status_label(status: str) -> str:
+    return {
+        "pending": "pending",
+        "applying": "running",
+        "applied": "succeeded",
+        "failed": "failed",
+        "superseded": "superseded",
+    }.get(status, status or "none")
+
+
+def _policy_runtime_state(
+    proxy_id: str,
+    *,
+    runtime_health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    desired_policy_sha, desired_error = _desired_policy_sha_for_proxy(proxy_id)
+    if runtime_health is None:
+        try:
+            runtime_health = _cached_proxy_health(
+                proxy_id,
+                timeout_seconds=_proxy_health_timeout_seconds(),
+                full=True,
+            )
+        except Exception:
+            runtime_health = {}
+    runtime_desired_sha = str((runtime_health or {}).get("desired_policy_sha") or "")
+    current_policy_sha = str((runtime_health or {}).get("current_policy_sha") or "")
+    state_errors = normalize_runtime_health_state_errors(
+        (runtime_health or {}).get("state_errors"),
+    )
+    latest_operation = _latest_policy_operation(proxy_id, desired_policy_sha)
+    operation_status = str(getattr(latest_operation, "status", "") or "")
+    operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
+    operation_target_ref = str(getattr(latest_operation, "target_ref", "") or "")
+    operation_matches_desired = bool(
+        latest_operation is not None
+        and desired_policy_sha
+        and operation_target_ref == desired_policy_sha
+    )
+    running_matches = bool(
+        desired_policy_sha and current_policy_sha and desired_policy_sha == current_policy_sha
+    )
+    operation_matches_current_desired = bool(
+        operation_matches_desired or (latest_operation is not None and not operation_target_ref)
+    )
+
+    if operation_status in {"pending", "applying"} and operation_matches_current_desired:
+        state = operation_status
+        label = "Policy apply pending" if operation_status == "pending" else "Policy apply running"
+        detail = (
+            f"Selected-proxy policy operation #{operation_id} is {operation_status}; "
+            "desired policy settings are not proven running yet."
+        )
+    elif operation_status in {"failed", "superseded"} and operation_matches_current_desired:
+        state = operation_status
+        label = "Policy apply failed" if operation_status == "failed" else "Policy apply superseded"
+        detail = (
+            f"Selected-proxy policy operation #{operation_id} ended {operation_status}; "
+            "do not treat the saved desired policy as running until a later reconcile succeeds."
+        )
+    elif running_matches:
+        state = "reconciled"
+        label = "Policy running"
+        detail = "Desired policy SHA matches the selected proxy runtime policy SHA."
+    elif operation_status == "applied" and operation_matches_current_desired:
+        state = "applied_unverified"
+        label = "Policy apply succeeded"
+        detail = (
+            f"Selected-proxy policy operation #{operation_id} succeeded, "
+            "but current runtime policy SHA evidence is unavailable."
+        )
+    elif desired_policy_sha and current_policy_sha:
+        state = "drift"
+        label = "Desired/running mismatch"
+        detail = (
+            f"Desired policy {_short_sha(desired_policy_sha) or 'unknown sha'} does not "
+            f"match running policy {_short_sha(current_policy_sha) or 'unknown sha'}."
+        )
+    elif desired_error:
+        state = "unknown"
+        label = "Policy evidence limited"
+        detail = (
+            "Desired policy state could not be fingerprinted for this Admin UI view. "
+            f"{desired_error}"
+        )
+    else:
+        state = "unknown"
+        label = "Runtime policy unknown"
+        detail = "The selected proxy runtime did not report enough policy SHA evidence."
+
+    if latest_operation is not None and not operation_matches_current_desired:
+        detail = (
+            f"{detail} Latest selected-proxy policy operation #{operation_id} targets "
+            "a different desired policy fingerprint, so it is shown as context only."
+        )
+
+    operation_payload = _operation_view(latest_operation)
+    return {
+        **operation_payload,
+        "state": state,
+        "label": label,
+        "detail": detail,
+        "badge_class": _state_badge_class(state),
+        "proxy_id": proxy_id,
+        "desired_policy_sha": desired_policy_sha,
+        "desired_policy_short_sha": _short_sha(desired_policy_sha),
+        "runtime_desired_policy_sha": runtime_desired_sha,
+        "runtime_desired_policy_short_sha": _short_sha(runtime_desired_sha),
+        "current_policy_sha": current_policy_sha,
+        "current_policy_short_sha": _short_sha(current_policy_sha),
+        "operation_status_label": _operation_status_label(operation_status),
+        "operation_target_ref": operation_target_ref,
+        "operation_target_short_ref": _short_sha(operation_target_ref),
+        "operation_matches_desired": operation_matches_desired,
+        "runtime_health_status": str((runtime_health or {}).get("status") or ""),
+        "runtime_health_ts": _safe_revision_id((runtime_health or {}).get("timestamp")),
+        "runtime_state_errors": state_errors,
     }
 
 
@@ -2471,6 +2683,56 @@ def _trigger_proxy_sync(*, force: bool = False) -> tuple[bool, str]:
     return True, f"Proxy reconciliation queued{op_suffix}."
 
 
+def _trigger_policy_sync(*, force: bool = True) -> tuple[bool, str]:
+    """Queue selected-proxy policy reconciliation with a desired-policy fingerprint."""
+    proxy_id = get_proxy_id()
+    desired_policy_sha, desired_error = _desired_policy_sha_for_proxy(proxy_id)
+    summary = "Policy state reconciliation queued."
+    detail = "Admin changed policy state; proxy should refresh materialized policy files."
+    if desired_policy_sha:
+        summary = f"Policy state {_short_sha(desired_policy_sha)} queued for reconciliation."
+        detail = f"Desired policy SHA: {desired_policy_sha}"
+    elif desired_error:
+        detail = f"Desired policy SHA unavailable before queueing. {desired_error}"
+    try:
+        operation = request_proxy_reconcile(
+            proxy_id,
+            operation_type="policy_sync",
+            subject="Policy reconciliation",
+            summary=summary,
+            target_kind="policy_state",
+            target_ref=desired_policy_sha,
+            detail=detail,
+            created_by=str(session.get("user") or ""),
+            force=force,
+        )
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.policy_sync",
+            interval_seconds=30.0,
+            message="Failed to queue policy reconciliation",
+        )
+        return False, public_error_message(
+            exc,
+            default="Policy reconciliation was not queued.",
+        )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return False, str(
+            getattr(operation, "detail", "") or "Policy reconcile was not queued.",
+        )
+    op_suffix = (
+        f" operation #{operation.operation_id}"
+        if getattr(operation, "operation_id", 0)
+        else ""
+    )
+    sha_suffix = f" for policy {_short_sha(desired_policy_sha)}" if desired_policy_sha else ""
+    return True, f"Policy reconciliation queued{op_suffix}{sha_suffix}."
+
+
 def _trigger_proxy_cache_clear() -> tuple[bool, str]:
     """Queue cache clearing for the selected proxy through the operation ledger."""
     try:
@@ -2652,7 +2914,7 @@ def _best_effort_refresh_managed_policy(
     force: bool = True,
 ) -> tuple[bool, str]:
     try:
-        return _trigger_proxy_sync(force=force)
+        return _trigger_policy_sync(force=force)
     except Exception as exc:
         log_exception_throttled(
             app.logger,
@@ -3405,7 +3667,7 @@ def _handle_sslfilter_post(store: Any):
     policy = _sslfilter_policy_from_form()
 
     if action in {"apply_policy", "apply_verify"}:
-        ok, detail = _trigger_proxy_sync(force=True)
+        ok, detail = _trigger_policy_sync(force=True)
         detail = (
             detail or ("Policy sync requested." if ok else "Policy sync failed.")
         ).strip()
@@ -5892,7 +6154,7 @@ def observability_remediation_no_bump_domain():
 
     saved_domain = canonical or domain
     if ok:
-        refresh_ok, refresh_detail = _trigger_proxy_sync(force=True)
+        refresh_ok, refresh_detail = _trigger_policy_sync(force=True)
         if not refresh_ok:
             partial_detail = (
                 "No-bump domain was saved, but proxy reconciliation was not queued."
@@ -6141,9 +6403,11 @@ def webfilter():
         minimum=300,
         maximum=7 * 24 * 3600,
     )
+    policy_runtime_state = _policy_runtime_state(get_proxy_id())
     return render_template(
         "webfilter.html",
         tab=tab,
+        policy_runtime_state=policy_runtime_state,
         settings=settings,
         available_categories=available,
         selected=selected,
@@ -6195,9 +6459,11 @@ def sslfilter():
 
     rules = store.list_all()
     pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
+    policy_runtime_state = _policy_runtime_state(get_proxy_id())
     return render_template(
         "sslfilter.html",
         rules=rules,
+        policy_runtime_state=policy_runtime_state,
         pac_target=pac_target,
         pac_url=pac_url,
         pac_warning=pac_warning,

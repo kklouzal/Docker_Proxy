@@ -1,0 +1,40 @@
+{% macro policy_runtime_card(policy_runtime_state, active_proxy) -%}
+{% if policy_runtime_state %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Selected proxy runtime/apply evidence</h2>
+      <div class="small">Saved policy settings are desired state; {{ active_proxy.display_name }} must reconcile before they are confirmed running.</div>
+    </div>
+    <span class="badge {{ policy_runtime_state.badge_class }}">{{ policy_runtime_state.label }}</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat">
+        <div class="stat-k">Desired policy SHA</div>
+        <div class="stat-v"><code class="mono">{{ policy_runtime_state.desired_policy_short_sha or 'n/a' }}</code></div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Running policy SHA</div>
+        <div class="stat-v"><code class="mono">{{ policy_runtime_state.current_policy_short_sha or 'n/a' }}</code></div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Latest policy operation</div>
+        <div class="stat-v">{% if policy_runtime_state.operation_id %}#{{ policy_runtime_state.operation_id }} {{ policy_runtime_state.operation_status_label }}{% else %}n/a{% endif %}</div>
+      </div>
+      <div class="stat compact-stat">
+        <div class="stat-k">Runtime report</div>
+        <div class="stat-v">{{ policy_runtime_state.runtime_health_status or 'unknown' }}</div>
+      </div>
+    </div>
+    <div class="surface-note small">{{ policy_runtime_state.detail }}</div>
+    {% if policy_runtime_state.operation_id %}
+      <div class="surface-note small">Operation target: <code class="mono">{{ policy_runtime_state.operation_target_short_ref or 'unfingerprinted' }}</code>{% if policy_runtime_state.operation_updated_ts %} · updated {{ fmt_ts(policy_runtime_state.operation_updated_ts) }}{% endif %}</div>
+    {% endif %}
+    {% if policy_runtime_state.runtime_state_errors %}
+      <div class="surface-note small">Runtime state notes: {{ policy_runtime_state.runtime_state_errors|join('; ') }}</div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{%- endmacro %}

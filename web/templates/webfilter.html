@@ -1,5 +1,6 @@
 {% extends 'layout.html' %}
 {% from "_scope_macros.html" import scope_notice, scope_chip %}
+{% from "_policy_runtime_state.html" import policy_runtime_card with context %}
 {% block title %}Web Filtering | Docker Proxy{% endblock %}
 
 {% block content %}
@@ -42,6 +43,8 @@
   <a class="btn {{ 'primary' if tab == 'categories' else 'ghost' }}" href="{{ url_for('webfilter', tab='categories') }}">Categories</a>
   <a class="btn {{ 'primary' if tab == 'whitelist' else 'ghost' }}" href="{{ url_for('webfilter', tab='whitelist') }}">Whitelist</a>
 </div>
+
+{{ policy_runtime_card(policy_runtime_state, active_proxy) }}
 
 {% if request.args.get('policy_error') %}
   <div class="banner error"><span class="badge danger">Sync not queued</span><div class="banner-copy"><span class="small">{{ request.args.get('policy_msg') or 'Policy changes were saved, but proxy reconciliation was not queued.' }}</span></div></div>

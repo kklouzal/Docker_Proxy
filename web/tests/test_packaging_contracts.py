@@ -132,7 +132,7 @@ def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     assert "web/services/version_status.py" in admin
     assert "COPY web/app.py /app/app.py" in admin
     assert "COPY web/templates /app/templates" in admin
-    assert "web/services/policy_materializer.py" not in admin
+    assert "web/services/policy_materializer.py" in admin
     assert "web/tools/webfilter_apply.py" not in admin
     assert "ARG GIT_COMMIT=" in proxy
     assert "ARG GIT_COMMIT=" in admin

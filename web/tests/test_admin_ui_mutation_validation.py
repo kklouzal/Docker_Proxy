@@ -68,7 +68,7 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(
     assert loaded.sslfilter_store.no_bump_domains == ["*.discord.com"]
     assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
     response = _post(
@@ -81,7 +81,7 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(
     assert loaded.sslfilter_store.no_cache_domains == ["cache.example"]
     assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
@@ -107,7 +107,7 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
     assert "policy_queue=1" in location
     assert loaded.sslfilter_store.exclude_private_nets is True
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
     page = client.get(location)
@@ -181,7 +181,7 @@ def test_webfilter_whitelist_success_discloses_queued_selected_proxy_scope(
     assert webfilter_store.whitelist == [("allow.example", 1)]
     assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
     page = client.get(location)
@@ -259,7 +259,7 @@ def test_sslfilter_forms_preserve_selected_proxy_context(monkeypatch, tmp_path) 
     assert "proxy_id=edge-2" in response.headers.get("Location", "")
     assert loaded.sslfilter_store.no_bump_domains == ["edge-form.example"]
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
@@ -277,7 +277,7 @@ def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(
     assert loaded.sslfilter_store.no_bump_domains == ["blocked.example"]
     assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
@@ -505,7 +505,7 @@ def test_policy_store_mutations_request_sync_without_config_revision_validation(
     _assert_redirect_success(response)
     assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
@@ -639,7 +639,7 @@ def test_webfilter_save_persists_shared_source_provider(monkeypatch, tmp_path) -
         == "https://example.test/categories.csv"
     )
     assert webfilter_store.last_set_settings["source_provider"] == "csv"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
 
 
 @pytest.mark.parametrize(

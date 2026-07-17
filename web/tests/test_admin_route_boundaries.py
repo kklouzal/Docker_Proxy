@@ -1312,9 +1312,10 @@ def test_sslfilter_apply_verify_forces_selected_proxy_sync(
     assert response.status_code == 200
     assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
+    assert loaded.operation_ledger.operations[-1].target_kind == "policy_state"
     assert loaded.operation_ledger.operations[-1].status == "pending"
-    assert "Proxy reconciliation queued" in text
+    assert "Policy reconciliation queued" in text
     assert any(
         record["kind"] == "sslfilter_apply_policy" and record["ok"]
         for record in loaded.audit_store.records
@@ -1383,7 +1384,8 @@ def test_sslfilter_apply_verify_targets_selected_proxy(monkeypatch, tmp_path) ->
     assert "proxy_id=edge-2" in response.headers["Location"]
     assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
+    assert loaded.operation_ledger.operations[-1].target_kind == "policy_state"
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert any(
         record["kind"] == "sslfilter_apply_policy" and record["ok"]
@@ -2350,7 +2352,7 @@ def test_observability_remediation_no_bump_domain_adds_sslfilter_rule(
     assert "sort=count" in location
     assert "q=ssl" in location
     assert "remediation_ok=1" in location
-    assert loaded.operation_ledger.operations[-1].operation_type == "manual_sync"
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert any(
         record["kind"] == "observability_remediation_no_bump_domain" and record["ok"]
@@ -2918,3 +2920,159 @@ def test_webfilter_disabled_save_rejects_unsafe_source_before_store(
     assert response.status_code in {302, 303}
     assert "err_source=1" in response.headers["Location"]
     assert not hasattr(store, "last_set_settings")
+
+
+class PolicyEvidenceProxyClient(RecordingProxyClient):
+    def __init__(
+        self,
+        *,
+        current_by_proxy: dict[str, str] | None = None,
+        desired_by_proxy: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__()
+        self.current_by_proxy = current_by_proxy or {}
+        self.desired_by_proxy = desired_by_proxy or {}
+
+    def get_health(self, proxy_id: object, *args, **kwargs) -> dict[str, object]:
+        payload = super().get_health(proxy_id, *args, **kwargs)
+        key = str(proxy_id)
+        payload.update(
+            {
+                "desired_policy_sha": self.desired_by_proxy.get(key, "desired-sha"),
+                "current_policy_sha": self.current_by_proxy.get(key, "running-sha"),
+                "timestamp": 1234,
+            }
+        )
+        return payload
+
+
+@pytest.mark.parametrize(
+    ("operation_status", "current_sha", "expected_state", "expected_label"),
+    [
+        ("pending", "old-sha", "pending", "Policy apply pending"),
+        ("applying", "old-sha", "applying", "Policy apply running"),
+        ("applied", "desired-sha", "reconciled", "Policy running"),
+        ("failed", "old-sha", "failed", "Policy apply failed"),
+        ("superseded", "old-sha", "superseded", "Policy apply superseded"),
+    ],
+)
+def test_policy_runtime_state_tracks_selected_policy_operation_status(
+    monkeypatch,
+    tmp_path,
+    operation_status: str,
+    current_sha: str,
+    expected_state: str,
+    expected_label: str,
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=PolicyEvidenceProxyClient(current_by_proxy={"default": current_sha}),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_policy_sha_for_proxy",
+        lambda _proxy_id: ("desired-sha", ""),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="policy_sync",
+        subject="Policy reconciliation",
+        summary="Policy state queued.",
+        target_kind="policy_state",
+        target_ref="desired-sha",
+    )
+    operation.status = operation_status
+
+    state = loaded.module._policy_runtime_state("default")
+
+    assert state["state"] == expected_state
+    assert state["label"] == expected_label
+    assert state["operation_id"] == operation.operation_id
+    assert state["operation_status_label"] == (
+        "succeeded" if operation_status == "applied" else operation_status.replace("applying", "running")
+    )
+    assert state["desired_policy_sha"] == "desired-sha"
+    assert state["current_policy_sha"] == current_sha
+
+
+def test_policy_runtime_state_isolated_to_selected_proxy(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+        proxy_client=PolicyEvidenceProxyClient(
+            current_by_proxy={"edge-a": "old-a", "edge-b": "old-b"},
+            desired_by_proxy={"edge-a": "desired-a", "edge-b": "desired-b"},
+        ),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_policy_sha_for_proxy",
+        lambda proxy_id: (f"desired-{str(proxy_id).split('-')[-1]}", ""),
+    )
+    edge_a_operation = loaded.operation_ledger.create_operation(
+        "edge-a",
+        operation_type="policy_sync",
+        subject="Policy reconciliation",
+        summary="Policy state queued.",
+        target_kind="policy_state",
+        target_ref="desired-a",
+    )
+    edge_a_operation.status = "failed"
+    edge_b_operation = loaded.operation_ledger.create_operation(
+        "edge-b",
+        operation_type="policy_sync",
+        subject="Policy reconciliation",
+        summary="Policy state queued.",
+        target_kind="policy_state",
+        target_ref="desired-b",
+    )
+    edge_b_operation.status = "pending"
+
+    client = loaded.module.app.test_client()
+    login_client(client)
+    response = client.get("/webfilter?proxy_id=edge-b")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Policy apply pending" in text
+    assert f"#{edge_b_operation.operation_id} pending" in text
+    assert f"#{edge_a_operation.operation_id} failed" not in text
+    assert "Edge-B" in text
+
+
+def test_sslfilter_policy_change_queues_fingerprinted_policy_operation(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=PolicyEvidenceProxyClient(),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_policy_sha_for_proxy",
+        lambda _proxy_id: ("desired-sha", ""),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/sslfilter",
+        data={
+            "csrf_token": csrf_token(client, "/sslfilter"),
+            "action": "add_domain",
+            "policy": "nobump",
+            "domain": "example.com",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "policy_queue=1" in response.headers["Location"]
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.proxy_id == "default"
+    assert operation.operation_type == "policy_sync"
+    assert operation.target_kind == "policy_state"
+    assert operation.target_ref == "desired-sha"
