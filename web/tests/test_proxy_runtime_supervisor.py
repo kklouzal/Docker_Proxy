@@ -3776,6 +3776,47 @@ def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
     ]
 
 
+def test_sync_from_db_marks_matching_config_revision_applied(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=6,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="9",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id) -> None:
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
+        "ok": True,
+        "revision_id": 9,
+        "detail": "runtime reconciled",
+        "executed_operation_types": ["config_apply"],
+    }
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls == [(6, "applied", "runtime reconciled")]
+
+
 def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
@@ -3783,10 +3824,16 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
     runtime = _runtime_shell()
     monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
     stale = SimpleNamespace(
-        operation_id=5, target_kind="config_revision", target_ref="7"
+        operation_id=5,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="7",
     )
     current = SimpleNamespace(
-        operation_id=6, target_kind="config_revision", target_ref="9"
+        operation_id=6,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="9",
     )
     calls: list[tuple[int, str, str]] = []
 
@@ -3808,14 +3855,167 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
         "ok": True,
         "revision_id": 9,
         "detail": "runtime reconciled",
+        "executed_operation_types": ["config_apply"],
     }
 
     result = runtime.sync_from_db(force=False)
 
     assert result["ok"] is True
     assert calls[0][0:2] == (5, "superseded")
-    assert "queued target revision 7 was not applied" in calls[0][2]
+    assert "active config revision 9" in calls[0][2]
+    assert "queued config revision 7 was not applied" in calls[0][2]
     assert calls[1] == (6, "applied", "runtime reconciled")
+
+
+@pytest.mark.parametrize("invalid_target", [None, "", "not-a-revision"])
+def test_sync_from_db_fails_config_operation_with_invalid_target(
+    monkeypatch,
+    invalid_target,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref=invalid_target,
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
+        "ok": True,
+        "revision_id": 9,
+        "detail": "runtime reconciled",
+        "executed_operation_types": ["config_apply"],
+    }
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls[0][0:2] == (5, "failed")
+    assert "valid queued config revision target" in calls[0][2]
+    assert "runtime reconciled" in calls[0][2]
+
+
+def test_sync_from_db_fails_config_operation_without_revision_evidence(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="9",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
+        "ok": True,
+        "detail": "runtime reconciled without active config revision evidence",
+        "executed_operation_types": ["config_apply"],
+    }
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls[0][0:2] == (5, "failed")
+    assert "did not report the active config revision evidence" in calls[0][2]
+    assert "runtime reconciled without active config revision evidence" in calls[0][2]
+
+
+def test_sync_from_db_fails_claimed_config_operation_when_no_active_revision(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="12",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id) -> None:
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "artifact-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._current_config_sha = lambda: "current-config-sha"
+    runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
+    runtime._current_adblock_enabled = lambda: True
+    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: None,
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert "revision_id" not in result
+    assert result["detail"] == "No active config revision is available for this proxy."
+    assert calls[0][0:2] == (5, "failed")
+    assert "did not report the active config revision evidence" in calls[0][2]
+    assert "No active config revision is available for this proxy." in calls[0][2]
 
 
 def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -> None:

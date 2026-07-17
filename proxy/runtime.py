@@ -299,12 +299,28 @@ def _operation_completion_status(
 
     target_ref = _int_or_none(getattr(operation, "target_ref", None))
     applied_ref = _int_or_none(result.get("revision_id"))
-    if target_ref is None or applied_ref is None or target_ref == applied_ref:
+    if target_ref is None:
+        op_detail = (
+            "Config operation completed reconciliation but did not include "
+            "a valid queued config revision target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if applied_ref is None:
+        op_detail = (
+            "Config operation completed reconciliation but did not report "
+            "the active config revision evidence required to verify the queued target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if target_ref == applied_ref:
         return default_status, detail
 
     op_detail = (
         f"Superseded by active config revision {applied_ref}; "
-        f"queued target revision {target_ref} was not applied because a newer desired state was reconciled."
+        f"queued config revision {target_ref} was not applied because a newer desired state was reconciled."
     )
     if detail:
         op_detail = f"{op_detail}\n{detail}"
