@@ -109,6 +109,20 @@ def _proxy_image_payload(pattern: str) -> set[str]:
     return _image_payload("docker/Dockerfile.proxy", pattern)
 
 
+def _workflow_build_arg_blocks(workflow: str) -> list[dict[str, str]]:
+    blocks: list[dict[str, str]] = []
+    for raw_block in re.findall(r"build-args:\s*\|\n((?: {12}\S.*\n)+)", workflow):
+        block: dict[str, str] = {}
+        for raw_line in raw_block.splitlines():
+            line = raw_line.strip()
+            if not line or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            block[key] = value
+        blocks.append(block)
+    return blocks
+
+
 def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     proxy = _read("docker/Dockerfile.proxy")
     admin = _read("docker/Dockerfile.admin")
@@ -180,10 +194,25 @@ def test_admin_dockerfile_includes_direct_service_import_dependencies() -> None:
 
 def test_ghcr_publish_passes_runtime_version_build_args() -> None:
     workflow = _read(".github/workflows/publish-ghcr.yml")
+    proxy = _read("docker/Dockerfile.proxy")
+    admin = _read("docker/Dockerfile.admin")
+    build_arg_blocks = _workflow_build_arg_blocks(workflow)
 
-    assert "APP_VERSION=${{ github.ref_name }}" in workflow
-    assert "GIT_COMMIT=${{ github.sha }}" in workflow
-    assert "GIT_REF_NAME=${{ github.ref_name }}" in workflow
+    assert len(build_arg_blocks) >= 2
+    test_image_args = build_arg_blocks[0]
+    publish_image_args = build_arg_blocks[-1]
+
+    for build_args in build_arg_blocks:
+        assert build_args["APP_VERSION"] == "${{ github.ref_name }}"
+        assert build_args["GIT_COMMIT"] == "${{ github.sha }}"
+        assert build_args["GIT_REF_NAME"] == "${{ github.ref_name }}"
+        assert build_args["BUILD_DATE"] == "${{ github.event.head_commit.timestamp || github.run_id }}"
+    assert test_image_args["IMAGE_NAME"] == "docker-proxy-${{ matrix.image }}:ci"
+    assert publish_image_args["IMAGE_NAME"] == "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.image }}"
+    assert "ARG IMAGE_NAME=proxy" in proxy
+    assert "ARG IMAGE_NAME=admin-ui" in admin
+    assert "IMAGE_NAME=${IMAGE_NAME}" in proxy
+    assert "IMAGE_NAME=${IMAGE_NAME}" in admin
 
 
 def test_admin_compose_and_cicap_startup_contracts() -> None:

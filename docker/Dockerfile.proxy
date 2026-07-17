@@ -75,12 +75,13 @@ ARG APP_VERSION=unknown
 ARG GIT_COMMIT=
 ARG GIT_REF_NAME=
 ARG BUILD_DATE=
+ARG IMAGE_NAME=proxy
 
 ENV APP_VERSION=${APP_VERSION} \
     GIT_COMMIT=${GIT_COMMIT} \
     GIT_REF_NAME=${GIT_REF_NAME} \
     BUILD_DATE=${BUILD_DATE} \
-    IMAGE_NAME=proxy
+    IMAGE_NAME=${IMAGE_NAME}
 
 # Proxy container responsibilities only:
 # - Squid, SQLite adblock ICAP helper, and AV c-icap runtime

@@ -110,6 +110,7 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             GIT_REF_NAME=${{ github.ref_name }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.run_id }}
+            IMAGE_NAME=docker-proxy-${{ matrix.image }}:ci
 
   live-tests:
     runs-on: ubuntu-latest
@@ -192,6 +193,7 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             GIT_REF_NAME=${{ github.ref_name }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.run_id }}
+            IMAGE_NAME=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.image }}
           pull: true
           sbom: true
           provenance: mode=max

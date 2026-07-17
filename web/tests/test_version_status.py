@@ -4,7 +4,11 @@ import io
 import json
 from typing import Any
 
-from services.version_status import VersionStatusClient, build_component_version_status
+from services.version_status import (
+    VersionStatusClient,
+    build_component_version_status,
+    current_component_metadata,
+)
 
 from .admin_route_test_utils import FakeProxyClient, load_admin_app, login_client
 
@@ -19,6 +23,28 @@ class _Response(io.BytesIO):
 
 def _json_response(payload: dict[str, Any]) -> _Response:
     return _Response(json.dumps(payload).encode("utf-8"))
+
+
+def test_current_component_metadata_preserves_published_image_identity(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("APP_VERSION", "main")
+    monkeypatch.setenv("GIT_COMMIT", "dfae11636e8e00b74983b8335ad427d2a07c8119")
+    monkeypatch.setenv("GIT_REF_NAME", "main")
+    monkeypatch.setenv("BUILD_DATE", "2026-07-17T20:00:00Z")
+    monkeypatch.setenv(
+        "IMAGE_NAME",
+        "ghcr.io/kklouzal/docker_proxy-admin-ui",
+    )
+
+    metadata = current_component_metadata("admin-ui")
+
+    assert metadata["component"] == "admin-ui"
+    assert metadata["version"] == "main"
+    assert metadata["revision_short"] == "dfae11636e8e"
+    assert metadata["source_ref"] == "main"
+    assert metadata["built_at"] == "2026-07-17T20:00:00Z"
+    assert metadata["image"] == "ghcr.io/kklouzal/docker_proxy-admin-ui"
 
 
 def test_current_component_status_counts_commits_behind_from_compare_api() -> None:
