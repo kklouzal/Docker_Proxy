@@ -1912,8 +1912,15 @@ stdout_logfile_maxbytes=0
         prepare_succeeded = False
         for prepare_attempt in range(2):
             try:
+                # Use Squid's normal foreground cache preparation path instead of
+                # -N.  Rock/SMP cache initialization is owned by the coordinator/kid
+                # startup path; -N collapses that model into a single non-daemon
+                # process and has produced false abnormal-termination results while
+                # still creating the Rock database.  --foreground keeps the command
+                # synchronous for the management API without bypassing Squid's
+                # production cache_dir lifecycle.
                 prepare = self._run(
-                    ["squid", "-N", "-z", "-f", self.squid_conf_path],
+                    ["squid", "--foreground", "-z", "-f", self.squid_conf_path],
                     capture_output=True,
                     timeout=90,
                 )

@@ -354,7 +354,7 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
         calls.append(list(args))
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             prepare_timeouts.append(float(kwargs["timeout"]))
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         msg = f"unexpected command: {args!r}"
@@ -391,7 +391,7 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "--foreground", "-z", "-f", controller.squid_conf_path],
     ]
     assert ready_timeouts == [20.0]
     assert prepare_timeouts == [90.0]
@@ -418,7 +418,7 @@ def test_clear_disk_cache_clears_all_configured_cache_dirs(
         calls.append(list(args))
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         msg = f"unexpected command: {args!r}"
         raise AssertionError(msg)
@@ -455,7 +455,7 @@ def test_clear_disk_cache_clears_all_configured_cache_dirs(
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "--foreground", "-z", "-f", controller.squid_conf_path],
     ]
     assert not (cache_a / "swap.state").exists()
     assert not (cache_b / "swap.state").exists()
@@ -482,7 +482,7 @@ def test_clear_disk_cache_cleans_live_pid_before_prepare(
         calls.append(list(args))
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         if args == ["squid", "-k", "shutdown"]:
             return SimpleNamespace(
@@ -535,7 +535,7 @@ def test_clear_disk_cache_cleans_live_pid_before_prepare(
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["squid", "-k", "shutdown"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "--foreground", "-z", "-f", controller.squid_conf_path],
     ]
     assert stale_checks == [10.0, 10.0, 1.0, 10.0, 10.0]
     assert absent_checks == [8.0, 1.0, 20.0, 1.0, 1.0]
@@ -627,7 +627,7 @@ def test_clear_disk_cache_fails_when_prepare_listener_stays_bound(
         calls.append(list(args))
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         if args == ["squid", "-k", "shutdown"]:
             return SimpleNamespace(
@@ -705,7 +705,7 @@ def test_clear_disk_cache_stops_supervisor_autorestart_before_prepare(
                 stdout=b"squid shutdown requested\n",
                 stderr=b"",
             )
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         msg = f"unexpected command: {args!r}"
         raise AssertionError(msg)
@@ -742,7 +742,7 @@ def test_clear_disk_cache_stops_supervisor_autorestart_before_prepare(
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["squid", "-k", "shutdown"],
-        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "--foreground", "-z", "-f", controller.squid_conf_path],
     ]
     assert ready_timeouts == [20.0]
     assert not (cache_dir / "swap.state").exists()
@@ -768,7 +768,7 @@ def test_clear_disk_cache_retries_supervisor_stop_before_prepare(
         calls.append(list(args))
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         if args == ["squid", "-k", "shutdown"]:
             return SimpleNamespace(
@@ -823,7 +823,7 @@ def test_clear_disk_cache_retries_supervisor_stop_before_prepare(
         ["squid", "-k", "shutdown"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "--foreground", "-z", "-f", controller.squid_conf_path],
     ]
     assert absent_checks == [8.0, 8.0, 8.0, 1.0, 20.0, 8.0, 20.0, 1.0, 1.0]
     assert ready_timeouts == [20.0]
@@ -849,7 +849,7 @@ def test_clear_disk_cache_retries_supervisor_stop_after_prepare(
         calls.append(list(args))
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             return SimpleNamespace(returncode=0, stdout=b"squid -z OK\n", stderr=b"")
         if args == ["squid", "-k", "shutdown"]:
             return SimpleNamespace(
@@ -901,7 +901,7 @@ def test_clear_disk_cache_retries_supervisor_stop_after_prepare(
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ["squid", "-N", "-z", "-f", controller.squid_conf_path],
+        ["squid", "--foreground", "-z", "-f", controller.squid_conf_path],
         ["squid", "-k", "shutdown"],
     ]
     assert absent_checks == [8.0, 1.0, 1.0, 1.0, 20.0, 8.0]
@@ -966,7 +966,7 @@ def test_clear_disk_cache_retries_transient_squid_z_failure(
         nonlocal prepare_calls
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             prepare_calls += 1
             if prepare_calls == 1:
                 return SimpleNamespace(
@@ -1034,7 +1034,7 @@ def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(
     def fake_run(args, **_kwargs):
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             return SimpleNamespace(
                 returncode=1,
                 stdout=b"",
@@ -1091,7 +1091,7 @@ def test_clear_disk_cache_fails_when_squid_z_raises(
     def fake_run(args, **_kwargs):
         if args[-2:] == ["stop", "squid"]:
             return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
-        if args[:3] == ["squid", "-N", "-z"]:
+        if args[:3] == ["squid", "--foreground", "-z"]:
             msg = "spawn failed"
             raise RuntimeError(msg)
         msg = f"unexpected command: {args!r}"
