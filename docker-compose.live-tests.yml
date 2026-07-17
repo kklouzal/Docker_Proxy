@@ -94,9 +94,7 @@ services:
       MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}
       MYSQL_CREATE_DATABASE: "1"
     healthcheck:
-      test:
-        - CMD-SHELL
-        - squid -k check >/dev/null 2>&1 && python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read(); urllib.request.urlopen('http://127.0.0.1/health', timeout=2).read()"
+      test: ["CMD", "/healthcheck.sh"]
       interval: 5s
       timeout: 5s
       retries: 24
@@ -148,9 +146,7 @@ services:
       MYSQL_DATABASE: ${LIVE_TEST_MYSQL_DATABASE:-squid_proxy_live}
       MYSQL_CREATE_DATABASE: "1"
     healthcheck:
-      test:
-        - CMD-SHELL
-        - squid -k check >/dev/null 2>&1 && python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read(); urllib.request.urlopen('http://127.0.0.1/health', timeout=2).read()"
+      test: ["CMD", "/healthcheck.sh"]
       interval: 5s
       timeout: 5s
       retries: 24

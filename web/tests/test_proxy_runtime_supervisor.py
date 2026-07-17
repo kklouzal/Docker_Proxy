@@ -3361,6 +3361,8 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "cicap_adblock_${instance}" in healthcheck
     assert "cicap_av_${instance}" in healthcheck
     assert "clamav_respmod_${instance}" in healthcheck
+    assert "supervisor_program_running proxy_agent" in healthcheck
+    assert "supervisor reports proxy_agent is not RUNNING" in healthcheck
     assert "icap_av_base_port" in healthcheck
     assert "icap_av_resp_base_port" in healthcheck
     assert "clamd_host_is_remote" in healthcheck

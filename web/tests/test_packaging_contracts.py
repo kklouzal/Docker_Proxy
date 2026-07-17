@@ -212,6 +212,8 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     live_compose = _read("docker-compose.live-tests.yml")
     assert "- squid_logs_edge_2:/var/log/squid" in live_compose
     assert "squid_logs_edge_2:" in live_compose
+    assert live_compose.count('test: ["CMD", "/healthcheck.sh"]') == 2
+    assert "squid -k check >/dev/null 2>&1 && python3 -c" not in live_compose
     assert (
         "--max-allowed-packet=${LIVE_TEST_MYSQL_MAX_ALLOWED_PACKET:-256M}"
         in live_compose
