@@ -3813,6 +3813,121 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
     assert calls[1] == (6, "applied", "runtime reconciled")
 
 
+def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergence(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="policy_sync",
+        target_kind="policy_state",
+        target_ref="desired-a",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+
+    def sync_unlocked(*, force=False, artifact_force=None, operations=None):
+        assert operations == [op]
+        return {
+            "ok": True,
+            "detail": "runtime reconciled",
+            "executed_operation_types": ["policy_sync"],
+            "policy_sha256": "desired-a",
+        }
+
+    runtime._sync_from_db_unlocked = sync_unlocked
+    runtime._current_policy_sha = lambda: "old-a"
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls == [
+        (
+            5,
+            "failed",
+            (
+                "Policy sync did not converge selected-proxy runtime state; "
+                "queued policy desired-a differs from current policy old-a.\n"
+                "runtime reconciled"
+            ),
+        )
+    ]
+
+
+def test_sync_from_db_policy_operation_uses_selected_proxy_current_policy_sha(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    edge_a = SimpleNamespace(
+        operation_id=5,
+        operation_type="policy_sync",
+        target_kind="policy_state",
+        target_ref="desired-a",
+    )
+    edge_b = SimpleNamespace(
+        operation_id=6,
+        operation_type="policy_sync",
+        target_kind="policy_state",
+        target_ref="desired-b",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [edge_a, edge_b]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+
+    def sync_unlocked(*, force=False, artifact_force=None, operations=None):
+        assert operations == [edge_a, edge_b]
+        return {
+            "ok": True,
+            "detail": "runtime reconciled",
+            "executed_operation_types": ["policy_sync"],
+            "policy_sha256": "desired-a",
+            "current_policy_sha": "desired-a",
+        }
+
+    runtime._sync_from_db_unlocked = sync_unlocked
+    runtime._current_policy_sha = lambda: "desired-b"
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls[0] == (5, "applied", "runtime reconciled")
+    assert calls[1][0:2] == (6, "superseded")
+    assert "queued policy state desired-b was not applied" in calls[1][2]
+
+
 def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

@@ -239,6 +239,28 @@ def _operation_completion_status(
         return "failed", op_detail[:4000]
 
     target_kind = str(getattr(operation, "target_kind", "") or "")
+    if target_kind == "policy_state":
+        target_ref = str(getattr(operation, "target_ref", "") or "").strip()
+        applied_ref = str(result.get("policy_sha256") or "").strip()
+        current_ref = str(result.get("current_policy_sha") or "").strip()
+        if target_ref and applied_ref and target_ref != applied_ref:
+            op_detail = (
+                f"Superseded by active policy state {applied_ref[:12]}; "
+                f"queued policy state {target_ref[:12]} was not applied because a newer desired state was reconciled."
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "superseded", op_detail[:4000]
+        if target_ref and current_ref and target_ref != current_ref:
+            op_detail = (
+                f"Policy sync did not converge selected-proxy runtime state; "
+                f"queued policy {target_ref[:12]} differs from current policy {current_ref[:12]}."
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "failed", op_detail[:4000]
+        return default_status, detail
+
     if target_kind != "config_revision":
         return default_status, detail
 
@@ -1862,7 +1884,7 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "current_policy_sha": current_sha,
+                "current_policy_sha": desired.policy_sha256,
                 "detail": "Proxy is already using the active policy materialization."
                 if snapshot_ok
                 else snapshot_detail,
@@ -1905,7 +1927,7 @@ class ProxyRuntime:
                 "changed": False,
                 "reload_required": False,
                 "policy_sha256": desired.policy_sha256,
-                "current_policy_sha": current_sha,
+                "current_policy_sha": desired.policy_sha256,
                 "detail": "Policy materialization is already current."
                 if snapshot_ok
                 else snapshot_detail,
@@ -1918,6 +1940,7 @@ class ProxyRuntime:
             "changed": True,
             "reload_required": True,
             "policy_sha256": desired.policy_sha256,
+            "current_policy_sha": desired.policy_sha256,
             "previous_policy_sha": current_sha,
             "detail": "\n".join(
                 part
@@ -2924,6 +2947,12 @@ class ProxyRuntime:
     ) -> None:
         default_status = "applied" if bool(result.get("ok")) else "failed"
         detail = str(result.get("detail") or "Proxy reconciliation completed.")[:4000]
+        current_policy_sha = str(result.get("current_policy_sha") or "").strip()
+        if not current_policy_sha:
+            with suppress(Exception):
+                current_policy_sha = str(self._current_policy_sha() or "").strip()
+        if current_policy_sha:
+            result = {**result, "current_policy_sha": current_policy_sha}
         for operation in operations:
             status, operation_detail = _operation_completion_status(
                 operation,
