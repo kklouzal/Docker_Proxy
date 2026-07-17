@@ -156,6 +156,7 @@ class FakeRegistry:
         public_pac_path: object | None = "/proxy.pac",
         public_http_proxy_port: object | None = 3128,
     ) -> None:
+        configured_proxy_ids = ["default"] if proxy_ids is None else proxy_ids
         self.proxies = [
             self._proxy(
                 proxy_id,
@@ -165,7 +166,7 @@ class FakeRegistry:
                 public_pac_path=public_pac_path,
                 public_http_proxy_port=public_http_proxy_port,
             )
-            for proxy_id in (proxy_ids or ["default"])
+            for proxy_id in configured_proxy_ids
         ]
 
     def _proxy(

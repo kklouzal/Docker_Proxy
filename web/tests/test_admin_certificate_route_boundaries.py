@@ -844,6 +844,173 @@ def test_certificate_publish_restores_previous_bundle_when_no_reconcile_queued(
     assert bundles.bundle is previous
 
 
+def test_certificate_publish_rejects_zero_registered_proxies_and_restores_previous(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=previous)
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry([]),
+    )
+
+    with loaded.module.app.test_request_context("/certs/upload", method="POST"):
+        loaded.module.session["user"] = "operator"
+        ok, detail = loaded.module._publish_certificate_bundle_remote(_bundle())
+
+    assert ok is False
+    assert (
+        detail
+        == "Certificate revision 1 saved, but no registered proxies were available; "
+        "certificate bundle was not activated.\n"
+        "Previous active certificate bundle was restored."
+    )
+    assert loaded.operation_ledger.operations == []
+    assert len(bundles.created) == 1
+    assert bundles._revisions[1] is bundles.created[0]
+    assert bundles.bundle is previous
+
+
+def test_certificate_publish_rejects_zero_registered_proxies_without_previous_active(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    bundles = FakeCertificateBundles(bundle=None)
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry([]),
+    )
+
+    with loaded.module.app.test_request_context("/certs/upload", method="POST"):
+        loaded.module.session["user"] = "operator"
+        ok, detail = loaded.module._publish_certificate_bundle_remote(_bundle())
+
+    assert ok is False
+    assert (
+        detail
+        == "Certificate revision 1 saved, but no registered proxies were available; "
+        "certificate bundle was not activated.\n"
+        "Unqueued certificate bundle revision was left inactive."
+    )
+    assert loaded.operation_ledger.operations == []
+    assert len(bundles.created) == 1
+    assert bundles._revisions[1] is bundles.created[0]
+    assert bundles.bundle is None
+
+
+def test_certificate_generate_audits_zero_registered_proxy_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    bundles = FakeCertificateBundles(bundle=None)
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry([]),
+    )
+    expected_detail = (
+        "Certificate revision 1 saved, but no registered proxies were available; "
+        "certificate bundle was not activated.\n"
+        "Unqueued certificate bundle revision was left inactive."
+    )
+
+    def generate_bundle():
+        return _bundle()
+
+    monkeypatch.setattr(
+        loaded.module,
+        "generate_self_signed_ca_bundle",
+        generate_bundle,
+    )
+    monkeypatch.setattr(loaded.module, "_request_needs_proxy_context", lambda: False)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    with client.session_transaction() as sess:
+        token = sess["_csrf_token"]
+
+    response = client.post(
+        "/certs/generate",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    params = _location_params(response)
+    assert params["ok"] == ["0"]
+    assert params["msg"] == [expected_detail]
+    assert bundles.bundle is None
+    assert loaded.operation_ledger.operations == []
+    assert loaded.audit_store.records[-1]["kind"] == "ca_ensure"
+    assert loaded.audit_store.records[-1]["ok"] is False
+    assert loaded.audit_store.records[-1]["detail"] == expected_detail
+
+
+def test_certificate_upload_audits_zero_registered_proxy_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=previous)
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry([]),
+    )
+    expected_detail = (
+        "Certificate revision 1 saved, but no registered proxies were available; "
+        "certificate bundle was not activated.\n"
+        "Previous active certificate bundle was restored."
+    )
+
+    def _parse_pfx_bundle(_pfx_bytes: bytes, *, password: str = ""):
+        return SimpleNamespace(ok=True, bundle=_bundle(), message="parsed")
+
+    monkeypatch.setattr(loaded.module, "parse_pfx_bundle", _parse_pfx_bundle)
+    monkeypatch.setattr(loaded.module, "_request_needs_proxy_context", lambda: False)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    with client.session_transaction() as sess:
+        token = sess["_csrf_token"]
+
+    response = client.post(
+        "/certs/upload",
+        data={
+            "csrf_token": token,
+            "pfx_password": "secret",
+            "pfx": (BytesIO(b"fake pfx"), "bundle.pfx"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    params = _location_params(response)
+    assert params["ok"] == ["0"]
+    assert params["msg"] == [expected_detail]
+    assert bundles.bundle is previous
+    assert loaded.operation_ledger.operations == []
+    assert loaded.audit_store.records[-1]["kind"] == "ca_upload_pfx"
+    assert loaded.audit_store.records[-1]["ok"] is False
+    assert loaded.audit_store.records[-1]["detail"] == expected_detail
+
+
 def test_certificate_publish_records_previous_bundle_for_operation_revert(
     monkeypatch, tmp_path
 ) -> None:
@@ -867,6 +1034,7 @@ def test_certificate_publish_records_previous_bundle_for_operation_revert(
 
     assert ok is True
     assert "Queued 2 async operations" in detail
+    assert bundles.bundle is bundles.created[0]
     assert [
         (op.proxy_id, op.target_kind, op.target_ref, op.rollback_kind, op.rollback_ref)
         for op in loaded.operation_ledger.operations

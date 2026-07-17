@@ -2871,11 +2871,15 @@ def _publish_certificate_bundle_remote(
             )
             failure_details.append(f"{proxy.proxy_id}: {operation_detail}")
     if attempted == 0:
+        restore_previous_active_bundle()
         detail = (
-            f"Certificate revision {revision.revision_id} saved. "
-            "No registered proxies were available to queue; proxies will apply it when reconciliation is requested."
+            f"Certificate revision {revision.revision_id} saved, but no registered proxies were available; "
+            "certificate bundle was not activated."
         )
-    elif queued_count == attempted:
+        if restore_detail:
+            detail = f"{detail}\n{restore_detail}"
+        return False, detail + leaf_detail
+    if queued_count == attempted:
         plural = "operation" if queued_count == 1 else "operations"
         detail = f"Certificate revision {revision.revision_id} saved. Queued {queued_count} async {plural}."
     elif queued_count == 0:
