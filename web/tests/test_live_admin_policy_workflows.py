@@ -43,7 +43,7 @@ def _assert_policy_request_reconcile_message(
     assert values is not None
     assert len(values) == 1
     assert re.fullmatch(
-        rf"{re.escape(action)}; Proxy reconciliation queued operation #\d+\.",
+        rf"{re.escape(action)}; Policy reconciliation queued operation #\d+ for policy [0-9a-f]{{12}}\.",
         values[0],
     )
 

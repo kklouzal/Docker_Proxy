@@ -352,6 +352,12 @@ def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation
         registry=FakeRegistry(["default", "edge-2"]),
         policy_request_store=store,
     )
+    desired_policy_sha = "a" * 64
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_policy_sha_for_proxy",
+        lambda _proxy_id: (desired_policy_sha, ""),
+    )
     client = loaded.module.app.test_client()
     login_client(client)
 
@@ -372,7 +378,7 @@ def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation
     )
     assert len(approve_params.get("ok", [])) == 1
     assert re.fullmatch(
-        r"approved; Policy reconciliation queued operation #\d+\.",
+        r"approved; Policy reconciliation queued operation #\d+ for policy a{12}\.",
         approve_params["ok"][0],
     )
     assert len(store.approved) == 1
@@ -380,12 +386,14 @@ def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation
     assert store.approved[0][1]["proxy_id"] == "edge-2"
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
+    assert loaded.operation_ledger.operations[-1].target_ref == desired_policy_sha
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
     approve_page = client.get(approve_location)
     approve_text = approve_page.get_data(as_text=True)
     assert (
-        "Action completed: approved; Policy reconciliation queued operation #1."
+        "Action completed: approved; Policy reconciliation queued operation #1 "
+        "for policy aaaaaaaaaaaa."
         in approve_text
     )
 
@@ -406,7 +414,7 @@ def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation
     )
     assert len(revoke_params.get("ok", [])) == 1
     assert re.fullmatch(
-        r"revoked; Policy reconciliation queued operation #\d+\.",
+        r"revoked; Policy reconciliation queued operation #\d+ for policy a{12}\.",
         revoke_params["ok"][0],
     )
     assert len(store.revoked) == 1
@@ -414,6 +422,7 @@ def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation
     assert store.revoked[0][1]["proxy_id"] == "edge-2"
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
+    assert loaded.operation_ledger.operations[-1].target_ref == desired_policy_sha
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
