@@ -188,3 +188,53 @@ def test_certificate_bundle_activate_switches_active_revision(monkeypatch) -> No
     assert revision.revision_id == 9
     assert any("SET is_active=0" in call for call in calls)
     assert any("SET is_active=1" in call for call in calls)
+
+
+def test_certificate_bundle_latest_apply_can_filter_by_revision(monkeypatch) -> None:
+    store = CertificateBundleStore()
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            calls.append((str(sql), tuple(params or ())))
+            return SimpleNamespace(fetchone=lambda: None)
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", Conn)
+
+    assert store.latest_apply("edge-2", revision_id=10) is None
+
+    sql, params = calls[-1]
+    assert "WHERE proxy_id=%s AND revision_id=%s" in sql
+    assert params == ("edge-2", 10)
+
+
+def test_certificate_bundle_latest_apply_preserves_unscoped_query(monkeypatch) -> None:
+    store = CertificateBundleStore()
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            calls.append((str(sql), tuple(params or ())))
+            return SimpleNamespace(fetchone=lambda: None)
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", Conn)
+
+    assert store.latest_apply("edge-2") is None
+
+    sql, params = calls[-1]
+    assert "AND revision_id" not in sql
+    assert params == ("edge-2",)

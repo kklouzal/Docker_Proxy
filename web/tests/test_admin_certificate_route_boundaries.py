@@ -103,6 +103,150 @@ def test_certificate_download_404s_when_no_active_bundle(monkeypatch, tmp_path) 
     assert client.get("/certs/download/ca.crt").status_code == 404
 
 
+def _cert_page_status_entries(html: str) -> dict[str, str]:
+    entries: dict[str, str] = {}
+    marker = '<h3 class="page-section-title">Proxy apply status</h3>'
+    section = html.split(marker, 1)[1] if marker in html else html
+    for item in section.split('<div class="status-item">')[1:]:
+        name = item.split("<strong>", 1)[1].split("</strong>", 1)[0].strip()
+        badge = (
+            item.split('class="badge', 1)[1]
+            .split(">", 1)[1]
+            .split("</span>", 1)[0]
+            .strip()
+        )
+        entries[name] = badge
+    return entries
+
+
+def test_certs_page_scopes_proxy_apply_status_to_active_revision(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    bundles = FakeCertificateBundles(bundle=bundle)
+    bundles.record_apply_result(
+        "default",
+        9,
+        ok=True,
+        detail="old applied",
+        bundle_sha256="old-sha",
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert _cert_page_status_entries(html)["Default"] == "Pending"
+    assert "old applied" not in html
+
+
+def test_certs_page_reports_success_failed_and_divergent_proxy_status_by_active_revision(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    bundles = FakeCertificateBundles(bundle=bundle)
+    bundles.record_apply_result(
+        "default",
+        10,
+        ok=True,
+        detail="default active applied",
+        bundle_sha256="active-sha",
+    )
+    bundles.record_apply_result(
+        "edge-2",
+        10,
+        ok=False,
+        detail="edge failed",
+        bundle_sha256="active-sha",
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["default", "edge-2"]),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    statuses = _cert_page_status_entries(html)
+    assert statuses["Default"] == "Applied"
+    assert statuses["Edge-2"] == "Failed"
+    assert "default active applied" in html
+    assert "edge failed" in html
+
+
+def test_certs_page_does_not_report_hash_mismatched_active_revision_as_applied(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    bundles = FakeCertificateBundles(bundle=bundle)
+    bundles.record_apply_result(
+        "default",
+        10,
+        ok=True,
+        detail="claimed active applied",
+        bundle_sha256="different-sha",
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert _cert_page_status_entries(html)["Default"] == "Pending"
+    assert "Recorded certificate bundle hash does not match the active bundle." in html
+
+
+def test_certs_page_without_active_bundle_does_not_leak_stale_apply_status(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=None)
+    bundles.record_apply_result(
+        "default",
+        9,
+        ok=True,
+        detail="old applied",
+        bundle_sha256="old-sha",
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert _cert_page_status_entries(html)["Default"] == "Pending"
+    assert "old applied" not in html
+
+
 def test_certificate_upload_rejects_missing_and_unsupported_files(
     monkeypatch, tmp_path
 ) -> None:

@@ -1105,13 +1105,28 @@ class FakeCertificateBundles:
         )
         return SimpleNamespace(application_id=len(self.applied))
 
-    def latest_apply(self, _proxy_id: object | None) -> Any | None:
-        if not self.applied:
-            return None
-        row = self.applied[-1]
-        return SimpleNamespace(
-            ok=bool(row.get("ok")), detail=row.get("detail", ""), applied_ts=1
-        )
+    def latest_apply(
+        self,
+        proxy_id: object | None,
+        *,
+        revision_id: object | None = None,
+    ) -> Any | None:
+        proxy_key = str(proxy_id or "default")
+        for row in reversed(self.applied):
+            if str(row.get("proxy_id") or "default") != proxy_key:
+                continue
+            if revision_id is not None and int(row.get("revision_id") or 0) != int(
+                revision_id or 0
+            ):
+                continue
+            return SimpleNamespace(
+                ok=bool(row.get("ok")),
+                detail=row.get("detail", ""),
+                applied_ts=1,
+                revision_id=int(row.get("revision_id") or 0),
+                bundle_sha256=str(row.get("bundle_sha256") or ""),
+            )
+        return None
 
     def get_admin_ui_https_settings(self) -> Any:
         return self.admin_ui_https_settings

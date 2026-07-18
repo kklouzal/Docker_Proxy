@@ -2395,7 +2395,9 @@ class ProxyRuntime:
         if revision_meta.bundle_sha256 == current_sha:
             applied = None
             try:
-                latest_apply = self.certificate_bundles.latest_apply(self.proxy_id)
+                latest_apply = self.certificate_bundles.latest_apply(
+                    self.proxy_id, revision_id=revision_meta.revision_id
+                )
             except Exception:
                 latest_apply = None
             if int(getattr(latest_apply, "revision_id", 0) or 0) != int(

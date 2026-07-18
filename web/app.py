@@ -7138,17 +7138,44 @@ def _render_certs_page(
     certificate = "ca.crt" if bundle is not None else None
     admin_ui_https = _admin_ui_https_status(bundle)
     proxy_cert_statuses = []
+    active_revision_id = (
+        getattr(bundle, "revision_id", None) if bundle is not None else None
+    )
+    active_bundle_sha256 = (
+        getattr(bundle, "bundle_sha256", "") if bundle is not None else ""
+    )
     for proxy in get_proxy_registry().list_proxies():
-        latest_apply = bundle_store.latest_apply(proxy.proxy_id)
+        latest_apply = None
+        if active_revision_id is not None:
+            latest_apply = bundle_store.latest_apply(
+                proxy.proxy_id,
+                revision_id=active_revision_id,
+            )
+        apply_ok = latest_apply.ok if latest_apply is not None else None
+        apply_detail = latest_apply.detail if latest_apply is not None else ""
+        if (
+            apply_ok is True
+            and active_bundle_sha256
+            and latest_apply is not None
+            and latest_apply.bundle_sha256
+            and latest_apply.bundle_sha256 != active_bundle_sha256
+        ):
+            apply_ok = None
+            apply_detail = (
+                "Recorded certificate bundle hash does not match the active bundle."
+            )
         proxy_cert_statuses.append(
             {
                 "proxy_id": proxy.proxy_id,
                 "display_name": proxy.display_name or proxy.proxy_id,
-                "ok": latest_apply.ok if latest_apply is not None else None,
-                "detail": latest_apply.detail if latest_apply is not None else "",
+                "ok": apply_ok,
+                "detail": apply_detail,
                 "applied_ts": latest_apply.applied_ts
                 if latest_apply is not None
                 else 0,
+                "revision_id": latest_apply.revision_id
+                if latest_apply is not None
+                else active_revision_id,
             },
         )
     return render_template(

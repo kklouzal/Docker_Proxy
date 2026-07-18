@@ -367,19 +367,32 @@ class CertificateBundleStore:
         assert application is not None
         return application
 
-    def latest_apply(self, proxy_id: object | None) -> CertificateApplication | None:
+    def latest_apply(
+        self,
+        proxy_id: object | None,
+        *,
+        revision_id: object | None = None,
+    ) -> CertificateApplication | None:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
-        with self._connect() as conn:
-            row = conn.execute(
-                """
+        if revision_id is None:
+            sql = """
                 SELECT * FROM proxy_certificate_applications
                 WHERE proxy_id=%s
                 ORDER BY applied_ts DESC, id DESC
                 LIMIT 1
-                """,
-                (proxy_key,),
-            ).fetchone()
+                """
+            params: tuple[object, ...] = (proxy_key,)
+        else:
+            sql = """
+                SELECT * FROM proxy_certificate_applications
+                WHERE proxy_id=%s AND revision_id=%s
+                ORDER BY applied_ts DESC, id DESC
+                LIMIT 1
+                """
+            params = (proxy_key, int(revision_id or 0))
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
         return self._row_to_application(row)
 
     def get_admin_ui_https_settings(self) -> AdminUiHttpsSettings:

@@ -113,6 +113,13 @@ def test_live_generate_certificate_creates_shared_bundle_and_nudges_all_register
     )
     assert primary_apply is not None
     assert remote_apply is not None
+    assert int(primary_apply.revision_id) == int(bundle.revision_id)
+    assert int(remote_apply.revision_id) == int(bundle.revision_id)
+    assert primary_apply.ok is True
+    assert remote_apply.ok is True
+    if bundle.bundle_sha256:
+        assert primary_apply.bundle_sha256 in {"", bundle.bundle_sha256}
+        assert remote_apply.bundle_sha256 in {"", bundle.bundle_sha256}
 
     certs_page = multi_proxy_admin.admin_request("/certs")
     assert certs_page.status == 200
@@ -202,15 +209,22 @@ def test_live_upload_certificate_pfx_creates_shared_bundle_and_nudges_all_regist
     assert bundle.original_filename == "live-upload-ca.pfx"
     assert bundle.original_pfx_blob
 
-    wait_for_certificate_apply(
+    primary_apply = wait_for_certificate_apply(
         LIVE_CONFIG.primary_proxy_id,
         revision_id=bundle.revision_id,
         after_ts=_apply_ts(primary_before) or None,
         timeout_seconds=120.0,
     )
-    wait_for_certificate_apply(
+    remote_apply = wait_for_certificate_apply(
         LIVE_CONFIG.remote_proxy_id,
         revision_id=bundle.revision_id,
         after_ts=_apply_ts(remote_before) or None,
         timeout_seconds=120.0,
     )
+    assert int(primary_apply.revision_id) == int(bundle.revision_id)
+    assert int(remote_apply.revision_id) == int(bundle.revision_id)
+    assert primary_apply.ok is True
+    assert remote_apply.ok is True
+    if bundle.bundle_sha256:
+        assert primary_apply.bundle_sha256 in {"", bundle.bundle_sha256}
+        assert remote_apply.bundle_sha256 in {"", bundle.bundle_sha256}
