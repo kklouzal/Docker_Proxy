@@ -15,9 +15,16 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from services.db import DATABASE_ERRORS, connect, mysql_error_code
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+from services.db import (
+    DATABASE_ERRORS,
+    connect,
+    mysql_error_code,
+)
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
@@ -30,6 +37,39 @@ _ARTIFACT_SHA_FILENAME = ".artifact-sha256"
 _DEFAULT_COMPILED_DIR = "/var/lib/squid-flask-proxy/adblock/compiled"
 _DEFAULT_SETTINGS_FILENAME = "settings.json"
 _BUILDER_SOURCE_KINDS = {"background", "compile"}
+
+
+_BUILDER_RETRYABLE_MYSQL_CODES = {1205, 1213}
+_BUILDER_MYSQL_RETRY_ATTEMPTS = 4
+_BUILDER_MYSQL_RETRY_BASE_DELAY_SECONDS = 0.2
+
+
+def _is_builder_retryable_mysql_error(exc: BaseException) -> bool:
+    return mysql_error_code(exc) in _BUILDER_RETRYABLE_MYSQL_CODES
+
+
+def _run_builder_mysql_operation(operation: Callable[[], Any]) -> Any:
+    last_exc: BaseException | None = None
+    for attempt in range(_BUILDER_MYSQL_RETRY_ATTEMPTS):
+        try:
+            return operation()
+        except DATABASE_ERRORS as exc:
+            last_exc = exc
+            if (
+                not _is_builder_retryable_mysql_error(exc)
+                or attempt >= _BUILDER_MYSQL_RETRY_ATTEMPTS - 1
+            ):
+                raise
+            time.sleep(
+                min(
+                    5.0,
+                    _BUILDER_MYSQL_RETRY_BASE_DELAY_SECONDS * (2**attempt),
+                ),
+            )
+    if last_exc is not None:
+        raise last_exc
+    msg = "MySQL builder operation failed"
+    raise RuntimeError(msg)
 
 
 def _parse_enabled_lists_json(enabled_lists_json: str) -> list[str]:
@@ -349,52 +389,59 @@ class AdblockArtifactStore:
         activate: bool = True,
     ) -> AdblockArtifactRevision:
         self.init_db()
-        current = self.get_active_artifact()
         enabled_lists_json = json.dumps(
             sorted({str(item).strip() for item in enabled_lists if str(item).strip()}),
         )
-        if (
-            activate
-            and current is not None
-            and current.artifact_sha256 == artifact_sha256
-            and current.settings_version == int(settings_version)
-            and current.source_kind == (source_kind or "compile")[:64]
-            and current.enabled_lists_json == enabled_lists_json
-        ):
-            self.prune_revisions()
-            return current
 
-        now = _now()
-        with self._connect() as conn:
-            if activate:
-                conn.execute(
-                    "UPDATE adblock_artifact_revisions SET is_active=0 WHERE is_active=1",
+        def _create() -> object | None:
+            current = self.get_active_artifact()
+            if (
+                activate
+                and current is not None
+                and current.artifact_sha256 == artifact_sha256
+                and current.settings_version == int(settings_version)
+                and current.source_kind == (source_kind or "compile")[:64]
+                and current.enabled_lists_json == enabled_lists_json
+            ):
+                self.prune_revisions()
+                return current
+
+            now = _now()
+            with self._connect() as conn:
+                if activate:
+                    conn.execute(
+                        "UPDATE adblock_artifact_revisions SET is_active=0 WHERE is_active=1",
+                    )
+                cur = conn.execute(
+                    """
+                    INSERT INTO adblock_artifact_revisions(
+                        artifact_sha256, archive_blob, report_json, settings_version,
+                        source_kind, enabled_lists_json, created_by, created_ts, is_active
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        (artifact_sha256 or "")[:64],
+                        bytes(archive_blob or b""),
+                        report_json or "{}",
+                        int(settings_version),
+                        (source_kind or "compile")[:64],
+                        enabled_lists_json,
+                        (created_by or "")[:255],
+                        now,
+                        1 if activate else 0,
+                    ),
                 )
-            cur = conn.execute(
-                """
-                INSERT INTO adblock_artifact_revisions(
-                    artifact_sha256, archive_blob, report_json, settings_version,
-                    source_kind, enabled_lists_json, created_by, created_ts, is_active
-                )
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    (artifact_sha256 or "")[:64],
-                    bytes(archive_blob or b""),
-                    report_json or "{}",
-                    int(settings_version),
-                    (source_kind or "compile")[:64],
-                    enabled_lists_json,
-                    (created_by or "")[:255],
-                    now,
-                    1 if activate else 0,
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
-                (int(cur.lastrowid or 0),),
-            ).fetchone()
-            self._prune_revisions_with_conn(conn)
+                row = conn.execute(
+                    "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
+                    (int(cur.lastrowid or 0),),
+                ).fetchone()
+                self._prune_revisions_with_conn(conn)
+            return row
+
+        row = _run_builder_mysql_operation(_create)
+        if isinstance(row, AdblockArtifactRevision):
+            return row
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
@@ -544,17 +591,37 @@ class AdblockArtifactStore:
         created_by: str = "system",
         source_kind: str = "background",
     ) -> dict[str, Any]:
-        self.init_db()
-        from services.adblock_store import get_adblock_store
+        def load_state() -> tuple[Any, dict[str, Any], bool, int, list[Any], Any]:
+            self.init_db()
+            from services.adblock_store import get_adblock_store
 
-        store = get_adblock_store()
-        store.init_db()
-        settings = store.get_settings()
-        settings_enabled = bool(settings.get("enabled"))
-        settings_version = store.get_settings_version()
-        statuses = store.list_statuses()
-        enabled_statuses = [status for status in statuses if status.enabled]
-        previous = self.get_active_artifact()
+            loaded_store = get_adblock_store()
+            loaded_store.init_db()
+            loaded_settings = loaded_store.get_settings()
+            loaded_settings_enabled = bool(loaded_settings.get("enabled"))
+            loaded_settings_version = loaded_store.get_settings_version()
+            loaded_statuses = loaded_store.list_statuses()
+            loaded_enabled_statuses = [
+                status for status in loaded_statuses if status.enabled
+            ]
+            loaded_previous = self.get_active_artifact()
+            return (
+                loaded_store,
+                loaded_settings,
+                loaded_settings_enabled,
+                loaded_settings_version,
+                loaded_enabled_statuses,
+                loaded_previous,
+            )
+
+        (
+            store,
+            settings,
+            settings_enabled,
+            settings_version,
+            enabled_statuses,
+            previous,
+        ) = _run_builder_mysql_operation(load_state)
         any_downloaded = False
         download_pending = False
 
@@ -572,7 +639,14 @@ class AdblockArtifactStore:
                     continue
                 force_download = bool(refresh_lists or not has_local_rules)
                 downloaded_now = bool(
-                    store.update_one(status.key, force=force_download),
+                    _run_builder_mysql_operation(
+                        lambda status=status, force_download=force_download: (
+                            store.update_one(
+                                status.key,
+                                force=force_download,
+                            )
+                        ),
+                    ),
                 )
                 any_downloaded = downloaded_now or any_downloaded
                 if not downloaded_now:

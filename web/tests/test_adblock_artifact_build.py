@@ -11,6 +11,9 @@ from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 
+import pymysql
+import pytest
+
 from .mysql_test_utils import configure_test_mysql_env
 
 
@@ -1150,7 +1153,9 @@ def test_adblock_cicap_access_parser_requires_http_403_status(tmp_path) -> None:
         )
 
 
-def test_adblock_cicap_access_parser_accepts_quoted_tabs_and_scaled_service_path(tmp_path) -> None:
+def test_adblock_cicap_access_parser_accepts_quoted_tabs_and_scaled_service_path(
+    tmp_path,
+) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     web_root = repo_root / "web"
     for path in (str(repo_root), str(web_root)):
@@ -1162,9 +1167,9 @@ def test_adblock_cicap_access_parser_accepts_quoted_tabs_and_scaled_service_path
     importlib.reload(store_module)
     store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
     line = (
-        '1700000000\t192.0.2.10\t198.51.100.20\tREQMOD\t/adblockreq\t200\t'
+        "1700000000\t192.0.2.10\t198.51.100.20\tREQMOD\t/adblockreq\t200\t"
         '"GET http://ads.example/path?note=a\tb HTTP/1.1"\thttp://ads.example/\t'
-        'HTTP/1.1 403 Forbidden\t-'
+        "HTTP/1.1 403 Forbidden\t-"
     )
 
     blocked = store._parse_cicap_access_line(line)
@@ -1239,3 +1244,197 @@ def test_create_revision_prunes_to_current_and_previous_artifacts(
         ("2" * 64, 0, b"archive-2"),
         ("3" * 64, 1, b"archive-3"),
     ]
+
+
+def test_create_revision_retries_transient_mysql_lock_wait(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    os.environ["DISABLE_BACKGROUND"] = "1"
+    import services.adblock_artifacts as artifacts_module  # type: ignore
+
+    importlib.reload(artifacts_module)
+    revision_store = artifacts_module.AdblockArtifactStore()
+    monkeypatch.setattr(revision_store, "init_db", lambda: None)
+    monkeypatch.setattr(revision_store, "get_active_artifact", lambda: None)
+
+    attempts = 0
+    operations: list[str] = []
+
+    def retry_once(operation):
+        nonlocal attempts
+        for _attempt in range(2):
+            attempts += 1
+            try:
+                return operation()
+            except pymysql.OperationalError as exc:
+                if int(exc.args[0]) != 1205:
+                    raise
+        return operation()
+
+    class FakeResult:
+        lastrowid = 7
+
+        def __init__(self, row=None) -> None:
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            operations.append("ROLLBACK" if exc_type is not None else "COMMIT")
+            return False
+
+        def execute(self, sql: str, params=()):
+            nonlocal operations
+            text = " ".join(sql.split())
+            operations.append(text)
+            if text.startswith("UPDATE") and operations.count(text) == 1:
+                raise pymysql.OperationalError(
+                    1205,
+                    "Lock wait timeout exceeded; try restarting transaction",
+                )
+            if text.startswith("INSERT"):
+                return FakeResult()
+            if text.startswith("SELECT * FROM adblock_artifact_revisions"):
+                return FakeResult(
+                    {
+                        "id": 7,
+                        "artifact_sha256": "a" * 64,
+                        "archive_blob": b"archive",
+                        "report_json": "{}",
+                        "settings_version": 3,
+                        "source_kind": "background",
+                        "enabled_lists_json": '["easylist"]',
+                        "created_by": "pytest",
+                        "created_ts": 123,
+                        "is_active": 1,
+                    }
+                )
+            return FakeResult([])
+
+    def fake_connect():
+        return FakeConn()
+
+    monkeypatch.setattr(artifacts_module, "_run_builder_mysql_operation", retry_once)
+    monkeypatch.setattr(revision_store, "_connect", fake_connect)
+    monkeypatch.setattr(
+        revision_store,
+        "_prune_revisions_with_conn",
+        lambda _conn: None,
+    )
+
+    revision = revision_store.create_revision(
+        artifact_sha256="a" * 64,
+        archive_blob=b"archive",
+        report_json="{}",
+        settings_version=3,
+        source_kind="background",
+        enabled_lists=["easylist"],
+        created_by="pytest",
+    )
+
+    assert attempts == 2
+    assert revision.revision_id == 7
+    assert revision.artifact_sha256 == "a" * 64
+    assert operations.count("ROLLBACK") == 1
+    assert operations.count("COMMIT") == 1
+
+
+def test_builder_mysql_operation_retries_only_lock_and_deadlock_errors(
+    monkeypatch,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import services.adblock_artifacts as artifacts_module  # type: ignore
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(artifacts_module.time, "sleep", sleeps.append)
+
+    attempts = 0
+
+    def lock_wait_once() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise pymysql.OperationalError(
+                1205,
+                "Lock wait timeout exceeded; try restarting transaction",
+            )
+        return "ok"
+
+    assert artifacts_module._run_builder_mysql_operation(lock_wait_once) == "ok"
+    assert attempts == 2
+    assert sleeps == [0.2]
+
+    attempts = 0
+    sleeps.clear()
+
+    def deadlock_once() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise pymysql.OperationalError(
+                1213,
+                "Deadlock found when trying to get lock; try restarting transaction",
+            )
+        return "ok"
+
+    assert artifacts_module._run_builder_mysql_operation(deadlock_once) == "ok"
+    assert attempts == 2
+    assert sleeps == [0.2]
+
+    def connection_refused() -> None:
+        raise pymysql.OperationalError(2003, "Can't connect to MySQL server")
+
+    with pytest.raises(pymysql.OperationalError):
+        artifacts_module._run_builder_mysql_operation(connection_refused)
+    assert sleeps == [0.2]
+
+    attempts = 0
+    sleeps.clear()
+
+    def duplicate_key() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise pymysql.IntegrityError(1062, "Duplicate entry")
+
+    with pytest.raises(pymysql.IntegrityError):
+        artifacts_module._run_builder_mysql_operation(duplicate_key)
+    assert attempts == 1
+    assert sleeps == []
+
+
+def test_builder_mysql_operation_propagates_non_database_errors(monkeypatch) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import services.adblock_artifacts as artifacts_module  # type: ignore
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(artifacts_module.time, "sleep", sleeps.append)
+
+    def fail() -> None:
+        msg = "not transient mysql"
+        raise ValueError(msg)
+
+    with pytest.raises(ValueError, match="not transient mysql"):
+        artifacts_module._run_builder_mysql_operation(fail)
+    assert sleeps == []
