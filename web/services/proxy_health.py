@@ -66,17 +66,24 @@ def _proxy_http_port() -> int:
     return port if 1 <= port <= 65535 else 3128
 
 
-def _public_health_target_url() -> str:
-    host = (os.environ.get("PAC_HTTP_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-    if host in {"0.0.0.0", "::", "[::]"}:  # noqa: S104 - normalize wildcard bind hosts to loopback probe targets.
+def _forwarding_canary_target_url() -> str:
+    host = (
+        os.environ.get("FORWARDING_CANARY_HOST") or "127.0.0.1"
+    ).strip() or "127.0.0.1"
+    if host in {"0.0.0.0", "::", "[::]", "::1", "[::1]"}:  # noqa: S104 - normalize wildcard/IPv6 loopback bind hosts to IPv4 loopback probe targets.
         host = "127.0.0.1"
     display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
     try:
-        port = int((os.environ.get("PAC_HTTP_PORT") or "80").strip())
+        port = int((os.environ.get("FORWARDING_CANARY_PORT") or "18080").strip())
     except Exception:
-        port = 80
-    port = port if 1 <= port <= 65535 else 80
-    return f"http://{display_host}:{port}/health"
+        port = 18080
+    port = port if 1 <= port <= 65535 else 18080
+    path = (
+        os.environ.get("FORWARDING_CANARY_PATH") or "/__docker_proxy_forwarding_canary"
+    ).strip()
+    if not path.startswith("/") or "?" in path or "#" in path or "\\" in path:
+        path = "/__docker_proxy_forwarding_canary"
+    return f"http://{display_host}:{port}{path}"
 
 
 def unavailable_service(
@@ -139,7 +146,7 @@ def check_forwarding_path_health(
     resolved_proxy_port = int(
         proxy_port if proxy_port is not None else _proxy_http_port()
     )
-    resolved_target_url = target_url or _public_health_target_url()
+    resolved_target_url = target_url or _forwarding_canary_target_url()
     result = check_http_proxy_forwarding(
         proxy_host=proxy_host,
         proxy_port=resolved_proxy_port,

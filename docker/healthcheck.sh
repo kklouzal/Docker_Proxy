@@ -134,6 +134,7 @@ PY
 check_squid_forwarding_path() {
     SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PY'
 import os
+import json
 import socket
 
 
@@ -194,21 +195,24 @@ def response_ports(config_path: str):
     return ports or [fallback]
 
 
-def public_health_url() -> str:
-    host = (os.environ.get('PAC_HTTP_HOST') or '127.0.0.1').strip() or '127.0.0.1'
-    if host in {'0.0.0.0', '::', '[::]'}:
+def forwarding_canary_url() -> str:
+    host = (os.environ.get('FORWARDING_CANARY_HOST') or '127.0.0.1').strip() or '127.0.0.1'
+    if host in {'0.0.0.0', '::', '[::]', '::1', '[::1]'}:
         host = '127.0.0.1'
     display_host = f'[{host}]' if ':' in host and not host.startswith('[') else host
     try:
-        port = int((os.environ.get('PAC_HTTP_PORT') or '80').strip() or '80')
+        port = int((os.environ.get('FORWARDING_CANARY_PORT') or '18080').strip() or '18080')
     except Exception:
-        port = 80
+        port = 18080
     if port < 1 or port > 65535:
-        port = 80
-    return f'http://{display_host}:{port}/health'
+        port = 18080
+    path = (os.environ.get('FORWARDING_CANARY_PATH') or '/__docker_proxy_forwarding_canary').strip()
+    if not path.startswith('/') or '?' in path or '#' in path or '\\' in path:
+        path = '/__docker_proxy_forwarding_canary'
+    return f'http://{display_host}:{port}{path}?probe=squid-respmod'
 
 
-target_url = public_health_url()
+target_url = forwarding_canary_url()
 last_error = ''
 for port in response_ports(os.environ.get('SQUID_CONFIG_PATH') or '/etc/squid/squid.conf'):
     try:
@@ -217,14 +221,17 @@ for port in response_ports(os.environ.get('SQUID_CONFIG_PATH') or '/etc/squid/sq
             sock.sendall(
                 (
                     f'GET {target_url} HTTP/1.1\r\n'
-                    'Host: 127.0.0.1\r\n'
+                    'Host: 127.0.0.1:18080\r\n'
                     'User-Agent: squid-flask-proxy-forwarding-health\r\n'
+                    'Accept: application/json, */*;q=0.1\r\n'
+                    'Cache-Control: no-cache\r\n'
+                    'Pragma: no-cache\r\n'
                     'Connection: close\r\n\r\n'
                 ).encode('ascii', errors='replace')
             )
             data = b''
-            while b'\n' not in data and len(data) < 512:
-                chunk = sock.recv(512 - len(data))
+            while len(data) < 4096:
+                chunk = sock.recv(min(512, 4096 - len(data)))
                 if not chunk:
                     break
                 data += chunk
@@ -232,11 +239,16 @@ for port in response_ports(os.environ.get('SQUID_CONFIG_PATH') or '/etc/squid/sq
         parts = status.split()
         code = int(parts[1]) if len(parts) > 1 else 0
         if status.startswith('HTTP/') and 200 <= code < 400:
-            raise SystemExit(0)
+            body = data.split(b'\r\n\r\n', 1)[1] if b'\r\n\r\n' in data else b''
+            payload = json.loads(body.decode('utf-8'))
+            if payload.get('ok') is True and payload.get('service') == 'docker-proxy-forwarding-canary' and payload.get('probe') == 'squid-respmod':
+                raise SystemExit(0)
+            last_error = f'port {port}: canary body did not confirm ok'
+            continue
         last_error = f'port {port}: {status or "no HTTP status"}'
     except Exception as exc:
         last_error = f'port {port}: {exc}'
-raise SystemExit(f'Squid explicit forwarding path failed for local health target {target_url}: {last_error}')
+raise SystemExit(f'Squid explicit forwarding path failed for local canary target {target_url}: {last_error}')
 PY
 }
 
@@ -351,6 +363,16 @@ fi
 
 if ! supervisor_program_running proxy_agent; then
     echo "supervisor reports proxy_agent is not RUNNING"
+    exit 1
+fi
+
+if ! supervisor_program_running forwarding_canary; then
+    echo "supervisor reports forwarding_canary is not RUNNING"
+    exit 1
+fi
+
+if ! has_listen_socket "${FORWARDING_CANARY_PORT:-18080}" >/dev/null 2>&1; then
+    echo "forwarding_canary is not accepting loopback connections"
     exit 1
 fi
 

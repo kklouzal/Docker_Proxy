@@ -3494,7 +3494,8 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
                 "cicap_adblock RUNNING pid 2\n"
                 "cicap_av RUNNING pid 3\n"
                 "proxy_api RUNNING pid 4\n"
-                "proxy_agent RUNNING pid 5\n"
+                "forwarding_canary RUNNING pid 5\n"
+                "proxy_agent RUNNING pid 6\n"
             ),
         )
 
@@ -3531,6 +3532,9 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "clamav_respmod_${instance}" in healthcheck
     assert "supervisor_program_running proxy_agent" in healthcheck
     assert "supervisor reports proxy_agent is not RUNNING" in healthcheck
+    assert "supervisor_program_running forwarding_canary" in healthcheck
+    assert "forwarding_canary is not accepting loopback connections" in healthcheck
+    assert "docker-proxy-forwarding-canary" in healthcheck
     assert "icap_av_base_port" in healthcheck
     assert "icap_av_resp_base_port" in healthcheck
     assert "clamd_host_is_remote" in healthcheck
@@ -3538,7 +3542,7 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "check_squid_forwarding_path" in healthcheck
     assert "PROXY_HEALTHCHECK_FORWARDING_REQUIRED" in healthcheck
     assert "squid-flask-proxy-forwarding-health" in healthcheck
-    assert "local health target" in healthcheck
+    assert "local canary target" in healthcheck
     assert (
         "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING"
         in healthcheck

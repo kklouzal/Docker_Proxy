@@ -205,6 +205,24 @@ PAC_HTTP_PORT="$(sanitize_positive_int "${PAC_HTTP_PORT:-80}")"
 export PAC_HTTP_PORT="${PAC_HTTP_PORT:-80}"
 PAC_HTTP_HOST="$(sanitize_bind_host "${PAC_HTTP_HOST:-0.0.0.0}")"
 export PAC_HTTP_HOST="${PAC_HTTP_HOST:-0.0.0.0}"
+FORWARDING_CANARY_PORT="$(sanitize_positive_int "${FORWARDING_CANARY_PORT:-18080}")"
+export FORWARDING_CANARY_PORT="${FORWARDING_CANARY_PORT:-18080}"
+FORWARDING_CANARY_HOST="$(sanitize_bind_host "${FORWARDING_CANARY_HOST:-127.0.0.1}")"
+case "${FORWARDING_CANARY_HOST}" in
+    127.*|localhost) ;;
+    *) FORWARDING_CANARY_HOST=127.0.0.1 ;;
+esac
+export FORWARDING_CANARY_HOST="${FORWARDING_CANARY_HOST:-127.0.0.1}"
+FORWARDING_CANARY_PATH="${FORWARDING_CANARY_PATH:-/__docker_proxy_forwarding_canary}"
+case "${FORWARDING_CANARY_PATH}" in
+    /*)
+        case "${FORWARDING_CANARY_PATH}" in
+            *'?'*|*'#'*|*'\\'*|*'//'*) FORWARDING_CANARY_PATH=/__docker_proxy_forwarding_canary ;;
+        esac
+        ;;
+    *) FORWARDING_CANARY_PATH=/__docker_proxy_forwarding_canary ;;
+esac
+export FORWARDING_CANARY_PATH
 WEB_WORKERS="$(sanitize_positive_int "${WEB_WORKERS:-1}")"
 export WEB_WORKERS="${WEB_WORKERS:-1}"
 WEB_THREADS="$(sanitize_positive_int "${WEB_THREADS:-2}")"

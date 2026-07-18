@@ -67,6 +67,16 @@ def _http_response(
     )
 
 
+def _forwarding_canary_response(
+    status: bytes = b"HTTP/1.1 200 OK",
+    body: bytes = (
+        b'{"ok":true,"probe":"squid-respmod",'
+        b'"service":"docker-proxy-forwarding-canary"}\n'
+    ),
+) -> bytes:
+    return _http_response(status=status, body=body)
+
+
 def test_health_check_local_host_listener_and_target_helpers(
     tmp_path, monkeypatch
 ) -> None:
@@ -241,11 +251,62 @@ def test_check_http_proxy_forwarding_uses_absolute_form_local_probe(
         "headers_complete": True,
         "body_complete": True,
         "local_health_ok": True,
+        "canary_probe_ok": None,
     }
     assert sock.timeout == pytest.approx(0.4)
     assert b"GET http://127.0.0.1:80/health HTTP/1.1" in sock.sent[0]
     assert b"Host: 127.0.0.1:80" in sock.sent[0]
     assert b"User-Agent: squid-flask-proxy-forwarding-health" in sock.sent[0]
+
+
+def test_check_http_proxy_forwarding_uses_dedicated_canary_and_requires_marker(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+
+    sock = _FakeSocket([_forwarding_canary_response()])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:18080/__docker_proxy_forwarding_canary",
+        timeout=0.4,
+    )
+
+    assert result == {
+        "ok": True,
+        "detail": "HTTP/1.1 200 OK; local health ok",
+        "status_code": 200,
+        "probe_url": "http://127.0.0.1:18080/__docker_proxy_forwarding_canary?probe=squid-respmod",
+        "headers_complete": True,
+        "body_complete": True,
+        "local_health_ok": True,
+        "canary_probe_ok": True,
+    }
+    assert (
+        b"GET http://127.0.0.1:18080/__docker_proxy_forwarding_canary?probe=squid-respmod HTTP/1.1"
+        in sock.sent[0]
+    )
+    assert b"Host: 127.0.0.1:18080" in sock.sent[0]
+
+    sock = _FakeSocket([_http_response(body=b'{"ok":true}\n')])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+    malformed = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:18080/__docker_proxy_forwarding_canary",
+        timeout=0.4,
+    )
+    assert malformed["ok"] is False
+    assert malformed["canary_probe_ok"] is False
+    assert "local health body did not confirm ok" in malformed["detail"]
 
 
 def test_check_http_proxy_forwarding_reports_blocked_or_timed_out_path(
@@ -498,8 +559,8 @@ def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> 
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
-    monkeypatch.setenv("PAC_HTTP_HOST", "0.0.0.0")  # noqa: S104 - wildcard bind env is normalized to loopback.
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # noqa: S104 - wildcard bind env is normalized to loopback.
+    monkeypatch.setenv("FORWARDING_CANARY_PORT", "18080")
     monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
 
     def fake_probe(**kwargs):
@@ -516,7 +577,7 @@ def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> 
     assert captured == {
         "proxy_host": "127.0.0.1",
         "proxy_port": 3128,
-        "target_url": "http://127.0.0.1:80/health",
+        "target_url": "http://127.0.0.1:18080/__docker_proxy_forwarding_canary",
         "timeout": 0.3,
         "error_formatter": None,
     }
@@ -525,6 +586,34 @@ def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> 
     assert result["traffic_scope"] == "local-only"
     assert result["fail_mode"] == "open"
     assert "forwarding path is degraded" in result["detail"]
+
+
+def test_forwarding_path_health_no_longer_targets_public_listener_self_dependency(
+    monkeypatch,
+) -> None:
+    proxy_health = _proxy_health_module()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+    monkeypatch.setenv("PAC_HTTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.delenv("FORWARDING_CANARY_HOST", raising=False)
+    monkeypatch.delenv("FORWARDING_CANARY_PORT", raising=False)
+    monkeypatch.delenv("FORWARDING_CANARY_PATH", raising=False)
+
+    def fake_probe(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "detail": "HTTP/1.1 200 OK; local health ok"}
+
+    monkeypatch.setattr(proxy_health, "check_http_proxy_forwarding", fake_probe)
+
+    result = proxy_health.check_forwarding_path_health(timeout=0.3)
+
+    assert result["ok"] is True
+    assert captured["target_url"] == (
+        "http://127.0.0.1:18080/__docker_proxy_forwarding_canary"
+    )
+    assert captured["target_url"] != "http://127.0.0.1:80/health"
 
 
 def test_forwarding_path_success_contract_cannot_include_stale_error(

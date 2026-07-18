@@ -6,7 +6,7 @@ import pathlib
 import socket
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from services.errors import public_error_message
 
@@ -209,9 +209,20 @@ def _decode_chunked_body(data: bytes) -> tuple[bytes, bool]:
     return bytes(body), False
 
 
-def _target_is_local_health(target_url: str) -> bool:
+def _target_is_local_json_health(target_url: str) -> bool:
     parsed = urlsplit(str(target_url or ""))
-    return parsed.scheme.lower() == "http" and parsed.path.rstrip("/") == "/health"
+    return parsed.scheme.lower() == "http" and parsed.path.rstrip("/") in {
+        "/health",
+        "/__docker_proxy_forwarding_canary",
+    }
+
+
+def _target_is_forwarding_canary(target_url: str) -> bool:
+    parsed = urlsplit(str(target_url or ""))
+    return (
+        parsed.scheme.lower() == "http"
+        and parsed.path.rstrip("/") == "/__docker_proxy_forwarding_canary"
+    )
 
 
 def _target_points_at_proxy_listener(
@@ -242,6 +253,24 @@ def _target_host_header(target_url: str) -> str:
     if parsed.port is not None:
         return f"{host}:{parsed.port}"
     return host
+
+
+def _append_forwarding_canary_probe(target_url: str) -> str:
+    if not _target_is_forwarding_canary(target_url):
+        return target_url
+    parsed = urlsplit(str(target_url or ""))
+    existing_probe = (
+        parse_qs(parsed.query, keep_blank_values=True).get("probe") or [""]
+    )[-1]
+    if existing_probe:
+        return target_url
+    separator = "&" if parsed.query else "?"
+    return f"{target_url}{separator}probe=squid-respmod"
+
+
+def _forwarding_canary_probe_token(target_url: str) -> str:
+    parsed = urlsplit(str(target_url or ""))
+    return (parse_qs(parsed.query, keep_blank_values=True).get("probe") or [""])[-1]
 
 
 def check_icap_service(
@@ -289,13 +318,15 @@ def check_http_proxy_forwarding(
     """Probe the explicit Squid request path without external traffic.
 
     The probe sends a tiny absolute-form HTTP request through Squid to a local
-    target, usually the public PAC listener's ``/health`` endpoint. A TCP-only
-    listener check can pass while Squid's forwarding/adaptation path is wedged;
-    this bounded request exercises forwarding, local PAC reachability, and any
-    response ICAP path configured for ordinary GET traffic.
+    canary origin. A TCP-only listener check can pass while Squid's forwarding
+    or adaptation path is wedged; this bounded request exercises forwarding,
+    loopback origin reachability, and any response ICAP path configured for
+    ordinary GET traffic without relying on the public PAC listener that serves
+    clients.
     """
+    request_url = _append_forwarding_canary_probe(target_url)
     if _target_points_at_proxy_listener(
-        target_url=target_url,
+        target_url=request_url,
         proxy_host=proxy_host,
         proxy_port=proxy_port,
     ):
@@ -305,7 +336,7 @@ def check_http_proxy_forwarding(
                 "refusing forwarding probe target that points back at the "
                 "explicit proxy listener"
             ),
-            "probe_url": target_url,
+            "probe_url": request_url,
         }
 
     try:
@@ -315,8 +346,8 @@ def check_http_proxy_forwarding(
         ) as sock:
             sock.settimeout(timeout)
             request = (
-                f"GET {target_url} HTTP/1.1\r\n"
-                f"Host: {_target_host_header(target_url)}\r\n"
+                f"GET {request_url} HTTP/1.1\r\n"
+                f"Host: {_target_host_header(request_url)}\r\n"
                 f"User-Agent: {user_agent}\r\n"
                 "Accept: application/json, */*;q=0.1\r\n"
                 "Cache-Control: no-cache\r\n"
@@ -331,7 +362,7 @@ def check_http_proxy_forwarding(
                 "ok": False,
                 "detail": first
                 or "incomplete HTTP response from proxy forwarding path",
-                "probe_url": target_url,
+                "probe_url": request_url,
                 "headers_complete": False,
             }
         parts = first.split()
@@ -342,7 +373,8 @@ def check_http_proxy_forwarding(
         status_ok = first.startswith("HTTP/") and 200 <= code < 400
         detail = first or "no HTTP status from proxy forwarding path"
         local_health_ok: bool | None = None
-        if status_ok and _target_is_local_health(target_url):
+        canary_probe_ok: bool | None = None
+        if status_ok and _target_is_local_json_health(request_url):
             response_body = body
             if "chunked" in _http_header_value(headers, "transfer-encoding").lower():
                 response_body, body_complete = _decode_chunked_body(body)
@@ -356,8 +388,20 @@ def check_http_proxy_forwarding(
                     local_health_ok = bool(
                         isinstance(payload, dict) and payload.get("ok") is True,
                     )
+                    if _target_is_forwarding_canary(request_url):
+                        expected_probe = _forwarding_canary_probe_token(request_url)
+                        canary_probe_ok = bool(
+                            isinstance(payload, dict)
+                            and payload.get("service")
+                            == "docker-proxy-forwarding-canary"
+                            and payload.get("probe") == expected_probe
+                        )
+                        local_health_ok = local_health_ok and canary_probe_ok
                 except Exception:
                     local_health_ok = False
+                    canary_probe_ok = (
+                        False if _target_is_forwarding_canary(request_url) else None
+                    )
                 if local_health_ok:
                     detail = f"{detail}; local health ok"
                 else:
@@ -367,10 +411,11 @@ def check_http_proxy_forwarding(
             "ok": status_ok,
             "detail": detail,
             "status_code": code,
-            "probe_url": target_url,
+            "probe_url": request_url,
             "headers_complete": True,
             "body_complete": body_complete,
             "local_health_ok": local_health_ok,
+            "canary_probe_ok": canary_probe_ok,
         }
     except Exception as exc:
         return {

@@ -599,6 +599,16 @@ http_access allow all
     assert "include /etc/squid/conf.d/20-icap.conf" in text
     assert "include /etc/squid/conf.d/30-webfilter.conf" in text
     assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index(
+        "http_access allow docker_proxy_forwarding_canary_src"
+    )
+    assert "acl docker_proxy_forwarding_canary_dst dst 127.0.0.1/32 ::1" in text
+    assert "acl docker_proxy_forwarding_canary_port port 18080" in text
+    assert "cache deny docker_proxy_forwarding_canary_dst" in text
+    assert text.index(
+        "http_access allow docker_proxy_forwarding_canary_src"
+    ) < text.index(
+        "http_access deny docker_proxy_forwarding_canary_dst"
+    ) < text.index(
         "http_access allow all"
     )
     assert "icap_log stdio:/var/log/squid/icap.log icapobserve" in text
@@ -625,6 +635,34 @@ include /etc/squid/conf.d/30-webfilter.conf
     assert text.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
     assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index(
         "http_access allow all"
+    )
+
+
+def test_squid_controller_normalize_config_text_keeps_includes_outside_canary_block() -> None:
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+    text = ctl.normalize_config_text(
+        f"""
+http_port 3128
+{ctl._forwarding_canary_access_block()}
+http_access allow manager localhost
+http_access deny manager
+include /etc/squid/conf.d/20-icap.conf
+include /etc/squid/conf.d/30-webfilter.conf
+http_access allow all
+""".strip(),
+    )
+
+    assert text.count("include /etc/squid/conf.d/20-icap.conf") == 1
+    assert text.count("include /etc/squid/conf.d/30-webfilter.conf") == 1
+    assert text.index("include /etc/squid/conf.d/20-icap.conf") < text.index(
+        "# BEGIN SQUID-UI MANAGED FORWARDING CANARY"
+    )
+    assert text.index("include /etc/squid/conf.d/30-webfilter.conf") < text.index(
+        "# BEGIN SQUID-UI MANAGED FORWARDING CANARY"
     )
 
 

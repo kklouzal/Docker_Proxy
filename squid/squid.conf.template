@@ -4,6 +4,19 @@ http_port 0.0.0.0:3128 ssl-bump \
 	generate-host-certificates=on \
 	dynamic_cert_mem_cache_size=128MB
 
+# BEGIN SQUID-UI MANAGED FORWARDING CANARY
+# Local-only target for full health: allow the management process to reach the
+# dedicated canary through Squid, then block remote clients from using the proxy
+# to fetch that loopback-only endpoint.
+acl docker_proxy_forwarding_canary_src src 127.0.0.1/32 ::1
+acl docker_proxy_forwarding_canary_dst dst 127.0.0.1/32 ::1
+acl docker_proxy_forwarding_canary_port port 18080
+acl docker_proxy_forwarding_canary_path urlpath_regex -i ^/__docker_proxy_forwarding_canary([?].*)?$
+cache deny docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path
+http_access allow docker_proxy_forwarding_canary_src docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path
+http_access deny docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path
+# END SQUID-UI MANAGED FORWARDING CANARY
+
 # Allow cache manager access from localhost (used by the web UI for stats)
 http_access allow manager localhost
 http_access deny manager

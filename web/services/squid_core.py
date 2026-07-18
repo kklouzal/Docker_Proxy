@@ -382,6 +382,53 @@ class SquidController:
             return text[: match.start()] + wanted + "\n" + text[match.start() :]
         return text.rstrip() + "\n" + wanted + "\n"
 
+    def _forwarding_canary_path(self) -> str:
+        path = (
+            os.environ.get("FORWARDING_CANARY_PATH")
+            or "/__docker_proxy_forwarding_canary"
+        ).strip()
+        if not path.startswith("/") or "?" in path or "#" in path or "\\" in path:
+            return "/__docker_proxy_forwarding_canary"
+        return path
+
+    def _forwarding_canary_port(self) -> int:
+        return _parse_port(os.environ.get("FORWARDING_CANARY_PORT"), 18080)
+
+    def _forwarding_canary_access_block(self) -> str:
+        path_regex = re.escape(self._forwarding_canary_path())
+        return "\n".join(
+            [
+                "# BEGIN SQUID-UI MANAGED FORWARDING CANARY",
+                "# Local-only target for full health: allow the management process to",
+                "# reach the dedicated canary through Squid, then block remote clients",
+                "# from using the proxy to fetch that loopback-only endpoint.",
+                "acl docker_proxy_forwarding_canary_src src 127.0.0.1/32 ::1",
+                "acl docker_proxy_forwarding_canary_dst dst 127.0.0.1/32 ::1",
+                f"acl docker_proxy_forwarding_canary_port port {self._forwarding_canary_port()}",
+                f"acl docker_proxy_forwarding_canary_path urlpath_regex -i ^{path_regex}([?].*)?$",
+                "cache deny docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path",
+                "http_access allow docker_proxy_forwarding_canary_src docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path",
+                "http_access deny docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path",
+                "# END SQUID-UI MANAGED FORWARDING CANARY",
+            ],
+        )
+
+    def _strip_forwarding_canary_access_block(self, text: str) -> str:
+        return re.sub(
+            r"^\s*# BEGIN SQUID-UI MANAGED FORWARDING CANARY\b.*?^\s*# END SQUID-UI MANAGED FORWARDING CANARY\s*$\n?",
+            "",
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+
+    def _ensure_forwarding_canary_access_block(self, text: str) -> str:
+        text = self._strip_forwarding_canary_access_block(text)
+        block = self._forwarding_canary_access_block()
+        match = re.search(r"^\s*http_access\s+", text, re.MULTILINE)
+        if match:
+            return text[: match.start()] + block + "\n" + text[match.start() :]
+        return text.rstrip() + "\n" + block + "\n"
+
     def _ensure_icap_include_if_needed(self, text: str) -> str:
         include_line = "include /etc/squid/conf.d/20-icap.conf"
         # Historical/manual configs may carry an inline copy of the managed ICAP
@@ -468,11 +515,13 @@ class SquidController:
             r"^\s*cache_store_log\s+.*$",
             "cache_store_log none",
         )
+        text = self._strip_forwarding_canary_access_block(text)
         text = self._ensure_icap_include_if_needed(text)
         text = self._ensure_line_before_first_http_access(
             text,
             "include /etc/squid/conf.d/30-webfilter.conf",
         )
+        text = self._ensure_forwarding_canary_access_block(text)
 
         note_requirements = (
             (r"^\s*acl\s+steam_sites\b", "note ssl_exception steam steam_sites"),

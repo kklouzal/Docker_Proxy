@@ -1277,7 +1277,14 @@ class ProxyRuntime:
         )
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
-        programs = ("squid", "cicap_adblock", "cicap_av", "proxy_api", "proxy_agent")
+        programs = (
+            "squid",
+            "cicap_adblock",
+            "cicap_av",
+            "proxy_api",
+            "forwarding_canary",
+            "proxy_agent",
+        )
         statuses: dict[str, dict[str, Any]] = {
             program: {"ok": False, "detail": f"{program} status unavailable."}
             for program in programs
