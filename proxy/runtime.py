@@ -1888,7 +1888,66 @@ class ProxyRuntime:
         ok_restart, restart_detail = self.controller.restart_squid()
         if restart_detail:
             details.append(restart_detail)
-        return ok_restart, "\n".join([part for part in details if part]).strip()
+        if ok_restart:
+            return True, "\n".join([part for part in details if part]).strip()
+
+        # Squid is supervised in foreground mode.  After ``supervisorctl stop`` the
+        # process may legitimately be STOPPED; in that state a direct
+        # ``squid -k shutdown`` fallback cannot signal a PID file and Squid reports
+        # "ERROR (not running)"/"ERROR (abnormal termination)".  That is not a
+        # truthful final runtime state unless supervisor still cannot bring Squid
+        # back and the listener remains unavailable.
+        status_ok, status_detail = self._supervisor_program_status(
+            "squid",
+            timeout_seconds=5,
+            accepted_states=("RUNNING",),
+        )
+        if status_detail:
+            details.append(status_detail)
+        if status_ok:
+            try:
+                if bool(self.controller._wait_for_http_listener(timeout=20.0)):
+                    details.append(
+                        "Squid recovered after ssl_db reinitialization and its HTTP listener is responding.",
+                    )
+                    return True, "\n".join(
+                        [part for part in details if part],
+                    ).strip()
+            except Exception as exc:
+                details.append(f"Squid listener recovery check failed: {exc}")
+
+        try:
+            start = subprocess.run(
+                ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
+                capture_output=True,
+                timeout=25,
+            )
+            start_detail = _decode_completed(start)
+            if start_detail:
+                details.append(start_detail)
+        except Exception as exc:
+            details.append(f"supervisorctl start squid recovery failed: {exc}")
+
+        status_ok, status_detail = self._supervisor_program_status(
+            "squid",
+            timeout_seconds=5,
+            accepted_states=("RUNNING",),
+        )
+        if status_detail:
+            details.append(status_detail)
+        if status_ok:
+            try:
+                if bool(self.controller._wait_for_http_listener(timeout=20.0)):
+                    details.append(
+                        "Squid recovered after ssl_db reinitialization and its HTTP listener is responding.",
+                    )
+                    return True, "\n".join(
+                        [part for part in details if part],
+                    ).strip()
+            except Exception as exc:
+                details.append(f"Squid listener recovery check failed: {exc}")
+
+        return False, "\n".join([part for part in details if part]).strip()
 
     def _publish_webcat_snapshot_for_policy_sync(self) -> tuple[bool, str]:
         try:

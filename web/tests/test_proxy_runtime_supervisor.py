@@ -751,6 +751,109 @@ def test_sync_certificate_bundle_skips_current_bundle_even_when_forced() -> None
     assert result["detail"] == "Proxy is already using the active certificate bundle."
 
 
+def test_ssl_db_reinitialize_recovers_when_restart_reports_stopped_squid(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    ssl_db = tmp_path / "ssl_db" / "store"
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"]:
+            return _cp(0, stdout="squid: stopped")
+        if args == ["sh", "/scripts/init_ssl_db.sh"]:
+            env = kwargs.get("env") or {}
+            target = Path(str(env.get("SSL_DB_DIR") or ssl_db))
+            (target / "certs").mkdir(parents=True, exist_ok=True)
+            (target / "index.txt").touch()
+            (target / "size").touch()
+            return _cp(0, stdout="initialized")
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"]:
+            return _cp(0, stdout="squid: started")
+        return _cp(0, stdout="ok")
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
+    runtime.ssl_db_dir = str(ssl_db)
+    runtime.controller = SimpleNamespace(
+        restart_squid=lambda: (
+            False,
+            "squid: stopped\nsquid: ERROR (not running)\nsquid: ERROR (abnormal termination)",
+        ),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    statuses = iter(
+        [
+            (False, "squid STOPPED Jul 18 02:18 AM"),
+            (True, "squid RUNNING pid 42, uptime 0:00:01"),
+        ],
+    )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: next(statuses)
+
+    monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(
+        runtime_module.pathlib.Path,
+        "exists",
+        lambda self: str(self) == "/scripts/init_ssl_db.sh",
+    )
+
+    ok, detail = runtime._reinitialize_ssl_db_and_restart()
+
+    assert ok is True
+    assert "squid: ERROR (not running)" in detail
+    assert "squid: started" in detail
+    assert "HTTP listener is responding" in detail
+    assert ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"] in calls
+
+
+def test_ssl_db_reinitialize_reports_failure_when_recovery_start_is_not_running(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    ssl_db = tmp_path / "ssl_db" / "store"
+
+    def fake_run(args, **_kwargs):
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"]:
+            return _cp(0, stdout="squid: stopped")
+        if args == ["sh", "/scripts/init_ssl_db.sh"]:
+            return _cp(0, stdout="initialized")
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"]:
+            return _cp(0, stdout="squid: ERROR (abnormal termination)")
+        return _cp(0, stdout="ok")
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
+    runtime.ssl_db_dir = str(ssl_db)
+    runtime.controller = SimpleNamespace(
+        restart_squid=lambda: (False, "squid: ERROR (abnormal termination)"),
+        _wait_for_http_listener=lambda *, timeout: False,
+    )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
+        False,
+        "squid BACKOFF Exited too quickly",
+    )
+
+    monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(
+        runtime_module.pathlib.Path,
+        "exists",
+        lambda self: str(self) == "/scripts/init_ssl_db.sh",
+    )
+
+    ok, detail = runtime._reinitialize_ssl_db_and_restart()
+
+    assert ok is False
+    assert "abnormal termination" in detail
+    assert "squid BACKOFF" in detail
+
+
 def test_sync_certificate_bundle_records_noop_apply_for_current_bundle_without_apply_record() -> (
     None
 ):
