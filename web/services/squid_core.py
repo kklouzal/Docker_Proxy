@@ -9,6 +9,7 @@ import shutil
 import signal
 import socket
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from functools import lru_cache
@@ -26,6 +27,8 @@ from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 
 logger = logging.getLogger(__name__)
+
+_SQUID_LIFECYCLE_LOCK = threading.RLock()
 
 
 _ADBLOCK_ICAP_METHODS = "GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
@@ -69,7 +72,9 @@ def _parse_port(value: object, default: int) -> int:
     return port if 1 <= port <= 65535 else default
 
 
-def _icap_port_bases(workers: int, *, adblock_port: object = None, av_port: object = None) -> tuple[int, int]:
+def _icap_port_bases(
+    workers: int, *, adblock_port: object = None, av_port: object = None
+) -> tuple[int, int]:
     count = _clamp_icap_workers(workers)
     adblock_base = _parse_port(
         os.environ.get("CICAP_PORT") if adblock_port is None else adblock_port,
@@ -115,7 +120,12 @@ def _clamd_host_is_remote(host: object) -> bool:
     value = str(host or "").strip().lower()
     if not value:
         return False
-    return value not in {"localhost", "127.0.0.1", "::1", "[::1]"} and not value.startswith("127.")
+    return value not in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "[::1]",
+    } and not value.startswith("127.")
 
 
 def _file_has_non_comment_lines(path: str) -> bool:
@@ -150,6 +160,48 @@ def _cached_virus_scan_config_path() -> Path:
 
 
 CommandRunner = Callable[..., Any]
+
+
+@contextlib.contextmanager
+def _exclusive_squid_lifecycle_lock():
+    """Serialize Squid stop/start/reconfigure mutations across UI/API workers.
+
+    The proxy can receive a manual restart, a certificate apply, and a runtime
+    reconciliation request from different Gunicorn/proxy-agent processes. Squid
+    and supervisor expose transitional states (STOPPING, STARTING, already
+    running/started, stale PID files) that are only safe if one lifecycle actor
+    owns the sequence until post-start readiness is proven.
+    """
+    with _SQUID_LIFECYCLE_LOCK:
+        handle = None
+        fcntl_mod = None
+        try:
+            lock_dir = (
+                os.environ.get("SQUID_LIFECYCLE_LOCK_DIR")
+                or os.environ.get("PROXY_RUNTIME_LOCK_DIR")
+                or tempfile.gettempdir()
+            ).strip() or tempfile.gettempdir()
+            Path(lock_dir).mkdir(exist_ok=True, parents=True)
+            handle = (Path(lock_dir) / "docker-proxy-squid-lifecycle.lock").open(
+                "a+",
+                encoding="utf-8",
+            )
+            try:
+                import fcntl as fcntl_mod  # type: ignore
+
+                fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_EX)
+            except Exception:
+                fcntl_mod = None
+            yield
+        finally:
+            if handle is not None:
+                try:
+                    if fcntl_mod is not None:
+                        fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_UN)
+                except Exception:
+                    pass
+                with contextlib.suppress(Exception):
+                    handle.close()
 
 
 class SquidController:
@@ -705,7 +757,9 @@ stdout_logfile_maxbytes=0
             extract_clamav_options(config_text or ""),
         )
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
-        file_security_policy = render_file_security_policy_config(clamav_options).strip()
+        file_security_policy = render_file_security_policy_config(
+            clamav_options
+        ).strip()
         # Version the Squid ICAP service name with the active artifact while
         # keeping the adblock ICAP helper URI stable. Squid tracks ICAP service health
         # and persistent connections by service object; changing the local service
@@ -730,11 +784,13 @@ stdout_logfile_maxbytes=0
             av_resp_port = (
                 clamav_respmod_port if use_stream_respmod else cicap_av_port
             ) + index
-            lines.extend([
-                f"icap_service {adblock_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port + index}/adblockreq bypass=on",
-                f"icap_service {av_req_name} reqmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
-                f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{av_resp_port}/avrespmod bypass={av_bypass}",
-            ])
+            lines.extend(
+                [
+                    f"icap_service {adblock_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port + index}/adblockreq bypass=on",
+                    f"icap_service {av_req_name} reqmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
+                    f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{av_resp_port}/avrespmod bypass={av_bypass}",
+                ]
+            )
         routing_enabled = (
             getattr(self, "_adblock_routing_enabled", True)
             if adblock_enabled is None
@@ -1359,6 +1415,18 @@ stdout_logfile_maxbytes=0
         timeout: float = 15.0,
         listener_timeout: float = 20.0,
     ) -> tuple[bool, str]:
+        with _exclusive_squid_lifecycle_lock():
+            return self._reconfigure_squid_locked(
+                timeout=timeout,
+                listener_timeout=listener_timeout,
+            )
+
+    def _reconfigure_squid_locked(
+        self,
+        *,
+        timeout: float = 15.0,
+        listener_timeout: float = 20.0,
+    ) -> tuple[bool, str]:
         proc = self._run(
             ["squid", "-k", "reconfigure"],
             capture_output=True,
@@ -1372,7 +1440,7 @@ stdout_logfile_maxbytes=0
                         detail
                         + "\nSquid reconfigure could not signal a PID file, but the HTTP listener is responding."
                     ).strip()
-                ok_restart, restart_details = self.restart_squid()
+                ok_restart, restart_details = self._restart_squid_locked()
                 recovery = (
                     "Squid reconfigure could not signal a PID file and the HTTP "
                     "listener was unavailable; "
@@ -1383,7 +1451,7 @@ stdout_logfile_maxbytes=0
                 return False, (detail + "\n" + recovery).strip()
             return False, detail or "Squid reconfigure failed."
         if not self._wait_for_http_listener(timeout=listener_timeout):
-            ok_restart, restart_details = self.restart_squid()
+            ok_restart, restart_details = self._restart_squid_locked()
             recovery = (
                 "Squid HTTP listener was unavailable after reconfigure; "
                 + (restart_details or "Squid restart failed.")
@@ -1395,6 +1463,18 @@ stdout_logfile_maxbytes=0
         return True, detail or "Squid reconfigured."
 
     def restart_squid(
+        self,
+        *,
+        ready_timeout: float = 45.0,
+        accept_live_pid_restart: bool = False,
+    ) -> tuple[bool, str]:
+        with _exclusive_squid_lifecycle_lock():
+            return self._restart_squid_locked(
+                ready_timeout=ready_timeout,
+                accept_live_pid_restart=accept_live_pid_restart,
+            )
+
+    def _restart_squid_locked(
         self,
         *,
         ready_timeout: float = 45.0,
@@ -1824,7 +1904,10 @@ stdout_logfile_maxbytes=0
         cache_paths = self._get_cache_dir_paths()
         for cache_path in cache_paths:
             if not self._cache_dir_path_is_safe_to_clear(cache_path):
-                return False, f"Refusing to clear cache_dir at unsafe path: {cache_path}"
+                return (
+                    False,
+                    f"Refusing to clear cache_dir at unsafe path: {cache_path}",
+                )
 
         detail_parts: list[str] = []
         try:
@@ -1925,7 +2008,9 @@ stdout_logfile_maxbytes=0
                     timeout=90,
                 )
                 if prepare.returncode == 0:
-                    detail_parts.append(self._decode_completed(prepare) or "squid -z OK")
+                    detail_parts.append(
+                        self._decode_completed(prepare) or "squid -z OK"
+                    )
                     prepare_succeeded = True
                     break
 

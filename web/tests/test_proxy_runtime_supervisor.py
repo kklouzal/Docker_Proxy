@@ -333,7 +333,11 @@ def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) ->
                 ),
             )
         if action == "status":
-            state = "RUNNING pid 42, uptime 0:00:01" if program in started else "STOPPED Jul 03 09:42 PM"
+            state = (
+                "RUNNING pid 42, uptime 0:00:01"
+                if program in started
+                else "STOPPED Jul 03 09:42 PM"
+            )
             return _cp(0, stdout=f"{program} {state}\n")
         if action == "start" and program:
             started.add(program)
@@ -3462,8 +3466,14 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "clamav_required()" in healthcheck
     assert "adblock_icap_required()" in healthcheck
     assert "extract_squid_workers_from_file()" in healthcheck
-    assert 'ICAP_WORKERS_RAW="$(extract_squid_workers_from_file /etc/squid/squid.conf)"' in healthcheck
-    assert 'ICAP_WORKERS="$(clamp_workers "${ICAP_WORKERS_RAW:-${SQUID_WORKERS:-${WORKERS:-1}}}")"' in healthcheck
+    assert (
+        'ICAP_WORKERS_RAW="$(extract_squid_workers_from_file /etc/squid/squid.conf)"'
+        in healthcheck
+    )
+    assert (
+        'ICAP_WORKERS="$(clamp_workers "${ICAP_WORKERS_RAW:-${SQUID_WORKERS:-${WORKERS:-1}}}")"'
+        in healthcheck
+    )
     assert "cicap_adblock_${instance}" in healthcheck
     assert "cicap_av_${instance}" in healthcheck
     assert "clamav_respmod_${instance}" in healthcheck
@@ -3473,9 +3483,18 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "icap_av_resp_base_port" in healthcheck
     assert "clamd_host_is_remote" in healthcheck
     assert "Squid adblock ICAP is fail-open" in healthcheck
-    assert "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING" in healthcheck
-    assert "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING" in healthcheck
-    assert "CLAMAV_REQUIRED is set but supervisor reports ${resp_program} is not RUNNING" in healthcheck
+    assert (
+        "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING"
+        in healthcheck
+    )
+    assert (
+        "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING"
+        in healthcheck
+    )
+    assert (
+        "CLAMAV_REQUIRED is set but supervisor reports ${resp_program} is not RUNNING"
+        in healthcheck
+    )
     assert "CLAMAV_REQUIRED is set but remote clamd is not responding" in healthcheck
     assert (
         "supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av"
@@ -3774,11 +3793,13 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
             calls.append(("mark", (operation_id, status, detail)))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
-        "ok": True,
-        "detail": "runtime reconciled",
-        "claimed_operation_ids": [op.operation_id for op in (operations or [])],
-    }
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "detail": "runtime reconciled",
+            "claimed_operation_ids": [op.operation_id for op in (operations or [])],
+        }
+    )
 
     result = runtime.sync_from_db(force=False)
 
@@ -3790,7 +3811,9 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
     ]
 
 
-def test_sync_from_db_routes_claimed_operation_force_to_artifact_sync(monkeypatch) -> None:
+def test_sync_from_db_routes_claimed_operation_force_to_artifact_sync(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -3907,12 +3930,14 @@ def test_sync_from_db_marks_matching_config_revision_applied(monkeypatch) -> Non
             calls.append((operation_id, status, detail))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
-        "ok": True,
-        "revision_id": 9,
-        "detail": "runtime reconciled",
-        "executed_operation_types": ["config_apply"],
-    }
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "revision_id": 9,
+            "detail": "runtime reconciled",
+            "executed_operation_types": ["config_apply"],
+        }
+    )
 
     result = runtime.sync_from_db(force=False)
 
@@ -3954,12 +3979,14 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
             calls.append((operation_id, status, detail))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
-        "ok": True,
-        "revision_id": 9,
-        "detail": "runtime reconciled",
-        "executed_operation_types": ["config_apply"],
-    }
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "revision_id": 9,
+            "detail": "runtime reconciled",
+            "executed_operation_types": ["config_apply"],
+        }
+    )
 
     result = runtime.sync_from_db(force=False)
 
@@ -4001,12 +4028,14 @@ def test_sync_from_db_fails_config_operation_with_invalid_target(
             calls.append((operation_id, status, detail))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
-        "ok": True,
-        "revision_id": 9,
-        "detail": "runtime reconciled",
-        "executed_operation_types": ["config_apply"],
-    }
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "revision_id": 9,
+            "detail": "runtime reconciled",
+            "executed_operation_types": ["config_apply"],
+        }
+    )
 
     result = runtime.sync_from_db(force=False)
 
@@ -4016,7 +4045,9 @@ def test_sync_from_db_fails_config_operation_with_invalid_target(
     assert "runtime reconciled" in calls[0][2]
 
 
-def test_sync_from_db_fails_config_operation_without_revision_evidence(monkeypatch) -> None:
+def test_sync_from_db_fails_config_operation_without_revision_evidence(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -4043,11 +4074,13 @@ def test_sync_from_db_fails_config_operation_without_revision_evidence(monkeypat
             calls.append((operation_id, status, detail))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
-        "ok": True,
-        "detail": "runtime reconciled without active config revision evidence",
-        "executed_operation_types": ["config_apply"],
-    }
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "detail": "runtime reconciled without active config revision evidence",
+            "executed_operation_types": ["config_apply"],
+        }
+    )
 
     result = runtime.sync_from_db(force=False)
 
@@ -4106,7 +4139,9 @@ def test_sync_from_db_fails_claimed_config_operation_when_no_active_revision(
     runtime._current_config_sha = lambda: "current-config-sha"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.controller = SimpleNamespace(
+        set_adblock_icap_revision_token=lambda _token: None
+    )
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: None,
     )
@@ -4174,7 +4209,9 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
     runtime._current_config_sha = lambda: "current-config-sha"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.controller = SimpleNamespace(
+        set_adblock_icap_revision_token=lambda _token: None
+    )
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: None,
     )
@@ -4252,7 +4289,9 @@ def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -
     runtime._current_config_sha = lambda: "config-sha-11"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.controller = SimpleNamespace(
+        set_adblock_icap_revision_token=lambda _token: None
+    )
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
             revision_id=11,
@@ -4333,7 +4372,9 @@ def test_sync_from_db_fails_certificate_operation_without_revision_evidence(
     runtime._current_config_sha = lambda: "config-sha-12"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(set_adblock_icap_revision_token=lambda _token: None)
+    runtime.controller = SimpleNamespace(
+        set_adblock_icap_revision_token=lambda _token: None
+    )
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
             revision_id=12,
@@ -4522,7 +4563,9 @@ def test_operation_completion_requires_exact_pac_target_and_current_runtime() ->
     assert "did not converge selected-proxy runtime state" in mismatch_detail
 
 
-def test_operation_completion_requires_exact_adblock_artifact_revision_and_hash() -> None:
+def test_operation_completion_requires_exact_adblock_artifact_revision_and_hash() -> (
+    None
+):
     from proxy import runtime as runtime_module
 
     op = SimpleNamespace(
@@ -4690,12 +4733,14 @@ def test_sync_from_db_requires_operation_execution_evidence(monkeypatch) -> None
             calls.append((operation_id, status, detail))
 
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
-    runtime._sync_from_db_unlocked = lambda *, force=False, artifact_force=None, operations=None: {
-        "ok": True,
-        "detail": "runtime reconciled",
-        "executed_operation_types": [],
-        "cache_cleared": False,
-    }
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "detail": "runtime reconciled",
+            "executed_operation_types": [],
+            "cache_cleared": False,
+        }
+    )
 
     result = runtime.sync_from_db(force=False)
 
@@ -4766,6 +4811,128 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
     assert cleared == [True]
     assert "Proxy disk cache cleared." in result["detail"]
     assert "cicap_adblock" not in result["detail"]
+
+
+def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    from services.certificate_core import CertificateBundle  # type: ignore
+
+    runtime = _runtime_shell()
+    cert_dir = tmp_path / "certs"
+    cert_dir.mkdir()
+    (cert_dir / "ca.crt").write_text("OLD CERT\n", encoding="utf-8")
+    (cert_dir / "ca.key").write_text("OLD KEY\n", encoding="utf-8")
+    (cert_dir / "uploaded_ca.pfx").write_bytes(b"old-pfx")
+    runtime.cert_manager = SimpleNamespace(ca_dir=str(cert_dir))
+    runtime.services = SimpleNamespace(current_certificate_sha_reader=lambda: "oldsha")
+    restart_results = [
+        (False, "spawn error while starting squid"),
+        (True, "old squid ready"),
+    ]
+    runtime._reinitialize_ssl_db_and_restart = lambda: restart_results.pop(0)
+
+    class Revision:
+        revision_id = 7
+        bundle_sha256 = "newsha"
+        original_pfx_blob = b"new-pfx"
+
+        def to_bundle(self):
+            return CertificateBundle(
+                cert_pem="NEW CERT\n",
+                key_pem="NEW KEY\n",
+                bundle_sha256="newsha",
+                cert_sha256="newcertsha",
+                original_pfx_bytes=b"new-pfx",
+            )
+
+    records: list[tuple[bool, str, str]] = []
+
+    class Bundles:
+        def get_active_bundle_metadata(self):
+            return SimpleNamespace(revision_id=7, bundle_sha256="newsha")
+
+        def latest_apply(self, *_args, **_kwargs):
+            return None
+
+        def get_active_bundle(self):
+            return Revision()
+
+        def record_apply_result(self, _proxy_id, revision_id, **kwargs):
+            records.append(
+                (
+                    bool(kwargs["ok"]),
+                    str(kwargs["detail"]),
+                    str(kwargs["bundle_sha256"]),
+                )
+            )
+            return SimpleNamespace(application_id=11, revision_id=revision_id)
+
+    runtime.certificate_bundles = Bundles()
+
+    result = runtime.sync_certificate_bundle()
+
+    assert result["ok"] is False
+    assert result["changed"] is False
+    assert (cert_dir / "ca.crt").read_text(encoding="utf-8") == "OLD CERT\n"
+    assert (cert_dir / "ca.key").read_text(encoding="utf-8") == "OLD KEY\n"
+    assert (cert_dir / "uploaded_ca.pfx").read_bytes() == b"old-pfx"
+    assert records
+    assert records[-1][0] is False
+    assert records[-1][2] == "newsha"
+    assert "spawn error" in result["detail"]
+    assert "Restored previous certificate material" in result["detail"]
+    assert "restarted successfully after rollback" in result["detail"]
+
+
+def test_sync_certificate_bundle_retries_restart_after_failed_apply_without_rematerializing(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_certificate_sha_reader=lambda: "newsha")
+    runtime.cert_manager = SimpleNamespace(ca_dir="/unused")
+    restart_calls: list[bool] = []
+    runtime._reinitialize_ssl_db_and_restart = lambda: (
+        restart_calls.append(True) or (True, "Squid HTTP listener is responding.")
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "materialize_certificate_bundle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "matching failed applies should retry restart, not rewrite certificate files"
+            )
+        ),
+    )
+
+    records: list[tuple[bool, str]] = []
+
+    class Bundles:
+        def get_active_bundle_metadata(self):
+            return SimpleNamespace(revision_id=7, bundle_sha256="newsha")
+
+        def latest_apply(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                revision_id=7, ok=False, detail="last restart failed"
+            )
+
+        def record_apply_result(self, _proxy_id, revision_id, **kwargs):
+            records.append((bool(kwargs["ok"]), str(kwargs["detail"])))
+            return SimpleNamespace(application_id=12, revision_id=revision_id)
+
+    runtime.certificate_bundles = Bundles()
+
+    result = runtime.sync_certificate_bundle(force=False)
+
+    assert result["ok"] is True
+    assert restart_calls == [True]
+    assert records[-1][0] is True
+    assert "previous apply failed" in records[-1][1]
+    assert "Squid HTTP listener is responding" in result["detail"]
 
 
 def test_current_config_sha_uses_normalized_config_text() -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,9 +17,7 @@ def test_get_status_ignores_stderr_when_squid_check_succeeds() -> None:
                 stdout=b"squid RUNNING pid 42\n",
                 stderr=b"",
             )
-        return SimpleNamespace(
-            returncode=0, stdout=b"", stderr=b"WARNING: harmless\n"
-        )
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"WARNING: harmless\n")
 
     controller = squidctl.SquidController(cmd_run=fake_run)
 
@@ -517,8 +517,10 @@ def test_clear_disk_cache_cleans_live_pid_before_prepare(
     monkeypatch.setattr(
         controller,
         "_remove_stale_squid_pidfile",
-        lambda **_kwargs: removed.append("pidfile")
-        or "Removed stale Squid PID file /var/run/squid.pid.",
+        lambda **_kwargs: (
+            removed.append("pidfile")
+            or "Removed stale Squid PID file /var/run/squid.pid."
+        ),
     )
     monkeypatch.setattr(
         controller,
@@ -1003,7 +1005,9 @@ def test_clear_disk_cache_retries_transient_squid_z_failure(
         cleanup_calls += 1
         return original_cleanup_after(detail_parts)
 
-    monkeypatch.setattr(controller, "_cleanup_after_cache_prepare", wrapped_cleanup_after)
+    monkeypatch.setattr(
+        controller, "_cleanup_after_cache_prepare", wrapped_cleanup_after
+    )
     monkeypatch.setattr(
         controller,
         "restart_squid",
@@ -1288,6 +1292,67 @@ def test_restart_squid_removes_live_pidfile_when_listener_is_absent(
     assert "Squid HTTP listener is responding" in detail
 
 
+def test_restart_squid_serializes_concurrent_lifecycle_requests(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(tmp_path))
+    calls: list[tuple[str, ...]] = []
+    call_lock = threading.Lock()
+
+    def fake_run(args, **_kwargs):
+        time.sleep(0.01)
+        with call_lock:
+            calls.append(tuple(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        if args[-2:] == ["status", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid STOPPED\n", stderr=b"")
+        if args[-2:] == ["start", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: started\n", stderr=b"")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
+
+    results: list[tuple[bool, str]] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(controller.restart_squid()))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    expected_chunk = [
+        ("supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"),
+        ("supervisorctl", "-c", "/etc/supervisord.conf", "status", "squid"),
+        ("supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"),
+    ]
+    assert len(results) == 2
+    assert all(ok for ok, _detail in results)
+    assert calls == [*expected_chunk, *expected_chunk]
+
+
 def test_restart_squid_accepts_supervisor_auto_restart_race(monkeypatch) -> None:
     from services import squidctl  # type: ignore
 
@@ -1511,7 +1576,9 @@ def test_restart_squid_fails_when_listener_never_releases(monkeypatch) -> None:
     assert "did not release" in detail
 
 
-def test_remove_stale_squid_pidfile_allows_live_squid_without_listener(monkeypatch) -> None:
+def test_remove_stale_squid_pidfile_allows_live_squid_without_listener(
+    monkeypatch,
+) -> None:
     from services import squid_core, squidctl  # type: ignore
 
     class FakePath:

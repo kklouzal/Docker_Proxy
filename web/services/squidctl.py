@@ -17,6 +17,7 @@ from services.squid_config_forms import (
     coerce_config_bool,
 )
 from services.squid_core import SquidController as _CoreSquidController
+from services.squid_core import _exclusive_squid_lifecycle_lock
 
 logger = logging.getLogger(__name__)
 
@@ -2609,6 +2610,10 @@ class SquidController(_CoreSquidController):
         return self._replace_managed_settings_block(rendered, managed_block)
 
     def start_squid(self):
+        with _exclusive_squid_lifecycle_lock():
+            return self._start_squid_locked()
+
+    def _start_squid_locked(self):
         try:
             proc = self._run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],

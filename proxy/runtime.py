@@ -88,7 +88,9 @@ def _adblock_icap_self_heal_failure_threshold() -> int:
 def _adblock_icap_self_heal_restart_cooldown_seconds() -> float:
     try:
         value = float(
-            (os.environ.get("ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS") or "").strip()
+            (
+                os.environ.get("ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS") or ""
+            ).strip()
             or _ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS
         )
     except Exception:
@@ -171,7 +173,9 @@ def _unsupported_operation_types(operations: list[Any] | None) -> list[str]:
     return sorted(
         {
             operation_type
-            for operation_type in (_operation_type(operation) for operation in operations or [])
+            for operation_type in (
+                _operation_type(operation) for operation in operations or []
+            )
             if operation_type not in _SUPPORTED_RUNTIME_OPERATION_TYPES
         },
     )
@@ -181,7 +185,9 @@ def _supported_operation_types(operations: list[Any] | None) -> list[str]:
     return sorted(
         {
             operation_type
-            for operation_type in (_operation_type(operation) for operation in operations or [])
+            for operation_type in (
+                _operation_type(operation) for operation in operations or []
+            )
             if operation_type in _SUPPORTED_RUNTIME_OPERATION_TYPES
         },
     )
@@ -241,7 +247,9 @@ def _operation_completion_status(
 ) -> tuple[str, str]:
     operation_type = _operation_type(operation)
     if operation_type not in _SUPPORTED_RUNTIME_OPERATION_TYPES:
-        op_detail = f"Unsupported proxy operation type '{operation_type}' was not executed."
+        op_detail = (
+            f"Unsupported proxy operation type '{operation_type}' was not executed."
+        )
         if detail:
             op_detail = f"{op_detail}\n{detail}"
         return "failed", op_detail[:4000]
@@ -262,7 +270,9 @@ def _operation_completion_status(
             return "failed", op_detail[:4000]
 
     if operation_type == "cache_clear" and not bool(result.get("cache_cleared")):
-        op_detail = "Proxy cache clear did not report a completed cache clear side effect."
+        op_detail = (
+            "Proxy cache clear did not report a completed cache clear side effect."
+        )
         if detail:
             op_detail = f"{op_detail}\n{detail}"
         return "failed", op_detail[:4000]
@@ -521,7 +531,9 @@ def _certificate_result_evidence(result: dict[str, Any]) -> dict[str, Any]:
             result.get("certificate_revision_id"),
         ),
         "certificate_bundle_sha256": str(
-            result.get("certificate_bundle_sha256") or result.get("bundle_sha256") or "",
+            result.get("certificate_bundle_sha256")
+            or result.get("bundle_sha256")
+            or "",
         ).strip(),
     }
 
@@ -916,6 +928,73 @@ class ProxyRuntime:
             if tmp_path and pathlib.Path(tmp_path).exists():
                 with suppress(Exception):
                     pathlib.Path(tmp_path).unlink()
+
+    def _atomic_write_bytes(self, path: str, content: bytes) -> None:
+        directory = pathlib.Path(path).parent or "."
+        pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
+        handle = None
+        tmp_path = ""
+        try:
+            handle = tempfile.NamedTemporaryFile(
+                mode="wb",
+                delete=False,
+                dir=directory,
+                prefix=".tmp-",
+            )
+            tmp_path = handle.name
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+            handle.close()
+            handle = None
+            pathlib.Path(tmp_path).replace(path)
+        finally:
+            if handle is not None:
+                with suppress(Exception):
+                    handle.close()
+            if tmp_path and pathlib.Path(tmp_path).exists():
+                with suppress(Exception):
+                    pathlib.Path(tmp_path).unlink()
+
+    def _certificate_material_paths(self) -> tuple[str, str, str]:
+        ca_dir = pathlib.Path(self.cert_manager.ca_dir)
+        return (
+            str(ca_dir / "ca.crt"),
+            str(ca_dir / "ca.key"),
+            str(ca_dir / "uploaded_ca.pfx"),
+        )
+
+    def _snapshot_certificate_material(self) -> dict[str, bytes | None]:
+        snapshot: dict[str, bytes | None] = {}
+        for path in self._certificate_material_paths():
+            path_obj = pathlib.Path(path)
+            if path_obj.exists():
+                snapshot[path] = path_obj.read_bytes()
+            else:
+                snapshot[path] = None
+        return snapshot
+
+    def _restore_certificate_material(
+        self,
+        snapshot: dict[str, bytes | None],
+    ) -> tuple[bool, str]:
+        try:
+            for path, content in snapshot.items():
+                path_obj = pathlib.Path(path)
+                if content is None:
+                    if path_obj.exists():
+                        path_obj.unlink()
+                    continue
+                self._atomic_write_bytes(path, content)
+            return True, "Restored previous certificate material after failed apply."
+        except Exception as exc:
+            return (
+                False,
+                public_error_message(
+                    exc,
+                    default="Failed to restore previous certificate material after failed apply.",
+                ),
+            )
 
     def _current_policy_sha(self) -> str:
         if self.services.current_policy_sha_reader is not None:
@@ -2385,7 +2464,9 @@ class ProxyRuntime:
                 "cache_flushed": False,
                 "revision_id": revision_meta.revision_id,
                 "application_id": getattr(applied, "application_id", None),
-                "adblock_settings_version": getattr(revision_meta, "settings_version", None),
+                "adblock_settings_version": getattr(
+                    revision_meta, "settings_version", None
+                ),
                 "artifact_sha256": revision_meta.artifact_sha256,
                 "current_adblock_artifact_sha256": revision_meta.artifact_sha256,
                 "detail": "Proxy is already using the active adblock artifact.",
@@ -2558,9 +2639,13 @@ class ProxyRuntime:
             "cache_flushed": cache_flushed,
             "revision_id": apply_revision_id,
             "application_id": applied.application_id,
-            "adblock_settings_version": getattr(revision_meta, "settings_version", None),
+            "adblock_settings_version": getattr(
+                revision_meta, "settings_version", None
+            ),
             "artifact_sha256": apply_artifact_sha256,
-            "current_adblock_artifact_sha256": apply_artifact_sha256 if result_ok else current_sha,
+            "current_adblock_artifact_sha256": apply_artifact_sha256
+            if result_ok
+            else current_sha,
             "detail": detail,
         }
 
@@ -2645,17 +2730,59 @@ class ProxyRuntime:
             }
 
         current_sha = self._current_certificate_bundle_sha()
-        if revision_meta.bundle_sha256 == current_sha:
-            applied = None
+        try:
+            latest_apply = self.certificate_bundles.latest_apply(
+                self.proxy_id,
+                revision_id=revision_meta.revision_id,
+            )
+        except TypeError:
             try:
-                latest_apply = self.certificate_bundles.latest_apply(
-                    self.proxy_id, revision_id=revision_meta.revision_id
-                )
+                latest_apply = self.certificate_bundles.latest_apply(self.proxy_id)
             except Exception:
                 latest_apply = None
-            if int(getattr(latest_apply, "revision_id", 0) or 0) != int(
+        except Exception:
+            latest_apply = None
+        if revision_meta.bundle_sha256 == current_sha:
+            applied = None
+            latest_apply_matches = int(
+                getattr(latest_apply, "revision_id", 0) or 0
+            ) == int(
                 revision_meta.revision_id or 0,
-            ):
+            )
+            latest_apply_failed = bool(
+                latest_apply_matches and not bool(getattr(latest_apply, "ok", True))
+            )
+            if latest_apply_failed:
+                ok_restart, restart_detail = self._reinitialize_ssl_db_and_restart()
+                detail = "\n".join(
+                    part
+                    for part in (
+                        (
+                            "Certificate bundle files already match the active revision; "
+                            "retrying ssl_db initialization and Squid restart because previous apply failed."
+                        ),
+                        restart_detail.strip(),
+                    )
+                    if str(part or "").strip()
+                )
+                applied = self.certificate_bundles.record_apply_result(
+                    self.proxy_id,
+                    revision_meta.revision_id,
+                    ok=ok_restart,
+                    detail=detail,
+                    applied_by="proxy",
+                    bundle_sha256=revision_meta.bundle_sha256,
+                )
+                return {
+                    "ok": ok_restart,
+                    "proxy_id": self.proxy_id,
+                    "certificate_revision_id": revision_meta.revision_id,
+                    "application_id": applied.application_id,
+                    "changed": ok_restart,
+                    "detail": detail,
+                    "certificate_bundle_sha256": revision_meta.bundle_sha256,
+                }
+            if not latest_apply_matches:
                 try:
                     applied = self.certificate_bundles.record_apply_result(
                         self.proxy_id,
@@ -2690,17 +2817,26 @@ class ProxyRuntime:
                 "certificate_bundle_sha256": "",
             }
 
+        material_snapshot: dict[str, bytes | None] = {}
         try:
+            material_snapshot = self._snapshot_certificate_material()
             materialize_certificate_bundle(
                 self.cert_manager.ca_dir,
                 revision.to_bundle(),
                 original_pfx_bytes=revision.original_pfx_blob,
             )
         except Exception as exc:
+            restore_detail = ""
+            if material_snapshot:
+                _restore_ok, restore_detail = self._restore_certificate_material(
+                    material_snapshot,
+                )
             detail = public_error_message(
                 exc,
                 default="Failed to materialize certificate bundle.",
             )
+            if restore_detail:
+                detail = f"{detail}\n{restore_detail}"
             applied = self.certificate_bundles.record_apply_result(
                 self.proxy_id,
                 revision.revision_id,
@@ -2721,6 +2857,30 @@ class ProxyRuntime:
 
         ok_restart, restart_detail = self._reinitialize_ssl_db_and_restart()
         detail = restart_detail.strip() or "Certificate bundle applied."
+        if not ok_restart:
+            rollback_ok, rollback_detail = self._restore_certificate_material(
+                material_snapshot,
+            )
+            recovery_ok = False
+            recovery_detail = ""
+            if rollback_ok:
+                recovery_ok, recovery_detail = self._reinitialize_ssl_db_and_restart()
+            detail = "\n".join(
+                part
+                for part in (
+                    detail,
+                    rollback_detail,
+                    (
+                        "Previous certificate material was restarted successfully after rollback."
+                        if recovery_ok
+                        else "Previous certificate material rollback restart did not complete successfully."
+                    )
+                    if rollback_ok
+                    else "",
+                    recovery_detail,
+                )
+                if str(part or "").strip()
+            )
         applied = self.certificate_bundles.record_apply_result(
             self.proxy_id,
             revision.revision_id,
@@ -3276,10 +3436,14 @@ class ProxyRuntime:
                 current_pac_sha = str(self._current_pac_state_sha() or "").strip()
         if current_pac_sha:
             evidence_updates["current_state_sha256"] = current_pac_sha
-        current_adblock_sha = str(result.get("current_adblock_artifact_sha256") or "").strip()
+        current_adblock_sha = str(
+            result.get("current_adblock_artifact_sha256") or ""
+        ).strip()
         if not current_adblock_sha:
             with suppress(Exception):
-                current_adblock_sha = str(self._current_adblock_artifact_sha() or "").strip()
+                current_adblock_sha = str(
+                    self._current_adblock_artifact_sha() or ""
+                ).strip()
         if current_adblock_sha:
             evidence_updates["current_adblock_artifact_sha256"] = current_adblock_sha
         if evidence_updates:
@@ -3308,8 +3472,12 @@ class ProxyRuntime:
         self._invalidate_health_cache()
         self.ensure_registered()
         self.bootstrap_revision_if_missing()
-        artifact_force_value = force if artifact_force is None else bool(
-            artifact_force,
+        artifact_force_value = (
+            force
+            if artifact_force is None
+            else bool(
+                artifact_force,
+            )
         )
         operation_types = set(_supported_operation_types(operations))
         unsupported_operation_types = _unsupported_operation_types(operations)
