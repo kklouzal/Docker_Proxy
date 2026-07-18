@@ -381,6 +381,81 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(
     assert updated_domain not in fallback_pac.text
 
 
+def test_live_pac_a_then_b_operation_truth_marks_a_superseded(
+    admin_client: LiveStackClient,
+) -> None:
+    from services.operation_ledger import get_operation_ledger  # type: ignore
+    from services.pac_renderer import build_proxy_pac_state  # type: ignore
+
+    profile_name = unique_token("live_pac_truth")
+    domain_a = unique_domain("pac-a")
+    domain_b = unique_domain("pac-b")
+    ledger = get_operation_ledger()
+
+    create_response = admin_client.admin_post_form(
+        "/pac",
+        {
+            "action": "create",
+            "name": profile_name,
+            "client_cidr": "",
+            "direct_domains": domain_a,
+            "direct_dst_nets": "",
+        },
+        csrf_path="/pac",
+    )
+    assert create_response.status == 200
+    assert query_params(create_response.url).get("ok") == ["1"]
+    target_a = build_proxy_pac_state(LIVE_CONFIG.primary_proxy_id).state_sha256
+    operation_a = next(
+        op
+        for op in ledger.list_operations(LIVE_CONFIG.primary_proxy_id, limit=20)
+        if op.operation_type == "pac_refresh" and op.target_ref == target_a
+    )
+
+    profiles_page = admin_client.admin_request("/pac")
+    profile_id = _find_pac_profile_id(profiles_page.text, profile_name)
+    update_response = admin_client.admin_post_form(
+        "/pac",
+        {
+            "action": "update",
+            "profile_id": str(profile_id),
+            "name": profile_name,
+            "client_cidr": "",
+            "direct_domains": domain_b,
+            "direct_dst_nets": "",
+        },
+        csrf_path="/pac",
+    )
+    assert update_response.status == 200
+    assert query_params(update_response.url).get("ok") == ["1"]
+    target_b = build_proxy_pac_state(LIVE_CONFIG.primary_proxy_id).state_sha256
+    assert target_b != target_a
+    operation_b = next(
+        op
+        for op in ledger.list_operations(LIVE_CONFIG.primary_proxy_id, limit=20)
+        if op.operation_type == "pac_refresh" and op.target_ref == target_b
+    )
+
+    try:
+        _sync_primary_proxy(admin_client)
+        applied_a = ledger.get_operation(operation_a.operation_id)
+        applied_b = ledger.get_operation(operation_b.operation_id)
+        assert applied_a.status == "superseded"
+        assert applied_b.status == "applied"
+        assert applied_b.target_kind == "pac_state"
+        pac_response = admin_client.pac_request(f"/proxy.pac?probe={profile_name}")
+        assert pac_response.status == 200
+        assert domain_b in pac_response.text
+        assert domain_a not in pac_response.text
+    finally:
+        admin_client.admin_post_form(
+            "/pac",
+            {"action": "delete", "profile_id": str(profile_id)},
+            csrf_path="/pac",
+        )
+        _sync_primary_proxy(admin_client)
+
+
 def test_live_sslfilter_granular_policy_stays_proxy_side_only(
     admin_client: LiveStackClient,
 ) -> None:

@@ -687,6 +687,9 @@ class FakeAdblockArtifacts:
     def get_active_artifact_summary(self) -> Any | None:
         return self.summary
 
+    def get_active_artifact_metadata(self) -> Any | None:
+        return self.summary
+
 
 class FakeAdblockStore:
     def __init__(self) -> None:
@@ -705,6 +708,7 @@ class FakeAdblockStore:
         ]
         self.refresh_requested = 0
         self.cache_flush_requested = 0
+        self.settings_version = 1
 
     def init_db(self) -> None:
         return None
@@ -715,24 +719,26 @@ class FakeAdblockStore:
     def set_enabled(self, enabled_map: dict[str, bool]) -> None:
         for status in self.statuses:
             status.enabled = bool(enabled_map.get(status.key))
+        self.settings_version += 1
 
     def get_settings(self) -> dict[str, Any]:
         return dict(self.settings)
 
     def set_settings(self, **kwargs: Any) -> None:
         self.settings.update(kwargs)
+        self.settings_version += 1
 
     def request_refresh_now(self) -> None:
         self.refresh_requested += 1
 
-    def request_cache_flush(self) -> None:
-        self.cache_flush_requested += 1
+    def get_refresh_requested(self) -> int:
+        return self.refresh_requested
 
     def get_settings_version(self) -> int:
-        return 1
+        return self.settings_version
 
-    def get_refresh_requested(self) -> int:
-        return int(self.refresh_requested)
+    def request_cache_flush(self) -> None:
+        self.cache_flush_requested += 1
 
     def get_artifact_build_status(self) -> dict[str, Any]:
         return {}

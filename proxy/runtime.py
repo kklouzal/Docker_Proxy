@@ -240,26 +240,40 @@ def _operation_completion_status(
 
     target_kind = str(getattr(operation, "target_kind", "") or "")
     if target_kind == "policy_state":
-        target_ref = str(getattr(operation, "target_ref", "") or "").strip()
-        applied_ref = str(result.get("policy_sha256") or "").strip()
-        current_ref = str(result.get("current_policy_sha") or "").strip()
-        if target_ref and applied_ref and target_ref != applied_ref:
-            op_detail = (
-                f"Superseded by active policy state {applied_ref[:12]}; "
-                f"queued policy state {target_ref[:12]} was not applied because a newer desired state was reconciled."
-            )
-            if detail:
-                op_detail = f"{op_detail}\n{detail}"
-            return "superseded", op_detail[:4000]
-        if target_ref and current_ref and target_ref != current_ref:
-            op_detail = (
-                f"Policy sync did not converge selected-proxy runtime state; "
-                f"queued policy {target_ref[:12]} differs from current policy {current_ref[:12]}."
-            )
-            if detail:
-                op_detail = f"{op_detail}\n{detail}"
-            return "failed", op_detail[:4000]
-        return default_status, detail
+        return _operation_string_target_status(
+            label="policy state",
+            target_ref=str(getattr(operation, "target_ref", "") or "").strip(),
+            applied_ref=str(result.get("policy_sha256") or "").strip(),
+            current_ref=str(result.get("current_policy_sha") or "").strip(),
+            default_status=default_status,
+            detail=detail,
+        )
+
+    if target_kind == "pac_state":
+        return _operation_string_target_status(
+            label="PAC state",
+            target_ref=str(getattr(operation, "target_ref", "") or "").strip(),
+            applied_ref=str(result.get("state_sha256") or "").strip(),
+            current_ref=str(result.get("current_state_sha256") or "").strip(),
+            default_status=default_status,
+            detail=detail,
+        )
+
+    if target_kind == "adblock_artifact":
+        return _operation_adblock_artifact_status(
+            operation,
+            default_status=default_status,
+            detail=detail,
+            result=result,
+        )
+
+    if target_kind == "adblock_artifact_build":
+        return _operation_adblock_build_status(
+            operation,
+            default_status=default_status,
+            detail=detail,
+            result=result,
+        )
 
     if target_kind == "certificate_revision":
         target_ref = _int_or_none(getattr(operation, "target_ref", None))
@@ -325,6 +339,151 @@ def _operation_completion_status(
     if detail:
         op_detail = f"{op_detail}\n{detail}"
     return "superseded", op_detail[:4000]
+
+
+def _operation_string_target_status(
+    *,
+    label: str,
+    target_ref: str,
+    applied_ref: str,
+    current_ref: str,
+    default_status: str,
+    detail: str,
+) -> tuple[str, str]:
+    if not target_ref:
+        op_detail = (
+            f"{label} operation completed reconciliation but did not include "
+            f"a valid queued {label} target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if not applied_ref:
+        op_detail = (
+            f"{label} operation completed reconciliation but did not report "
+            "active target evidence required to verify the queued target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if target_ref != applied_ref:
+        op_detail = (
+            f"Superseded by active {label} {applied_ref[:12]}; "
+            f"queued {label} {target_ref[:12]} was not applied because a newer desired state was reconciled."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "superseded", op_detail[:4000]
+    if not current_ref:
+        op_detail = (
+            f"{label} operation applied target {target_ref[:12]}, but current runtime "
+            "evidence required to verify convergence is unavailable."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if target_ref != current_ref:
+        op_detail = (
+            f"{label} sync did not converge selected-proxy runtime state; "
+            f"queued {label} {target_ref[:12]} differs from current {label} {current_ref[:12]}."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    return default_status, detail
+
+
+def _operation_adblock_artifact_status(
+    operation: Any,
+    *,
+    default_status: str,
+    detail: str,
+    result: dict[str, Any],
+) -> tuple[str, str]:
+    target_ref = _int_or_none(getattr(operation, "target_ref", None))
+    target_hash = str(getattr(operation, "request_hash", "") or "").strip()
+    applied_ref = _int_or_none(result.get("adblock_revision_id"))
+    if applied_ref is None:
+        applied_ref = _int_or_none(result.get("revision_id"))
+    applied_hash = str(result.get("artifact_sha256") or "").strip()
+    current_hash = str(result.get("current_adblock_artifact_sha256") or "").strip()
+    if target_ref is None or not target_hash:
+        op_detail = (
+            "Adblock artifact operation completed reconciliation but did not include "
+            "a valid queued revision/hash target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if applied_ref is None or not applied_hash:
+        op_detail = (
+            "Adblock artifact operation completed reconciliation but did not report "
+            "the active revision/hash evidence required to verify the queued target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if target_ref != applied_ref or target_hash != applied_hash:
+        op_detail = (
+            f"Superseded by active adblock artifact revision {applied_ref} ({applied_hash[:12]}); "
+            f"queued revision {target_ref} ({target_hash[:12]}) was not applied because a newer desired artifact was reconciled."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "superseded", op_detail[:4000]
+    if not current_hash:
+        op_detail = (
+            f"Adblock artifact revision {target_ref} applied, but current runtime "
+            "artifact SHA evidence is unavailable."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if target_hash != current_hash:
+        op_detail = (
+            "Adblock artifact sync did not converge selected-proxy runtime state; "
+            f"queued artifact {target_hash[:12]} differs from current artifact {current_hash[:12]}."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    return default_status, detail
+
+
+def _operation_adblock_build_status(
+    operation: Any,
+    *,
+    default_status: str,
+    detail: str,
+    result: dict[str, Any],
+) -> tuple[str, str]:
+    target_ref = _int_or_none(getattr(operation, "target_ref", None))
+    applied_settings_version = _int_or_none(result.get("adblock_settings_version"))
+    if target_ref is None:
+        op_detail = (
+            "Adblock artifact build operation completed reconciliation but did not include "
+            "a valid queued settings-version target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if applied_settings_version is None:
+        op_detail = (
+            "Adblock artifact build operation completed reconciliation but did not report "
+            "active artifact settings-version evidence required to verify the queued target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if target_ref != applied_settings_version:
+        op_detail = (
+            f"Superseded by adblock artifact settings version {applied_settings_version}; "
+            f"queued settings version {target_ref} was not the artifact reconciled by this operation."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "superseded", op_detail[:4000]
+    return default_status, detail
 
 
 def _certificate_result_evidence(result: dict[str, Any]) -> dict[str, Any]:
@@ -2095,7 +2254,9 @@ class ProxyRuntime:
                     "artifact_changed": False,
                     "cache_flushed": False,
                     "revision_id": None,
+                    "adblock_settings_version": None,
                     "artifact_sha256": current_sha,
+                    "current_adblock_artifact_sha256": current_sha,
                     "detail": "No active adblock artifact is available.",
                 }
 
@@ -2195,7 +2356,9 @@ class ProxyRuntime:
                 "cache_flushed": False,
                 "revision_id": revision_meta.revision_id,
                 "application_id": getattr(applied, "application_id", None),
+                "adblock_settings_version": getattr(revision_meta, "settings_version", None),
                 "artifact_sha256": revision_meta.artifact_sha256,
+                "current_adblock_artifact_sha256": revision_meta.artifact_sha256,
                 "detail": "Proxy is already using the active adblock artifact.",
             }
 
@@ -2366,7 +2529,9 @@ class ProxyRuntime:
             "cache_flushed": cache_flushed,
             "revision_id": apply_revision_id,
             "application_id": applied.application_id,
+            "adblock_settings_version": getattr(revision_meta, "settings_version", None),
             "artifact_sha256": apply_artifact_sha256,
+            "current_adblock_artifact_sha256": apply_artifact_sha256 if result_ok else current_sha,
             "detail": detail,
         }
 
@@ -3069,12 +3234,27 @@ class ProxyRuntime:
     ) -> None:
         default_status = "applied" if bool(result.get("ok")) else "failed"
         detail = str(result.get("detail") or "Proxy reconciliation completed.")[:4000]
+        evidence_updates: dict[str, Any] = {}
         current_policy_sha = str(result.get("current_policy_sha") or "").strip()
         if not current_policy_sha:
             with suppress(Exception):
                 current_policy_sha = str(self._current_policy_sha() or "").strip()
         if current_policy_sha:
-            result = {**result, "current_policy_sha": current_policy_sha}
+            evidence_updates["current_policy_sha"] = current_policy_sha
+        current_pac_sha = str(result.get("current_state_sha256") or "").strip()
+        if not current_pac_sha:
+            with suppress(Exception):
+                current_pac_sha = str(self._current_pac_state_sha() or "").strip()
+        if current_pac_sha:
+            evidence_updates["current_state_sha256"] = current_pac_sha
+        current_adblock_sha = str(result.get("current_adblock_artifact_sha256") or "").strip()
+        if not current_adblock_sha:
+            with suppress(Exception):
+                current_adblock_sha = str(self._current_adblock_artifact_sha() or "").strip()
+        if current_adblock_sha:
+            evidence_updates["current_adblock_artifact_sha256"] = current_adblock_sha
+        if evidence_updates:
+            result = {**result, **evidence_updates}
         for operation in operations:
             status, operation_detail = _operation_completion_status(
                 operation,
@@ -3180,6 +3360,18 @@ class ProxyRuntime:
         adblock_result = self.sync_adblock_state(force=artifact_force_value)
         adblock_ok = bool(adblock_result.get("ok", True))
         adblock_changed = bool(adblock_result.get("changed", False))
+        adblock_evidence = {
+            "adblock_revision_id": _int_or_none(adblock_result.get("revision_id")),
+            "adblock_settings_version": _int_or_none(
+                adblock_result.get("adblock_settings_version"),
+            ),
+            "artifact_sha256": str(adblock_result.get("artifact_sha256") or ""),
+            "current_adblock_artifact_sha256": str(
+                adblock_result.get("current_adblock_artifact_sha256")
+                or adblock_result.get("artifact_sha256")
+                or "",
+            ),
+        }
         if str(adblock_result.get("detail") or "").strip():
             detail_parts.append(str(adblock_result.get("detail") or "").strip())
         if not adblock_ok:
@@ -3195,6 +3387,7 @@ class ProxyRuntime:
             )
             adblock_result.update(cert_evidence)
             adblock_result.update(policy_evidence)
+            adblock_result.update(adblock_evidence)
             adblock_result.update(operation_evidence)
             adblock_result["detail"] = detail
             return adblock_result
@@ -3202,6 +3395,14 @@ class ProxyRuntime:
         pac_result = self.sync_pac_state(force=artifact_force_value)
         pac_ok = bool(pac_result.get("ok", True))
         pac_changed = bool(pac_result.get("changed", False))
+        pac_evidence = {
+            "state_sha256": str(pac_result.get("state_sha256") or ""),
+            "current_state_sha256": str(
+                pac_result.get("current_state_sha256")
+                or pac_result.get("state_sha256")
+                or "",
+            ),
+        }
         if str(pac_result.get("detail") or "").strip():
             detail_parts.append(str(pac_result.get("detail") or "").strip())
         if not pac_ok:
@@ -3214,6 +3415,8 @@ class ProxyRuntime:
             )
             pac_result.update(cert_evidence)
             pac_result.update(policy_evidence)
+            pac_result.update(adblock_evidence)
+            pac_result.update(pac_evidence)
             pac_result.update(operation_evidence)
             pac_result["detail"] = detail
             return pac_result
@@ -3247,6 +3450,8 @@ class ProxyRuntime:
                     "current_config_sha": self._current_config_sha(),
                     **cert_evidence,
                     **policy_evidence,
+                    **adblock_evidence,
+                    **pac_evidence,
                     **operation_evidence,
                 }
 
@@ -3331,6 +3536,8 @@ class ProxyRuntime:
                     "detail": detail,
                     **cert_evidence,
                     **policy_evidence,
+                    **adblock_evidence,
+                    **pac_evidence,
                     **operation_evidence,
                 }
         policy_config_ok, policy_config_detail, policy_config_changed = (
@@ -3364,6 +3571,8 @@ class ProxyRuntime:
                 "detail": detail,
                 **cert_evidence,
                 **policy_evidence,
+                **adblock_evidence,
+                **pac_evidence,
                 **operation_evidence,
             }
         if policy_config_changed:
@@ -3396,6 +3605,8 @@ class ProxyRuntime:
                 "detail": detail,
                 **cert_evidence,
                 **policy_evidence,
+                **adblock_evidence,
+                **pac_evidence,
                 **operation_evidence,
             }
             if (
@@ -3473,6 +3684,8 @@ class ProxyRuntime:
                 "detail": detail,
                 **cert_evidence,
                 **policy_evidence,
+                **adblock_evidence,
+                **pac_evidence,
                 **operation_evidence,
             }
 
@@ -3515,6 +3728,8 @@ class ProxyRuntime:
                 "detail": detail,
                 **cert_evidence,
                 **policy_evidence,
+                **adblock_evidence,
+                **pac_evidence,
                 **operation_evidence,
             }
 
@@ -3558,6 +3773,8 @@ class ProxyRuntime:
                 "detail": detail,
                 **cert_evidence,
                 **policy_evidence,
+                **adblock_evidence,
+                **pac_evidence,
                 **operation_evidence,
             }
 
@@ -3586,6 +3803,8 @@ class ProxyRuntime:
                 "detail": detail,
                 **cert_evidence,
                 **policy_evidence,
+                **adblock_evidence,
+                **pac_evidence,
                 **operation_evidence,
             }
 

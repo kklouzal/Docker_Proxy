@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+from types import SimpleNamespace
 
 import pytest
 
@@ -724,6 +725,11 @@ def test_pac_refresh_queues_only_without_direct_proxy_sync(monkeypatch, tmp_path
     store = Store()
     loaded, client = _loaded(monkeypatch, tmp_path, pac_profiles_store=store)
     monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-pac")
+    monkeypatch.setattr(
+        loaded.module,
+        "build_proxy_pac_state",
+        lambda proxy_id: SimpleNamespace(state_sha256=f"pac-sha-{proxy_id}"),
+    )
 
     response = _post(
         client,
@@ -733,8 +739,11 @@ def test_pac_refresh_queues_only_without_direct_proxy_sync(monkeypatch, tmp_path
 
     _assert_redirect_success(response)
     assert loaded.proxy_client.synced == []
-    assert loaded.operation_ledger.operations[-1].operation_type == "pac_refresh"
-    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-pac"
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.operation_type == "pac_refresh"
+    assert operation.proxy_id == "edge-pac"
+    assert operation.target_kind == "pac_state"
+    assert operation.target_ref == "pac-sha-edge-pac"
 
 
 def test_cache_clear_queues_operation_without_direct_proxy_client(

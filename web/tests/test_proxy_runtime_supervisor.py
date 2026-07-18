@@ -4401,8 +4401,8 @@ def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergenc
             5,
             "failed",
             (
-                "Policy sync did not converge selected-proxy runtime state; "
-                "queued policy desired-a differs from current policy old-a.\n"
+                "policy state sync did not converge selected-proxy runtime state; "
+                "queued policy state desired-a differs from current policy state old-a.\n"
                 "runtime reconciled"
             ),
         )
@@ -4464,6 +4464,159 @@ def test_sync_from_db_policy_operation_uses_selected_proxy_current_policy_sha(
     assert calls[0] == (5, "applied", "runtime reconciled")
     assert calls[1][0:2] == (6, "superseded")
     assert "queued policy state desired-b was not applied" in calls[1][2]
+
+
+def test_operation_completion_requires_exact_pac_target_and_current_runtime() -> None:
+    from proxy import runtime as runtime_module
+
+    op = SimpleNamespace(
+        operation_type="pac_refresh",
+        target_kind="pac_state",
+        target_ref="pac-a",
+    )
+
+    assert runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["pac_refresh"],
+            "state_sha256": "pac-a",
+            "current_state_sha256": "pac-a",
+        },
+    ) == ("applied", "runtime reconciled")
+
+    status, detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["pac_refresh"],
+            "state_sha256": "pac-b",
+            "current_state_sha256": "pac-b",
+        },
+    )
+    assert status == "superseded"
+    assert "queued PAC state pac-a" in detail
+
+    missing_status, missing_detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={"executed_operation_types": ["pac_refresh"]},
+    )
+    assert missing_status == "failed"
+    assert "did not report active target evidence" in missing_detail
+
+    mismatch_status, mismatch_detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["pac_refresh"],
+            "state_sha256": "pac-a",
+            "current_state_sha256": "pac-current-mismatch",
+        },
+    )
+    assert mismatch_status == "failed"
+    assert "did not converge selected-proxy runtime state" in mismatch_detail
+
+
+def test_operation_completion_requires_exact_adblock_artifact_revision_and_hash() -> None:
+    from proxy import runtime as runtime_module
+
+    op = SimpleNamespace(
+        operation_type="adblock_refresh",
+        target_kind="adblock_artifact",
+        target_ref="7",
+        request_hash="artifact-a",
+    )
+
+    assert runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["adblock_refresh"],
+            "revision_id": 7,
+            "artifact_sha256": "artifact-a",
+            "current_adblock_artifact_sha256": "artifact-a",
+        },
+    ) == ("applied", "runtime reconciled")
+
+    status, detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["adblock_refresh"],
+            "revision_id": 8,
+            "artifact_sha256": "artifact-b",
+            "current_adblock_artifact_sha256": "artifact-b",
+        },
+    )
+    assert status == "superseded"
+    assert "queued revision 7" in detail
+
+    missing_status, missing_detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={"executed_operation_types": ["adblock_refresh"]},
+    )
+    assert missing_status == "failed"
+    assert "did not report the active revision/hash evidence" in missing_detail
+
+    mismatch_status, mismatch_detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["adblock_refresh"],
+            "revision_id": 7,
+            "artifact_sha256": "artifact-a",
+            "current_adblock_artifact_sha256": "artifact-current-mismatch",
+        },
+    )
+    assert mismatch_status == "failed"
+    assert "queued artifact artifact-a" in mismatch_detail
+
+
+def test_operation_completion_tracks_adblock_build_settings_version_target() -> None:
+    from proxy import runtime as runtime_module
+
+    op = SimpleNamespace(
+        operation_type="adblock_refresh",
+        target_kind="adblock_artifact_build",
+        target_ref="12",
+        request_hash="",
+    )
+
+    assert runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["adblock_refresh"],
+            "adblock_settings_version": 12,
+            "revision_id": 9,
+            "artifact_sha256": "artifact-c",
+        },
+    ) == ("applied", "runtime reconciled")
+
+    status, detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["adblock_refresh"],
+            "adblock_settings_version": 13,
+            "revision_id": 10,
+            "artifact_sha256": "artifact-d",
+        },
+    )
+    assert status == "superseded"
+    assert "queued settings version 12" in detail
 
 
 def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:

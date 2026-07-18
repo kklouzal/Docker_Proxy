@@ -105,7 +105,7 @@ from services.operation_ledger import get_operation_ledger
 from services.pac_profiles_store import (
     get_pac_profiles_store as _default_get_pac_profiles_store,
 )
-from services.pac_renderer import resolve_proxy_pac_target
+from services.pac_renderer import build_proxy_pac_state, resolve_proxy_pac_target
 from services.policy_materializer import (
     ProxyPolicyState,
     build_proxy_policy_state_from_stores,
@@ -2932,14 +2932,36 @@ def _best_effort_refresh_managed_policy(
         )
 
 
+def _desired_pac_state_sha_for_proxy(proxy_id: str) -> tuple[str, str]:
+    try:
+        state = build_proxy_pac_state(proxy_id)
+    except Exception as exc:
+        return "", public_error_message(
+            exc,
+            default="Desired PAC state SHA could not be calculated.",
+        )
+    return str(getattr(state, "state_sha256", "") or ""), ""
+
+
 def _queue_pac_runtime_refresh() -> tuple[bool, str]:
+    proxy_id = get_proxy_id()
+    desired_pac_sha, desired_error = _desired_pac_state_sha_for_proxy(proxy_id)
+    summary = "PAC profile changes queued for proxy materialization."
+    detail = "Admin changed PAC profile state; proxy should refresh materialized PAC files."
+    if desired_pac_sha:
+        summary = f"PAC state {_short_sha(desired_pac_sha)} queued for materialization."
+        detail = f"Desired PAC state SHA: {desired_pac_sha}"
+    elif desired_error:
+        detail = f"Desired PAC state SHA unavailable before queueing. {desired_error}"
     try:
         operation = request_proxy_reconcile(
-            get_proxy_id(),
+            proxy_id,
             operation_type="pac_refresh",
             subject="PAC profile refresh",
-            summary="PAC profile changes queued for proxy materialization.",
-            detail="Admin changed PAC profile state; proxy should refresh materialized PAC files.",
+            summary=summary,
+            target_kind="pac_state",
+            target_ref=desired_pac_sha,
+            detail=detail,
             created_by=str(session.get("user") or ""),
             force=True,
         )
@@ -2976,15 +2998,78 @@ def _best_effort_refresh_pac_runtime() -> None:
     _queue_pac_runtime_refresh()
 
 
-def _queue_adblock_runtime_refresh(*, action: str) -> tuple[bool, str]:
+def _adblock_runtime_refresh_target(*, store: Any | None = None) -> dict[str, str]:
+    target: dict[str, str] = {
+        "target_kind": "",
+        "target_ref": "",
+        "request_hash": "",
+        "summary": "Adblock settings changed; proxy reconciliation queued.",
+        "detail_suffix": "",
+    }
+    store = store or get_adblock_store()
+    try:
+        refresh_requested = bool(store.get_refresh_requested())
+    except Exception:
+        refresh_requested = False
+    try:
+        settings_version = _safe_int(store.get_settings_version())
+    except Exception:
+        settings_version = 0
+    if refresh_requested:
+        target.update(
+            target_kind="adblock_artifact_build",
+            target_ref=str(settings_version) if settings_version else "",
+            summary=(
+                f"Adblock artifact build for settings version {settings_version} queued."
+                if settings_version
+                else "Adblock artifact build queued."
+            ),
+            detail_suffix=(
+                f"Desired adblock settings version: {settings_version}"
+                if settings_version
+                else "Desired adblock settings version was unavailable before queueing."
+            ),
+        )
+        return target
+    try:
+        summary = get_adblock_artifacts().get_active_artifact_summary()
+    except Exception:
+        summary = None
+    revision_id = _safe_int(getattr(summary, "revision_id", 0)) if summary else 0
+    artifact_sha = str(getattr(summary, "artifact_sha256", "") or "").strip()
+    if revision_id and artifact_sha:
+        target.update(
+            target_kind="adblock_artifact",
+            target_ref=str(revision_id),
+            request_hash=artifact_sha,
+            summary=f"Adblock artifact revision {revision_id} ({_short_sha(artifact_sha)}) queued for runtime refresh.",
+            detail_suffix=f"Desired adblock artifact revision: {revision_id}; SHA: {artifact_sha}",
+        )
+    else:
+        target.update(
+            target_kind="adblock_artifact",
+            summary="Adblock runtime refresh queued without active artifact evidence.",
+            detail_suffix="No active adblock artifact revision/SHA was available before queueing.",
+        )
+    return target
+
+
+def _queue_adblock_runtime_refresh(*, action: str, store: Any | None = None) -> tuple[bool, str]:
     default = "Adblock changes were saved, but runtime refresh was not queued."
+    target = _adblock_runtime_refresh_target(store=store)
+    detail = f"Admin requested adblock runtime refresh after {action}."
+    if target.get("detail_suffix"):
+        detail = f"{detail}\n{target['detail_suffix']}"
     try:
         operation = request_proxy_reconcile(
             get_proxy_id(),
             operation_type="adblock_refresh",
             subject="Adblock runtime refresh",
-            summary="Adblock settings changed; proxy reconciliation queued.",
-            detail=f"Admin requested adblock runtime refresh after {action}.",
+            summary=target["summary"],
+            target_kind=target["target_kind"],
+            target_ref=target["target_ref"],
+            request_hash=target["request_hash"],
+            detail=detail,
             created_by=str(session.get("user") or ""),
             force=True,
         )
@@ -3020,8 +3105,8 @@ def _redirect_adblock_queue_failure(detail: str):
     )
 
 
-def _queue_adblock_or_error(*, action: str):
-    ok, detail = _queue_adblock_runtime_refresh(action=action)
+def _queue_adblock_or_error(*, action: str, store: Any | None = None):
+    ok, detail = _queue_adblock_runtime_refresh(action=action, store=store)
     if not ok:
         return _redirect_adblock_queue_failure(detail)
     return None
@@ -3035,7 +3120,7 @@ def _handle_adblock_post(store: Any):
             enabled_map[st.key] = request.form.get(f"enabled_{st.key}") == "on"
         store.set_enabled(enabled_map)
         store.request_refresh_now()
-        if response := _queue_adblock_or_error(action="list save"):
+        if response := _queue_adblock_or_error(action="list save", store=store):
             return response
     elif action == "save_settings":
         enabled = request.form.get("adblock_enabled") == "on"
@@ -3054,7 +3139,7 @@ def _handle_adblock_post(store: Any):
         )
         store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
         store.request_refresh_now()
-        if response := _queue_adblock_or_error(action="settings save"):
+        if response := _queue_adblock_or_error(action="settings save", store=store):
             return response
     elif action == "refresh":
         any_enabled = False
@@ -3065,12 +3150,12 @@ def _handle_adblock_post(store: Any):
         if not any_enabled:
             return _redirect_to("adblock", refresh_no_lists="1")
         store.request_refresh_now()
-        if response := _queue_adblock_or_error(action="manual refresh"):
+        if response := _queue_adblock_or_error(action="manual refresh", store=store):
             return response
         return _redirect_to("adblock", refresh_requested="1")
     elif action == "flush_cache":
         store.request_cache_flush()
-        if response := _queue_adblock_or_error(action="cache flush"):
+        if response := _queue_adblock_or_error(action="cache flush", store=store):
             return response
         return _redirect_to("adblock", cache_flushed="1")
     return _redirect_to("adblock")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 
@@ -42,8 +43,11 @@ def test_adblock_settings_clamp_invalid_cache_values_and_request_refresh(
     assert store.settings["cache_ttl"] == 3600
     assert store.settings["cache_max"] == 0
     assert store.refresh_requested == 1
-    assert loaded.operation_ledger.operations[-1].operation_type == "adblock_refresh"
-    assert loaded.operation_ledger.operations[-1].status == "pending"
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.operation_type == "adblock_refresh"
+    assert operation.status == "pending"
+    assert operation.target_kind == "adblock_artifact_build"
+    assert operation.target_ref == str(store.settings_version)
 
 
 def test_adblock_refresh_with_no_enabled_lists_redirects_with_warning(
@@ -443,6 +447,8 @@ def test_adblock_settings_save_queues_forced_runtime_refresh(
     assert operation.operation_type == "adblock_refresh"
     assert operation.subject == "Adblock runtime refresh"
     assert operation.force is True
+    assert operation.target_kind == "adblock_artifact_build"
+    assert operation.target_ref == str(store.settings_version)
 
 
 @pytest.mark.parametrize(
@@ -513,3 +519,57 @@ def test_adblock_mutations_report_runtime_refresh_queue_failure(
     assert "cache_flushed" not in params
     assert assert_mutation(store)
     assert loaded.operation_ledger.operations == []
+
+
+def test_adblock_cache_flush_targets_active_artifact_revision_and_hash(monkeypatch, tmp_path) -> None:
+    store = FakeAdblockStore()
+    store.refresh_requested = 0
+    summary = SimpleNamespace(
+        revision_id=17,
+        artifact_sha256="abc123def456",
+        settings_version=store.settings_version,
+        source_kind="test",
+        created_by="test",
+        created_ts=1,
+        enabled_lists=["default"],
+        report={},
+    )
+    from .admin_route_test_utils import FakeAdblockArtifacts
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_store=store,
+        adblock_artifacts=FakeAdblockArtifacts(summary),
+    )
+
+    with loaded.module.app.test_request_context(
+        "/adblock", method="POST", data={"action": "flush_cache"}
+    ):
+        response = loaded.module._handle_adblock_post(store)
+
+    assert response.status_code in {301, 302, 303}
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.operation_type == "adblock_refresh"
+    assert operation.target_kind == "adblock_artifact"
+    assert operation.target_ref == "17"
+    assert operation.request_hash == "abc123def456"
+
+
+def test_adblock_refresh_without_active_artifact_queues_unverifiable_artifact_target(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakeAdblockStore()
+    store.request_cache_flush()
+    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/adblock", method="POST", data={"action": "flush_cache"}
+    ):
+        response = loaded.module._handle_adblock_post(store)
+
+    assert response.status_code in {301, 302, 303}
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.target_kind == "adblock_artifact"
+    assert operation.target_ref == ""
+    assert operation.request_hash == ""
