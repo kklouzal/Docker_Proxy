@@ -461,7 +461,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("CLAMAV_RESPMOD_PORT", "15001")))
     parser.add_argument("--clamd-host", default=os.environ.get("CLAMD_HOST", "127.0.0.1"))
     parser.add_argument("--clamd-port", type=int, default=int(os.environ.get("CLAMD_PORT", "3310")))
-    parser.add_argument("--clamd-timeout", type=float, default=float(os.environ.get("CLAMD_TIMEOUT", "30")))
+    parser.add_argument("--clamd-timeout", type=float, default=float(os.environ.get("CLAMD_TIMEOUT", "5")))
     parser.add_argument("--max-scan-bytes", type=int, default=int(os.environ.get("CLAMAV_STREAM_MAX_BYTES", str(DEFAULT_MAX_SCAN_BYTES))))
     parser.add_argument("--fail-open", dest="fail_open", action="store_true")
     parser.add_argument("--fail-closed", dest="fail_open", action="store_false")

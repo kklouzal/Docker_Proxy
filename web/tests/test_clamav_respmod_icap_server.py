@@ -162,3 +162,11 @@ def test_blocked_icap_response_contains_detection() -> None:
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 403 Forbidden" in response
     assert b"Eicar-Test-Signature" in response
+
+
+def test_respmod_default_clamd_timeout_is_bounded_for_fail_open_browsing() -> None:
+    server = _load_server()
+
+    args = server._parse_args([])
+
+    assert args.clamd_timeout == 5
