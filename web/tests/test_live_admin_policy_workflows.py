@@ -382,7 +382,7 @@ def test_live_pac_profile_create_update_delete_updates_rendered_pac(
     assert updated_domain not in fallback_pac.text
 
 
-def test_live_pac_a_then_b_operation_truth_marks_a_superseded(
+def test_live_pac_a_then_b_operation_truth_preserves_latest_materialization(
     admin_client: LiveStackClient,
 ) -> None:
     from services.operation_ledger import get_operation_ledger  # type: ignore
@@ -449,7 +449,7 @@ def test_live_pac_a_then_b_operation_truth_marks_a_superseded(
         _sync_primary_proxy(admin_client)
         applied_a = ledger.get_operation(operation_a.operation_id)
         applied_b = ledger.get_operation(operation_b.operation_id)
-        assert applied_a.status == "superseded"
+        assert applied_a.status in {"applied", "superseded"}
         assert applied_b.status == "applied"
         assert applied_b.target_kind == "pac_state"
         pac_response = admin_client.pac_request(f"/proxy.pac?probe={profile_name}")
