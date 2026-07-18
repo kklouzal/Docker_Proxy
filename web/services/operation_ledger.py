@@ -285,7 +285,7 @@ class OperationLedger:
                 """
                 INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts,force_sync)
                 VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), summary=VALUES(summary), rollback_kind=VALUES(rollback_kind), rollback_ref=VALUES(rollback_ref), detail=VALUES(detail), created_by=VALUES(created_by), updated_ts=VALUES(updated_ts), force_sync=GREATEST(force_sync, VALUES(force_sync))
+                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), summary=VALUES(summary), detail=VALUES(detail), created_by=VALUES(created_by), updated_ts=VALUES(updated_ts), force_sync=GREATEST(force_sync, VALUES(force_sync))
                 """,
                 (
                     proxy_key,

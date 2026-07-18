@@ -44,6 +44,7 @@ class _Revisions:
         self.applied: list[dict[str, object]] = []
         self.active_revision_id: int | None = None
         self.active_revision = None
+        self.existing_active_revision_for_config: object | None = None
 
     def get_active_revision(self, _proxy_id):
         return self.active_revision
@@ -51,6 +52,11 @@ class _Revisions:
     def create_revision(
         self, proxy_id, config_text, *, created_by, source_kind, activate
     ):
+        if self.existing_active_revision_for_config is not None:
+            revision = self.existing_active_revision_for_config
+            self.active_revision_id = int(revision.revision_id)
+            self.active_revision = revision
+            return revision
         revision_id = len(self.created) + 17
         self.created.append(
             {
@@ -246,6 +252,146 @@ def test_publish_config_queues_user_apply_as_forced_runtime_retry(
     assert "operation #78" in detail
     assert queued[0]["operation_type"] == "config_apply"
     assert queued[0]["force"] is True
+
+
+def test_publish_config_duplicate_pending_operation_preserves_original_revert_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+    controller = _Controller()
+    revisions = _Revisions()
+    previous = SimpleNamespace(revision_id=3, config_sha256="old-sha")
+    target = SimpleNamespace(revision_id=17, config_sha256="abc")
+    revisions.active_revision = previous
+    revisions.active_revision_id = 3
+    queued_operation = SimpleNamespace(
+        operation_id=42,
+        status="pending",
+        operation_type="config_apply",
+        target_ref="17",
+        rollback_kind="config_revision",
+        rollback_ref="3",
+        force=True,
+    )
+    captured: list[dict[str, object]] = []
+
+    def fake_request_proxy_reconcile(proxy_id, **kwargs):
+        captured.append({"proxy_id": proxy_id, **kwargs})
+        return queued_operation
+
+    monkeypatch.setattr(admin_app, "squid_controller", controller)
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
+    monkeypatch.setattr(
+        admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok")
+    )
+    monkeypatch.setattr(
+        admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
+    )
+
+    with admin_app.app.test_request_context("/"):
+        admin_app.session["user"] = "operator"
+        ok, detail = admin_app._publish_config_for_current_mode(
+            "workers 2", source_kind="manual"
+        )
+
+    assert ok is True
+    assert "Revision 17 saved" in detail
+    assert "operation #42" in detail
+    assert captured[0]["target_ref"] == 17
+    assert captured[0]["rollback_ref"] == 3
+    assert revisions.active_revision_id == 17
+
+    revisions.existing_active_revision_for_config = target
+    with admin_app.app.test_request_context("/"):
+        admin_app.session["user"] = "operator-b"
+        ok, detail = admin_app._publish_config_for_current_mode(
+            "workers 2", source_kind="manual"
+        )
+
+    assert ok is True
+    assert "Revision 17 saved" in detail
+    assert "operation #42" in detail
+    assert len(captured) == 2
+    duplicate_request = captured[1]
+    assert duplicate_request["target_ref"] == 17
+    assert duplicate_request["rollback_ref"] == 17
+    assert queued_operation.rollback_ref == "3"
+    assert queued_operation.operation_id == 42
+    assert revisions.active_revision_id == 17
+
+
+def test_revert_duplicate_config_apply_targets_original_rollback_revision(
+    monkeypatch, tmp_path
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+    queued: list[dict[str, object]] = []
+
+    class Op:
+        operation_id = 42
+        proxy_id = "edge-a"
+        status = "failed"
+        can_revert = True
+        rollback_kind = "config_revision"
+        rollback_ref = "3"
+        operation_type = "config_apply"
+        target_ref = "17"
+
+    class Ledger:
+        def get_operation(self, operation_id):
+            assert operation_id == 42
+            return Op()
+
+    class Revisions:
+        def get_revision(self, revision_id, *, proxy_id=None):
+            assert revision_id == "3"
+            assert proxy_id == "edge-a"
+            return SimpleNamespace(revision_id=3, config_text="workers 1\n")
+
+        def create_revision(
+            self, proxy_id, config_text, *, created_by, source_kind, activate
+        ):
+            assert proxy_id == "edge-a"
+            assert config_text == "workers 1\n"
+            assert created_by == "operator"
+            assert source_kind == "revert-config_apply"
+            assert activate is True
+            return SimpleNamespace(revision_id=18, config_sha256="restored-sha")
+
+    def fake_request_proxy_reconcile(proxy_id, **kwargs):
+        queued.append({"proxy_id": proxy_id, **kwargs})
+        return SimpleNamespace(operation_id=43)
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(admin_app, "get_config_revisions", Revisions)
+    monkeypatch.setattr(
+        admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
+    )
+
+    with admin_app.app.test_request_context("/operations/42/revert", method="POST"):
+        admin_app.session["user"] = "operator"
+        response = admin_app.revert_operation(42)
+
+    assert response.status_code == 302
+    assert "reverted=1" in response.location
+    assert queued == [
+        {
+            "proxy_id": "edge-a",
+            "operation_type": "revert",
+            "subject": "Revert #42",
+            "summary": "Restored config revision 3; applying asynchronously.",
+            "target_kind": "config_revision",
+            "target_ref": 18,
+            "rollback_kind": "config_revision",
+            "rollback_ref": "17",
+            "request_hash": "restored-sha",
+            "detail": "Revert queued from failed operation #42.",
+            "created_by": "operator",
+            "force": False,
+        },
+    ]
 
 
 def test_publish_config_restores_previous_revision_when_reconcile_not_queued(
