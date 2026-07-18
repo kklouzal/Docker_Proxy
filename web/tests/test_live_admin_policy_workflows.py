@@ -14,6 +14,7 @@ from .live_test_helpers import (
     query_params,
     unique_domain,
     unique_token,
+    wait_for_admin_contains,
     wait_for_proxy_fixture_response,
     wait_for_proxy_management_payload,
 )
@@ -455,8 +456,7 @@ def test_live_pac_a_then_b_operation_truth_marks_a_superseded(
         assert pac_response.status == 200
         assert domain_b in pac_response.text
         assert domain_a not in pac_response.text
-        post_sync_page = admin_client.admin_request("/pac")
-        assert "PAC materialized" in post_sync_page.text
+        wait_for_admin_contains(admin_client, "/pac", "PAC materialized", timeout_seconds=30.0)
     finally:
         admin_client.admin_post_form(
             "/pac",
@@ -826,8 +826,12 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     assert latest_apply.revision_id == revision.revision_id
     assert latest_apply.ok is True
     assert latest_apply.artifact_sha256 == revision.artifact_sha256
-    post_sync_page = admin_client.admin_request("/adblock")
-    assert "Adblock artifact applied" in post_sync_page.text
+    wait_for_admin_contains(
+        admin_client,
+        "/adblock",
+        "Adblock artifact applied",
+        timeout_seconds=30.0,
+    )
     assert (
         _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.get_cache_flush_requested)
         == 0
