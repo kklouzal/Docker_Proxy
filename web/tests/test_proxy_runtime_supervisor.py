@@ -3508,6 +3508,81 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
     assert calls[0][:4] == ["supervisorctl", "-c", "/etc/supervisord.conf", "status"]
 
 
+def test_squid_restart_waits_for_icap_readiness_before_accepting_success() -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return _cp(0, stdout="ok")
+
+    controller = SquidController.__new__(SquidController)
+    controller.squid_conf_path = "/etc/squid/squid.conf"
+    controller._run = fake_run
+    controller._decode_completed = lambda proc: (proc.stdout or b"").decode().strip()
+    controller._http_listener_ports = lambda *_args, **_kwargs: (3128,)
+    controller._http_listener_response_ports = lambda *_args, **_kwargs: (3128,)
+    controller._wait_for_http_listener_absent = lambda *, timeout: True
+    controller._wait_for_squid_pidfile_stale_or_absent = lambda *, timeout: True
+    controller._remove_stale_squid_pidfile = lambda **_kwargs: ""
+    controller._accept_running_squid_restart = lambda *args, **kwargs: None
+    controller._wait_for_http_listener = lambda *, timeout: True
+    controller._check_icap_readiness = lambda *, timeout: (False, "adblock OPTIONS not ready")
+
+    ok, detail = controller._restart_squid_locked(ready_timeout=1.0)
+
+    assert ok is False
+    assert "adblock OPTIONS not ready" in detail
+    assert ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"] in calls
+
+
+def test_adblock_artifact_restart_pauses_squid_until_icap_ready() -> None:
+    runtime = _runtime_shell()
+    calls: list[object] = []
+
+    class Controller:
+        def _supervisor_program_running(self, program):
+            assert program == "squid"
+            return True
+
+        def _run(self, args, **_kwargs):
+            calls.append(list(args))
+            return _cp(0, stdout="squid: stopped")
+
+        def _decode_completed(self, proc):
+            return (proc.stdout or b"").decode().strip()
+
+        def _wait_for_http_listener_absent(self, *, timeout):
+            calls.append(("absent", timeout))
+            return True
+
+        def _wait_for_icap_readiness(self, *, timeout):
+            calls.append(("icap", timeout))
+            return True, "ICAP ready"
+
+        def restart_squid(self, *, ready_timeout):
+            calls.append(("restart_squid", ready_timeout))
+            return True, "Squid HTTP listener is responding and ICAP readiness is green."
+
+    runtime.controller = Controller()
+    runtime._restart_adblock_service = lambda: (calls.append("adblock_restart") or (True, "adblock restarted"))
+
+    ok, detail = runtime._restart_adblock_service_with_squid_paused()
+
+    assert ok is True
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ("absent", 30.0),
+        "adblock_restart",
+        ("icap", 75.0),
+        ("restart_squid", 75.0),
+    ]
+    assert "adblock restarted" in detail
+    assert "ICAP ready" in detail
+
+
 def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default() -> (
     None
 ):
@@ -3540,6 +3615,9 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "clamd_host_is_remote" in healthcheck
     assert "Squid adblock ICAP is fail-open" in healthcheck
     assert "check_squid_forwarding_path" in healthcheck
+    assert "check_icap_readiness" in healthcheck
+    assert "/usr/local/bin/icap_readiness.py check" in healthcheck
+    assert "Configured ICAP services are not OPTIONS-ready" in healthcheck
     assert "PROXY_HEALTHCHECK_FORWARDING_REQUIRED" in healthcheck
     assert "squid-flask-proxy-forwarding-health" in healthcheck
     assert "local canary target" in healthcheck
@@ -3612,6 +3690,8 @@ def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:
     )
     section = supervisord.split("[program:squid]", 1)[1].split("[program:", 1)[0]
 
+    assert "command=/usr/local/bin/squid_ready_start.sh" in section
+    assert "priority=40" in section
     assert "stopasgroup=true" in section
     assert "killasgroup=true" in section
 

@@ -60,7 +60,7 @@ from services.proxy_registry import (
     resolve_local_proxy_public_fields,
 )
 from services.runtime_helpers import decode_bytes as _decode_bytes
-from services.squid_core import SquidController
+from services.squid_core import SquidController, _exclusive_squid_lifecycle_lock
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
@@ -1769,6 +1769,78 @@ class ProxyRuntime:
             False,
         )
 
+    def _restart_adblock_service_with_squid_paused(self) -> tuple[bool, str]:
+        controller = getattr(self, "controller", None)
+        controller_run = getattr(controller, "_run", None)
+        controller_restart = getattr(controller, "restart_squid", None)
+        if not callable(controller_run) or not callable(controller_restart):
+            return self._restart_adblock_service()
+        with _exclusive_squid_lifecycle_lock():
+            detail_parts: list[str] = []
+            squid_was_running = False
+            try:
+                status_running = getattr(controller, "_supervisor_program_running", None)
+                squid_was_running = bool(
+                    status_running("squid") if callable(status_running) else True
+                )
+            except Exception:
+                squid_was_running = True
+
+            if squid_was_running:
+                try:
+                    stop = controller_run(
+                        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+                        capture_output=True,
+                        timeout=25,
+                    )
+                    decoder = getattr(controller, "_decode_completed", _decode_completed)
+                    detail = decoder(stop)
+                    if detail:
+                        detail_parts.append(detail)
+                except Exception as exc:
+                    return False, public_error_message(
+                        exc,
+                        default="Failed to pause Squid before adblock ICAP restart.",
+                    )
+
+                absent = getattr(controller, "_wait_for_http_listener_absent", None)
+                if callable(absent) and not absent(timeout=30.0):
+                    return False, "Squid HTTP listener did not release before adblock ICAP restart."
+
+            try:
+                ok_restart, restart_detail = self._restart_adblock_service()
+                if restart_detail:
+                    detail_parts.append(restart_detail)
+                if not ok_restart:
+                    return False, "\n".join(part for part in detail_parts if part).strip()
+
+                wait_icap = getattr(controller, "_wait_for_icap_readiness", None)
+                if callable(wait_icap):
+                    ok_icap, icap_detail = wait_icap(timeout=75.0)
+                    if icap_detail:
+                        detail_parts.append(icap_detail)
+                    if not ok_icap:
+                        return False, "\n".join(part for part in detail_parts if part).strip()
+
+                if squid_was_running:
+                    ok_squid, squid_detail = controller_restart(ready_timeout=75.0)
+                    if squid_detail:
+                        detail_parts.append(squid_detail)
+                    return bool(ok_squid), "\n".join(part for part in detail_parts if part).strip()
+                return True, "\n".join(part for part in detail_parts if part).strip()
+            except Exception as exc:
+                return False, "\n".join(
+                    part
+                    for part in (
+                        *detail_parts,
+                        public_error_message(
+                            exc,
+                            default="Failed during adblock ICAP restart gate.",
+                        ),
+                    )
+                    if str(part or "").strip()
+                ).strip()
+
     def _reload_for_policy_update(
         self,
         *,
@@ -2389,7 +2461,7 @@ class ProxyRuntime:
                     "detail": "No active adblock artifact is available.",
                 }
 
-            ok_restart, restart_detail = self._restart_adblock_service()
+            ok_restart, restart_detail = self._restart_adblock_service_with_squid_paused()
             if ok_restart:
                 try:
                     store.mark_cache_flushed(size=0)
@@ -2569,7 +2641,7 @@ class ProxyRuntime:
             apply_artifact_sha256 = revision_meta.artifact_sha256
             snapshot_root = ""
 
-        ok_restart, restart_detail = self._restart_adblock_service()
+        ok_restart, restart_detail = self._restart_adblock_service_with_squid_paused()
         if not ok_restart and artifact_changed and snapshot_root:
             rollback_detail_parts = [
                 restart_detail.strip()

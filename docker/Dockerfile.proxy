@@ -165,6 +165,8 @@ COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 COPY docker/supervisord.proxy.conf /etc/supervisord.conf
 COPY --chmod=755 docker/healthcheck.sh /healthcheck.sh
+COPY --chmod=755 docker/icap_readiness.py /usr/local/bin/icap_readiness.py
+COPY --chmod=755 docker/squid_ready_start.sh /usr/local/bin/squid_ready_start.sh
 COPY --chmod=755 docker/cicap_av_runner.py /usr/local/bin/cicap_av_runner.py
 COPY --chmod=755 docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
 

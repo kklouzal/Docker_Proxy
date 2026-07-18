@@ -14,30 +14,22 @@ def _load_runner():
     return module
 
 
-def test_optional_unavailable_clamd_execs_sleep_without_child_probe(monkeypatch, capsys) -> None:
+def test_optional_unavailable_clamd_serves_fail_open_placeholder(monkeypatch) -> None:
     runner = _load_runner()
-    exec_calls: list[tuple[str, list[str]]] = []
+    calls: list[tuple[str, str, int]] = []
 
     monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
     monkeypatch.delenv("FILE_SECURITY_AV_REQUIRED", raising=False)
-
-    class ExecCalledError(Exception):
-        pass
-
-    def fake_execv(path, argv):
-        exec_calls.append((path, argv))
-        raise ExecCalledError
-
     monkeypatch.setattr(runner, "clamd_ready", lambda _host, _port: False)
-    monkeypatch.setattr(runner.os, "execv", fake_execv)
+    monkeypatch.setattr(
+        runner,
+        "run_fail_open_placeholder",
+        lambda conf_path, *, host, port: calls.append((conf_path, host, port)),
+    )
 
-    try:
-        runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"])
-    except ExecCalledError:
-        pass
+    assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 0
 
-    assert exec_calls == [("/bin/sleep", ["/bin/sleep", "infinity"])]
-    assert "optional ClamAV backend" in capsys.readouterr().err
+    assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310)]
 
 
 def test_required_unavailable_clamd_returns_failure_after_bounded_wait(monkeypatch, capsys) -> None:

@@ -931,6 +931,32 @@ stdout_logfile_maxbytes=0
                 )
             )
             if supervisor_changed:
+                squid_was_running = any(
+                    self._tcp_listener_accepts(port)
+                    for port in self._http_listener_ports(normalized)
+                )
+                stop_detail = ""
+                if squid_was_running:
+                    try:
+                        stop = self._run(
+                            ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+                            capture_output=True,
+                            timeout=25,
+                        )
+                        stop_detail = self._decode_completed(stop)
+                        if not self._wait_for_http_listener_absent(timeout=30.0):
+                            return (
+                                False,
+                                "Squid HTTP listener did not release before ICAP supervisor update.",
+                            )
+                    except Exception as exc:
+                        return (
+                            False,
+                            public_error_message(
+                                exc,
+                                default="Failed to pause Squid before ICAP supervisor update.",
+                            ),
+                        )
                 ok_supervisor, supervisor_detail = self._supervisor_reread_update()
                 if not ok_supervisor:
                     self._restore_runtime_file_snapshot(
@@ -944,6 +970,18 @@ stdout_logfile_maxbytes=0
                         False,
                         supervisor_detail
                         or "Failed to reload ICAP supervisor runtime files.",
+                    )
+                if squid_was_running:
+                    ok_icap, icap_detail = self._wait_for_icap_readiness(timeout=75.0)
+                    if not ok_icap:
+                        return False, icap_detail or "ICAP services were not ready after supervisor update."
+                    ok_restart, restart_detail = self.restart_squid(ready_timeout=75.0)
+                    if not ok_restart:
+                        return False, restart_detail or "Squid restart failed after ICAP supervisor update."
+                    changed.extend(
+                        part
+                        for part in (stop_detail, icap_detail, restart_detail)
+                        if str(part or "").strip()
                     )
                 changed.extend(supervisor_paths)
             if changed:
@@ -1166,6 +1204,75 @@ stdout_logfile_maxbytes=0
                 return True
         except OSError:
             return False
+
+    def _icap_readiness_status_file(self) -> str:
+        return (
+            os.environ.get("SQUID_ICAP_READY_STATUS_FILE")
+            or "/var/lib/squid-flask-proxy/icap-readiness.json"
+        ).strip() or "/var/lib/squid-flask-proxy/icap-readiness.json"
+
+    def _icap_readiness_command(self, command: str = "check") -> list[str]:
+        helper = (
+            os.environ.get("SQUID_ICAP_READY_HELPER")
+            or "/usr/local/bin/icap_readiness.py"
+        ).strip() or "/usr/local/bin/icap_readiness.py"
+        config_path = str(self._icap_include_path())
+        return [helper, command, "--config", config_path]
+
+    def _check_icap_readiness(self, *, timeout: float = 8.0) -> tuple[bool, str]:
+        try:
+            command = self._icap_readiness_command("check")
+            if not Path(command[0]).exists():
+                return True, "ICAP readiness helper is unavailable; skipping readiness probe."
+            proc = self._run(
+                command,
+                capture_output=True,
+                timeout=max(1.0, float(timeout or 8.0)),
+            )
+            detail = self._decode_completed(proc) or "ICAP readiness check completed."
+            return int(getattr(proc, "returncode", 1) or 0) == 0, detail
+        except FileNotFoundError:
+            return True, "ICAP readiness helper is unavailable; skipping readiness probe."
+        except Exception as exc:
+            return False, public_error_message(
+                exc,
+                default="ICAP readiness check failed.",
+            )
+
+    def _wait_for_icap_readiness(self, *, timeout: float = 75.0) -> tuple[bool, str]:
+        try:
+            command = self._icap_readiness_command("wait")
+            if not Path(command[0]).exists():
+                return True, "ICAP readiness helper is unavailable; skipping readiness wait."
+            proc = self._run(
+                [
+                    *command,
+                    "--timeout",
+                    str(max(1.0, float(timeout or 75.0))),
+                    "--status-file",
+                    self._icap_readiness_status_file(),
+                ],
+                capture_output=True,
+                timeout=max(2.0, float(timeout or 75.0) + 5.0),
+            )
+            detail = self._decode_completed(proc) or "ICAP readiness wait completed."
+            return int(getattr(proc, "returncode", 1) or 0) == 0, detail
+        except FileNotFoundError:
+            return True, "ICAP readiness helper is unavailable; skipping readiness wait."
+        except Exception as exc:
+            return False, public_error_message(
+                exc,
+                default="Timed out waiting for ICAP readiness.",
+            )
+
+    def _wait_for_http_listener_ready(self, *, timeout: float = 20.0) -> tuple[bool, str]:
+        http_ok = self._wait_for_http_listener(timeout=timeout)
+        if not http_ok:
+            return False, "Squid process started but the HTTP listener is not responding."
+        icap_ok, icap_detail = self._check_icap_readiness(timeout=min(8.0, timeout))
+        if not icap_ok:
+            return False, icap_detail
+        return True, "Squid HTTP listener is responding and ICAP readiness is green."
 
     def _http_listener_responds(self, port: int) -> bool:
         try:
@@ -1436,9 +1543,14 @@ stdout_logfile_maxbytes=0
         live_pid_running = accept_live_pid and not (
             self._wait_for_squid_pidfile_stale_or_absent(timeout=0.5)
         )
-        if (supervisor_running or live_pid_running) and self._wait_for_http_listener(
-            timeout=timeout,
-        ):
+        listener_ready = False
+        if supervisor_running or live_pid_running:
+            listener_ready, listener_detail = self._wait_for_http_listener_ready(
+                timeout=timeout,
+            )
+            if listener_detail:
+                detail_parts.append(listener_detail)
+        if (supervisor_running or live_pid_running) and listener_ready:
             if live_pid_running and not supervisor_running:
                 detail_parts.append(
                     "Squid already has a fresh PID file and its HTTP listener is responding.",
@@ -1484,10 +1596,12 @@ stdout_logfile_maxbytes=0
         detail = self._decode_completed(proc)
         if proc.returncode != 0:
             if self._reconfigure_failed_only_for_missing_pid(detail):
-                if self._wait_for_http_listener(timeout=listener_timeout):
+                ready_ok, ready_detail = self._wait_for_http_listener_ready(timeout=listener_timeout)
+                if ready_ok:
                     return True, (
                         detail
-                        + "\nSquid reconfigure could not signal a PID file, but the HTTP listener is responding."
+                        + "\n"
+                        + (ready_detail or "Squid reconfigure could not signal a PID file, but the HTTP listener is responding.")
                     ).strip()
                 ok_restart, restart_details = self._restart_squid_locked()
                 recovery = (
@@ -1499,16 +1613,19 @@ stdout_logfile_maxbytes=0
                     return True, (detail + "\n" + recovery).strip()
                 return False, (detail + "\n" + recovery).strip()
             return False, detail or "Squid reconfigure failed."
-        if not self._wait_for_http_listener(timeout=listener_timeout):
+        ready_ok, ready_detail = self._wait_for_http_listener_ready(timeout=listener_timeout)
+        if not ready_ok:
             ok_restart, restart_details = self._restart_squid_locked()
             recovery = (
-                "Squid HTTP listener was unavailable after reconfigure; "
-                + (restart_details or "Squid restart failed.")
+                "Squid/ICAP readiness was unavailable after reconfigure; "
+                + (ready_detail or restart_details or "Squid restart failed.")
             ).strip()
             if ok_restart:
                 detail = (detail + "\n" + recovery).strip()
             else:
                 return False, (detail + "\n" + recovery).strip()
+        elif ready_detail:
+            detail = (detail + "\n" + ready_detail).strip()
         return True, detail or "Squid reconfigured."
 
     def restart_squid(
@@ -1654,9 +1771,10 @@ stdout_logfile_maxbytes=0
                 if accepted is not None:
                     return accepted
                 if start_reported_already_running:
-                    if self._wait_for_http_listener(timeout=15.0):
+                    ready_ok, ready_detail = self._wait_for_http_listener_ready(timeout=15.0)
+                    if ready_ok:
                         detail_parts.append(
-                            "Squid was already running and its HTTP listener is responding.",
+                            ready_detail or "Squid was already running and its HTTP listener is responding.",
                         )
                         return True, "\n".join(
                             part for part in detail_parts if part
@@ -1694,11 +1812,12 @@ stdout_logfile_maxbytes=0
                             or "supervisorctl start squid retry"
                         )
                         detail_parts.append(retry_detail)
-                        if retry.returncode == 0 and self._wait_for_http_listener(
+                        retry_ready_ok, retry_ready_detail = self._wait_for_http_listener_ready(
                             timeout=ready_timeout,
-                        ):
+                        )
+                        if retry.returncode == 0 and retry_ready_ok:
                             detail_parts.append(
-                                "Squid HTTP listener is responding.",
+                                retry_ready_detail,
                             )
                             return True, "\n".join(
                                 part for part in detail_parts if part
@@ -1708,14 +1827,16 @@ stdout_logfile_maxbytes=0
                             f"retry after already-running start failure failed: {exc}",
                         )
                 return False, "\n".join(detail_parts).strip()
-            if self._wait_for_http_listener(timeout=ready_timeout):
-                detail_parts.append("Squid HTTP listener is responding.")
+            ready_ok, ready_detail = self._wait_for_http_listener_ready(timeout=ready_timeout)
+            if ready_ok:
+                detail_parts.append(ready_detail)
                 return True, "\n".join(part for part in detail_parts if part).strip()
             return False, "\n".join(
                 part
                 for part in [
                     *detail_parts,
-                    "Squid process started but the HTTP listener is not responding.",
+                    ready_detail
+                    or "Squid process started but the HTTP listener is not responding.",
                 ]
                 if part
             ).strip()
@@ -1736,9 +1857,11 @@ stdout_logfile_maxbytes=0
             detail_parts.append(direct_start_detail)
             direct_start_detail_lower = direct_start_detail.lower()
             if "already running" in direct_start_detail_lower:
-                if self._wait_for_http_listener(timeout=ready_timeout):
+                ready_ok, ready_detail = self._wait_for_http_listener_ready(timeout=ready_timeout)
+                if ready_ok:
                     detail_parts.append(
-                        "Squid was already running and its HTTP listener is responding.",
+                        "Squid was already running and its HTTP listener is responding."
+                        + (" ICAP readiness is green." if ready_detail else ""),
                     )
                     return True, "\n".join(
                         part for part in detail_parts if part
@@ -1749,9 +1872,12 @@ stdout_logfile_maxbytes=0
                         "Squid reported it was already running, but the HTTP listener is not responding.",
                     ],
                 ).strip()
-            if proc.returncode == 0 and self._wait_for_http_listener(
+            direct_ready_ok, direct_ready_detail = self._wait_for_http_listener_ready(
                 timeout=ready_timeout,
-            ):
+            )
+            if proc.returncode == 0 and direct_ready_ok:
+                if direct_ready_detail:
+                    detail_parts.append(direct_ready_detail)
                 return True, "\n".join(part for part in detail_parts if part).strip()
             return False, "\n".join(
                 [

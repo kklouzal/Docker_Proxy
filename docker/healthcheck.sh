@@ -131,6 +131,15 @@ if missing:
 PY
 }
 
+check_icap_readiness() {
+    if [ ! -x /usr/local/bin/icap_readiness.py ]; then
+        return 0
+    fi
+    /usr/local/bin/icap_readiness.py check \
+        --config "${SQUID_ICAP_INCLUDE_PATH:-/etc/squid/conf.d/20-icap.conf}" \
+        --probe-timeout "${SQUID_ICAP_READY_HEALTH_PROBE_TIMEOUT_SECONDS:-0.35}"
+}
+
 check_squid_forwarding_path() {
     SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PY'
 import os
@@ -346,7 +355,16 @@ if ! supervisor_program_running squid; then
 fi
 
 if ! squid -k check >/dev/null 2>&1; then
+    if ! icap_ready_detail="$(check_icap_readiness 2>&1)"; then
+        echo "Squid startup is waiting for ICAP readiness: ${icap_ready_detail}"
+        exit 1
+    fi
     echo "Squid check failed"
+    exit 1
+fi
+
+if ! icap_ready_detail="$(check_icap_readiness 2>&1)"; then
+    echo "Configured ICAP services are not OPTIONS-ready: ${icap_ready_detail}"
     exit 1
 fi
 

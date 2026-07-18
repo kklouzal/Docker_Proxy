@@ -380,6 +380,7 @@ def test_proxy_launcher_env_knobs_are_sanitized_and_documented() -> None:
         assert name in entrypoint
     assert '"${PAC_HTTP_HOST:-0.0.0.0}:${PAC_HTTP_PORT:-80}"' in supervisord
     assert "python3 -m proxy.forwarding_canary" in supervisord
+    assert "command=/usr/local/bin/squid_ready_start.sh" in supervisord
     assert '"${WEB_TIMEOUT:-120}"' in supervisord
 
 
@@ -852,6 +853,8 @@ def test_linux_container_payloads_are_lf_only() -> None:
         "docker/entrypoint.sh",
         "docker/entrypoint.admin.sh",
         "docker/healthcheck.sh",
+        "docker/icap_readiness.py",
+        "docker/squid_ready_start.sh",
         "docker/cicap_av_runner.py",
         "web/tools/clamav_respmod_icap_server.py",
         "docker/healthcheck.admin.sh",
