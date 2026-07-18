@@ -223,6 +223,71 @@ def test_clean_icap_response_prefers_204_when_allowed() -> None:
     assert b"ISTag" in response
 
 
+def test_clean_icap_responses_close_connections_to_prevent_reuse_races() -> None:
+    server = _load_server()
+
+    options = server.options_response()
+    clean = server.clean_response(
+        allow_204=True, http_header=b"HTTP/1.1 200 OK\r\n\r\n", body=b"clean"
+    )
+    replay = server.clean_response(
+        allow_204=False, http_header=b"HTTP/1.1 200 OK\r\n\r\n", body=b"clean"
+    )
+
+    assert b"Connection: close\r\n" in options
+    assert b"Connection: close\r\n" in clean
+    assert b"Connection: close\r\n" in replay
+
+
+def test_burst_respmod_requests_close_each_exchange_and_succeed() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=16,
+        max_scans=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        responses: list[bytes] = []
+        workers = [
+            threading.Thread(
+                target=lambda index=index: responses.append(
+                    _recv_icap_response(
+                        port,
+                        _sample_respmod_request(port).replace(
+                            b"hello", f"h{index:04d}".encode("ascii")
+                        ),
+                        timeout=1.0,
+                    )
+                )
+            )
+            for index in range(24)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=2)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert len(responses) == 24
+    assert all(
+        response.startswith(b"ICAP/1.0 204 No Content\r\n") for response in responses
+    )
+    assert all(b"Connection: close\r\n" in response for response in responses)
+
+
 def test_blocked_icap_response_contains_detection() -> None:
     server = _load_server()
 

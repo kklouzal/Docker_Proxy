@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import concurrent.futures
+
 import pytest
 
 from .live_test_helpers import (
@@ -65,4 +67,33 @@ def test_live_proxy_dns_failure_returns_squid_error_and_keeps_proxy_healthy(
         or "access denied" in body
         or "the requested url could not be retrieved" in body
     )
+    wait_for_proxy_management_payload()
+
+
+def test_live_proxy_http_cache_miss_serial_and_parallel_bursts(
+    admin_client: LiveStackClient,
+) -> None:
+    token = unique_token("http_cache_miss_burst")
+
+    def fetch(index: int) -> tuple[int, str]:
+        worker_client = LiveStackClient()
+        response = worker_client.proxy_fixture_request(
+            f"/traffic/{token}-{index}?cache_bust={token}-{index}",
+            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            timeout_seconds=30.0,
+        )
+        return response.status, response.text
+
+    serial = [fetch(index) for index in range(16)]
+    assert all(status == 200 and token in body for status, body in serial)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        parallel = list(executor.map(fetch, range(16, 76)))
+
+    failures = [
+        (status, body[:300])
+        for status, body in parallel
+        if status != 200 or token not in body or "ICAP_FAILURE" in body
+    ]
+    assert not failures
     wait_for_proxy_management_payload()

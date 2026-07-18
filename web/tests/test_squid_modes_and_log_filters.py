@@ -213,8 +213,13 @@ def test_render_icap_include_scales_services_by_squid_workers_without_duplicate_
     assert "icap://127.0.0.1:24003/avrespmod" in out
     assert "icap://127.0.0.1:24004/avrespmod" in out
     assert "icap://127.0.0.1:24005/avrespmod" in out
-    assert "adaptation_service_set adblock_req_set adblock_req adblock_req_2 adblock_req_3" in out
+    assert (
+        "adaptation_service_set adblock_req_set adblock_req adblock_req_2 adblock_req_3"
+        in out
+    )
     assert "adaptation_service_set av_resp_set av_resp av_resp_2 av_resp_3" in out
+    assert "icap_service av_resp respmod_precache" in out
+    assert "bypass=on" in out
     assert (
         "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
         in out
@@ -476,11 +481,22 @@ def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> N
 
     monkeypatch.setenv("SQUID_WORKERS", "2")
     ctl = SquidController()
-    out = ctl._render_icap_include("# BEGIN SQUID-UI CLAMAV SETTINGS\n# clamav_fail_mode: closed\n# END SQUID-UI CLAMAV SETTINGS\n")
+    out = ctl._render_icap_include(
+        "# BEGIN SQUID-UI CLAMAV SETTINGS\n# clamav_fail_mode: closed\n# END SQUID-UI CLAMAV SETTINGS\n"
+    )
 
-    assert "icap_service av_req reqmod_precache icap://127.0.0.1:14002/avrespmod bypass=off" in out
-    assert "icap_service av_req_2 reqmod_precache icap://127.0.0.1:14003/avrespmod bypass=off" in out
-    assert "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod bypass=off" in out
+    assert (
+        "icap_service av_req reqmod_precache icap://127.0.0.1:14002/avrespmod bypass=off"
+        in out
+    )
+    assert (
+        "icap_service av_req_2 reqmod_precache icap://127.0.0.1:14003/avrespmod bypass=off"
+        in out
+    )
+    assert (
+        "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod bypass=off"
+        in out
+    )
     assert "adaptation_service_set av_req_set av_req av_req_2" in out
 
 
@@ -565,6 +581,9 @@ def test_repo_template_includes_cache_first_defaults() -> None:
     assert "%{Server}<h" in text
     assert "%{Cf-Mitigated}<h" in text
     assert "%{Alt-Svc}<h" in text
+    assert "%icap::<service_name" in text
+    assert "%icap::to" in text
+    assert "%icap::Hs" in text
 
 
 def test_squid_controller_normalize_config_text_adds_default_observability_lines() -> (
@@ -594,6 +613,9 @@ http_access allow all
     assert "%{Cf-Mitigated}<h" in text
     assert "%{Alt-Svc}<h" in text
     assert "logformat icapobserve" in text
+    assert "%icap::<service_name" in text
+    assert "%icap::to" in text
+    assert "%icap::Hs" in text
     assert "access_log stdio:/var/log/squid/access-observe.log diagnostic" in text
     assert "/var/log/squid/access.log" not in text
     assert "include /etc/squid/conf.d/20-icap.conf" in text
@@ -604,12 +626,10 @@ http_access allow all
     assert "acl docker_proxy_forwarding_canary_dst dst 127.0.0.1/32 ::1" in text
     assert "acl docker_proxy_forwarding_canary_port port 18080" in text
     assert "cache deny docker_proxy_forwarding_canary_dst" in text
-    assert text.index(
-        "http_access allow docker_proxy_forwarding_canary_src"
-    ) < text.index(
-        "http_access deny docker_proxy_forwarding_canary_dst"
-    ) < text.index(
-        "http_access allow all"
+    assert (
+        text.index("http_access allow docker_proxy_forwarding_canary_src")
+        < text.index("http_access deny docker_proxy_forwarding_canary_dst")
+        < text.index("http_access allow all")
     )
     assert "icap_log stdio:/var/log/squid/icap.log icapobserve" in text
     assert "note ssl_exception steam steam_sites" in text
@@ -638,7 +658,9 @@ include /etc/squid/conf.d/30-webfilter.conf
     )
 
 
-def test_squid_controller_normalize_config_text_keeps_includes_outside_canary_block() -> None:
+def test_squid_controller_normalize_config_text_keeps_includes_outside_canary_block() -> (
+    None
+):
     _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
@@ -1512,7 +1534,10 @@ def test_squid_normalize_migrates_hyphenated_versioned_adblock_service() -> None
 
     assert normalized.count("include /etc/squid/conf.d/20-icap.conf") == 1
     assert "icap_service adblock_req_rev-2026.06" not in normalized
-    assert "adaptation_service_set adblock_req_set adblock_req_rev-2026.06" not in normalized
+    assert (
+        "adaptation_service_set adblock_req_set adblock_req_rev-2026.06"
+        not in normalized
+    )
     assert "adaptation_access adblock_req_set allow icap_adblockable" not in normalized
     assert "adaptation_access adblock_req_set deny all" not in normalized
     assert normalized.index(

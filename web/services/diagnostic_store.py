@@ -213,12 +213,7 @@ def _split_tsv(line: str) -> list[str]:
                 in_quotes = not in_quotes
                 i += 1
                 continue
-            if (
-                not in_quotes
-                and ch == "\\"
-                and i + 1 < len(s)
-                and s[i + 1] == "t"
-            ):
+            if not in_quotes and ch == "\\" and i + 1 < len(s) and s[i + 1] == "t":
                 normalized.append("\t")
                 i += 2
                 continue
@@ -288,10 +283,16 @@ def _bounded_raw_line(line: str) -> str:
     return (line or "").strip("\r\n")[:4000]
 
 
-def _service_family(adapt_summary: str, adapt_details: str) -> str:
-    haystack = f"{adapt_summary} {adapt_details}".lower()
+def _service_family(
+    adapt_summary: str,
+    adapt_details: str,
+    service_name: str = "",
+    icap_uri: str = "",
+) -> str:
+    haystack = f"{service_name} {icap_uri} {adapt_summary} {adapt_details}".lower()
     if any(
-        token in haystack for token in ("avrespmod", "virus_scan", "clamd", "av_resp")
+        token in haystack
+        for token in ("avrespmod", "virus_scan", "clamd", "av_resp", "av_req")
     ):
         return "av"
     if any(token in haystack for token in ("adblockreq", "adblock_req", "adblock")):
@@ -403,6 +404,13 @@ def _normalize_icap_row(row: Any) -> dict[str, Any]:
         "webfilter_allow": _policy_text(row[14]),
         "cache_bypass": _policy_text(row[15]),
         "service_family": _safe_text(row[16], max_len=32),
+        "icap_service": _safe_text(row[17] if len(row) > 17 else "", max_len=128),
+        "icap_outcome": _safe_text(row[18] if len(row) > 18 else "", max_len=64),
+        "icap_status": _safe_int(row[19], 0) if len(row) > 19 else 0,
+        "icap_response_time_ms": _safe_int(row[20], 0) if len(row) > 20 else 0,
+        "icap_io_time_ms": _safe_int(row[21], 0) if len(row) > 21 else 0,
+        "icap_bytes_sent": _safe_int(row[22], 0) if len(row) > 22 else 0,
+        "icap_bytes_received": _safe_int(row[23], 0) if len(row) > 23 else 0,
     }
     data["service_label"] = _service_label(data["service_family"])
     data["target_display"] = (
@@ -1149,10 +1157,11 @@ class DiagnosticStore:
         if len(row) < 11:
             return None
 
-        # Squid/c-icap builds can drift by inserting an ICAP status or service
-        # token around the timing fields.  Keep the canonical icapobserve layout
-        # first, but tolerate one inserted column before or after icap::tt so
-        # diagnostic observability does not silently misclassify the row.
+        # Squid/c-icap builds and previous repository revisions can drift by
+        # inserting ICAP status/service tokens around the timing fields. Keep the
+        # canonical legacy icapobserve layout first, then parse the extended
+        # Squid ICAP tokens when present so operators can attribute failures to
+        # adblock REQMOD, upload AV REQMOD, or download AV RESPMOD.
         def _looks_int(value: str) -> bool:
             try:
                 int(str(value).strip())
@@ -1165,7 +1174,11 @@ class DiagnosticStore:
         if len(row) >= 12 and not _looks_int(row[5]) and _looks_int(row[6]):
             time_index = 6
             fields_offset = 1
-        elif len(row) >= 12 and _looks_int(row[5]) and re.fullmatch(r"[1-5][0-9]{2}", row[6].strip()):
+        elif (
+            len(row) >= 12
+            and _looks_int(row[5])
+            and re.fullmatch(r"[1-5][0-9]{2}", row[6].strip())
+        ):
             fields_offset = 1
 
         ts = _safe_int(row[0], _now())
@@ -1180,8 +1193,61 @@ class DiagnosticStore:
         user_agent = _safe_text(row[9 + fields_offset], max_len=512)
         sni = _safe_text(row[10 + fields_offset], max_len=255)
         policy_fields = _policy_fields_from_row(row, 11 + fields_offset)
+        extended_start = 15 + fields_offset
+        icap_service = _policy_text(
+            row[extended_start] if len(row) > extended_start else ""
+        )
+        icap_outcome = _policy_text(
+            row[extended_start + 1] if len(row) > extended_start + 1 else ""
+        )
+        icap_status = (
+            _safe_int(row[extended_start + 2], 0)
+            if len(row) > extended_start + 2
+            else 0
+        )
+        icap_response_time_ms = (
+            _safe_int(row[extended_start + 3], 0)
+            if len(row) > extended_start + 3
+            else 0
+        )
+        icap_io_time_ms = (
+            _safe_int(row[extended_start + 4], 0)
+            if len(row) > extended_start + 4
+            else 0
+        )
+        icap_bytes_sent = (
+            _safe_int(row[extended_start + 5], 0)
+            if len(row) > extended_start + 5
+            else 0
+        )
+        icap_bytes_received = (
+            _safe_int(row[extended_start + 6], 0)
+            if len(row) > extended_start + 6
+            else 0
+        )
+        icap_metadata_parts = []
+        if icap_service:
+            icap_metadata_parts.append(f"service={icap_service}")
+        if icap_outcome:
+            icap_metadata_parts.append(f"outcome={icap_outcome}")
+        if icap_status:
+            icap_metadata_parts.append(f"status={icap_status}")
+        if icap_response_time_ms:
+            icap_metadata_parts.append(f"tr_ms={icap_response_time_ms}")
+        if icap_io_time_ms:
+            icap_metadata_parts.append(f"tio_ms={icap_io_time_ms}")
+        if icap_bytes_sent:
+            icap_metadata_parts.append(f"bytes_sent={icap_bytes_sent}")
+        if icap_bytes_received:
+            icap_metadata_parts.append(f"bytes_received={icap_bytes_received}")
+        if icap_metadata_parts:
+            base_details = "" if adapt_details == "-" else adapt_details
+            adapt_details = " ".join(
+                part for part in (base_details, ";".join(icap_metadata_parts)) if part
+            )
+
         domain = _extract_domain(url, host=host, sni=sni)
-        family = _service_family(adapt_summary, adapt_details)
+        family = _service_family(adapt_summary, adapt_details, icap_service, url)
 
         return {
             "ts": ts,
@@ -1198,6 +1264,13 @@ class DiagnosticStore:
             "sni": sni,
             **policy_fields,
             "service_family": family,
+            "icap_service": icap_service,
+            "icap_outcome": icap_outcome,
+            "icap_status": icap_status,
+            "icap_response_time_ms": icap_response_time_ms,
+            "icap_io_time_ms": icap_io_time_ms,
+            "icap_bytes_sent": icap_bytes_sent,
+            "icap_bytes_received": icap_bytes_received,
             "raw": _bounded_raw_line(line),
         }
 
@@ -1256,7 +1329,9 @@ class DiagnosticStore:
         )
         self._materialize_request_policy_tags(conn, rows)
 
-    def _materialize_request_policy_tags(self, conn, rows: list[tuple[Any, ...]]) -> None:
+    def _materialize_request_policy_tags(
+        self, conn, rows: list[tuple[Any, ...]]
+    ) -> None:
         tag_rows: list[tuple[Any, ...]] = []
         for row in rows:
             tags = _policy_tags(

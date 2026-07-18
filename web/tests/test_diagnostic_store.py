@@ -187,6 +187,62 @@ def test_parse_icap_log_line_accepts_extra_token_before_timing() -> None:
     assert row["service_family"] == "av"
 
 
+def test_parse_icap_log_line_captures_extended_service_outcome_fields() -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777000002\ttx-resp\t192.0.2.10\tGET\thttp://example.com/file.bin\t11"
+        "\t-\t-\texample.com\tcurl/8.19.0\t-\t-\t-\t-\t-"
+        "\tav_resp\tICAP_ERR_GONE\t500\t12\t10\t512\t0"
+    )
+
+    row = store._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["service_family"] == "av"
+    assert row["icap_service"] == "av_resp"
+    assert row["icap_outcome"] == "ICAP_ERR_GONE"
+    assert row["icap_status"] == 500
+    assert row["icap_response_time_ms"] == 12
+    assert row["icap_io_time_ms"] == 10
+    assert row["icap_bytes_sent"] == 512
+    assert row["icap_bytes_received"] == 0
+
+
+def test_normalized_icap_row_exposes_extended_service_fields() -> None:
+    row = _normalize_icap_row(
+        [
+            1777000002,
+            "tx-resp",
+            "192.0.2.10",
+            "GET",
+            "http://example.com/file.bin",
+            "example.com",
+            11,
+            "-",
+            "-",
+            "example.com",
+            "curl/8.19.0",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "av",
+            "av_resp",
+            "ICAP_ERR_GONE",
+            500,
+            12,
+            10,
+            512,
+            0,
+        ]
+    )
+
+    assert row["icap_service"] == "av_resp"
+    assert row["icap_outcome"] == "ICAP_ERR_GONE"
+    assert row["icap_status"] == 500
+
+
 def test_parse_icap_log_line_ignores_rows_shorter_than_legacy_base() -> None:
     store = DiagnosticStore()
     line = (
@@ -703,11 +759,11 @@ def test_split_tsv_normalizes_escaped_delimiters_when_quoted_field_contains_real
     line = '1710000000\\t10\\t192.0.2.10\\tGET\\thttp://example.test/\\t"agent\twith real tab"\\tTCP_MISS/200'
 
     assert _split_tsv(line) == [
-        '1710000000',
-        '10',
-        '192.0.2.10',
-        'GET',
-        'http://example.test/',
-        'agent\twith real tab',
-        'TCP_MISS/200',
+        "1710000000",
+        "10",
+        "192.0.2.10",
+        "GET",
+        "http://example.test/",
+        "agent\twith real tab",
+        "TCP_MISS/200",
     ]

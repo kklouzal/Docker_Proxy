@@ -369,10 +369,16 @@ def scan_stream_with_clamd(
 
 
 def _icap_response(
-    status: str, headers: dict[str, str] | None = None, body: bytes = b""
+    status: str,
+    headers: dict[str, str] | None = None,
+    body: bytes = b"",
+    *,
+    close: bool = True,
 ) -> bytes:
     lines = [f"ICAP/1.0 {status}"]
-    for name, value in (headers or {}).items():
+    response_headers = {"Connection": "close"} if close else {}
+    response_headers.update(headers or {})
+    for name, value in response_headers.items():
         lines.append(f"{name}: {value}")
     return "\r\n".join(lines).encode("ascii") + HEADER_END + body
 
