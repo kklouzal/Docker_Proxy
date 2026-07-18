@@ -54,6 +54,19 @@ class _FakeSocket:
         return chunk
 
 
+def _http_response(
+    status: bytes = b"HTTP/1.1 200 OK",
+    body: bytes = b'{"ok":true}\n',
+) -> bytes:
+    return (
+        status
+        + b"\r\nContent-Type: application/json\r\nContent-Length: "
+        + str(len(body)).encode("ascii")
+        + b"\r\n\r\n"
+        + body
+    )
+
+
 def test_health_check_local_host_listener_and_target_helpers(
     tmp_path, monkeypatch
 ) -> None:
@@ -207,7 +220,7 @@ def test_check_http_proxy_forwarding_uses_absolute_form_local_probe(
 ) -> None:
     health_checks = _health_checks_module()
 
-    sock = _FakeSocket([b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"])
+    sock = _FakeSocket([_http_response()])
     monkeypatch.setattr(
         health_checks.socket,
         "create_connection",
@@ -220,9 +233,18 @@ def test_check_http_proxy_forwarding_uses_absolute_form_local_probe(
         timeout=0.4,
     )
 
-    assert result == {"ok": True, "detail": "HTTP/1.1 200 OK"}
+    assert result == {
+        "ok": True,
+        "detail": "HTTP/1.1 200 OK; local health ok",
+        "status_code": 200,
+        "probe_url": "http://127.0.0.1:80/health",
+        "headers_complete": True,
+        "body_complete": True,
+        "local_health_ok": True,
+    }
     assert sock.timeout == pytest.approx(0.4)
     assert b"GET http://127.0.0.1:80/health HTTP/1.1" in sock.sent[0]
+    assert b"Host: 127.0.0.1:80" in sock.sent[0]
     assert b"User-Agent: squid-flask-proxy-forwarding-health" in sock.sent[0]
 
 
@@ -245,6 +267,62 @@ def test_check_http_proxy_forwarding_reports_blocked_or_timed_out_path(
     )
 
     assert result == {"ok": False, "detail": "formatted wedged"}
+
+
+@pytest.mark.parametrize(
+    ("chunks", "detail"),
+    [
+        (
+            [b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok":true'],
+            "incomplete local health response body",
+        ),
+        ([_http_response(body=b"not json")], "local health body did not confirm ok"),
+        (
+            [_http_response(status=b"HTTP/1.1 503 Service Unavailable")],
+            "HTTP/1.1 503 Service Unavailable",
+        ),
+    ],
+)
+def test_check_http_proxy_forwarding_rejects_partial_malformed_and_non_2xx(
+    monkeypatch,
+    chunks,
+    detail,
+) -> None:
+    health_checks = _health_checks_module()
+
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeSocket(chunks),
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:80/health",
+        timeout=0.1,
+    )
+
+    assert result["ok"] is False
+    assert detail in result["detail"]
+
+
+def test_check_http_proxy_forwarding_refuses_self_proxy_loop(monkeypatch) -> None:
+    health_checks = _health_checks_module()
+
+    def fail_connect(*_args, **_kwargs):
+        msg = "self-loop guard should avoid opening a socket"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(health_checks.socket, "create_connection", fail_connect)
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:3128/health",
+        timeout=0.1,
+    )
+
+    assert result["ok"] is False
+    assert "points back at the explicit proxy listener" in result["detail"]
 
 
 def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) -> None:
@@ -374,9 +452,9 @@ def test_remote_clamav_view_preserves_split_av_icap_components() -> None:
     assert av_icap["target"] == "127.0.0.1:24002"
     assert av_icap["components"]["upload_av_icap"]["target"] == "127.0.0.1:24001"
     assert av_icap["components"]["download_av_icap"]["target"] == "127.0.0.1:24002"
-    assert view["health"]["components"]["av_icap"]["components"] == av_icap[
-        "components"
-    ]
+    assert (
+        view["health"]["components"]["av_icap"]["components"] == av_icap["components"]
+    )
 
 
 def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
@@ -447,6 +525,64 @@ def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> 
     assert result["traffic_scope"] == "local-only"
     assert result["fail_mode"] == "open"
     assert "forwarding path is degraded" in result["detail"]
+
+
+def test_forwarding_path_success_contract_cannot_include_stale_error(
+    monkeypatch,
+) -> None:
+    proxy_health = _proxy_health_module()
+
+    monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
+
+    def fake_probe(**_kwargs):
+        return {
+            "ok": True,
+            "detail": "HTTP/1.1 200 OK; local health ok",
+            "status_code": 200,
+            "body_complete": True,
+            "local_health_ok": True,
+        }
+
+    monkeypatch.setattr(proxy_health, "check_http_proxy_forwarding", fake_probe)
+
+    result = proxy_health.check_forwarding_path_health(
+        timeout=0.3,
+        av_icap_health={"ok": True, "detail": "ICAP/1.0 200 OK"},
+    )
+
+    assert result["ok"] is True
+    assert result["detail"] == "HTTP/1.1 200 OK; local health ok"
+    assert result["contract"] == (
+        "Squid explicit forwarding path returned a local health response."
+    )
+    assert "timed out" not in result["detail"]
+    assert "degraded" not in result["contract"]
+
+
+def test_forwarding_path_timeout_with_healthy_av_cannot_claim_local_health(
+    monkeypatch,
+) -> None:
+    proxy_health = _proxy_health_module()
+
+    monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
+
+    def fake_probe(**_kwargs):
+        return {"ok": False, "detail": "timed out"}
+
+    monkeypatch.setattr(proxy_health, "check_http_proxy_forwarding", fake_probe)
+
+    result = proxy_health.check_forwarding_path_health(
+        timeout=0.3,
+        av_icap_health={"ok": True, "detail": "ICAP/1.0 200 OK"},
+    )
+
+    assert result["ok"] is False
+    assert result["av_icap_ok"] is True
+    assert result["detail"].startswith(
+        "timed out | Squid explicit forwarding path is degraded"
+    )
+    assert "returned a local health response" not in result["detail"]
+    assert "returned a local health response" not in result["contract"]
 
 
 def test_clamav_diagnostic_actions_include_resolved_targets(monkeypatch) -> None:

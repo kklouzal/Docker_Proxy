@@ -2921,6 +2921,40 @@ def test_collect_health_returns_stale_cache_during_inflight_refresh() -> None:
     assert "refresh was already in progress" in result["health_cache_detail"]
 
 
+def test_collect_health_stale_cache_degrades_forwarding_without_preserving_green_detail() -> (
+    None
+):
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 3.0
+    runtime._health_cache_lock = __import__("threading").Lock()
+    runtime._health_refresh_lock = __import__("threading").Lock()
+    runtime._health_cache_ts = 0.0
+    runtime._health_cache_value = {
+        "ok": True,
+        "status": "healthy",
+        "timestamp": 1,
+        "services": {
+            "forwarding": {
+                "ok": True,
+                "detail": "HTTP/1.1 200 OK; local health ok",
+                "contract": "Squid explicit forwarding path returned a local health response.",
+            }
+        },
+    }
+    runtime._health_refresh_lock.acquire()
+    try:
+        result = runtime.collect_health()
+    finally:
+        runtime._health_refresh_lock.release()
+
+    forwarding = result["services"]["forwarding"]
+    assert forwarding["ok"] is False
+    assert forwarding["previous_ok"] is True
+    assert forwarding["health_cache_stale"] is True
+    assert forwarding["detail"] == result["health_cache_detail"]
+    assert "local health response" not in forwarding["detail"]
+
+
 def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

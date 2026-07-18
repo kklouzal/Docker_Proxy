@@ -3130,6 +3130,23 @@ class ProxyRuntime:
             stale["health_cache_detail"] = (
                 "Returned stale health while a refresh was already in progress."
             )
+            services = stale.get("services")
+            if isinstance(services, dict):
+                forwarding = services.get("forwarding")
+                if isinstance(forwarding, dict):
+                    stale_forwarding = dict(forwarding)
+                    stale_forwarding["previous_ok"] = bool(
+                        stale_forwarding.get("ok"),
+                    )
+                    stale_forwarding["ok"] = False
+                    stale_forwarding["health_cache_stale"] = True
+                    stale_forwarding["health_cache_detail"] = stale[
+                        "health_cache_detail"
+                    ]
+                    stale_forwarding["detail"] = stale["health_cache_detail"]
+                    stale_services = dict(services)
+                    stale_services["forwarding"] = stale_forwarding
+                    stale["services"] = stale_services
             return stale
 
         try:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import socket
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from services.errors import public_error_message
 
@@ -97,6 +99,151 @@ def _decode_status_line(data: bytes) -> str:
     return data.decode("ascii", errors="replace") if data else "no data"
 
 
+def _http_header_value(headers: dict[str, list[str]], name: str) -> str:
+    values = headers.get(name.lower()) or []
+    return values[-1] if values else ""
+
+
+def _parse_http_response_head(data: bytes) -> tuple[str, dict[str, list[str]]]:
+    lines = data.decode("iso-8859-1", errors="replace").split("\r\n")
+    if len(lines) == 1:
+        lines = lines[0].split("\n")
+    status = (lines[0] if lines else "").strip()
+    headers: dict[str, list[str]] = {}
+    for line in lines[1:]:
+        if not line or ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        normalized = name.strip().lower()
+        if normalized:
+            headers.setdefault(normalized, []).append(value.strip())
+    return status, headers
+
+
+def _read_http_response(
+    sock: socket.socket,
+    *,
+    max_header_bytes: int = 8192,
+    max_body_bytes: int = 65536,
+) -> tuple[bytes, bytes, bool, bool]:
+    """Read a bounded HTTP response head and enough body to validate /health."""
+    data = b""
+    headers_complete = False
+    while len(data) < max_header_bytes:
+        chunk = sock.recv(min(512, max_header_bytes - len(data)))
+        if not chunk:
+            break
+        data += chunk
+        if b"\r\n\r\n" in data or b"\n\n" in data:
+            headers_complete = True
+            break
+    if b"\r\n\r\n" in data:
+        head, body = data.split(b"\r\n\r\n", 1)
+    elif b"\n\n" in data:
+        head, body = data.split(b"\n\n", 1)
+    else:
+        return data, b"", headers_complete, False
+
+    _status, headers = _parse_http_response_head(head)
+    body_complete = False
+    transfer_encoding = _http_header_value(headers, "transfer-encoding").lower()
+    content_length_header = _http_header_value(headers, "content-length")
+    content_length: int | None = None
+    if content_length_header:
+        try:
+            content_length = max(0, int(content_length_header))
+        except Exception:
+            content_length = None
+
+    if content_length is not None:
+        desired = min(content_length, max_body_bytes)
+        while len(body) < desired:
+            chunk = sock.recv(min(512, desired - len(body)))
+            if not chunk:
+                break
+            body += chunk
+        body = body[:desired]
+        body_complete = len(body) >= desired and content_length <= max_body_bytes
+    elif "chunked" in transfer_encoding:
+        while len(body) < max_body_bytes:
+            if b"\r\n0\r\n" in body or b"\n0\n" in body:
+                body_complete = True
+                break
+            chunk = sock.recv(min(512, max_body_bytes - len(body)))
+            if not chunk:
+                break
+            body += chunk
+    else:
+        while len(body) < max_body_bytes:
+            chunk = sock.recv(min(512, max_body_bytes - len(body)))
+            if not chunk:
+                body_complete = True
+                break
+            body += chunk
+    return head, body[:max_body_bytes], headers_complete, body_complete
+
+
+def _decode_chunked_body(data: bytes) -> tuple[bytes, bool]:
+    body = bytearray()
+    index = 0
+    while index < len(data):
+        line_end = data.find(b"\n", index)
+        if line_end < 0:
+            return bytes(body), False
+        size_line = data[index:line_end].strip().split(b";", 1)[0]
+        try:
+            size = int(size_line, 16)
+        except Exception:
+            return bytes(body), False
+        index = line_end + 1
+        if size == 0:
+            return bytes(body), True
+        if len(data) - index < size:
+            return bytes(body), False
+        body.extend(data[index : index + size])
+        index += size
+        if data[index : index + 2] == b"\r\n":
+            index += 2
+        elif data[index : index + 1] == b"\n":
+            index += 1
+    return bytes(body), False
+
+
+def _target_is_local_health(target_url: str) -> bool:
+    parsed = urlsplit(str(target_url or ""))
+    return parsed.scheme.lower() == "http" and parsed.path.rstrip("/") == "/health"
+
+
+def _target_points_at_proxy_listener(
+    *,
+    target_url: str,
+    proxy_host: str,
+    proxy_port: int,
+) -> bool:
+    parsed = urlsplit(str(target_url or ""))
+    if parsed.scheme.lower() != "http":
+        return False
+    target_host = parsed.hostname or ""
+    target_port = int(parsed.port or 80)
+    return (
+        target_port == int(proxy_port)
+        and is_local_host(target_host)
+        and is_local_host(proxy_host)
+    )
+
+
+def _target_host_header(target_url: str) -> str:
+    parsed = urlsplit(str(target_url or ""))
+    if not parsed.hostname:
+        return "127.0.0.1"
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parsed.port is not None:
+        return f"{host}:{parsed.port}"
+    return host
+
+
 def check_icap_service(
     host: str,
     port: int,
@@ -147,6 +294,20 @@ def check_http_proxy_forwarding(
     this bounded request exercises forwarding, local PAC reachability, and any
     response ICAP path configured for ordinary GET traffic.
     """
+    if _target_points_at_proxy_listener(
+        target_url=target_url,
+        proxy_host=proxy_host,
+        proxy_port=proxy_port,
+    ):
+        return {
+            "ok": False,
+            "detail": (
+                "refusing forwarding probe target that points back at the "
+                "explicit proxy listener"
+            ),
+            "probe_url": target_url,
+        }
+
     try:
         with socket.create_connection(
             (proxy_host, int(proxy_port)),
@@ -155,22 +316,61 @@ def check_http_proxy_forwarding(
             sock.settimeout(timeout)
             request = (
                 f"GET {target_url} HTTP/1.1\r\n"
-                "Host: 127.0.0.1\r\n"
+                f"Host: {_target_host_header(target_url)}\r\n"
                 f"User-Agent: {user_agent}\r\n"
+                "Accept: application/json, */*;q=0.1\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Pragma: no-cache\r\n"
                 "Connection: close\r\n\r\n"
             ).encode("ascii", errors="replace")
             sock.sendall(request)
-            status_line = _recv_status_line(sock)
-        first = _decode_status_line(status_line)
+            head, body, headers_complete, body_complete = _read_http_response(sock)
+        first, headers = _parse_http_response_head(head)
+        if not headers_complete:
+            return {
+                "ok": False,
+                "detail": first
+                or "incomplete HTTP response from proxy forwarding path",
+                "probe_url": target_url,
+                "headers_complete": False,
+            }
         parts = first.split()
         try:
             code = int(parts[1]) if len(parts) > 1 else 0
         except Exception:
             code = 0
-        ok = first.startswith("HTTP/") and 200 <= code < 400
+        status_ok = first.startswith("HTTP/") and 200 <= code < 400
+        detail = first or "no HTTP status from proxy forwarding path"
+        local_health_ok: bool | None = None
+        if status_ok and _target_is_local_health(target_url):
+            response_body = body
+            if "chunked" in _http_header_value(headers, "transfer-encoding").lower():
+                response_body, body_complete = _decode_chunked_body(body)
+            if not body_complete:
+                detail = f"{detail}; incomplete local health response body"
+                status_ok = False
+                local_health_ok = False
+            else:
+                try:
+                    payload = json.loads(response_body.decode("utf-8"))
+                    local_health_ok = bool(
+                        isinstance(payload, dict) and payload.get("ok") is True,
+                    )
+                except Exception:
+                    local_health_ok = False
+                if local_health_ok:
+                    detail = f"{detail}; local health ok"
+                else:
+                    detail = f"{detail}; local health body did not confirm ok"
+                status_ok = status_ok and local_health_ok
         return {
-            "ok": ok,
-            "detail": first or "no HTTP status from proxy forwarding path",
+            "ok": status_ok,
+            "detail": detail,
+            "status_code": code,
+            "probe_url": target_url,
+            "headers_complete": True,
+            "body_complete": body_complete,
+            "local_health_ok": local_health_ok,
         }
     except Exception as exc:
         return {

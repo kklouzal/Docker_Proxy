@@ -97,9 +97,24 @@ def unavailable_service(
     return status
 
 
-def forwarding_mode_detail(*, clamav_required: bool, av_icap_ok: bool) -> str:
-    if av_icap_ok:
-        return "Squid explicit forwarding path returned a local health response."
+def forwarding_mode_detail(
+    *,
+    forwarding_ok: bool,
+    clamav_required: bool,
+    av_icap_ok: bool,
+) -> str:
+    if forwarding_ok:
+        if av_icap_ok:
+            return "Squid explicit forwarding path returned a local health response."
+        if clamav_required:
+            return (
+                "Squid explicit forwarding path returned a local health response, "
+                "but ClamAV is fail-closed and AV ICAP is not healthy."
+            )
+        return (
+            "Squid explicit forwarding path returned a local health response; "
+            "ClamAV/adblock ICAP are configured fail-open unless required."
+        )
     if clamav_required:
         return (
             "Squid explicit forwarding path is degraded while ClamAV is fail-closed; "
@@ -121,7 +136,9 @@ def check_forwarding_path_health(
     av_icap_health: dict[str, Any] | None = None,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    resolved_proxy_port = int(proxy_port if proxy_port is not None else _proxy_http_port())
+    resolved_proxy_port = int(
+        proxy_port if proxy_port is not None else _proxy_http_port()
+    )
     resolved_target_url = target_url or _public_health_target_url()
     result = check_http_proxy_forwarding(
         proxy_host=proxy_host,
@@ -144,7 +161,10 @@ def check_forwarding_path_health(
     status["traffic_scope"] = "local-only"
     status["clamav_required"] = clamav_required
     status["fail_mode"] = "closed" if clamav_required else "open"
+    status["fail_open"] = not clamav_required
+    status["av_icap_ok"] = av_icap_ok
     status["contract"] = forwarding_mode_detail(
+        forwarding_ok=bool(status["ok"]),
         clamav_required=clamav_required,
         av_icap_ok=av_icap_ok,
     )
