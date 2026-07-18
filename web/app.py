@@ -724,6 +724,89 @@ def _operation_view(operation: Any | None) -> dict[str, Any]:
     }
 
 
+def _certificate_revision_by_id(bundle_store: Any, revision_id: object) -> Any | None:
+    try:
+        get_revision = getattr(bundle_store, "get_revision", None)
+        if callable(get_revision):
+            return get_revision(revision_id)
+    except Exception:
+        return None
+    return None
+
+
+def _certificate_revision_sha(bundle_store: Any, revision_id: object) -> str:
+    revision = _certificate_revision_by_id(bundle_store, revision_id)
+    return str(getattr(revision, "bundle_sha256", "") or "").strip()
+
+
+def _certificate_global_revert_context(
+    operation: Any,
+    bundle_store: Any,
+) -> dict[str, Any]:
+    if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
+        return {"is_global_certificate_revert": False}
+    current_revision = None
+    try:
+        current_revision = bundle_store.get_active_bundle()
+    except Exception:
+        current_revision = None
+    rollback_sha = _certificate_revision_sha(
+        bundle_store,
+        getattr(operation, "rollback_ref", ""),
+    )
+    current_revision_id = _safe_revision_id(getattr(current_revision, "revision_id", 0))
+    current_sha = str(getattr(current_revision, "bundle_sha256", "") or "").strip()
+    target_ref = str(getattr(operation, "target_ref", "") or "").strip()
+    request_hash = str(getattr(operation, "request_hash", "") or "").strip()
+    target_matches_active = bool(
+        current_revision_id
+        and target_ref
+        and str(current_revision_id) == target_ref
+        and (not request_hash or not current_sha or request_hash == current_sha)
+    )
+    return {
+        "is_global_certificate_revert": True,
+        "global_revert_current_revision": current_revision_id,
+        "global_revert_current_sha": current_sha,
+        "global_revert_current_short_sha": _short_sha(current_sha),
+        "global_revert_target_revision": target_ref,
+        "global_revert_target_sha": request_hash,
+        "global_revert_target_short_sha": _short_sha(request_hash),
+        "global_revert_rollback_revision": str(
+            getattr(operation, "rollback_ref", "") or "",
+        ),
+        "global_revert_rollback_sha": rollback_sha,
+        "global_revert_rollback_short_sha": _short_sha(rollback_sha),
+        "global_revert_target_matches_active": target_matches_active,
+    }
+
+
+def _operation_template_rows(operations: list[Any]) -> list[Any]:
+    bundle_store = None
+    rows = []
+    for operation in operations:
+        if callable(getattr(operation, "to_dict", None)):
+            row = SimpleNamespace(**operation.to_dict())
+        else:
+            row = operation
+        if str(getattr(row, "rollback_kind", "") or "") == "certificate_revision":
+            if bundle_store is None:
+                bundle_store = get_certificate_bundles()
+            context = _certificate_global_revert_context(row, bundle_store)
+            for key, value in context.items():
+                try:
+                    setattr(row, key, value)
+                except Exception:
+                    pass
+        else:
+            try:
+                row.is_global_certificate_revert = False
+            except Exception:
+                pass
+        rows.append(row)
+    return rows
+
+
 def _state_badge_class(state: str) -> str:
     if state == "reconciled":
         return "ok"
@@ -4918,6 +5001,7 @@ def operations_status():
     except Exception:
         operations = []
         operation_counts = {"pending": 0, "applying": 0, "applied": 0, "failed": 0}
+    operations = _operation_template_rows(operations)
     return render_template(
         "operations.html",
         operations=operations,
@@ -5116,6 +5200,11 @@ def revert_operation(operation_id: int):
             return _redirect_to("operations_status", error="revert_failed")
         return _redirect_to("operations_status", reverted="1")
     if op.rollback_kind == "certificate_revision":
+        if request.form.get("confirm_global_certificate_revert") != "1":
+            return _redirect_to(
+                "operations_status",
+                error="global_certificate_confirmation_required",
+            )
         bundle_store = get_certificate_bundles()
         active_revision = None
         restored_revision = None
@@ -5124,6 +5213,27 @@ def revert_operation(operation_id: int):
                 active_revision = bundle_store.get_active_bundle()
             except Exception:
                 active_revision = None
+            rollback_revision = _certificate_revision_by_id(
+                bundle_store,
+                op.rollback_ref,
+            )
+            if rollback_revision is None:
+                return _redirect_to("operations_status", error="rollback_missing")
+            active_revision_id = _safe_revision_id(
+                getattr(active_revision, "revision_id", 0),
+            )
+            active_sha = str(
+                getattr(active_revision, "bundle_sha256", "") or "",
+            ).strip()
+            op_target_ref = str(getattr(op, "target_ref", "") or "").strip()
+            op_target_sha = str(getattr(op, "request_hash", "") or "").strip()
+            if (
+                not active_revision_id
+                or not op_target_ref
+                or str(active_revision_id) != op_target_ref
+                or (op_target_sha and active_sha and active_sha != op_target_sha)
+            ):
+                return _redirect_to("operations_status", error="rollback_stale")
             restored_revision = bundle_store.activate_revision(op.rollback_ref)
 
             rollback_ref = ""
@@ -5144,7 +5254,11 @@ def revert_operation(operation_id: int):
                         operation_type="certificate_revert",
                         subject=f"Revert #{op.operation_id}",
                         summary=(
-                            f"Restored certificate revision {restored_revision.revision_id}; "
+                            "Global certificate bundle revert queued: "
+                            f"active CA revision {active_revision_id} "
+                            f"({_short_sha(active_sha) or 'unknown hash'}) was replaced with "
+                            f"revision {restored_revision.revision_id} "
+                            f"({_short_sha(getattr(restored_revision, 'bundle_sha256', '')) or 'unknown hash'}); "
                             f"applying asynchronously to proxy {proxy.proxy_id}."
                         ),
                         target_kind="certificate_revision",
@@ -5152,7 +5266,14 @@ def revert_operation(operation_id: int):
                         rollback_kind="certificate_revision" if rollback_ref else "",
                         rollback_ref=rollback_ref,
                         request_hash=getattr(restored_revision, "bundle_sha256", ""),
-                        detail=f"Certificate bundle revert queued from failed operation #{op.operation_id}.",
+                        detail=(
+                            f"Global/shared active CA bundle revert queued from failed operation #{op.operation_id}. "
+                            f"Current active revision before revert: {active_revision_id} "
+                            f"sha={active_sha or 'unknown'}; rollback target revision: "
+                            f"{restored_revision.revision_id} sha="
+                            f"{getattr(restored_revision, 'bundle_sha256', '') or 'unknown'}. "
+                            "This desired-state change affects every registered proxy, not only the selected proxy."
+                        ),
                         created_by=str(session.get("user") or ""),
                         force=True,
                     )

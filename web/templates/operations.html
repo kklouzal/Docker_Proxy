@@ -32,6 +32,10 @@
                 The revert could not be queued; the prior active state was preserved when possible.
             {% elif operation_error == 'unsupported_rollback' %}
                 This operation has an unsupported rollback target.
+            {% elif operation_error == 'global_certificate_confirmation_required' %}
+                Global certificate bundle reverts require explicit confirmation because they change the shared active CA bundle for every registered proxy.
+            {% elif operation_error == 'rollback_stale' %}
+                The active certificate bundle no longer matches the failed operation target, so this global revert is stale. Use selected-proxy retry or apply a new certificate bundle intentionally.
             {% else %}
                 The operation request failed.
             {% endif %}
@@ -67,13 +71,38 @@
                 </div>
                 <p>{{ op.summary }}</p>
                 {% if op.detail %}<p class="small muted">{{ op.detail }}</p>{% endif %}
+                {% if op.is_global_certificate_revert %}
+                <div class="inline-warning certificate-global-revert-warning">
+                    <strong>Global/shared CA rollback.</strong>
+                    This revert changes the active certificate bundle desired state for every registered proxy, not just {{ active_proxy_id }}.
+                    <span class="small">
+                        Failed target revision {{ op.global_revert_target_revision or 'unknown' }}
+                        (requested hash {{ op.global_revert_target_short_sha or 'unknown' }});
+                        current active revision {{ op.global_revert_current_revision or 'unknown' }}
+                        (current hash {{ op.global_revert_current_short_sha or 'unknown' }});
+                        rollback target revision {{ op.global_revert_rollback_revision or 'unknown' }}
+                        (target hash {{ op.global_revert_rollback_short_sha or 'unknown' }}).
+                    </span>
+                </div>
+                {% endif %}
                 <p class="small muted">Created {{ op.created_ts|datetimeformat }}{% if op.completed_ts %} · Completed {{ op.completed_ts|datetimeformat }}{% endif %}</p>
             </div>
             <div class="operation-actions">
                 {% if op.can_revert and op.status == 'failed' %}
                 <form method="post" action="{{ url_for('revert_operation', operation_id=op.operation_id) }}">
                     {{ csrf_field() }}
+                    {% if op.is_global_certificate_revert %}
+                    <label class="checkbox-row small">
+                        <input type="checkbox" name="confirm_global_certificate_revert" value="1" required>
+                        Confirm global CA rollback for all registered proxies
+                    </label>
+                    <button class="btn danger" type="submit" {% if not op.global_revert_target_matches_active %}disabled{% endif %}>Revert global CA</button>
+                    {% if not op.global_revert_target_matches_active %}
+                    <span class="small muted">Disabled because the current active certificate bundle no longer matches this failed operation target.</span>
+                    {% endif %}
+                    {% else %}
                     <button class="btn danger" type="submit">Revert</button>
+                    {% endif %}
                 </form>
                 {% elif op.can_revert %}
                 <span class="small muted">Revert available if this fails</span>

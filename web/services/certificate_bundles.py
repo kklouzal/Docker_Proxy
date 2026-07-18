@@ -220,6 +220,18 @@ class CertificateBundleStore:
             ).fetchone()
         return self._row_to_revision(row)
 
+    def get_revision(self, revision_id: object) -> CertificateBundleRevision | None:
+        self.init_db()
+        target_id = int(revision_id or 0)
+        if target_id <= 0:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
+                (target_id,),
+            ).fetchone()
+        return self._row_to_revision(row)
+
     def get_active_bundle_metadata(self) -> CertificateBundleMetadata | None:
         self.init_db()
         with self._connect() as conn:

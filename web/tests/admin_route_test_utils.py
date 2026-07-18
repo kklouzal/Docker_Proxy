@@ -1134,6 +1134,9 @@ class FakeCertificateBundles:
     def get_active_bundle(self) -> Any | None:
         return self.bundle
 
+    def get_revision(self, revision_id: object) -> Any | None:
+        return self._revisions.get(int(revision_id or 0))
+
     def create_revision(self, bundle: Any, **_kwargs: Any) -> Any:
         revision = SimpleNamespace(
             revision_id=len(self.created) + 1,

@@ -1367,6 +1367,7 @@ def test_revert_certificate_operation_restores_bundle_and_queues_registered_prox
     with loaded.module.app.test_request_context(
         f"/operations/{operation.operation_id}/revert",
         method="POST",
+        data={"confirm_global_certificate_revert": "1"},
     ):
         loaded.module.session["user"] = "operator"
         response = loaded.module.revert_operation(operation.operation_id)
@@ -1376,12 +1377,21 @@ def test_revert_certificate_operation_restores_bundle_and_queues_registered_prox
     assert bundles.bundle is previous
     queued_reverts = loaded.operation_ledger.operations[1:]
     assert [
-        (op.proxy_id, op.operation_type, op.target_ref, op.rollback_ref, op.force)
+        (
+            op.proxy_id,
+            op.operation_type,
+            op.target_ref,
+            op.rollback_ref,
+            op.request_hash,
+            op.force,
+        )
         for op in queued_reverts
     ] == [
-        ("edge-a", "certificate_revert", "9", "12", True),
-        ("edge-b", "certificate_revert", "9", "12", True),
+        ("edge-a", "certificate_revert", "9", "12", "previous-sha", True),
+        ("edge-b", "certificate_revert", "9", "12", "previous-sha", True),
     ]
+    assert "Global/shared active CA bundle revert" in queued_reverts[0].detail
+    assert "affects every registered proxy" in queued_reverts[0].detail
 
 
 def test_revert_certificate_operation_keeps_partial_proxy_queue(
@@ -1429,6 +1439,7 @@ def test_revert_certificate_operation_keeps_partial_proxy_queue(
     with loaded.module.app.test_request_context(
         f"/operations/{operation.operation_id}/revert",
         method="POST",
+        data={"confirm_global_certificate_revert": "1"},
     ):
         loaded.module.session["user"] = "operator"
         response = loaded.module.revert_operation(operation.operation_id)
@@ -1438,9 +1449,248 @@ def test_revert_certificate_operation_keeps_partial_proxy_queue(
     assert bundles.bundle is previous
     queued_reverts = loaded.operation_ledger.operations[1:]
     assert [
-        (op.proxy_id, op.operation_type, op.target_ref, op.rollback_ref, op.force)
+        (
+            op.proxy_id,
+            op.operation_type,
+            op.target_ref,
+            op.rollback_ref,
+            op.request_hash,
+            op.force,
+        )
         for op in queued_reverts
-    ] == [("edge-a", "certificate_revert", "9", "12", True)]
+    ] == [("edge-a", "certificate_revert", "9", "12", "previous-sha", True)]
+
+
+def test_revert_certificate_operation_requires_global_confirmation(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    current = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="NEW CERT\n",
+        bundle_sha256="current-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=current)
+    bundles._revisions[previous.revision_id] = previous
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref=current.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+        request_hash=current.bundle_sha256,
+    )
+    operation.status = "failed"
+
+    with loaded.module.app.test_request_context(
+        f"/operations/{operation.operation_id}/revert",
+        method="POST",
+    ):
+        loaded.module.session["user"] = "operator"
+        response = loaded.module.revert_operation(operation.operation_id)
+
+    assert response.status_code == 302
+    assert "error=global_certificate_confirmation_required" in response.location
+    assert bundles.bundle is current
+    assert loaded.operation_ledger.operations == [operation]
+
+
+def test_revert_certificate_operation_rejects_stale_global_active_target(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    failed_target = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="FAILED CERT\n",
+        bundle_sha256="failed-sha",
+        original_pfx_bytes=None,
+    )
+    newer = SimpleNamespace(
+        revision_id=15,
+        fullchain_pem="NEWER CERT\n",
+        bundle_sha256="newer-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=newer)
+    bundles._revisions[previous.revision_id] = previous
+    bundles._revisions[failed_target.revision_id] = failed_target
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref=failed_target.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+        request_hash=failed_target.bundle_sha256,
+    )
+    operation.status = "failed"
+
+    with loaded.module.app.test_request_context(
+        f"/operations/{operation.operation_id}/revert",
+        method="POST",
+        data={"confirm_global_certificate_revert": "1"},
+    ):
+        loaded.module.session["user"] = "operator"
+        response = loaded.module.revert_operation(operation.operation_id)
+
+    assert response.status_code == 302
+    assert "error=rollback_stale" in response.location
+    assert bundles.bundle is newer
+    assert loaded.operation_ledger.operations == [operation]
+
+
+def test_revert_certificate_operation_rejects_missing_rollback_target(
+    monkeypatch, tmp_path
+) -> None:
+    current = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="NEW CERT\n",
+        bundle_sha256="current-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=current)
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref=current.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=9,
+        request_hash=current.bundle_sha256,
+    )
+    operation.status = "failed"
+
+    with loaded.module.app.test_request_context(
+        f"/operations/{operation.operation_id}/revert",
+        method="POST",
+        data={"confirm_global_certificate_revert": "1"},
+    ):
+        loaded.module.session["user"] = "operator"
+        response = loaded.module.revert_operation(operation.operation_id)
+
+    assert response.status_code == 302
+    assert "error=rollback_missing" in response.location
+    assert bundles.bundle is current
+    assert loaded.operation_ledger.operations == [operation]
+
+
+def test_revert_certificate_operation_requires_auth_and_csrf(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    current = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="NEW CERT\n",
+        bundle_sha256="current-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=current)
+    bundles._revisions[previous.revision_id] = previous
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref=current.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+        request_hash=current.bundle_sha256,
+    )
+    operation.status = "failed"
+    client = loaded.module.app.test_client()
+
+    unauthenticated = client.post(
+        f"/operations/{operation.operation_id}/revert",
+        data={"confirm_global_certificate_revert": "1"},
+    )
+    assert unauthenticated.status_code == 403
+
+    login_client(client)
+    missing_csrf = client.post(
+        f"/operations/{operation.operation_id}/revert",
+        data={"confirm_global_certificate_revert": "1"},
+    )
+    assert missing_csrf.status_code == 403
+
+    token = csrf_token(client, "/operations")
+    ok = client.post(
+        f"/operations/{operation.operation_id}/revert",
+        data={"csrf_token": token, "confirm_global_certificate_revert": "1"},
+        follow_redirects=False,
+    )
+    assert ok.status_code in {301, 302, 303}
+    assert "reverted=1" in ok.location
+
+
+def test_operations_page_labels_certificate_revert_as_global_with_hash_evidence(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    current = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="NEW CERT\n",
+        bundle_sha256="current-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=current)
+    bundles._revisions[previous.revision_id] = previous
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "edge-a",
+        operation_type="certificate_apply",
+        subject="Certificate bundle",
+        summary="Certificate revision 12 failed on edge-a.",
+        target_kind="certificate_revision",
+        target_ref=current.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+        request_hash=current.bundle_sha256,
+    )
+    operation.status = "failed"
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/operations?proxy_id=edge-a")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Global/shared CA rollback" in body
+    assert "not just edge-a" in body
+    assert "requested hash current-sha" in body
+    assert "current hash current-sha" in body
+    assert "target hash previous-sha" in body
+    assert "Confirm global CA rollback for all registered proxies" in body
 
 
 def test_operations_page_surfaces_revert_success(monkeypatch, tmp_path) -> None:
@@ -1466,6 +1716,8 @@ def test_operations_page_surfaces_revert_errors(monkeypatch, tmp_path) -> None:
         "rollback_missing": "rollback revision is no longer available",
         "revert_failed": "prior active state was preserved when possible",
         "unsupported_rollback": "unsupported rollback target",
+        "global_certificate_confirmation_required": "require explicit confirmation",
+        "rollback_stale": "global revert is stale",
     }
 
     for error, message in expected_messages.items():
