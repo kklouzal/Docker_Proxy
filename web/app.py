@@ -734,6 +734,149 @@ def _state_badge_class(state: str) -> str:
     return "warn"
 
 
+def _certificate_runtime_state(
+    proxy_id: str,
+    *,
+    active_revision: Any | None = None,
+    runtime_health: dict[str, Any] | None = None,
+    latest_apply: Any | None = None,
+) -> dict[str, Any]:
+    bundle_store = get_certificate_bundles()
+    if active_revision is None:
+        try:
+            active_revision = bundle_store.get_active_bundle()
+        except Exception:
+            active_revision = None
+    if runtime_health is None:
+        try:
+            runtime_health = _cached_proxy_health(
+                proxy_id,
+                timeout_seconds=_proxy_health_timeout_seconds(),
+                full=True,
+            )
+        except Exception:
+            runtime_health = {}
+
+    revision_id = _safe_revision_id(getattr(active_revision, "revision_id", 0))
+    desired_sha = str(getattr(active_revision, "bundle_sha256", "") or "").strip()
+    running_revision_id = _safe_revision_id(
+        (runtime_health or {}).get("active_certificate_revision_id"),
+    )
+    running_desired_sha = str(
+        (runtime_health or {}).get("active_certificate_sha") or "",
+    ).strip()
+    running_sha = str(
+        (runtime_health or {}).get("current_certificate_sha") or "",
+    ).strip()
+    if latest_apply is None and revision_id:
+        try:
+            latest_apply = bundle_store.latest_apply(proxy_id, revision_id=revision_id)
+        except Exception:
+            latest_apply = None
+
+    latest_operation = _latest_operation(
+        proxy_id,
+        target_kind="certificate_revision",
+        target_ref=revision_id,
+        operation_types={"certificate_apply", "certificate_revert"},
+    )
+    operation_status = str(getattr(latest_operation, "status", "") or "")
+    operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
+    applied_sha = str(getattr(latest_apply, "bundle_sha256", "") or "").strip()
+    applied_ts = _safe_revision_id(getattr(latest_apply, "applied_ts", 0))
+    apply_ok = bool(getattr(latest_apply, "ok", False)) if latest_apply else False
+    apply_detail = str(getattr(latest_apply, "detail", "") or "") if latest_apply else ""
+    apply_matches = bool(
+        revision_id
+        and latest_apply is not None
+        and _safe_revision_id(getattr(latest_apply, "revision_id", 0)) == revision_id
+        and apply_ok
+        and desired_sha
+        and applied_sha
+        and applied_sha == desired_sha
+    )
+    running_matches = bool(
+        revision_id
+        and desired_sha
+        and running_sha
+        and desired_sha == running_sha
+        and (not running_revision_id or running_revision_id == revision_id)
+    )
+
+    if not revision_id:
+        state = "untracked"
+        label = "No active bundle"
+        detail = "No active certificate bundle is saved."
+    elif operation_status in {"pending", "applying"}:
+        state = operation_status
+        label = "Apply pending" if operation_status == "pending" else "Apply running"
+        detail = (
+            f"Certificate revision {revision_id} is {operation_status} as operation #{operation_id}; "
+            "do not treat it as applied until runtime or apply evidence confirms it."
+        )
+    elif operation_status in {"failed", "superseded"}:
+        state = operation_status
+        label = "Apply failed" if operation_status == "failed" else "Apply superseded"
+        detail = (
+            f"Certificate revision {revision_id} ended {operation_status} in operation #{operation_id}; "
+            "a recovery or later reconcile is required before trusting this proxy."
+        )
+    elif running_matches:
+        state = "verified"
+        label = "Runtime verified"
+        detail = f"Desired certificate bundle {revision_id} matches the selected proxy runtime."
+    elif apply_matches:
+        state = "applied_unverified"
+        label = "Apply recorded"
+        detail = (
+            f"Proxy recorded a successful apply for certificate revision {revision_id}, "
+            "but current runtime bundle SHA evidence is unavailable."
+        )
+    elif latest_apply is not None and not apply_ok:
+        state = "failed"
+        label = "Apply failed"
+        detail = apply_detail or f"Proxy recorded a failed apply for certificate revision {revision_id}."
+    elif (
+        latest_apply is not None
+        and desired_sha
+        and applied_sha
+        and applied_sha != desired_sha
+    ):
+        state = "stale"
+        label = "Stale apply evidence"
+        detail = "Recorded certificate bundle hash does not match the active bundle."
+    elif running_sha:
+        state = "drift"
+        label = "Desired/running mismatch"
+        detail = (
+            f"Desired certificate bundle {_short_sha(desired_sha) or 'unknown sha'} does not "
+            f"match running bundle {_short_sha(running_sha) or 'unknown sha'}."
+        )
+    else:
+        state = "unknown"
+        label = "Pending evidence"
+        detail = "No selected-proxy apply or runtime SHA evidence is available for the active bundle."
+
+    return {
+        "proxy_id": proxy_id,
+        "state": state,
+        "label": label,
+        "ok": True
+        if state == "verified"
+        else False
+        if state in {"failed", "superseded", "drift", "stale"}
+        else None,
+        "detail": detail,
+        "desired_revision_id": revision_id,
+        "desired_bundle_sha256": desired_sha,
+        "applied_bundle_sha256": applied_sha,
+        "running_bundle_sha256": running_sha,
+        "running_desired_bundle_sha256": running_desired_sha,
+        "applied_ts": applied_ts,
+        **_operation_view(latest_operation),
+    }
+
+
 def _latest_config_revision_operation(proxy_id: str, revision_id: int):
     if revision_id <= 0:
         return None
@@ -7551,9 +7694,6 @@ def _render_certs_page(
     active_revision_id = (
         getattr(bundle, "revision_id", None) if bundle is not None else None
     )
-    active_bundle_sha256 = (
-        getattr(bundle, "bundle_sha256", "") if bundle is not None else ""
-    )
     for proxy in get_proxy_registry().list_proxies():
         latest_apply = None
         if active_revision_id is not None:
@@ -7561,31 +7701,17 @@ def _render_certs_page(
                 proxy.proxy_id,
                 revision_id=active_revision_id,
             )
-        apply_ok = latest_apply.ok if latest_apply is not None else None
-        apply_detail = latest_apply.detail if latest_apply is not None else ""
-        if (
-            apply_ok is True
-            and active_bundle_sha256
-            and latest_apply is not None
-            and latest_apply.bundle_sha256
-            and latest_apply.bundle_sha256 != active_bundle_sha256
-        ):
-            apply_ok = None
-            apply_detail = (
-                "Recorded certificate bundle hash does not match the active bundle."
-            )
+        state = _certificate_runtime_state(
+            proxy.proxy_id,
+            active_revision=bundle,
+            latest_apply=latest_apply,
+        )
         proxy_cert_statuses.append(
             {
                 "proxy_id": proxy.proxy_id,
                 "display_name": proxy.display_name or proxy.proxy_id,
-                "ok": apply_ok,
-                "detail": apply_detail,
-                "applied_ts": latest_apply.applied_ts
-                if latest_apply is not None
-                else 0,
-                "revision_id": latest_apply.revision_id
-                if latest_apply is not None
-                else active_revision_id,
+                "revision_id": active_revision_id,
+                **state,
             },
         )
     return render_template(

@@ -65,7 +65,7 @@ window.setTimeout(function () {
             <article class="stat-card">
                 <span class="stat-label">Apply status rows</span>
                 <strong class="stat-value">{{ proxy_cert_statuses|length if proxy_cert_statuses is defined else 0 }}</strong>
-                <span class="small">Remote proxies report whether they materialized the active CA successfully.</span>
+                <span class="small">Per-proxy evidence compares desired, applied, and running bundle hashes.</span>
             </article>
         </div>
     </div>
@@ -203,11 +203,11 @@ window.setTimeout(function () {
                                 <strong>{{ row.display_name }}</strong>
                                 <div class="status-item-meta">
                                     {% if row.ok is sameas true %}
-                                        <span class="badge ok">Applied</span>
+                                        <span class="badge ok">{{ row.label }}</span>
                                     {% elif row.ok is sameas false %}
-                                        <span class="badge danger">Failed</span>
+                                        <span class="badge danger">{{ row.label }}</span>
                                     {% else %}
-                                        <span class="badge warn">Pending</span>
+                                        <span class="badge warn">{{ row.label }}</span>
                                     {% endif %}
                                     {% if row.applied_ts %}
                                         <span>{{ fmt_ts(row.applied_ts) }}</span>
@@ -215,6 +215,14 @@ window.setTimeout(function () {
                                 </div>
                                 {% if row.detail %}
                                     <div>{{ row.detail }}</div>
+                                {% endif %}
+                                <div class="mono small">
+                                    desired={{ row.desired_bundle_sha256[:12] if row.desired_bundle_sha256 else 'none' }}
+                                    · applied={{ row.applied_bundle_sha256[:12] if row.applied_bundle_sha256 else 'none' }}
+                                    · running={{ row.running_bundle_sha256[:12] if row.running_bundle_sha256 else 'none' }}
+                                </div>
+                                {% if row.operation_id %}
+                                    <div class="small">Operation #{{ row.operation_id }}: {{ row.operation_status }}</div>
                                 {% endif %}
                             </div>
                         {% endfor %}

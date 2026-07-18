@@ -145,7 +145,7 @@ def test_certs_page_scopes_proxy_apply_status_to_active_revision(
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert _cert_page_status_entries(html)["Default"] == "Pending"
+    assert _cert_page_status_entries(html)["Default"] == "Pending evidence"
     assert "old applied" not in html
 
 
@@ -188,9 +188,9 @@ def test_certs_page_reports_success_failed_and_divergent_proxy_status_by_active_
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     statuses = _cert_page_status_entries(html)
-    assert statuses["Default"] == "Applied"
-    assert statuses["Edge-2"] == "Failed"
-    assert "default active applied" in html
+    assert statuses["Default"] == "Apply recorded"
+    assert statuses["Edge-2"] == "Apply failed"
+    assert "but current runtime bundle SHA evidence is unavailable" in html
     assert "edge failed" in html
 
 
@@ -220,8 +220,111 @@ def test_certs_page_does_not_report_hash_mismatched_active_revision_as_applied(
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert _cert_page_status_entries(html)["Default"] == "Pending"
+    assert _cert_page_status_entries(html)["Default"] == "Stale apply evidence"
     assert "Recorded certificate bundle hash does not match the active bundle." in html
+
+
+def test_certs_page_reports_runtime_verified_per_selected_proxy_without_leakage(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    bundles = FakeCertificateBundles(bundle=bundle)
+    bundles.record_apply_result(
+        "edge-b",
+        10,
+        ok=True,
+        detail="edge-b applied",
+        bundle_sha256="active-sha",
+    )
+
+    class CertProxyClient:
+        def get_health(self, proxy_id: object, *_, **__) -> dict[str, object]:
+            if str(proxy_id) == "edge-a":
+                return {
+                    "ok": True,
+                    "proxy_id": "edge-a",
+                    "active_certificate_revision_id": 10,
+                    "active_certificate_sha": "active-sha",
+                    "current_certificate_sha": "active-sha",
+                }
+            return {
+                "ok": True,
+                "proxy_id": "edge-b",
+                "active_certificate_revision_id": 10,
+                "active_certificate_sha": "active-sha",
+                "current_certificate_sha": "other-sha",
+            }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+        proxy_client=CertProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    statuses = _cert_page_status_entries(html)
+    assert statuses["Edge-A"] == "Runtime verified"
+    assert statuses["Edge-B"] == "Apply recorded"
+    assert "desired=active-sha" in html
+    assert "running=other-sha" in html
+
+
+def test_certs_page_prioritizes_pending_applying_failed_and_superseded_operations(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=bundle),
+        registry=FakeRegistry(["pending", "applying", "failed", "superseded"]),
+    )
+    for proxy_id, status in (
+        ("pending", "pending"),
+        ("applying", "applying"),
+        ("failed", "failed"),
+        ("superseded", "superseded"),
+    ):
+        op = loaded.operation_ledger.create_operation(
+            proxy_id,
+            operation_type="certificate_apply",
+            target_kind="certificate_revision",
+            target_ref=10,
+        )
+        op.status = status
+
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    statuses = _cert_page_status_entries(response.get_data(as_text=True))
+    assert statuses == {
+        "Pending": "Apply pending",
+        "Applying": "Apply running",
+        "Failed": "Apply failed",
+        "Superseded": "Apply superseded",
+    }
 
 
 def test_certs_page_without_active_bundle_does_not_leak_stale_apply_status(
@@ -243,7 +346,7 @@ def test_certs_page_without_active_bundle_does_not_leak_stale_apply_status(
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert _cert_page_status_entries(html)["Default"] == "Pending"
+    assert _cert_page_status_entries(html)["Default"] == "No active bundle"
     assert "old applied" not in html
 
 
