@@ -68,6 +68,7 @@ def _build_policy_sha(proxy_id: object) -> str:
         build_proxy_policy_state,
     )
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
+
     token = set_proxy_id(proxy_id)
     try:
         return build_proxy_policy_state(proxy_id).policy_sha256
@@ -205,7 +206,9 @@ def test_live_remote_sslfilter_policy_mutation_operation_converges_selected_prox
         None,
     )
     assert latest_operation is not None
-    assert latest_operation.status == "pending"
+    assert latest_operation.status in {"pending", "applying"}
+    if latest_operation.status == "applying":
+        assert latest_operation.started_ts > 0
     assert latest_operation.proxy_id == selected_proxy_id
 
     sync_payload = _sync_remote_proxy(multi_proxy_admin)

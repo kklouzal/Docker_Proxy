@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ class ProxyOperation:
     completed_ts: int
     updated_ts: int
     force: bool = False
+    claim_token: str = ""
 
     @property
     def can_revert(self) -> bool:
@@ -63,7 +65,7 @@ class ProxyOperation:
 
 
 class OperationLedger:
-    _SELECT_COLUMNS = "id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts, force_sync"
+    _SELECT_COLUMNS = "id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts, force_sync, claim_token"
 
     def __init__(self) -> None:
         self._schema_ready = False
@@ -133,8 +135,10 @@ class OperationLedger:
         conn.execute(
             """
             UPDATE proxy_operations
-            SET request_key=NULL
-            WHERE status NOT IN ('pending','applying') AND request_key IS NOT NULL
+            SET request_key=NULL,
+                claim_token=NULL
+            WHERE status NOT IN ('pending','applying')
+              AND (request_key IS NOT NULL OR claim_token IS NOT NULL)
             """,
         )
         conn.execute(
@@ -153,7 +157,8 @@ class OperationLedger:
                 active.completed_ts=%s,
                 active.updated_ts=%s,
                 active.started_ts=0,
-                active.request_key=NULL
+                active.request_key=NULL,
+                active.claim_token=NULL
             WHERE ranked.rn>1
             """,
             (now, now),
@@ -197,6 +202,7 @@ class OperationLedger:
                     rollback_ref VARCHAR(255) NOT NULL DEFAULT '',
                     request_hash CHAR(64) NOT NULL DEFAULT '',
                     request_key CHAR(64) NULL DEFAULT NULL,
+                    claim_token CHAR(32) NULL DEFAULT NULL,
                     detail TEXT,
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
@@ -213,6 +219,10 @@ class OperationLedger:
                 if not self._column_exists(conn, "proxy_operations", "request_key"):
                     conn.execute(
                         "ALTER TABLE proxy_operations ADD COLUMN request_key CHAR(64) NULL DEFAULT NULL AFTER request_hash",
+                    )
+                if not self._column_exists(conn, "proxy_operations", "claim_token"):
+                    conn.execute(
+                        "ALTER TABLE proxy_operations ADD COLUMN claim_token CHAR(32) NULL DEFAULT NULL AFTER request_key",
                     )
                 if not self._column_exists(conn, "proxy_operations", "force_sync"):
                     conn.execute(
@@ -251,6 +261,7 @@ class OperationLedger:
             completed_ts=int(row["completed_ts"] or 0),
             updated_ts=int(row["updated_ts"] or 0),
             force=bool(int(row["force_sync"] or 0)),
+            claim_token=str(row.get("claim_token") or ""),
         )
 
     def create_operation(
@@ -449,7 +460,8 @@ class OperationLedger:
                     active.completed_ts=%s,
                     active.updated_ts=%s,
                     active.started_ts=0,
-                    active.request_key=NULL
+                    active.request_key=NULL,
+                    active.claim_token=NULL
                 WHERE ranked.rn>1
                 """,
                 (cutoff, proxy_key, cutoff, now, now),
@@ -466,7 +478,8 @@ class OperationLedger:
                     stale.detail='Requeued after stale applying state.',
                     stale.updated_ts=%s,
                     stale.started_ts=0,
-                    stale.request_key={stale_request_key_expr}
+                    stale.request_key={stale_request_key_expr},
+                    stale.claim_token=NULL
                 WHERE stale.proxy_id=%s
                   AND stale.status='applying'
                   AND stale.started_ts>0
@@ -487,6 +500,7 @@ class OperationLedger:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
+        claim_token = secrets.token_hex(16)
         limit = max(1, min(200, int(limit)))
         target_operation_id = int(operation_id or 0)
         params: list[Any] = [proxy_key]
@@ -511,12 +525,12 @@ class OperationLedger:
                 return []
             placeholders = ",".join(["%s"] * len(ids))
             conn.execute(
-                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
-                (now, now, proxy_key, *ids),
+                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s, claim_token=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
+                (now, now, claim_token, proxy_key, *ids),
             )
             claimed_rows = conn.execute(
-                f"SELECT * FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
-                (proxy_key, *ids),
+                f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND claim_token=%s AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
+                (proxy_key, claim_token, *ids),
             ).fetchall()
         return [
             op
@@ -530,6 +544,8 @@ class OperationLedger:
         *,
         status: str,
         detail: str = "",
+        expected_status: str | None = None,
+        expected_claim_token: str | None = None,
     ) -> ProxyOperation | None:
         if status not in OPERATION_STATUSES:
             msg = f"Unsupported operation status: {status}"
@@ -537,16 +553,29 @@ class OperationLedger:
         self.init_db()
         now = int(time.time())
         completed = now if status in TERMINAL_STATUSES else 0
+        where = "id=%s"
+        where_params: list[Any] = [int(operation_id or 0)]
+        if expected_status:
+            expected_status_text = str(expected_status or "")
+            if expected_status_text not in OPERATION_STATUSES:
+                msg = f"Unsupported expected operation status: {expected_status_text}"
+                raise ValueError(msg)
+            where += " AND status=%s"
+            where_params.append(expected_status_text)
+        if expected_claim_token:
+            where += " AND claim_token=%s"
+            where_params.append(str(expected_claim_token))
         with self._connect() as conn:
             conn.execute(
-                "UPDATE proxy_operations SET status=%s, detail=%s, completed_ts=%s, updated_ts=%s, request_key=IF(%s, NULL, request_key) WHERE id=%s",
+                f"UPDATE proxy_operations SET status=%s, detail=%s, completed_ts=%s, updated_ts=%s, request_key=IF(%s, NULL, request_key), claim_token=IF(%s, NULL, claim_token) WHERE {where}",
                 (
                     status,
                     (detail or "")[:4000],
                     completed,
                     now,
                     status in TERMINAL_STATUSES,
-                    int(operation_id or 0),
+                    status in TERMINAL_STATUSES,
+                    *where_params,
                 ),
             )
             row = conn.execute(
@@ -563,7 +592,13 @@ class OperationLedger:
         detail: str = "",
     ) -> None:
         for op in operations:
-            self.mark_status(op.operation_id, status=status, detail=detail)
+            self.mark_status(
+                op.operation_id,
+                status=status,
+                detail=detail,
+                expected_status="applying",
+                expected_claim_token=getattr(op, "claim_token", ""),
+            )
 
 
 _store: OperationLedger | None = None

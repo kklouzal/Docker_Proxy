@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -200,6 +201,34 @@ def _operation_requests_config_force(operation: Any) -> bool:
 def _operations_request_config_force(operations: list[Any] | None) -> bool:
     return any(
         _operation_requests_config_force(operation) for operation in operations or []
+    )
+
+
+def _mark_claimed_operation_status(
+    ledger: Any,
+    operation: Any,
+    *,
+    status: str,
+    detail: str,
+) -> None:
+    mark_status = ledger.mark_status
+    operation_id = getattr(operation, "operation_id", 0)
+    try:
+        parameters = inspect.signature(mark_status).parameters
+        supports_claim_guard = "expected_status" in parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+        )
+    except (TypeError, ValueError):
+        supports_claim_guard = True
+    if not supports_claim_guard:
+        mark_status(operation_id, status=status, detail=detail)
+        return
+    mark_status(
+        operation_id,
+        status=status,
+        detail=detail,
+        expected_status="applying",
+        expected_claim_token=getattr(operation, "claim_token", ""),
     )
 
 
@@ -3262,8 +3291,9 @@ class ProxyRuntime:
                 detail=detail,
                 result=result,
             )
-            ledger.mark_status(
-                getattr(operation, "operation_id", 0),
+            _mark_claimed_operation_status(
+                ledger,
+                operation,
                 status=status,
                 detail=operation_detail,
             )

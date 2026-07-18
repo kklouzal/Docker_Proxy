@@ -48,6 +48,7 @@ def _operation_row(**overrides):
         "completed_ts": 0,
         "updated_ts": 123,
         "force_sync": 0,
+        "claim_token": "",
     }
     base.update(overrides)
     return base
@@ -64,7 +65,10 @@ class _Connection:
         self.queries.append((compact, params))
         if compact.startswith("SELECT id FROM proxy_operations"):
             return _Result([{"id": 7}, {"id": 8}])
-        if compact.startswith("SELECT * FROM proxy_operations"):
+        if (
+            compact.startswith("SELECT id, proxy_id, status")
+            and "claim_token=%s" in compact
+        ):
             base = {
                 "proxy_id": "edge-a",
                 "status": "applying",
@@ -83,6 +87,7 @@ class _Connection:
                 "completed_ts": 0,
                 "updated_ts": 2,
                 "force_sync": 0,
+                "claim_token": "claim-0",
             }
             return _Result(
                 [dict(base, id=7, created_ts=1), dict(base, id=8, created_ts=2)],
@@ -139,7 +144,13 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
         for i, query in enumerate(sql)
         if query.startswith("UPDATE proxy_operations SET request_key=SHA2")
     )
-    assert terminal_clear_pos < supersede_pos < mismatch_clear_pos < backfill_pos < create_index_pos
+    assert (
+        terminal_clear_pos
+        < supersede_pos
+        < mismatch_clear_pos
+        < backfill_pos
+        < create_index_pos
+    )
     supersede_sql, supersede_params = conn.queries[supersede_pos]
     assert "ROW_NUMBER() OVER ( PARTITION BY proxy_id, SHA2(CONCAT(" in supersede_sql
     assert "CASE WHEN status='applying' THEN 0 ELSE 1 END" in supersede_sql
@@ -161,6 +172,9 @@ def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-0"
+    )
     claimed = ledger.claim_pending("edge-a", limit=2)
     assert [op.operation_id for op in claimed] == [7, 8]
     select_sql, select_params = conn.queries[0]
@@ -170,7 +184,8 @@ def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
     update_sql, update_params = conn.queries[1]
     assert update_sql.startswith("UPDATE proxy_operations SET status='applying'")
     assert "request_key=NULL" not in update_sql
-    assert update_params == (123, 123, "edge-a", 7, 8)
+    assert "claim_token=%s" in update_sql
+    assert update_params == (123, 123, "claim-0", "edge-a", 7, 8)
     assert conn.committed is True
 
 
@@ -183,6 +198,9 @@ def test_claim_pending_can_target_single_operation_id(monkeypatch) -> None:
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-0"
+    )
     ledger.claim_pending("edge-a", limit=50, operation_id=7)
     select_sql, select_params = conn.queries[0]
     assert "AND id=%s" in select_sql
@@ -199,6 +217,9 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-0"
+    )
 
     claimed = ledger.claim_pending("edge-a", limit=2)
 
@@ -206,7 +227,9 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     assert [op.force for op in claimed] == [False, False]
 
 
-def test_requeue_stale_applying_recovers_without_active_key_collisions(monkeypatch) -> None:
+def test_requeue_stale_applying_recovers_without_active_key_collisions(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
@@ -250,6 +273,7 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(monkeypat
     assert "CASE WHEN status='applying' AND started_ts>=%s THEN 0" in supersede_sql
     assert "active.status='superseded'" in supersede_sql
     assert "active.request_key=NULL" in supersede_sql
+    assert "active.claim_token=NULL" in supersede_sql
     assert supersede_params == (700, "edge-a", 700, 1000, 1000)
     requeue_sql, requeue_params = conn.queries[1]
     assert requeue_sql.startswith("UPDATE proxy_operations stale LEFT JOIN")
@@ -257,9 +281,164 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(monkeypat
     assert "active.id IS NULL" in requeue_sql
     assert "SET stale.status='pending'" in requeue_sql
     assert "request_key=SHA2(CONCAT(" in requeue_sql
+    assert "stale.claim_token=NULL" in requeue_sql
     assert "COALESCE(NULLIF(stale.operation_type,''),'sync')" in requeue_sql
     assert requeue_params == (1000, "edge-a", 700)
     assert conn.committed is True
+
+
+def test_claim_pending_returns_only_rows_claimed_by_current_token(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _LostUpdateConnection:
+        def __init__(self) -> None:
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("SELECT id FROM proxy_operations"):
+                return _Result([{"id": 7}, {"id": 8}])
+            if (
+                compact.startswith("SELECT id, proxy_id, status")
+                and "claim_token=%s" in compact
+            ):
+                base = _operation_row(status="applying", started_ts=123, updated_ts=123)
+                # Row 8 was concurrently moved away/reclaimed after the SELECT. The
+                # claimant must not execute or later complete it from a stale id list.
+                return _Result([dict(base, id=7, claim_token=params[1])])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _LostUpdateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-current"
+    )
+
+    claimed = ledger.claim_pending("edge-a", limit=2)
+
+    assert [op.operation_id for op in claimed] == [7]
+    select_claimed_sql, select_claimed_params = conn.queries[2]
+    assert "status='applying'" in select_claimed_sql
+    assert "claim_token=%s" in select_claimed_sql
+    assert select_claimed_params == ("edge-a", "claim-current", 7, 8)
+
+
+def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+
+    ledger.mark_status(
+        7,
+        status="applied",
+        detail="done",
+        expected_status="applying",
+        expected_claim_token="claim-a",
+    )
+
+    update_sql, update_params = conn.queries[0]
+    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert update_params == (
+        "applied",
+        "done",
+        456,
+        456,
+        True,
+        True,
+        7,
+        "applying",
+        "claim-a",
+    )
+
+
+def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _GuardedConnection:
+        def __init__(self) -> None:
+            self.row = _operation_row(
+                status="applying",
+                detail="new claim is still running",
+                claim_token="new-claim",
+            )
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                expected_status = params[7] if len(params) > 7 else None
+                expected_token = params[8] if len(params) > 8 else None
+                if (
+                    self.row["status"] == expected_status
+                    and self.row["claim_token"] == expected_token
+                ):
+                    self.row["status"] = params[0]
+                    self.row["detail"] = params[1]
+                    self.row["completed_ts"] = params[2]
+                    self.row["updated_ts"] = params[3]
+                    if params[4]:
+                        self.row["request_key"] = None
+                    if params[5]:
+                        self.row["claim_token"] = None
+                    result = _Result()
+                    result.rowcount = 1
+                    return result
+                result = _Result()
+                result.rowcount = 0
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _GuardedConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 500)
+
+    current = ledger.mark_status(
+        11,
+        status="failed",
+        detail="stale worker failed after recovery",
+        expected_status="applying",
+        expected_claim_token="old-claim",
+    )
+
+    assert current is not None
+    assert current.status == "applying"
+    assert current.detail == "new claim is still running"
+    assert current.claim_token == "new-claim"
+    update_sql, update_params = conn.queries[0]
+    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert update_params[-3:] == (11, "applying", "old-claim")
 
 
 def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
@@ -504,6 +683,9 @@ def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     now = iter([100, 101, 102])
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-1"
+    )
 
     first = ledger.create_operation(
         "edge-a",
@@ -717,21 +899,27 @@ def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pend
                 pending = [
                     {"id": row_id}
                     for row_id, row in sorted(self.rows.items())
-                    if row.get("proxy_id") == params[0] and row.get("status") == "pending"
+                    if row.get("proxy_id") == params[0]
+                    and row.get("status") == "pending"
                 ]
                 return _Result(pending[: int(params[-1])])
             if compact.startswith("UPDATE proxy_operations SET status='applying'"):
-                for row_id in params[3:]:
+                for row_id in params[4:]:
                     row = self.rows[int(row_id)]
                     row["status"] = "applying"
                     row["started_ts"] = params[0]
                     row["updated_ts"] = params[1]
+                    row["claim_token"] = params[2]
                     if "request_key=NULL" in compact:
+                        key = (str(row["proxy_id"]), str(row["request_key"]))
                         row["request_key"] = None
-                        self.active_by_key.pop((str(row["proxy_id"]), str(row["request_key"])), None)
+                        self.active_by_key.pop(key, None)
                 return _Result()
-            if compact.startswith("SELECT * FROM proxy_operations"):
-                ids = {int(value) for value in params[1:]}
+            if (
+                compact.startswith("SELECT id, proxy_id, status")
+                and "claim_token=%s" in compact
+            ):
+                ids = {int(value) for value in params[2:]}
                 return _Result(
                     [
                         row
@@ -757,6 +945,9 @@ def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pend
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     now = iter([100, 101, 102])
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-1"
+    )
 
     first = ledger.create_operation(
         "edge-a",
@@ -855,11 +1046,23 @@ def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> Non
                 result.lastrowid = row_id
                 return result
             if compact.startswith("UPDATE proxy_operations SET status=%s"):
-                status, detail, completed_ts, updated_ts, release, row_id = params
+                (
+                    status,
+                    detail,
+                    completed_ts,
+                    updated_ts,
+                    release_key,
+                    release_claim,
+                    row_id,
+                ) = params
                 row = self.rows[int(row_id)]
-                if release:
-                    self.active_by_key.pop((str(row["proxy_id"]), str(row["request_key"])), None)
+                if release_key:
+                    self.active_by_key.pop(
+                        (str(row["proxy_id"]), str(row["request_key"])), None
+                    )
                     row["request_key"] = None
+                if release_claim:
+                    row["claim_token"] = None
                 row["status"] = status
                 row["detail"] = detail
                 row["completed_ts"] = completed_ts
@@ -881,6 +1084,9 @@ def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> Non
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     now = iter([100, 101, 102])
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-1"
+    )
 
     first = ledger.create_operation(
         "edge-a",
@@ -994,7 +1200,16 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
 
     update_sql, update_params = conn.queries[0]
     assert "request_key=IF(%s, NULL, request_key)" in update_sql
-    assert update_params == ("superseded", "newer revision applied", 456, 456, True, 7)
+    assert "claim_token=IF(%s, NULL, claim_token)" in update_sql
+    assert update_params == (
+        "superseded",
+        "newer revision applied",
+        456,
+        456,
+        True,
+        True,
+        7,
+    )
 
 
 def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
@@ -1011,4 +1226,5 @@ def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
 
     update_sql, update_params = conn.queries[0]
     assert "request_key=IF(%s, NULL, request_key)" in update_sql
-    assert update_params == ("applying", "retrying", 0, 789, False, 7)
+    assert "claim_token=IF(%s, NULL, claim_token)" in update_sql
+    assert update_params == ("applying", "retrying", 0, 789, False, False, 7)
