@@ -2095,22 +2095,23 @@ def test_runtime_icap_materialization_matches_startup_parity_contract(
     )
     assert "autorestart=unexpected" in adblock_supervisor
     assert "exitcodes=0" in adblock_supervisor
-    assert "startsecs=45" in adblock_supervisor
+    assert "startsecs=1" in adblock_supervisor
+    assert "startsecs=45" not in adblock_supervisor
     assert "startretries=2" in adblock_supervisor
 
     av_supervisor = (supervisor_dir / "cicap_av_1.conf").read_text(encoding="utf-8")
-    assert "CLAMD_HOST=clamd.example.internal" in av_supervisor
-    assert "CLAMD_PORT=3311" in av_supervisor
-    assert "CLAMAV_REQUIRED=1" in av_supervisor
+    assert 'CLAMD_HOST="clamd.example.internal"' in av_supervisor
+    assert 'CLAMD_PORT="3311"' in av_supervisor
+    assert 'CLAMAV_REQUIRED="1"' in av_supervisor
     assert "rm -f" in av_supervisor
     assert "cicap_av_runner.py" in av_supervisor
 
     respmod_supervisor = (supervisor_dir / "clamav_respmod_1.conf").read_text(
         encoding="utf-8",
     )
-    assert "--port 15004" in respmod_supervisor
-    assert "--clamd-host clamd.example.internal" in respmod_supervisor
-    assert "--clamd-port 3311" in respmod_supervisor
+    assert '--port "15004"' in respmod_supervisor
+    assert '--clamd-host "clamd.example.internal"' in respmod_supervisor
+    assert '--clamd-port "3311"' in respmod_supervisor
     assert "--fail-closed" in respmod_supervisor
     assert "--fail-open" not in respmod_supervisor
 
@@ -3666,7 +3667,7 @@ def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
     assert "ping_clamd" not in av_section
 
 
-def test_packaged_proxy_entrypoint_bounds_adblock_supervisor_restart_loop() -> None:
+def test_packaged_proxy_entrypoint_keeps_adblock_running_before_squid_gate() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(
         encoding="utf-8",
@@ -3678,9 +3679,29 @@ def test_packaged_proxy_entrypoint_bounds_adblock_supervisor_restart_loop() -> N
 
     assert "autorestart=unexpected" in section
     assert "exitcodes=0" in section
-    assert "startsecs=45" in section
+    assert "startsecs=1" in section
+    assert "startsecs=45" not in section
     assert "startretries=2" in section
     assert "bypass=on" in entrypoint
+
+
+def test_runtime_adblock_supervisor_config_matches_startup_readiness_contract() -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    files = SquidController()._render_icap_supervisor_files(workers=1)
+    adblock_configs = [
+        content
+        for path, content in files.items()
+        if path.name == "cicap_adblock_1.conf"
+    ]
+    assert len(adblock_configs) == 1
+    section = adblock_configs[0]
+
+    assert "autorestart=unexpected" in section
+    assert "exitcodes=0" in section
+    assert "startsecs=1" in section
+    assert "startsecs=45" not in section
 
 
 def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:

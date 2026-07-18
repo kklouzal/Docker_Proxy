@@ -408,10 +408,10 @@ def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
     assert "Port 127.0.0.1:24005" in av_conf
     assert "AccessLog" not in av_conf
     assert (
-        "command=/bin/sh -c 'export CLAMD_HOST=clamd-proxy CLAMD_PORT=3310 CLAMAV_REQUIRED=1;"
+        'command=/bin/sh -c \'export CLAMD_HOST="clamd-proxy" CLAMD_PORT="3310" CLAMAV_REQUIRED="1";'
         in (supervisor_dir / "cicap_av_1.conf").read_text(encoding="utf-8")
     )
-    assert "--port 24008" in (supervisor_dir / "clamav_respmod_3.conf").read_text(
+    assert '--port "24008"' in (supervisor_dir / "clamav_respmod_3.conf").read_text(
         encoding="utf-8"
     )
     assert "--fail-closed" in (supervisor_dir / "clamav_respmod_1.conf").read_text(
@@ -423,6 +423,98 @@ def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
     assert "icap://127.0.0.1:24002/adblockreq" in include_text
     assert "icap://127.0.0.1:24005/avrespmod" in include_text
     assert "icap://127.0.0.1:24008/avrespmod" in include_text
+
+
+def test_ci_remote_clamd_startup_supervisor_files_are_runtime_noop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import SquidController  # type: ignore
+
+    supervisor_dir = tmp_path / "supervisor.d"
+    cicap_dir = tmp_path / "c-icap"
+    supervisor_dir.mkdir()
+    cicap_dir.mkdir()
+    (cicap_dir / "c-icap.conf").write_text(
+        "PidFile /var/run/c-icap/c-icap.pid\n"
+        "Port 127.0.0.1:1344\n"
+        "AccessLog /var/log/c-icap/access.log\n"
+        "Service echo srv_echo.so\n",
+        encoding="utf-8",
+    )
+    (cicap_dir / "c-icap-av-1.conf").write_text(
+        "PidFile /var/run/c-icap/c-icap-av-1.pid\n"
+        "Port 127.0.0.1:24001\n"
+        "Service echo srv_echo.so\n",
+        encoding="utf-8",
+    )
+    (supervisor_dir / "cicap_adblock_1.conf").write_text(
+        """[program:cicap_adblock_1]
+command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "14000" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
+autostart=true
+autorestart=unexpected
+exitcodes=0
+startsecs=1
+startretries=2
+priority=10
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+""",
+        encoding="utf-8",
+    )
+    (supervisor_dir / "cicap_av_1.conf").write_text(
+        f"""[program:cicap_av_1]
+command=/bin/sh -c 'export CLAMD_HOST="clamav.edge-2.internal" CLAMD_PORT="3311" CLAMAV_REQUIRED="0"; rm -f "/var/run/c-icap/c-icap-av-1.pid"; exec /usr/local/bin/cicap_av_runner.py "{cicap_dir / "c-icap-av-1.conf"}"'
+autostart=true
+autorestart=true
+priority=11
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+""",
+        encoding="utf-8",
+    )
+    (supervisor_dir / "clamav_respmod_1.conf").write_text(
+        """[program:clamav_respmod_1]
+command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "24002" --clamd-host "clamav.edge-2.internal" --clamd-port "3311" --clamd-timeout "5" --client-timeout "2" --max-connections "64" --max-scans "16" --fail-open'
+autostart=true
+autorestart=true
+priority=12
+stderr_logfile=/dev/stderr
+stdout_logfile=/dev/stdout
+stderr_logfile_maxbytes=0
+stdout_logfile_maxbytes=0
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("SQUID_SUPERVISOR_INCLUDE_DIR", str(supervisor_dir))
+    monkeypatch.setenv("CICAP_CONFIG_DIR", str(cicap_dir))
+    monkeypatch.delenv("CICAP_RUN_DIR", raising=False)
+    monkeypatch.setenv("CICAP_PORT", "14000")
+    monkeypatch.setenv("CICAP_AV_PORT", "24001")
+    monkeypatch.delenv("CICAP_AV_RESP_PORT", raising=False)
+    monkeypatch.setenv("CLAMD_HOST", "clamav.edge-2.internal")
+    monkeypatch.setenv("CLAMD_PORT", "3311")
+    monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
+    monkeypatch.delenv("FILE_SECURITY_AV_REQUIRED", raising=False)
+    monkeypatch.delenv("CLAMD_TIMEOUT", raising=False)
+    monkeypatch.delenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", raising=False)
+    monkeypatch.delenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", raising=False)
+    monkeypatch.delenv("CLAMAV_RESPMOD_MAX_SCANS", raising=False)
+
+    changed, paths = SquidController()._sync_icap_supervisor_runtime_files(
+        workers=1,
+        config_text="workers 1\n",
+    )
+
+    assert changed is False
+    assert paths == []
 
 
 def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(

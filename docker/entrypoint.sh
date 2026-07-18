@@ -1176,7 +1176,7 @@ command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.
 autostart=true
 autorestart=unexpected
 exitcodes=0
-startsecs=45
+startsecs=1
 startretries=2
 priority=10
 stderr_logfile=/dev/stderr
@@ -1190,7 +1190,7 @@ EOF
 # Keep the backend probe inside the supervisor child process. RouterOS/supervisord
 # otherwise logs the short-lived probe helper as an unknown reaped pid whenever
 # clamd is unavailable.
-command=/bin/sh -c 'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"'
+command=/bin/sh -c 'export CLAMD_HOST="${CLAMD_HOST}" CLAMD_PORT="${CLAMD_PORT}" CLAMAV_REQUIRED="${CLAMAV_REQUIRED}"; rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"'
 autostart=true
 autorestart=true
 priority=11

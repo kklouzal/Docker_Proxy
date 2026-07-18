@@ -4,7 +4,6 @@ import contextlib
 import logging
 import os
 import re
-import shlex
 import shutil
 import signal
 import socket
@@ -700,6 +699,16 @@ class SquidController:
         fail_open = clamav_fail_open(options)
         clamav_required = "0" if fail_open else "1"
         fail_mode_arg = "--fail-open" if fail_open else "--fail-closed"
+        clamd_timeout = (os.environ.get("CLAMD_TIMEOUT") or "5").strip() or "5"
+        respmod_client_timeout = (
+            os.environ.get("CLAMAV_RESPMOD_CLIENT_TIMEOUT") or "2"
+        ).strip() or "2"
+        respmod_max_connections = (
+            os.environ.get("CLAMAV_RESPMOD_MAX_CONNECTIONS") or "64"
+        ).strip() or "64"
+        respmod_max_scans = (
+            os.environ.get("CLAMAV_RESPMOD_MAX_SCANS") or "16"
+        ).strip() or "16"
         rendered: dict[Path, str] = {}
 
         for index in range(count):
@@ -712,11 +721,11 @@ class SquidController:
             rendered[
                 supervisor_dir / f"cicap_adblock_{instance}.conf"
             ] = f"""[program:cicap_adblock_{instance}]
-command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port {adblock_port} --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
+command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "{adblock_port}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
 autostart=true
 autorestart=unexpected
 exitcodes=0
-startsecs=45
+startsecs=1
 startretries=2
 priority=10
 stderr_logfile=/dev/stderr
@@ -727,7 +736,7 @@ stdout_logfile_maxbytes=0
             rendered[
                 supervisor_dir / f"cicap_av_{instance}.conf"
             ] = f"""[program:cicap_av_{instance}]
-command=/bin/sh -c 'export CLAMD_HOST={shlex.quote(clamd_host)} CLAMD_PORT={clamd_port} CLAMAV_REQUIRED={clamav_required}; rm -f {shlex.quote(str(av_pid))}; exec /usr/local/bin/cicap_av_runner.py {shlex.quote(str(av_conf))}'
+command=/bin/sh -c 'export CLAMD_HOST="{clamd_host}" CLAMD_PORT="{clamd_port}" CLAMAV_REQUIRED="{clamav_required}"; rm -f "{av_pid}"; exec /usr/local/bin/cicap_av_runner.py "{av_conf}"'
 autostart=true
 autorestart=true
 priority=11
@@ -743,7 +752,7 @@ stdout_logfile_maxbytes=0
                 rendered[
                     supervisor_dir / f"clamav_respmod_{instance}.conf"
                 ] = f"""[program:clamav_respmod_{instance}]
-command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port {resp_port} --clamd-host {shlex.quote(clamd_host)} --clamd-port {clamd_port} {fail_mode_arg}'
+command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "{resp_port}" --clamd-host "{clamd_host}" --clamd-port "{clamd_port}" --clamd-timeout "{clamd_timeout}" --client-timeout "{respmod_client_timeout}" --max-connections "{respmod_max_connections}" --max-scans "{respmod_max_scans}" {fail_mode_arg}'
 autostart=true
 autorestart=true
 priority=12
